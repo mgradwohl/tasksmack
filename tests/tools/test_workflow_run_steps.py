@@ -251,6 +251,10 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         if outputs["handed"] == "true":
             self.assertTrue((handed_dir / "TaskSmackBenchmarks").is_file())
             self.assertTrue((handed_dir / "benchmark-current.json").is_file())
+            # #3692: what this runner's gate judged goes too, for the second runner's other benchmarks.
+            across = self.work / "perf-data" / "benchmark-across-launches.json"
+            judged = across if across.is_file() else self.work / "perf-data" / "benchmark-current.json"
+            self.assertEqual((handed_dir / "benchmark-judged.json").read_bytes(), judged.read_bytes())
         return outputs["handed"], names
 
     def test_the_remeasure_runs_only_on_a_flag_and_rechecks_at_the_same_thresholds(self):
@@ -322,6 +326,18 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         check_exit, remeasure, outputs = self.gate(first, launches)
         self.assertEqual(outputs["exit_code"], "1")
         self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
+
+    def test_what_the_gate_judged_goes_to_the_second_runner_not_the_first_launch(self):
+        # #3692: BM_Steady read +60% in launch 1 and was cleared by the launches; BM_Big stood. The second runner
+        # gets BM_Steady's median across the launches, not launch 1's value, so it isn't failed on it again.
+        first = {**self.BASELINE, "BM_Big": 1600.0, "BM_Steady": 80.0}
+        launches = [{"BM_Big": t, "BM_Steady": 51.0} for t in (1580.0, 1620.0, 1010.0, 1590.0)]
+        check_exit, remeasure, outputs = self.gate(first, launches)
+        self.assertEqual(outputs["exit_code"], "1")
+        self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
+        judged = json.loads((self.runner_temp / "second-runner" / "benchmark-judged.json").read_text(encoding="utf-8"))
+        steady = [row["real_time"] for row in judged["benchmarks"] if row.get("run_name") == "BM_Steady"]
+        self.assertEqual(steady, [51.0])
 
     def test_a_coverage_loss_alone_is_not_handed_over(self):
         # BM_Steady missing: 2 of 3 is under the 90% floor, with no regression to re-measure.
@@ -435,9 +451,11 @@ class HeavyChecksSecondRunnerTests(unittest.TestCase):
         path.write_text(json.dumps({"benchmarks": rows}), encoding="utf-8")
 
     def second_runner(self, first: dict[str, float], flagged: list[str], launches: list[dict[str, float]],
-                      extra_env: dict[str, str] | None = None):
-        """benchmark-regression handed over `first` and `flagged`; `launches` are this runner's 5."""
+                      extra_env: dict[str, str] | None = None, judged: dict[str, float] | None = None):
+        """benchmark-regression handed over `first`, what its gate `judged` (`first` when not given) and `flagged`;
+        `launches` are this runner's 5."""
         self.write_run(self.work / "second-runner" / "benchmark-current.json", first)
+        self.write_run(self.work / "second-runner" / "benchmark-judged.json", first if judged is None else judged)
         (self.work / "second-runner" / "regressions.json").write_text(json.dumps({"regressions": flagged}), encoding="utf-8")
         (self.stub / "launches.json").write_text(
             json.dumps({str(i + 1): timings for i, timings in enumerate(launches)}), encoding="utf-8")
@@ -494,6 +512,25 @@ class HeavyChecksSecondRunnerTests(unittest.TestCase):
         self.assertNotIn("17.90ns", report, "the first host's value isn't one of the launches")
         self.assertIn("median: 12.20ns (+0.8%)", report)
         self.assertIn("Coverage: 100.0% (3 of 3", report)
+
+    def test_a_benchmark_the_first_runner_cleared_is_judged_on_its_launches_median(self):
+        # #3692: BM_Big read +48% in the first runner's launch 1, and its launches cleared it (+3%); only
+        # BM_StorageModel_LatestSnapshot stood. The other benchmarks come from what that gate judged.
+        flagged = ["BM_StorageModel_LatestSnapshot"]
+        first = {**self.BASELINE, "BM_Big": 1480.0, flagged[0]: 17.9}
+        judged = {**self.BASELINE, "BM_Big": 1030.0, flagged[0]: 17.5}
+        launches = [{flagged[0]: t} for t in (12.2, 12.0, 12.3, 12.1, 12.2)]
+        result, outputs, report = self.second_runner(first, flagged, launches, judged=judged)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(outputs["exit_code"], "0", report)
+        self.assertNotIn("BM_Big: 1000.0ns -> 1480.0ns", report)
+        self.assertIn("Coverage: 100.0% (3 of 3", report)
+
+        # Judged on the first launch alone, as before #3692's fix, it failed.
+        (self.stub / "count").write_text("0\n", encoding="utf-8", newline="\n")  # this runner's launches, from 1 again
+        result, outputs, report = self.second_runner(first, flagged, launches, judged=first)
+        self.assertEqual(outputs["exit_code"], "1", report)
+        self.assertIn("BM_Big", report)
 
     def test_a_real_regression_fails_on_the_second_runner_too(self):
         first = {**self.BASELINE, "BM_Big": 1600.0}

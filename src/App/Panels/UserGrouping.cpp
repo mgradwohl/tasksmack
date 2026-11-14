@@ -558,9 +558,13 @@ std::string groupStatus(const ProcessGrouping::Group& group, std::uint64_t nowUs
     return group.sessions.empty() ? std::string{} : std::format("{} sessions", group.sessions.size());
 }
 
-std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed)
+std::string groupHeaderTooltip(const ProcessGrouping::Group& group, bool collapsed, bool othersHidden)
 {
     std::string tooltip = collapsed ? "Expand" : "Collapse";
+    if (othersHidden && !group.sessions.empty() && !group.current && !group.notReadable)
+    {
+        tooltip += std::format("\n{}'s processes aren't visible: /proc is mounted with hidepid", group.label);
+    }
     if (group.notReadable)
     {
         for (const Platform::UserSession& session : group.sessions)

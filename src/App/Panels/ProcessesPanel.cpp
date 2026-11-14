@@ -4101,7 +4101,8 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
             }
             if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) // built only when shown, not every frame
             {
-                ImGui::SetTooltip("%s", UserGrouping::groupHeaderTooltip(group, collapsed).c_str());
+                const bool othersHidden = (processCapabilities().missingPrivileges & Platform::MissingPrivilege::PROCESSES_HIDDEN) != 0;
+                ImGui::SetTooltip("%s", UserGrouping::groupHeaderTooltip(group, collapsed, othersHidden).c_str());
             }
             // Group: User (#3377): an account with one sign-in session offers its menu on the header too.
             if (const Platform::UserSession* const session = UserGrouping::headerMenuSession(group);

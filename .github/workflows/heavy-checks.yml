@@ -886,6 +886,14 @@ jobs:
             exit 0
           fi
           cp build/benchmark/bin/TaskSmackBenchmarks perf-data/benchmark-current.json "$RUNNER_TEMP/second-runner/"
+          # What this runner's gate judged, for the second runner's other benchmarks: the across-launches
+          # result where the re-measurement ran (each re-measured benchmark's median over every launch), not the
+          # first launch alone, which can fail a benchmark the launches here cleared (#3692). The first launch's
+          # full run when the re-measurement didn't get that far. benchmark-current.json goes too, unchanged:
+          # its repetitions are what the second runner's plan estimates the launches' time from.
+          judged=perf-data/benchmark-across-launches.json
+          [[ -f "$judged" ]] || judged=perf-data/benchmark-current.json
+          cp "$judged" "$RUNNER_TEMP/second-runner/benchmark-judged.json"
           if [[ -f build/benchmark/bin/TaskSmackBenchmarks.buildinfo.json ]]; then
             cp build/benchmark/bin/TaskSmackBenchmarks.buildinfo.json "$RUNNER_TEMP/second-runner/"
           fi
@@ -1062,11 +1070,12 @@ jobs:
             fi
             results+=("$result")
           done
-          # The first runner's full run supplies the other benchmarks, for the same coverage; its values of the
-          # flagged ones aren't counted.
+          # What the first runner's gate judged supplies the other benchmarks, for the same coverage: its
+          # across-launches medians where it re-measured them, so a benchmark its launches cleared isn't judged
+          # again on one launch (#3692). Its values of the flagged ones aren't counted.
           ( set -o pipefail
             python3 tools/bench-across-launches.py combine \
-              --first second-runner/benchmark-current.json --exclude-first \
+              --first second-runner/benchmark-judged.json --exclude-first \
               --regressions second-runner/regressions.json \
               --baseline perf-data/linux-ci-baseline.json \
               --output perf-data/benchmark-second-runner.json \

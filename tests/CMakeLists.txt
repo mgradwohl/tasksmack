@@ -775,6 +775,7 @@ set(COMMON_TEST_SOURCES
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
     App/test_GpuSectionRender.cpp
+    App/test_ChartSourceGenerations.cpp # one chart data generation per source (#843)
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
     App/test_ProcessesPanelRender.cpp

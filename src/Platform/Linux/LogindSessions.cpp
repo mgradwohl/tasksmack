@@ -90,6 +90,12 @@ template<typename T> bool sessionTrivial(sd_bus* bus, const std::string& path, c
     {
         session.leaderPid = static_cast<std::int32_t>(leader);
     }
+    // When the session started (CLOCK_REALTIME µs): its user's sign-in, for the session row's time (#3377 PR 4).
+    std::uint64_t signedIn = 0;
+    if (sessionTrivial(bus, path, "Timestamp", 't', signedIn))
+    {
+        session.logonUsec = signedIn;
+    }
     return session;
 }
 
