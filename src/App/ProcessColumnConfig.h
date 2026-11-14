@@ -222,7 +222,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // Status
         {.name="Status", .menuName="Status", .configKey="status", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="Process status (Suspended, Efficiency Mode)"},
         // Type (Windows-only)
-        {.name="Type", .menuName="Type", .configKey="type", .defaultWidth=120.0F, .defaultVisible=false, .canHide=true, .description="Process type: App (has UI), Background Process, or Windows Process (Windows only)"},
+        {.name="Type", .menuName="Type", .configKey="type", .defaultWidth=120.0F, .defaultVisible=false, .canHide=true, .description="Process type: App (has UI on Windows; started in a desktop app's scope on Linux), Background Process, or Windows Process on Windows and System Process on Linux"},
         // Architecture (#2394)
         {.name="Architecture", .menuName="Architecture", .configKey="architecture", .defaultWidth=110.0F, .defaultVisible=false, .canHide=true, .description="The architecture the process runs as: x64, x86, ARM64, ARM64EC or ARM32. (emulated) marks code translated to this machine's own as it runs (x64 on ARM64), which costs performance; (WOW64) on Windows and (32-bit) on Linux mark a 32-bit program its 64-bit OS runs natively"},
 
@@ -251,7 +251,7 @@ constexpr auto getColumnInfo(ProcessColumn col) -> ProcessColumnInfo
         // Scheduling policy (Linux, #3086)
         {.name="Policy", .menuName="Scheduling Policy", .configKey="policy", .defaultWidth=80.0F, .defaultVisible=false, .canHide=true, .description="The CPU scheduling policy (Linux): Normal (SCHED_OTHER), Batch, Idle, Deadline, or real time with its priority, FIFO 50 or RR 10"},
         // The I/O priority (#3551), as Process Details words it
-        {.name="I/O Priority", .menuName="I/O Priority", .configKey="io_priority", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="The I/O priority, as ionice names it on Linux: best-effort 0 (highest) to 7, realtime, idle, or a default derived from the nice value"},
+        {.name="I/O Priority", .menuName="I/O Priority", .configKey="io_priority", .defaultWidth=150.0F, .defaultVisible=false, .canHide=true, .description="The I/O priority: the I/O priority hint on Windows (Very low, Low, Normal, High or Critical); as ionice names it on Linux, best-effort 0 (highest) to 7, realtime, idle, or a default derived from the nice value"},
         // Affinity
         {.name="Affinity", .menuName="CPU Affinity", .configKey="affinity", .defaultWidth=100.0F, .defaultVisible=false, .canHide=true, .description="CPU cores this process can run on"},
         // Threads
