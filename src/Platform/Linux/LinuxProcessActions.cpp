@@ -592,8 +592,10 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
         return std::unexpected(std::move(identity.errorMessage));
     }
     const std::filesystem::path image = std::filesystem::path("/proc") / std::to_string(target.pid) / "exe";
+    // A kernel thread's link is absent (ENOENT, no error). Another user's process fails the check with EACCES instead
+    // (exists() follows the link): that one falls through to the read, which words it (#3723).
     std::error_code ec;
-    if (!std::filesystem::exists(image, ec))
+    if (!std::filesystem::exists(image, ec) && !ec)
     {
         return std::unexpected(std::string("It has no executable file (a kernel thread)"));
     }
