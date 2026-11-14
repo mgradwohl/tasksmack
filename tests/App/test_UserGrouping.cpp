@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -736,10 +737,37 @@ TEST(UserGroupsWithSessionsTest, SessionsNotReadableShareOneGroupBeforeUngrouped
     EXPECT_TRUE(groups[2].key.empty());
     EXPECT_EQ(headerMenuSession(groups[1]), nullptr);
     EXPECT_EQ(groupStatus(groups[1], 0), "2 sessions");
-    const std::string tooltip = groupHeaderTooltip(groups[1], false);
+    const std::string tooltip = groupHeaderTooltip(groups[1], false, false);
     EXPECT_TRUE(tooltip.starts_with("Collapse")) << tooltip;
     EXPECT_TRUE(tooltip.contains("Session 5: its user couldn't be read: Access is denied")) << tooltip;
     EXPECT_TRUE(tooltip.contains("Session 6")) << tooltip;
+}
+
+// #3377 PR 4 (Linux): with /proc mounted with hidepid, another signed-in account's header says its processes aren't
+// visible, rather than letting its 0 read as none; TaskSmack's own account's doesn't, nor does any header without it.
+TEST(UserGroupsWithSessionsTest, AnotherAccountsHeaderSaysHidepidHidesItsProcesses)
+{
+    UserSession desktop = session("2", "alice", 1000);
+    desktop.current = true;
+    const UserSession bobs = session("5", "bob", 1001);
+    const std::vector<Domain::ProcessSnapshot> snapshots{process(10, "alice", 5.0, 300), process(11, "root", 1.0, 10)};
+    const std::vector<ProcessGrouping::Group> groups = userGroupsWithSessions(snapshots, allOf(snapshots), {desktop, bobs});
+    const auto find = [&groups](std::string_view label)
+    {
+        const auto found = std::ranges::find_if(groups, [label](const ProcessGrouping::Group& g) { return g.label == label; });
+        return found == groups.end() ? nullptr : &*found;
+    };
+    const ProcessGrouping::Group* bob = find("bob");
+    const ProcessGrouping::Group* alice = find("alice");
+    const ProcessGrouping::Group* root = find("root");
+    ASSERT_NE(bob, nullptr);
+    ASSERT_NE(alice, nullptr);
+    ASSERT_NE(root, nullptr);
+    EXPECT_TRUE(groupHeaderTooltip(*bob, false, true).contains("bob's processes aren't visible: /proc is mounted with hidepid"));
+    EXPECT_FALSE(groupHeaderTooltip(*bob, false, false).contains("hidepid")) << "not when /proc doesn't hide them";
+    EXPECT_FALSE(groupHeaderTooltip(*alice, false, true).contains("hidepid")) << "TaskSmack's own account sees its processes";
+    EXPECT_FALSE(groupHeaderTooltip(*root, false, true).contains("hidepid")) << "an account without sessions has a group only for "
+                                                                                "processes it can see";
 }
 
 // #3377: what a Group: User header and its session rows say, as the Users tab said it: "(you)", the one
@@ -762,10 +790,10 @@ TEST(UserGroupsWithSessionsTest, TheHeaderAndSessionRowsSayWhoWhereAndHow)
     ASSERT_NE(headerMenuSession(alice), nullptr);
     EXPECT_EQ(headerMenuSession(alice)->id, "2");
     EXPECT_EQ(headerMenuSession(groups[1]), nullptr);
-    EXPECT_EQ(groupHeaderTooltip(groups[1], true), "Expand");
-    EXPECT_EQ(groupHeaderTooltip(alice, false), "Collapse\nThe \xCE\xA3 totals are of the processes TaskSmack can see");
+    EXPECT_EQ(groupHeaderTooltip(groups[1], true, false), "Expand");
+    EXPECT_EQ(groupHeaderTooltip(alice, false, false), "Collapse\nThe \xCE\xA3 totals are of the processes TaskSmack can see");
     EXPECT_EQ(sessionRowName(desktop), "seat0 \xC2\xB7 Wayland  (this session)");
-    EXPECT_EQ(sessionSignInTime(desktop), "") << "Linux doesn't read the sign-in time yet (#3377 PR 4)";
+    EXPECT_EQ(sessionSignInTime(desktop), "") << "no sign-in time known (logonUsec 0)";
 
     // Two sessions: the header says how many, and each session's own row has the menu.
     UserSession ssh = session("7", "alice", 1000, "online");

@@ -86,7 +86,8 @@ class LogindSessionsTest : public ::testing::Test
                                         {"Remote", false},
                                         {"IdleHint", false},
                                         {"IdleSinceHint", std::uint64_t{0}},
-                                        {"Leader", std::uint32_t{1234}}};
+                                        {"Leader", std::uint32_t{1234}},
+                                        {"Timestamp", std::uint64_t{1'700'000'100'000'000}}};
         props[SSH_PATH][SESSION] = {{"TTY", std::string("pts/0")},
                                     {"Type", std::string("tty")},
                                     {"Class", std::string("user")},
@@ -164,6 +165,7 @@ TEST_F(LogindSessionsTest, EverySessionIsReadWithItsPropertiesAndTheCurrentOneMa
     EXPECT_FALSE(desktop.idle);
     EXPECT_EQ(desktop.idleSinceUsec, 0U);
     EXPECT_EQ(desktop.leaderPid, 1234);
+    EXPECT_EQ(desktop.logonUsec, 1'700'000'100'000'000U) << "logind's Timestamp: when it was signed in to (#3377 PR 4)";
     EXPECT_TRUE(desktop.current);
 
     const UserSession& ssh = read.sessions[1];
@@ -175,6 +177,7 @@ TEST_F(LogindSessionsTest, EverySessionIsReadWithItsPropertiesAndTheCurrentOneMa
     EXPECT_EQ(ssh.remoteHost, "10.0.0.9");
     EXPECT_TRUE(ssh.idle);
     EXPECT_EQ(ssh.idleSinceUsec, 1'700'000'000'000'000U);
+    EXPECT_EQ(ssh.logonUsec, 0U) << "no Timestamp answered: not known";
     EXPECT_FALSE(ssh.current);
 }
 
