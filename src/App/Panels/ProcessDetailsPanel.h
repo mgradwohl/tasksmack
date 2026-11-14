@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/SelectOverride.h"
 #include "Core/Event.h"
@@ -40,19 +41,6 @@
 
 namespace App
 {
-
-/// Process Details' actions and per-process readers (made by PanelPlatforms.h's makeProcessDetailsReaders(), #2137).
-struct ProcessDetailsReaders
-{
-    std::unique_ptr<Platform::IProcessActions> actions;
-    std::unique_ptr<Platform::IProcessEnvironmentReader> environment;
-    std::unique_ptr<Platform::IProcessConnectionsReader> connections;
-    std::unique_ptr<Platform::IProcessModulesReader> modules;
-    std::unique_ptr<Platform::IProcessSecurityReader> security;
-    std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles;
-    std::unique_ptr<Platform::IProcessThreadsReader> threads;     ///< #3069
-    std::unique_ptr<Platform::IProcessMemoryMapReader> memoryMap; ///< #3089
-};
 
 // The section views and charts live in ProcessDetailsPanel.cpp (Views), so this header pulls none of their headers into
 // its includers: the shell's translation units each paid about 0.8 GB of compile memory for them (#3717).

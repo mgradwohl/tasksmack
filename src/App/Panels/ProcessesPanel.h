@@ -2,6 +2,7 @@
 
 #include "App/KeyboardShortcuts.h"
 #include "App/Panel.h"
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/ExitingProcessRows.h"
 #include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
@@ -129,24 +130,6 @@ struct ProcessCellWidths
 
 /// Panel for displaying and managing the process list.
 /// Refresh cadence is driven by the main loop via onUpdate().
-/// The process probe and actions ProcessesPanel::onAttach() builds from (#1546).
-struct ProcessesPanelPlatform
-{
-    std::unique_ptr<Platform::IProcessProbe> probe;
-    std::unique_ptr<Platform::IProcessActions> actions;
-    /// The opt-in UDP collector (#1492), shared with the probe; null where there is none (Linux, a
-    /// synthetic scenario, most tests).
-    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
-    std::shared_ptr<Platform::IUdpTrafficCollector> udpCollector{};
-    /// The icons beside the names (#1800); nullptr: every process shows the generic icon.
-    std::unique_ptr<Platform::IProcessIconSource> icons;
-    /// Find handles' readers (#3067), the ones Process Details uses; null where there are none (most tests).
-    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
-    std::unique_ptr<Platform::IProcessOpenFilesReader> openFiles{};
-    // NOLINTNEXTLINE(readability-redundant-member-init) - lets the tests' designated initializers leave it out
-    std::unique_ptr<Platform::IProcessModulesReader> modules{};
-};
-
 class ProcessesPanel : public Panel
 {
   public:

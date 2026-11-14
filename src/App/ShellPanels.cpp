@@ -19,6 +19,7 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Panels/UserSessionsFeed.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/ProcessTypes.h"
 #include "ProcessColumnConfig.h"
 #include "SelectOverride.h"
 #include "SyntheticScenario.h"
@@ -28,10 +29,13 @@
 
 #include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
+#include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -114,6 +118,106 @@ ConnectionsPanel& ShellPanels::connections() noexcept
 SystemInfoPanel& ShellPanels::systemInfo() noexcept
 {
     return m_Impl->m_SystemInfo;
+}
+
+bool ShellPanels::processesFirstSnapshotAdopted() const noexcept
+{
+    return m_Impl->m_Processes.firstSnapshotAdopted();
+}
+
+Platform::ProcessCapabilities ShellPanels::processCapabilities() const
+{
+    return m_Impl->m_Processes.processCapabilities();
+}
+
+std::size_t ShellPanels::adoptedProcessCount() const noexcept
+{
+    return m_Impl->m_Processes.adoptedProcessCount();
+}
+
+bool ShellPanels::processesTreeViewEnabled() const noexcept
+{
+    return m_Impl->m_Processes.treeViewEnabled();
+}
+
+void ShellPanels::toggleProcessesTreeView()
+{
+    m_Impl->m_Processes.toggleTreeView();
+}
+
+bool ShellPanels::processesStartupSelectionPending() const noexcept
+{
+    return m_Impl->m_Processes.startupSelectionPending();
+}
+
+void ShellPanels::requestStartupSelection(std::optional<SelectOverride::Target> target, bool showDetails)
+{
+    m_Impl->m_Processes.requestStartupSelection(std::move(target), showDetails);
+}
+
+void ShellPanels::requestProcessSelection(SelectOverride::Target target)
+{
+    m_Impl->m_Processes.requestSelection(std::move(target));
+}
+
+std::string ShellPanels::captureProcessTableLayout() const
+{
+    return m_Impl->m_Processes.captureTableLayout();
+}
+
+ProcessIconView& ShellPanels::processIconView() noexcept
+{
+    return m_Impl->m_Processes.iconView();
+}
+
+void ShellPanels::requestKillSelectedProcesses() noexcept
+{
+    m_Impl->m_Processes.requestKillSelected();
+}
+
+void ShellPanels::requestProcessPriorityStep(NiceStep::Direction direction) noexcept
+{
+    m_Impl->m_Processes.requestPriorityStep(direction);
+}
+
+void ShellPanels::requestProcessSortMenu() noexcept
+{
+    m_Impl->m_Processes.requestSortMenu();
+}
+
+void ShellPanels::expireProcessesFrameRequests() noexcept
+{
+    m_Impl->m_Processes.expireFrameRequests();
+}
+
+const std::string& ShellPanels::hostname() const
+{
+    return m_Impl->m_SystemMetrics.hostname();
+}
+
+void ShellPanels::requestMachineTab(SelectOverride::MachineTab tab) noexcept
+{
+    m_Impl->m_SystemMetrics.requestTab(tab);
+}
+
+float ShellPanels::overviewNowBarColumnWidth() const
+{
+    return m_Impl->m_SystemMetrics.overviewNowBarColumnWidth();
+}
+
+float ShellPanels::firstChartNonPlotHeight(float windowWidth, float fontSize) const noexcept
+{
+    return m_Impl->m_SystemMetrics.firstChartNonPlotHeight(windowWidth, fontSize);
+}
+
+void ShellPanels::restoreProcessTableLayout(std::string_view layout)
+{
+    ProcessesPanel::restoreTableLayout(layout);
+}
+
+float ShellPanels::processesToolbarMinimumWidth()
+{
+    return ProcessesPanel::measureToolbarMinimumWidth();
 }
 
 std::array<Panel*, 7> ShellPanels::inTabOrder() noexcept

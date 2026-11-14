@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/ProcessIconView.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/StartupActionsView.h"
@@ -16,16 +17,6 @@
 
 namespace App
 {
-
-/// The probe and actions StartupPanel::onAttach() builds from (#1721).
-struct StartupPanelPlatform
-{
-    std::unique_ptr<Platform::IStartupProbe> probe;
-    std::shared_ptr<Platform::IStartupActions> actions; ///< Shared, as StartupActionsView holds it
-    /// Whose TaskSmack this is (#3671): in one elevated as another account the per-user entries are read-only.
-    /// Null: the signed-in user's.
-    std::shared_ptr<SessionAccountCheck> account;
-};
 
 /// The Startup tab (#801; enable / disable in phase 2). Owns the StartupModel and samples it on its own
 /// BackgroundSampler at Sampling::STARTUP_REFRESH_MS, only while the tab is shown. As in the Services

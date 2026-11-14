@@ -13,15 +13,9 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
-#include "Panels/ConnectionsPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Panels/NiceStep.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
-#include "Panels/ProcessesPanel.h"
-#include "Panels/ServicesPanel.h"   // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
-#include "Panels/StartupPanel.h"    // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
-#include "Panels/SystemInfoPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
-#include "Panels/SystemMetricsPanel.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/ProcessTypes.h"
 #include "RenderMetricsOverride.h"
@@ -101,44 +95,44 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
       m_Updates(std::move(updateClient), tasksmack::Version::FULL, std::move(updateClock)),
       m_Tabs({
           {
-              .panel = m_SystemMetricsPanel,
+              .panel = *m_Panels.inTabOrder().at(0),
               .eventName = "SystemOverview",
               .label = [this] { return m_CachedSystemTabLabel.c_str(); },
-              .text = [this] { return std::string_view(m_SystemMetricsPanel.hostname()); },
+              .text = [this] { return std::string_view(m_Panels.hostname()); },
           },
           {
-              .panel = m_ProcessesPanel,
+              .panel = *m_Panels.inTabOrder().at(1),
               .eventName = "Processes",
               .label = [] { return PROCESSES_TAB_LABEL; },
               .text = [] { return std::string_view(PROCESSES_TAB_TEXT); },
           },
           {
-              .panel = m_ProcessDetailsPanel,
+              .panel = *m_Panels.inTabOrder().at(2),
               .eventName = "ProcessDetails",
               .label = [this]
               { return (m_DetailsTabIcon != ImTextureID_Invalid ? m_DetailsTabIconLabel : m_DetailsTabLabel).label().c_str(); },
               .text = [this] { return std::string_view(m_ProcessDetailsPanel.tabLabel()); },
           },
           {
-              .panel = m_ServicesPanel,
+              .panel = *m_Panels.inTabOrder().at(3),
               .eventName = "Services",
               .label = [] { return SERVICES_TAB_LABEL; },
               .text = [] { return std::string_view(SERVICES_TAB_TEXT); },
           },
           {
-              .panel = m_StartupPanel,
+              .panel = *m_Panels.inTabOrder().at(4),
               .eventName = "Startup",
               .label = [] { return STARTUP_TAB_LABEL; },
               .text = [] { return std::string_view(STARTUP_TAB_TEXT); },
           },
           {
-              .panel = m_ConnectionsPanel,
+              .panel = *m_Panels.inTabOrder().at(5),
               .eventName = "Connections",
               .label = [] { return CONNECTIONS_TAB_LABEL; },
               .text = [] { return std::string_view(CONNECTIONS_TAB_TEXT); },
           },
           {
-              .panel = m_SystemInfoPanel,
+              .panel = *m_Panels.inTabOrder().at(6),
               .eventName = "SystemInfo",
               .label = [] { return SYSTEM_INFO_TAB_LABEL; },
               .text = [] { return std::string_view(SYSTEM_INFO_TAB_TEXT); },
@@ -151,12 +145,12 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
 
 bool ShellLayer::processesTreeViewForTesting() const noexcept
 {
-    return m_ProcessesPanel.treeViewEnabled();
+    return m_Panels.processesTreeViewEnabled();
 }
 
 bool ShellLayer::startupSelectionPending() const noexcept
 {
-    return m_StartupTab.pending() || m_ProcessesPanel.startupSelectionPending();
+    return m_StartupTab.pending() || m_Panels.processesStartupSelectionPending();
 }
 
 void ShellLayer::onAttach()
@@ -194,7 +188,7 @@ void ShellLayer::onAttach()
     m_StartupTab = SelectOverride::PendingMainTab(mainTab.id);
     if (const std::optional<SelectOverride::Target>& select = SelectOverride::active(); select.has_value())
     {
-        m_ProcessesPanel.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
+        m_Panels.requestStartupSelection(select, SelectOverride::selectionShowsDetails(mainTab));
     }
     // TASKSMACK_MACHINE_TAB (#2869): the machine tab's sub-tab, asked for until it shows; an unknown
     // name is ignored with one warning. It picks no main tab: that stays TASKSMACK_TAB's, or the default.
@@ -219,7 +213,7 @@ void ShellLayer::onAttach()
     }
 
     // Give ImGui back the Processes table's saved column layout before it is first drawn (#952).
-    ProcessesPanel::restoreTableLayout(config.settings().processTableLayout);
+    ShellPanels::restoreProcessTableLayout(config.settings().processTableLayout);
 
     // Share the process model, the GPU model and the Services tab's list between the panels (#1880).
     m_Panels.connectModels();
@@ -250,7 +244,7 @@ bool ShellLayer::isAdministratorSession(const Platform::ProcessCapabilities& cap
 
 void ShellLayer::updateSystemTabLabel()
 {
-    const std::string& hostname = m_SystemMetricsPanel.hostname();
+    const std::string& hostname = m_Panels.hostname();
     if (m_SystemTabLabelBuilt && hostname == m_SystemTabLabelHostname)
     {
         return; // one string compare per frame, no allocation
@@ -296,7 +290,7 @@ bool ShellLayer::requestMainTab(const std::string_view name)
 
 void ShellLayer::requestSelection(const SelectOverride::Target& target)
 {
-    m_ProcessesPanel.requestSelection(target);
+    m_Panels.requestProcessSelection(target);
 }
 
 void ShellLayer::requestDetailsTab(const SelectOverride::DetailsTab tab)
@@ -306,7 +300,7 @@ void ShellLayer::requestDetailsTab(const SelectOverride::DetailsTab tab)
 
 void ShellLayer::requestMachineTab(const SelectOverride::MachineTab tab)
 {
-    m_SystemMetricsPanel.requestTab(tab);
+    m_Panels.requestMachineTab(tab);
 }
 
 void ShellLayer::requestDetailsSection(const SelectOverride::DetailsSection section)
@@ -394,7 +388,7 @@ void ShellLayer::onDetach()
 
     // Column widths, order and sort of the Processes table (#952). Empty means the table was never
     // drawn this session, so whatever was loaded is kept.
-    if (std::string layout = m_ProcessesPanel.captureTableLayout(); !layout.empty())
+    if (std::string layout = m_Panels.captureProcessTableLayout(); !layout.empty())
     {
         settings.processTableLayout = std::move(layout);
     }
@@ -510,9 +504,9 @@ void ShellLayer::onUpdate(float deltaTime)
 
     // "TaskSmack (Administrator)" while the session is (#2728), as the access chip says; set only when that
     // changes.
-    if (m_ProcessesPanel.firstSnapshotAdopted())
+    if (m_Panels.processesFirstSnapshotAdopted())
     {
-        const bool administrator = isAdministratorSession(m_ProcessesPanel.processCapabilities());
+        const bool administrator = isAdministratorSession(m_Panels.processCapabilities());
         if (m_TitleSaysAdministrator != administrator)
         {
             m_TitleSaysAdministrator = administrator;
@@ -523,10 +517,10 @@ void ShellLayer::onUpdate(float deltaTime)
     // Dispatch the startup privilege notice on the first update after the process probe's first
     // generation (#2731), with all layers stacked: that generation says whether the probe runs with
     // reduced privileges, which onAttach() could not know.
-    if (m_PendingPrivilegeNotice && m_ProcessesPanel.firstSnapshotAdopted())
+    if (m_PendingPrivilegeNotice && m_Panels.processesFirstSnapshotAdopted())
     {
         m_PendingPrivilegeNotice = false;
-        if (const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities(); capabilities.hasReducedPrivileges)
+        if (const Platform::ProcessCapabilities capabilities = m_Panels.processCapabilities(); capabilities.hasReducedPrivileges)
         {
             Core::OpenElevationNoticeEvent evt(capabilities.missingPrivileges);
             m_Host->raiseEvent(evt);
@@ -587,7 +581,7 @@ void ShellLayer::onUpdate(float deltaTime)
     // The status bar's text (#1200), rebuilt only when what it says changes: the process count moves
     // once a sample at most, the interval only from Settings.
     // From the generation ProcessesPanel adopted this update: no lock in the render path.
-    const std::size_t processCount = m_ProcessesPanel.adoptedProcessCount();
+    const std::size_t processCount = m_Panels.adoptedProcessCount();
     if (processCount != m_StatusProcessCount)
     {
         // Each segment leads with an icon (#977); the fitting below measures the whole string, icon included.
@@ -726,15 +720,14 @@ void ShellLayer::onRender()
         const float mainTabBarWidth = MainTabBarView::measureWidth(m_TabBarMinimumLabels);
         // Also from the estimate alone: the tab-independent height, whose changes (font, scale) may
         // grow the window, where a tab's measurement may not (#1945).
-        applyContentMinimumSize(
-            std::max(computeContentMinimumWidth(ProcessesPanel::measureToolbarMinimumWidth(),
-                                                m_SystemMetricsPanel.overviewNowBarColumnWidth(),
-                                                fontSize,
-                                                (contentPaddingH * 2.0F) + style.ScrollbarSize),
-                     mainTabBarWidth),
-            contentHeightFor(computeFirstChartBudget(
-                estimatedFirstChartBlock, m_SystemMetricsPanel.firstChartNonPlotHeight(viewport->Size.x, fontSize), plotMinHeight)),
-            contentHeightFor(computeFirstChartBudget(estimatedFirstChartBlock, 0.0F, plotMinHeight)));
+        applyContentMinimumSize(std::max(computeContentMinimumWidth(ShellPanels::processesToolbarMinimumWidth(),
+                                                                    m_Panels.overviewNowBarColumnWidth(),
+                                                                    fontSize,
+                                                                    (contentPaddingH * 2.0F) + style.ScrollbarSize),
+                                         mainTabBarWidth),
+                                contentHeightFor(computeFirstChartBudget(
+                                    estimatedFirstChartBlock, m_Panels.firstChartNonPlotHeight(viewport->Size.x, fontSize), plotMinHeight)),
+                                contentHeightFor(computeFirstChartBudget(estimatedFirstChartBlock, 0.0F, plotMinHeight)));
     }
     else
     {
@@ -747,7 +740,7 @@ void ShellLayer::onRender()
     UI::RenderMetrics::get().renderOverlay(&m_ShowRenderMetrics);
 
     // A shortcut request no render took this frame is dropped, never kept for a later one (#170).
-    m_ProcessesPanel.expireFrameRequests();
+    m_Panels.expireProcessesFrameRequests();
     m_ProcessDetailsPanel.expireFrameRequests();
 }
 
@@ -796,23 +789,23 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
     case KeyboardShortcuts::ShortcutTarget::Processes:
         if (action == KeyboardShortcuts::ShortcutAction::ToggleTreeView)
         {
-            m_ProcessesPanel.toggleTreeView();
+            m_Panels.toggleProcessesTreeView();
         }
         else if (action == KeyboardShortcuts::ShortcutAction::SortMenu)
         {
-            m_ProcessesPanel.requestSortMenu();
+            m_Panels.requestProcessSortMenu();
         }
         else if (action == KeyboardShortcuts::ShortcutAction::RaisePriority)
         {
-            m_ProcessesPanel.requestPriorityStep(NiceStep::Direction::Raise);
+            m_Panels.requestProcessPriorityStep(NiceStep::Direction::Raise);
         }
         else if (action == KeyboardShortcuts::ShortcutAction::LowerPriority)
         {
-            m_ProcessesPanel.requestPriorityStep(NiceStep::Direction::Lower);
+            m_Panels.requestProcessPriorityStep(NiceStep::Direction::Lower);
         }
         else
         {
-            m_ProcessesPanel.requestKillSelected();
+            m_Panels.requestKillSelectedProcesses();
         }
         break;
     case KeyboardShortcuts::ShortcutTarget::ProcessDetails:
@@ -826,7 +819,7 @@ void ShellLayer::handleTabShortcut(KeyboardShortcuts::ShortcutAction action)
 void ShellLayer::updateDetailsTabIcon()
 {
     m_DetailsTabIcon = ImTextureID_Invalid;
-    ProcessIconView& icons = m_ProcessesPanel.iconView();
+    ProcessIconView& icons = m_Panels.processIconView();
     icons.setEnabled(UserConfig::get().settings().showProcessIcons);
     const Domain::ProcessSnapshot* shown = m_ProcessDetailsPanel.displayedSnapshot();
     if (shown == nullptr || !icons.enabled())
@@ -971,7 +964,7 @@ void ShellLayer::renderStatusBar()
 {
     // Live, not a startup copy: a probe can withdraw a capability after the first sample (#1254).
     // ProcessesPanel keeps it with its cached snapshot generation, so reading it takes no lock.
-    const Platform::ProcessCapabilities capabilities = m_ProcessesPanel.processCapabilities();
+    const Platform::ProcessCapabilities capabilities = m_Panels.processCapabilities();
     // When native OS decorations replace the custom title bar (see #745), its Settings/Help buttons
     // don't exist, so the status bar carries them.
     // Standard or Administrator (#2728): Administrator when nothing is limited (Linux: root, or every capability

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/ChartSourceGenerations.h"
 #include "App/Panels/CpuDetailsBlock.h"
 #include "App/Panels/CpuDetailsText.h"
@@ -46,14 +47,6 @@
 
 namespace App
 {
-
-/// The System model's probes (#2731): the system counters and the power state, read together on the
-/// system sampler. A null power probe is no battery, as the model already allows.
-struct SystemModelProbes
-{
-    std::unique_ptr<Platform::ISystemProbe> system;
-    std::unique_ptr<Platform::IPowerProbe> power;
-};
 
 /// The probe factories SystemMetricsPanel's three samplers build their models from (#1546, #2731), one per
 /// data domain: each runs once, on its own sampler thread, from that sampler's start hook. A null disk or

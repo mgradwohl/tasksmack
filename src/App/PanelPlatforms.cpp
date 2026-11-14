@@ -1,11 +1,7 @@
 #include "PanelPlatforms.h"
 
+#include "App/PanelPlatformTypes.h"
 #include "NativeWindow.h"
-#include "Panels/ProcessDetailsPanel.h"
-#include "Panels/ProcessesPanel.h"
-#include "Panels/ServicesPanel.h"
-#include "Panels/StartupPanel.h"
-#include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
 #ifdef _WIN32
 #include "Platform/BrokeredUserSessions.h" // the signed-in sessions' helper decorator: Windows only (#3076)
