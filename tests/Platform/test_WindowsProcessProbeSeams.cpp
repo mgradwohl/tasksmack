@@ -1995,8 +1995,9 @@ class WindowsProcessAppIdentityTest : public WindowsProcessProbeSeamTest
     }
 };
 
-// A packaged process: its package is read once, with its first handle, and named once; past every TTL
-// neither is read again, and its windows are never walked for an ID. A reused PID is a new process.
+// A packaged process: its package is read once, with its first handle, and named once, from the second sample
+// (#3714: the first is the sampler's seed); past every TTL neither is read again, and its windows are never walked
+// for an ID. A reused PID is a new process.
 TEST_F(WindowsProcessAppIdentityTest, APackageIsReadAndNamedOnceAProcess)
 {
     fakeApps().package = {
@@ -2006,9 +2007,12 @@ TEST_F(WindowsProcessAppIdentityTest, APackageIsReadAndNamedOnceAProcess)
     fakeApps().names["Microsoft.WindowsTerminal_8wekyb3d8bbwe!App"] = "Windows Terminal";
     WindowsProcessProbe probe(appFunctions());
     EXPECT_TRUE(probe.capabilities().hasAppIds);
+    const ProcessCounters seed = find(probe.enumerate());
+    EXPECT_EQ(seed.packageFamily, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(seed.appUserModelId, "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
+    EXPECT_TRUE(seed.appName.empty()) << "not named on the first sample";
+    EXPECT_EQ(fakeApps().nameLookups, 0);
     const ProcessCounters first = find(probe.enumerate());
-    EXPECT_EQ(first.packageFamily, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
-    EXPECT_EQ(first.appUserModelId, "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
     EXPECT_EQ(first.appName, "Windows Terminal");
 
     fakeApps().package = {};

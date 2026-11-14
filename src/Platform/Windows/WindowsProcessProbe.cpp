@@ -1133,8 +1133,12 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     }
 
     // The app each process belongs to (#3457): a few names a sample, and one window walk for the unpackaged
-    // processes last sample listed whose windows are due to be looked at for an AppUserModelID.
-    m_AppNameLookupsLeft = APP_NAME_LOOKUPS_PER_SAMPLE;
+    // processes last sample listed whose windows are due to be looked at for an AppUserModelID. None is named
+    // on the first sample (#3714): it is the process sampler's seed, which the Processes table's first rows
+    // wait on, and the first name asked of the shell's Apps folder loads it (about 100 ms, most of the seed).
+    // Those names come with the next sample, as a window's ID does.
+    const bool firstSample = m_DetailCacheGeneration == 1; // Counted at the top of this call
+    m_AppNameLookupsLeft = firstSample ? 0 : APP_NAME_LOOKUPS_PER_SAMPLE;
     lookForWindowAppIds(m_Fns.system.steadyNow());
 
     for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
