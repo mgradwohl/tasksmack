@@ -7,6 +7,7 @@
 #include "Platform/Linux/CommandOutput.h"
 #include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/RootTools.h"
 #include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
@@ -407,16 +408,32 @@ CronSources cronSources()
         std::optional<std::string> text;
     };
     const auto cache = std::make_shared<Cache>();
+    // As root (#3760), crontab only from the system's own directories, only a file root put there, and with an
+    // environment of TaskSmack's: a PATH the invoking user preserved (sudo -E) would otherwise run their own program as
+    // root, about once a minute. Resolved once, here on the Startup sampler's thread.
+    const bool root = ::geteuid() == 0;
+    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read once, on the sampler's thread
+    const std::optional<std::string> crontab = RootTools::find("crontab", root, pathEnv != nullptr ? pathEnv : "");
+    const std::optional<std::vector<std::string>> environment =
+        root ? std::optional<std::vector<std::string>>(RootTools::rootEnvironment()) : std::nullopt;
     CronSources sources;
-    sources.userCrontab = [cache] -> std::optional<std::string>
+    sources.userCrontab = [cache, crontab, environment] -> std::optional<std::string>
     {
         const std::scoped_lock lock(cache->mutex);
         const auto now = std::chrono::steady_clock::now();
         if (!cache->readAt.has_value() || now - *cache->readAt >= std::chrono::seconds(Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS))
         {
             // Exit 1 with "no crontab for <user>" on stderr when there's none: no jobs, not an error to show.
-            const CommandOutput run = runForOutput({"crontab", "-l"}, std::chrono::seconds(2), std::size_t{256} * 1024);
-            cache->text = (run.started && run.exitCode == 0) ? std::optional<std::string>(run.output) : std::nullopt;
+            if (crontab.has_value())
+            {
+                const CommandOutput run = runForOutput(
+                    {*crontab, "-l"}, std::chrono::seconds(2), std::size_t{256} * 1024, environment.has_value() ? &*environment : nullptr);
+                cache->text = (run.started && run.exitCode == 0) ? std::optional<std::string>(run.output) : std::nullopt;
+            }
+            else
+            {
+                cache->text = std::nullopt; // no crontab this session may run
+            }
             cache->readAt = now;
         }
         return cache->text;
