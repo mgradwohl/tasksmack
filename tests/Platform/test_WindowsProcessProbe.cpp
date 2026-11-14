@@ -1069,7 +1069,16 @@ TEST(WindowsProcessProbeTest, OurProcessHasProcessTypeSet)
 TEST(WindowsProcessProbeTest, SomeProcessesHavePublisherSet)
 {
     WindowsProcessProbe probe;
-    const auto processes = probe.enumerate();
+    // The publisher is read by the signature worker with each image's check, and taken on a later sample
+    // (#3703): sample until one is in.
+    std::vector<ProcessCounters> processes = probe.enumerate();
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(30);
+    while (std::ranges::none_of(processes, [](const ProcessCounters& p) { return !p.publisher.empty(); }) &&
+           std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        processes = probe.enumerate();
+    }
 
     // svchost.exe (Service Host) is always running on Windows and its image
     // (C:\Windows\System32\svchost.exe) carries a well-known Microsoft publisher string.

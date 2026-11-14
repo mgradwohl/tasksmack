@@ -8,6 +8,10 @@
 // later sample with find(). Nothing waits for it: a process is published at once, its signature "not
 // checked yet" until the answer is in.
 //
+// - The publisher (the version info's CompanyName, SignatureFunctions::readPublisher) is read in the same pass
+//   and handed over with the answer (#3703): a new image's version info is file I/O, tens of milliseconds while
+//   the file is first scanned, which the process sampler then never waits on.
+//
 // - Cached by path and {file ID, change time, size} (SignatureCache, bounded; #3292): a second process of
 //   the same image costs a file open and stamp read, not another check, and a file replaced or changed is
 //   checked anew. A file with no ID (FAT, some network shares) isn't cached: it is checked every time.
@@ -120,8 +124,9 @@ class SignatureWorker
 
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
     /// A path the table has forgotten (it overflowed), or never admitted (it was full), is requested again
-    /// on its turn (#3403).
-    [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path)
+    /// on its turn (#3403). With an answer, @p publisher (when given) is set to the publisher read with it
+    /// (#3703); it is left alone without one.
+    [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path, std::string* publisher = nullptr)
     {
         std::string key = pathKey(path);
         const std::scoped_lock lock(m_Mutex);
@@ -133,6 +138,10 @@ class SignatureWorker
         {
             requestLocked(path, std::move(key), Asker::LaterSample);
             return std::nullopt;
+        }
+        if (publisher != nullptr && found->second.result.has_value())
+        {
+            *publisher = found->second.publisher;
         }
         return found->second.result;
     }
@@ -196,6 +205,7 @@ class SignatureWorker
     struct PathState
     {
         std::optional<SignatureCheck> result; ///< The last answer; nullopt while queued
+        std::string publisher;                ///< Read with it (#3703); empty with no answer, or none named
         bool queued = false;
     };
 
@@ -302,6 +312,7 @@ class SignatureWorker
             throw;
         }
         state->result.reset();
+        state->publisher.clear();
         state->queued = true;
         ++m_QueuedCount; // not queued before: a queued path returned at the top
         submitDrainLocked();
@@ -478,10 +489,25 @@ class SignatureWorker
             {
                 check = SignatureCheck{.signature = ImageSignature::Unknown, .note = e.what(), .signer = {}};
             }
+            // The publisher in the same pass (#3703), at the worker's background priority, off the sampler. An
+            // unreadable one is no publisher; it doesn't change the check's answer.
+            std::string publisher;
+            if (m_Fns.readPublisher != nullptr)
+            {
+                try
+                {
+                    publisher = m_Fns.readPublisher(queued.path);
+                }
+                catch (const std::exception& e)
+                {
+                    spdlog::debug("SignatureWorker: the publisher of {} couldn't be read: {}", queued.path, e.what());
+                }
+            }
             {
                 const std::scoped_lock lock(m_Mutex);
                 if (const auto found = m_Paths.find(key); found != m_Paths.end())
                 {
+                    found->second.publisher = std::move(publisher);
                     found->second.result = std::move(check);
                     markAnsweredLocked(found->second);
                 }

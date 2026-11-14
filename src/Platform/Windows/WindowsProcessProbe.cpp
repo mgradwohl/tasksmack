@@ -584,10 +584,11 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return result;
 }
 
-/// Fill @p image from the process's image path and its publisher, unless an earlier read already has
-/// (#2982): neither changes while the process runs. A failed path read (an empty path) leaves it
-/// unread, so the next heavy refresh tries again.
-const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProcess, ProcessImage& image)
+/// Fill @p image from the process's image path and, with @p readPublisher, its publisher, unless an earlier
+/// read already has (#2982): neither changes while the process runs. A failed path read (an empty path)
+/// leaves it unread, so the next heavy refresh tries again. The probe reads the publisher here only without a
+/// signature worker, which otherwise reads it off the sampler thread with the image's check (#3703).
+const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProcess, ProcessImage& image, bool readPublisher = true)
 {
     if (image.read)
     {
@@ -599,7 +600,10 @@ const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProces
         return image;
     }
     image.path = WinString::wideToUtf8(path);
-    image.publisher = getFilePublisher(path);
+    if (readPublisher)
+    {
+        image.publisher = getFilePublisher(path);
+    }
     image.read = true;
     return image;
 }
@@ -942,6 +946,25 @@ void enterBackgroundMode()
 
 } // namespace
 
+namespace
+{
+
+/// The signature worker's publisher read (#3703): getFilePublisher() of a UTF-8 path, on the worker's thread.
+std::string readImagePublisher(const std::string& path)
+{
+    return getFilePublisher(WinString::utf8ToWide(path));
+}
+
+/// The system's signature calls, with the publisher read alongside each check.
+WindowsSignature::SignatureFunctions signatureFunctionsWithPublisher()
+{
+    WindowsSignature::SignatureFunctions functions = Windows::systemSignatureFunctions();
+    functions.readPublisher = &readImagePublisher;
+    return functions;
+}
+
+} // namespace
+
 WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
 {
     return {
@@ -986,7 +1009,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .appDisplayName = &Windows::appDisplayName,
             },
         .energyMeter = Windows::EnergyMeterFunctions{},
-        .signature = Windows::systemSignatureFunctions(),
+        .signature = signatureFunctionsWithPublisher(),
         .signatureWorker =
             {
                 .pause = std::chrono::milliseconds{Domain::Sampling::SIGNATURE_CHECK_PAUSE_MS},
@@ -1399,7 +1422,9 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     {
         // Expensive data: owner and command line at a lower cadence. The image path and its publisher
         // never change for a process, so they are read once, on the first heavy read that succeeds (#2982).
-        const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image);
+        // The publisher is file I/O on a new image (tens of milliseconds while it is first scanned): the
+        // signature worker reads it with the check, and updateSignature() takes both (#3703).
+        const ProcessImage& image = readProcessImage(m_Fns.process, hProcess.get(), cache.image, m_Signatures == nullptr || !canCache);
         imagePathUtf8 = image.path;
         counters.publisher = image.publisher;
         if (canCache)
@@ -1494,11 +1519,13 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
             m_Signatures->request(cache.image.path);
             cache.signatureRequested = true;
         }
-        cache.signature = m_Signatures->find(cache.image.path); // nullopt until the worker has checked it
+        // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
+        cache.signature = m_Signatures->find(cache.image.path, &cache.image.publisher);
     }
     if (cache.signature.has_value())
     {
         counters.signature = *cache.signature;
+        counters.publisher = cache.image.publisher;
     }
 }
 
