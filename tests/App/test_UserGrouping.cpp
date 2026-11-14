@@ -1,7 +1,7 @@
 /// @file test_UserGrouping.cpp
-/// @brief Who a process or a session belongs to (#3377): the Users tab's rows, one per signed-in account
-/// with its sessions and its processes' totals (#3076, #3310), the session text, and the Processes table's
-/// Group: User, keyed by account so PC\alice and CORP\alice are two groups.
+/// @brief Who a process or a session belongs to (#3377): the session text (#3076), and the Processes table's
+/// Group: User, keyed by account so PC\alice and CORP\alice are two groups (#3310), each signed-in account's
+/// sessions under its header.
 
 #include "App/Panels/ProcessGroupTotals.h"
 #include "App/Panels/ProcessGrouping.h"
@@ -52,36 +52,13 @@ using Platform::UserSession;
     return p;
 }
 
-TEST(UserRowsTest, OneRowPerSignedInUserWithTheirSessionsAndProcessTotals)
+// #3076: a person's sign-in is logind's class "user", or a session with no class (Windows); a greeter, a lock
+// screen or the user manager's own background session isn't one.
+TEST(SessionTextTest, OnlyAPersonsSignInIsASignInSession)
 {
     UserSession greeter = session("c1", "gdm", 120);
     greeter.sessionClass = "greeter";
-    UserSession aliceDesktop = session("2", "alice", 1000);
-    aliceDesktop.current = true;
-    const std::vector<UserSession> sessions{aliceDesktop, session("7", "alice", 1000, "online"), session("5", "Bob", 1001), greeter};
-    const std::vector<Domain::ProcessSnapshot> processes{
-        process(10, "alice", 5.0, 100),
-        process(11, "alice", 20.0, 300),
-        process(12, "Bob", 1.0, 50),
-        process(13, "root", 50.0, 9000),
-    };
-
-    const std::vector<UserRow> rows = buildUserRows(sessions, processes);
-    ASSERT_EQ(rows.size(), 2U) << "the greeter and root (no sign-in) have no row";
-    EXPECT_EQ(rows[0].user, "alice");
-    EXPECT_EQ(rows[0].uid, 1000U);
-    EXPECT_EQ(rows[0].sessions.size(), 2U);
-    EXPECT_TRUE(rows[0].current);
-    EXPECT_EQ(rows[0].totals.processes, 2U);
-    EXPECT_DOUBLE_EQ(rows[0].totals.cpuPercent, 25.0);
-    EXPECT_EQ(rows[0].totals.resident, 400U);
-    EXPECT_DOUBLE_EQ(rows[0].totals.ioRead + rows[0].totals.ioWrite, 30.0);
-    EXPECT_DOUBLE_EQ(rows[0].totals.netSent + rows[0].totals.netReceived, 10.0);
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{1, 0})) << "busiest first";
-    EXPECT_EQ(rows[1].user, "Bob") << "by name, ignoring case";
-    EXPECT_FALSE(rows[1].current);
-    EXPECT_EQ(rows[1].processes, (std::vector<std::size_t>{2}));
-
+    EXPECT_FALSE(isSignInSession(greeter));
     EXPECT_TRUE(isSignInSession(session("1", "x", 1)));
     UserSession unclassed = session("1", "x", 1);
     unclassed.sessionClass.clear();
@@ -90,7 +67,7 @@ TEST(UserRowsTest, OneRowPerSignedInUserWithTheirSessionsAndProcessTotals)
     EXPECT_FALSE(isSignInSession(unclassed));
 }
 
-TEST(UserRowsTest, TheSessionTextSaysWhereHowAndWhatItIsDoing)
+TEST(SessionTextTest, TheSessionTextSaysWhereHowAndWhatItIsDoing)
 {
     UserSession desktop = session("2", "alice", 1000);
     desktop.seat = "seat0";
@@ -134,7 +111,7 @@ TEST(UserRowsTest, TheSessionTextSaysWhereHowAndWhatItIsDoing)
 
 // #3076: Windows' sessions say where they are (the console, a Remote Desktop and its client), the WTS states
 // it adds read as words, and the tooltip names the domain, the sign-in and the session.
-TEST(UserRowsTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
+TEST(SessionTextTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
 {
     UserSession console = session("1", "alice", 0);
     console.type = "console";
@@ -160,33 +137,6 @@ TEST(UserRowsTest, WindowsSessionsSayWhereTheyAreAndWhatTheyAreDoing)
     EXPECT_TRUE(tooltip.ends_with("\nSession 1")) << tooltip;
 }
 
-// #3076: two accounts with one short name (PC\\alice and CORP\\alice) are two rows, each labelled with its
-// domain. A process that names only the short name can't be told apart, so neither row gets it; a name only
-// one row has keeps its processes.
-TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
-{
-    UserSession local = session("1", "alice", 0);
-    local.domain = "PC";
-    UserSession corp = session("2", "alice", 0);
-    corp.domain = "CORP";
-    UserSession bob = session("3", "bob", 0);
-    bob.domain = "PC";
-    UserSession again = session("4", "bob", 0);
-    again.domain = "PC";
-    const std::vector<Domain::ProcessSnapshot> processes{process(10, "alice", 5.0, 100), process(11, "bob", 1.0, 50)};
-    const std::vector<UserRow> rows = buildUserRows({local, corp, bob, again}, processes);
-    ASSERT_EQ(rows.size(), 3U);
-    EXPECT_EQ(rows[0].label, "bob") << "a short name only one row has";
-    EXPECT_EQ(rows[0].key, "PC\\bob");
-    EXPECT_EQ(rows[0].sessions.size(), 2U) << "both of PC\\bob's sessions";
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{1}));
-    EXPECT_EQ(rows[1].label, "CORP\\alice");
-    EXPECT_EQ(rows[2].label, "PC\\alice");
-    EXPECT_TRUE(rows[1].processes.empty()) << "an alice process could be either alice's";
-    EXPECT_TRUE(rows[2].processes.empty());
-    EXPECT_EQ(rows[1].user, "alice");
-}
-
 /// A Windows process, which names its owner's domain too (#3310).
 [[nodiscard]] Domain::ProcessSnapshot processOf(std::int32_t pid, std::string domain, std::string user, double cpu)
 {
@@ -195,83 +145,11 @@ TEST(UserRowsTest, AccountsOfTwoDomainsAreTwoRows)
     return p;
 }
 
-// #3310: a Windows process names its owner's domain, so PC\\alice's and CORP\\alice's processes each go to
-// their own row, whatever the case of the names. One with no domain still goes only to a name one row has.
-TEST(UserRowsTest, AProcessWithItsDomainGoesToThatAccountsRow)
-{
-    UserSession local = session("1", "alice", 0);
-    local.domain = "PC";
-    UserSession corp = session("2", "alice", 0);
-    corp.domain = "CORP";
-    UserSession bob = session("3", "bob", 0);
-    bob.domain = "PC";
-    const std::vector<Domain::ProcessSnapshot> processes{
-        processOf(10, "PC", "alice", 5.0),
-        processOf(11, "CORP", "alice", 7.0),
-        processOf(12, "corp", "ALICE", 1.0), // Windows compares account names without case
-        processOf(13, "NT AUTHORITY", "SYSTEM", 50.0),
-        processOf(14, "OTHER", "alice", 9.0), // A third alice, signed in nowhere
-        process(15, "alice", 3.0, 100),       // No domain: either alice's
-        process(16, "bob", 2.0, 100),         // No domain, a name one row has
-        processOf(17, "CORP", "bob", 4.0),    // CORP\\bob isn't PC\\bob
-    };
-    const std::vector<UserRow> rows = buildUserRows({local, corp, bob}, processes);
-    ASSERT_EQ(rows.size(), 3U);
-    EXPECT_EQ(rows[0].key, "PC\\bob");
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{6}));
-    EXPECT_EQ(rows[1].key, "CORP\\alice");
-    EXPECT_EQ(rows[1].processes, (std::vector<std::size_t>{1, 2})) << "busiest first";
-    EXPECT_EQ(rows[1].totals.processes, 2U);
-    EXPECT_EQ(rows[2].key, "PC\\alice");
-    EXPECT_EQ(rows[2].processes, (std::vector<std::size_t>{0}));
-}
-
-// #3310: a row whose sessions gave no domain takes a process with one when only that row has its name (a
-// session WTS named no domain for can't be told from the process's account). Linux's rows and processes,
-// with no domain on either side, match by name as they did.
-TEST(UserRowsTest, ARowWithNoDomainTakesItsNamesProcesses)
-{
-    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "alice", 5.0), process(11, "alice", 1.0, 100)};
-    const std::vector<UserRow> rows = buildUserRows({session("1", "alice", 1000)}, processes);
-    ASSERT_EQ(rows.size(), 1U);
-    EXPECT_EQ(rows[0].processes, (std::vector<std::size_t>{0, 1}));
-
-    UserSession corp = session("2", "alice", 0);
-    corp.domain = "CORP";
-    const std::vector<UserRow> two = buildUserRows({session("1", "alice", 1000), corp}, processes);
-    ASSERT_EQ(two.size(), 2U);
-    EXPECT_TRUE(two[0].processes.empty()) << "alice has two rows: PC\\alice's process could be the bare row's";
-    EXPECT_TRUE(two[1].processes.empty());
-}
-
-// #3310: Windows names ignore case, so a process with a domain falls back to a row with none by its name in
-// any case, and only when no other row has that name in any case. Without a domain (Linux) names keep their case.
-TEST(UserRowsTest, TheNoDomainFallbackIgnoresCase)
-{
-    UserSession corp = session("2", "ALICE", 0);
-    corp.domain = "CORP";
-    const std::vector<UserRow> ambiguous = buildUserRows({session("1", "alice", 1000), corp}, {processOf(10, "PC", "alice", 5.0)});
-    ASSERT_EQ(ambiguous.size(), 2U);
-    EXPECT_TRUE(ambiguous[0].processes.empty()) << "alice and CORP\\ALICE are one name to Windows: either could be PC\\alice";
-    EXPECT_TRUE(ambiguous[1].processes.empty());
-
-    const std::vector<Domain::ProcessSnapshot> processes{processOf(10, "PC", "ALICE", 5.0), process(11, "ALICE", 1.0, 100)};
-    const std::vector<UserRow> sole = buildUserRows({session("1", "alice", 1000)}, processes);
-    ASSERT_EQ(sole.size(), 1U);
-    EXPECT_EQ(sole[0].processes, (std::vector<std::size_t>{0})) << "PC\\ALICE is the sole alice row's; ALICE without a domain isn't";
-}
-
-// #3076: a Windows session whose user couldn't be read is a row of its own, said to be not readable, with no
-// processes and its reason in the tooltip.
-TEST(UserRowsTest, ASessionNotReadableIsItsOwnRow)
+// #3076: a Windows session whose user couldn't be read says so in its tooltip, with its reason.
+TEST(SessionTextTest, ASessionNotReadableSaysWhy)
 {
     UserSession hidden = session("5", "", 0, "disconnected");
     hidden.unreadable = "Access is denied";
-    const std::vector<UserRow> rows = buildUserRows({hidden, session("1", "alice", 1000)}, {process(10, "", 1.0, 1)});
-    ASSERT_EQ(rows.size(), 2U);
-    EXPECT_EQ(rows[1].label, "Not readable");
-    EXPECT_TRUE(rows[1].user.empty());
-    EXPECT_TRUE(rows[1].processes.empty());
     EXPECT_EQ(sessionTooltip(hidden), "Its user couldn't be read: Access is denied\nSession 5");
 }
 
@@ -288,7 +166,7 @@ TEST(UserRowsTest, ASessionNotReadableIsItsOwnRow)
 }
 
 // #3377: on Windows PC\\alice and CORP\\alice are two accounts with one short name, so Group: User has a
-// group for each, labelled with its domain, as the Users tab's rows are; before, both were one "alice" group.
+// group for each, labelled with its domain; before, both were one "alice" group.
 TEST(UserGroupsTest, TwoAccountsWithOneShortNameAreTwoGroupsLabelledWithTheirDomains)
 {
     const std::vector<Domain::ProcessSnapshot> snapshots{
@@ -309,7 +187,7 @@ TEST(UserGroupsTest, TwoAccountsWithOneShortNameAreTwoGroupsLabelledWithTheirDom
 
 // #3377: one account's processes are one group, whatever the case of its names (Windows compares account
 // names without it), labelled as its lowest-numbered process spells it; and a process whose domain wasn't read joins
-// the one account with its name, as the Users tab gives it to the one row.
+// the one account with its name.
 TEST(UserGroupsTest, OneAccountsProcessesAreOneGroup)
 {
     const std::vector<Domain::ProcessSnapshot> snapshots{
@@ -562,7 +440,7 @@ TEST(SharedUserNamesTest, EverySharedNameIsFoundWhateverItsPlaceInTheSortedList)
     EXPECT_FALSE(isSharedUserName(shared, "aaron"));
 }
 
-// --- The Users tab folded into Group: User (#3377) ------------------------------------------------
+// --- Signed-in sessions in Group: User (#3377) ---------------------------------------------------
 
 /// Group: User's groups of @p snapshots taken in @p order, with the sign-in @p sessions, by CPU busiest first.
 [[nodiscard]] std::vector<ProcessGrouping::Group> userGroupsWithSessions(const std::vector<Domain::ProcessSnapshot>& snapshots,
@@ -742,7 +620,7 @@ TEST(UserGroupsWithSessionsTest, SessionsNotReadableShareOneGroupBeforeUngrouped
     EXPECT_TRUE(tooltip.contains("Session 6")) << tooltip;
 }
 
-// #3377: what a Group: User header and its session rows say, as the Users tab said it: "(you)", the one
+// #3377: what a Group: User header and its session rows say: "(you)", the one
 // session's status or how many, the totals' scope in the tooltip, the session's place and "(this session)",
 // and when it was signed in to; the header's menu is its one readable session's.
 TEST(UserGroupsWithSessionsTest, TheHeaderAndSessionRowsSayWhoWhereAndHow)

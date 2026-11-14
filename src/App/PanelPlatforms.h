@@ -70,8 +70,9 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// which an administrator can finish through the helper.
 [[nodiscard]] std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario);
 
-/// The Users tab's sessions (#3076): the platform's, or none in a synthetic run, whose processes are made up.
-[[nodiscard]] std::shared_ptr<Platform::IUserSessions> makeUsersPanelSessions(const Synthetic::Scenario* scenario);
+/// The signed-in sessions Processes > Group: User shows (#3076, #3377): the platform's, or none in a synthetic
+/// run, whose processes are made up.
+[[nodiscard]] std::shared_ptr<Platform::IUserSessions> makeSignedInSessions(const Synthetic::Scenario* scenario);
 
 /// The Services tab's probe and actions: the platform's, in every run.
 [[nodiscard]] ServicesPanelPlatform makeServicesPanelPlatform(const Synthetic::Scenario* scenario);

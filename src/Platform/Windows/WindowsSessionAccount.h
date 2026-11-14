@@ -2,8 +2,8 @@
 
 // Whether an elevated TaskSmack runs as another account than the session's signed-in user (#3671): the
 // user of TaskSmack's own token (TokenUser, named by LookupAccountSidW) against the session's
-// (WTSQuerySessionInformationW's WTSUserName and WTSDomainName for WTS_CURRENT_SESSION, as the Users tab
-// reads sessions). Platform::readSessionAccount() (Factory.h) is this, with the real calls.
+// (WTSQuerySessionInformationW's WTSUserName and WTSDomainName for WTS_CURRENT_SESSION, as the
+// signed-in sessions are read). Platform::readSessionAccount() (Factory.h) is this, with the real calls.
 //
 // Blocking (a token read, an account lookup that may ask a domain controller): on a worker, never the UI
 // thread (App::SessionAccountCheck runs it once, at startup). The calls are a table of function pointers,

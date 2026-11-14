@@ -793,7 +793,7 @@ TEST_F(WindowsProcessProbeSeamTest, EveryDetailIsReadWhenEveryCallSucceeds)
     const ProcessCounters process = sampleOne();
     EXPECT_EQ(process.name, "app.exe");
     EXPECT_EQ(process.user, "alice");
-    EXPECT_EQ(process.userDomain, "PC"); // Kept beside the user name, for the Users tab (#3310)
+    EXPECT_EQ(process.userDomain, "PC"); // Kept beside the user name, for Group: User (#3310)
     EXPECT_EQ(process.command, "app.exe --flag");
     EXPECT_EQ(process.status, "Efficiency Mode");
     EXPECT_EQ(process.gdiObjectCount, 7);

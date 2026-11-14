@@ -9,7 +9,7 @@
     _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
     TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
     without input"). Same matrix and names as screenshots.sh, less the Environment and Security
-    sections, which TaskSmack reads on Linux only, and plus the grouped Processes and Users shots, which
+    sections, which TaskSmack reads on Linux only, and plus the grouped Processes shots, which
     screenshots.sh doesn't take yet.
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
@@ -17,7 +17,7 @@
     what has Windows read the service list) and by user (#3068); the machine tab's CPU Cores, GPU and
     Network and I/O sub-tabs (cores, gpu, network; #2869), Process Details (overview, gpu, network, and
     the Overview with its Modules and Connections sections expanded at -SectionWindow and its Open
-    files section at -OpenFilesWindow) for one process, Services, Startup, Users, Settings, About and
+    files section at -OpenFilesWindow) for one process, Services, Startup, Settings, About and
     Help in the first theme; and three
     frame sequences written as animated WebPs: overview-live (8 s of the Overview),
     walk-live (10 s: the Processes table, the process selected, its Process Details' Network tab) and
@@ -203,7 +203,6 @@ foreach ($section in 'modules', 'openfiles', 'connections') {
 }
 Invoke-Shot "services-$Dark" $Dark @{ TASKSMACK_TAB = 'Services' }
 Invoke-Shot "startup-$Dark" $Dark @{ TASKSMACK_TAB = 'Startup' }
-Invoke-Shot "users-$Dark" $Dark @{ TASKSMACK_TAB = 'Users' }
 Invoke-Shot "settings-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'settings' }
 Invoke-Shot "about-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'about' }
 Invoke-Shot "help-$Dark" $Dark @{ TASKSMACK_TAB = 'overview'; TASKSMACK_OPEN = 'help' }

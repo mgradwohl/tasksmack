@@ -8,7 +8,7 @@
 #include "Panels/SystemMetricsPanel.h"
 #include "Platform/BrokeredProcessActions.h"
 #ifdef _WIN32
-#include "Platform/BrokeredUserSessions.h" // the Users tab's helper decorator: Windows only (#3076)
+#include "Platform/BrokeredUserSessions.h" // the signed-in sessions' helper decorator: Windows only (#3076)
 #endif
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
@@ -170,7 +170,7 @@ std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Syn
     return processActionsFor(scenario);
 }
 
-std::shared_ptr<Platform::IUserSessions> makeUsersPanelSessions(const Synthetic::Scenario* scenario)
+std::shared_ptr<Platform::IUserSessions> makeSignedInSessions(const Synthetic::Scenario* scenario)
 {
     if (scenario != nullptr)
     {

@@ -141,7 +141,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
         // this helper, the one checkParentIsTaskSmack() confirmed its parent runs.
         Platform::Windows::WindowsIfeoRegistry ifeo;
         const std::wstring& taskSmack = self->taskSmackPath;
-        // The Users tab's Disconnect and Sign out of another user's session (#3076): checked against a fresh
+        // Group: User's Disconnect and Sign out of another user's session (#3076): checked against a fresh
         // WTS list first (not session 0, still there, someone signed in to it).
         const Platform::Windows::WtsCalls sessions = Platform::Windows::realWtsCalls();
         const Platform::BrokerServer::Readers readers{

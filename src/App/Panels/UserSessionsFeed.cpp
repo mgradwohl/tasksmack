@@ -35,11 +35,11 @@ void UserSessionsFeed::start()
     {
         return;
     }
-    m_Sessions = m_MakeSessions ? m_MakeSessions() : makeUsersPanelSessions(Synthetic::activeScenario());
+    m_Sessions = m_MakeSessions ? m_MakeSessions() : makeSignedInSessions(Synthetic::activeScenario());
     m_Model = std::make_shared<Domain::UsersModel>(m_Sessions);
     m_Gate = std::make_shared<SamplingGate>(m_Model);
     m_Actions.emplace(m_Sessions);
-    applyDemand(); // a view shown before start(), or still shown across a stop() and start()
+    applyDemand(); // the view shown before start(), or still shown across a stop() and start()
 }
 
 void UserSessionsFeed::stop()
@@ -49,13 +49,7 @@ void UserSessionsFeed::stop()
     m_Gate.reset();
     m_Model.reset();
     m_Sessions.reset();
-    m_Demanded = false; // the gate is gone; the views' inputs stay, so start() resumes what they demand
-}
-
-void UserSessionsFeed::setUsersTabShown(bool shown)
-{
-    m_UsersTabShown = shown;
-    applyDemand();
+    m_Demanded = false; // the gate is gone; the view's inputs stay, so start() resumes what they demand
 }
 
 void UserSessionsFeed::setProcessesView(bool shown, ProcessGrouping::GroupBy groupBy)
@@ -88,7 +82,7 @@ void UserSessionsFeed::applyDemand()
     {
         return;
     }
-    const bool demanded = ProcessGrouping::sessionsDemand(m_UsersTabShown, m_ProcessesTabShown, m_GroupBy);
+    const bool demanded = ProcessGrouping::sessionsDemand(m_ProcessesTabShown, m_GroupBy);
     if (demanded == m_Demanded)
     {
         return; // only a change does anything

@@ -1,8 +1,8 @@
 #pragma once
 
-// The Users tab's sessions on Windows (#3076): the Terminal Services sessions, read with
+// The signed-in sessions on Windows (#3076): the Terminal Services sessions, read with
 // WTSEnumerateSessionsW and WTSQuerySessionInformationW (WTSSessionInfo, WTSClientName,
-// WTSClientProtocolType) on the tab's sampler, and Disconnect (WTSDisconnectSession) and Sign out
+// WTSClientProtocolType) on the sessions' sampler, and Disconnect (WTSDisconnectSession) and Sign out
 // (WTSLogoffSession) on its action worker. Windows has no Lock here: Disconnect takes its place.
 //
 // Every action is checked first against a fresh list (UserSessionsMath::checkSessionAction: a live,
@@ -47,7 +47,7 @@ struct WtsCalls
 /// The real WTS calls, for this process's session.
 [[nodiscard]] WtsCalls realWtsCalls();
 
-/// The sessions through @p calls as the Users tab's (UserSessionsMath::toUserSession()), or Failed with why.
+/// The sessions through @p calls as UserSessions (UserSessionsMath::toUserSession()), or Failed with why.
 [[nodiscard]] UserSessionsRead readUserSessions(const WtsCalls& calls);
 
 /// Checks @p action on @p confirmed (the session the user confirmed: its ID, user, domain and sign-in time)
@@ -86,7 +86,7 @@ class WindowsUserSessions final : public IUserSessions
     }
 
     /// By ID alone: refused, since Windows reuses session IDs and an ID can't say it is still the sign-in
-    /// the user confirmed. The Users tab calls actOnConfirmed().
+    /// the user confirmed. The session menus call actOnConfirmed().
     [[nodiscard]] ServiceActionResult
     act(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/) override
     {

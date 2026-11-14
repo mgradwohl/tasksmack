@@ -13,7 +13,6 @@
 #include <format>
 #include <limits>
 #include <map>
-#include <optional>
 #include <string>
 #include <string_view>
 #include <unordered_map>
@@ -87,123 +86,6 @@ struct NameLess
 bool isSignInSession(const Platform::UserSession& session)
 {
     return session.sessionClass.empty() || session.sessionClass == "user";
-}
-
-std::vector<UserRow> buildUserRows(const std::vector<Platform::UserSession>& sessions,
-                                   const std::vector<Domain::ProcessSnapshot>& processes)
-{
-    std::vector<UserRow> rows;
-    std::vector<std::string> domains;              // each row's domain, from its first session; empty on Linux
-    std::map<std::string, std::size_t> byKey;      // account key -> row
-    std::map<std::string, std::size_t> namesInUse; // short name -> how many rows have it
-    for (const Platform::UserSession& session : sessions)
-    {
-        if (!isSignInSession(session))
-        {
-            continue;
-        }
-        const std::string key = Platform::accountKey(session);
-        auto [found, added] = byKey.try_emplace(key, rows.size());
-        if (added)
-        {
-            rows.push_back(UserRow{
-                .user = session.unreadable.empty() ? session.user : std::string{},
-                .key = key,
-                .label = {},
-                .uid = session.uid,
-                .sessions = {},
-                .totals = {},
-                .processes = {},
-                .current = false,
-            });
-            domains.push_back(rows.back().user.empty() ? std::string{} : session.domain);
-            if (!rows.back().user.empty())
-            {
-                ++namesInUse[rows.back().user];
-            }
-        }
-        UserRow& row = rows[found->second];
-        row.current = row.current || session.current;
-        row.sessions.push_back(session);
-    }
-    // A process that names its owner's domain (Windows, #3310) goes to the row of that domain and user. One
-    // that names only a short name (Linux, or a Windows owner whose domain wasn't read) goes to the one row
-    // with that name, never to one of two.
-    std::map<AccountLess::Names, std::size_t, AccountLess> byAccount; // domain, user -> its row
-    std::map<std::string, std::size_t> byName;                        // short name -> its one row
-    // For a process with a domain, a row with none, when no other row has its name in any case: Windows
-    // names ignore case, so "alice" beside CORP\\ALICE could be either.
-    std::map<std::string_view, std::size_t, NameLess> namesInUseIgnoringCase;
-    for (const UserRow& row : rows)
-    {
-        if (!row.user.empty())
-        {
-            ++namesInUseIgnoringCase[row.user];
-        }
-    }
-    std::map<std::string_view, std::size_t, NameLess> byNameWithoutDomain;
-    for (std::size_t i = 0; i < rows.size(); ++i)
-    {
-        UserRow& row = rows[i];
-        const bool shared = !row.user.empty() && namesInUse[row.user] > 1;
-        if (row.user.empty())
-        {
-            row.label = "Not readable";
-        }
-        else
-        {
-            row.label = shared ? row.key : row.user;
-        }
-        if (row.user.empty())
-        {
-            continue;
-        }
-        if (!domains[i].empty())
-        {
-            byAccount.emplace(AccountLess::Names{domains[i], row.user}, i);
-        }
-        if (!shared)
-        {
-            byName.emplace(row.user, i);
-        }
-        if (domains[i].empty() && namesInUseIgnoringCase[row.user] == 1)
-        {
-            byNameWithoutDomain.emplace(row.user, i);
-        }
-    }
-    for (std::size_t i = 0; i < processes.size(); ++i)
-    {
-        const Domain::ProcessSnapshot& process = processes[i];
-        std::optional<std::size_t> rowIndex;
-        if (process.userDomain.empty())
-        {
-            if (const auto found = byName.find(process.user); found != byName.end())
-            {
-                rowIndex = found->second;
-            }
-        }
-        else if (const auto found = byAccount.find(AccountLess::Names{process.userDomain, process.user}); found != byAccount.end())
-        {
-            rowIndex = found->second;
-        }
-        else if (const auto bare = byNameWithoutDomain.find(process.user); bare != byNameWithoutDomain.end())
-        {
-            rowIndex = bare->second; // A row whose sessions gave no domain can't be told from this one's
-        }
-        if (rowIndex)
-        {
-            UserRow& row = rows[*rowIndex];
-            row.totals.add(process);
-            row.processes.push_back(i);
-        }
-    }
-    for (UserRow& row : rows)
-    {
-        std::ranges::stable_sort(row.processes,
-                                 [&processes](std::size_t a, std::size_t b) { return processes[a].cpuPercent > processes[b].cpuPercent; });
-    }
-    std::ranges::stable_sort(rows, [](const UserRow& a, const UserRow& b) { return Platform::compareIgnoreCase(a.label, b.label) < 0; });
-    return rows;
 }
 
 namespace
@@ -298,7 +180,7 @@ std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::Pr
     // not accounts, so a process with no domain is as ambiguous with PC\alice's process filtered out as with
     // it shown. Short names count ignoring ASCII case, as Windows compares them, so neither the table's order
     // nor which spelling it meets first changes the answer. A signed-in account counts too, processes or not,
-    // as the Users tab's rows did: a process with no domain joins the one account with its name.
+    // as the Users tab's rows once did (#3310): a process with no domain joins the one account with its name.
     std::unordered_set<std::string> accounts;                        // processAccountKey() of each with a domain
     std::map<std::string_view, std::size_t, NameLess> accountsNamed; // short name -> how many accounts have it
     std::map<std::string_view, std::string, NameLess> accountNamed;  // short name -> an account's key with it
