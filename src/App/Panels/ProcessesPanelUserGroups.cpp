@@ -1,4 +1,4 @@
-// The Processes table's Group: User, with the Users tab folded into it (#3377): each signed-in account's
+// The Processes table's Group: User, where the Users tab's sessions went (#3377): each signed-in account's
 // sessions under its header, their status and sign-in time, and their Lock, Disconnect and Sign out. The
 // groups are built in UserGrouping (buildUserGroups()), from the sessions UserSessionsFeed publishes; this is
 // the panel's drawing of them, apart from ProcessesPanel.cpp, which draws every other row.
@@ -101,7 +101,7 @@ void ProcessesPanel::renderSessionMenu()
     }
     if (m_SessionMenuTarget.has_value() && m_UserSessions != nullptr)
     {
-        // The Users tab's items, for the copy taken at the right-click (#1365): a regroup can't change it.
+        // The session menu's items, for the copy taken at the right-click (#1365): a regroup can't change it.
         const SessionMenuChoice choice = renderSessionMenuItems(m_UserSessions->sessionMenu(), *m_SessionMenuTarget);
         if (SessionActionControl* const actions = m_UserSessions->actions(); actions != nullptr && choice.any())
         {

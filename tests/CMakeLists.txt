@@ -584,8 +584,8 @@ set(COMMON_TEST_SOURCES
     App/test_RunTask.cpp # Run new task (#3065)
     App/test_ProcessPins.cpp # pinned processes (#3061)
     App/test_Connections.cpp # the Connections tab (#3066)
-    App/test_Users.cpp # the Users tab (#3076)
-    App/test_UserGrouping.cpp # account matching for the Users tab and Group: User (#3377)
+    App/test_UserSessions.cpp # the signed-in sessions: model, actions and feed (#3076, #3377)
+    App/test_UserGrouping.cpp # account matching for Group: User (#3377)
     Domain/test_HandleSearch.cpp # Find handles (#3067)
     App/test_ProcessGrouping.cpp # Group by (#3068)
     App/test_ProcessTreeFlatten.cpp
@@ -802,7 +802,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsOsInfoMath.cpp
     Platform/WindowsMath/test_WindowsStorageSmartMath.cpp  # ATA SMART pages, thresholds and return status as AtaHealth (#2588)
     Platform/WindowsMath/test_WindowsServiceActionsMath.cpp
-    Platform/WindowsMath/test_WindowsUserSessionsMath.cpp # WTS sessions as the Users tab's, and the action checks (#3076)
+    Platform/WindowsMath/test_WindowsUserSessionsMath.cpp # WTS sessions as UserSessions, and the action checks (#3076)
     Platform/WindowsMath/test_WindowsServiceProbeMath.cpp
     Platform/WindowsMath/test_WindowsSystemProbeMath.cpp
     Platform/WindowsMath/test_WindowsProcessIconMath.cpp
@@ -860,7 +860,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_ElevatedRestart.cpp  # Restart as administrator: ShellExecuteExW("runas") and the hand-off wait, through fakes (#2728)
     Platform/test_WindowsFactory.cpp  # every Windows factory product is the Windows one, with Windows' capabilities (#3676)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
-    Platform/test_WindowsUserSessions.cpp  # the Users tab's WTS reader and actions through fakes, and this machine's sessions (#3076)
+    Platform/test_WindowsUserSessions.cpp  # the WTS sessions reader and actions through fakes, and this machine's sessions (#3076)
     Platform/test_WindowsProcessIdentity.cpp
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsSystemConnectionsReader.cpp  # the Connections tab's reader through fakes, and a real loopback pair in CI (#3356)
@@ -953,7 +953,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SystemdBusFake.cpp
     Platform/test_SystemdServices.cpp
     Platform/test_SystemdActions.cpp  # systemd service control (#2006 phase 2)
-    Platform/test_LogindSessions.cpp  # the Users tab's sessions (#3076)
+    Platform/test_LogindSessions.cpp  # logind's signed-in sessions (#3076)
     Platform/test_ProcParsing.cpp  # the file readers and parseDouble (#1891)
     Platform/test_PressureParser.cpp  # /proc/pressure parsing (#3062)
     Platform/test_LinuxNuma.cpp  # the NUMA nodes from /sys/devices/system/node (#3088)
@@ -1129,8 +1129,6 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/App/Panels/StartupPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ConnectionsPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ConnectionsView.cpp
-    ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersPanel.cpp
-    ${CMAKE_SOURCE_DIR}/src/App/Panels/UsersView.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UserGrouping.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/UserSessionsFeed.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/SessionActionView.cpp

@@ -2,7 +2,7 @@
 /// @brief Signed-in sessions a test controls (#3076, #3377): what read() lists and what act() answers, with
 /// each action recorded. Linux's actions (Lock and Sign out), or with @p windows Windows' (Disconnect and
 /// Sign out). Session "5" is another user's: refused for want of an administrator unless the action may ask.
-/// Shared by the Users tab's tests and the Processes table's Group: User tests.
+/// Shared by the sessions' tests (test_UserSessions.cpp) and the Processes table's Group: User tests.
 
 #pragma once
 

@@ -230,7 +230,7 @@ set(TASKSMACK_SOURCES
     src/App/UserConfig.cpp
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
-    src/App/Panels/ProcessesPanelUserGroups.cpp # Group: User's sessions and their actions, the Users tab folded in (#3377)
+    src/App/Panels/ProcessesPanelUserGroups.cpp # Group: User's sessions and their actions (#3377)
     src/App/Panels/ProcessIconView.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/ProcessDetailsCharts.cpp
@@ -271,11 +271,9 @@ set(TASKSMACK_SOURCES
     src/App/Panels/StartupView.cpp
     src/App/Panels/ConnectionsPanel.cpp # the Connections tab (#3066)
     src/App/Panels/ConnectionsView.cpp
-    src/App/Panels/UsersPanel.cpp # the Users tab (#3076)
-    src/App/Panels/UsersView.cpp
-    src/App/Panels/UserGrouping.cpp # who a process or session belongs to: the Users tab and Group: User (#3377)
+    src/App/Panels/UserGrouping.cpp # who a process or session belongs to: Group: User (#3377)
     src/App/Panels/UserSessionsFeed.cpp # the signed-in sessions, read once for every view that shows them (#3377)
-    src/App/Panels/SessionActionView.cpp # a session's menu and confirm, for the Users tab and Group: User (#3377)
+    src/App/Panels/SessionActionView.cpp # a session's menu and confirm, for Group: User (#3377)
     src/App/Panels/SystemInfoPanel.cpp
     src/App/Panels/SystemInfoSections.cpp
     src/App/Panels/SystemInfoView.cpp
@@ -288,7 +286,7 @@ set(TASKSMACK_SOURCES
     src/Domain/GPUModel.cpp
     src/Domain/StartupModel.cpp
     src/Domain/ConnectionsModel.cpp # the Connections tab (#3066)
-    src/Domain/UsersModel.cpp # the Users tab (#3076)
+    src/Domain/UsersModel.cpp # the signed-in sessions (#3076)
     src/Domain/HandleSearch.cpp # Find handles (#3067)
     src/Domain/ServiceModel.cpp
     src/Domain/SensorModel.cpp
@@ -339,7 +337,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxSystemProbe.cpp
     src/Platform/Linux/SystemdUnits.cpp
     src/Platform/Linux/SystemdUnitActions.cpp # start, stop and start types (#2006)
-    src/Platform/Linux/LogindSessions.cpp # the Users tab's sessions (#3076)
+    src/Platform/Linux/LogindSessions.cpp # the signed-in sessions (#3076)
     src/Platform/Linux/UDisks2Smart.cpp
     src/Platform/Linux/NetworkManager.cpp
     src/Platform/Linux/Nl80211.cpp # a Wi-Fi link's standard and receive rate (#2591)
@@ -383,7 +381,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
     src/Platform/Windows/WindowsTaskManagerReplacement.cpp # taskmgr.exe's IFEO Debugger (#3072)
     src/Platform/Windows/WindowsTaskManagerInstall.cpp # Program Files, and who can change an elevated copy (#3280)
-    src/Platform/Windows/WindowsUserSessions.cpp # the Users tab's WTS sessions, Disconnect and Sign out (#3076)
+    src/Platform/Windows/WindowsUserSessions.cpp # the WTS sessions, Disconnect and Sign out (#3076)
     src/Platform/Windows/WindowsFolderPicker.cpp
     src/Platform/Windows/UnelevatedShell.cpp # an elevated TaskSmack's links and folders opened through Explorer, unelevated (#3658)
     src/Platform/Windows/WindowsFileLocation.cpp # Open file location: SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
@@ -841,7 +839,7 @@ function(tasksmack_apply_windows_platform target)
         advapi32 # WindowsEtwNetCollector: the opt-in UDP event trace (StartTraceW, ProcessTrace, ...) (#1492)
         bcrypt # BrokerPipe: the broker pipe's random name (BCryptGenRandom) (#2311)
         dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)
-        wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152); the Users tab's sessions (#3076)
+        wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152); Group: User's sessions (#3076)
         winhttp # WindowsHttpsClient: the opt-in update check's one HTTPS request (#3093)
     )
 endfunction()

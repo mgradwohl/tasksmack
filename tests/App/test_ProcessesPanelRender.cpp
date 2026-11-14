@@ -3843,7 +3843,7 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlOffersOnlyTheModesThisSystemHasD
     panel->onDetach(); // TearDown restores the settings
 }
 
-// --- The Users tab folded into Group: User (#3377) ------------------------------------------------
+// --- Signed-in sessions in Group: User (#3377) ---------------------------------------------------
 
 /// A sign-in session of @p user.
 [[nodiscard]] Platform::UserSession signIn(std::string id, std::string user, std::string state = "active")
@@ -3982,7 +3982,7 @@ TEST_F(ProcessesPanelUserGroupsTest, GroupByUserShowsEachSignedInAccountsSession
     EXPECT_EQ(panel->selectedPid(), 100);
 
     // Another tab shown: the table reads nothing.
-    Core::ActiveTabChangedEvent hidden("Users");
+    Core::ActiveTabChangedEvent hidden("Services");
     panel->onEvent(hidden);
     panel->onUpdate(1.0F / 60.0F);
     EXPECT_FALSE(feed.demanded());
@@ -3990,7 +3990,7 @@ TEST_F(ProcessesPanelUserGroupsTest, GroupByUserShowsEachSignedInAccountsSession
     feed.stop();
 }
 
-// #3377 (Linux): a session's menu has Lock and Sign out..., as the Users tab's had; Sign out asks first, naming
+// #3377 (Linux): a session's menu has Lock and Sign out...; Sign out asks first, naming
 // the session. Refused for want of an administrator, the toolbar's line offers Authenticate and retry. An
 // account with one session offers the same menu on its header: Lock runs at once.
 TEST_F(ProcessesPanelUserGroupsTest, ASessionsMenuSignsOutAfterAskingAndTheHeaderLocksItsOneSession)
@@ -4113,6 +4113,36 @@ TEST_F(ProcessesPanelUserGroupsTest, AnAccountWithSessionsAndNoMatchingProcesses
     EXPECT_TRUE(text.contains(UserGrouping::NO_MATCHING_PROCESSES)) << text;
     panel->onDetach();
     feed.stop();
+}
+
+// #3377 (PR 5): with the Users tab gone, the Processes panel owns the feed's life: it starts the feed at attach
+// (nothing read until the table is grouped by User), hands it each Settings interval, and stops it at detach,
+// joining its sampler thread and letting the sessions go.
+TEST_F(ProcessesPanelUserGroupsTest, ThePanelStartsTheFeedAtAttachHandsItTheIntervalAndStopsItAtDetach)
+{
+    auto fake = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice")});
+    UserSessionsFeed feed([fake] { return fake; });
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::None;
+    ASSERT_EQ(feed.model(), nullptr);
+    const auto panel = userSessionsPanel(feed); // attached here, the feed not started by the test
+    ASSERT_NE(feed.model(), nullptr) << "onAttach() didn't start the feed";
+    EXPECT_FALSE(feed.demanded()) << "not grouped by User";
+
+    Core::RefreshRateChangedEvent faster(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    panel->onEvent(faster);
+    EXPECT_EQ(feed.interval(), std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS));
+
+    renderUntilLoaded(*panel);
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    EXPECT_TRUE(renderUntil(*panel, ICON_FA_USER "  alice").contains(ICON_FA_USER "  alice")) << "the session never read";
+    EXPECT_TRUE(feed.demanded());
+
+    panel->onDetach();
+    EXPECT_EQ(feed.model(), nullptr) << "onDetach() didn't stop the feed";
+    EXPECT_FALSE(feed.demanded());
+    const int readsStopped = fake->m_Reads.load();
+    std::this_thread::sleep_for(std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS * 2));
+    EXPECT_EQ(fake->m_Reads.load(), readsStopped) << "read after the panel detached";
 }
 
 // #3377: a failed read says so in one muted line above the table, which groups the processes as ever; where the

@@ -1,5 +1,5 @@
 /// @file test_WindowsUserSessionsMath.cpp
-/// @brief WindowsUserSessionsMath.h (#3076): a WTS session's facts as the Users tab's session, the WTS states
+/// @brief WindowsUserSessionsMath.h (#3076): a WTS session's facts as a UserSession, the WTS states
 /// as its words, and the checks a Disconnect or Sign out passes before it is sent (session 0, an ended
 /// session, one nobody is signed in to). No Windows header, so these run on every platform.
 
