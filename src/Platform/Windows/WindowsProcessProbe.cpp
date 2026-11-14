@@ -1349,15 +1349,17 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     const Windows::UniqueHandle hProcess(canCache ? m_Fns.process.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
     if (!hProcess.valid())
     {
-        // Can't access this process (protected/system). Push the due TTLs forward so we don't retry
-        // OpenProcess every sample; the bulk snapshot still provides fresh counters regardless.
-        if (canCache && plan.light)
+        // Can't access this process (protected, another user's, a service). A process's protection and
+        // security descriptor are set when it starts, so asking again next light TTL (every sample at the
+        // default interval) only repeats the refusal (#3704): both TTLs wait OPEN_REFUSED_RETRY_SECONDS,
+        // after which the open is tried again in case it was refused for a passing reason. The entry is
+        // keyed by {pid, start time}, so a reused PID is a new process, tried at once. The bulk snapshot
+        // still provides fresh counters regardless.
+        if (canCache)
         {
-            cache.nextLightRefresh = now + m_LightDetailTTL;
-        }
-        if (canCache && plan.heavy)
-        {
-            cache.nextHeavyRefresh = now + m_HeavyDetailTTL;
+            const auto retry = now + std::chrono::seconds{Domain::Sampling::OPEN_REFUSED_RETRY_SECONDS};
+            cache.nextLightRefresh = std::max(cache.nextLightRefresh, retry);
+            cache.nextHeavyRefresh = std::max(cache.nextHeavyRefresh, retry);
         }
         fallBackToName();
         return false;

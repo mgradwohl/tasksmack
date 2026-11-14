@@ -83,6 +83,14 @@ inline constexpr int BATTERY_INFO_REFRESH_SECONDS = 300;
 // new name within this long.
 inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
 
+// How long WindowsProcessProbe waits before it asks OpenProcess again for a process that refused it
+// (seconds) (#3704). Without elevation about half a desktop's processes refuse (other users', services,
+// protected ones), and a process's protection and security descriptor are fixed when it starts, so
+// asking every light TTL only repeated the refusal, about 0.1 ms a sample. The retry covers a refusal
+// for a passing reason; a reused PID is a new process, asked at once. TaskSmack's own token doesn't
+// change while it runs: running elevated is a new TaskSmack, with a new probe that asks everything anew.
+inline constexpr int OPEN_REFUSED_RETRY_SECONDS = 30;
+
 // The pause WindowsProcessProbe's signature worker (ts-sig-check, #3070) takes after checking each
 // process image's Authenticode signature (milliseconds). A check costs about 5-35 ms a file (a 100 MB
 // unsigned one, hashed whole for the catalog lookup, about 300 ms), and the first sample asks for every
