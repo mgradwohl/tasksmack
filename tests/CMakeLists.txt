@@ -801,6 +801,7 @@ set(COMMON_TEST_SOURCES
     App/test_ProcessDetailsPanelRender.cpp
     App/test_ProcessesPanelRender.cpp
     App/test_FindHandlesFormat.cpp # the Find handles order and status line (#3374)
+    App/test_FindHandlesDialogRender.cpp # the dialog's Stop and its administrator's search, headless (#3374)
     App/test_ServicesStartupPanelsRender.cpp
     App/test_WindowOverride.cpp
     Platform/test_SyntheticWorkload.cpp
