@@ -27,7 +27,7 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
 {
     if (!caps.canSetEnabled)
     {
-        return "Startup apps can't be changed on this platform yet";
+        return "Startup apps can't be changed on this system";
     }
     if (caps.perUserEntriesOtherAccount && entry.scope == Platform::StartupScope::User)
     {

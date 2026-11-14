@@ -30,8 +30,9 @@ struct TabSummary
     std::string_view summary;
 };
 
-/// One line for each top-level tab, in the tab bar's order (ShellLayer's tab list).
-inline constexpr std::array<TabSummary, 4> TAB_OVERVIEW{
+/// One line for each top-level tab, in the tab bar's order (ShellLayer's tab list). The Users tab has no line:
+/// #3698 removes it, its sessions moving to Processes' Group: User.
+inline constexpr std::array<TabSummary, 7> TAB_OVERVIEW{
     {
         {
             .name = "Machine (its name)",
@@ -44,7 +45,20 @@ inline constexpr std::array<TabSummary, 4> TAB_OVERVIEW{
             .summary =
                 "The selected process: Overview (identity, runtime, actions, charts), GPU, NPU where there is one, and Network and I/O",
         },
-        {.name = "Services", .summary = "The system's services and their state (read-only)"},
+        {.name = "Services", .summary = "The system's services and their state; start, stop or restart one, or change how it starts"},
+        {
+            .name = "Startup",
+            .summary = "What starts when you sign in or on a schedule (on Windows, with its sign-in impact); turn an entry on or off",
+        },
+        {
+            .name = "Connections",
+            .summary = "Every network connection and listening port, with the process that owns it; close a TCP connection",
+        },
+        {
+            .name = "System",
+            .summary = "Reference facts: the operating system, firmware, memory modules, storage, graphics, security, devices, "
+                       "network adapters and boot performance",
+        },
     },
 };
 

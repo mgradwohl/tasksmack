@@ -8,7 +8,9 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
+#include <string_view>
 
 namespace App::HelpContent
 {
@@ -54,6 +56,27 @@ TEST(HelpContentTest, EveryTabHasANameAndASummary)
     {
         EXPECT_FALSE(tab.name.empty());
         EXPECT_FALSE(tab.summary.empty());
+    }
+}
+
+// #3434: the overview names every tab the shell has (the Users tab aside, which #3698 removes), and
+// Services is no longer read-only: it starts, stops and restarts services, and changes their start type.
+TEST(HelpContentTest, TheOverviewNamesEveryTabInTheTabBarsOrder)
+{
+    constexpr std::array<std::string_view, 7> NAMES{
+        "Machine (its name)",
+        "Processes",
+        "Process Details",
+        "Services",
+        "Startup",
+        "Connections",
+        "System",
+    };
+    ASSERT_EQ(TAB_OVERVIEW.size(), NAMES.size());
+    for (std::size_t i = 0; i < NAMES.size(); ++i)
+    {
+        EXPECT_EQ(TAB_OVERVIEW.at(i).name, NAMES.at(i)) << i;
+        EXPECT_FALSE(TAB_OVERVIEW.at(i).summary.contains("read-only")) << i;
     }
 }
 

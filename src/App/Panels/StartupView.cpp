@@ -422,7 +422,7 @@ void renderUnsupported(const Platform::StartupCapabilities& capabilities, Startu
             (capabilities.unavailableReason.empty() ? std::string("Startup apps aren't available") : capabilities.unavailableReason);
     }
     UI::Widgets::renderEmptyState(state.unavailableHeading.c_str(),
-                                  "TaskSmack can list startup apps on Windows. Support for XDG autostart on Linux is planned.");
+                                  "TaskSmack lists startup apps on Windows and Linux, but can't read them on this system.");
 }
 
 /// The filter box and the "N of M startup apps" count beside it. The rows are brought up to date with
