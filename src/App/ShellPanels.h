@@ -1,6 +1,6 @@
 #pragma once
 
-// The shell's six panels and the wiring between them that does not touch the window (#2136): the
+// The shell's panels and the wiring between them that does not touch the window (#2136): the
 // crash history they share, the signed-in sessions' feed (#3377), the priority changes in flight that
 // the Processes table and Process Details hold each other's priority controls by (#3467), the models
 // handed from one panel to another, and the per-update hand-offs (capabilities, the selection count, Process Details' new
@@ -10,9 +10,17 @@
 // the app runs: hand-copied, it had drifted (no service model, crash history, selection count,
 // background demand or shared icon view).
 
+#include "Platform/ProcessTypes.h"
+#include "SelectOverride.h"
+
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
+#include <optional>
+#include <string>
+#include <string_view>
 
 namespace Core
 {
@@ -21,6 +29,12 @@ class Event;
 
 namespace App
 {
+
+namespace NiceStep
+{
+enum class Direction : std::uint8_t; // NiceStep.h
+}
+class ProcessIconView;
 
 class ConnectionsPanel;
 class Panel;
@@ -55,6 +69,32 @@ class ShellPanels
 
     /// In tab order: System, Processes, Process Details, Services, Startup, Connections, System Information.
     [[nodiscard]] std::array<Panel*, 7> inTabOrder() noexcept;
+
+    // What the shell asks of the Processes and System panels, forwarded so that ShellLayer.cpp includes neither
+    // panel's header: the two cost 0.7 GB of compile memory together (#3717). Each is the panel's method of the
+    // same meaning.
+    [[nodiscard]] bool processesFirstSnapshotAdopted() const noexcept;
+    [[nodiscard]] Platform::ProcessCapabilities processCapabilities() const;
+    [[nodiscard]] std::size_t adoptedProcessCount() const noexcept;
+    [[nodiscard]] bool processesTreeViewEnabled() const noexcept;
+    void toggleProcessesTreeView();
+    [[nodiscard]] bool processesStartupSelectionPending() const noexcept;
+    void requestStartupSelection(std::optional<SelectOverride::Target> target, bool showDetails);
+    void requestProcessSelection(SelectOverride::Target target);
+    [[nodiscard]] std::string captureProcessTableLayout() const;
+    [[nodiscard]] ProcessIconView& processIconView() noexcept;
+    void requestKillSelectedProcesses() noexcept;
+    void requestProcessPriorityStep(NiceStep::Direction direction) noexcept;
+    void requestProcessSortMenu() noexcept;
+    void expireProcessesFrameRequests() noexcept;
+    [[nodiscard]] const std::string& hostname() const;
+    void requestMachineTab(SelectOverride::MachineTab tab) noexcept;
+    [[nodiscard]] float overviewNowBarColumnWidth() const;
+    [[nodiscard]] float firstChartNonPlotHeight(float windowWidth, float fontSize) const noexcept;
+    /// ProcessesPanel::restoreTableLayout(): the Processes table's saved column layout, before it is first drawn.
+    static void restoreProcessTableLayout(std::string_view layout);
+    /// ProcessesPanel::measureToolbarMinimumWidth().
+    [[nodiscard]] static float processesToolbarMinimumWidth();
 
     /// Before the panels attach: the recent crashes and hangs the System tab's reads fill and Process
     /// Details' Recent crashes line reads (#1675), so the System tab's model is built with them. Not in

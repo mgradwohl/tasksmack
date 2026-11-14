@@ -565,6 +565,7 @@ set(TASKSMACK_HEADERS
     src/Domain/StartAtLogin.h
     src/App/StartAtLoginSetting.h
     src/App/SessionAccountCheck.h
+    src/App/PanelPlatformTypes.h
     src/App/LaunchOptions.h
     src/Platform/ThreadName.h
     src/Platform/Synthetic/SyntheticProbes.h

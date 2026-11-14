@@ -24,18 +24,14 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace App
 {
 
-class ConnectionsPanel;
 class ProcessDetailsPanel;
 class ProcessesPanel;
-class ServicesPanel;
-class StartupPanel;
-class SystemInfoPanel;
-class SystemMetricsPanel;
 class TitleBarLayer;
 
 class ShellLayer : public Core::Layer
@@ -81,6 +77,10 @@ class ShellLayer : public Core::Layer
     {
         return m_ProcessesPanel;
     }
+
+    /// Each tab's event name and the name of the panel it shows, in tab order: the tabs take their panels by position in
+    /// ShellPanels::inTabOrder() (#3717), so a test checks the two lists still agree.
+    [[nodiscard]] std::vector<std::pair<std::string, std::string>> tabPanelsForTesting() const;
 
     /// The Process Details tab's panel, for tests that check what it took in while hidden (#3156).
     [[nodiscard]] const ProcessDetailsPanel& processDetailsPanelForTesting() const noexcept
@@ -171,16 +171,11 @@ class ShellLayer : public Core::Layer
     // The opt-in update check (#3093): its worker and what this session saw. Driven from onUpdate().
     UpdateChecker m_Updates;
 
-    // The six panels and the window-independent wiring between them, shared with the PGO training
-    // driver (#2136); named here as before.
+    // The panels and the window-independent wiring between them, shared with the PGO training driver (#2136). The shell
+    // reaches the Processes and System panels through ShellPanels' forwarders (#3717); these two it names directly.
     ShellPanels m_Panels;
     ProcessesPanel& m_ProcessesPanel = m_Panels.processes();
     ProcessDetailsPanel& m_ProcessDetailsPanel = m_Panels.processDetails();
-    SystemMetricsPanel& m_SystemMetricsPanel = m_Panels.systemMetrics();
-    ServicesPanel& m_ServicesPanel = m_Panels.services();
-    StartupPanel& m_StartupPanel = m_Panels.startup();
-    ConnectionsPanel& m_ConnectionsPanel = m_Panels.connections(); // #3066
-    SystemInfoPanel& m_SystemInfoPanel = m_Panels.systemInfo();
 
     // Frame timing / FPS display
     FpsCounter m_FpsCounter;

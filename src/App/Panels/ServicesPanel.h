@@ -1,6 +1,7 @@
 #pragma once
 
 #include "App/Panel.h"
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/ProcessIconView.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/Panels/ServiceActionsView.h"
@@ -16,13 +17,6 @@
 
 namespace App
 {
-
-/// The probe and actions ServicesPanel::onAttach() builds from (#1721).
-struct ServicesPanelPlatform
-{
-    std::unique_ptr<Platform::IServiceProbe> probe;
-    std::shared_ptr<Platform::IServiceActions> actions; ///< Shared, as ServiceActionsView holds it
-};
 
 /// The Services tab (#800; actions #1577). Owns the ServiceModel and samples it on its own
 /// BackgroundSampler at Sampling::SERVICES_REFRESH_MS, only while the tab is shown or something else

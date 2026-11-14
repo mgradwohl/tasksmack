@@ -284,6 +284,23 @@ TEST_F(ShellLayerRenderTest, RequestsForATabSelectionOrSectionReachTheirPanels)
     EXPECT_FALSE(m_Shell->startupSelectionPending()) << "the demo's requests aren't the startup selection the screenshot waits for";
 }
 
+// #3717: the tabs take their panels by position in ShellPanels::inTabOrder(), so each tab's event name must still
+// name the panel it shows; a reordered inTabOrder() would put a panel under another tab's name.
+TEST_F(ShellLayerRenderTest, EachTabShowsThePanelItIsNamedFor)
+{
+    makeShell(false);
+    const std::vector<std::pair<std::string, std::string>> expected{
+        {"SystemOverview", "System"},
+        {"Processes", "Processes"},
+        {"ProcessDetails", "Process Details"},
+        {"Services", "Services"},
+        {"Startup", "Startup"},
+        {"Connections", "Connections"},
+        {"SystemInfo", "System Information"},
+    };
+    EXPECT_EQ(m_Shell->tabPanelsForTesting(), expected);
+}
+
 TEST_F(ShellLayerRenderTest, TheWindowsMinimumSizeFollowsThePanelsMeasurements)
 {
     makeShell(false);
