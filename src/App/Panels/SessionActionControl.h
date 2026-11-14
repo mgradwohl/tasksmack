@@ -1,6 +1,6 @@
 #pragma once
 
-// The Users tab's Lock, Disconnect and Sign out (#3076). Lock (Linux) runs at once, as Task Manager's does;
+// A signed-in session's Lock, Disconnect and Sign out (#3076). Lock (Linux) runs at once, as Task Manager's does;
 // Sign out first asks, naming the user and the session and warning that unsaved work is lost (and, for
 // TaskSmack's own session, that TaskSmack closes too); Disconnect (Windows) asks too, saying the session's
 // programs keep running (and, for TaskSmack's own, that this screen locks). Each runs on a worker of its own,
@@ -9,7 +9,7 @@
 // retry", which calls again allowing the prompt (#2304).
 //
 // The control owns only its UI state; the IUserSessions it acts through is the panel's, shared with the model,
-// and outlives it. Free of ImGui: the panel draws the confirm and the line. Tested in tests/App/test_Users.cpp.
+// and outlives it. Free of ImGui: the panel draws the confirm and the line. Tested in tests/App/test_UserSessions.cpp.
 
 #include "App/Panels/BackgroundTask.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"

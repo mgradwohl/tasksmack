@@ -2,7 +2,7 @@
 
 // Pure mappings behind WindowsUserSessions (#3076): one Terminal Services session's facts (what
 // WTSQuerySessionInformationW's WTSSessionInfo, WTSClientName and WTSClientProtocolType give) as the
-// Users tab's UserSession, the WTS states as the tab's state words, and the checks every Disconnect and
+// UserSession, the WTS states as its state words, and the checks every Disconnect and
 // Sign out passes before it is sent, in TaskSmack and in the administrator helper alike. No Windows
 // header, so the tests build on every platform (tests/Platform/WindowsMath/).
 
@@ -68,7 +68,7 @@ struct WtsSessionFacts
     std::string infoError;
 };
 
-/// The Users tab's state word for WTS state @p state: "active" (sessionStatus()'s Active), "online"
+/// The session's state word for WTS state @p state: "active" (sessionStatus()'s Active), "online"
 /// (Signed in), "disconnected", "connecting", "closing", "listening", or "unknown" past WTSInit.
 [[nodiscard]] constexpr std::string_view stateName(std::uint32_t state) noexcept
 {
@@ -116,7 +116,7 @@ struct WtsSessionFacts
     return fileTime > FILETIME_UNIX_EPOCH ? (fileTime - FILETIME_UNIX_EPOCH) / TICKS_PER_USEC : 0;
 }
 
-/// @p facts as the Users tab's session, or nullopt for one that isn't a person's: session 0 (the
+/// @p facts as a UserSession, or nullopt for one that isn't a person's: session 0 (the
 /// services), a listener, or one nobody is signed in to. A session whose details couldn't be read is kept,
 /// as not readable (UserSession::unreadable), rather than taken for one nobody is signed in to.
 /// @p currentSessionId is TaskSmack's own.

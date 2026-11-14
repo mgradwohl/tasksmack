@@ -1,16 +1,16 @@
 #pragma once
 
-// The machine's signed-in sessions, for the Users tab (#3076): who is signed in, where (seat, TTY, remote
+// The machine's signed-in sessions, for Processes > Group: User (#3076, #3377): who is signed in, where (seat, TTY, remote
 // host), how (X11, Wayland, a text console), and whether the session is active or idle; and the two things
-// the tab can do to one: Lock or Disconnect, and Sign out. Linux reads logind over the system bus
+// the table can do to one: Lock or Disconnect, and Sign out. Linux reads logind over the system bus
 // (ListSessions, then each session's properties) and asks it to lock or terminate a session, polkit deciding
 // who may (another user's session asks for an administrator). Windows reads the Terminal Services sessions
 // (WTSEnumerateSessionsW, WTSQuerySessionInformationW) and offers Disconnect in Lock's place
 // (WTSDisconnectSession) and Sign out (WTSLogoffSession); another user's session goes through the
 // administrator helper (BrokeredUserSessions.h). Each platform's canAct() says which actions it has.
 //
-// Sampled on the Users tab's own worker, at the Settings interval, only while the tab is shown (#2731). The
-// App composition root creates it (Platform::makeUserSessions()).
+// Sampled on its own worker (App::UserSessionsFeed), at the Settings interval, only while the Processes tab is
+// shown grouped by User (#2731, #3377). The App composition root creates it (Platform::makeUserSessions()).
 
 #include "Platform/IServiceActions.h"
 
@@ -95,7 +95,7 @@ class IUserSessions
     IUserSessions(IUserSessions&&) = default;
     IUserSessions& operator=(IUserSessions&&) = default;
 
-    /// Whether this run can list sessions. When false the Users tab says so.
+    /// Whether this run can list sessions. When false Group: User shows no sessions.
     [[nodiscard]] virtual bool hasSessions() const = 0;
 
     /// Reads every session now. Synchronous: called from the tab's sampler thread, never the UI thread.
@@ -117,7 +117,7 @@ class IUserSessions
         return ServiceActionResult::failed("Not supported on this platform");
     }
 
-    /// act() on @p confirmed, the session as the user saw it when they confirmed: what the Users tab calls. A
+    /// act() on @p confirmed, the session as the user saw it when they confirmed: what the session menus call. A
     /// platform whose session IDs are reused (Windows) checks that the ID still names that session, by its
     /// user, domain and sign-in time, and refuses one that doesn't (#3076). The default acts by ID, as logind's
     /// IDs aren't reused while TaskSmack runs.

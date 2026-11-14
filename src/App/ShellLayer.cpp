@@ -22,7 +22,6 @@
 #include "Panels/StartupPanel.h"    // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Panels/SystemInfoPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Panels/SystemMetricsPanel.h"
-#include "Panels/UsersPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Platform/IHttpsClient.h"
 #include "Platform/ProcessTypes.h"
 #include "RenderMetricsOverride.h"
@@ -80,8 +79,6 @@ constexpr const char* STARTUP_TAB_TEXT = "Startup";                             
 constexpr const char* STARTUP_TAB_LABEL = ICON_FA_POWER_OFF "  Startup###StartupTab";                 // #801
 constexpr const char* CONNECTIONS_TAB_TEXT = "Connections";                                           // #3066
 constexpr const char* CONNECTIONS_TAB_LABEL = ICON_FA_NETWORK_WIRED "  Connections###ConnectionsTab"; // #3066
-constexpr const char* USERS_TAB_TEXT = "Users";                                                       // #3076
-constexpr const char* USERS_TAB_LABEL = ICON_FA_USERS "  Users###UsersTab";                           // #3076
 // #1399. Last: static reference facts, visited least often, and the tabs before it keep their places.
 constexpr const char* SYSTEM_INFO_TAB_TEXT = "System";
 constexpr const char* SYSTEM_INFO_TAB_LABEL = ICON_FA_SERVER "  System###SystemInfoTab";
@@ -139,12 +136,6 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
               .eventName = "Connections",
               .label = [] { return CONNECTIONS_TAB_LABEL; },
               .text = [] { return std::string_view(CONNECTIONS_TAB_TEXT); },
-          },
-          {
-              .panel = m_UsersPanel,
-              .eventName = "Users",
-              .label = [] { return USERS_TAB_LABEL; },
-              .text = [] { return std::string_view(USERS_TAB_TEXT); },
           },
           {
               .panel = m_SystemInfoPanel,

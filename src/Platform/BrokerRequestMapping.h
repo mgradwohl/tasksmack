@@ -43,7 +43,7 @@ struct Readers
     /// TaskSmack.exe beside it only. A helper without it answers with an error.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<Broker::ActionResult(const Broker::TaskManagerReplacementRequest&)> taskManagerReplacement{};
-    /// The Users tab's Disconnect and Sign out of another user's session (#3076): Windows' helper, after it
+    /// Group: User's Disconnect and Sign out of another user's session (#3076): Windows' helper, after it
     /// checks the session against a fresh list. A helper without it answers with an error.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     std::function<ServiceActionResult(const Broker::SessionActionRequest&)> sessionAction{};

@@ -22,7 +22,7 @@ struct UsersPublication
     std::vector<Platform::UserSession> sessions; ///< By user name (ignoring case), then session ID.
 };
 
-/// Samples the signed-in sessions off the UI thread (from the Users tab's BackgroundSampler) and publishes
+/// Samples the signed-in sessions off the UI thread (from App::UserSessionsFeed's BackgroundSampler) and publishes
 /// each reading as an immutable UsersPublication, so the UI reads it without locking or copying.
 class UsersModel : public ISamplable
 {

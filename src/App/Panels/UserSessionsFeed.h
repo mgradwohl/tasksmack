@@ -3,8 +3,9 @@
 // The signed-in sessions, read once for every view that shows them (#3377): the sessions the platform lists
 // and acts through, the UsersModel that publishes them, the gate and the sampler that read them at the
 // Settings interval while a view needs them (ProcessGrouping::sessionsDemand()), and the Lock, Disconnect and
-// Sign out worker. ShellPanels owns it; the Users tab and the Processes table's Group: User draw from it. The
-// views only read its immutable publications on the UI thread: no view calls a probe.
+// Sign out worker. ShellPanels owns it, and the Processes panel starts it at attach, stops it at detach and
+// hands it the Settings interval; the table's Group: User draws from it. The table only reads its immutable
+// publications on the UI thread: it never calls a probe.
 
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/SamplingGate.h"
@@ -27,7 +28,7 @@ namespace App
 class UserSessionsFeed
 {
   public:
-    /// The platform's sessions (PanelPlatforms' makeUsersPanelSessions(), or none in a synthetic run).
+    /// The platform's sessions (PanelPlatforms' makeSignedInSessions(), or none in a synthetic run).
     UserSessionsFeed();
 
     /// Test seam: start() takes its sessions from @p makeSessions instead of the platform's.
@@ -39,21 +40,18 @@ class UserSessionsFeed
     UserSessionsFeed(UserSessionsFeed&&) = delete;
     UserSessionsFeed& operator=(UserSessionsFeed&&) = delete;
 
-    /// Makes the sessions, the model and the action worker, then samples if a view already demands them
-    /// (one shown before start(), or still shown across stop()); otherwise sampling waits for demand. Once
+    /// Makes the sessions, the model and the action worker, then samples if the view already demands them
+    /// (shown before start(), or still shown across stop()); otherwise sampling waits for demand. Once
     /// until stop().
-    /// On the UI thread, from the Users tab's onAttach() (the composition root's one sessions creation).
+    /// On the UI thread, from the Processes panel's onAttach() (the composition root's one sessions creation).
     void start();
 
     /// Joins the sampler thread (the one place it is waited for), then stops and waits for an action in
-    /// flight, and lets the sessions go. The views' inputs (setUsersTabShown(), setProcessesView()) are kept.
+    /// flight, and lets the sessions go. The view's inputs (setProcessesView()) are kept.
     /// Safe to call twice, or without start().
     void stop();
 
-    /// Whether the Users tab is shown, one of sessionsDemand()'s inputs.
-    void setUsersTabShown(bool shown);
-
-    /// Whether the Processes tab is shown and how its table is grouped, sessionsDemand()'s other inputs:
+    /// Whether the Processes tab is shown and how its table is grouped, sessionsDemand()'s inputs:
     /// grouped by User, its groups show each account's sessions. The Processes panel sets them each frame;
     /// only a change does anything.
     void setProcessesView(bool shown, ProcessGrouping::GroupBy groupBy);
@@ -68,6 +66,12 @@ class UserSessionsFeed
     [[nodiscard]] bool demanded() const noexcept
     {
         return m_Demanded;
+    }
+
+    /// The interval the sessions are read at, now or once they are (tests).
+    [[nodiscard]] std::chrono::milliseconds interval() const noexcept
+    {
+        return m_Interval;
     }
 
     /// The model the views read publications from, or null before start() and after stop().
@@ -115,7 +119,6 @@ class UserSessionsFeed
     std::unique_ptr<Domain::BackgroundSampler> m_Sampler;                                // created when first demanded
     std::optional<SessionActionControl> m_Actions;                                       // made at start, with the sessions it acts through
     std::chrono::milliseconds m_Interval{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS}; // the Settings interval
-    bool m_UsersTabShown = false;
     bool m_ProcessesTabShown = false;
     ProcessGrouping::GroupBy m_GroupBy = ProcessGrouping::GroupBy::None;
     bool m_Demanded = false; // what the gate was last set to

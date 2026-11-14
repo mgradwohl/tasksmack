@@ -1,6 +1,6 @@
 #pragma once
 
-// The Users tab's sessions on Linux (#3076): logind's, through SystemdBus (LogindSessions.cpp for the read,
+// The signed-in sessions on Linux (#3076): logind's, through SystemdBus (LogindSessions.cpp for the read,
 // SystemdUnitActions.cpp for Lock and Sign out). Without sd-bus in the build there are none to list.
 
 #include "Platform/IServiceActions.h"

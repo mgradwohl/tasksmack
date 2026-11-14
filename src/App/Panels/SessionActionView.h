@@ -1,7 +1,7 @@
 #pragma once
 
-// A signed-in session's menu and its confirm (#3076), drawn by every view that lists sessions: the Users tab
-// and the Processes table's Group: User (#3377). The menu's items are what the platform can do (SessionMenu):
+// A signed-in session's menu and its confirm (#3076), drawn by the view that lists sessions: the Processes
+// table's Group: User (#3377). The menu's items are what the platform can do (SessionMenu):
 // Lock and Sign out... on Linux, Disconnect... and Sign out... on Windows. Lock runs at once; Sign out and
 // Disconnect ask first, through SessionActionControl, in the confirm drawn here.
 

@@ -266,21 +266,20 @@ TEST(ProcessGroupingTest, ServicesDemandFollowsColumnSectionAndUnitGrouping)
 #endif
 }
 
-// #3377: the signed-in sessions are read while the Users tab is shown, or the Processes tab grouped by User,
-// whose groups show each account's sessions; not for any other grouping, nor with the Processes tab hidden.
-TEST(ProcessGroupingTest, SessionsDemandFollowsTheUsersTabAndUserGrouping)
+// #3377: the signed-in sessions are read while the Processes tab is shown grouped by User, whose groups show
+// each account's sessions; not for any other grouping, nor with the Processes tab hidden.
+TEST(ProcessGroupingTest, SessionsDemandFollowsUserGrouping)
 {
     for (const GroupBy mode : {GroupBy::None, GroupBy::Unit, GroupBy::Container, GroupBy::App, GroupBy::User})
     {
         for (const bool processesShown : {false, true})
         {
-            EXPECT_TRUE(ProcessGrouping::sessionsDemand(true, processesShown, mode));
-            EXPECT_EQ(ProcessGrouping::sessionsDemand(false, processesShown, mode), processesShown && mode == GroupBy::User);
+            EXPECT_EQ(ProcessGrouping::sessionsDemand(processesShown, mode), processesShown && mode == GroupBy::User);
         }
     }
-    static_assert(ProcessGrouping::sessionsDemand(true, false, GroupBy::None));
-    static_assert(ProcessGrouping::sessionsDemand(false, true, GroupBy::User));
-    static_assert(!ProcessGrouping::sessionsDemand(false, false, GroupBy::User));
+    static_assert(ProcessGrouping::sessionsDemand(true, GroupBy::User));
+    static_assert(!ProcessGrouping::sessionsDemand(true, GroupBy::None));
+    static_assert(!ProcessGrouping::sessionsDemand(false, GroupBy::User));
 }
 
 // --- Group: App on Windows (#3457) ----------------------------------------------------------------

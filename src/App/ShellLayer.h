@@ -37,7 +37,6 @@ class StartupPanel;
 class SystemInfoPanel;
 class SystemMetricsPanel;
 class TitleBarLayer;
-class UsersPanel;
 
 class ShellLayer : public Core::Layer
 {
@@ -181,7 +180,6 @@ class ShellLayer : public Core::Layer
     ServicesPanel& m_ServicesPanel = m_Panels.services();
     StartupPanel& m_StartupPanel = m_Panels.startup();
     ConnectionsPanel& m_ConnectionsPanel = m_Panels.connections(); // #3066
-    UsersPanel& m_UsersPanel = m_Panels.users();                   // #3076
     SystemInfoPanel& m_SystemInfoPanel = m_Panels.systemInfo();
 
     // Frame timing / FPS display

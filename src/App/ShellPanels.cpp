@@ -18,7 +18,6 @@
 #include "Panels/SystemInfoPanel.h"
 #include "Panels/SystemMetricsPanel.h"
 #include "Panels/UserSessionsFeed.h"
-#include "Panels/UsersPanel.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "ProcessColumnConfig.h"
 #include "SelectOverride.h"
@@ -43,8 +42,8 @@ namespace App
 // reverse, so the sessions' feed and the priority changes still outlive the panels that point at them.
 struct ShellPanels::Impl
 {
-    // The signed-in sessions, before every panel that shows them, so it outlives them (#3377): the Users tab
-    // and the Processes table's Group: User. The Users tab starts and stops it, at its attach and detach.
+    // The signed-in sessions, before the Processes panel that shows them, so it outlives it (#3377): the
+    // table's Group: User. The Processes panel starts and stops it, at its attach and detach.
     UserSessionsFeed m_UserSessions;
     // The processes a priority change is asked about or running for, in the Processes table or Process
     // Details (#3467): each panel holds its own priority controls for a process the other has one for.
@@ -56,8 +55,7 @@ struct ShellPanels::Impl
     SystemMetricsPanel m_SystemMetrics;
     ServicesPanel m_Services;
     StartupPanel m_Startup;
-    ConnectionsPanel m_Connections;     // #3066
-    UsersPanel m_Users{m_UserSessions}; // #3076
+    ConnectionsPanel m_Connections; // #3066
     SystemInfoPanel m_SystemInfo;
 
     // The PID the process model watches for Process Details, and the scratch buffer its new samples
@@ -113,17 +111,12 @@ ConnectionsPanel& ShellPanels::connections() noexcept
     return m_Impl->m_Connections;
 }
 
-UsersPanel& ShellPanels::users() noexcept
-{
-    return m_Impl->m_Users;
-}
-
 SystemInfoPanel& ShellPanels::systemInfo() noexcept
 {
     return m_Impl->m_SystemInfo;
 }
 
-std::array<Panel*, 8> ShellPanels::inTabOrder() noexcept
+std::array<Panel*, 7> ShellPanels::inTabOrder() noexcept
 {
     Impl& p = *m_Impl;
     return {
@@ -133,7 +126,6 @@ std::array<Panel*, 8> ShellPanels::inTabOrder() noexcept
         &p.m_Services,
         &p.m_Startup,
         &p.m_Connections,
-        &p.m_Users,
         &p.m_SystemInfo,
     };
 }
@@ -162,7 +154,6 @@ void ShellPanels::connectModels()
     if (const auto processModel = m_Impl->m_Processes.processModel(); processModel != nullptr)
     {
         m_Impl->m_SystemMetrics.setProcessModel(processModel);
-        m_Impl->m_Users.setProcessModel(processModel); // the Users tab's per-user totals (#3076)
 
         // Share GPU model with ProcessModel for per-process GPU data
         if (const auto gpuModel = m_Impl->m_SystemMetrics.gpuModel(); gpuModel != nullptr)

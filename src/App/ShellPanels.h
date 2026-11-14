@@ -30,7 +30,6 @@ class ServicesPanel;
 class StartupPanel;
 class SystemInfoPanel;
 class SystemMetricsPanel;
-class UsersPanel;
 
 // The panels live in ShellPanels.cpp (Impl), so this header pulls no panel header into the shell's includers: their
 // translation units cost about 0.3 GB to compile, not 1.1-1.3 GB (#3717).
@@ -52,11 +51,10 @@ class ShellPanels
     [[nodiscard]] ServicesPanel& services() noexcept;
     [[nodiscard]] StartupPanel& startup() noexcept;
     [[nodiscard]] ConnectionsPanel& connections() noexcept;
-    [[nodiscard]] UsersPanel& users() noexcept;
     [[nodiscard]] SystemInfoPanel& systemInfo() noexcept;
 
-    /// In tab order: System, Processes, Process Details, Services, Startup, Connections, Users, System Information.
-    [[nodiscard]] std::array<Panel*, 8> inTabOrder() noexcept;
+    /// In tab order: System, Processes, Process Details, Services, Startup, Connections, System Information.
+    [[nodiscard]] std::array<Panel*, 7> inTabOrder() noexcept;
 
     /// Before the panels attach: the recent crashes and hangs the System tab's reads fill and Process
     /// Details' Recent crashes line reads (#1675), so the System tab's model is built with them. Not in

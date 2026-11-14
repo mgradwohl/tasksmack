@@ -1,5 +1,5 @@
 /// @file test_BrokeredUserSessions.cpp
-/// @brief The Users tab's session actions with the administrator helper behind them (#3076): a Disconnect or
+/// @brief The signed-in sessions' actions with the administrator helper behind them (#3076): a Disconnect or
 /// Sign out refused for want of an administrator goes to a running helper; Authenticate and retry starts the
 /// helper (its UAC prompt) and acts through it; without a helper the refusal says how to get the rights, and
 /// isn't offered the retry. Everything else is the inner sessions'.

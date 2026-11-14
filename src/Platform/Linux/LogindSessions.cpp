@@ -1,4 +1,4 @@
-// logind's sessions for the Users tab (#3076): ListSessions, then each session's properties. The actions
+// logind's sessions for Processes > Group: User (#3076, #3377): ListSessions, then each session's properties. The actions
 // (LockSession, TerminateSession) are in SystemdUnitActions.cpp, with the other calls that may prompt.
 
 #include "Platform/IUserSessions.h"

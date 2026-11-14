@@ -1,5 +1,5 @@
 /// @file test_WindowsUserSessions.cpp
-/// @brief The Users tab's Windows sessions (#3076): the WTS reader and Disconnect and Sign out through fake
+/// @brief The signed-in Windows sessions (#3076): the WTS reader and Disconnect and Sign out through fake
 /// WTS calls, the helper's answer to a SessionActionRequest, and a read of this machine's real sessions.
 /// No test here disconnects or signs out a real session: every action goes to the fakes.
 
@@ -293,7 +293,7 @@ TEST(WindowsUserSessionsRealTest, ListsThisMachinesSessionsAndFindsItsOwn)
     EXPECT_FALSE(calls.describe(ERROR_ACCESS_DENIED).empty());
 }
 
-// The Users tab matches a process to its row by domain and user (#3310): the process probe names this
+// Group: User matches a process to its account by domain and user (#3310): the process probe names this
 // process's owner, user and domain, as its own token's SID names it. Read only; the owner may not be the
 // session's user (runas, UAC with another account's credentials), so it is checked against the token.
 TEST(WindowsUserSessionsRealTest, TheProbeNamesThisProcesssOwnerAndDomain)

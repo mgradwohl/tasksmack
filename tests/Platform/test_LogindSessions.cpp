@@ -1,5 +1,5 @@
 /// @file test_LogindSessions.cpp
-/// @brief The Users tab's sessions on Linux (#3076): logind's ListSessions and each session's properties, read
+/// @brief The signed-in sessions on Linux (#3076): logind's ListSessions and each session's properties, read
 /// against a fake logind on a private bus (FakeSystemBus.h), the session TaskSmack runs in marked, and Lock and
 /// Sign out (LockSession, TerminateSession) with polkit's refusal when no password prompt is allowed.
 

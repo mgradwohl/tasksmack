@@ -42,7 +42,7 @@ bool isActionWindowsDoes(const Broker::Request& request) noexcept
 {
     // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess);
     // Efficiency mode (#3071); Replace Task Manager (#3072), which isn't a process action but is one the
-    // user chose, so it is the one action of an over-the-shoulder session too. The Users tab's Disconnect and
+    // user chose, so it is the one action of an over-the-shoulder session too. Group: User's Disconnect and
     // Sign out of another user's session (#3076), and one thread suspended, resumed or ended (#3069), are
     // actions the user chose and confirmed as well. An I/O priority hint (#3362): High needs an administrator.
     // Close connection (#3358): SetTcpEntry needs an administrator for any connection.

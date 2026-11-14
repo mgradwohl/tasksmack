@@ -348,8 +348,9 @@ class ProcessesPanel : public Panel
 
     /// The signed-in sessions (#3377), from the composition root (ShellPanels), which keeps the feed alive
     /// longer than the panel: grouped by User, each account's sessions are drawn under its header, with their
-    /// Lock, Disconnect and Sign out, and the panel tells the feed when it needs them read
-    /// (ProcessGrouping::sessionsDemand()). Null (the default, a panel on its own): no sessions.
+    /// Lock, Disconnect and Sign out. The panel starts the feed at onAttach() and stops it at onDetach(), hands
+    /// it the Settings interval, and tells it when it needs them read (ProcessGrouping::sessionsDemand()). Set
+    /// before onAttach(). Null (the default, a panel on its own): no sessions.
     void setUserSessions(UserSessionsFeed* feed) noexcept
     {
         m_UserSessions = feed;

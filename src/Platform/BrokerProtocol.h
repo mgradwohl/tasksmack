@@ -20,7 +20,7 @@
 // by PID *and* start time (ProcessTarget), so the helper re-verifies the process and a reused PID can't
 // redirect a request. The one path a request carries is Replace Task Manager's (#3072), which the helper
 // takes only when it is the TaskSmack.exe beside it. Its kinds: the handshake, the process actions
-// (#2308), Process Details' reads (#2309), Replace Task Manager (#3072), the Users tab's Disconnect and
+// (#2308), Process Details' reads (#2309), Replace Task Manager (#3072), Group: User's Disconnect and
 // Sign out of another user's Windows session (#3076), Find handles' batch of open-files reads (#3578), and
 // Process Details' memory map (#3665), a read of the region list only, never of the process's memory.
 
@@ -240,7 +240,7 @@ struct TaskManagerReplacementRequest
     friend bool operator==(const TaskManagerReplacementRequest&, const TaskManagerReplacementRequest&) = default;
 };
 
-// ---- The Users tab's session actions (#3076, protocol v13) ----
+// ---- The signed-in sessions' actions (#3076, protocol v13) ----
 
 /// Disconnect or sign out another user's Windows session (#3076, protocol v13): what TaskSmack can't do
 /// without an administrator's rights. Only Disconnect and SignOut are carried (a Lock is refused as

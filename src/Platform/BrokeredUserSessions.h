@@ -1,6 +1,6 @@
 #pragma once
 
-// The Users tab's session actions with the administrator helper behind them (#3076), Windows' counterpart of
+// The signed-in sessions' actions with the administrator helper behind them (#3076), Windows' counterpart of
 // what polkit does for Linux: a Disconnect or Sign out Windows refuses for want of an administrator's rights
 // (another user's session; the inner act() says needsAuthorization) goes to a running helper at once, and
 // the user's "Authenticate and retry" starts the helper (its UAC prompt) and sends it there. One's own

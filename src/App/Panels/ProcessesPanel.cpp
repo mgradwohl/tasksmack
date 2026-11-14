@@ -1220,6 +1220,14 @@ void ProcessesPanel::onAttach()
     m_RequestedColumns = m_ColumnSettings;
     m_TableShowsColumnSettings = false;
 
+    // Group: User's signed-in sessions (#3377): the composition root's one sessions creation, the feed's, which
+    // ShellPanels owns. Nothing is read until the table is shown grouped by User (sessionsDemand()), at the
+    // Settings interval, which onEvent() hands it as it changes.
+    if (m_UserSessions != nullptr)
+    {
+        m_UserSessions->start();
+    }
+
     spdlog::info("ProcessesPanel: initialized with background sampler ({}ms interval)", m_RefreshInterval.count());
 }
 
@@ -1351,10 +1359,12 @@ void ProcessesPanel::onDetach()
         m_UdpCollector = std::move(contents->udpCollector);
     }
     m_Handoff.reset();
-    // Group: User's sessions (#3377): the feed reads none for this table any more; it outlives the panel.
+    // Group: User's sessions (#3377): the feed reads none for this table any more, and stops: its sampler thread
+    // is joined and an action in flight waited for. It outlives the panel, so a later attach starts it again.
     if (m_UserSessions != nullptr)
     {
         m_UserSessions->setProcessesView(false, m_GroupBy);
+        m_UserSessions->stop();
     }
     m_SessionsPublication.reset();
     m_SessionMenuTarget.reset();
@@ -1425,6 +1435,11 @@ void ProcessesPanel::onEvent(Core::Event& event)
         {
             // The startup value (#1079) is applied without forcing a sample right after the seed (#1102).
             setSamplingInterval(std::chrono::milliseconds(e.getIntervalMs()), !e.isInitial());
+            // Group: User's sessions are read at the same Settings interval (#2731, #3377).
+            if (m_UserSessions != nullptr)
+            {
+                m_UserSessions->setInterval(std::chrono::milliseconds(e.getIntervalMs()));
+            }
             return false;
         });
     // The Settings toggle for the UDP event trace (#1492).

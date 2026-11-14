@@ -164,7 +164,7 @@ std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader()
 
 std::unique_ptr<IUserSessions> makeUserSessions()
 {
-    // The Users tab (#3076): the WTS sessions, with Disconnect and Sign out. Reads nothing until sampled.
+    // The signed-in sessions (#3076): the WTS sessions, with Disconnect and Sign out. Reads nothing until sampled.
     return std::make_unique<Windows::WindowsUserSessions>();
 }
 
