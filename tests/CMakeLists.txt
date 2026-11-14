@@ -120,6 +120,11 @@ if(WIN32)
         # frame (minimized) is left out of the frame and loop figures, n/a when none drew one (#3210).
         add_test(NAME ResizePerfSummaryScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-resize-perf-summary.ps1)
+        # tools/idle-sample.ps1, measure-idle.ps1's wake-ups, thread modules, timer resolution, phases,
+        # dwm and machine load, and memory series (#3715): recorded figures, and one 3 s phase of a
+        # hidden, sleeping pwsh. TaskSmack is never launched.
+        add_test(NAME MeasureIdleScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-measure-idle.ps1)
         # tools/winget-manifest.ps1 fills in packaging/winget/'s templates from a release's SHA256SUMS (#3486).
         # Fixture SHA256SUMS files; nothing is downloaded, and winget isn't needed.
         add_test(NAME WingetManifestScript

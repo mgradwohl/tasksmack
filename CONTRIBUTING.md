@@ -2492,8 +2492,31 @@ else the machine is doing, so compare runs taken back to back. `-RedirectAppData
 older than `TASKSMACK_CONFIG_DIR` (v0.8.0) without touching your own `%APPDATA%\TaskSmack`; give it
 a `config.toml` with `[window]` `width`/`height` there, since such a build ignores `-Window` too.
 
+It also records what each Windows performance run used to need a scratch harness for (#3715), none
+of it needing elevation:
+- **Wake-ups:** each thread's context switches per second, from a `SystemProcessInformation`
+  snapshot at each end of a phase. The process's total is in the JSON as `totalWakeupsPerSec`, and
+  the UI thread's as `uiThreadWakeupsPerSec`.
+- **Who owns an unnamed thread:** the module its Win32 start address is in
+  (`igxelpgicd64.dll+0x8da460`), as `module`.
+- **The system timer resolution** at every poll (`timerResolutionMs`), plus before launch and after
+  exit. A process that calls `timeBeginPeriod` changes it for the whole machine.
+- **dwm.exe** CPU and wake-ups, and the **machine load**: GetSystemTimes less TaskSmack and dwm, so
+  a disturbed run shows up.
+- **Phases:** `-Phases visible:120,minimized:60,restored:60` posts `SC_MINIMIZE` and then
+  `SC_RESTORE` to the app's own window, waits `-PhaseSettle` seconds, and reports each phase on
+  its own `PHASE` line and in the JSON's `phases`.
+- **A memory series:** `-MemoryCsv` writes private working set, private bytes, working set, handles
+  and threads every `-MemoryPollSeconds`, for long memory runs.
+
+The JSON is `tasksmack-idle-windows/2`. Version 1's fields are kept and describe the first phase,
+and the `RESULT` line keeps its keys, with the new ones after them. `tools/test-measure-idle.ps1`
+(CTest `MeasureIdleScript`) checks the arithmetic on recorded figures without launching TaskSmack.
+
 ```powershell
 pwsh tools/measure-idle.ps1 -Preset win-release -Window 1280x720 -Warmup 60 -Duration 300
+pwsh tools/measure-idle.ps1 -Window 1280x720 -Warmup 30 -Phases visible:120,minimized:60,restored:60
+pwsh tools/measure-idle.ps1 -Window 1280x720 -Phases visible:3600 -MemoryPollSeconds 30 -MemoryCsv perf-data\memory.csv
 Get-Help tools/measure-idle.ps1 -Full
 ```
 

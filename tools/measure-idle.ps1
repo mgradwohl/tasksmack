@@ -14,12 +14,18 @@
        to a folder inside that directory, so the app's tasksmack-debug.log is written there instead
        of over the user's own %TEMP%\tasksmack-debug.log.
     2. Waits for the main window (and for "Entering main loop" in that log), then -Warmup seconds.
-    3. Samples for -Duration seconds: the process's and every thread's CPU time (100% = one logical
-       CPU fully busy), and the private working set (Task Manager's "Memory" column), private bytes
-       and working set at the start and end, plus the peak private working set seen every 5 s.
+    3. Samples each phase (-Phases; by default one visible phase of -Duration seconds): the process's
+       and every thread's CPU time (100% = one logical CPU fully busy) and context switches
+       (wake-ups per second), the private working set (Task Manager's "Memory" column), private
+       bytes and working set at the start and end plus the peak private working set seen every
+       -MemoryPollSeconds, the system timer resolution at each poll, dwm.exe's CPU and wake-ups, and
+       how busy the rest of the machine was (#3715). A minimized phase posts SC_MINIMIZE to the
+       app's own window and a restored phase SC_RESTORE (WM_SYSCOMMAND, not injected input), then
+       waits -PhaseSettle seconds before sampling.
     4. Closes the app with WM_CLOSE (Process.CloseMainWindow, not injected input), or stops it if it
        has not exited 15 s later, and fails the run if it exited non-zero or had to be stopped.
-    5. Prints a table and one RESULT line, and writes JSON.
+    5. Prints a table, one RESULT line (and one PHASE line a phase), and writes JSON; with
+       -MemoryCsv, also the memory series.
 
     fps and frame times come from the ResizePerf summaries the app logs every 5 s at idle, as in
     measure-idle.sh: fps is the summaries' loop intervals divided by their summed duration;
@@ -32,7 +38,18 @@
 
     The UI thread is the one described as "tasksmack-ui" (Platform/ThreadName.h), or, for a build
     that does not name it, the process's first thread. The other named threads (ts-sampler-*) are
-    shown by name; unnamed threads (GPU driver, SDL, the thread pool) by thread id.
+    shown by name; unnamed threads (GPU driver, SDL, the thread pool) by the module their Win32
+    start address is in (igxelpgicd64.dll+0x8da460), with the thread id.
+
+    Wake-ups, the memory figures, dwm.exe and the machine load come from one SystemProcessInformation
+    snapshot at each end of a phase (tools/idle-sample.ps1); the timer resolution from
+    NtQueryTimerResolution. None needs elevation. A figure that can't be read is null in the JSON
+    and n/a in the table: a thread's module when the thread can't be opened (an elevated TaskSmack
+    seen from a normal shell), and every snapshot figure in a 32-bit PowerShell, which then falls
+    back to the per-thread CPU time alone.
+
+    The JSON is schema tasksmack-idle-windows/2: version 1's fields, which describe the first
+    phase, and a phases array with each phase's figures. A thread row adds module and wakeupsPerSec.
 
     Background load on the machine adds noise to Windows numbers: close what you can, and compare
     runs taken back to back.
@@ -43,7 +60,18 @@
 .PARAMETER Warmup
     Seconds to wait after the main loop starts, before sampling. Default 15.
 .PARAMETER Duration
-    Seconds to sample. Default 30.
+    Seconds to sample, as one visible phase. Default 30. Ignored when -Phases is given.
+.PARAMETER Phases
+    The phases to sample, in order: <kind>:<seconds>, comma-separated or as an array, with kind one
+    of visible, minimized or restored (e.g. visible:120,minimized:60,restored:60). Default
+    visible:<Duration>.
+.PARAMETER PhaseSettle
+    Seconds to wait after minimizing or restoring the window, before that phase is sampled. Default 10.
+.PARAMETER MemoryPollSeconds
+    How often the memory and the timer resolution are read during a phase. Default 5.
+.PARAMETER MemoryCsv
+    Also write the memory series here: elapsed seconds, phase, private working set, private bytes,
+    working set (MB), handles and threads, one row a poll. For long memory runs.
 .PARAMETER Label
     Scenario name printed with the results and used in the file names. Default idle.
 .PARAMETER Window
@@ -63,6 +91,10 @@
 .EXAMPLE
     pwsh tools/measure-idle.ps1 -Preset win-release -Window 1280x720 -Duration 300
 .EXAMPLE
+    pwsh tools/measure-idle.ps1 -Window 1280x720 -Warmup 30 -Phases visible:120,minimized:60,restored:60
+.EXAMPLE
+    pwsh tools/measure-idle.ps1 -Window 1280x720 -Phases visible:3600 -MemoryPollSeconds 30 -MemoryCsv perf-data\memory.csv
+.EXAMPLE
     pwsh tools/measure-idle.ps1 -Binary C:\temp\TaskSmack-0.8.0-win64\TaskSmack.exe -RedirectAppData -ConfigDir C:\temp\ts080 -Duration 300
 #>
 
@@ -76,7 +108,11 @@ param(
     [string]$Window,
     [string]$ConfigDir,
     [switch]$RedirectAppData,
-    [string]$Json
+    [string]$Json,
+    [string[]]$Phases,
+    [ValidateRange(0, 600)][int]$PhaseSettle = 10,
+    [ValidateRange(1, 3600)][int]$MemoryPollSeconds = 5,
+    [string]$MemoryCsv
 )
 
 Set-StrictMode -Version Latest
@@ -88,12 +124,15 @@ $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 
 . (Join-Path $scriptDir 'resize-perf-summary.ps1') # Get-FrameStatistic, Format-Millisecond
+. (Join-Path $scriptDir 'idle-sample.ps1')         # TaskSmackIdleSampler and the phase arithmetic (#3715)
 
 $MainLoopMarker = 'Entering main loop'                  # Core::Application::run(), info level
 $AlreadyRunningExitCode = 75                            # App::ALREADY_RUNNING_EXIT_CODE (InstanceLock.h)
 $MainWindowTimeoutSeconds = 60
 $CloseTimeoutSeconds = 15
-$MemoryPollSeconds = 5
+$WmSysCommand = 0x0112
+$ScMinimize = 0xF020
+$ScRestore = 0xF120
 
 if (-not ('TaskSmackIdleNative' -as [type])) {
     Add-Type -TypeDefinition @'
@@ -142,35 +181,6 @@ public static class TaskSmackIdleNative {
 '@
 }
 
-function Get-ThreadTime([System.Diagnostics.Process]$Process) {
-    # tid -> @{ Ticks; Start } for every thread still readable; one that exits mid-read is skipped.
-    $Process.Refresh()
-    $times = @{}
-    foreach ($thread in @($Process.Threads)) {
-        try { $times[$thread.Id] = @{ Ticks = $thread.TotalProcessorTime.Ticks; Start = $thread.StartTime } }
-        catch { Write-Verbose "Thread $($thread.Id) not readable: $_" }
-    }
-    return $times
-}
-
-function Get-Memory([System.Diagnostics.Process]$Process) {
-    $Process.Refresh()
-    $privateWs = $null
-    # "Process V2" instances are <name>:<pid>, so the figure is this process's even when several
-    # TaskSmack.exe run. Get-Counter is locale-dependent; on a non-English system it fails and the
-    # private working set is left out (private bytes and working set are still recorded).
-    try {
-        $path = "\Process V2($($Process.ProcessName):$($Process.Id))\Working Set - Private"
-        $privateWs = [int64](Get-Counter -Counter $path -ErrorAction Stop).CounterSamples[0].CookedValue
-    }
-    catch { Write-Verbose "Private working set unavailable: $_" }
-    return [ordered]@{
-        privateWorkingSetMB = if ($null -ne $privateWs) { [math]::Round($privateWs / 1MB, 1) } else { $null }
-        privateBytesMB      = [math]::Round($Process.PrivateMemorySize64 / 1MB, 1)
-        workingSetMB        = [math]::Round($Process.WorkingSet64 / 1MB, 1)
-    }
-}
-
 function Read-LogFile([string]$Path) {
     if (-not (Test-Path -LiteralPath $Path)) { return @() }
     # FileShare.ReadWrite: the app may still hold the log open for writing.
@@ -192,6 +202,11 @@ function Select-LogWindow([string[]]$Lines, [datetime]$From, [datetime]$To) {
 }
 
 # --- Inputs --------------------------------------------------------------------------------------
+$phaseList = if ($Phases) {
+    if ($PSBoundParameters.ContainsKey('Duration')) { Write-Warning '-Duration is ignored: -Phases gives each phase its length.' }
+    ConvertFrom-IdlePhaseSpec $Phases
+}
+else { ConvertFrom-IdlePhaseSpec @("visible:$Duration") }
 if ($Binary) {
     $binaryPath = (Resolve-Path -LiteralPath $Binary).Path
 }
@@ -227,7 +242,7 @@ if ($others.Count -gt 0) {
     Write-Warning "$($others.Count) other TaskSmack process(es) running (PIDs $($others.Id -join ', ')). They are left alone; their load adds noise."
 }
 
-Write-Host "=== ${Label}: warmup=${Warmup}s duration=${Duration}s window=$(if ($Window) { $Window } else { 'saved/default' })"
+Write-Host "=== ${Label}: warmup=${Warmup}s phases=$(($phaseList | ForEach-Object { "$($_.kind):$($_.seconds)" }) -join ',') window=$(if ($Window) { $Window } else { 'saved/default' })"
 Write-Host "Binary:     $binaryPath"
 Write-Host "Config dir: $ConfigDir"
 Write-Host "App log:    $appLog"
@@ -256,6 +271,7 @@ if ($RedirectAppData) {
     $psi.Environment['USERPROFILE'] = $ConfigDir
 }
 
+$timerBeforeLaunch = [TaskSmackIdleSampler]::TimerResolutionMs()
 $proc = [Diagnostics.Process]::Start($psi)
 $null = $proc.Handle # keeps ExitCode readable after exit
 # Drained and discarded, so a full pipe never blocks the app.
@@ -302,64 +318,71 @@ try {
         }
     }
 
+    # The module each thread starts in, for the unnamed ones (#3715); read once, after the warm-up.
+    $modules = @()
+    try {
+        $proc.Refresh()
+        $modules = @($proc.Modules | ForEach-Object { [pscustomobject]@{ name = $_.ModuleName; base = $_.BaseAddress.ToInt64(); size = [long]$_.ModuleMemorySize } })
+    }
+    catch { Write-Verbose "Modules unavailable: $_" }
+    $startThreads = Get-ThreadTime $proc
+    $firstThreadId = ($startThreads.GetEnumerator() | Sort-Object { $_.Value.Start } | Select-Object -First 1).Key
+    $threadNames = @{}
+    $nameOf = {
+        param([long]$tid)
+        if (-not $threadNames.ContainsKey($tid)) {
+            $n = [TaskSmackIdleNative]::ThreadName([int]$tid)
+            $threadNames[$tid] = if ($n) { $n } elseif ($tid -eq $firstThreadId) { '(first thread)' } else { '' }
+        }
+        $threadNames[$tid]
+    }
+    $moduleOf = { param([long]$tid) Resolve-ThreadModule ([TaskSmackIdleSampler]::Win32StartAddress($tid)) $modules }
+
     # --- Sample ----------------------------------------------------------------------------------
-    Write-Host "Sampling for $Duration s..."
-    $memStart = Get-Memory $proc
-    $peakPrivateWs = $memStart.privateWorkingSetMB
-    $threadsBefore = Get-ThreadTime $proc
-    $totalBefore = $proc.TotalProcessorTime.Ticks
-    $clock = [Diagnostics.Stopwatch]::StartNew()
-    $cpuStartLocal = Get-Date
-    while ($clock.Elapsed.TotalSeconds -lt $Duration) {
-        $waitMs = [int][math]::Min($MemoryPollSeconds * 1000, ($Duration - $clock.Elapsed.TotalSeconds) * 1000)
-        if ($waitMs -gt 0 -and $proc.WaitForExit($waitMs)) { throw "TaskSmack exited while sampling with code $($proc.ExitCode)." }
-        $mem = Get-Memory $proc
-        if ($null -ne $mem.privateWorkingSetMB -and ($null -eq $peakPrivateWs -or $mem.privateWorkingSetMB -gt $peakPrivateWs)) {
-            $peakPrivateWs = $mem.privateWorkingSetMB
+    $phaseResults = [Collections.Generic.List[object]]::new()
+    $memoryRows = [Collections.Generic.List[object]]::new()
+    $runClock = [Diagnostics.Stopwatch]::StartNew()
+    for ($index = 0; $index -lt $phaseList.Count; $index++) {
+        $phase = $phaseList[$index]
+        if ($phase.kind -ne 'visible' -and $hwnd -eq [IntPtr]::Zero) { throw "No main window to post $($phase.kind) to." }
+        if ($phase.kind -eq 'minimized') { [void][TaskSmackIdleSampler]::PostMessageW($hwnd, $WmSysCommand, [IntPtr]$ScMinimize, [IntPtr]::Zero) }
+        elseif ($phase.kind -eq 'restored') { [void][TaskSmackIdleSampler]::PostMessageW($hwnd, $WmSysCommand, [IntPtr]$ScRestore, [IntPtr]::Zero) }
+        if ($index -gt 0 -and $PhaseSettle -gt 0) {
+            if ($proc.WaitForExit($PhaseSettle * 1000)) { throw "TaskSmack exited while settling into $($phase.kind) with code $($proc.ExitCode)." }
         }
+        $phaseResults.Add((Measure-IdlePhase -Process $proc -Kind $phase.kind -Seconds $phase.seconds -Window $hwnd -NameOf $nameOf -ModuleOf $moduleOf `
+                    -FirstThreadId $firstThreadId -MemoryPollSeconds $MemoryPollSeconds -RunClock $runClock -MemoryRows $memoryRows))
     }
-    $threadsAfter = Get-ThreadTime $proc
-    $proc.Refresh()
-    $totalAfter = $proc.TotalProcessorTime.Ticks
-    $seconds = $clock.Elapsed.TotalSeconds
-    $cpuEndLocal = Get-Date
-    $memEnd = Get-Memory $proc
-
-    $toPercent = { param([long]$ticks) [math]::Round($ticks / [TimeSpan]::TicksPerSecond / $seconds * 100.0, 2) }
-    $firstThreadId = ($threadsAfter.GetEnumerator() | Sort-Object { $_.Value.Start } | Select-Object -First 1).Key
-    $threads = foreach ($tid in $threadsAfter.Keys) {
-        if (-not $threadsBefore.ContainsKey($tid)) { continue } # started during the sample: in the total only
-        $name = [TaskSmackIdleNative]::ThreadName($tid)
-        [pscustomobject]@{
-            tid  = $tid
-            name = if ($name) { $name } elseif ($tid -eq $firstThreadId) { '(first thread)' } else { '' }
-            cpu  = & $toPercent ($threadsAfter[$tid].Ticks - $threadsBefore[$tid].Ticks)
-        }
-    }
-    $threads = @($threads | Sort-Object cpu -Descending)
-    $uiThread = $threads | Where-Object name -EQ 'tasksmack-ui' | Select-Object -First 1
-    if (-not $uiThread) { $uiThread = $threads | Where-Object tid -EQ $firstThreadId | Select-Object -First 1 }
-
+    $first = $phaseResults[0]
 
     $result = [ordered]@{
-        schema          = 'tasksmack-idle-windows/1'
+        schema          = 'tasksmack-idle-windows/2'
         label           = $Label
         binary          = $binaryPath
         binaryVersion   = (Get-Item -LiteralPath $binaryPath).VersionInfo.ProductVersion
         anchor          = $null
         warmupSeconds   = $Warmup
-        durationSeconds = [math]::Round($seconds, 1)
-        cpuStartUtc     = $cpuStartLocal.ToUniversalTime().ToString('o')
-        cpuEndUtc       = $cpuEndLocal.ToUniversalTime().ToString('o')
+        # Version 1's fields: the first phase's figures
+        durationSeconds = $first.durationSeconds
+        cpuStartUtc     = $first.cpuStartUtc
+        cpuEndUtc       = $first.cpuEndUtc
         requestedWindow = $Window
         window          = $windowInfo
-        totalCpu        = & $toPercent ($totalAfter - $totalBefore)
-        uiThreadCpu     = if ($uiThread) { $uiThread.cpu } else { $null }
+        totalCpu        = $first.totalCpu
+        uiThreadCpu     = $first.uiThreadCpu
         frames          = $null
-        memoryStart     = $memStart
-        memoryEnd       = $memEnd
-        peakPrivateWorkingSetMB = $peakPrivateWs
-        threads         = $threads
+        memoryStart     = $first.memoryStart
+        memoryEnd       = $first.memoryEnd
+        peakPrivateWorkingSetMB = $first.peakPrivateWorkingSetMB
+        threads         = $first.threads
+        # Version 2 (#3715)
+        totalWakeupsPerSec    = $first.totalWakeupsPerSec
+        uiThreadWakeupsPerSec = $first.uiThreadWakeupsPerSec
+        timerResolutionMs     = $first.timerResolutionMs
+        timerResolutionBeforeLaunchMs = if ($timerBeforeLaunch -gt 0) { $timerBeforeLaunch } else { $null }
+        timerResolutionAfterExitMs    = $null
+        phases          = $phaseResults
+        memoryCsv       = $null
         machine         = [ordered]@{
             cpu          = (Get-CimInstance Win32_Processor | Select-Object -First 1).Name.Trim()
             logicalCpus  = [Environment]::ProcessorCount
@@ -397,15 +420,30 @@ finally {
 }
 if ($failure) { throw $failure }
 
-# The ResizePerf summaries logged while CPU was sampled (each covers the 5 s before it).
-$frames = Get-FrameStatistic @(Select-LogWindow -Lines $logLines -From $cpuStartLocal -To $cpuEndLocal)
+# The ResizePerf summaries logged while each phase was sampled (each covers the 5 s before it).
+foreach ($p in $result.phases) {
+    $p.frames = Get-FrameStatistic @(Select-LogWindow -Lines $logLines -From $p.cpuStartLocal -To $p.cpuEndLocal)
+    $p.Remove('cpuStartLocal')
+    $p.Remove('cpuEndLocal')
+}
+$frames = $result.phases[0].frames
 $result.frames = $frames
 $result.anchor = $logLines | Where-Object { $_ -match 'ResizePerfAnchor:' } | Select-Object -First 1
+$timerAfterExit = [TaskSmackIdleSampler]::TimerResolutionMs()
+$result.timerResolutionAfterExitMs = if ($timerAfterExit -gt 0) { $timerAfterExit } else { $null }
+if ($MemoryCsv) {
+    $memoryRows | Export-Csv -LiteralPath $MemoryCsv -NoTypeInformation -Encoding utf8
+    $result.memoryCsv = (Resolve-Path -LiteralPath $MemoryCsv).Path
+}
 
-$result | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $Json -Encoding utf8
+$result | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $Json -Encoding utf8
 
 # --- Report --------------------------------------------------------------------------------------
-$fmt = { param($v, $unit = '') if ($null -eq $v) { 'n/a' } else { "$v$unit" } }
+$fmt = { param($v, $unit = '') if ($null -eq $v -or ($v -is [array] -and $v.Count -eq 0)) { 'n/a' } elseif ($v -is [array]) { ($v -join ',') + $unit } else { "$v$unit" } }
+$memStart = $result.memoryStart
+$memEnd = $result.memoryEnd
+$peakPrivateWs = $result.peakPrivateWorkingSetMB
+$threads = $result.threads
 Write-Host ''
 Write-Host ("{0,-34} {1,12}" -f 'Metric', 'Value')
 Write-Host ("{0,-34} {1,12}" -f 'Total CPU (% of one CPU)', $result.totalCpu)
@@ -418,12 +456,35 @@ Write-Host ("{0,-34} {1,12}" -f 'Private working set start/end MB', "$(& $fmt $m
 Write-Host ("{0,-34} {1,12}" -f 'Peak private working set MB', (& $fmt $peakPrivateWs))
 Write-Host ("{0,-34} {1,12}" -f 'Private bytes start/end MB', "$($memStart.privateBytesMB)/$($memEnd.privateBytesMB)")
 Write-Host ("{0,-34} {1,12}" -f 'Window client (px) / DPI', $(if ($result.window) { "$($result.window.clientWidth)x$($result.window.clientHeight) @$($result.window.dpi)" } else { 'n/a' }))
+Write-Host ("{0,-34} {1,12}" -f 'Wake-ups/s total / UI thread', "$(& $fmt $result.totalWakeupsPerSec)/$(& $fmt $result.uiThreadWakeupsPerSec)")
+Write-Host ("{0,-34} {1,12}" -f 'System timer resolution (ms)', (& $fmt $result.timerResolutionMs))
+Write-Host ("{0,-34} {1,12}" -f 'dwm CPU / wake-ups/s', $(if ($result.phases[0].dwm) { "$($result.phases[0].dwm.cpu)/$($result.phases[0].dwm.wakeupsPerSec)" } else { 'n/a' }))
+Write-Host ("{0,-34} {1,12}" -f 'Rest of machine (% of all CPUs)', $(if ($result.phases[0].machineLoad) { $result.phases[0].machineLoad.restPctOfAll } else { 'n/a' }))
+if ($result.phases.Count -gt 1) {
+    Write-Host ''
+    Write-Host ("{0,-10} {1,7} {2,7} {3,8} {4,8} {5,7} {6,10} {7,10} {8,8}" -f 'Phase', 'CPU', 'UI CPU', 'wake/s', 'UI wk/s', 'fps', 'loop p95', 'timer ms', 'rest %')
+    foreach ($p in $result.phases) {
+        Write-Host ("{0,-10} {1,7} {2,7} {3,8} {4,8} {5,7} {6,10} {7,10} {8,8}" -f $p.phase, $p.totalCpu, (& $fmt $p.uiThreadCpu), (& $fmt $p.totalWakeupsPerSec),
+            (& $fmt $p.uiThreadWakeupsPerSec), (& $fmt $p.frames.fps), (& $fmt $p.frames.loopP95Ms), (& $fmt $p.timerResolutionMs),
+            $(if ($p.machineLoad) { $p.machineLoad.restPctOfAll } else { 'n/a' }))
+    }
+}
 Write-Host ''
-Write-Host 'Threads above 0.05%:'
-foreach ($t in $threads | Where-Object cpu -GT 0.05) { Write-Host ("  {0,7} {1,-22} {2,8}" -f $t.tid, $t.name, $t.cpu) }
+Write-Host 'Threads above 0.05% (first phase):'
+foreach ($t in $threads | Where-Object cpu -GT 0.05) {
+    Write-Host ("  {0,7} {1,-36} {2,8} {3,10}" -f $t.tid, $(if ($t.name) { $t.name } elseif ($t.module) { $t.module } else { '' }), $t.cpu, (& $fmt $t.wakeupsPerSec ' /s'))
+}
 Write-Host ''
 Write-Host "JSON: $Json"
+if ($result.memoryCsv) { Write-Host "Memory series: $($result.memoryCsv)" }
 $inv = [Globalization.CultureInfo]::InvariantCulture
-Write-Host ([string]::Format($inv, 'RESULT label={0} totalCpu={1} uiCpu={2} fps={3} privateWsStartMB={4} privateWsEndMB={5} duration={6}',
+# Version 1's keys first, unchanged; version 2's after them (#3715).
+Write-Host ([string]::Format($inv, 'RESULT label={0} totalCpu={1} uiCpu={2} fps={3} privateWsStartMB={4} privateWsEndMB={5} duration={6} wakeups={7} uiWakeups={8} timerMs={9}',
         $Label, $result.totalCpu, (& $fmt $result.uiThreadCpu), (& $fmt $frames.fps),
-        (& $fmt $memStart.privateWorkingSetMB), (& $fmt $memEnd.privateWorkingSetMB), $result.durationSeconds))
+        (& $fmt $memStart.privateWorkingSetMB), (& $fmt $memEnd.privateWorkingSetMB), $result.durationSeconds,
+        (& $fmt $result.totalWakeupsPerSec), (& $fmt $result.uiThreadWakeupsPerSec), (& $fmt $result.timerResolutionMs)))
+foreach ($p in $result.phases) {
+    Write-Host ([string]::Format($inv, 'PHASE label={0} phase={1} totalCpu={2} uiCpu={3} fps={4} loopP95Ms={5} wakeups={6} uiWakeups={7} timerMs={8} duration={9}',
+            $Label, $p.phase, $p.totalCpu, (& $fmt $p.uiThreadCpu), (& $fmt $p.frames.fps), (& $fmt $p.frames.loopP95Ms),
+            (& $fmt $p.totalWakeupsPerSec), (& $fmt $p.uiThreadWakeupsPerSec), (& $fmt $p.timerResolutionMs), $p.durationSeconds))
+}
