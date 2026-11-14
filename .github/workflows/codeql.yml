@@ -214,9 +214,17 @@ jobs:
       # The traced build: TaskSmack's object files only -- everything but main() in the
       # TaskSmackApp object library, plus main.cpp's object (a Ninja output path; a wrong one fails
       # loudly). CodeQL extracts compiles, not links, and the debug link alone took ~1 minute.
+      #
+      # At most 3 compiles at once (#3708). Ninja's default on this 4-core runner is 6, and the
+      # translation units that compile together at the end of src/App (main.cpp, DemoLayer,
+      # SettingsLayer, ShellLayer, PanelPlatforms: each about 1.1-1.3 GB of plain clang, plus the
+      # CodeQL extractor's own memory on top) took the 16 GB hosted runner down: "The runner has
+      # received a shutdown signal", exit 143, a dozen lost attempts by 2026-11-14, always in that
+      # stretch (the last line printed was [229/374] MainTabBarView.cpp.o, the job that finished
+      # just before them). Ninja prints a step when it finishes here, not when it starts.
       - name: Build
         run: >-
-          cmake --build --preset debug --target
+          cmake --build --preset debug --parallel 3 --target
           TaskSmackApp CMakeFiles/TaskSmack.dir/src/main.cpp.o
 
       # The CLI writes the SARIF; the upload is the last step. codeql-config.yml's paths and
