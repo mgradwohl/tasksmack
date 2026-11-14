@@ -58,10 +58,11 @@ render cached publications. Process enumeration and the heavier system metrics r
 generations, and process consumers use `ProcessModel` snapshot versions, so render loops do no probe I/O,
 take no model locks and copy no history.
 
-History is stored in `Domain::HistoryBuffer<T>` rings (`src/Domain/History.h`), sized from the configured
+History is stored in `Domain::SharedHistoryBuffer<T>` (`src/Domain/SharedHistory.h`): append-only blocks published
+as immutable `HistoryView`s, sized from the configured
 history window by `Sampling::historyCapacityForSeconds()` so the whole window (10 seconds to 30 minutes) fits
 even at the fastest 100 ms refresh. Entries older than the window are trimmed on every sample in O(1), and all
-the series in one model share one timestamp ring and are trimmed together.
+the series in one model share one timestamp axis and are trimmed together.
 
 The full description is
 [Sampling and Publication](https://github.com/mgradwohl/tasksmack/blob/main/tasksmack.md#sampling-and-publication)
