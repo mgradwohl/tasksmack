@@ -292,6 +292,14 @@ try {
         exit 1
     }
     $CovObjects = @("$BuildDir\tests\TaskSmackTests.exe", "-object", "$BuildDir\tests\TaskSmackThemeTests.exe", "-object", "$BuildDir\tests\TaskSmackAppTests.exe", "-object", $AppBinary)
+    # The broker helper and its 3 s idle copy run as child processes of test_BrokerHelper and the CI
+    # real-system tests; they inherit LLVM_PROFILE_FILE, so each writes its own %p profile. Their objects must
+    # be passed too or HelperMain.cpp drops out of the report (#3843). Only those that were built.
+    foreach ($HelperBinary in @("$BuildDir\bin\TaskSmackHelper.exe", "$BuildDir\tests\TaskSmackHelperShortIdle.exe")) {
+        if (Test-Path $HelperBinary) {
+            $CovObjects += @("-object", $HelperBinary)
+        }
+    }
 
     # Step 4: Generate HTML report
     Write-Host "==> Generating HTML report..."
