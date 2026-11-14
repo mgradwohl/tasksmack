@@ -45,8 +45,9 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
 
 /// Height of one of the Overview's section cards (#1537) holding its header line and @p rows rows of
 /// text: one text line each (ImGui::GetTextLineHeightWithSpacing()), inside the card's window padding
-/// top and bottom. Identity and Runtime both take the taller of their two heights, and the cards
-/// beside them share the row's height (computeRowCardHeight()), so all their edges line up.
+/// top and bottom. Identity and Runtime both take the taller of their two heights, so their edges
+/// line up; the Actions, Priority and I/O priority cards beside them are each as tall as their own
+/// content (#3741).
 ///
 /// @param rows                 The card's rows, not counting the header.
 /// @param lineHeightPx         ImGui::GetTextLineHeightWithSpacing().
@@ -108,7 +109,7 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
 /// gradient track and "Low", which the slider fits to the width it is given (#1493).
 inline constexpr float PRIORITY_SLIDER_ROW_WIDTH_EM = 28.0F;
 
-/// Where the Overview's Actions and Priority cards go (#1789).
+/// Where the Overview's Actions card and its Priority and I/O priority column go (#1789, #3741).
 struct TopRowLayout
 {
     /// Both cards are on the Identity/Runtime row, to the right of Runtime; otherwise they wrap to a
@@ -119,12 +120,13 @@ struct TopRowLayout
     bool priorityBesideActions = true;
     /// The Actions card's width in pixels, padding included; 0 when it is not drawn.
     float actionsWidth = 0.0F;
-    /// The Priority card's width in pixels, padding included; 0 when it is not drawn.
+    /// The Priority and I/O priority cards' width in pixels, padding included; 0 when neither is drawn.
     float priorityWidth = 0.0F;
 };
 
 /// Lays out the Overview's top row (#1789): Identity and Runtime, then the Actions card (the
-/// process-control buttons) and the Priority card (the priority row(s)), each at its content width.
+/// process-control buttons) and the Priority column (the Priority and I/O priority cards, #3741), each
+/// at its content width.
 ///
 /// The rule is width alone, at the font scale in force (every width passed in is measured at it):
 /// the four cards share one row when the pane is at least
@@ -134,9 +136,9 @@ struct TopRowLayout
 /// Actions + ItemSpacing.x + Priority, else one under the other, each held to the pane -- so nothing
 /// is clipped or overlaps. A card of width 0 is not drawn and takes no gap.
 ///
-/// The cards on a row share the tallest one's height (computeRowCardHeight()): a card taller than
-/// Identity and Runtime makes the row taller, rather than being kept off it as the single Actions
-/// block once was (#1493).
+/// Each card is as tall as its own content (#3741): a card taller than Identity and Runtime makes the
+/// row taller, rather than being kept off it as the single Actions block once was (#1493), and none is
+/// stretched to another's height.
 ///
 /// @param paneWidthPx       Width of the pane the row is laid out in.
 /// @param infoRowWidthPx    Width Identity and Runtime take, with the gap between them.
@@ -181,37 +183,6 @@ chooseTopRowLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, flo
         .actionsWidth = std::min(actions, paneWidthPx),
         .priorityWidth = std::min(priority, paneWidthPx),
     };
-}
-
-/// Height every card on one row of the Overview shares (#1789): the tallest of @p baseHeightPx (the
-/// Identity/Runtime card height on the top row, 0 on the wrapped row) and the Actions and Priority
-/// cards' content heights as last drawn (0 when not drawn yet, or not on this row). 0 when nothing is
-/// known: each card then sizes itself to its content.
-[[nodiscard]] inline float computeRowCardHeight(float baseHeightPx, float actionsHeightPx, float priorityHeightPx) noexcept
-{
-    const auto nonNegative = [](float value) noexcept
-    {
-        return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
-    };
-    return std::max({nonNegative(baseHeightPx), nonNegative(actionsHeightPx), nonNegative(priorityHeightPx)});
-}
-
-/// How far down to move a card's rows (everything under its header) to centre them in the room left
-/// under the header (#1874): half the room they leave, in whole pixels so text stays on the pixel grid.
-/// The Actions card's one row of buttons used to sit at the top of a row as tall as Identity and
-/// Runtime, over a block of empty card.
-///
-/// @param availableHeightPx  The room under the header, to the card's bottom padding
-///                           (ImGui::GetContentRegionAvail().y where the rows start).
-/// @param rowsHeightPx       What the rows need down, last row's bottom included; 0 when not yet known.
-/// @return 0 when the rows' height is unknown, or they fill the room or more.
-[[nodiscard]] inline float computeCentredRowsOffset(float availableHeightPx, float rowsHeightPx) noexcept
-{
-    if (!std::isfinite(availableHeightPx) || !std::isfinite(rowsHeightPx) || rowsHeightPx <= 0.0F || availableHeightPx <= rowsHeightPx)
-    {
-        return 0.0F;
-    }
-    return std::floor((availableHeightPx - rowsHeightPx) * 0.5F);
 }
 
 /// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).
