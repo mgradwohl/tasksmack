@@ -10,28 +10,34 @@
 // Startup and System Information panels still read the real platform there, as they always have; the
 // crash history does not (a real crash list would match the scenario's made-up PIDs by accident).
 
-#include "Panels/ProcessDetailsPanel.h"
-#include "Panels/ProcessesPanel.h"
-#include "Panels/ServicesPanel.h"
-#include "Panels/StartupPanel.h"
-#include "Panels/SystemMetricsPanel.h"
-#include "Platform/IDiskProbe.h"
-#include "Platform/IElevatedRestart.h"
-#include "Platform/IGPUProbe.h"
-#include "Platform/IHttpsClient.h"
-#include "Platform/IPrivilegedBroker.h"
-#include "Platform/IProcessActions.h"
-#include "Platform/IProcessMemoryMap.h"
-#include "Platform/IStartAtLogin.h"
-#include "Platform/ISystemInfoProbe.h"
-#include "Platform/IUserSessions.h"
-#include "SessionAccountCheck.h"
-#include "TaskManagerReplacementController.h"
-
 #include <memory>
+
+// Declarations only, so this header pulls no panel or platform header into its includers (#3717): each caller
+// includes what it uses of the types below.
+namespace Platform
+{
+class IDiskProbe;
+class IElevatedRestart;
+class IGPUProbe;
+class IHttpsClient;
+class IPrivilegedBroker;
+class IProcessActions;
+class IProcessMemoryMapReader;
+class IStartAtLogin;
+class ISystemInfoProbe;
+class IUserSessions;
+} // namespace Platform
 
 namespace App
 {
+
+struct ProcessDetailsReaders;
+struct ProcessesPanelPlatform;
+struct ServicesPanelPlatform;
+class SessionAccountCheck;
+struct StartupPanelPlatform;
+struct SystemModelProbes;
+class TaskManagerReplacementController;
 
 namespace Synthetic
 {

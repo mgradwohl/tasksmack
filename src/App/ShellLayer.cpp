@@ -13,11 +13,16 @@
 #include "KeyboardInput.h"
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
+#include "Panels/ConnectionsPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Panels/NiceStep.h"
 #include "Panels/ProcessDetailsPanel.h"
 #include "Panels/ProcessIconView.h"
 #include "Panels/ProcessesPanel.h"
+#include "Panels/ServicesPanel.h"   // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
+#include "Panels/StartupPanel.h"    // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
+#include "Panels/SystemInfoPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Panels/SystemMetricsPanel.h"
+#include "Panels/UsersPanel.h" // IWYU pragma: keep - complete type: PanelTabs takes it as its Panel base (#3717)
 #include "Platform/IHttpsClient.h"
 #include "Platform/ProcessTypes.h"
 #include "RenderMetricsOverride.h"
@@ -151,6 +156,16 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
 {
     // One icon cache and texture set for every tab's program icons (#1800): ShellPanels hands the
     // Processes panel's to the Services and Startup tabs.
+}
+
+bool ShellLayer::processesTreeViewForTesting() const noexcept
+{
+    return m_ProcessesPanel.treeViewEnabled();
+}
+
+bool ShellLayer::startupSelectionPending() const noexcept
+{
+    return m_StartupTab.pending() || m_ProcessesPanel.startupSelectionPending();
 }
 
 void ShellLayer::onAttach()

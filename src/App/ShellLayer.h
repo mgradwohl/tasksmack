@@ -6,12 +6,6 @@
 #include "KeyboardShortcuts.h"
 #include "MainTabBarView.h"
 #include "PanelTabs.h"
-#include "Panels/ProcessDetailsPanel.h"
-#include "Panels/ProcessesPanel.h"
-#include "Panels/ServicesPanel.h"
-#include "Panels/StartupPanel.h"
-#include "Panels/SystemInfoPanel.h"
-#include "Panels/SystemMetricsPanel.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/ProcessTypes.h"
 #include "SelectOverride.h"
@@ -35,7 +29,15 @@
 namespace App
 {
 
+class ConnectionsPanel;
+class ProcessDetailsPanel;
+class ProcessesPanel;
+class ServicesPanel;
+class StartupPanel;
+class SystemInfoPanel;
+class SystemMetricsPanel;
 class TitleBarLayer;
+class UsersPanel;
 
 class ShellLayer : public Core::Layer
 {
@@ -73,10 +75,7 @@ class ShellLayer : public Core::Layer
     }
 
     /// Whether the Processes tab shows its tree, for tests driving F5 through the whole shell (#1891).
-    [[nodiscard]] bool processesTreeViewForTesting() const noexcept
-    {
-        return m_ProcessesPanel.treeViewEnabled();
-    }
+    [[nodiscard]] bool processesTreeViewForTesting() const noexcept;
 
     /// The Processes tab's panel, for the UI scenarios that check its state after driving it (#2711).
     [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
@@ -93,10 +92,7 @@ class ShellLayer : public Core::Layer
     /// Whether a startup selection is still waiting to take effect: TASKSMACK_TAB's tab not yet shown,
     /// or TASKSMACK_SELECT_PID/_NAME's process not yet seen in a snapshot (#1559). ScreenshotLayer
     /// captures only once it is false (#2827).
-    [[nodiscard]] bool startupSelectionPending() const noexcept
-    {
-        return m_StartupTab.pending() || m_ProcessesPanel.startupSelectionPending();
-    }
+    [[nodiscard]] bool startupSelectionPending() const noexcept;
 
     // TASKSMACK_DEMO's requests (#2827, DemoLayer), through the paths the startup hooks and the UI take.
     // None of them is counted by startupSelectionPending(): the screenshot hook's settle is for startup.

@@ -10,22 +10,9 @@
 // the app runs: hand-copied, it had drifted (no service model, crash history, selection count,
 // background demand or shared icon view).
 
-#include "Domain/ProcessSnapshot.h"
-#include "Panels/ConnectionsPanel.h"
-#include "Panels/PriorityChangesInFlight.h"
-#include "Panels/ProcessDetailsPanel.h"
-#include "Panels/ProcessesPanel.h"
-#include "Panels/ServicesPanel.h"
-#include "Panels/StartupPanel.h"
-#include "Panels/SystemInfoPanel.h"
-#include "Panels/SystemMetricsPanel.h"
-#include "Panels/UserSessionsFeed.h"
-#include "Panels/UsersPanel.h"
-
 #include <array>
-#include <cstdint>
 #include <functional>
-#include <vector>
+#include <memory>
 
 namespace Core
 {
@@ -35,58 +22,41 @@ class Event;
 namespace App
 {
 
+class ConnectionsPanel;
 class Panel;
+class ProcessDetailsPanel;
+class ProcessesPanel;
+class ServicesPanel;
+class StartupPanel;
+class SystemInfoPanel;
+class SystemMetricsPanel;
+class UsersPanel;
 
+// The panels live in ShellPanels.cpp (Impl), so this header pulls no panel header into the shell's includers: their
+// translation units cost about 0.3 GB to compile, not 1.1-1.3 GB (#3717).
 class ShellPanels
 {
   public:
     /// The panels, with one icon cache for every tab's program icons (#1800): the Processes panel's.
     ShellPanels();
-    ~ShellPanels() = default;
+    ~ShellPanels();
 
     ShellPanels(const ShellPanels&) = delete;
     ShellPanels& operator=(const ShellPanels&) = delete;
     ShellPanels(ShellPanels&&) = delete;
     ShellPanels& operator=(ShellPanels&&) = delete;
 
-    [[nodiscard]] ProcessesPanel& processes() noexcept
-    {
-        return m_Processes;
-    }
-    [[nodiscard]] ProcessDetailsPanel& processDetails() noexcept
-    {
-        return m_ProcessDetails;
-    }
-    [[nodiscard]] SystemMetricsPanel& systemMetrics() noexcept
-    {
-        return m_SystemMetrics;
-    }
-    [[nodiscard]] ServicesPanel& services() noexcept
-    {
-        return m_Services;
-    }
-    [[nodiscard]] StartupPanel& startup() noexcept
-    {
-        return m_Startup;
-    }
-    [[nodiscard]] ConnectionsPanel& connections() noexcept
-    {
-        return m_Connections;
-    }
-    [[nodiscard]] UsersPanel& users() noexcept
-    {
-        return m_Users;
-    }
-    [[nodiscard]] SystemInfoPanel& systemInfo() noexcept
-    {
-        return m_SystemInfo;
-    }
+    [[nodiscard]] ProcessesPanel& processes() noexcept;
+    [[nodiscard]] ProcessDetailsPanel& processDetails() noexcept;
+    [[nodiscard]] SystemMetricsPanel& systemMetrics() noexcept;
+    [[nodiscard]] ServicesPanel& services() noexcept;
+    [[nodiscard]] StartupPanel& startup() noexcept;
+    [[nodiscard]] ConnectionsPanel& connections() noexcept;
+    [[nodiscard]] UsersPanel& users() noexcept;
+    [[nodiscard]] SystemInfoPanel& systemInfo() noexcept;
 
     /// In tab order: System, Processes, Process Details, Services, Startup, Connections, Users, System Information.
-    [[nodiscard]] std::array<Panel*, 8> inTabOrder() noexcept
-    {
-        return {&m_SystemMetrics, &m_Processes, &m_ProcessDetails, &m_Services, &m_Startup, &m_Connections, &m_Users, &m_SystemInfo};
-    }
+    [[nodiscard]] std::array<Panel*, 8> inTabOrder() noexcept;
 
     /// Before the panels attach: the recent crashes and hangs the System tab's reads fill and Process
     /// Details' Recent crashes line reads (#1675), so the System tab's model is built with them. Not in
@@ -115,31 +85,8 @@ class ShellPanels
     static void raiseStartupSettings(const std::function<void(Core::Event&)>& raise);
 
   private:
-    // The signed-in sessions, before every panel that shows them, so it outlives them (#3377): the Users tab
-    // and the Processes table's Group: User. The Users tab starts and stops it, at its attach and detach.
-    UserSessionsFeed m_UserSessions;
-    // The processes a priority change is asked about or running for, in the Processes table or Process
-    // Details (#3467): each panel holds its own priority controls for a process the other has one for.
-    // Before both panels, so it outlives them.
-    PriorityChangesInFlight m_PriorityChanges;
-    // The Processes panel first: its icon view outlives the Services and Startup tabs that draw with it.
-    ProcessesPanel m_Processes;
-    ProcessDetailsPanel m_ProcessDetails;
-    SystemMetricsPanel m_SystemMetrics;
-    ServicesPanel m_Services;
-    StartupPanel m_Startup;
-    ConnectionsPanel m_Connections;     // #3066
-    UsersPanel m_Users{m_UserSessions}; // #3076
-    SystemInfoPanel m_SystemInfo;
-
-    // The PID the process model watches for Process Details, and the scratch buffer its new samples
-    // are collected into each update, reused to avoid allocating.
-    std::int32_t m_WatchedPid = -1;
-    std::vector<Domain::ProcessSample> m_PendingSamples;
-
-    // GPU debug logging throttling.
-    std::int32_t m_LastGpuLogPid = -1;
-    bool m_LastGpuLogHasData = false;
+    struct Impl;
+    std::unique_ptr<Impl> m_Impl;
 };
 
 } // namespace App
