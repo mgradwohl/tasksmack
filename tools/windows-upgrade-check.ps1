@@ -18,7 +18,8 @@
        Recorded: the version, the install folder and its files, the Uninstall key's values, App Paths.
     2. The user's config: the config.toml v0.8.0 saved (tests/App/fixtures/config-v0.8.0.toml) goes in
        %APPDATA%\TaskSmack, and the installed previous TaskSmack.exe runs once from it, headless, quitting
-       by itself (TASKSMACK_SCREENSHOT) and saving it in its own format. Start at sign-in is turned on
+       by itself (TASKSMACK_SCREENSHOT) and saving it in its own format, with the settings whose keys haven't
+       changed since v0.8.0 kept (the font size's has; the upgraded build's run checks it). Start at sign-in is turned on
        for that copy as TaskSmack writes it (HKCU Run value TaskSmack: "<exe>" --minimized), and a
        sentinel value goes into the Uninstall key, which only the old uninstaller deletes.
     3. This run's installer, with /S, over it.
@@ -85,16 +86,23 @@ $AppKeys = @('HKLM:\SOFTWARE\TaskSmack Contributors\TaskSmack', 'HKLM:\SOFTWARE\
 $RunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $SentinelName = 'TaskSmackCiUpgradeSentinel'
 # The settings v0.8.0's config.toml changed from the defaults: section, key, and the value as TaskSmack
-# writes it. Keep in step with tools/release-smoke-check.ps1's list.
-$FixtureSettings = @(
-    @('theme', 'id', "'dracula'"),
-    @('font', 'point_size', '10'),
-    @('sampling', 'interval_ms', '2000'),
-    @('sampling', 'history_max_seconds', '600'),
-    @('ui', 'show_privilege_notice', 'false'),
-    @('process_columns', 'threads', 'true'),
-    @('process_columns', 'user', 'false')
-)
+# writes it today. Keep in step with tools/release-smoke-check.ps1's list. With -Stable, only the ones whose
+# key every release since v0.8.0 writes the same way, which the previous release's own save must keep. The
+# font size isn't one: v0.10.0 writes [font] size = 'large', and point_size came later (#3501), so it is
+# checked only once the upgraded build has migrated the file.
+function Get-FixtureSettings([switch]$Stable) {
+    $settings = @(
+        @('theme', 'id', "'dracula'"),
+        @('font', 'point_size', '10'),
+        @('sampling', 'interval_ms', '2000'),
+        @('sampling', 'history_max_seconds', '600'),
+        @('ui', 'show_privilege_notice', 'false'),
+        @('process_columns', 'threads', 'true'),
+        @('process_columns', 'user', 'false')
+    )
+    if ($Stable) { $settings = @($settings | Where-Object { $_[0] -ne 'font' }) }
+    return , $settings
+}
 
 # The version in an installer's name: TaskSmack-<version>-win64.exe or -windows-arm64.exe, else $null.
 function Get-InstallerVersion([string]$Path) {
@@ -338,7 +346,7 @@ try {
     $configFile = Join-Path $configDir 'config.toml'
     Copy-Item -LiteralPath $Fixture -Destination $configFile
     $problems = Invoke-HeadlessLaunch -Exe $exe -Label "previous-$previousVersion" -LogDir $logDir
-    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) $FixtureSettings }
+    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings -Stable) }
     Add-Result "Run $previousVersion once from v0.8.0's config" $problems "it quit by itself and saved $configFile"
     $configTree = Get-FileTree $configDir
     $runCommand = "`"$exe`" --minimized"
@@ -396,7 +404,7 @@ try {
 
     # 5. The upgraded TaskSmack, from the user's config.
     $problems = Invoke-HeadlessLaunch -Exe $exe -Label "upgraded-$newVersion" -LogDir $logDir -Strict
-    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) $FixtureSettings }
+    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings) }
     Add-Result "Start the upgraded $newVersion" $problems 'it started headless from the user config, quit by itself with exit code 0 and kept v0.8.0''s settings'
 
     # 6. The uninstall. NSIS's uninstaller copies itself to %TEMP% and runs from there, so the end state is polled for.
@@ -418,7 +426,7 @@ try {
         # The user's config outlives the uninstall (cmake/CPackProjectConfig.cmake.in, "The uninstall mark").
         if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) { $left += "$configFile, the user's config, is gone" }
         else {
-            $kept = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) $FixtureSettings
+            $kept = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings)
             if ($kept.Count) { $left += "$configFile lost settings: $($kept -join '; ')" }
         }
         if (-not $left.Count) { break }

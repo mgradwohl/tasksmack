@@ -30,7 +30,7 @@ function Get-ScriptFunctions([string]$Script, [string[]]$Names) {
 foreach ($definition in @(Get-ScriptFunctions 'fetch-previous-windows-release.ps1' @('ConvertTo-ReleaseVersion', 'Select-PreviousRelease',
         'Get-WindowsInstallerNames', 'Test-AgainstSha256Sums', 'Get-CosignIdentity')) +
     @(Get-ScriptFunctions 'windows-upgrade-check.ps1' @('Get-InstallerVersion', 'Get-FileTree', 'Compare-InstalledTree',
-            'Get-WingetEntry', 'Get-TomlValue', 'Test-FixtureConfig'))) {
+            'Get-WingetEntry', 'Get-TomlValue', 'Test-FixtureConfig', 'Get-FixtureSettings'))) {
     . $definition
 }
 
@@ -155,4 +155,16 @@ $saved[6] = 'point_size = 12'
 $problems = Test-FixtureConfig $saved $settings
 Assert-True ($problems.Count -eq 1 -and $problems[0] -match "^\[font\] point_size is 12, not v0\.8\.0's 10$") "A lost setting wasn't named: $($problems -join '; ')"
 
+# The previous release's own save is held to the keys unchanged since v0.8.0 (#3757: v0.10.0 writes
+# [font] size = 'large', not point_size); the upgraded build's save is held to all of them.
+$full = Get-FixtureSettings
+$stable = Get-FixtureSettings -Stable
+Assert-True ($full.Count -eq 7 -and @($full | Where-Object { $_[0] -eq 'font' -and $_[1] -eq 'point_size' }).Count -eq 1) "The full list should have 7 settings with [font] point_size, got $($full.Count)"
+Assert-True ($stable.Count -eq 6 -and @($stable | Where-Object { $_[0] -eq 'font' }).Count -eq 0) "The stable list should be the other 6, got $(($stable | ForEach-Object { "$($_[0]).$($_[1])" }) -join ', ')"
+$v0100 = @('config_version = 2', '', '[font]', "size = 'large'", '', '[process_columns]', 'threads = true', 'user = false', '',
+    '[sampling]', 'history_max_seconds = 600', 'interval_ms = 2000', '', '[theme]', "id = 'dracula'", '', '[ui]', 'show_privilege_notice = false')
+$problems = Test-FixtureConfig $v0100 $stable
+Assert-True ($problems.Count -eq 0) "v0.10.0's save should pass the stable list: $($problems -join '; ')"
+$problems = Test-FixtureConfig $v0100 $full
+Assert-True ($problems.Count -eq 1 -and $problems[0] -match '^\[font\] point_size is missing') "v0.10.0's save should fail the full list on point_size alone: $($problems -join '; ')"
 Write-Host 'windows-upgrade-check tests passed'
