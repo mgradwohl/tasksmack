@@ -7,7 +7,9 @@
 #include "Core/FramePacing.h"
 #include "Core/FrameWake.h"
 #include "Core/GraphicsReset.h"
-#include "Core/IdleWaitTimer.h"
+#ifdef _WIN32
+#include "Core/IdleWaitTimer.h" // Only Windows paces its idle waits with it (#3712)
+#endif
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
