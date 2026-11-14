@@ -1160,6 +1160,52 @@ TEST_F(WindowsProcessProbeSeamTest, TheSameProcessIsReadAgainOnceItsTtlsRunOut)
     EXPECT_EQ(fake().openProcessCalls, 2);
 }
 
+// #3704: a refusal is remembered for OPEN_REFUSED_RETRY_SECONDS, past every light and heavy TTL, not one light TTL.
+TEST_F(WindowsProcessProbeSeamTest, AProcessThatRefusedOpenProcessIsNotOpenedAgainWithinTheRetryWindow)
+{
+    fake().failOpenProcess = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    (void) probe.enumerate();
+    EXPECT_EQ(fake().openProcessCalls, 1);
+
+    // Samples a second apart (the default interval), past the light and heavy TTLs of every RAM tier but within the window.
+    for (int second = 1; second < Domain::Sampling::OPEN_REFUSED_RETRY_SECONDS; ++second)
+    {
+        fake().now += std::chrono::seconds(1);
+        EXPECT_TRUE(find(probe.enumerate()).user.empty());
+    }
+    EXPECT_EQ(fake().openProcessCalls, 1) << "the refusal isn't asked again every sample";
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AProcessThatRefusedOpenProcessIsTriedAgainAfterTheRetryWindow)
+{
+    fake().failOpenProcess = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    (void) probe.enumerate();
+
+    fake().now += std::chrono::seconds(Domain::Sampling::OPEN_REFUSED_RETRY_SECONDS);
+    (void) probe.enumerate();
+    EXPECT_EQ(fake().openProcessCalls, 2) << "refused again: tried once more";
+
+    fake().failOpenProcess = false; // The reason has passed
+    fake().now += std::chrono::seconds(Domain::Sampling::OPEN_REFUSED_RETRY_SECONDS);
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    EXPECT_EQ(fake().openProcessCalls, 3);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AReusedPidOfAProcessThatRefusedOpenProcessIsTriedAtOnce)
+{
+    fake().failOpenProcess = true;
+    WindowsProcessProbe probe(fakeFunctions());
+    (void) probe.enumerate();
+    EXPECT_EQ(fake().openProcessCalls, 1);
+
+    fake().failOpenProcess = false;
+    fake().processes.front().createTime += 1; // The PID now belongs to a new process
+    EXPECT_EQ(find(probe.enumerate()).user, "alice");
+    EXPECT_EQ(fake().openProcessCalls, 2);
+}
+
 // --- Account names (#2982) ---------------------------------------------------------------------
 
 /// The default fake process, under another PID.
