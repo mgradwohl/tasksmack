@@ -29,8 +29,9 @@
 
 #include "Platform/Windows/WindowsNtQuery.h"
 
-// MIB_IF_TABLE2 (netioapi.h), declared here so this header needn't pull in winsock2.h and iphlpapi.h.
+// MIB_IF_TABLE2 and MIB_IF_ROW2 (netioapi.h), declared here so this header needn't pull in winsock2.h and iphlpapi.h.
 struct _MIB_IF_TABLE2; // NOLINT(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,readability-identifier-naming) - the SDK's tag
+struct _MIB_IF_ROW2;   // NOLINT(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,readability-identifier-naming) - the SDK's tag
 
 namespace Platform
 {
@@ -99,9 +100,14 @@ struct WindowsSystemProbeFunctions
 
     struct Network
     {
-        /// GetIfTable2, and FreeMibTable, which frees the table it hands out.
-        DWORD(WINAPI* getIfTable2)(_MIB_IF_TABLE2** table) = nullptr;
+        /// The interface list: GetIfTable2Ex(MibIfTableNormalWithoutStatistics), every row GetIfTable2
+        /// lists with its counters left zero (#3713). Asking for the counters made the kernel query each
+        /// NDIS filter-module row's driver, a context switch apiece, for rows the probe then skips.
+        DWORD(WINAPI* getIfTableWithoutStatistics)(_MIB_IF_TABLE2** table) = nullptr;
+        /// FreeMibTable, which frees the table getIfTableWithoutStatistics hands out.
         void(WINAPI* freeMibTable)(PVOID memory) = nullptr;
+        /// GetIfEntry2: one interface's row with its counters, by the InterfaceLuid set on @p row (#3713).
+        DWORD(WINAPI* getIfEntry2)(_MIB_IF_ROW2* row) = nullptr;
         /// The PnP device instance id of the adapter behind an interface, from the registry; empty when the
         /// interface has none (Teredo, 6to4) or it can't be read (#1284).
         std::wstring (*readAdapterDeviceInstanceId)(const GUID& interfaceGuid) = nullptr;
@@ -122,7 +128,8 @@ struct SystemReadTiming
     /// "cpu" (GetSystemTimes and the per-core NT query), "cpu-details" (the topology re-read, rare),
     /// "memory" (GlobalMemoryStatusEx, GetPerformanceInfo, the page files, the process list for
     /// compressed memory and the NUMA nodes), "uptime", "pdh-freq"
-    /// (the PDH collect) or "ifTable" (GetIfTable2 and the device lookups); empty before the first read().
+    /// (the PDH collect) or "ifTable" (the interface list when due, each counted interface's GetIfEntry2 and
+    /// the device lookups); empty before the first read().
     std::string_view slowestSubRead;
     std::chrono::steady_clock::duration slowest{};
     std::chrono::steady_clock::duration total{};
@@ -226,7 +233,18 @@ class WindowsSystemProbe : public ISystemProbe
     /// buffer size) follows every non-empty sample.
     void refreshCpuDetailsIfProcessorsChanged(std::span<const CpuCounters> perCore);
     void readCpuFreq(SystemCounters& counters);
+    /// The network interfaces (#3713): each counted interface's row read with GetIfEntry2, from the list
+    /// listNetworkInterfaces() last made. The list is made again every NETWORK_INTERFACE_RESCAN_INTERVAL_SECONDS,
+    /// and at once in a pass whose read finds a listed interface gone or its status changed.
     void readNetworkCounters(SystemCounters& counters);
+    /// Lists the interfaces without their counters and keeps the counted ones (isCountedNetworkRow()) in
+    /// m_CountedInterfaces, dropping every cached device presence when the interface set or a status
+    /// changed (#2731). False when the list can't be read: m_CountedInterfaces is then empty and the next
+    /// pass lists again.
+    [[nodiscard]] bool listNetworkInterfaces(std::chrono::steady_clock::time_point now);
+    /// GetIfEntry2 for each of m_CountedInterfaces into m_InterfaceRows, a row whose read failed left with
+    /// a zero LUID. False when one failed or reported another status than the list did: the list is stale.
+    [[nodiscard]] bool readCountedInterfaceRows();
     /// The interface's cache entry, its device instance id read from the registry when due (#1284).
     [[nodiscard]] AdapterDevice&
     adapterDevice(std::uint64_t interfaceLuid, const GUID& interfaceGuid, std::chrono::steady_clock::time_point now);
@@ -247,11 +265,20 @@ class WindowsSystemProbe : public ISystemProbe
 
     // The adapter behind each network interface, by interface LUID (AdapterDevice). Sampler thread only.
     std::unordered_map<std::uint64_t, AdapterDevice> m_AdapterDevices;
-    // The interfaces and statuses GetIfTable2 listed last pass, sorted, and the scratch this pass's are
+    // The interfaces and statuses the last listing found, sorted, and the scratch this pass's are
     // collected in (networkInterfacesChanged() swaps them, so neither allocates once grown). Sampler
     // thread only.
     std::vector<NetworkInterfaceKey> m_InterfaceKeys;
     std::vector<NetworkInterfaceKey> m_InterfaceKeysScratch;
+    // The counted interfaces the last listing found, in its order, with the status it gave each (#3713),
+    // and each one's row as this pass read it (GetIfEntry2), kept so neither allocates once grown. Sampler
+    // thread only.
+    std::vector<NetworkInterfaceKey> m_CountedInterfaces;
+    std::vector<_MIB_IF_ROW2> m_InterfaceRows;
+    // When the interfaces were last listed; m_InterfacesListed is false before the first listing and after
+    // a failed one (#3713). Sampler thread only.
+    std::chrono::steady_clock::time_point m_InterfacesListedAt;
+    bool m_InterfacesListed = false;
     // The process list readMemoryCompression() reads (#3363): the whole SystemProcessInformation snapshot
     // when it searches, else the Memory Compression process's session's (#3483). Kept between samples so
     // it isn't allocated again once grown. Sampler thread only.
