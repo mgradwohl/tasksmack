@@ -12,6 +12,7 @@
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/Format.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 
 #include <algorithm>
@@ -53,14 +54,22 @@ inline constexpr std::size_t PROCESS_NPU_NOW_BAR_COLUMNS = 2;
 /// "412.0 MB (1.3% of RAM)": the bytes the Memory chart plots and the share of RAM the Processes
 /// table shows, from @p percentPerByte (ProcessSmoothedUsage::memoryPercentPerByte). N/A for a gap
 /// point (#1098). The share is held to [0, 100].
-[[nodiscard]] inline std::string formatBytesWithRamShare(double bytes, double percentPerByte)
+[[nodiscard]] inline UI::InlineText formatBytesWithRamShareText(double bytes, double percentPerByte)
 {
     if (!std::isfinite(bytes))
     {
         return "N/A"; // a gap point (#1098)
     }
-    return std::format(
+    // Held in place: the Memory chart's Used and Shared bars show it every frame, and as a std::string
+    // it was longer than the small-string buffer, so it cost a heap allocation per bar per frame (#843).
+    return UI::InlineText::format(
         "{} ({} of RAM)", UI::Format::formatBytes(bytes), UI::Format::percentOneDecimal(std::clamp(bytes * percentPerByte, 0.0, 100.0)));
+}
+
+/// formatBytesWithRamShareText() as a std::string, for a hovered sample's tooltip row.
+[[nodiscard]] inline std::string formatBytesWithRamShare(double bytes, double percentPerByte)
+{
+    return std::string(formatBytesWithRamShareText(bytes, percentPerByte).view());
 }
 
 /// A smoothed I/O or network rate as its NowBar shows it, in the unit that suits it, or N/A when the
