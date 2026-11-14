@@ -16,6 +16,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <memory>
 #include <optional>
 #include <span>
@@ -25,6 +26,16 @@
 #ifdef _WIN32
 #include "Platform/Windows/WindowsCommitPaging.h"
 #include "Platform/Windows/WindowsNtQuery.h"
+#include "Platform/Windows/WindowsProcAddress.h"
+#include "Platform/Windows/WindowsSystemProbeMath.h"
+
+// clang-format off
+#include <winsock2.h> // Before iphlpapi.h, which needs it
+#include <ws2ipdef.h> // MIB_IF_ROW2 and MIB_IF_TABLE2 in netioapi.h
+#include <windows.h>
+#include <winternl.h>
+#include <iphlpapi.h>
+// clang-format on
 #endif
 
 namespace
@@ -108,6 +119,183 @@ static void BM_WindowsMemoryCompression_SessionList(benchmark::State& state)
     }
 }
 BENCHMARK(BM_WindowsMemoryCompression_SessionList)->Unit(benchmark::kMicrosecond);
+
+// The network read's OS calls (#3713). Each sample used to call GetIfTable2, which asks every row for its
+// counters: a context switch per NDIS filter-module row, rows the probe then skips. The probe now lists
+// the interfaces without their counters (every NETWORK_INTERFACE_RESCAN_INTERVAL_SECONDS) and reads each
+// counted row with GetIfEntry2 (each sample). switches_per_call is the benchmark thread's context
+// switches over the timed calls, from its SYSTEM_THREAD_INFORMATION record, per call.
+
+// The calling thread's context switches so far: SYSTEM_THREAD_INFORMATION::Reserved3 is ContextSwitches.
+std::optional<ULONG> currentThreadContextSwitches(std::vector<std::byte>& buffer)
+{
+    const auto written =
+        Platform::WindowsCommitPaging::querySystemInformationInto(Platform::Windows::ntQuerySystemInformation(),
+                                                                  Platform::WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS,
+                                                                  buffer,
+                                                                  Platform::WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES);
+    if (!written.has_value())
+    {
+        return std::nullopt;
+    }
+    const auto processId = static_cast<ULONG_PTR>(GetCurrentProcessId());
+    const auto threadId = static_cast<ULONG_PTR>(GetCurrentThreadId());
+    std::size_t offset = 0;
+    while (offset + sizeof(SYSTEM_PROCESS_INFORMATION) <= *written)
+    {
+        SYSTEM_PROCESS_INFORMATION process{};
+        std::memcpy(&process, buffer.data() + offset, sizeof(process));
+        if (reinterpret_cast<ULONG_PTR>(process.UniqueProcessId) == processId)
+        {
+            for (ULONG i = 0; i < process.NumberOfThreads; ++i)
+            {
+                const std::size_t at = offset + sizeof(SYSTEM_PROCESS_INFORMATION) + (i * sizeof(SYSTEM_THREAD_INFORMATION));
+                if (at + sizeof(SYSTEM_THREAD_INFORMATION) > *written)
+                {
+                    break;
+                }
+                SYSTEM_THREAD_INFORMATION thread{};
+                std::memcpy(&thread, buffer.data() + at, sizeof(thread));
+                if (reinterpret_cast<ULONG_PTR>(thread.ClientId.UniqueThread) == threadId)
+                {
+                    return thread.Reserved3;
+                }
+            }
+            return std::nullopt;
+        }
+        if (process.NextEntryOffset == 0)
+        {
+            break;
+        }
+        offset += process.NextEntryOffset;
+    }
+    return std::nullopt;
+}
+
+// Times @p call per iteration and reports the context switches it made per call. The snapshot that
+// counts them is taken outside the timed region.
+template<typename Call> void runCountingSwitches(benchmark::State& state, Call call)
+{
+    std::vector<std::byte> buffer;
+    const std::optional<ULONG> before = currentThreadContextSwitches(buffer);
+    for (auto _ : state)
+    {
+        call();
+    }
+    const std::optional<ULONG> after = currentThreadContextSwitches(buffer);
+    if (before.has_value() && after.has_value() && state.iterations() > 0)
+    {
+        state.counters["switches_per_call"] = static_cast<double>(*after - *before) / static_cast<double>(state.iterations());
+    }
+}
+
+// GetIfTable2Ex with its level as an integer, as WindowsSystemProbe calls it: the SDK declares
+// MibIfTableNormalWithoutStatistics only above this build's NTDDI_VERSION.
+using GetIfTable2ExFn = DWORD(WINAPI*)(ULONG, MIB_IF_TABLE2**);
+constexpr ULONG MIB_IF_TABLE_NORMAL_WITHOUT_STATISTICS = 2;
+
+GetIfTable2ExFn getIfTable2Ex()
+{
+    return Platform::Windows::getProcAddress<GetIfTable2ExFn>(GetModuleHandleW(L"iphlpapi.dll"), "GetIfTable2Ex");
+}
+
+// The counted rows' LUIDs, from a list without statistics (as the probe keeps them)
+std::vector<NET_LUID> countedInterfaceLuids()
+{
+    auto* const list = getIfTable2Ex();
+    std::vector<NET_LUID> luids;
+    MIB_IF_TABLE2* table = nullptr;
+    if (list == nullptr || list(MIB_IF_TABLE_NORMAL_WITHOUT_STATISTICS, &table) != NO_ERROR || table == nullptr)
+    {
+        return luids;
+    }
+    const std::span<const MIB_IF_ROW2> rows(static_cast<const MIB_IF_ROW2*>(table->Table), table->NumEntries);
+    for (const MIB_IF_ROW2& row : rows)
+    {
+        if (Platform::isCountedNetworkRow(row.Type, row.InterfaceAndOperStatusFlags.FilterInterface != 0))
+        {
+            luids.push_back(row.InterfaceLuid);
+        }
+    }
+    FreeMibTable(table);
+    return luids;
+}
+
+// Before #3713, each sample: every row with its counters
+static void BM_WindowsNetwork_GetIfTable2(benchmark::State& state)
+{
+    runCountingSwitches(state,
+                        []
+                        {
+                            MIB_IF_TABLE2* table = nullptr;
+                            if (GetIfTable2(&table) == NO_ERROR && table != nullptr)
+                            {
+                                benchmark::DoNotOptimize(table->NumEntries);
+                                FreeMibTable(table);
+                            }
+                        });
+}
+BENCHMARK(BM_WindowsNetwork_GetIfTable2)->Unit(benchmark::kMicrosecond);
+
+// After, at the rescan: every row without its counters
+static void BM_WindowsNetwork_ListWithoutStatistics(benchmark::State& state)
+{
+    auto* const list = getIfTable2Ex();
+    if (list == nullptr)
+    {
+        state.SkipWithError("no GetIfTable2Ex");
+        return;
+    }
+    runCountingSwitches(state,
+                        [list]
+                        {
+                            MIB_IF_TABLE2* table = nullptr;
+                            if (list(MIB_IF_TABLE_NORMAL_WITHOUT_STATISTICS, &table) == NO_ERROR && table != nullptr)
+                            {
+                                benchmark::DoNotOptimize(table->NumEntries);
+                                FreeMibTable(table);
+                            }
+                        });
+}
+BENCHMARK(BM_WindowsNetwork_ListWithoutStatistics)->Unit(benchmark::kMicrosecond);
+
+// After, each sample: GetIfEntry2 on each counted row
+static void BM_WindowsNetwork_CountedEntries(benchmark::State& state)
+{
+    const std::vector<NET_LUID> luids = countedInterfaceLuids();
+    runCountingSwitches(state,
+                        [&luids]
+                        {
+                            for (const NET_LUID& luid : luids)
+                            {
+                                MIB_IF_ROW2 row{}; // NOLINT(bugprone-invalid-enum-default-initialization) - zeroed, as GetIfEntry2 expects
+                                row.InterfaceLuid = luid;
+                                if (GetIfEntry2(&row) == NO_ERROR)
+                                {
+                                    benchmark::DoNotOptimize(row.InOctets);
+                                }
+                            }
+                        });
+    state.counters["rows"] = static_cast<double>(luids.size());
+}
+BENCHMARK(BM_WindowsNetwork_CountedEntries)->Unit(benchmark::kMicrosecond);
+
+// BM_SystemProbe_Sample with the context switches a whole read() makes (#3713): every switch is a wake-up
+// of the system sampler, which reads once a second.
+static void BM_WindowsSystemProbe_SampleSwitches(benchmark::State& state)
+{
+    auto probe = Platform::makeSystemProbe();
+    // Untimed: the seed, and the read that opens PDH's counter (#3154)
+    (void) probe->read();
+    (void) probe->read();
+    runCountingSwitches(state,
+                        [&probe]
+                        {
+                            auto counters = probe->read();
+                            benchmark::DoNotOptimize(counters.cpuTotal.user);
+                        });
+}
+BENCHMARK(BM_WindowsSystemProbe_SampleSwitches)->Unit(benchmark::kMicrosecond);
 #endif
 
 // Benchmark SystemModel refresh (full pipeline including delta computation)
