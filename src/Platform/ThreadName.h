@@ -48,6 +48,8 @@ inline constexpr std::string_view THREADS_READ_THREAD_NAME = "ts-thr-read";
 /// The worker that runs one Process Details Open files read at a time (#183).
 inline constexpr std::string_view OPEN_FILES_READ_THREAD_NAME = "ts-files-read";
 inline constexpr std::string_view SECURITY_READ_THREAD_NAME = "ts-sec-read";
+/// The process probe's app-name lookups (#3718): the shell's Apps folder names each AppUserModelID once.
+inline constexpr std::string_view APP_NAME_THREAD_NAME = "ts-app-names";
 /// The worker that runs one Process Details I/O priority read at a time (#2734).
 inline constexpr std::string_view IO_PRIORITY_READ_THREAD_NAME = "ts-ioprio-read";
 /// The worker that runs one Process Details Environment read at a time (#2116).

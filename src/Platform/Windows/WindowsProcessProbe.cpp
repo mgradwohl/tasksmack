@@ -28,6 +28,7 @@
 #include <windows.h>
 #include <iphlpapi.h>
 #include <mstcpip.h>
+#include <objbase.h>
 #include <sddl.h>
 #include <winternl.h>
 #include <winver.h>
@@ -82,11 +83,36 @@ using ProcessFunctions = WindowsProcessProbeFunctions::Process;
 using SystemFunctions = WindowsProcessProbeFunctions::System;
 using TokenFunctions = WindowsProcessProbeFunctions::Token;
 
-/// How many AppUserModelIDs a sample asks the Start menu to name (#3457): a first sample with many apps
-/// spreads its lookups over the next few samples rather than holding one up.
-constexpr std::size_t APP_NAME_LOOKUPS_PER_SAMPLE = 4;
-/// The most AppUserModelID names kept; past it the cache starts again (a machine runs tens of apps).
+/// The most AppUserModelID names kept; past it the answers already taken are forgotten (a machine runs tens
+/// of apps), and the most waiting to be looked up at once (#3718).
 constexpr std::size_t APP_NAME_CACHE_MAX = 512;
+constexpr std::size_t APP_NAME_QUEUE_MAX = 64;
+
+/// The app-name worker's thread for each pass over its queue (#3718): COM, which SHCreateItemFromParsingName
+/// needs on the calling thread, in the multithreaded apartment as the process sampler's own (#2731); and
+/// background mode, as the signature worker's (#3070), so the shell's reads yield to everything else.
+// NOLINTBEGIN(cppcoreguidelines-avoid-non-const-global-variables) - each thread's own: what its pass entered, to leave
+thread_local bool t_AppNameComEntered = false;
+thread_local bool t_AppNameBackground = false;
+// NOLINTEND(cppcoreguidelines-avoid-non-const-global-variables)
+
+void enterAppNameWork()
+{
+    t_AppNameComEntered = SUCCEEDED(CoInitializeEx(nullptr, COINIT_MULTITHREADED));
+    t_AppNameBackground = SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_BEGIN) != FALSE;
+}
+
+void leaveAppNameWork()
+{
+    if (std::exchange(t_AppNameBackground, false))
+    {
+        static_cast<void>(SetThreadPriority(GetCurrentThread(), THREAD_MODE_BACKGROUND_END));
+    }
+    if (std::exchange(t_AppNameComEntered, false))
+    {
+        CoUninitialize();
+    }
+}
 
 /// The bytes of the SID @p sid points at, when it lies whole inside @p buffer (the TokenUser read it
 /// came in) and is valid; empty otherwise, and the name it gets is then not cached.
@@ -1083,6 +1109,20 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
         m_Signatures = std::make_unique<WindowsSignature::SignatureWorker>(*functions.signature, functions.signatureWorker);
     }
 
+    // The app-name worker (#3718); its thread starts with the first name asked for.
+    if (functions.app.appDisplayName != nullptr)
+    {
+        m_AppNameLookup = std::make_unique<Domain::KeyedLookup<std::string>>(
+            Domain::KeyedLookup<std::string>::Options{
+                .threadName = APP_NAME_THREAD_NAME,
+                .maxQueued = APP_NAME_QUEUE_MAX,
+                .maxEntries = APP_NAME_CACHE_MAX,
+                .beginDrain = &enterAppNameWork,
+                .endDrain = &leaveAppNameWork,
+            },
+            [displayName = functions.app.appDisplayName](const std::string& appUserModelId) { return displayName(appUserModelId); });
+    }
+
     // The EMI energy meters behind per-process power (#2587), enumerated and opened once, on their own
     // one-shot worker: the SetupAPI enumeration can stall on a slow ACPI call, which must hold up
     // neither the thread building this probe nor a sample. Last in the constructor: the worker reads
@@ -1184,13 +1224,13 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     }
     WindowsProcessDetailReads::hungWindowProcesses(m_Windows, m_HungWindowPids);
 
-    // The app each process belongs to (#3457): a few names a sample, and one window walk for the unpackaged
-    // processes last sample listed whose windows are due to be looked at for an AppUserModelID. None is named
-    // on the first sample (#3714): it is the process sampler's seed, which the Processes table's first rows
-    // wait on, and the first name asked of the shell's Apps folder loads it (about 100 ms, most of the seed).
-    // Those names come with the next sample, as a window's ID does.
+    // The app each process belongs to (#3457): its name looked up off this thread (#3718), and the sample's window
+    // walk read for the unpackaged processes last sample listed whose windows are due to be looked at for an
+    // AppUserModelID. No name is asked for on the first sample (#3714): it is the process sampler's seed, which the
+    // Processes table's first rows wait on, and the first name asked of the shell's Apps folder loads it (about
+    // 100 ms of CPU), which then waits until the startup is done. Names come from the next sample on.
     const bool firstSample = m_DetailCacheGeneration == 1; // Counted at the top of this call
-    m_AppNameLookupsLeft = firstSample ? 0 : APP_NAME_LOOKUPS_PER_SAMPLE;
+    m_AskAppNames = !firstSample;
     lookForWindowAppIds(m_Fns.system.steadyNow());
 
     for (std::size_t offset = 0; (offset + sizeof(SystemProcessInfo)) <= snapshotBytes;)
@@ -1575,26 +1615,20 @@ void WindowsProcessProbe::updateAppIdentity(DetailCacheEntry& cache, ProcessCoun
     }
     if (!cache.appNameRead && !cache.appUserModelId.empty())
     {
-        if (const auto known = m_AppNames.find(cache.appUserModelId); known != m_AppNames.end())
-        {
-            cache.appName = known->second;
-            cache.appNameRead = true;
-        }
-        else if (m_Fns.app.appDisplayName == nullptr)
+        if (m_AppNameLookup == nullptr)
         {
             cache.appNameRead = true; // Nothing names it
         }
-        else if (m_AppNameLookupsLeft > 0)
+        else if (m_AskAppNames)
         {
-            --m_AppNameLookupsLeft;
-            if (m_AppNames.size() >= APP_NAME_CACHE_MAX)
+            // Looked up on the app-name worker, once per ID however many processes share it; taken on a later
+            // sample (#3718). Never on this thread.
+            if (std::optional<std::string> name = m_AppNameLookup->find(cache.appUserModelId))
             {
-                m_AppNames.clear();
+                cache.appName = std::move(*name);
+                cache.appNameRead = true;
             }
-            cache.appName = m_AppNames.emplace(cache.appUserModelId, m_Fns.app.appDisplayName(cache.appUserModelId)).first->second;
-            cache.appNameRead = true;
         }
-        // Else this sample's lookups are spent: named on a later one.
     }
     counters.packageFamily = cache.packageFamily;
     counters.appUserModelId = cache.appUserModelId;

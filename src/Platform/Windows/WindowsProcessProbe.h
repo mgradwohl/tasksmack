@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Domain/KeyedLookup.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IUdpTrafficCollector.h"
@@ -442,10 +443,10 @@ class WindowsProcessProbe : public IProcessProbe
     std::vector<Windows::TopLevelWindow> m_Windows; // This sample's visible top-level windows (#3705); reused
     std::vector<std::uint32_t> m_HungWindowPids;    // This sample's processes with a hung window (#3084), sorted; reused
     AccountNameCache m_AccountNames;                // Owners' account names by SID, for the heavy reads (#2982)
-    // The Start menu's names by AppUserModelID (#3457), empty for one it doesn't name; cleared when it grows
-    // past a cap. m_AppNameLookupsLeft is this sample's budget of lookups not yet in it.
-    std::unordered_map<std::string, std::string> m_AppNames;
-    std::size_t m_AppNameLookupsLeft = 0;
+    // The Start menu's names by AppUserModelID (#3457), looked up on a worker of their own (#3718); null without
+    // the call. m_AskAppNames is false on the first sample, which asks for none (#3714).
+    std::unique_ptr<Domain::KeyedLookup<std::string>> m_AppNameLookup;
+    bool m_AskAppNames = false;
     std::vector<std::uint32_t> m_WindowAppIdPids;     // lookForWindowAppIds()' processes; reused
     std::vector<Windows::WindowAppId> m_WindowAppIds; // and what their windows set; reused
 
