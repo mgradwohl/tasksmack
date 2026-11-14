@@ -64,7 +64,7 @@ inline constexpr int64_t LINK_SPEED_CACHE_TTL_SECONDS = 60;
 // How long WindowsSystemProbe trusts what it last learned about a down network interface's adapter
 // device (seconds) (#1284, #2731): the registry's device instance id when the read came back empty,
 // and whether the device is still in the system (CM_Locate_DevNodeW, a PnP call). The presence is
-// dropped sooner when GetIfTable2's interface set or an interface's status changes; this is the
+// dropped sooner when the interface list's set or an interface's status changes; this is the
 // backstop, so a device that comes or goes with no table change is still noticed. Hyper-V and WSL add
 // several down vEthernet rows, so without the cache that was several PnP calls per pass.
 inline constexpr int NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS = 30;
@@ -260,6 +260,13 @@ inline constexpr int ZRAM_RESCAN_INTERVAL_SECONDS = 10;
 // layout only changes on CPU or memory hotplug. Each sample reads the known nodes' meminfo; only the
 // listing and the CPU lists wait for this.
 inline constexpr int NUMA_RESCAN_INTERVAL_SECONDS = 10;
+
+// Network interface re-enumeration interval (seconds) - fixed, not configurable (#3713)
+// How often the Windows system probe lists the network interfaces (GetIfTable2Ex, without their
+// counters), so an added one -- a dock's adapter, a VPN's tunnel -- is found. Each sample reads the
+// listed counted interfaces' counters (GetIfEntry2); one gone, or one whose status changed, lists them
+// again in that sample. The counters on every row cost a context switch per NDIS filter row (#3713).
+inline constexpr int NETWORK_INTERFACE_RESCAN_INTERVAL_SECONDS = 10;
 
 // Memory Compression process search interval (seconds) - fixed, not configurable (#3483)
 // While the Windows system probe knows no "Memory Compression" process (compression is off, or the last
