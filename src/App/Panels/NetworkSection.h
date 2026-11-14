@@ -77,9 +77,13 @@ struct RenderContext
     // Models (non-owning pointers)
     const Domain::SystemPublication* systemPublication = nullptr;
     const Domain::StoragePublication* storagePublication = nullptr;
-    // Generation of the histories charted (UI::Widgets::nextChartDataGeneration()), so the charts keep
-    // their reduced points until it changes (HistoryChartConfig::dataGeneration, #1139). 0: none.
+    // Generation of the network histories charted, those of `systemPublication`
+    // (UI::Widgets::nextChartDataGeneration()), so the charts keep their reduced points until it changes
+    // (HistoryChartConfig::dataGeneration, #1139). 0: none.
     std::uint64_t chartDataGeneration = 0;
+    // The same for the disk histories, those of `storagePublication`: each source has its own, so a
+    // storage publication leaves the network charts' caches alone and a system one the disk charts' (#843).
+    std::uint64_t storageChartDataGeneration = 0;
     bool hasNetworkCounters = false;
 
     // History configuration
