@@ -899,6 +899,17 @@ bool UserConfig::writeSettings(const UserSettings& settings)
 #ifndef _WIN32
     const std::optional<FileOwner> newFileOwner =
         ownerForNewFiles(configDir, m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid());
+    // Run as root for a user (#3759), a link of theirs on the way to the config folder could send this write, and the
+    // folder's creation, anywhere they chose: nothing is written through one.
+    if (Core::ConfigDirOverride::handedOver())
+    {
+        if (const std::optional<std::filesystem::path> link = NewFileOwner::userOwnedLinkOnPath(configDir); link.has_value())
+        {
+            spdlog::error("Not saving settings: {} is a link of a user's, which TaskSmack run as root doesn't write through",
+                          Core::pathToUtf8(*link));
+            return false;
+        }
+    }
 #endif
     if (!std::filesystem::exists(configDir, ec))
     {

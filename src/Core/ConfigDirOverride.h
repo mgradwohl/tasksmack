@@ -60,8 +60,14 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 /// it first thing, before anything reads active(). Not thread-safe for the same reason as setActiveForTesting().
 void adoptHandedOver(const std::filesystem::path& dir);
 
-/// Whether active() is a directory an elevated restart handed over (adoptHandedOver()): one the less-privileged
-/// side chose, so UserConfig writes through no link in it, and nothing read from it is offered to run elevated.
+/// A TaskSmack run as root for a user (sudo or pkexec, #3580) keeps that user's config directory, the less-privileged
+/// side's, as an elevated restart's handed-over one is (#3759): main.cpp calls this first thing on Linux when
+/// SessionUser::invokingUserHome() names a user, and handedOver() is true from then on. Not thread-safe, as above.
+void markLessPrivilegedFolder();
+
+/// Whether the config directory is the less-privileged side's: one an elevated restart handed over (adoptHandedOver()),
+/// or, run as root for a user, that user's (markLessPrivilegedFolder()). UserConfig then writes through no link in it,
+/// and nothing read from it (a dump folder, recent commands) is offered to run elevated.
 [[nodiscard]] bool handedOver();
 
 /// Whether active() is TASKSMACK_CONFIG_DIR's (a test hook), not a handed-over directory; false when there is

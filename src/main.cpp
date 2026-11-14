@@ -41,6 +41,7 @@
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
 #include "Platform/Linux/RootCapabilities.h"
+#include "Platform/Linux/SessionUser.h"
 
 #include <system_error>
 #endif
@@ -168,6 +169,15 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
 #else
     constexpr bool handoffSession = false;
+#endif
+#ifdef __linux__
+    // Run as root for a user (sudo, pkexec, #3580), the config directory is that user's, the less-privileged side's, as
+    // a handed-over one is on Windows (#3759): UserConfig writes through no link of theirs in it, and the dump folder and
+    // recent commands stored there aren't offered. Before the configuration is first read.
+    if (Platform::SessionUser::invokingUserHome().has_value())
+    {
+        Core::ConfigDirOverride::markLessPrivilegedFolder();
+    }
 #endif
 
     // Load user configuration early so we can apply window geometry before creating the SDL window.

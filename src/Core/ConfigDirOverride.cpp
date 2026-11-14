@@ -53,6 +53,13 @@ bool& handedOverFlag()
     return handed;
 }
 
+/// Whether the config directory is the invoking user's, in a session run as root for them (markLessPrivilegedFolder()).
+bool& lessPrivilegedFlag()
+{
+    static bool lessPrivileged = false;
+    return lessPrivileged;
+}
+
 } // namespace
 
 const std::optional<std::filesystem::path>& active()
@@ -68,9 +75,14 @@ void adoptHandedOver(const std::filesystem::path& dir)
     handedOverFlag() = true;
 }
 
+void markLessPrivilegedFolder()
+{
+    lessPrivilegedFlag() = true;
+}
+
 bool handedOver()
 {
-    return current().has_value() && handedOverFlag();
+    return (current().has_value() && handedOverFlag()) || lessPrivilegedFlag();
 }
 
 bool fromTestHook()
@@ -82,6 +94,7 @@ void setActiveForTesting(std::optional<std::filesystem::path> dir)
 {
     current() = std::move(dir);
     handedOverFlag() = false;
+    lessPrivilegedFlag() = false;
 }
 
 } // namespace Core::ConfigDirOverride

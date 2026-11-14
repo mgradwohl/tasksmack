@@ -1,4 +1,5 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+#include "App/NewFileOwner.h"
 #include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessRowMeter.h"
 #include "App/Panels/ProcessTableSettings.h"
@@ -2608,6 +2609,40 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
 }
 
 #ifndef _WIN32
+// #3759: run as root for a user (sudo, pkexec), the config folder is theirs, the less-privileged side's. A link of theirs
+// anywhere on the way to it (here the folder's parent) could send root's save, and the folder's creation, wherever they
+// chose: nothing is written through it. A link root owns is the system's own and isn't one of these, so as root (where
+// the test's own links are root's) the case can't be built.
+TEST_F(UserConfigSaveLoadFixture, ARootSessionSavesNothingThroughAUsersLinkOnTheWayToItsFolder)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root the test's links are root's, which the check trusts";
+    }
+    const std::filesystem::path real = m_TempDir / "real";
+    const std::filesystem::path link = m_TempDir / "link";
+    std::error_code ec;
+    std::filesystem::create_directory(real, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    std::filesystem::create_directory_symlink(real, link, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    EXPECT_EQ(NewFileOwner::userOwnedLinkOnPath(link / "tasksmack"), link) << "the user's link is found from below it";
+    EXPECT_EQ(NewFileOwner::userOwnedLinkOnPath(real / "tasksmack"), std::nullopt) << "no link on that way";
+
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    ASSERT_TRUE(Core::ConfigDirOverride::handedOver());
+    auto& config = UserConfig::get();
+    config.resetConfigPathForTesting(link / "tasksmack" / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    EXPECT_FALSE(std::filesystem::exists(real / "tasksmack")) << "neither the folder nor the file is made through the link";
+}
+
 // #2728, #3374: the handed-over config folder itself swapped for a link after the startup check is refused too:
 // an elevated save writes nothing into the folder the link points at.
 TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderSwappedForALinkIsNotSavedInto)
