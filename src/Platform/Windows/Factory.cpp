@@ -283,9 +283,14 @@ HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks)
     return Windows::ElevatedRestart::waitForHandoff(static_cast<DWORD>(pid), startTicks);
 }
 
-std::expected<void, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir)
+std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir)
 {
-    return Windows::ElevatedRestart::checkConfigDir(dir);
+    auto pinned = Windows::ElevatedRestart::checkConfigDir(dir);
+    if (!pinned.has_value())
+    {
+        return std::unexpected(std::move(pinned.error()));
+    }
+    return std::make_shared<Windows::ElevatedRestart::PinnedFolder>(dir, std::move(*pinned));
 }
 
 bool enableDebugPrivilege()

@@ -36,6 +36,7 @@
 #include "Platform/IElevatedRestart.h"
 #ifdef _WIN32
 #include "Platform/Factory.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/WinString.h"
 #endif
 #ifdef __linux__
@@ -147,6 +148,9 @@ auto runApp(const App::LaunchOptions& launch) -> int
     const bool handoffSession = launch.handoffPid.has_value();
     std::optional<Platform::HandoffWait> handoffWait;
     std::string handoffDirRefused;
+    // The handed-over folder as checked, held open until runApp() returns (#3787): the one owner of the hold.
+    // ConfigDirOverride keeps only a weak reference, so a save after this is released fails closed.
+    std::shared_ptr<Platform::IHandedOverFolder> handedOverFolder;
     if (handoffSession)
     {
         handoffWait = Platform::waitForHandoff(*launch.handoffPid, launch.handoffStartTicks);
@@ -157,13 +161,14 @@ auto runApp(const App::LaunchOptions& launch) -> int
             {
                 handoffDirRefused = "the process it names isn't the TaskSmack that restarted this one";
             }
-            else if (const auto checked = Platform::checkHandedOverConfigDir(handedOver); !checked.has_value())
+            else if (auto checked = Platform::checkHandedOverConfigDir(handedOver); !checked.has_value())
             {
                 handoffDirRefused = checked.error();
             }
             else
             {
-                Core::ConfigDirOverride::adoptHandedOver(handedOver);
+                handedOverFolder = std::move(*checked);
+                Core::ConfigDirOverride::adoptHandedOver(handedOver, handedOverFolder);
             }
         }
     }

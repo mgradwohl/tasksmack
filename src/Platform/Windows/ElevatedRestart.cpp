@@ -21,7 +21,7 @@
 #include <vector>
 
 // clang-format off
-#include <aclapi.h> // GetNamedSecurityInfoW
+#include <aclapi.h> // GetSecurityInfo
 #include <sddl.h>   // ConvertStringSidToSidW
 #include <shlobj.h> // SHGetKnownFolderPath
 // clang-format on
@@ -84,7 +84,36 @@ namespace
            CSTR_EQUAL;
 }
 
-std::optional<DWORD> realLinkCount(const std::wstring& path)
+/// GetFinalPathNameByHandleW's path for @p handle as a plain drive path, without the \\?\ prefix; nullopt when
+/// it can't be read.
+[[nodiscard]] std::optional<std::wstring> finalPathOf(HANDLE handle, ConfigDirFunctions::FinalPathFn getFinalPath)
+{
+    std::wstring path(MAX_PATH, L'\0');
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        const DWORD length = getFinalPath(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (length == 0)
+        {
+            return std::nullopt;
+        }
+        if (length < path.size())
+        {
+            path.resize(length);
+            constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
+            if (path.starts_with(LONG_PREFIX) && !path.starts_with(LR"(\\?\UNC\)"))
+            {
+                path.erase(0, LONG_PREFIX.size());
+            }
+            return path;
+        }
+        path.assign(length, L'\0'); // too short: length is the size it needs, with its terminator
+    }
+    return std::nullopt;
+}
+
+} // namespace
+
+std::optional<DWORD> linkCountOf(const std::wstring& path)
 {
     const UniqueHandle file(CreateFileW(path.c_str(),
                                         FILE_READ_ATTRIBUTES,
@@ -101,11 +130,11 @@ std::optional<DWORD> realLinkCount(const std::wstring& path)
     return info.nNumberOfLinks;
 }
 
-std::optional<bool> realOwnerIsPrivileged(const std::wstring& path)
+std::optional<bool> ownerIsPrivileged(HANDLE handle)
 {
     PSID owner = nullptr;
     PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
+    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
             ERROR_SUCCESS ||
         owner == nullptr)
     {
@@ -127,34 +156,18 @@ std::optional<bool> realOwnerIsPrivileged(const std::wstring& path)
     return privileged;
 }
 
-/// The handed-over config directory, held open for the rest of the process (realPin()).
-[[nodiscard]] UniqueHandle& pinnedDirectory()
+HANDLE openToPin(const std::wstring& path)
 {
-    static UniqueHandle pinned;
-    return pinned;
+    // No FILE_SHARE_DELETE: while this is open the folder can't be renamed or deleted. READ_CONTROL: its owner is read
+    // through this handle. FILE_FLAG_OPEN_REPARSE_POINT: a link here is opened itself, then refused by its attributes.
+    return CreateFileW(path.c_str(),
+                       FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
+                       FILE_SHARE_READ | FILE_SHARE_WRITE,
+                       nullptr,
+                       OPEN_EXISTING,
+                       FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                       nullptr);
 }
-
-bool realPin(const std::wstring& path)
-{
-    // No FILE_SHARE_DELETE: while this is open the folder can't be renamed, deleted or replaced by a junction.
-    UniqueHandle dir(CreateFileW(path.c_str(),
-                                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
-                                 FILE_SHARE_READ | FILE_SHARE_WRITE,
-                                 nullptr,
-                                 OPEN_EXISTING,
-                                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
-                                 nullptr));
-    BY_HANDLE_FILE_INFORMATION info{};
-    if (!dir || GetFileInformationByHandle(dir.get(), &info) == FALSE || (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 ||
-        (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
-    {
-        return false; // swapped for a link between the checks and this open, or gone
-    }
-    pinnedDirectory() = std::move(dir);
-    return true;
-}
-
-} // namespace
 
 std::expected<std::wstring, std::string> parameters(DWORD pid, std::uint64_t startTicks, const std::filesystem::path& configDir)
 {
@@ -262,7 +275,7 @@ HandoffWait waitForHandoff(DWORD pid, std::uint64_t startTicks, DWORD timeoutMs,
     }
 }
 
-std::expected<void, std::string>
+std::expected<UniqueHandle, std::string>
 checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& profilesRoot, const ConfigDirFunctions& functions)
 {
     const auto refused = [&dir](std::string_view why)
@@ -318,18 +331,7 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
         }
         prefix += L'\\';
     }
-    const auto ownerIsPrivileged = functions.ownerIsPrivileged != nullptr ? functions.ownerIsPrivileged : &realOwnerIsPrivileged;
-    const std::optional<bool> privileged = ownerIsPrivileged(text);
-    if (!privileged.has_value())
-    {
-        return refused("its owner can't be read");
-    }
-    if (*privileged)
-    {
-        return refused("it is owned by an administrator or system account, not a user");
-    }
     // The files an elevated TaskSmack opens there: neither links nor hard links to a file elsewhere.
-    const auto linkCount = functions.linkCount != nullptr ? functions.linkCount : &realLinkCount;
     for (const std::wstring_view name : {std::wstring_view(L"config.toml"), std::wstring_view(L"tasksmack.lock")})
     {
         const std::wstring file = (dir / name).native();
@@ -342,20 +344,42 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
         {
             return refused(std::format("its {} is a link or a folder", WinString::wideToUtf8(name)));
         }
-        if (linkCount(file) != std::optional<DWORD>{1})
+        if (functions.linkCount(file) != std::optional<DWORD>{1})
         {
             return refused(std::format("its {} is hard-linked to another file", WinString::wideToUtf8(name)));
         }
     }
-    const auto pin = functions.pin != nullptr ? functions.pin : &realPin;
-    if (!pin(text))
+    // Held open, and from here on checked through that handle (#3775): the folder it holds is the one checked
+    // above only if it is still a real folder, no reparse point, at the same path, and the user's.
+    UniqueHandle pinned(functions.openToPin(text));
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (!pinned || functions.getFileInformation(pinned.get(), &info) == FALSE ||
+        (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
     {
         return refused("it can't be held open, or changed while it was checked");
     }
-    return {};
+    const std::optional<std::wstring> finalPath = finalPathOf(pinned.get(), functions.getFinalPath);
+    if (!finalPath.has_value())
+    {
+        return refused("the folder it holds can't be named");
+    }
+    if (!sameComponent(*finalPath, text))
+    {
+        return refused(std::format("the folder it holds is {}, not the folder checked", WinString::wideToUtf8(*finalPath)));
+    }
+    const std::optional<bool> privileged = functions.ownerIsPrivileged(pinned.get());
+    if (!privileged.has_value())
+    {
+        return refused("its owner can't be read");
+    }
+    if (*privileged)
+    {
+        return refused("it is owned by an administrator or system account, not a user");
+    }
+    return pinned;
 }
 
-std::expected<void, std::string> checkConfigDir(const std::filesystem::path& dir)
+std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::path& dir)
 {
     wchar_t* profiles = nullptr;
     if (FAILED(SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr, &profiles)))

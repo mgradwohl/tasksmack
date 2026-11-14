@@ -19,9 +19,11 @@
 
 #include "Core/EnvUtils.h"
 #include "Platform/AsciiTrim.h"
+#include "Platform/IHandedOverFolder.h"
 
 #include <cctype>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -56,9 +58,12 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 [[nodiscard]] const std::optional<std::filesystem::path>& active();
 
 /// The launching user's config directory an elevated restart hands over (--config-dir, #2728): active()
-/// returns it, made absolute, from now on, and fromTestHook() is false, as this is no test hook. main.cpp calls
-/// it first thing, before anything reads active(). Not thread-safe for the same reason as setActiveForTesting().
-void adoptHandedOver(const std::filesystem::path& dir);
+/// returns it, made absolute, from now on, and fromTestHook() is false, as this is no test hook. Kept apart from
+/// TASKSMACK_CONFIG_DIR's (#3780): a hand-off session never reads that variable, nor creates its directory.
+/// @p folder is the folder as checked and held (Platform::checkHandedOverConfigDir()), which main.cpp owns;
+/// only a weak reference is kept here (handedOverFolder()). main.cpp calls this first thing, before anything
+/// reads active(). Not thread-safe for the same reason as setActiveForTesting().
+void adoptHandedOver(const std::filesystem::path& dir, std::weak_ptr<const Platform::IHandedOverFolder> folder = {});
 
 /// A TaskSmack run as root for a user (sudo or pkexec, #3580) keeps that user's config directory, the less-privileged
 /// side's, as an elevated restart's handed-over one is (#3759): main.cpp calls this first thing on Linux when
@@ -69,6 +74,15 @@ void markLessPrivilegedFolder();
 /// or, run as root for a user, that user's (markLessPrivilegedFolder()). UserConfig then writes through no link in it,
 /// and nothing read from it (a dump folder, recent commands) is offered to run elevated.
 [[nodiscard]] bool handedOver();
+
+/// The held folder adoptHandedOver() was given, while its owner (main.cpp) still holds it; null when nothing was
+/// handed over, or it is no longer held.
+[[nodiscard]] std::shared_ptr<const Platform::IHandedOverFolder> handedOverFolder();
+
+/// Whether an elevated restart handed a folder over (adoptHandedOver()) that is no longer held, or was never given
+/// one: such a hand-off fails closed, and UserConfig neither reads nor saves there. False with no hand-off, and in a
+/// root session for a user (markLessPrivilegedFolder()), which holds no folder.
+[[nodiscard]] bool handedOverFolderReleased();
 
 /// Whether active() is TASKSMACK_CONFIG_DIR's (a test hook), not a handed-over directory; false when there is
 /// no override.

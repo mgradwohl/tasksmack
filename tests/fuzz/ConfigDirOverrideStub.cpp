@@ -4,7 +4,8 @@
 // real active() reads the variable through SDL_getenv(), and the fuzz build has no SDL (see
 // .clusterfuzzlite/fetch-deps.sh). The fuzzer exercises parseSettings(), never the config
 // directory, so "no override" -- TaskSmack's behaviour with the variable unset -- is all it needs. With no
-// override, nothing was handed over by an elevated restart either (handedOver(), #2728), which UserConfig's save asks.
+// override, nothing was handed over by an elevated restart either (handedOver(), #2728), which UserConfig's save asks,
+// so no held folder was let go either (handedOverFolderReleased(), #3787).
 
 #include "Core/ConfigDirOverride.h"
 
@@ -21,6 +22,11 @@ const std::optional<std::filesystem::path>& active()
 }
 
 bool handedOver()
+{
+    return false;
+}
+
+bool handedOverFolderReleased()
 {
     return false;
 }

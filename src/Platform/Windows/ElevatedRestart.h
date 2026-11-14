@@ -29,14 +29,17 @@
 // clang-format on
 
 #include "Platform/IElevatedRestart.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
+#include "Platform/Windows/WindowsHandles.h"
 
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace Platform::Windows::ElevatedRestart
 {
@@ -88,37 +91,71 @@ struct WaitFunctions
 [[nodiscard]] HandoffWait
 waitForHandoff(DWORD pid, std::uint64_t startTicks, DWORD timeoutMs = HANDOFF_WAIT_MS, const WaitFunctions& functions = {});
 
-/// The calls checkConfigDir() makes on the disk: the system's, or a test's fakes. Each takes a full path.
+/// The file's hard-link count, opened without following a link; nullopt when it can't be read.
+[[nodiscard]] std::optional<DWORD> linkCountOf(const std::wstring& path);
+
+/// Whether the owner of the file or folder @p handle (opened with READ_CONTROL) is an administrator or system account
+/// (BUILTIN\Administrators, SYSTEM, TrustedInstaller); nullopt when it can't be read.
+[[nodiscard]] std::optional<bool> ownerIsPrivileged(HANDLE handle);
+
+/// The folder @p path opened to be held: without FILE_SHARE_DELETE, so it can't be renamed or deleted while open,
+/// and without following a link at its last component. INVALID_HANDLE_VALUE when it can't be opened.
+[[nodiscard]] HANDLE openToPin(const std::wstring& path);
+
+/// The calls checkConfigDir() makes on the disk: the system's, or a test's fakes (#3787).
 struct ConfigDirFunctions
 {
-    /// GetFileAttributesW.
     using AttributesFn = DWORD(WINAPI*)(LPCWSTR);
-    /// The file's hard-link count, opened without following a link; nullopt when it can't be read.
     using LinkCountFn = std::optional<DWORD> (*)(const std::wstring&);
-    /// Whether the folder's owner is an administrator or system account (BUILTIN\Administrators, SYSTEM,
-    /// TrustedInstaller); nullopt when it can't be read.
-    using OwnerIsPrivilegedFn = std::optional<bool> (*)(const std::wstring&);
-    /// Holds the folder open for the rest of this process, without FILE_SHARE_DELETE so it can't be renamed or
-    /// replaced, checking through the open handle that it is still no reparse point. False when it can't.
-    using PinFn = bool (*)(const std::wstring&);
+    using OpenToPinFn = HANDLE (*)(const std::wstring&);
+    using FileInformationFn = BOOL(WINAPI*)(HANDLE, LPBY_HANDLE_FILE_INFORMATION);
+    using FinalPathFn = DWORD(WINAPI*)(HANDLE, LPWSTR, DWORD, DWORD);
+    using OwnerIsPrivilegedFn = std::optional<bool> (*)(HANDLE);
 
     AttributesFn getFileAttributes = &::GetFileAttributesW;
-    LinkCountFn linkCount = nullptr;                 ///< Null: the real one
-    OwnerIsPrivilegedFn ownerIsPrivileged = nullptr; ///< Null: the real one
-    PinFn pin = nullptr;                             ///< Null: the real one
+    LinkCountFn linkCount = &linkCountOf;
+    OpenToPinFn openToPin = &ElevatedRestart::openToPin;
+    FileInformationFn getFileInformation = &::GetFileInformationByHandle;        ///< Through the held handle
+    FinalPathFn getFinalPath = &::GetFinalPathNameByHandleW;                     ///< Through the held handle
+    OwnerIsPrivilegedFn ownerIsPrivileged = &ElevatedRestart::ownerIsPrivileged; ///< Through the held handle
 };
 
 /// Whether @p dir, a config directory an elevated restart was handed (--config-dir), may be used (#2728): an
 /// absolute local path under @p profilesRoot (the user profiles folder, C:\Users), at least one folder below it,
 /// with no "." or ".." in it; every folder from the drive down to it a real folder, never a junction, link or
-/// other reparse point; its owner no administrator or system account; config.toml and tasksmack.lock in it, where
-/// they exist, neither reparse points nor hard-linked elsewhere; and held open (pinned) from then on. The error
-/// says which check failed.
-[[nodiscard]] std::expected<void, std::string>
+/// other reparse point; config.toml and tasksmack.lock in it, where they exist, neither reparse points nor
+/// hard-linked elsewhere. Then it is held open, and the rest is checked through that handle (#3775), so it is the
+/// folder held that passes: still a folder with no reparse point, its final path @p dir itself, its owner no
+/// administrator or system account. The handle is the caller's to hold (#3787); the error says which check failed.
+[[nodiscard]] std::expected<UniqueHandle, std::string>
 checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& profilesRoot, const ConfigDirFunctions& functions = {});
 
 /// checkConfigDir() against this machine's user profiles folder (FOLDERID_UserProfiles).
-[[nodiscard]] std::expected<void, std::string> checkConfigDir(const std::filesystem::path& dir);
+[[nodiscard]] std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::path& dir);
+
+/// A handed-over config folder that passed checkConfigDir(), held open by its handle for as long as this lives.
+class PinnedFolder final : public IHandedOverFolder
+{
+  public:
+    PinnedFolder(std::filesystem::path path, UniqueHandle handle) noexcept : m_Path(std::move(path)), m_Handle(std::move(handle))
+    {}
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept override
+    {
+        return m_Path;
+    }
+
+    /// The held folder's handle, still owned by this object.
+    [[nodiscard]] HANDLE handle() const noexcept
+    {
+        return m_Handle.get();
+    }
+
+  private:
+    std::filesystem::path m_Path;
+    UniqueHandle m_Handle;
+};
+
 /// The IElevatedRestart a Standard TaskSmack is given (Platform::makeElevatedRestart()).
 class WindowsElevatedRestart final : public IElevatedRestart
 {

@@ -30,6 +30,7 @@
 #include <filesystem>
 #include <format>
 #include <locale>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -834,6 +835,14 @@ void UserConfig::load()
     // The baseline save() merges against, until a file is read: the settings TaskSmack starts with.
     m_Synced = m_Settings;
 
+    // A handed-over folder no longer held as checked (#3787) is read no more than it is written: defaults.
+    if (Core::ConfigDirOverride::handedOverFolderReleased())
+    {
+        spdlog::error("Not reading {}: its folder isn't held open as it was when it was checked; using defaults",
+                      Core::pathToUtf8(m_ConfigPath));
+        return;
+    }
+
     // error_code overloads: an unreadable config directory falls back to defaults instead of
     // throwing out of startup (#1124).
     std::error_code ec;
@@ -895,6 +904,14 @@ bool UserConfig::writeSettings(const UserSettings& settings)
 
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
+    // A config folder an elevated restart was handed (#2728) is saved into only while the folder checked at startup
+    // is still held (#3787): otherwise nothing says this is still that folder, so nothing is made or written there.
+    const bool handedOver = Core::ConfigDirOverride::handedOver();
+    if (Core::ConfigDirOverride::handedOverFolderReleased())
+    {
+        spdlog::error("Not saving settings: {} isn't held open as it was when it was checked", Core::pathToUtf8(configDir));
+        return false;
+    }
     std::error_code ec;
 #ifndef _WIN32
     const std::optional<FileOwner> newFileOwner =
@@ -946,7 +963,6 @@ bool UserConfig::writeSettings(const UserSettings& settings)
 
     // A config folder an elevated restart was handed (#2728) is the less-privileged side's: an elevated TaskSmack
     // writes through no link there, so a link planted after the startup check can't send a write elsewhere.
-    const bool handedOver = Core::ConfigDirOverride::handedOver();
     if (handedOver)
     {
         const std::filesystem::file_status dirStatus = std::filesystem::symlink_status(configDir, ec);

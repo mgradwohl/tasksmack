@@ -19,7 +19,9 @@
 // elevated copy runs as another account than the user who chose the directory, and anything running as that
 // user could have started this restart, or planted links in that directory. So the directory must be a real
 // folder under the user profiles, with no junction or link on its path, owned by no administrator or system
-// account, its config.toml and lock file neither links nor hard-linked; it is held open so it can't be swapped;
+// account, its config.toml and lock file neither links nor hard-linked; it is held open so it can't be swapped, the
+// owner, final path and reparse checks are made through that handle (#3775), and main.cpp owns the hold (#3787);
+// a hand-off never reads TASKSMACK_CONFIG_DIR (#3780);
 // UserConfig never writes through a link in it (ConfigDirOverride::handedOver()); its recent Run new task
 // commands aren't offered for an elevated run, and its dump folder isn't written to (DumpDetail::trustedDumpFolder()). A directory that
 // fails is not used: the elevated copy keeps its own account's settings, and says so in the log.
