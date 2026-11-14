@@ -150,14 +150,14 @@ class FindHandlesDialogRenderTest : public ::testing::Test
         static_cast<void>(frame());
     }
 
-    /// Frames until the text drawn contains @p wanted, and that text.
-    std::string frameUntil(const std::string& wanted)
+    /// Frames until the text drawn contains @p wanted (and not @p unwanted, when given), and that text.
+    std::string frameUntil(const std::string& wanted, const std::string& unwanted = {})
     {
         std::string text;
         for (int i = 0; i < MAX_FRAMES; ++i)
         {
             text = frame();
-            if (text.contains(wanted))
+            if (text.contains(wanted) && (unwanted.empty() || !text.contains(unwanted)))
             {
                 break;
             }
@@ -193,7 +193,8 @@ TEST_F(FindHandlesDialogRenderTest, StopEndsASearchBeforeItsOtherProcessesAreRea
 
     click("Stop");
     held.release();
-    const std::string text = frameUntil("processes searched");
+    // Both in one frame: the worker can finish between the query row (Stop) and the status line.
+    const std::string text = frameUntil("processes searched", "Stop");
     EXPECT_TRUE(text.contains("1 processes searched")) << text;
     EXPECT_FALSE(text.contains("Stop")) << "Find is offered again: " << text;
     EXPECT_EQ(held.reads(), 1) << "the second process isn't read after Stop";
