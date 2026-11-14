@@ -143,6 +143,16 @@ ShellLayer::ShellLayer(std::unique_ptr<IShellHost> host,
     // Processes panel's to the Services and Startup tabs.
 }
 
+std::vector<std::pair<std::string, std::string>> ShellLayer::tabPanelsForTesting() const
+{
+    std::vector<std::pair<std::string, std::string>> pairs;
+    for (const auto& tab : m_Tabs.tabs())
+    {
+        pairs.emplace_back(tab.eventName, tab.panel.get().name());
+    }
+    return pairs;
+}
+
 bool ShellLayer::processesTreeViewForTesting() const noexcept
 {
     return m_Panels.processesTreeViewEnabled();
