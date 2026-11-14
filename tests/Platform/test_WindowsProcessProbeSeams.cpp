@@ -945,10 +945,15 @@ TEST_F(WindowsProcessProbeSeamTest, AProcessWithAHungWindowIsNotRespondingFromTh
     static int walks = 0;
     walks = 0;
     WindowsProcessProbeFunctions functions = fakeFunctions();
-    functions.system.hungWindowProcesses = [](std::vector<std::uint32_t>& pids)
+    functions.system.topLevelWindows = [](std::vector<Windows::TopLevelWindow>& windows)
     {
         ++walks;
-        pids = {3, PID, PID + 1000}; // sorted, as the real walk leaves them
+        windows = {
+            {.hungPid = PID + 1000, .hung = true},
+            {.hungPid = 3, .hung = true},
+            {.hungPid = PID}, // A ghost (DWM's) standing in for this process's hung window
+            {},               // A window that answers
+        };
     };
     WindowsProcessProbe probe(functions);
     const std::vector<ProcessCounters> processes = probe.enumerate();
@@ -963,9 +968,9 @@ TEST_F(WindowsProcessProbeSeamTest, AProcessWithAHungWindowIsNotRespondingFromTh
         }
     }
 
-    functions.system.hungWindowProcesses = [](std::vector<std::uint32_t>& pids)
+    functions.system.topLevelWindows = [](std::vector<Windows::TopLevelWindow>& windows)
     {
-        pids.clear();
+        windows = {{}};
     };
     WindowsProcessProbe answering(functions);
     EXPECT_FALSE(find(answering.enumerate()).notResponding);
@@ -974,12 +979,32 @@ TEST_F(WindowsProcessProbeSeamTest, AProcessWithAHungWindowIsNotRespondingFromTh
 // The real walk, over this desktop's windows: sorted and unique, whatever it finds (this test hangs nothing).
 TEST(WindowsHungWindowsTest, TheRealWalkIsSortedAndUnique)
 {
+    std::vector<Windows::TopLevelWindow> windows{{.window = nullptr, .hungPid = 42}};
+    WindowsProcessDetailReads::topLevelWindows(windows);
+    EXPECT_EQ(std::ranges::find(windows, nullptr, &Windows::TopLevelWindow::window), windows.end())
+        << "what was in the vector before is cleared";
     std::vector<std::uint32_t> pids{42, 7, 7};
-    WindowsProcessDetailReads::hungWindowProcesses(pids);
+    WindowsProcessDetailReads::hungWindowProcesses(windows, pids);
     EXPECT_TRUE(std::ranges::is_sorted(pids));
     EXPECT_EQ(std::ranges::adjacent_find(pids), pids.end());
     EXPECT_EQ(std::ranges::find(pids, 42U), pids.end()) << "what was in the vector before is cleared";
-    EXPECT_EQ(WindowsProcessProbe::systemFunctions().system.hungWindowProcesses, &WindowsProcessDetailReads::hungWindowProcesses);
+    EXPECT_EQ(WindowsProcessProbe::systemFunctions().system.topLevelWindows, &WindowsProcessDetailReads::topLevelWindows);
+}
+
+// #3705: the hung processes come from the shared walk's windows, a ghost's as the process it stands in for.
+TEST(WindowsHungWindowsTest, TheHungProcessesAreEveryWindowsHungPidSortedAndUnique)
+{
+    const std::vector<Windows::TopLevelWindow> windows{
+        {.hungPid = 9, .hung = true},
+        {},
+        {.hungPid = 9}, // A ghost for 9's hung window
+        {.hungPid = 5, .hung = true},
+    };
+    std::vector<std::uint32_t> pids{100};
+    WindowsProcessDetailReads::hungWindowProcesses(windows, pids);
+    EXPECT_EQ(pids, (std::vector<std::uint32_t>{5, 9}));
+    WindowsProcessDetailReads::hungWindowProcesses({}, pids);
+    EXPECT_TRUE(pids.empty());
 }
 
 TEST_F(WindowsProcessProbeSeamTest, AnUnreadableStatusKeepsTheLastOneRead)
@@ -1938,6 +1963,7 @@ struct FakeApps
     int packageReads = 0;
     int walks = 0;
     std::vector<std::uint32_t> lastWalkPids;
+    std::size_t lastWalkWindows = 0; ///< How many of the sample's windows the lookup was handed
     int nameLookups = 0;
 };
 
@@ -1953,10 +1979,13 @@ Windows::PackageIdentity fakePackageIdentity(HANDLE /*process*/)
     return fakeApps().package;
 }
 
-void fakeWindowAppIds(std::span<const std::uint32_t> pids, std::vector<Windows::WindowAppId>& found)
+void fakeWindowAppIds(std::span<const Windows::TopLevelWindow> windows,
+                      std::span<const std::uint32_t> pids,
+                      std::vector<Windows::WindowAppId>& found)
 {
     ++fakeApps().walks;
     fakeApps().lastWalkPids.assign(pids.begin(), pids.end());
+    fakeApps().lastWalkWindows = windows.size();
     found.clear();
     for (const std::uint32_t pid : pids)
     {
@@ -2059,6 +2088,29 @@ TEST_F(WindowsProcessAppIdentityTest, AnUnpackagedProcesssWindowsAreLookedAtUnti
     fake().now += std::chrono::hours(1);
     EXPECT_EQ(find(probe.enumerate()).appUserModelId, "Contoso.Editor") << "kept once found";
     EXPECT_EQ(fakeApps().walks, 2) << "no walk while nothing is due";
+}
+
+// #3705: a sample that looks for window IDs walks the desktop once, the Not responding check and the lookup
+// both reading that one walk's windows.
+TEST_F(WindowsProcessAppIdentityTest, ASampleThatLooksForWindowIdsWalksTheWindowsOnce)
+{
+    static int windowWalks = 0;
+    windowWalks = 0;
+    WindowsProcessProbeFunctions functions = appFunctions();
+    functions.system.topLevelWindows = [](std::vector<Windows::TopLevelWindow>& windows)
+    {
+        ++windowWalks;
+        windows = {{.hungPid = PID, .hung = true}, {}};
+    };
+    fakeApps().windowIds[PID] = "Contoso.Editor";
+    WindowsProcessProbe probe(functions);
+    (void) probe.enumerate(); // Listed
+    const ProcessCounters looked = find(probe.enumerate());
+    EXPECT_EQ(fakeApps().walks, 1) << "the second sample looks for its window's ID";
+    EXPECT_EQ(windowWalks, 2) << "one walk a sample, the lookup's included";
+    EXPECT_EQ(fakeApps().lastWalkWindows, 2U) << "the lookup reads that sample's windows";
+    EXPECT_TRUE(looked.notResponding);
+    EXPECT_EQ(looked.appUserModelId, "Contoso.Editor");
 }
 
 // A first sample with many apps names a few of them a sample, the rest on the next; a name is asked once per
@@ -2176,7 +2228,7 @@ TEST(WindowsAppIdentityTest, AThrowingWindowVisitStopsTheWalkInsideTheCallback)
     EXPECT_EQ(outOfMemory.failed, calls == 1);
 }
 
-// The real reads: TaskSmackTests itself is unpackaged, a walk for no processes finds nothing, and the probe's
+// The real reads: TaskSmackTests itself is unpackaged, a lookup for no processes finds nothing, and the probe's
 // own table points at them.
 TEST(WindowsAppIdentityTest, TheRealReadsOnThisUnpackagedTestProcess)
 {
@@ -2186,7 +2238,23 @@ TEST(WindowsAppIdentityTest, TheRealReadsOnThisUnpackagedTestProcess)
     EXPECT_TRUE(Windows::readPackageIdentity(nullptr).family.empty());
 
     std::vector<Windows::WindowAppId> found{{.pid = 1, .appUserModelId = "stale"}};
-    Windows::windowAppUserModelIds({}, found);
+    Windows::windowAppUserModelIds({}, {}, found);
+    EXPECT_TRUE(found.empty());
+
+    // Over the real walk (#3705): no process asked about finds nothing; nor does a hung window, a window that
+    // isn't one, or one whose process wasn't asked about.
+    std::vector<Windows::TopLevelWindow> windows;
+    WindowsProcessDetailReads::topLevelWindows(windows);
+    found = {{.pid = 1, .appUserModelId = "stale"}};
+    Windows::windowAppUserModelIds(windows, {}, found);
+    EXPECT_TRUE(found.empty());
+    const std::vector<Windows::TopLevelWindow> skipped{
+        {.window = GetDesktopWindow(), .hung = true},
+        {.window = nullptr},
+        {.window = GetDesktopWindow()},
+    };
+    const std::vector<std::uint32_t> asked{1}; // Not the desktop window's process
+    Windows::windowAppUserModelIds(skipped, asked, found);
     EXPECT_TRUE(found.empty());
     EXPECT_TRUE(Windows::appDisplayName("").empty());
 

@@ -768,19 +768,21 @@ using HungWindowFromGhostFn = HWND(WINAPI*)(HWND);
     return fn;
 }
 
-/// EnumWindows' callback for hungWindowProcesses(): records the process of each visible top-level window
-/// that has stopped answering (IsHungAppWindow). Once Windows has hidden a hung window behind its ghost
-/// (the "(Not Responding)" stand-in DWM draws in its place, class "Ghost"), only the ghost is visible:
-/// the window it stands in for is the hung one.
-BOOL CALLBACK collectHungWindowProcess(HWND window, LPARAM param)
+/// topLevelWindows()' work for one window: a visible one is recorded with whether it answers and the process
+/// it shows as not responding. Once Windows has hidden a hung window behind its ghost
+/// (the "(Not Responding)" stand-in DWM draws in its place, class "Ghost"), only the ghost is visible: the
+/// window it stands in for is the hung one. Only what is on screen: a hidden window on a thread that doesn't
+/// pump messages (a service's, a background helper's) would otherwise read as hung, though no user is waiting
+/// on it. Its push can throw; guardedWindowCallback() keeps that inside the callback.
+void collectTopLevelWindow(HWND window, std::vector<Windows::TopLevelWindow>& windows)
 {
-    // Only what is on screen: a hidden window on a thread that doesn't pump messages (a service's, a
-    // background helper's) would otherwise read as hung, though no user is waiting on it.
     if (IsWindowVisible(window) == FALSE)
     {
-        return TRUE;
+        return;
     }
-    HWND hung = (IsHungAppWindow(window) != FALSE) ? window : nullptr;
+    Windows::TopLevelWindow found{.window = window};
+    found.hung = IsHungAppWindow(window) != FALSE;
+    HWND hung = found.hung ? window : nullptr;
     if (hung == nullptr)
     {
         constexpr int CLASS_CHARS = 8; // "Ghost" and its NUL, with room to tell a longer name apart
@@ -793,12 +795,12 @@ BOOL CALLBACK collectHungWindowProcess(HWND window, LPARAM param)
             hung = fromGhost(window);
         }
     }
-    DWORD pid = 0;
-    if (hung != nullptr && GetWindowThreadProcessId(hung, &pid) != 0 && pid != 0)
+    DWORD hungPid = 0;
+    if (hung != nullptr && GetWindowThreadProcessId(hung, &hungPid) != 0)
     {
-        reinterpret_cast<std::vector<std::uint32_t>*>(param)->push_back(pid); // NOLINT(performance-no-int-to-ptr) - EnumWindows' LPARAM
+        found.hungPid = hungPid;
     }
-    return TRUE;
+    windows.push_back(found);
 }
 
 /// Each thread's group affinity (GetThreadGroupAffinity), from the process's
@@ -917,11 +919,36 @@ std::string_view WindowsProcessDetailReads::processType(const WindowsProcessProb
     return classifyProcessType(fns, hQuery, pid, imagePath);
 }
 
-void WindowsProcessDetailReads::hungWindowProcesses(std::vector<std::uint32_t>& pids)
+void WindowsProcessDetailReads::topLevelWindows(std::vector<Windows::TopLevelWindow>& windows)
+{
+    windows.clear();
+    Windows::WindowVisitor visitor{
+        .visit =
+            [&windows](HWND window)
+        {
+            collectTopLevelWindow(window, windows);
+            return true; // Every window: the walk stops only if this throws
+        },
+        .failed = false,
+    };
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - EnumWindows' LPARAM
+    static_cast<void>(EnumWindows(&Windows::guardedWindowCallback, reinterpret_cast<LPARAM>(&visitor)));
+    if (visitor.failed)
+    {
+        windows.clear(); // Cut short (out of memory): nothing hung and no window IDs this sample, not a partial list
+    }
+}
+
+void WindowsProcessDetailReads::hungWindowProcesses(std::span<const Windows::TopLevelWindow> windows, std::vector<std::uint32_t>& pids)
 {
     pids.clear();
-    // The callback never stops the walk; a failure leaves what was collected, read as "none hung" for the rest.
-    static_cast<void>(EnumWindows(&collectHungWindowProcess, reinterpret_cast<LPARAM>(&pids)));
+    for (const Windows::TopLevelWindow& window : windows)
+    {
+        if (window.hungPid != 0)
+        {
+            pids.push_back(window.hungPid);
+        }
+    }
     std::ranges::sort(pids);
     const auto duplicates = std::ranges::unique(pids);
     pids.erase(duplicates.begin(), duplicates.end());
@@ -955,7 +982,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
                 .windowsBuildNumber = &windowsBuildNumber,
                 .steadyNow = &steadyNow,
                 .nativeMachine = &Windows::nativeMachine,
-                .hungWindowProcesses = &WindowsProcessDetailReads::hungWindowProcesses,
+                .topLevelWindows = &WindowsProcessDetailReads::topLevelWindows,
             },
         .token =
             {
@@ -1124,13 +1151,15 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     // once so every process in this sample agrees with it.
     const bool perProcessNetworkCounters = m_HasNetworkCounters.load(std::memory_order_relaxed);
 
-    // Which processes' windows have stopped answering (#3084): one window walk for the whole sample,
-    // then a binary search per process, which an empty list (the usual case) answers at once.
-    m_HungWindowPids.clear();
-    if (m_Fns.system.hungWindowProcesses != nullptr)
+    // The sample's one window walk (#3705), which both readers below take from: which processes' windows have
+    // stopped answering (#3084), then a binary search per process, which an empty list (the usual case) answers
+    // at once; and the window AppUserModelIDs of the unpackaged processes due to be looked at (#3457).
+    m_Windows.clear();
+    if (m_Fns.system.topLevelWindows != nullptr)
     {
-        m_Fns.system.hungWindowProcesses(m_HungWindowPids);
+        m_Fns.system.topLevelWindows(m_Windows);
     }
+    WindowsProcessDetailReads::hungWindowProcesses(m_Windows, m_HungWindowPids);
 
     // The app each process belongs to (#3457): a few names a sample, and one window walk for the unpackaged
     // processes last sample listed whose windows are due to be looked at for an AppUserModelID. None is named
@@ -1571,7 +1600,7 @@ void WindowsProcessProbe::lookForWindowAppIds(std::chrono::steady_clock::time_po
     std::ranges::sort(m_WindowAppIdPids);
     const auto duplicates = std::ranges::unique(m_WindowAppIdPids);
     m_WindowAppIdPids.erase(duplicates.begin(), duplicates.end());
-    m_Fns.app.windowAppIds(m_WindowAppIdPids, m_WindowAppIds);
+    m_Fns.app.windowAppIds(m_Windows, m_WindowAppIdPids, m_WindowAppIds);
     for (auto& [key, entry] : m_DetailCache)
     {
         if (!due(entry))

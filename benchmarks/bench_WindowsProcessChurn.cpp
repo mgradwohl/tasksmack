@@ -22,8 +22,9 @@
 //  - Churn_Attribution/starts:S/new_paths:N: Churn_Enumerate with each system call the probe makes
 //    through its seams (WindowsProcessProbeFunctions) timed on the way through, reported as the mean
 //    microseconds a sample spends in it: the snapshot, OpenProcess, the image path, the command line and
-//    the other NtQueryInformationProcess classes, the token and account reads, the package, the two
-//    window walks (Not responding, and the window AppIDs), and the rest. unattributed is the sample's
+//    the other NtQueryInformationProcess classes, the token and account reads, the package, the
+//    sample's window walk (#3705: the Not responding check and the window AppIDs both read it; two walks
+//    before), the window AppID lookup, and the rest. unattributed is the sample's
 //    wall time less all of them: the probe's own code and what isn't behind a seam (the publisher's
 //    GetFileVersionInfo, the signature worker's request).
 //  - FirstEnumerate/iterations:1 and /iterations:10: a new probe built and its first enumerate(), as the
@@ -413,7 +414,7 @@ enum class Seam : std::uint8_t
     LookupAccountSid,
     Package,
     WindowAppIds,
-    HungWindows,
+    WindowWalk,
     OpenProcessRefused,
     AppDisplayName,
     Network,
@@ -437,7 +438,7 @@ constexpr std::array<const char*, SEAM_COUNT> SEAM_NAMES{
     "lookup_account_sid_us",
     "package_us",
     "window_app_ids_us",
-    "hung_windows_us",
+    "window_walk_us",
     "open_process_refused_us",
     "app_display_name_us",
     "network_us",
@@ -527,7 +528,7 @@ HANDLE WINAPI timedOpenProcess(DWORD access, BOOL inherit, DWORD pid)
 {
     auto functions = fakeClockFunctions();
     timeSeam<Seam::Snapshot>(functions.system.ntQuerySystemInformation);
-    timeSeam<Seam::HungWindows>(functions.system.hungWindowProcesses);
+    timeSeam<Seam::WindowWalk>(functions.system.topLevelWindows);
     timeSeam<Seam::Token>(functions.token.openProcessToken);
     timeSeam<Seam::Token>(functions.token.getTokenInformation);
     timeSeam<Seam::LookupAccountSid>(functions.token.lookupAccountSidW);
