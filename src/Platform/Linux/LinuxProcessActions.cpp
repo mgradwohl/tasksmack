@@ -9,6 +9,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/Sha256.h"
 #include "PosixGuards.h"
+#include "ProcParsing.h"
 #include "ProcPrivileges.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
@@ -592,10 +593,12 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
         return std::unexpected(std::move(identity.errorMessage));
     }
     const std::filesystem::path image = std::filesystem::path("/proc") / std::to_string(target.pid) / "exe";
-    // A kernel thread's link is absent (ENOENT, no error). Another user's process fails the check with EACCES instead
-    // (exists() follows the link): that one falls through to the read, which words it (#3723).
-    std::error_code ec;
-    if (!std::filesystem::exists(image, ec) && !ec)
+    // A kernel thread has no image: PF_KTHREAD in its stat, which anyone can read. Not by the exe link, whose check a
+    // standard user fails with EACCES for a kernel thread and another user's process alike (#3723); another user's
+    // falls through to the read, which words it.
+    const std::optional<std::string> stat = readSmallFile("/proc/" + std::to_string(target.pid) + "/stat");
+    const std::optional<ProcParsing::StatFields> fields = stat ? ProcParsing::parseStatFields(*stat) : std::nullopt;
+    if (fields.has_value() && (fields->flags & ProcParsing::PF_KTHREAD_FLAG) != 0)
     {
         return std::unexpected(std::string("It has no executable file (a kernel thread)"));
     }
