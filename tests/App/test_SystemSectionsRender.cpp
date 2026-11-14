@@ -535,7 +535,7 @@ TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsCompressedSwapWhileSomet
     };
     runFrame(render);
     runFrame(render);
-    const std::string value = MemorySection::compressedStripValue(publication.snapshot);
+    const std::string value(MemorySection::compressedStripValue(publication.snapshot).view());
     EXPECT_EQ(value,
               "3.0\u00d7 (" + UI::Format::formatBytes(static_cast<double>(3ULL << 30U)) + " in " +
                   UI::Format::formatBytes(static_cast<double>(1ULL << 30U)) + ")");
@@ -564,7 +564,7 @@ TEST_F(SystemSectionsRenderTest, MemorySectionStripShowsWindowsCompressedMemoryO
     };
     runFrame(render);
     runFrame(render);
-    const std::string value = MemorySection::compressedStripValue(publication.snapshot);
+    const std::string value(MemorySection::compressedStripValue(publication.snapshot).view());
     EXPECT_EQ(value, UI::Format::formatBytes(static_cast<double>(410ULL << 20U)));
     const std::string text = renderAndCapture(render);
     EXPECT_NE(text.find("Compressed"), std::string::npos) << text;

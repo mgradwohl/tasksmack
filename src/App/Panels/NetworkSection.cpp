@@ -12,6 +12,7 @@
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/InlineText.h"
 #include "UI/RateAxis.h"
 #include "UI/Theme.h"
 
@@ -436,12 +437,12 @@ void renderNetworkChartAndTable(RenderContext& ctx, const UI::Theme& theme, doub
         totalEntries = {
             UI::Widgets::ValueStripEntry{
                 .label = TOTAL_SENT_BEHIND_LABEL,
-                .value = latestRate(sentData),
+                .value = UI::InlineText(latestRate(sentData)),
                 .color = usingInterfaceHistory ? ifaceSentColor : theme.scheme().chartNetTx,
             },
             UI::Widgets::ValueStripEntry{
                 .label = TOTAL_RECV_BEHIND_LABEL,
-                .value = latestRate(recvData),
+                .value = UI::InlineText(latestRate(recvData)),
                 .color = usingInterfaceHistory ? ifaceRecvColor : theme.scheme().chartNetRx,
             },
         };

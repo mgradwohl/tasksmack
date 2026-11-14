@@ -775,6 +775,7 @@ set(COMMON_TEST_SOURCES
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
     App/test_GpuSectionRender.cpp
+    App/test_ValueStripText.cpp # the strips' texts, held in place (#843)
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
     App/test_ProcessesPanelRender.cpp

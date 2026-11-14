@@ -3,6 +3,7 @@
 #include "Domain/SystemModel.h"
 #include "Domain/SystemSnapshot.h"
 #include "UI/ChartWidgets.h"
+#include "UI/InlineText.h"
 
 #include <chrono>
 #include <cstdint>
@@ -51,8 +52,9 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
                           std::chrono::milliseconds refreshInterval);
 
 /// The value strip's Commit entry (#1627): "35.0 GiB / 73.7 GiB (48%)", commit charge against the
-/// commit limit; empty when the snapshot has no commit charge.
-[[nodiscard]] std::string commitStripValue(const Domain::SystemSnapshot& snap);
+/// commit limit; empty when the snapshot has no commit charge. Held in place, as the strip shows it
+/// every frame (#843).
+[[nodiscard]] UI::InlineText commitStripValue(const Domain::SystemSnapshot& snap);
 
 /// The Commit entry's hover text: what it measures, and the peak commit when the platform keeps one
 /// (Windows); empty when the snapshot has no commit charge.
@@ -60,8 +62,8 @@ void updateSmoothedMemory(SmoothedMemory& smoothed,
 
 /// The value strip's Compressed entry (#3087): "2.9× (1.2 GiB in 410 MiB)", compressed swap's ratio and
 /// sizes, zram and zswap together; on Windows (#3363) the compression store's size alone, "410 MiB"; empty
-/// while nothing compressed is stored or compression is off.
-[[nodiscard]] std::string compressedStripValue(const Domain::SystemSnapshot& snap);
+/// while nothing compressed is stored or compression is off. Held in place, like commitStripValue().
+[[nodiscard]] UI::InlineText compressedStripValue(const Domain::SystemSnapshot& snap);
 
 /// The Compressed entry's hover text: each kind's sizes and ratio, zram's RAM use, and the ratio's range
 /// over @p ratioHistory (the chart's window; NaN where nothing was stored); on Windows (#3363) what the size
