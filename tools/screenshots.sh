@@ -8,7 +8,7 @@
 # _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
 # TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
 # without input"). Without $DISPLAY the shots run under Xvfb. Same matrix and names as screenshots.ps1,
-# plus the Environment and Security sections, which TaskSmack reads on Linux only.
+# plus the Environment and Security sections, which screenshots.ps1 doesn't take yet.
 #
 # Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
 # the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (cores, gpu, network; #2869), Process
@@ -230,8 +230,8 @@ for tab in overview gpu network; do
     run_shot "details-$tab-$DARK" "$DARK" TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB="$tab"
 done
 # The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
-# startup selection has settled, in the taller window. Environment and Security are read on Linux only
-# (#179, #1526), so screenshots.ps1 has no counterpart for those two.
+# startup selection has settled, in the taller window. screenshots.ps1 doesn't take Environment and
+# Security yet, though Windows reads them too.
 for section in modules openfiles connections environment security; do
     SHOT_WINDOW="$SECTION_WINDOW" run_shot "details-$section-$DARK" "$DARK" \
         TASKSMACK_SELECT_NAME="$PROCESS" TASKSMACK_DETAILS_TAB=overview TASKSMACK_DEMO="1:section=$section"
