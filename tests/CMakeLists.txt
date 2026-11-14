@@ -485,6 +485,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowGeometry.cpp
     Core/test_WindowVisibility.cpp
     Core/test_FrameWake.cpp # the publication wake and a static frame's wait (#3156)
+    Core/test_IdleWaitTimer.cpp # the idle wait's high-resolution wake on Windows (#3712)
     Domain/test_History.cpp
     Domain/test_SharedHistory.cpp
     Domain/test_ProcessConnections.cpp
