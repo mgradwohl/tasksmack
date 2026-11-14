@@ -4120,7 +4120,7 @@ TEST_F(ProcessesPanelUserGroupsTest, AnAccountWithSessionsAndNoMatchingProcesses
 // joining its sampler thread and letting the sessions go.
 TEST_F(ProcessesPanelUserGroupsTest, ThePanelStartsTheFeedAtAttachHandsItTheIntervalAndStopsItAtDetach)
 {
-    auto fake = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice")});
+    const auto fake = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice")});
     UserSessionsFeed feed([fake] { return fake; });
     UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::None;
     ASSERT_EQ(feed.model(), nullptr);

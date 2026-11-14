@@ -59,7 +59,7 @@ using FakeSessions = TestMocks::FakeUserSessions;
 
 TEST(UsersModelTest, PublishesTheSessionsByUserThenIdAndAFailedReadsReason)
 {
-    auto fake = std::make_shared<FakeSessions>(
+    const auto fake = std::make_shared<FakeSessions>(
         std::vector<UserSession>{session("7", "bob", 1001), session("3", "Alice", 1000), session("2", "alice", 1000)});
     Domain::UsersModel model(fake);
     EXPECT_TRUE(model.hasSessions());
@@ -82,7 +82,7 @@ TEST(UsersModelTest, PublishesTheSessionsByUserThenIdAndAFailedReadsReason)
 
 TEST(SessionActionTest, LockRunsAtOnceAndSignOutAsksFirstNamingTheSession)
 {
-    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
+    const auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
     SessionActionControl control(fake);
     UserSession desktop = session("2", "alice", 1000);
     desktop.seat = "seat0";
@@ -121,7 +121,7 @@ TEST(SessionActionTest, LockRunsAtOnceAndSignOutAsksFirstNamingTheSession)
 
 TEST(SessionActionTest, AnotherUsersSessionOffersAuthenticateAndRetryOnce)
 {
-    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
+    const auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
     SessionActionControl control(fake);
     control.requestSignOut(session("5", "bob", 1001));
     control.confirm();
@@ -169,7 +169,7 @@ TEST(SessionActionTest, WithNoHelperARefusalOffersRestartAsAdministrator)
     EXPECT_TRUE(offered.raised().empty()) << "nothing raised until it is pressed";
 
     // A helper's Authenticate and retry instead, and nothing for a session that went.
-    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
+    const auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{});
     SessionActionControl withHelper(fake);
     withHelper.requestSignOut(session("5", "bob", 1001));
     withHelper.confirm();
@@ -182,7 +182,7 @@ TEST(SessionActionTest, WithNoHelperARefusalOffersRestartAsAdministrator)
 // running; TaskSmack's own, that this screen locks. Refused for want of an administrator, it offers the retry.
 TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
 {
-    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{}, true, true);
+    const auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{}, true, true);
     SessionActionControl control(fake);
     UserSession console = session("1", "alice", 0);
     console.type = "console";
