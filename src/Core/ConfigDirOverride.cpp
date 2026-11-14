@@ -1,6 +1,7 @@
 #include "ConfigDirOverride.h"
 
 #include "Core/EnvRead.h"
+#include "Platform/IHandedOverFolder.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>

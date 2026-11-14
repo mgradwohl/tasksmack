@@ -2630,22 +2630,23 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
 // #3787: a hand-off whose held folder has been let go fails closed: its config is neither read nor saved.
 TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderNoLongerHeldIsNeitherReadNorSaved)
 {
-    writeFile(m_ConfigPath, "[theme]\nid = \"arctic-fire\"\n");
+    // Not the default theme, so a read can be told from defaults.
+    writeFile(m_ConfigPath, "[theme]\nid = \"mocha\"\n");
     // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
     const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
     auto held = std::make_shared<HeldTestFolder>(m_TempDir);
     Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
     auto& config = UserConfig::get();
     config.load();
-    EXPECT_EQ(config.settings().themeId, "arctic-fire") << "read while it is held";
+    EXPECT_EQ(config.settings().themeId, "mocha") << "read while it is held";
 
     held.reset();
-    config.settings().themeId = "mocha";
+    config.settings().themeId = "nord";
     config.save();
-    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "arctic-fire") << "not saved once let go";
+    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "mocha") << "not saved once let go";
     config.resetConfigPathForTesting(m_ConfigPath); // read afresh
     config.load();
-    EXPECT_NE(config.settings().themeId, "arctic-fire") << "not read once let go: defaults";
+    EXPECT_NE(config.settings().themeId, "mocha") << "not read once let go: defaults";
     Core::ConfigDirOverride::setActiveForTesting(previous);
 }
 

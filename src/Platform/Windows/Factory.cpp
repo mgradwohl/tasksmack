@@ -3,6 +3,7 @@
 #include "Platform/IDiskProbe.h"
 #include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
