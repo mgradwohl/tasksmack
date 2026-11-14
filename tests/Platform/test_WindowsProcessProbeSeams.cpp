@@ -1941,6 +1941,24 @@ TEST_F(WindowsProcessProbeSeamTest, TheSignatureIsCheckedOffTheSampleAndTakenOnA
     EXPECT_EQ(fakeSignatures().checks, 1);
 }
 
+// #3703: with a signature worker the sampler never reads the publisher; it comes with the image's check.
+TEST_F(WindowsProcessProbeSeamTest, ThePublisherComesFromTheSignatureWorkerNotTheSample)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.signature = fakeSignatureFunctions();
+    functions.signature->readPublisher = [](const std::string& path)
+    {
+        return "Publisher of " + path;
+    };
+    WindowsProcessProbe probe(functions);
+    EXPECT_TRUE(find(probe.enumerate()).publisher.empty()) << "not read on the sample";
+
+    const ProcessCounters signedProcess = sampleUntilSigned(probe);
+    EXPECT_EQ(signedProcess.publisher, "Publisher of C:\\fake\\app.exe");
+    fake().now += std::chrono::hours(1); // Past every TTL: kept with the process
+    EXPECT_EQ(find(probe.enumerate()).publisher, "Publisher of C:\\fake\\app.exe");
+}
+
 TEST_F(WindowsProcessProbeSeamTest, AnUnreadableImagePathIsNeverSentForASignatureCheck)
 {
     fake().failImagePath = true;

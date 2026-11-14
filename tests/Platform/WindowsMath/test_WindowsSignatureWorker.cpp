@@ -253,6 +253,54 @@ TEST_F(SignatureWorkerTest, ARequestIsAnsweredLaterOnTheWorkersOwnThread)
     EXPECT_NE(fakes().checkThread, std::this_thread::get_id());
 }
 
+// #3703: the publisher is read with the check, on the worker's thread, and handed over with the answer.
+TEST_F(SignatureWorkerTest, ThePublisherIsReadWithTheCheckOnTheWorkersThread)
+{
+    static std::thread::id publisherThread;
+    publisherThread = {};
+    setStamp("C:\\app.exe", 1);
+    SignatureFunctions functions = fakeFunctions();
+    functions.readPublisher = [](const std::string& path)
+    {
+        publisherThread = std::this_thread::get_id();
+        return "Publisher of " + path;
+    };
+    SignatureWorker worker(functions, WorkerOptions{});
+    std::string publisher = "untouched";
+    EXPECT_FALSE(worker.find("C:\\app.exe", &publisher).has_value());
+    EXPECT_EQ(publisher, "untouched") << "no answer yet: left alone";
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    ASSERT_TRUE(worker.find("C:\\app.exe", &publisher).has_value());
+    EXPECT_EQ(publisher, "Publisher of C:\\app.exe");
+    EXPECT_NE(publisherThread, std::this_thread::get_id()) << "never on the asking (sampler) thread";
+    EXPECT_NE(publisherThread, std::thread::id{});
+}
+
+TEST_F(SignatureWorkerTest, AnUnreadablePublisherIsNoneAndTheCheckStillAnswers)
+{
+    setStamp("C:\\app.exe", 1);
+    SignatureFunctions functions = fakeFunctions();
+    functions.readPublisher = [](const std::string& /*path*/) -> std::string
+    {
+        throw std::runtime_error("no version info");
+    };
+    SignatureWorker worker(functions, WorkerOptions{});
+    (void) worker.find("C:\\app.exe");
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    std::string publisher = "stale";
+    const std::optional<SignatureCheck> check = worker.find("C:\\app.exe", &publisher);
+    ASSERT_TRUE(check.has_value());
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Embedded);
+    EXPECT_TRUE(publisher.empty());
+
+    SignatureWorker without(fakeFunctions(), WorkerOptions{}); // No publisher read at all
+    (void) without.find("C:\\app.exe");
+    ASSERT_TRUE(without.waitUntilIdle(WAIT));
+    publisher = "stale";
+    ASSERT_TRUE(without.find("C:\\app.exe", &publisher).has_value());
+    EXPECT_TRUE(publisher.empty());
+}
+
 TEST_F(SignatureWorkerTest, APathIsQueuedOnceHoweverManyProcessesAskForIt)
 {
     setStamp("svchost.exe", 1);
