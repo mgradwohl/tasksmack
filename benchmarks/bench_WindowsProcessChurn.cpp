@@ -26,6 +26,11 @@
 //    window walks (Not responding, and the window AppIDs), and the rest. unattributed is the sample's
 //    wall time less all of them: the probe's own code and what isn't behind a seam (the publisher's
 //    GetFileVersionInfo, the signature worker's request).
+//  - FirstEnumerate/iterations:1 and /iterations:10: a new probe built and its first enumerate(), as the
+//    process sampler's start hook makes them before the Processes table's first rows (#3714), with the same
+//    seams timed (plus the app names and the network detection) and construct_us the constructor's share.
+//    iterations:1 runs first in a benchmark process, with every per-process cache cold, as at launch;
+//    iterations:10 is ten more fresh probes in the same process.
 //
 // The processes are started suspended (CREATE_SUSPENDED) and ended before they run, so the churn spends
 // no CPU of its own beyond the kernel's process creation and exit, which falls outside the timed
@@ -54,6 +59,7 @@
 #include <utility>
 #include <vector>
 
+#include <objbase.h>
 #include <windows.h>
 
 namespace
@@ -409,6 +415,8 @@ enum class Seam : std::uint8_t
     WindowAppIds,
     HungWindows,
     OpenProcessRefused,
+    AppDisplayName,
+    Network,
     Count,
 };
 
@@ -431,6 +439,8 @@ constexpr std::array<const char*, SEAM_COUNT> SEAM_NAMES{
     "window_app_ids_us",
     "hung_windows_us",
     "open_process_refused_us",
+    "app_display_name_us",
+    "network_us",
 };
 
 constexpr ULONG COMMAND_LINE_CLASS = 60; // ProcessCommandLineInformation, as getProcessCommandLine() asks
@@ -512,7 +522,8 @@ HANDLE WINAPI timedOpenProcess(DWORD access, BOOL inherit, DWORD pid)
     return handle;
 }
 
-void BM_WindowsProcessProbe_Churn_Attribution(benchmark::State& state)
+/// fakeClockFunctions() with every seam Churn_Attribution and FirstEnumerate time routed through its bucket.
+[[nodiscard]] Platform::WindowsProcessProbeFunctions timedFunctions()
 {
     auto functions = fakeClockFunctions();
     timeSeam<Seam::Snapshot>(functions.system.ntQuerySystemInformation);
@@ -541,7 +552,22 @@ void BM_WindowsProcessProbe_Churn_Attribution(benchmark::State& state)
         realNtQueryInformationProcess = functions.process.ntQueryInformationProcess;
         functions.process.ntQueryInformationProcess = &timedNtQueryInformationProcess;
     }
+    timeSeam<Seam::AppDisplayName>(functions.app.appDisplayName);
+    timeSeam<Seam::Network>(functions.network.loadTcpEStats);
+    timeSeam<Seam::Network>(functions.network.getExtendedTcpTable);
+    return functions;
+}
 
+[[nodiscard]] double ticksToMicroseconds(std::int64_t ticks)
+{
+    LARGE_INTEGER frequency{};
+    (void) QueryPerformanceFrequency(&frequency);
+    return static_cast<double>(ticks) * 1e6 / static_cast<double>(frequency.QuadPart);
+}
+
+void BM_WindowsProcessProbe_Churn_Attribution(benchmark::State& state)
+{
+    const auto functions = timedFunctions();
     Platform::WindowsProcessProbe probe(functions);
     (void) probe.enumerate(); // Every running process's details read once, as a first sample does
     seamTicks().fill(0);
@@ -577,6 +603,53 @@ BENCHMARK(BM_WindowsProcessProbe_Churn_Attribution)
     ->Args({8, 1})
     ->Iterations(CHURN_SAMPLES)
     ->Unit(benchmark::kMicrosecond);
+
+/// What the process sampler's start hook pays for the probe (#3714): a new WindowsProcessProbe built and its
+/// first enumerate(), which reads every process's details at once, on a thread in the multithreaded
+/// apartment as the sampler's is (#2731). Each iteration is a fresh probe; its destruction (which joins the
+/// signature worker its first sample started) is untimed. construct_us is the constructor's share, and the
+/// seam counters are per first pass, as Churn_Attribution's are per sample.
+void BM_WindowsProcessProbe_FirstEnumerate(benchmark::State& state)
+{
+    const HRESULT com = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    const auto functions = timedFunctions();
+    seamTicks().fill(0);
+    std::int64_t constructTicks = 0;
+    std::int64_t passTicks = 0;
+    std::size_t processes = 0;
+    for (auto _ : state)
+    {
+        const std::int64_t start = performanceCounter();
+        auto probe = std::make_unique<Platform::WindowsProcessProbe>(functions);
+        const std::int64_t built = performanceCounter();
+        auto counters = probe->enumerate();
+        const std::int64_t done = performanceCounter();
+        constructTicks += built - start;
+        passTicks += done - start;
+        processes = counters.size();
+        benchmark::DoNotOptimize(counters.data());
+        state.PauseTiming();
+        probe.reset();
+        state.ResumeTiming();
+    }
+    std::int64_t attributed = 0;
+    for (std::size_t seam = 0; seam < SEAM_COUNT; ++seam)
+    {
+        attributed += seamTicks()[seam];
+        state.counters[SEAM_NAMES[seam]] = benchmark::Counter(ticksToMicroseconds(seamTicks()[seam]), benchmark::Counter::kAvgIterations);
+    }
+    state.counters["construct_us"] = benchmark::Counter(ticksToMicroseconds(constructTicks), benchmark::Counter::kAvgIterations);
+    state.counters["unattributed_us"] = benchmark::Counter(ticksToMicroseconds(passTicks - attributed), benchmark::Counter::kAvgIterations);
+    state.counters["processes"] = benchmark::Counter(static_cast<double>(processes));
+    if (SUCCEEDED(com))
+    {
+        CoUninitialize();
+    }
+}
+// The first pass in a benchmark process (every static cache cold, as at launch: the publisher cache is per process),
+// then ten more fresh probes in the same process.
+BENCHMARK(BM_WindowsProcessProbe_FirstEnumerate)->Iterations(1)->Unit(benchmark::kMillisecond);
+BENCHMARK(BM_WindowsProcessProbe_FirstEnumerate)->Iterations(10)->Unit(benchmark::kMillisecond);
 
 /// The publisher's first read of an image (WindowsProcessDetailReads::publisher(): GetFileVersionInfo),
 /// which the probe makes on the sampler thread with a new process's first heavy read, once per path for
