@@ -20,6 +20,7 @@
 #include "App/HelpLayer.h"
 #include "App/HelpWindow.h"
 #include "App/Panels/ProcessDetailsPanel.h"
+#include "App/Panels/ProcessModulesView.h"
 #include "App/RenderMetricsOverride.h"
 #include "App/ScreenshotLayer.h"
 #include "App/ScreenshotOverride.h"
