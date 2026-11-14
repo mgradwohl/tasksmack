@@ -2460,6 +2460,28 @@ single-instance lock would stop the new one at its "already running" box); close
 ./tools/measure-idle.sh --help
 ```
 
+Each run is sampled in phases (#3729), by `tools/idle-sample.py` from `/proc`, under the field names
+`measure-idle.ps1` uses (schema `tasksmack-idle-windows/2`, #3715), so one summary script reads
+both platforms' runs. A phase records each thread's wake-ups (context switches per second) beside
+its CPU, the UI thread's and the total; memory at each end and every `--memory-poll-seconds` (the
+resident set, its private part and PSS from `smaps_rollup`, plus file descriptors and threads); the
+compositor's CPU and wake-ups (gnome-shell, kwin_wayland, Xorg and others, where you can see them:
+never under WSLg, whose compositor runs in the system distro); and how busy the rest of the machine
+was. Linux has no system-wide timer resolution, so `timerResolutionMs` stays `null`. By default a
+run is one visible phase of `--duration` seconds. `--phases visible:120,minimized:60,restored:60`
+runs several in order: a minimized phase asks the window manager to minimize the window (`xdotool`
+or `wmctrl`, a request, not injected input) and a restored phase to bring it back. When the window
+manager ignores the request, as WSLg's does, or there is no X11 window (native Wayland), that phase
+is skipped and the JSON says why. The table, `RESULT` line, aggregates and `--fail-above` describe
+the first phase. `--memory-csv <path>` also writes the memory series, one row per reading.
+
+```bash
+# Minimize and restore phases, then an hour-long memory series.
+./tools/measure-idle.sh --skip-build --window 1600x900 --phases visible:120,minimized:60,restored:60
+./tools/measure-idle.sh --skip-build --phases visible:3600 --memory-poll-seconds 30 \
+    --memory-csv perf-data/memory.csv
+```
+
 On Windows, `tools/measure-idle.ps1` (#2492) takes one measurement of an existing build the same way:
 its own fresh `TASKSMACK_CONFIG_DIR`, `TASKSMACK_TRACE_RESIZE_PERF=1`, a warm-up, then per-thread
 CPU (from each thread's processor time), fps and frame times from the same `ResizePerf` summaries,
