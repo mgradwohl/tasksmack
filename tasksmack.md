@@ -32,7 +32,7 @@ flowchart TD
 ```
 
 - Platform probes read raw OS counters and never compute deltas or rates. They may keep implementation state that serves those reads: caches of raw readings and the bookkeeping a raw reading needs. On Linux, `LinuxProcessProbe` keeps a UID-to-username cache (one entry per UID seen, never evicted); each process's command line, keyed by PID, start time and comm, re-read within `PROCESS_CMDLINE_CACHE_TTL_MS` and dropped once the process is no longer listed; the socket inode-to-PID map, which `enumerate()` rebuilds every `INODE_PID_CACHE_TTL_MS` from the same `/proc/[pid]/fd` walk that counts FDs; the TCP socket query result, cached for `socket_stats_cache_ttl_ms` (default `SOCKET_STATS_CACHE_TTL_MS_DEFAULT`); and, for socket attribution, when each still-unowned socket was first seen (replaced by every reading).
-- Process enumeration and each system-metrics domain (System, Storage, GPU/NPU) run on their own `BackgroundSampler` threads (each seeded on its thread by its start hook), so the UI stays responsive under heavy load and a stalled source (a disk rescan, a GPU enumeration) never delays another domain's samples (#2731). The Services and Startup tabs have their own samplers, which run only once their tab has been shown.
+- Process enumeration and each system-metrics domain (System, Storage, GPU/NPU) run on their own `BackgroundSampler` threads (each seeded on its thread by its start hook), so the UI stays responsive under heavy load and a stalled source (a disk rescan, a GPU enumeration) never delays another domain's samples (#2731). The Services, Startup, Connections and Users tabs have their own samplers, which run only once their tab has been shown.
 - Domain code transforms counters into snapshots and maintains history.
 - UI (panels) consumes snapshots, renders views through ImGui/ImPlot, and never calls platform APIs directly.
 - OpenGL usage is confined to Core/UI (SDL3 + ImGui backends).
@@ -49,7 +49,7 @@ The diagram shows runtime data flow. Compile-time dependencies are constrained m
 - Declares probe and action interfaces.
 - Implements Linux and Windows access to process, system, disk, GPU, power, networking, and path APIs.
 - Returns cumulative counters and capability flags rather than UI-ready rates.
-- Contains no Core, UI, or App dependencies. From Domain it uses only header-only constants and helpers (`SamplingConfig.h`, `PriorityConfig.h`, `Numeric.h`).
+- Contains no Core, UI, or App dependencies. From Domain it uses only header-only constants and helpers (`SamplingConfig.h`, `PriorityConfig.h`, `Numeric.h`, `StartAtLogin.h`) and the worker its background reads run on (`Worker.h`, with `PublicationSlot.h` and `PublicationWake.h`).
 
 ### `src/Domain`
 
@@ -116,7 +116,7 @@ The default interval is 1 second and can be configured from 100 ms to 5 seconds.
 
 Sampling and drawing are separate (#2731): every sampler runs at the refresh interval set in Settings, in every UI state. A hidden tab, a resize or move, a minimized window and the frame rate change what is drawn and how often, never how often the data is sampled. `ProcessesPanel::samplingInterval()`, `SystemMetricsPanel::samplingInterval()` and `SystemMetricsPanel::samplerIntervals()` (all three of that panel's samplers) expose the samplers' intervals, and the panel tests check each equals the setting through every state.
 
-Timer inventory (the threads that do timed work, and what sets each period): `ts-sampler-proc` (processes), `ts-sampler-sys` (CPU, memory, network, power), `ts-sampler-disk` (disks), `ts-sampler-gpu` (GPUs and NPUs) and `ts-sampler-sens` (sensors) run at the Settings interval; the GPU and disk rescans and the battery facts (`ts-battery-read`) run at their constants in `SamplingConfig.h`; `ts-sampler-svc` and `ts-sampler-auto` run at constants only while wanted; the Process Details and System Information readers run on demand at their own constants. The UI thread times nothing but its own redraw.
+Timer inventory (the threads that do timed work, and what sets each period): `ts-sampler-proc` (processes), `ts-sampler-sys` (CPU, memory, network, power), `ts-sampler-disk` (disks), `ts-sampler-gpu` (GPUs and NPUs) and `ts-sampler-sens` (sensors) run at the Settings interval; the GPU and disk rescans and the battery facts (`ts-battery-read`) run at their constants in `SamplingConfig.h`; `ts-sampler-svc` and `ts-sampler-auto` run at constants only while wanted; `ts-sampler-conn` (Connections) and `ts-sampler-user` (Users) run at the Settings interval once their tab has been shown; the Process Details and System Information readers run on demand at their own constants. The UI thread times nothing but its own redraw.
 
 ### History Storage
 
@@ -163,7 +163,9 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 - **ProcessDetailsPanel:** detailed view for the currently selected process.
 - **SystemMetricsPanel:** the machine's tab: plots and timelines backed by domain history.
 - **ServicesPanel:** Windows services or systemd units, with their own sampler (`ts-sampler-svc`) once the tab is shown.
-- **StartupPanel:** Windows startup apps, with their own sampler (`ts-sampler-auto`) while the tab is shown.
+- **StartupPanel:** startup apps (Windows Run keys, Startup folders and packaged apps; Linux XDG autostart, systemd units and cron), with their own sampler (`ts-sampler-auto`) while the tab is shown.
+- **ConnectionsPanel:** every TCP and UDP socket and its process, with its own sampler (`ts-sampler-conn`) once the tab is shown.
+- **UsersPanel:** signed-in users and their sessions, with its own sampler (`ts-sampler-user`) once the tab is shown (#3377 folds it into Processes › Group: User).
 - **SystemInfoPanel:** System Information, read on demand off the UI thread.
 
 ## Process Scalability
@@ -239,7 +241,7 @@ Custom title-bar behavior is intentionally platform-specific:
 
 - **Windows:** The empty title bar is the OS's caption: the hit test answers `SDL_HITTEST_DRAGGABLE` (-> `HTCAPTION`), so Windows runs the move itself and Aero Snap, the snap preview, drag-to-the-top to maximize and a double-click to maximize all work as for a native window (#2716). Border resize stays client-side (`TitleBarLayer::updateResize()`, resize cursors applied from the app): the OS resize loop is modal inside SDL's event pump, so nothing would be drawn until the button came up. A client-side maximized window (#1208) is a normal window to the OS, so its title bar stays client-side too and a drag restores it under the pointer (#2715). Snap Layouts (hovering the maximize button) is not available: SDL has no `HTMAXBUTTON` hit-test result.
 - **Linux (X11/XWayland):** Delegates border resize to window manager via `SDL_HITTEST_RESIZE_*` results.
-  - Title-bar drag uses event-consistent coordinates (`window position + event-local mouse`), client-side, same as Windows.
+  - Title-bar drag is client-side and reads global mouse state (`TitleBarLayer::queryMouseState()`), unlike Windows, which hands the empty title bar to the OS move loop (#2716).
   - Window maximize asks the window manager (`SDL_MaximizeWindow`) when it supports EWMH maximize (`_NET_SUPPORTED` lists `_NET_WM_STATE_MAXIMIZED_VERT`/`_HORZ`, read by `Core::X11WindowManager`), so it fills the window manager's work area; `SDL_GetDisplayUsableBounds` is the whole display on a server without `_NET_WORKAREA` (WSLg), which covered the taskbar (#1339). Without EWMH maximize it falls back to client-side positioning with `SDL_GetDisplayUsableBounds`. The decision is `WindowGeometry::chooseBorderlessMaximize()`; Windows always maximizes client-side (#1208).
 - **Linux (native Wayland):** Prefers compositor-managed window interactions.
   - Title-bar drag delegates to the compositor via `SDL_HITTEST_DRAGGABLE` (-> `xdg_toplevel_move()`) rather than client-side `SDL_SetWindowPosition()`, which Wayland doesn't support for absolute positioning (#744). This consumes the button-down event entirely, so double-click-to-maximize does not fire from the title bar on native Wayland -- the maximize button remains available there.

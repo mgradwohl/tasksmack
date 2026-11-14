@@ -28,7 +28,7 @@ TaskSmack is a C++23 system monitor and task manager for Linux and Windows, buil
 - CPU, memory, swap, storage, network, GPU, NPU, and battery histories
 - Per-process CPU, memory, disk I/O, network, GPU, and NPU metrics when the platform exposes them
 - Process termination, forced termination, priority and CPU affinity changes, suspend/resume, dump files, batch actions on several processes, I/O priority changes (ionice on Linux, the I/O priority hint on Windows), and Linux strace actions
-- Services and Startup tabs that list and control services and startup apps (Windows Run keys, Startup folders and packaged apps; Linux XDG autostart), and a System tab of hardware, firmware, network, driver, and crash facts
+- Services and Startup tabs that list and control services and startup apps (Windows Run keys, Startup folders and packaged apps; Linux XDG autostart, systemd units and cron jobs), and a System tab of hardware, firmware, network, driver, and crash facts
 - TOML configuration, 22 bundled themes, user themes, configurable sampling, and bounded history
 - Capability-driven UI that hides unavailable metrics instead of fabricating cross-platform parity
 

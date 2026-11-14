@@ -7,6 +7,9 @@
 #include "Core/FramePacing.h"
 #include "Core/FrameWake.h"
 #include "Core/GraphicsReset.h"
+#ifdef _WIN32
+#include "Core/IdleWaitTimer.h" // Only Windows paces its idle waits with it (#3712)
+#endif
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
 #include "Core/ResizePerfTrace.h"
@@ -353,6 +356,17 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
     bool sdlInitialized = false;
     try
     {
+#ifdef _WIN32
+        // SDL raises the whole machine's timer to 1 ms (timeBeginPeriod(1)) when its clock starts,
+        // unless this hint says otherwise (#3712): a cost to every core's idle states and to the
+        // battery, for as long as the window is visible. The frame loop's waits end on time without it
+        // (IdleWaitTimer). Set before anything starts SDL's clock: getTime() does, headless too. At
+        // normal priority, so an SDL_TIMER_RESOLUTION environment variable still wins.
+        if (!SDL_SetHint(SDL_HINT_TIMER_RESOLUTION, "0"))
+        {
+            spdlog::info("SDL_HINT_TIMER_RESOLUTION is set by the environment; SDL keeps that timer resolution");
+        }
+#endif
         m_ResizePerfTraceEnabled = resizePerfTraceRequested();
         resizePerfOperations() = {};
         spdlog::info("Initializing {} application", m_Spec.Name);
@@ -578,14 +592,30 @@ void Application::run()
     // event stayed queued and the frame after the wait rendered straight after the wake, showing the
     // state from before the input. A wait that times out polls once more (#1450): a wake from another
     // thread can reach it late, with the event already queued, and that event is a wake too.
-    const auto waitForEvent = [&idleWakeEvent, &loopTiming](int timeoutMs, bool traced) -> FramePacing::IdleWaitOutcome
+    // On Windows the wait's timeout is ended on time by a high-resolution timer (#3712): SDL's own
+    // ends on a system timer tick, 15.625 ms apart now that TaskSmack no longer raises the timer to
+    // 1 ms (see SDL_HINT_TIMER_RESOLUTION in the constructor).
+#ifdef _WIN32
+    IdleWaitTimer idleWaitTimer;
+    if (!idleWaitTimer.active())
+    {
+        spdlog::warn("Frame pacing: no high-resolution timer; idle waits end on the system timer's tick");
+    }
+#endif
+    const auto waitForEvent = [&](int timeoutMs, bool traced) -> FramePacing::IdleWaitOutcome
     {
         const auto waitStart = traced ? SDL_GetPerformanceCounter() : 0;
         SDL_Event wakeEvent;
+#ifdef _WIN32
+        idleWaitTimer.arm(timeoutMs);
+#endif
         const auto outcome = FramePacing::waitForIdleEvent(
             wakeEvent,
             [timeoutMs](SDL_Event& event) { return SDL_WaitEventTimeout(&event, timeoutMs); },
             [](SDL_Event& event) { return SDL_PollEvent(&event); });
+#ifdef _WIN32
+        idleWaitTimer.disarm();
+#endif
         if (outcome != FramePacing::IdleWaitOutcome::TimedOut)
         {
             idleWakeEvent = wakeEvent;

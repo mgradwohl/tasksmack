@@ -9,7 +9,7 @@ This document defines the test matrix and acceptance criteria for the Wayland na
 
 ## Implementation Summary
 The implementation uses backend capability gating (`Core::VideoBackend`) to provide platform-specific behavior:
-1. **Native Wayland:** Compositor-managed maximize/restore, event-consistent local-coordinate drag
+1. **Native Wayland:** Compositor-managed maximize/restore, and a compositor-run title-bar drag and border resize (`SDL_HITTEST_DRAGGABLE`, #744)
 2. **X11/XWayland:** Maximize asks the window manager when it supports EWMH maximize (#1339), otherwise client-side maximize/restore; global-coordinate drag (existing behavior preserved)
 3. **Windows:** Title-bar drag handed to the OS move loop (`SDL_HITTEST_DRAGGABLE` -> `HTCAPTION`, so Aero Snap works, #2716); client-side maximize/restore and border resize (existing behavior preserved)
 
@@ -39,7 +39,7 @@ These tests verify the backend detection and capability query system that gates 
 **Test Coverage:**
 - `ClassifyBackendTest` (6 cases) - table-tests `VideoBackend::classifyBackend(driverName, waylandDisplaySet)` directly. It's a pure function with no SDL/environment calls of its own, so every backend and edge case (empty/unrecognized driver name, Wayland regardless of env, X11 with/without `WAYLAND_DISPLAY`, Windows per-platform) is exercised deterministically regardless of what driver the test process actually has active.
 - `ShouldUseBorderlessTitleBarTest` (3 cases) - table-tests `VideoBackend::shouldUseBorderlessTitleBar(forceNativeDecorationsOnWayland, isWayland)`: the custom title bar is used unless the native-decorations opt-in is on *and* the backend is native Wayland (#745).
-- `VideoBackendTest` (8 `TEST_F` cases) - exercises the real `initialize()`/`isWayland()`/etc. path against whichever real or headless SDL driver is active, so (unlike `ClassifyBackendTest`) these check cross-backend invariants rather than asserting a specific backend on every platform:
+- `VideoBackendTest` (10 `TEST_F` cases) - exercises the real `initialize()`/`isWayland()`/etc. path against whichever real or headless SDL driver is active, so (unlike `ClassifyBackendTest`) these check cross-backend invariants rather than asserting a specific backend on every platform:
   - `InitializeIsIdempotent` - calling `initialize()` twice doesn't change the result
   - `DriverNameIsNotEmptyAfterInitialize` - driver name is always available once initialized
   - `BackendFlagsAreMutuallyExclusive` - at most one of `isWayland`/`isX11`/`isXWaylandFallback`/`isWindows` is true
@@ -101,12 +101,10 @@ ctest --preset debug              # Linux tests
 Test that borderless window maximize/restore works reliably:
 
 **Wayland (Native):**
-- [ ] Maximize window via double-click on title bar
+- [ ] Maximize via the maximize button (a double-click on the title bar does nothing on native Wayland: the compositor takes the press, see below)
   - Expected: Window maximizes smoothly using compositor
   - Verify: Window fills usable area, custom title bar visible
-- [ ] Maximize via maximize button
-  - Expected: Same as double-click
-- [ ] Restore from maximized state via double-click
+- [ ] Restore from maximized state via the maximize button
   - Expected: Window returns to previous size/position
 - [ ] Restore via restore button
   - Expected: Same as double-click
@@ -131,7 +129,7 @@ Test that title-bar dragging is smooth and accurate:
   - Expected: Compositor's own maximize/restore-on-drag behavior applies (varies by compositor -- note what actually happens)
 - [ ] Drag onto a different monitor (multi-monitor)
   - Expected: Window moves smoothly between monitors
-- [ ] **Regression check: every title-bar button still works** (icon/system-menu, about, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`isPointInControlArea()` must be checked before returning `DRAGGABLE`).
+- [ ] **Regression check: every title-bar button still works** (icon/system-menu, about, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`computeWindowHitTestAt()` in `App/TitleBarGeometry.h` must answer `SDL_HITTEST_NORMAL` for every button).
 - [ ] Double-click the empty title-bar area
   - Expected (accepted trade-off, not a bug): does NOT toggle maximize/restore on native Wayland, since the compositor consumes the button-down entirely. Use the maximize button instead.
 
