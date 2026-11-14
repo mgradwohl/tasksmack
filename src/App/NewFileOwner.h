@@ -67,6 +67,27 @@ struct FileOwner
     return ok;
 }
 
+/// The first link on the way to @p dir (it included, or the nearest of its ancestors that exist) that a user other than
+/// root owns, or nullopt. Run as root for a user (#3759), such a link is theirs to point anywhere, so a write (the
+/// directory's creation included) would go where they chose; a link root owns is the system's own (/home on some
+/// systems) and is followed as usual. lstat, so a link is seen as itself.
+[[nodiscard]] inline std::optional<std::filesystem::path> userOwnedLinkOnPath(const std::filesystem::path& dir)
+{
+    for (std::filesystem::path at = dir; !at.empty(); at = at.parent_path())
+    {
+        struct stat entry = {};
+        if (::lstat(at.c_str(), &entry) == 0 && S_ISLNK(entry.st_mode) && entry.st_uid != 0)
+        {
+            return at;
+        }
+        if (at == at.parent_path())
+        {
+            break;
+        }
+    }
+    return std::nullopt;
+}
+
 } // namespace App::NewFileOwner
 
 #endif

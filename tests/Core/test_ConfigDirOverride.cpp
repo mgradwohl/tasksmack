@@ -83,5 +83,23 @@ TEST(ConfigDirOverrideTest, AHandedOverDirectoryIsUsedButIsNoTestHook)
     setActiveForTesting(previous);
 }
 
+// #3759: a TaskSmack run as root for a user keeps that user's config folder, the less-privileged side's, so it counts as
+// handed over, though no override names it; a test's own override starts clean again.
+TEST(ConfigDirOverrideTest, ARootSessionsInvokingUsersFolderCountsAsHandedOver)
+{
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = active();
+    setActiveForTesting(std::nullopt);
+    EXPECT_FALSE(handedOver());
+
+    markLessPrivilegedFolder();
+    EXPECT_TRUE(handedOver());
+    EXPECT_FALSE(active().has_value()) << "the folder is still the one the platform picks";
+    EXPECT_FALSE(fromTestHook());
+
+    setActiveForTesting(previous);
+    EXPECT_FALSE(handedOver()) << "a test's override starts with nothing handed over";
+}
+
 } // namespace
 } // namespace Core::ConfigDirOverride
