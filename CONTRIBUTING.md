@@ -143,7 +143,7 @@ The Windows setup installs only what building, testing and running need:
 - LLVM 23 (`-LlvmVersion` must stay on the pinned major), as the only LLVM in `C:\Program Files\LLVM` (see below);
 - CMake, Ninja and Python 3.14.
 
-It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success, and it skips the Windows SDK when its 10.0.26100 desktop headers and libraries are already there. For LLVM it reads the installer registrations (Settings > Apps) first. An LLVM of the pinned major is left alone, whatever its minor version, and so are several side-by-side LLVM MSIs of that major (it says so). An LLVM of any other major is uninstalled (every registration, with `msiexec /x` for an MSI and the NSIS uninstaller's `/S`), then the pinned version is installed and `clang --version` checked. If any of that fails, the script stops with an error rather than finishing on the wrong LLVM; `-DryRun` prints the uninstall and install commands it would run. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), fails `clang` and `clang++` on an LLVM major other than CI's pinned one, marks the other LLVM tools on another major with `!`, and marks the optional developer tools with `!` when they are missing rather than failing: ccache, clangd and clang-format (found in `LLVM_ROOT\bin`; the LLVM installer does not add itself to `PATH`, which VS Code needs for them), and the Windows Performance Toolkit (`wpr`, `xperf`, `wpa`) for ETW profiling.
+It then creates `.venv\` with Python 3.14 and installs GLAD's hash-locked build dependencies into it. `-DevTools` adds the optional developer tools: ccache and the development dependencies from `requirements.txt` (pre-commit and the other Python tools). You need those before your first pull request, not to build. clang-tidy and clang-format come with LLVM. CMake configures GLAD with `.venv\Scripts\python.exe` whenever it exists (`.venv/bin/python` on Linux). Re-running the script is safe: winget's "already installed" results count as success, and it skips the Windows SDK when its 10.0.26100 desktop headers and libraries are already there. For LLVM it reads the installer registrations (Settings > Apps) first. An LLVM of the pinned major is left alone, whatever its minor version, and so are several side-by-side LLVM MSIs of that major (it says so). An LLVM of any other major is uninstalled (every registration, with `msiexec /x` for an MSI and the NSIS uninstaller's `/S`), then the pinned version is installed and `clang --version` checked. If any of that fails, the script stops with an error rather than finishing on the wrong LLVM; `-DryRun` prints the uninstall and install commands it would run. `check-prereqs.ps1` reports the LLVM in `LLVM_ROOT` (what the `win-*` presets build with), fails `clang` and `clang++` on an LLVM major other than CI's pinned one, marks the other LLVM tools on another major with `!`, and marks the optional developer tools with `!` when they are missing rather than failing: ccache, clangd and clang-format (found in `LLVM_ROOT\bin`; the LLVM installer does not add itself to `PATH`, which VS Code needs for them), and the Windows Performance Toolkit (`wpr`, `xperf`, `wpa`, `wpaexporter`) for ETW profiling.
 
 ### One-Command Dev Workflow
 
@@ -268,6 +268,7 @@ Pre-commit hooks automatically check your code before each commit, catching form
 
 ```bash
 # Activate the project environment created during setup, then install pre-commit.
+# (Windows, in PowerShell 7: .venv\Scripts\Activate.ps1; tools/setup-dev.ps1 -DevTools installs pre-commit.)
 source .venv/bin/activate
 python -m pip install pre-commit
 
@@ -474,7 +475,7 @@ Remove stale build directories, FetchContent cache, and coverage output:
 ./tools/clean.sh --all    # Also removes .cache/, dist/, profiles/, and compilation databases
 ./tools/clean.sh --dry-run  # Preview what would be removed without deleting anything
 
-pwsh tools/clean.ps1      # Windows equivalent (same flags)
+pwsh tools/clean.ps1      # Windows: -All and -DryRun as above, -Yes to skip the confirmation prompt
 ```
 
 ### CPU Compatibility
@@ -908,11 +909,12 @@ matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `no
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
 the Processes table grouped by service, by app and by user (`processes-grouped-unit`, `processes-grouped-app`,
 `processes-grouped-user`, #3068, #3377; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
-service list Unit groups by), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
+service list Unit groups by, and only the Linux set takes `processes-grouped-app` so far), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
 `TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
 Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
-`details-modules`, `details-openfiles`, `details-connections`, and on Linux, the only platform that
-reads them, Environment and Security too: `details-environment`, `details-security`) for one process,
+`details-modules`, `details-openfiles`, `details-connections`, and in the Linux set Environment and
+Security too: `details-environment`, `details-security`; Windows reads both sections as well, but
+`screenshots.ps1` doesn't take them yet) for one process,
 Services, Startup, Users (Windows only so far), Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
 plus three animated WebPs at 12 fps built from frame sequences:
 `overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
@@ -1160,6 +1162,8 @@ sudo apt install iwyu
 ```
 
 **Notes:**
+- **Windows:** `pwsh tools/iwyu.ps1` runs `tools/iwyu.sh` inside WSL, against the Linux build tree
+  (configure and build `debug` in WSL first); there is no Windows-native IWYU run.
 - IWYU suggestions are advisory and may not always be appropriate.
 - CI runs IWYU in report-only mode (does not block PRs).
 - **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
@@ -2052,7 +2056,8 @@ Notes:
 
 #### Same-run resize diagnostics (normal-user app, elevated collector)
 
-`profile-etw.ps1 resize` uses PowerShell 7 and four explicit phases. Only **Collect**
+`profile-etw.ps1 resize` uses PowerShell 7 and four explicit phases (Prepare, Collect, App and Check,
+plus Save for ring buffering, below). Only **Collect**
 requires elevation; it never launches the app or executes commands from the run manifest.
 Prepare/App/Check refuse elevated terminals. This avoids the workload-elevation confound
 without replacing the legacy profiling modes. No driver changes, TDR settings, GPU
@@ -3177,7 +3182,8 @@ opens PRs; the same CI gate applies before merge.
     WinGet's newest version with a warning that names the pin to move, so a stale pin shows up on a
     clean machine as that warning, not as a failed setup.
 - *Tier 3, manual:* tools that ride the OS, runner or SDK rather than their own releases (`wpr`, `xperf`,
-  `wpa`, CPack's NSIS/dpkg/rpmbuild, `gh`, `xvfb`), and optional local-only tools (Inkscape, heaptrack,
+  `wpa`, CPack's dpkg/rpmbuild, `gh`, `xvfb`), NSIS (no Renovate entry: bump `.github/actions/setup-nsis`'s
+  `version` default and its SHA-256 together), and optional local-only tools (Inkscape, heaptrack,
   FlameGraph, hotspot).
 
 **`check-prereqs.sh`'s `MIN_*` floors** (`MIN_CMAKE_VERSION`, `MIN_CLANG_VERSION`, `MIN_CCACHE_VERSION`,
@@ -3386,8 +3392,8 @@ and upgrade `tasksmack` in place. Every file the new `.deb` ships must be instal
 and man pages aside, which the image's dpkg doesn't unpack), the Administrator launcher and its polkit action checked by name, and no v0.8.0 file the new `.deb` dropped (v0.8.0's helper among them) may be left
 over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
-the fixture's settings kept. Windows has no package to upgrade from yet: the `.zip` is portable, and v0.9.1
-publishes the first installer, so an installer upgrade check can follow once a release has one.
+the fixture's settings kept. Windows has no upgrade check yet: the `.zip` is portable, and although every
+release since v0.9.1 publishes an installer, no job installs this run's installer over a published one.
 
 Both jobs also check what the packages contain, since a bundled dependency's own `install()` rules
 can ship development files to users: the `.deb`'s listing (`dpkg -c`) may hold nothing outside
