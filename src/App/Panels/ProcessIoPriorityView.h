@@ -1,7 +1,7 @@
 #pragma once
 
 // Process Details' I/O priority control (#803): the Linux ionice setting, drawn by ProcessPriorityView
-// under the nice control: one discrete slider through every class and level in bands -- Realtime 0..7 |
+// in the I/O priority card, under the Priority card (#3741): one discrete slider through every class and level in bands -- Realtime 0..7 |
 // Best-effort 0..7 | Idle (#1540) -- with the never-set default drawn hollow at the level nice derives, a
 // "Reset to default" button, and its own Apply button. On Windows (#3362) the same control sets the I/O
 // priority hint instead: High | Normal | Low | Very low, with no Reset to default.
@@ -352,7 +352,8 @@ static_assert(IO_HINT_ORDER[0] == Platform::IoPriorityHint::High && IO_HINT_ORDE
 class ProcessIoPriorityView
 {
   public:
-    /// Draws the control for @p target from the last value updateRead() took in: the row label, one slider through every class and level
+    /// Draws the control for @p target from the last value updateRead() took in, under the I/O priority card's header,
+    /// which is its label (currentText() is the header's tooltip, #3741): one slider through every class and level
     /// (Detail::IO_PRIORITY_SLIDER, or without Realtime unless @p realtimeSettable, #1540), "Reset to default" and Apply, which sets the
     /// edit through @p actions. @p currentNice is the process's nice value from its latest snapshot: a
     /// class never set shows at the Best-effort level it derives. With @p windowsHints
@@ -652,6 +653,15 @@ class ProcessIoPriorityView
     [[nodiscard]] const std::optional<Platform::IoPriority>& currentIoPriority() const noexcept
     {
         return m_Current;
+    }
+
+    /// The process's current I/O priority in words, "current: best-effort 4" ("current: unknown" before a read or when
+    /// it failed): the I/O priority card header's tooltip, and the note after Apply where it fits. @p currentNice and
+    /// @p schedPolicy word a class never set (Detail::describeIoPriority()).
+    [[nodiscard]] std::string currentText(std::optional<std::int32_t> currentNice, Platform::SchedPolicy schedPolicy) const
+    {
+        return m_Current.has_value() ? "current: " + Detail::describeIoPriority(*m_Current, currentNice, schedPolicy)
+                                     : std::string("current: unknown");
     }
 
     /// Why the last read failed, empty when it did not.

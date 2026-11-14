@@ -7,7 +7,7 @@
 # keep the source tree clean (#599).
 option(TASKSMACK_COPY_COMPILE_COMMANDS "Copy compile_commands.json to the source root for clangd" OFF)
 
-set(TASKSMACK_LLVM_VERSION "22" CACHE STRING "Canonical LLVM toolchain version used for tool discovery hints")
+set(TASKSMACK_LLVM_VERSION "23" CACHE STRING "Canonical LLVM toolchain version used for tool discovery hints")
 option(TASKSMACK_ENABLE_IPO "Enable interprocedural optimization" ON)
 option(TASKSMACK_ENABLE_WARNINGS "Enable extra compiler warnings" ON)
 option(TASKSMACK_WARNINGS_AS_ERRORS "Treat compiler warnings as errors" ON)

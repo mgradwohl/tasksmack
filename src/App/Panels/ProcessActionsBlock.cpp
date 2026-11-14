@@ -5,6 +5,7 @@
 #include "ProcessActionsView.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
+#include "ProcessIoPriorityView.h"
 #include "ProcessOverviewCard.h"
 #include "ProcessPriorityView.h"
 #include "UI/IconsFontAwesome6.h"
@@ -16,7 +17,7 @@
 #include <imgui.h>
 
 #include <algorithm>
-#include <cmath>
+#include <string>
 
 namespace App::ProcessActionsBlock
 {
@@ -31,7 +32,8 @@ namespace
     return ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(label).x, ImGui::GetStyle().FramePadding.x);
 }
 
-/// The priority rows ProcessPriorityView draws for @p capabilities: label, controls and Apply.
+/// The widest row of the Priority and I/O priority cards, which share a column and its width (#3741): each
+/// card's slider and its buttons under it.
 [[nodiscard]] float priorityRowsWidth(const Platform::ProcessActionCapabilities& capabilities)
 {
     const float emPx = ImGui::GetFontSize();
@@ -48,19 +50,13 @@ namespace
         // The gradient slider row, which fits itself to the width it is given.
         width = ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx;
 #endif
-        if (ProcessPriorityView::labelsRows(capabilities))
-        {
-            // Its "Priority" row label, drawn only beside the I/O priority row (#1874).
-            width = std::max(width, ImGui::CalcTextSize("Priority").x);
-        }
     }
     if (capabilities.canSetIoPriority)
     {
-        // "I/O priority", its slider under it at the nice slider's row width (it fits itself to the width
-        // it is given, as that one does), and [Reset to default] [Apply] under the slider (#1540).
+        // The I/O slider at the nice slider's row width (it fits itself to the width it is given, as that
+        // one does), and [Reset to default] [Apply] under it (#1540).
         width = std::max({
             width,
-            ImGui::CalcTextSize("I/O priority").x,
             ProcessDetailsLayout::PRIORITY_SLIDER_ROW_WIDTH_EM * emPx,
             applyButtonWidth("Reset to default") + spacing + applyButtonWidth(ICON_FA_CHECK "  Apply"),
         });
@@ -68,30 +64,24 @@ namespace
     return width;
 }
 
-/// Draws @p rows, a card's content under its header, and returns what the card needs down for them:
-/// from its top to their bottom, and the bottom padding. In a card given a fixed height (@p centred)
-/// they are centred in the room left under the header (#1874), from their height the frame before,
-/// which the card keeps in its state storage: a card on a row taller than it -- Actions' one row of
-/// buttons beside Identity and Runtime -- no longer leaves all its spare room in one block under them.
-/// The height returned leaves that offset out, so the row's height (computeRowCardHeight()) does not
-/// feed on it.
-template<typename Rows> [[nodiscard]] float renderRows(bool centred, const Rows& rows)
+/// Draws one of the cards render() draws, @p width wide and exactly as tall as its content (#3741): the
+/// header (@p icon, @p title) and @p rows, with text in them (result and error lines) wrapped at the card's
+/// edge instead of running out of it. The card grows while a result or error line shows and shrinks back
+/// after. It used to be given the tallest card's height on its row (#1789) and centre its rows in it
+/// (#1874), which left blank card above and below them.
+template<typename Rows> void renderCard(const char* id, const char* icon, const char* title, float width, const Rows& rows)
 {
-    const ImGuiStyle& style = ImGui::GetStyle();
-    ImGuiStorage* storage = ImGui::GetStateStorage();
-    const ImGuiID key = ImGui::GetID("##RowsHeight");
-    const float top = ImGui::GetCursorPosY();
-    const float offset =
-        centred ? ProcessDetailsLayout::computeCentredRowsOffset(ImGui::GetContentRegionAvail().y, storage->GetFloat(key, 0.0F)) : 0.0F;
-    if (offset > 0.0F)
-    {
-        ImGui::SetCursorPosY(top + offset);
-    }
-    rows();
-    // The last row's bottom: the cursor is an item spacing below it.
-    const float rowsHeight = std::max(0.0F, ImGui::GetCursorPosY() - style.ItemSpacing.y - (top + offset));
-    storage->SetFloat(key, rowsHeight);
-    return top + rowsHeight + style.WindowPadding.y;
+    (void) ProcessOverviewCard::render(id,
+                                       icon,
+                                       title,
+                                       ImVec2(width, 0.0F),
+                                       ImGuiChildFlags_AutoResizeY,
+                                       [&]
+                                       {
+                                           ImGui::PushTextWrapPos(0.0F);
+                                           rows();
+                                           ImGui::PopTextWrapPos();
+                                       });
 }
 
 /// Why the slider's Apply waits while the Actions card's Set Realtime priority or Efficiency mode change
@@ -153,19 +143,12 @@ Widths measure(const Platform::ProcessActionCapabilities& capabilities)
     };
 }
 
-Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout, float cardHeight)
+void render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout)
 {
-    Heights heights;
     if (context.actionsView == nullptr || context.priorityView == nullptr || context.processName == nullptr)
     {
-        return heights;
+        return;
     }
-
-    // Cards like Identity's and Runtime's, each with its header inside (#1537). Given the row's height
-    // they take it, so the row's cards share their edges; otherwise each is as tall as its content.
-    const bool fixedHeight = std::isfinite(cardHeight) && cardHeight > 0.0F;
-    const ImGuiChildFlags childFlags = fixedHeight ? ImGuiChildFlags_None : ImGuiChildFlags_AutoResizeY;
-    const float height = fixedHeight ? cardHeight : 0.0F;
 
     // The Actions card's priority changes -- Efficiency mode, and a refused Set Realtime priority's or
     // Efficiency mode's "Retry as administrator" -- wait for the slider's apply (#3429), and for a change for
@@ -175,73 +158,69 @@ Heights render(const Context& context, const ProcessDetailsLayout::TopRowLayout&
     const bool drawActions = layout.actionsWidth > 0.0F;
     if (drawActions)
     {
-        (void) ProcessOverviewCard::render("ProcessActionsBlock",
-                                           ICON_FA_GEARS,
-                                           "Actions",
-                                           ImVec2(layout.actionsWidth, height),
-                                           childFlags,
-                                           [&]
-                                           {
-                                               heights.actions =
-                                                   renderRows(fixedHeight,
-                                                              [&]
-                                                              {
-                                                                  // The result line wraps at the card's edge
-                                                                  // instead of running out of it.
-                                                                  ImGui::PushTextWrapPos(0.0F);
-                                                                  context.actionsView->renderControls(context.actions,
-                                                                                                      context.capabilities,
-                                                                                                      *context.processName,
-                                                                                                      context.target,
-                                                                                                      context.currentAffinity,
-                                                                                                      context.efficiencyMode,
-                                                                                                      context.currentSchedPolicy,
-                                                                                                      context.currentRtPriority);
-                                                                  context.actionsView->renderResultLine();
-                                                                  ImGui::PopTextWrapPos();
-                                                              });
-                                           });
+        renderCard("ProcessActionsBlock",
+                   ICON_FA_GEARS,
+                   "Actions",
+                   layout.actionsWidth,
+                   [&]
+                   {
+                       context.actionsView->renderControls(context.actions,
+                                                           context.capabilities,
+                                                           *context.processName,
+                                                           context.target,
+                                                           context.currentAffinity,
+                                                           context.efficiencyMode,
+                                                           context.currentSchedPolicy,
+                                                           context.currentRtPriority);
+                       context.actionsView->renderResultLine();
+                   });
     }
 
-    if (layout.priorityWidth > 0.0F)
+    if (layout.priorityWidth <= 0.0F)
     {
-        if (drawActions && layout.priorityBesideActions)
-        {
-            ImGui::SameLine();
-        }
-        (void) ProcessOverviewCard::render(
-            "ProcessPriorityBlock",
-            ICON_FA_GAUGE_HIGH,
-            "Priority",
-            ImVec2(layout.priorityWidth, height),
-            childFlags,
-            [&]
-            {
-                // With the priority row alone (Windows) the header is its label, and so
-                // shows the current priority on hover, as the row label did (#1874).
-                if (context.capabilities.canSetPriority && !ProcessPriorityView::labelsRows(context.capabilities))
-                {
-                    ProcessPriorityView::setCurrentPriorityTooltip(context.currentNice);
-                }
-                heights.priority = renderRows(
-                    fixedHeight,
-                    [&]
-                    {
-                        // The error lines wrap at the card's edge too.
-                        ImGui::PushTextWrapPos(0.0F);
-                        // Apply waits while Set Realtime priority or Efficiency mode is asked about or
-                        // runs (#3429, #3467), or
-                        // a change for this process runs in the Processes table (#3467).
-                        context.priorityView->holdForOtherPriorityChange(
-                            context.actionsView->priorityChangeInFlight() ? ACTIONS_CARD_HOLD_REASON : context.priorityHeldElsewhere);
-                        context.priorityView->render(
-                            context.actions, context.capabilities, context.currentNice, context.target, context.currentSchedPolicy);
-                        renderSetRealtimeButton(context);
-                        ImGui::PopTextWrapPos();
-                    });
-            });
+        return;
     }
-    return heights;
+    if (drawActions && layout.priorityBesideActions)
+    {
+        ImGui::SameLine();
+    }
+    // Priority, then I/O priority under it: one column, the two cards its width (#3741).
+    ImGui::BeginGroup();
+    if (context.capabilities.canSetPriority)
+    {
+        renderCard("ProcessPriorityBlock",
+                   ICON_FA_GAUGE_HIGH,
+                   "Priority",
+                   layout.priorityWidth,
+                   [&]
+                   {
+                       // The header is the control's label, and so shows the current priority on hover (#1874).
+                       ProcessPriorityView::setCurrentPriorityTooltip(context.currentNice);
+                       // Apply waits while Set Realtime priority or Efficiency mode is asked about or runs
+                       // (#3429, #3467), or a change for this process runs in the Processes table (#3467).
+                       context.priorityView->holdForOtherPriorityChange(
+                           context.actionsView->priorityChangeInFlight() ? ACTIONS_CARD_HOLD_REASON : context.priorityHeldElsewhere);
+                       context.priorityView->render(context.actions, context.capabilities, context.currentNice, context.target);
+                       renderSetRealtimeButton(context);
+                   });
+    }
+    if (context.capabilities.canSetIoPriority)
+    {
+        renderCard("ProcessIoPriorityBlock",
+                   ICON_FA_HARD_DRIVE,
+                   "I/O priority",
+                   layout.priorityWidth,
+                   [&]
+                   {
+                       // The header is the control's label: the current I/O priority on hover.
+                       const std::string current =
+                           context.priorityView->ioPriorityView().currentText(context.currentNice, context.currentSchedPolicy);
+                       ImGui::SetItemTooltip("%s", current.c_str());
+                       context.priorityView->renderIoPriority(
+                           context.actions, context.capabilities, context.currentNice, context.target, context.currentSchedPolicy);
+                   });
+    }
+    ImGui::EndGroup();
 }
 
 } // namespace App::ProcessActionsBlock

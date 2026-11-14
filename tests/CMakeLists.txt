@@ -148,22 +148,24 @@ if(WIN32)
         # runner the interpreter itself dies now and then, a few seconds into a script, with .NET's
         # "Fatal error. Internal CLR error. (0x80131506)" (ctest: SEGFAULT), and only there, so
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
+        # A new pwsh test joins both lists below (#3746: MeasureIdleScript, left out, died that way).
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
-            BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript ClangTidyHeadersScript
-            FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES
+            BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript WingetManifestScript
+            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript WingetManifestScript
-            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript PROPERTIES TIMEOUT 120)
+            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
+            WingetManifestScript ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript
+            PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript BenchAcrossLaunchesPs1Script PROPERTIES TIMEOUT 180)
     else()
         # Say so rather than leave the ETW script tests silently missing from ctest (#1187).
         message(WARNING "pwsh (PowerShell 7) not found: the ResizeCaptureScript, EtwCaptureScript, "
                         "EtwAnalysisScript, CMakeCacheScript, BenchScript, BenchAcrossLaunchesPs1Script, "
                         "CheckPrereqsScript, SetupDevScript, VerifyWindowsSignaturesScript, "
-                        "BuildWindowsInstallerScript, ResizePerfSummaryScript, "
+                        "BuildWindowsInstallerScript, ResizePerfSummaryScript, MeasureIdleScript, "
                         "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript and "
                         "ReleaseSmokeCheckScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
@@ -542,6 +544,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
     Domain/test_Worker.cpp # the background worker primitive (#3343)
+    Domain/test_KeyedLookup.cpp # a lookup made once per key on a worker of its own (#3718)
     Domain/test_RateTracker.cpp # rates by acquisition time, keyed on identity (#3344)
     Domain/test_PidIndex.cpp
     Domain/test_ProcessGeneration.cpp # rows, PID index and tree published together (#3345)

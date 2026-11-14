@@ -1,9 +1,10 @@
 #pragma once
 
-// One of the Process Details Overview's section cards (#1537): Identity, Runtime, Actions and Priority
-// are each a card (UI/Card.h, the CPU Cores grid's cell style) with the section's header inside it, at
-// the top, as a core's name heads its cell. ProcessDetailsPanel draws Identity and Runtime with it and
-// ProcessActionsBlock draws Actions and Priority (#1789), so the four are drawn alike.
+// One of the Process Details Overview's section cards (#1537): Identity, Runtime, Actions, Priority and
+// I/O priority are each a card (UI/Card.h, the CPU Cores grid's cell style) with the section's header
+// inside it, at the top, as a core's name heads its cell. ProcessDetailsPanel draws Identity and Runtime
+// with it and ProcessActionsBlock draws Actions, Priority and I/O priority (#1789, #3741), so all are
+// drawn alike.
 
 #include "UI/Card.h"
 #include "UI/ChromeWidgets.h"

@@ -9,8 +9,8 @@
     _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
     TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
     without input"). Same matrix and names as screenshots.sh, less the Environment and Security
-    sections, which TaskSmack reads on Linux only, and plus the grouped Processes shots, which
-    screenshots.sh doesn't take yet.
+    sections and the Processes table grouped by app, which only screenshots.sh takes so far (Windows
+    has all three too).
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
     the Processes table grouped by service (Unit, with the Services column shown, since that column is
@@ -183,7 +183,8 @@ foreach ($t in @($Dark) + $Light) {
     Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'SystemInfo' }
 }
 # The Processes table grouped (#3068). Windows reads the service list Unit groups by only while something
-# shows services, so the unit shot shows the Services column; the App grouping is Linux's (systemd scopes).
+# shows services, so the unit shot shows the Services column. Windows has the App grouping too (package
+# family or AppUserModelID), but this set doesn't take processes-grouped-app yet; screenshots.sh does.
 Invoke-Shot "processes-grouped-unit-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "services = true`n[process_table]`ngroup_by = 'unit'`n"
 Invoke-Shot "processes-grouped-user-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "[process_table]`ngroup_by = 'user'`n"
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
@@ -194,8 +195,8 @@ foreach ($tab in 'overview', 'gpu', 'network') {
     Invoke-Shot "details-$tab-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = $tab }
 }
 # The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
-# startup selection has settled. The Environment and Security sections are read on Linux only (#179,
-# #1526), so screenshots.sh alone takes details-environment and details-security.
+# startup selection has settled. Windows reads the Environment and Security sections too, but only
+# screenshots.sh takes details-environment and details-security so far.
 foreach ($section in 'modules', 'openfiles', 'connections') {
     $target = if ($section -eq 'connections' -and $ConnectionsPid -gt 0) { @{ TASKSMACK_SELECT_PID = "$ConnectionsPid" } } else { @{ TASKSMACK_SELECT_NAME = $Process } }
     $shotWindow = if ($section -eq 'openfiles') { $OpenFilesWindow } else { $SectionWindow }

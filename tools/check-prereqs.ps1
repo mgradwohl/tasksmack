@@ -6,7 +6,7 @@
     LLVM the win-* presets build with ($env:LLVM_ROOT\bin), and the Python rows the interpreter
     CMake uses (the project .venv when it exists).
 .EXAMPLE
-    .\check-prereqs.ps1
+    pwsh tools/check-prereqs.ps1
 #>
 [CmdletBinding()]
 param()

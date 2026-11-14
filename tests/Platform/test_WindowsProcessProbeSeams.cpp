@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -38,6 +39,7 @@
 #include <span>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -1982,8 +1984,20 @@ struct FakeApps
     int walks = 0;
     std::vector<std::uint32_t> lastWalkPids;
     std::size_t lastWalkWindows = 0; ///< How many of the sample's windows the lookup was handed
-    int nameLookups = 0;
 };
+
+/// The names looked up, and the thread the last was looked up on: the app-name worker's (#3718), not the test's.
+std::atomic<int>& fakeNameLookups()
+{
+    static std::atomic<int> count{0};
+    return count;
+}
+
+std::atomic<std::thread::id>& fakeNameThread()
+{
+    static std::atomic<std::thread::id> thread;
+    return thread;
+}
 
 FakeApps& fakeApps()
 {
@@ -2016,7 +2030,8 @@ void fakeWindowAppIds(std::span<const Windows::TopLevelWindow> windows,
 
 std::string fakeAppDisplayName(const std::string& appUserModelId)
 {
-    ++fakeApps().nameLookups;
+    ++fakeNameLookups();
+    fakeNameThread() = std::this_thread::get_id();
     const auto it = fakeApps().names.find(appUserModelId);
     return (it != fakeApps().names.end()) ? it->second : std::string{};
 }
@@ -2039,6 +2054,22 @@ class WindowsProcessAppIdentityTest : public WindowsProcessProbeSeamTest
     {
         WindowsProcessProbeSeamTest::SetUp();
         fakeApps() = FakeApps{};
+        fakeNameLookups() = 0;
+        fakeNameThread() = std::thread::id{};
+    }
+
+    /// Samples @p probe until the fake process's app is named @p name (the app-name worker answers on a later
+    /// sample, #3718), at most 10 s; the counters of the last sample.
+    static ProcessCounters sampleUntilNamed(WindowsProcessProbe& probe, std::string_view name)
+    {
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+        ProcessCounters process = find(probe.enumerate());
+        while (process.appName != name && std::chrono::steady_clock::now() < deadline)
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+            process = find(probe.enumerate());
+        }
+        return process;
     }
 };
 
@@ -2058,9 +2089,10 @@ TEST_F(WindowsProcessAppIdentityTest, APackageIsReadAndNamedOnceAProcess)
     EXPECT_EQ(seed.packageFamily, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
     EXPECT_EQ(seed.appUserModelId, "Microsoft.WindowsTerminal_8wekyb3d8bbwe!App");
     EXPECT_TRUE(seed.appName.empty()) << "not named on the first sample";
-    EXPECT_EQ(fakeApps().nameLookups, 0);
-    const ProcessCounters first = find(probe.enumerate());
+    EXPECT_EQ(fakeNameLookups(), 0) << "nor asked for";
+    const ProcessCounters first = sampleUntilNamed(probe, "Windows Terminal");
     EXPECT_EQ(first.appName, "Windows Terminal");
+    EXPECT_NE(fakeNameThread().load(), std::this_thread::get_id()) << "named on the app-name worker, never the sampler (#3718)";
 
     fakeApps().package = {};
     for (int sample = 0; sample < 3; ++sample)
@@ -2071,7 +2103,7 @@ TEST_F(WindowsProcessAppIdentityTest, APackageIsReadAndNamedOnceAProcess)
         EXPECT_EQ(again.appName, "Windows Terminal");
     }
     EXPECT_EQ(fakeApps().packageReads, 1);
-    EXPECT_EQ(fakeApps().nameLookups, 1);
+    EXPECT_EQ(fakeNameLookups(), 1);
     EXPECT_EQ(std::ranges::count(fakeApps().lastWalkPids, PID), 0) << "a packaged process's windows aren't looked at";
 
     fake().processes.front().createTime += 1; // The PID now belongs to a new, unpackaged process
@@ -2099,8 +2131,8 @@ TEST_F(WindowsProcessAppIdentityTest, AnUnpackagedProcesssWindowsAreLookedAtUnti
     const ProcessCounters found = find(probe.enumerate());
     EXPECT_EQ(fakeApps().walks, 2);
     EXPECT_EQ(found.appUserModelId, "Contoso.Editor");
-    EXPECT_EQ(found.appName, "Contoso Editor");
     EXPECT_TRUE(found.packageFamily.empty());
+    EXPECT_EQ(sampleUntilNamed(probe, "Contoso Editor").appName, "Contoso Editor");
 
     fakeApps().windowIds.clear();
     fake().now += std::chrono::hours(1);
@@ -2131,9 +2163,9 @@ TEST_F(WindowsProcessAppIdentityTest, ASampleThatLooksForWindowIdsWalksTheWindow
     EXPECT_EQ(looked.appUserModelId, "Contoso.Editor");
 }
 
-// A first sample with many apps names a few of them a sample, the rest on the next; a name is asked once per
-// AppUserModelID, however many processes share it.
-TEST_F(WindowsProcessAppIdentityTest, NamesAreLookedUpAFewASampleAndOnceAnId)
+// Every ID the walk finds is named off the sample (#3718), once per AppUserModelID however many processes
+// share it.
+TEST_F(WindowsProcessAppIdentityTest, NamesAreLookedUpOffTheSampleOnceAnId)
 {
     fake().processes.clear();
     for (DWORD i = 0; i < 6; ++i)
@@ -2142,18 +2174,31 @@ TEST_F(WindowsProcessAppIdentityTest, NamesAreLookedUpAFewASampleAndOnceAnId)
             FakeProcess{.pid = 100 + i, .createTime = 133'000'000'000'000'000 + i, .name = L"app.exe", .threadIds = {}});
         fakeApps().windowIds[100 + i] = (i < 5) ? std::format("App.{}", i) : std::string("App.0");
     }
+    for (int i = 0; i < 5; ++i)
+    {
+        fakeApps().names[std::format("App.{}", i)] = std::format("Name {}", i);
+    }
     WindowsProcessProbe probe(appFunctions());
     (void) probe.enumerate(); // Listed
-    const std::vector<ProcessCounters> walked = probe.enumerate();
+    std::vector<ProcessCounters> processes = probe.enumerate();
     EXPECT_EQ(fakeApps().walks, 1);
-    const auto withIds = std::ranges::count_if(walked, [](const ProcessCounters& p) { return !p.appUserModelId.empty(); });
-    EXPECT_EQ(withIds, 6) << "every ID is found in the one walk";
-    EXPECT_EQ(fakeApps().nameLookups, 4) << "but only four are named a sample";
+    EXPECT_EQ(std::ranges::count_if(processes, [](const ProcessCounters& p) { return !p.appUserModelId.empty(); }), 6)
+        << "every ID is found in the one walk";
 
+    const auto named = [](const std::vector<ProcessCounters>& sample)
+    {
+        return std::ranges::count_if(sample, [](const ProcessCounters& p) { return !p.appName.empty(); });
+    };
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (named(processes) < 6 && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        processes = probe.enumerate();
+    }
+    EXPECT_EQ(named(processes), 6);
+    EXPECT_EQ(fakeNameLookups(), 5) << "App.0's second process uses the first's answer";
     (void) probe.enumerate();
-    EXPECT_EQ(fakeApps().nameLookups, 5) << "the fifth ID next sample; App.0's second process uses the first's answer";
-    (void) probe.enumerate();
-    EXPECT_EQ(fakeApps().nameLookups, 5);
+    EXPECT_EQ(fakeNameLookups(), 5);
 }
 
 // Without the reads (a test's table, or the calls missing) Group: App isn't offered and nothing is read.
@@ -2191,18 +2236,18 @@ TEST_F(WindowsProcessAppIdentityTest, TheNameFollowsAChangedAppUserModelId)
     fakeApps().names["Contoso.App_1a2b3c!App"] = "Packaged Name";
     WindowsProcessProbe probe(appFunctions());
     (void) probe.enumerate();
-    const ProcessCounters fromWindow = find(probe.enumerate());
+    const ProcessCounters fromWindow = sampleUntilNamed(probe, "Window Name");
     EXPECT_EQ(fromWindow.appUserModelId, "Contoso.Window");
     EXPECT_EQ(fromWindow.appName, "Window Name");
 
     fake().failOpenProcess = false;
     fakeApps().package = {.family = "Contoso.App_1a2b3c", .appUserModelId = "Contoso.App_1a2b3c!App"};
     fake().now += std::chrono::hours(1); // The next handle opens with the details' TTL
-    const ProcessCounters fromPackage = find(probe.enumerate());
+    EXPECT_EQ(find(probe.enumerate()).appUserModelId, "Contoso.App_1a2b3c!App");
+    const ProcessCounters fromPackage = sampleUntilNamed(probe, "Packaged Name");
     EXPECT_EQ(fromPackage.packageFamily, "Contoso.App_1a2b3c");
-    EXPECT_EQ(fromPackage.appUserModelId, "Contoso.App_1a2b3c!App");
     EXPECT_EQ(fromPackage.appName, "Packaged Name");
-    EXPECT_EQ(fakeApps().nameLookups, 2);
+    EXPECT_EQ(fakeNameLookups(), 2);
 }
 
 // #3457: nothing the per-window work throws escapes the EnumWindows callback, an allocation failure or anything
