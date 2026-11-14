@@ -402,10 +402,12 @@ add_test(NAME StartupWiringScript
 # the release.yml cases pwsh on PATH; each is skipped without.
 if(TASKSMACK_BASH)
     # setup-llvm's cache-key and install cases (#3635) run install-llvm.sh dozens of times and have their own
-    # entry (#3643): together with the rest they outran the 120 s timeout on the slow bash spawns of the
+    # entry (#3643), as do Heavy Checks' benchmark-gate cases (#3709), which run its steps' bash launches
+    # dozens of times: together with the rest they outran the 120 s timeout on the slow bash spawns of the
     # windows-11-arm runner. WorkflowRunStepsScript runs everything else.
     add_test(NAME WorkflowRunStepsScript
-        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm)
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm
+                --skip-benchmark-gate)
     set_tests_properties(WorkflowRunStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
@@ -416,6 +418,11 @@ if(TASKSMACK_BASH)
     add_test(NAME SetupLlvmInstallScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-setup-llvm)
     set_tests_properties(SetupLlvmInstallScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
+        TIMEOUT 120)
+    add_test(NAME BenchmarkGateStepsScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-benchmark-gate)
+    set_tests_properties(BenchmarkGateStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         TIMEOUT 120)
 endif()
@@ -775,6 +782,7 @@ set(COMMON_TEST_SOURCES
     App/test_SyntheticScenario.cpp
     App/test_SystemSectionsRender.cpp
     App/test_GpuSectionRender.cpp
+    App/test_ChartSourceGenerations.cpp # one chart data generation per source (#843)
     App/test_ValueStripText.cpp # the strips' texts, held in place (#843)
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp

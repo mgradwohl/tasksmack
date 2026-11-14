@@ -45,6 +45,10 @@ std::string_view blockedReason(const Platform::StartupEntry& entry, const Platfo
     {
         return "Run-once entries run at the next sign-in only and have no enabled state";
     }
+    if (caps.perUserEntriesOtherAccount && switchIsAccounts(entry, caps))
+    {
+        return OTHER_ACCOUNT_SWITCH_REASON; // an all-users entry whose switch is that account's own file (#3682)
+    }
     if (entry.scope == Platform::StartupScope::Machine && caps.machineEntriesNeedElevation && !caps.elevated)
     {
         return "Requires administrator";
@@ -173,14 +177,16 @@ void StartupActionsView::run(StartupActionRequest request)
     m_Running = request;
     // The worker owns copies of everything it uses; nothing here is shared with it but its result. An
     // action that throws is a failed result, built on the worker (BackgroundTask, #1685, #1706).
-    // A per-user entry waits for the account check first (#3671): another account's is never changed, even when
-    // asked for before the answer came.
+    // A per-user entry, or one whose switch is a per-user file, waits for the account check first (#3671, #3682):
+    // another account's is never changed, even when asked for before the answer came.
     if (auto failed = m_Worker.start(
-            [actions = m_Actions, account = m_Account, request = std::move(request)]
+            [actions = m_Actions, account = m_Account, caps = m_Capabilities, request = std::move(request)]
             {
-                if (request.entry.scope == Platform::StartupScope::User && account != nullptr && account->wait().otherAccount)
+                if (AutoDetail::switchIsAccounts(request.entry, caps) && account != nullptr && account->wait().otherAccount)
                 {
-                    return Platform::StartupActionResult::failed(std::string(AutoDetail::OTHER_ACCOUNT_REASON));
+                    return Platform::StartupActionResult::failed(std::string(request.entry.scope == Platform::StartupScope::User
+                                                                                 ? AutoDetail::OTHER_ACCOUNT_REASON
+                                                                                 : AutoDetail::OTHER_ACCOUNT_SWITCH_REASON));
                 }
                 return actions->setEnabled(request.entry, request.enable);
             }))

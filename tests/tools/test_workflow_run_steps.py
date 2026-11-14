@@ -1969,6 +1969,17 @@ def _is_setup_llvm(test: unittest.TestCase) -> bool:
     return type(test).__name__.startswith("SetupLlvm")
 
 
+def _is_benchmark_gate(test: unittest.TestCase) -> bool:
+    """Heavy Checks' benchmark gate: the check, the re-measurement across launches and the second runner."""
+    return type(test).__name__.startswith(("HeavyChecksBenchmark", "HeavyChecksAcrossLaunches", "HeavyChecksSecondRunner"))
+
+
+# Groups ctest runs as entries of their own (--only-<group>), and WorkflowRunStepsScript runs without
+# (--skip-<group>, any of them): each spawns bash dozens of times, and on the windows-11-arm runner's slow spawns
+# all of them together outran one entry's 120 s timeout (#3643 setup-llvm, #3709 the benchmark gate).
+GROUPS = {"setup-llvm": _is_setup_llvm, "benchmark-gate": _is_benchmark_gate}
+
+
 def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
     out = unittest.TestSuite()
     for item in suite:
@@ -1980,16 +1991,18 @@ def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
 
 
 if __name__ == "__main__":
-    # #3643: the setup-llvm cases (#3635) spawn bash about forty times, so ctest runs them as their own entry,
-    # SetupLlvmInstallScript (--only-setup-llvm), and WorkflowRunStepsScript runs the rest (--skip-setup-llvm).
-    # With neither flag every case runs, as before.
-    flags = {"--only-setup-llvm", "--skip-setup-llvm"}
-    chosen = [arg for arg in sys.argv[1:] if arg in flags]
-    if chosen:
-        sys.argv = [arg for arg in sys.argv if arg not in flags]
-        only = chosen[0] == "--only-setup-llvm"
+    # With no --only-/--skip- flag every case runs, as before.
+    only = [arg[len("--only-"):] for arg in sys.argv[1:] if arg.startswith("--only-") and arg[len("--only-"):] in GROUPS]
+    skip = [arg[len("--skip-"):] for arg in sys.argv[1:] if arg.startswith("--skip-") and arg[len("--skip-"):] in GROUPS]
+    if only or skip:
+        sys.argv = [arg for arg in sys.argv if arg not in {f"--only-{g}" for g in only} | {f"--skip-{g}" for g in skip}]
         loaded = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
-        keep = _is_setup_llvm if only else (lambda test: not _is_setup_llvm(test))
+
+        def keep(test: unittest.TestCase) -> bool:
+            if only:
+                return any(GROUPS[group](test) for group in only)
+            return not any(GROUPS[group](test) for group in skip)
+
         result = unittest.TextTestRunner(verbosity=1).run(_filtered(loaded, keep))
         sys.exit(0 if result.wasSuccessful() else 1)
     unittest.main()

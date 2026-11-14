@@ -92,7 +92,7 @@ void renderDiskIOSection(const RenderContext& ctx)
     // Delegate to StorageSection - this wrapper maintains API compatibility
     StorageSection::RenderContext storageCtx{
         .publication = ctx.storagePublication,
-        .chartDataGeneration = ctx.chartDataGeneration,
+        .chartDataGeneration = ctx.storageChartDataGeneration,
         .maxHistorySeconds = ctx.maxHistorySeconds,
         .lastDeltaSeconds = ctx.lastDeltaSeconds,
         .refreshInterval = ctx.refreshInterval,

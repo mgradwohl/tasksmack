@@ -54,6 +54,7 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/SessionAccount.h"
+#include "SessionUser.h"
 
 #include <memory>
 
@@ -222,8 +223,9 @@ std::shared_ptr<IStartAtLogin> makeStartAtLogin()
 
 SessionAccount readSessionAccount()
 {
-    // An Administrator session is started as one (#3580): there is no elevated copy of another account's TaskSmack.
-    return {};
+    // An Administrator session (#3580) runs as root for the user who started it: root's per-user startup isn't theirs
+    // (#3682).
+    return SessionUser::sessionAccount(::geteuid(), &SessionUser::processVariable, &SessionUser::systemAccount);
 }
 
 std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* /*ownerWindow*/)

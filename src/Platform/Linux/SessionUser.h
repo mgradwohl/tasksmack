@@ -7,6 +7,7 @@
 // lookup and the file checks are passed in, so it is tested without being root.
 
 #include "DetachedSpawn.h"
+#include "Platform/SessionAccount.h"
 #include "UserNameLookup.h"
 
 #include <array>
@@ -198,6 +199,24 @@ invokingUserSession(uid_t effectiveUid,
         account->groups = userGroups(account->name, account->gid);
     }
     return account;
+}
+
+/// Whose TaskSmack this is (#3682, Linux's half of #3671): an Administrator session (#3580) started for a user runs as
+/// root, so the per-user startup it would read and write (~/.config/autostart, systemd user units, crontab) is root's,
+/// not that user's, and is left alone. Another account exactly when invokingUser() names a user (@p effectiveUid 0, and
+/// SUDO_UID or PKEXEC_UID naming a user the passwd database knows); its name is @p effectiveUid's ("root"), or
+/// "root" when the database has none. Never from a command-line value. Root's own session, and any other run, is the
+/// same account.
+[[nodiscard]] inline SessionAccount sessionAccount(uid_t effectiveUid,
+                                                   const std::function<std::optional<std::string>(std::string_view)>& env,
+                                                   const std::function<std::optional<Account>(uid_t)>& account)
+{
+    if (!invokingUser(effectiveUid, env, account).has_value())
+    {
+        return {};
+    }
+    const std::optional<Account> self = account(effectiveUid);
+    return {.otherAccount = true, .account = self.has_value() && !self->name.empty() ? self->name : std::string("root")};
 }
 
 /// The home directory of the user this process was started for as root (#3580): invokingUser()'s, for this process's
