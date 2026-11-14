@@ -253,6 +253,50 @@ TEST(StartupActionsDetailTest, AnotherAccountsPerUserEntriesAreReadOnly)
     EXPECT_TRUE(note.contains("normal TaskSmack")) << note;
 }
 
+// #3682 (Linux): where an all-users entry's switch is the running account's own file (machineEntriesNeedElevation
+// false: /etc/xdg/autostart switched by a copy in ~/.config/autostart), a TaskSmack running as another account leaves
+// those alone too, saying why. Windows' all-users entries (the machine's own setting) are unchanged above.
+TEST(StartupActionsDetailTest, AnotherAccountsSwitchOfAnAllUsersEntryIsReadOnlyWhereItIsAPerUserFile)
+{
+    const Platform::StartupActionCapabilities linux{.canSetEnabled = true, .elevated = false, .machineEntriesNeedElevation = false};
+    Platform::StartupActionCapabilities other = linux;
+    other.perUserEntriesOtherAccount = true;
+
+    Platform::StartupEntry system = entry("Tracker", StartupLocation::XdgAutostartSystem);
+    system.scope = Platform::StartupScope::Machine;
+    EXPECT_TRUE(AutoDetail::switchIsAccounts(system, linux));
+    EXPECT_TRUE(AutoDetail::isApplicable(false, system, linux)) << "the user's own TaskSmack switches it";
+    EXPECT_EQ(AutoDetail::blockedReason(system, other), AutoDetail::OTHER_ACCOUNT_SWITCH_REASON);
+    EXPECT_FALSE(AutoDetail::isApplicable(false, system, other));
+
+    Platform::StartupEntry user = entry("Syncthing", StartupLocation::XdgAutostartUser);
+    user.scope = Platform::StartupScope::User;
+    EXPECT_EQ(AutoDetail::blockedReason(user, other), AutoDetail::OTHER_ACCOUNT_REASON);
+
+    // An entry that can't be switched anyway keeps its own reason.
+    Platform::StartupEntry unit = entry("backup.timer", StartupLocation::SystemdSystemUnit);
+    unit.scope = Platform::StartupScope::Machine;
+    unit.notSwitchableReason = "Enabled for every user";
+    EXPECT_EQ(AutoDetail::blockedReason(unit, other), "Enabled for every user");
+
+    EXPECT_FALSE(AutoDetail::switchIsAccounts(entry("Helper", StartupLocation::RunMachine), ADMIN)) << "Windows: the machine's";
+}
+
+// #3682: the worker refuses such an entry too, even when asked for before the account check answered.
+TEST(StartupActionsViewTest, AnotherAccountsSwitchOfAnAllUsersEntryIsNeverWrittenWhereItIsAPerUserFile)
+{
+    const auto fake = std::make_shared<FakeStartupActions>(
+        Platform::StartupActionCapabilities{.canSetEnabled = true, .elevated = false, .machineEntriesNeedElevation = false});
+    StartupActionsView view(fake, SessionAccountCheck::known({.otherAccount = true, .account = "root"}));
+    Platform::StartupEntry system = entry("Tracker", StartupLocation::XdgAutostartSystem, false);
+    system.scope = Platform::StartupScope::Machine;
+    view.request({.enable = true, .entry = system}); // before the answer is taken in
+    ASSERT_TRUE(waitFinished(view));
+    EXPECT_EQ(fake->enables.load(), 0);
+    EXPECT_FALSE(view.lastResult().ok);
+    EXPECT_TRUE(view.lastResult().text.contains(AutoDetail::OTHER_ACCOUNT_SWITCH_REASON)) << view.lastResult().text;
+}
+
 // The view takes the check's answer once it has one: the Scope label and the read-only per-user entries. An action
 // asked for before then still waits for the answer on the worker, and another account's entry is never changed.
 TEST(StartupActionsViewTest, AnotherAccountsPerUserEntriesAreNeverChanged)
