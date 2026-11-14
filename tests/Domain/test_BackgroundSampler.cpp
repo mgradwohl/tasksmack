@@ -456,6 +456,27 @@ TEST(BackgroundSamplerTest, AStartHookThatThrowsIsContainedAndSamplingGoesOn)
     EXPECT_GE(samplable->getSampleCount(), 2);
 }
 
+// #3374: a hook that throws something that isn't a std::exception is contained the same way.
+TEST(BackgroundSamplerTest, AStartHookThatThrowsANonStdExceptionIsContainedToo)
+{
+    auto samplable = std::make_shared<MockSamplable>();
+    Domain::SamplerConfig config;
+    config.interval = 100ms;
+    config.onThreadStart = []
+    {
+        // NOLINTNEXTLINE(hicpp-exception-baseclass) - intentionally non-std, the point of the test
+        throw 42;
+    };
+    Domain::BackgroundSampler sampler(config);
+    sampler.addSamplable(samplable);
+
+    sampler.start();
+    samplable->waitForSamples(2);
+    EXPECT_TRUE(sampler.isRunning());
+    sampler.stop();
+    EXPECT_GE(samplable->getSampleCount(), 2);
+}
+
 namespace
 {
 
