@@ -159,7 +159,7 @@ struct ShortcutHelpEntry
 
 /// Every keyboard shortcut, for the Help window (#172): the function keys above, then the Processes
 /// table's navigation (ProcessTableNavigation.h), Process Details' keys and the older chords.
-inline constexpr std::array<ShortcutHelpEntry, 22> SHORTCUT_HELP{
+inline constexpr std::array<ShortcutHelpEntry, 24> SHORTCUT_HELP{
     {
         {.keys = "F1", .description = "Help: shortcuts, columns and tabs", .area = ShortcutArea::Global},
         {.keys = "F2", .description = "Settings", .area = ShortcutArea::Global},
@@ -189,6 +189,8 @@ inline constexpr std::array<ShortcutHelpEntry, 22> SHORTCUT_HELP{
         },
         {.keys = "Ctrl + A", .description = "Select every row shown", .area = ShortcutArea::Processes},
         {.keys = "/", .description = "Find a process by name: Enter for the next, Esc to close", .area = ShortcutArea::Processes},
+        {.keys = "Ctrl + F", .description = "Put the cursor in the filter box", .area = ShortcutArea::Processes},
+        {.keys = "Ctrl + Shift + F", .description = "Find handles: which process has a file open", .area = ShortcutArea::Processes},
         {.keys = "Hold Ctrl", .description = "Pause updates while held", .area = ShortcutArea::Processes},
         {.keys = "F9", .description = "Kill the process shown (asks first)", .area = ShortcutArea::ProcessDetails},
         {

@@ -85,6 +85,18 @@ TEST(KeyboardShortcutsTest, EveryAreaHasAHeadingAndAShortcut)
     }
 }
 
+// #3739: the Processes table's Ctrl+F (the filter box) and Ctrl+Shift+F (Find handles) are in the Help window's list,
+// as KeyboardInput's pollFocusFilter() and pollFindHandles() handle them.
+TEST(KeyboardShortcutsTest, HelpListNamesTheFilterAndFindHandlesKeys)
+{
+    for (const std::string_view keys : {std::string_view{"Ctrl + F"}, std::string_view{"Ctrl + Shift + F"}})
+    {
+        SCOPED_TRACE(std::string(keys));
+        EXPECT_TRUE(std::ranges::any_of(
+            SHORTCUT_HELP, [keys](const ShortcutHelpEntry& entry) { return entry.keys == keys && entry.area == ShortcutArea::Processes; }));
+    }
+}
+
 TEST(KeyboardShortcutsTest, HelpListStartsWithTheFunctionKeys)
 {
     // The Help window's list leads with the function keys, worded as the map words them, so the two
