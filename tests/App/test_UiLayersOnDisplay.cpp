@@ -18,6 +18,7 @@
 #include "App/AboutLayer.h"
 #include "App/ElevationNoticeLayer.h"
 #include "App/HelpLayer.h"
+#include "App/Panels/ProcessDetailsPanel.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SettingsDialog.h"
 #include "App/SettingsLayer.h"
