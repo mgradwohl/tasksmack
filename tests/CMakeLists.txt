@@ -284,6 +284,14 @@ if(TASKSMACK_BASH)
     set_tests_properties(ResizePerfSummaryAwkScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
 endif()
 
+# tools/idle-sample.py, measure-idle.sh's per-phase /proc sampler: wake-ups, memory, the compositor and the
+# machine load under measure-idle.ps1's field names (#3729). Canned /proc text and a fake /proc tree; it reads
+# Linux's /proc layout and SC_CLK_TCK, so the test is Linux-only.
+if(NOT WIN32)
+    add_test(NAME IdleSampleScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_idle_sample.py)
+    set_tests_properties(IdleSampleScript PROPERTIES TIMEOUT 60)
+endif()
+
 # tools/docs-sri.py: the docs site's jsDelivr pins carry SRI hashes matching docs/cdn-integrity.json (#3167).
 # Pure Python and offline, so on every platform.
 add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
