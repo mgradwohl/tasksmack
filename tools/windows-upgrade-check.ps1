@@ -33,7 +33,8 @@
        code 0, a frame written, no [critical] or [error] log line, and config.toml saved with v0.8.0's
        settings kept.
     6. Its Uninstall.exe, with /S. Then the install folder, the Uninstall key, the app's own registry key,
-       App Paths, the Start menu entries and the Run value are gone, and the uninstall mark is written.
+       App Paths, the Start menu entries and the Run value are gone, and the uninstall mark is written;
+       %APPDATA%\TaskSmack\config.toml, the user's, is kept with v0.8.0's settings.
 
     Mesa's llvmpipe DLLs go beside the installed exe for each launch only, and are deleted after it, so
     the install folder holds only what an installer put there. Appends a summary to
@@ -414,10 +415,16 @@ try {
         $runValue = Get-RunValue
         if ($null -ne $runValue) { $left += "the HKCU Run value TaskSmack is still there: $runValue" }
         if ((Get-UninstallMark) -ne 1) { $left += 'the uninstall mark HKCU\Software\TaskSmack Uninstalled = 1 isn''t there' }
+        # The user's config outlives the uninstall (cmake/CPackProjectConfig.cmake.in, "The uninstall mark").
+        if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) { $left += "$configFile, the user's config, is gone" }
+        else {
+            $kept = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) $FixtureSettings
+            if ($kept.Count) { $left += "$configFile lost settings: $($kept -join '; ')" }
+        }
         if (-not $left.Count) { break }
         Start-Sleep -Seconds 2
     } while ((Get-Date) -lt $deadline)
-    Add-Result 'Uninstall' $left "$installDir, the Uninstall key, the app's registry key, the Start menu entries and the Run value are gone; the uninstall mark is written; $configDir is the user's and stays"
+    Add-Result 'Uninstall' $left "$installDir, the Uninstall key, the app's registry key, the Start menu entries and the Run value are gone; the uninstall mark is written; $configFile is kept with v0.8.0's settings"
 } catch {
     if (-not $failure) {
         $failure = $_.Exception.Message

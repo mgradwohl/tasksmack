@@ -3412,7 +3412,8 @@ entry, with the new version, whose key, DisplayName and Publisher match the wing
 unchanged, and the Run value and Start menu shortcut must name the installed exe. The upgraded
 `TaskSmack.exe` then starts headless from that config and must quit by itself with exit code 0 and the
 fixture's settings kept. Last, `Uninstall.exe /S` must remove the folder, the Uninstall key, the app's
-registry key, the Start menu entries and the Run value, and write the uninstall mark.
+registry key, the Start menu entries and the Run value, and write the uninstall mark, while
+`%APPDATA%\TaskSmack\config.toml` stays with the fixture's settings.
 `tools/test-windows-upgrade-check.ps1` (ctest `WindowsUpgradeCheckScript`) tests the release choice, the
 `SHA256SUMS` check and the installed-folder comparison without installing anything.
 
