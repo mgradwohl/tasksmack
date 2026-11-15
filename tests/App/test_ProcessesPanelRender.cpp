@@ -47,6 +47,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
 #include "Mocks/FakeClipboard.h"
+#include "Mocks/FakeHttpsClient.h"
 #include "Mocks/FakeUserSessions.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
@@ -98,38 +99,8 @@
 namespace App::ProcessesPanelRenderTestDetail
 {
 
-/// Look up on VirusTotal's client in these tests (#3094): every request answered with one reply, and kept.
-class FakeLookupClient final : public Platform::IHttpsClient
-{
-  public:
-    explicit FakeLookupClient(Platform::HttpsResponse reply) : m_Reply(std::move(reply))
-    {}
-
-    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& request,
-                                                                          const std::stop_token& /*stop*/) override
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_Requests.push_back(request);
-        return m_Reply;
-    }
-
-    [[nodiscard]] std::size_t requestCount() const
-    {
-        const std::scoped_lock lock(m_Mutex);
-        return m_Requests.size();
-    }
-
-    [[nodiscard]] std::string lastPath() const
-    {
-        const std::scoped_lock lock(m_Mutex);
-        return m_Requests.empty() ? std::string{} : m_Requests.back().path;
-    }
-
-  private:
-    mutable std::mutex m_Mutex;
-    Platform::HttpsResponse m_Reply;
-    std::vector<Platform::HttpsRequest> m_Requests;
-};
+/// Look up on VirusTotal's client in these tests (#3094): the shared fake (#3849).
+using FakeLookupClient = TestMocks::FakeHttpsClient;
 
 } // namespace App::ProcessesPanelRenderTestDetail
 
