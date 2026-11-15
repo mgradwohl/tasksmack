@@ -65,6 +65,9 @@ void ConnectionsModel::sample()
     const std::scoped_lock lock(m_SampleMutex);
 
     Platform::SystemConnectionsRead read = m_Reader->read();
+    // The reading's time is when its counters were read (#3344, #3788), before the sort below, whose cost (thousands of
+    // sockets on a busy machine) would otherwise stretch one interval and shrink the next.
+    const Clock::time_point now = m_Now();
     auto next = std::make_shared<ConnectionsPublication>();
     next->status = read.status;
     next->detail = std::move(read.detail);
@@ -98,7 +101,6 @@ void ConnectionsModel::sample()
     // aside and replace the last reading's together with its time once nothing left can throw: a failure part
     // way through used to leave some of this reading's counters beside the last reading's time, so the next
     // rates divided one interval's bytes by two intervals (#3400).
-    const Clock::time_point now = m_Now();
     const double elapsed = m_PreviousBytes.empty() ? 0.0 : std::chrono::duration<double>(now - m_PreviousAt).count();
     next->rates = connectionRates(next->connections, m_PreviousBytes, elapsed);
     std::unordered_map<std::uint64_t, ConnectionBytes> bytes;

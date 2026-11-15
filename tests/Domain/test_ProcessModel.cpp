@@ -2890,6 +2890,27 @@ TEST(ProcessModelTest, WatchedSamplesCarryTheNpuFigures)
     EXPECT_DOUBLE_EQ(watched.gpuUtilPercent, 0.0) << "Never counted as GPU use";
 }
 
+// #3789: a read that lists a PID twice (reused within one read): Process Details' watched sample is the same row the
+// table's findSnapshot() shows, the last listing, as the generation's PID index maps it, not the first one a scan meets.
+TEST(ProcessModelTest, TheWatchedSampleOfAPidListedTwiceIsTheRowTheTableShows)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    probe->withProcess(makeProcessCounters(100, "first", 'S', 100, 50, 10, 1024, 1))
+        .withProcess(makeProcessCounters(100, "second", 'S', 100, 50, 20, 1024, 1));
+    Domain::ProcessModel processModel(std::move(probe));
+    processModel.watchProcess(100);
+    processModel.refresh();
+
+    const std::shared_ptr<const Domain::ProcessSnapshot> shown = processModel.findSnapshot(100);
+    ASSERT_NE(shown, nullptr);
+    std::vector<Domain::ProcessSample> samples;
+    ASSERT_TRUE(processModel.watchedSamplesSince(0, samples));
+    ASSERT_FALSE(samples.empty());
+    ASSERT_NE(samples.back().snapshot, nullptr);
+    EXPECT_EQ(samples.back().snapshot->name, shown->name);
+    EXPECT_EQ(samples.back().snapshot->name, "second");
+}
+
 // #1799: a sample on an adapter enumerated as an NPU is routed by the adapter's kind too, even
 // untagged, so a probe that doesn't tag its samples still never counts NPU work as GPU work.
 TEST(ProcessModelTest, MergeGPUDataRoutesAnUntaggedSampleOnAnEnumeratedNpuToTheNpuFields)
