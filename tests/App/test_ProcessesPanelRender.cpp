@@ -3788,6 +3788,46 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3807: group headers are formatted once per groups rebuild, not every frame: frames with the same data reuse the
+// header names (and the totals and statuses beside them), and a collapse, which changes the caret, rebuilds them.
+TEST_F(ProcessesPanelRenderTest, GroupHeadersAreFormattedOncePerRebuildNotEveryFrame)
+{
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::Container;
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            auto web = TestMocks::makeProcessCounters(100, "nginx", 'S', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            web.container = "docker:1a2b3c4d5e6f";
+            Platform::ProcessCapabilities caps;
+            caps.hasContainer = true;
+            probe->setCapabilities(caps);
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0)).withProcess(web);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    std::string text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains("docker:1a2b3c4d5e6f (1)")) << text;
+    const std::size_t builds = panel->groupHeaderTextBuildsForTesting();
+    for (int frame = 0; frame < 10; ++frame)
+    {
+        text = renderAndCapture(*panel);
+    }
+    EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f (1)")) << text;
+    EXPECT_TRUE(text.contains("Ungrouped (1)")) << text;
+    // Two headers drawn ten times would be twenty builds if formatted every frame; a sample that lands meanwhile
+    // rebuilds the groups once (two builds), which is allowed twice over.
+    EXPECT_LE(panel->groupHeaderTextBuildsForTesting() - builds, 4U) << "ten frames, the same headers";
+    panel->onDetach();
+}
+
 // #3428: where the probe reads no containers and no app units (Windows), a saved Group: Container stands
 // as None, the Group control doesn't offer Container or App, and the saved choice is kept for a system that
 // has them; choosing None there replaces it.
