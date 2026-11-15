@@ -751,27 +751,11 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesDeadlineABadPriorityAnInvalid
     EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
 }
 
-// #3219: a child set to round robin at priority 1, the least real time there is, on every thread, then back to
-// Normal. Only where this user may: CAP_SYS_NICE, or an RLIMIT_RTPRIO of at least 1 (the audio group often has
-// one); else skipped, since an unprivileged real-time request is refused by design.
-TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
+/// Round Robin at priority 1 set on a sleeping child, and on every one of its threads (#3219). @p hasCap: whether this
+/// run has CAP_SYS_NICE, which canSetRealtimeSchedPolicy reports. A kernel that refuses real time to this cgroup (RT
+/// group scheduling with no budget) skips.
+void expectRoundRobinOnEveryThread(bool hasCap)
 {
-    const std::optional<std::string> status = [] -> std::optional<std::string>
-    {
-        std::ifstream file("/proc/self/status");
-        if (!file)
-        {
-            return std::nullopt;
-        }
-        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    }();
-    const bool hasCap = ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
-    rlimit rtprio{};
-    const bool hasLimit = ::getrlimit(RLIMIT_RTPRIO, &rtprio) == 0 && rtprio.rlim_cur >= 1;
-    if (!hasCap && !hasLimit)
-    {
-        GTEST_SKIP() << "this user may not set real time: no CAP_SYS_NICE and RLIMIT_RTPRIO is 0";
-    }
     const SleepingChild child(2);
     ASSERT_TRUE(child.started());
     ASSERT_TRUE(child.threadsReady());
@@ -801,6 +785,30 @@ TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
     {
         EXPECT_EQ(schedulerOf(tid), SCHED_OTHER) << "thread " << tid;
     }
+}
+
+// #3219: a child set to round robin at priority 1, the least real time there is, on every thread, then back to
+// Normal. Only where this user may: CAP_SYS_NICE, or an RLIMIT_RTPRIO of at least 1 (the audio group often has
+// one); else skipped, since an unprivileged real-time request is refused by design.
+TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
+{
+    const std::optional<std::string> status = [] -> std::optional<std::string>
+    {
+        std::ifstream file("/proc/self/status");
+        if (!file)
+        {
+            return std::nullopt;
+        }
+        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    }();
+    const bool hasCap = ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
+    rlimit rtprio{};
+    const bool hasLimit = ::getrlimit(RLIMIT_RTPRIO, &rtprio) == 0 && rtprio.rlim_cur >= 1;
+    if (!hasCap && !hasLimit)
+    {
+        GTEST_SKIP() << "this user may not set real time: no CAP_SYS_NICE and RLIMIT_RTPRIO is 0";
+    }
+    expectRoundRobinOnEveryThread(hasCap);
 }
 
 // =============================================================================
@@ -4395,6 +4403,18 @@ TEST(LinuxEfficiencyModeRealTest, TheRealCgroupFileCallsStayUnderTheCgroupRoot)
     const std::optional<std::string> own = real.procCgroup(static_cast<std::int32_t>(::getpid()));
     ASSERT_TRUE(own.has_value());
     EXPECT_FALSE(own->empty());
+}
+
+// #3836: Round Robin, which LinuxProcessActionsTest skips wherever the user may not set real time (every CI runner
+// as a user), set as root, which may. Only as root: CI's PR root step and the coverage job's root pass run this suite,
+// so a skip there (a kernel refusing real time) fails the step.
+TEST(LinuxProcessActionsRootTest, AsRootSetSchedPolicySetsRoundRobin)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+    }
+    expectRoundRobinOnEveryThread(true);
 }
 
 // #3620, #3374: as root, a tool TaskSmack runs as root comes only from the system's own directories. A fake strace,

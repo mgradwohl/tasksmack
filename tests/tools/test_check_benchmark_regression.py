@@ -253,18 +253,35 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
     GPU_BENCHMARKS = ("BM_GPUModel_Refresh", "BM_GPUModel_Snapshots", "BM_GPUProbe_Enumerate")
     OTHER_BENCHMARKS = {f"BM_Other_{index}": 100.0 for index in range(7)}
 
-    def test_a_skipped_benchmark_is_not_measured_and_not_counted_against_coverage(self):
-        baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
+    def test_a_benchmark_skipped_on_both_sides_is_not_measured_and_not_counted_against_coverage(self):
+        # The CI baseline was recorded on a runner with no GPU, so the GPU benchmarks skip in both:
+        # 7 of 10 would read 70%; the 3 skips are out of the denominator, so it is 7 of 7.
         skipped = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm)]
-        # 7 of 10 baseline benchmarks compared would be 70% coverage; the 3 skips are out of the
-        # denominator, so it is 7 of 7.
-        code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, "--min-coverage", "90", current_extra=skipped)
+        code, output = self.run_gate(
+            self.OTHER_BENCHMARKS, self.OTHER_BENCHMARKS, "--min-coverage", "90", baseline_extra=skipped, current_extra=skipped
+        )
         self.assertEqual(code, 0, output)
         self.assertIn("Not measured (3)", output)
         for bm in self.GPU_BENCHMARKS:
             self.assertIn(f"{bm}: skipped in current run: No GPUs available", output)
         self.assertIn("coverage 100.0% (3 skipped on purpose, not counted)", output)
+        self.assertNotIn("Newly skipped", output)
         self.assertNotIn("Invalid/unusable", output)
+
+    def test_a_benchmark_measured_in_the_baseline_but_skipped_now_counts_against_coverage(self):
+        # #3847: a benchmark that starts skipping must not quietly leave the gate. 7 of 10 compared.
+        baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
+        skipped = [record for bm in self.GPU_BENCHMARKS for record in skipped_records(bm)]
+        code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, "--min-coverage", "90", current_extra=skipped)
+        self.assertEqual(code, 1, output)
+        self.assertIn("Newly skipped (3)", output)
+        self.assertIn("Not measured (3)", output)
+        self.assertIn("coverage 70.0% is below the required 90.0%", output)
+        self.assertIn("3 newly skipped", output)
+        # Within --min-coverage, it is reported and passes.
+        code, output = self.run_gate(baseline, self.OTHER_BENCHMARKS, "--min-coverage", "70", current_extra=skipped)
+        self.assertEqual(code, 0, output)
+        self.assertIn("Newly skipped (3)", output)
 
     def test_a_skipped_benchmark_does_not_hide_a_real_regression(self):
         baseline = {**self.OTHER_BENCHMARKS, **{bm: 40.0 for bm in self.GPU_BENCHMARKS}}
