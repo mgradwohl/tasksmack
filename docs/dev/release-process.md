@@ -261,9 +261,7 @@ the one place that pins it, for both architectures (#3393).
   image, architecture and package set. A warm run doesn't reach apt.llvm.org at all, and keeps installing the
   snapshot it saved after apt.llvm.org moves on. Release runs on `main` and `release/*` (dry runs) save it on a
   miss; a tag run only restores, from main's entry. So run a dry run from main before tagging, and both builds of
-  the tag install the same snapshot. GitHub evicts an entry no run has read for 7 days, so `llvm-cache-warm.yml`
-  restores it on both architectures every Monday and Thursday (#3825). When it finds the entry gone, it fails,
-  and a dry run from main saves it again.
+  the tag install the same snapshot.
 - **Every other Linux job (#3635):** Setup LLVM caches their `.deb`s too, keyed by LLVM major, OS image,
   architecture, package set and ISO week. The week's first run on `main` refreshes from apt.llvm.org and saves;
   later runs install from the cache. A run that finds only an earlier week's entry tries apt.llvm.org for a fresh

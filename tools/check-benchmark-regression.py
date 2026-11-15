@@ -31,12 +31,9 @@ benchmarks disappear or degrade is not trustworthy. Default 90% tolerates the oc
 benchmark with no usable timing without masking a real, larger coverage loss.
 
 A benchmark that skipped itself on purpose (Google Benchmark's SkipWithMessage(), written as
-"skipped": true) is reported as not measured, and never compared. One the baseline skipped too, or
-only the current run has, isn't counted in coverage, in the numerator or the denominator: the GPU
-benchmarks skip on a machine with no GPU, such as the CI runner, instead of timing an empty probe
-(#1420), and the CI baseline was recorded there. One the baseline measured but the current run
-skips counts against coverage (#3847): a benchmark that starts skipping is a coverage loss, not a
-quieter gate. A benchmark that failed
+"skipped": true) on either side is reported as not measured: neither compared nor counted in
+coverage, in the numerator or the denominator. The GPU benchmarks do this on a machine with no
+GPU, such as the CI runner, instead of timing an empty probe (#1420). A benchmark that failed
 (SkipWithError(), "error_occurred": true) on either side still counts against coverage, even if
 the other side skipped on purpose.
 
@@ -593,14 +590,8 @@ def main() -> int:
         elif base_skip is not None:
             not_measured.append((name, f"skipped in baseline run: {base_skip}"))
     skipped_names = {name for name, _ in not_measured}
-    # Measured in the baseline, skipped now (#3847): it stays in the coverage denominator, so a benchmark that
-    # starts skipping is a coverage loss. The rest of the skips are out of it; only baseline benchmarks are in it.
-    newly_skipped = sorted(
-        name
-        for name in skipped_names & set(baseline) & set(current)
-        if skip_message(current[name]) is not None and skip_message(baseline[name]) is None
-    )
-    skipped_baseline = len(skipped_names & set(baseline)) - len(newly_skipped)
+    # Only baseline benchmarks are in the coverage denominator, so only they are taken out of it.
+    skipped_baseline = len(skipped_names & set(baseline))
 
     # A benchmark present in the baseline but absent from the current run is a real coverage
     # gap, not something to silently ignore -- it means this run tells us nothing about
@@ -742,14 +733,9 @@ def main() -> int:
     # compared, and a run with both a regression and a coverage loss reports both failures.
     measurable = len(baseline) - skipped_baseline
     coverage_pct = (compared / measurable) * 100.0
-    if newly_skipped:
-        print(f"Newly skipped ({len(newly_skipped)}) -- measured in the baseline, skipped now: counted against coverage (#3847):")
-        for name in newly_skipped:
-            print(f"   {name}")
-        print()
     print(
         f"Coverage: {coverage_pct:.1f}% ({compared} of {measurable} measurable baseline benchmark(s) compared; "
-        f"{len(missing_from_current)} missing, {len(invalid)} invalid/unusable, {len(newly_skipped)} newly skipped, "
+        f"{len(missing_from_current)} missing, {len(invalid)} invalid/unusable, "
         f"{skipped_baseline} skipped on purpose; {args.min_coverage:.1f}% required)."
     )
     print()
@@ -769,8 +755,8 @@ def main() -> int:
         print(
             f"FAILED: coverage {coverage_pct:.1f}% is below the required "
             f"{args.min_coverage:.1f}% ({len(missing_from_current)} missing, "
-            f"{len(invalid)} invalid/unusable, {len(newly_skipped)} newly skipped, out of {measurable} measurable "
-            f"baseline benchmark(s); {skipped_baseline} skipped on purpose)."
+            f"{len(invalid)} invalid/unusable, out of {measurable} measurable baseline benchmark(s); "
+            f"{skipped_baseline} skipped on purpose)."
         )
         failed = True
     if failed:

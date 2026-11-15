@@ -1128,6 +1128,66 @@ jobs:
   # Native Wayland (#2724): TaskSmack on a headless sway and a headless labwc, driven with a real (virtual)
   # pointer -- the compositor-run drag, resize and maximize the on-display tests can't drive there, a second
   # output at scale 1.5 unplugged under the window, and the size saved and restored. GNOME and KDE stay manual.
+  # The release's Linux packages build on ubuntu-24.04 (release.yml's build-linux), where every other job builds on
+  # 26.04 (#3821): its older libbpf, headers and glibc used to meet a change only at a dry run or the tag. Nightly,
+  # x64, the release preset built as build-linux builds it (Setup LLVM with release.yml's pinned LLVM release, read
+  # from it), without tests or packaging: a build break is what 24.04 alone can show. Restores build-linux's ccache,
+  # saves none.
+  ubuntu-2404-build:
+    name: Release preset builds on ubuntu-24.04 (x64)
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && inputs.scope == 'all')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Read release.yml's LLVM pins
+        id: pins
+        run: |
+          version="$(sed -n "s/^  LLVM_VERSION: '\([0-9]*\)'.*/\1/p" .github/workflows/release.yml)"
+          release="$(sed -n "s/^  LLVM_LINUX_RELEASE: '\([0-9.]*\)'.*/\1/p" .github/workflows/release.yml)"
+          if [[ -z "$version" || -z "$release" ]]; then
+            echo "::error title=ubuntu-24.04 build::couldn't read LLVM_VERSION and LLVM_LINUX_RELEASE from release.yml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Setup LLVM
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ steps.pins.outputs.version }}
+          expect-release: ${{ steps.pins.outputs.release }}
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup ccache
+        id: ccache
+        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
+        continue-on-error: true
+        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        with:
+          install: binary
+          key: linux-release-package-llvm${{ steps.pins.outputs.version }}
+          max-size: 500M
+          save: false
+
+      - name: Build without ccache (its setup failed)
+        if: steps.ccache.outcome == 'failure'
+        shell: bash
+        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
+
+      - name: Configure
+        run: cmake --preset release -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_VERSION_SUFFIX=
+
+      - name: Build
+        run: cmake --build --preset release
+
   wayland-matrix:
     if: >-
       github.event_name == 'schedule' ||

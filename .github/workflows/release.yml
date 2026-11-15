@@ -1933,7 +1933,7 @@ jobs:
         # can't end the run: TaskSmack runs until its window is up, then gets SIGTERM, which SDL turns into a normal
         # quit that saves the settings. The signal needs sudo, since TaskSmack runs as root; only the start went
         # through pkexec. Then the "Root launch (Linux)" checks: the user's config.toml, owned by them, root's
-        # untouched, and the narrowed capabilities (13, as there).
+        # untouched, and the narrowed capabilities.
         run: |
           set -o pipefail
           user="$(id -un)"
@@ -1998,8 +1998,10 @@ jobs:
           fi
           # From /proc, not its log: a release build logs at warn, and pkexec drops TASKSMACK_LOG_LEVEL.
           kept="$(python3 -c 'import sys; print(bin(int(sys.argv[1], 16)).count("1"))' "$(awk '{print $2}' caps.txt 2>/dev/null || true)" 2>/dev/null || echo none)"
-          if [[ "$kept" != 13 ]]; then
-            echo "::error title=Administrator launch::TaskSmack through pkexec kept $kept effective capabilities, not the 13 #3621 narrows root's to"
+          # Narrowed (#3621): some kept, and fewer than root holds (#3836: a bound, as CI's Root launch).
+          full="$(sudo python3 -c 'import re; print(bin(int(re.search(r"CapBnd:\s*(\w+)", open("/proc/self/status").read()).group(1), 16)).count("1"))')"
+          if [[ "$kept" == none ]] || (( kept < 1 || kept >= full )); then
+            echo "::error title=Administrator launch::TaskSmack through pkexec kept $kept effective capabilities of root's $full: not narrowed (#3621)"
             failed=1
           fi
           if sudo test -e /root/.config/tasksmack; then

@@ -47,6 +47,17 @@ void ProcessesPanel::refreshSessions()
     // Read only while this table shows them, grouped by User (ProcessGrouping::sessionsDemand()); only a
     // change does anything.
     m_UserSessions->setProcessesView(m_IsActiveTab, m_GroupBy);
+    // The session actions' worker: a finished one's line, which goes after a while, and the session's new
+    // state read at once. Whatever the grouping (#3803): an action started under Group: User finishes, and its line
+    // times out, after the grouping changed, so it isn't stale when Group: User comes back.
+    if (SessionActionControl* const actions = m_UserSessions->actions(); actions != nullptr)
+    {
+        actions->update(ImGui::GetIO().DeltaTime);
+        if (actions->takeDone())
+        {
+            m_UserSessions->requestRefresh();
+        }
+    }
     const Domain::UsersModel* const model = m_UserSessions->model();
     if (model == nullptr || m_GroupBy != ProcessGrouping::GroupBy::User)
     {
@@ -56,16 +67,6 @@ void ProcessesPanel::refreshSessions()
     if (!m_SessionsPublication || m_SessionsPublication->version != model->version())
     {
         m_SessionsPublication = model->publication(); // shared, not copied: one atomic load with nothing new
-    }
-    // The session actions' worker: a finished one's line, which goes after a while, and the session's new
-    // state read at once.
-    if (SessionActionControl* const actions = m_UserSessions->actions(); actions != nullptr)
-    {
-        actions->update(ImGui::GetIO().DeltaTime);
-        if (actions->takeDone())
-        {
-            m_UserSessions->requestRefresh();
-        }
     }
 }
 

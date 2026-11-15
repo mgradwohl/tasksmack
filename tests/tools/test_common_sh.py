@@ -168,6 +168,34 @@ class CheckoutPathTests(unittest.TestCase):
         self.assertTrue(regex.search(f"{given}/.cache/fetchcontent/x.h"))
 
 
+class RootTestFilterTests(unittest.TestCase):
+    """#3836: CI's PR root step and tools/coverage.sh's root pass run the same root tests, from one list."""
+
+    SUITES = (
+        "DetachedSpawnTest.AsRoot*",
+        "*/UdpByteCounterRootTest.*",
+        "UdpTrafficCollectorRootTest.*",
+        "SessionUserRootTest.*",
+        "RootCapabilitiesRootTest.*",
+        "LinuxProcessActionsRootTest.*",
+    )
+
+    def test_the_filter_names_every_root_suite(self):
+        result = subprocess.run(
+            [BASH, "-c", 'source "$1"; root_test_filter', "test", posix(COMMON_SH)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip().split(":"), list(self.SUITES))
+
+    def test_ci_and_coverage_take_it_rather_than_a_copy(self):
+        repo = REPO_ROOT
+        for path in (repo / "tools" / "coverage.sh", repo / ".github" / "workflows" / "reusable-build-test.yml"):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("root_test_filter", text)
+                self.assertNotIn("RootCapabilitiesRootTest.*:", text, "a hand-kept copy of the filter")
+
+
 class PinnedLlvmMajorTests(unittest.TestCase):
     """#3824: the hooks are pinned by commit, with the tag in a `# frozen:` comment; the LLVM major still reads."""
 
