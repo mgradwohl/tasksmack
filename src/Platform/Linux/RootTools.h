@@ -65,6 +65,25 @@ namespace Platform::RootTools
     return SyscallTrace::findExecutable(name, pathEnv, &isExecutableFile);
 }
 
+/// TaskSmack's environment @p env (NAME=value entries, null-terminated, as environ) for a program it starts as root and
+/// as itself (#3855): the same variables, the display and session bus included, which a terminal or xdg-open needs, but
+/// PATH set to SyscallTrace::ROOT_TOOL_PATH. gcore and xdg-open are scripts that run their own helpers by name; with the
+/// invoking user's PATH (sudo -E, su without -) a helper of theirs would run as root.
+[[nodiscard]] inline std::vector<std::string> withRootPath(const char* const* env)
+{
+    std::vector<std::string> out;
+    for (const char* const* entry = env; entry != nullptr && *entry != nullptr; ++entry)
+    {
+        const std::string_view variable(*entry);
+        if (!variable.starts_with("PATH="))
+        {
+            out.emplace_back(variable);
+        }
+    }
+    out.push_back(std::string("PATH=") + std::string(SyscallTrace::ROOT_TOOL_PATH));
+    return out;
+}
+
 /// The environment a tool run as root gets in place of TaskSmack's own (#3760): only a PATH of the system's directories,
 /// so nothing the invoking user set (PATH, LD_*, locale or tool variables) reaches it.
 [[nodiscard]] inline std::vector<std::string> rootEnvironment()

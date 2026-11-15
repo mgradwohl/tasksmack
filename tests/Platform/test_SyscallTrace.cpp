@@ -469,5 +469,22 @@ TEST(RootToolsTest, AsRootAToolIsNeverFoundOnTheUsersPath)
     std::filesystem::remove_all(dir, ec);
 }
 
+// #3855: a program TaskSmack starts as root and as itself keeps TaskSmack's environment (the display, the session bus)
+// but gets the system's PATH, whatever PATH TaskSmack itself was started with.
+TEST(RootToolsTest, AsRootAChildKeepsTheEnvironmentButNotThePath)
+{
+    std::array<const char*, 5> env{
+        "DISPLAY=:0", "PATH=/home/someone/bin:/usr/bin", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", "PATHLIKE=kept", nullptr};
+    const std::vector<std::string> out = RootTools::withRootPath(env.data());
+    EXPECT_EQ(out,
+              (std::vector<std::string>{"DISPLAY=:0",
+                                        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+                                        "PATHLIKE=kept",
+                                        std::string("PATH=") + std::string(ROOT_TOOL_PATH)}));
+    std::array<const char*, 1> none{nullptr};
+    EXPECT_EQ(RootTools::withRootPath(none.data()), (std::vector<std::string>{std::string("PATH=") + std::string(ROOT_TOOL_PATH)}))
+        << "a PATH is set even when there was none";
+}
+
 } // namespace
 } // namespace Platform::SyscallTrace

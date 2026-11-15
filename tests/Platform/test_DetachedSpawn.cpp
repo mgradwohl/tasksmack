@@ -16,6 +16,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstddef>
+#include <cstdlib>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -564,6 +565,27 @@ TEST(DetachedSpawnTest, AsRootARunAsGetsItsWholeGroupListOrThePrimaryAlone)
 
     const RunAs primaryOnly{.uid = NOBODY, .gid = NOGROUP, .environment = {"PATH=/usr/bin:/bin"}, .groups = {}};
     EXPECT_EQ(groupsOf(primaryOnly, "primary-only.txt"), std::vector<std::string>{"65534"});
+}
+
+// #3855: as root and as itself, the program gets the system's PATH, not the one TaskSmack was started with (sudo -E keeps
+// the user's), so a script it runs can't pick up a helper of the user's.
+TEST(DetachedSpawnTest, AsRootAProgramGetsTheSystemsPath)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "only a root TaskSmack's children get the system's PATH";
+    }
+    const char* const previous = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - this test's thread only
+    const std::string saved = previous != nullptr ? previous : "";
+    ASSERT_EQ(::setenv("PATH", "/tmp/tasksmack-3855-planted:/usr/bin:/bin", 1), 0);
+    const ScopedTempDir dir("tasksmack_detached_root_path");
+    const std::filesystem::path out = dir.path / "path.txt";
+    const std::array<std::string, 3> argv{
+        "/bin/sh", "-c", std::format("printf '%s' \"$PATH\" > '{0}.tmp' && mv '{0}.tmp' '{0}'", out.string())};
+    const auto result = spawnDetached(argv);
+    ::setenv("PATH", saved.c_str(), 1);
+    ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), argv[0]);
+    EXPECT_EQ(waitForFile(out).value_or(""), Platform::SyscallTrace::ROOT_TOOL_PATH);
 }
 
 TEST(DetachedSpawnTest, AUserItCantBecomeIsReportedAndStartsNothing)
