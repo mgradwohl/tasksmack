@@ -79,7 +79,10 @@ order.
 - **Renovate** (`.github/renovate.json5`): `dependencies` plus `ci` on every PR. Its Actions and pip managers are
   off, since Dependabot covers those (`enabledManagers` is `custom.regex` and `pre-commit`). So a Renovate PR
   bumps a version pinned by a custom regex (CMake FetchContent and toolchain pins) or a pre-commit hook.
-- **`ci:arm64`:** add it to a PR to run the ARM64 build and test jobs (`arm64.yml`).
+- **`ci:arm64`:** runs the ARM64 build and test jobs (`arm64.yml`). The PR labeler adds it for a change to
+  `.github/actions`, CMake, `CMakePresets.json` or arch-specific sources (`.github/labeler.yml`, #3820); add it
+  by hand for anything else. The labeler can't start the run by adding the label, so it begins with the PR's
+  next push. ARM64 is not a required check.
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
 - **`winget-health.yml`:** opens, rewrites and closes one issue, "WinGet: TaskSmack.TaskSmack <version> isn't
   published", labelled `release` and `agent:Windows` and found by that title among the open `release` issues
