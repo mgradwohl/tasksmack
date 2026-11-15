@@ -6,8 +6,10 @@
 
 #include "Platform/BrokerProtocol.h"
 
+#include <array>
 #include <chrono>
 #include <concepts>
+#include <cstddef>
 #include <cstdint>
 #include <functional>
 #include <variant>
@@ -117,30 +119,33 @@ namespace Detail
 template<typename Variant> inline constexpr bool EVERY_KIND_SORTED = false;
 template<typename... Kinds> inline constexpr bool EVERY_KIND_SORTED<std::variant<Kinds...>> = (SortedRequestKind<Kinds> && ...);
 
-template<typename... Kinds> [[nodiscard]] constexpr bool isOf(const std::variant<Kinds...>& request, RequestCategory category) noexcept
+/// Each kind's traits, by its index in the variant: built from RequestKind, so a kind with no trait fails to compile.
+template<typename Variant> struct KindTable;
+template<typename... Kinds> struct KindTable<std::variant<Kinds...>>
 {
-    return ((std::holds_alternative<Kinds>(request) && RequestKind<Kinds>::CATEGORY == category) || ...);
-}
-
-template<typename... Kinds> [[nodiscard]] constexpr bool putsOff(const std::variant<Kinds...>& request) noexcept
-{
-    return ((std::holds_alternative<Kinds>(request) && RequestKind<Kinds>::PUTS_OFF_THE_IDLE_EXIT) || ...);
-}
+    static constexpr std::array<RequestCategory, sizeof...(Kinds)> CATEGORIES{RequestKind<Kinds>::CATEGORY...};
+    static constexpr std::array<bool, sizeof...(Kinds)> PUTS_OFF_THE_IDLE_EXIT{RequestKind<Kinds>::PUTS_OFF_THE_IDLE_EXIT...};
+};
 
 } // namespace Detail
 
 static_assert(Detail::EVERY_KIND_SORTED<Request>, "give the new request kind its RequestKind trait: the Hello, an action or a read");
 
-/// Whether @p request is of @p category. A valueless request is of none, so it counts as an action, never a read.
+/// Whether @p request is of @p category. A valueless request (index variant_npos) is of none, so it counts as an
+/// action, never a read.
 [[nodiscard]] constexpr bool isRequestOf(const Request& request, RequestCategory category) noexcept
 {
-    return Detail::isOf(request, category);
+    constexpr const auto& categories = Detail::KindTable<Request>::CATEGORIES;
+    const std::size_t index = request.index();
+    return index < categories.size() && categories[index] == category;
 }
 
-/// Whether @p request puts off the helper's idle exit: its kind's RequestKind trait.
+/// Whether @p request puts off the helper's idle exit: its kind's RequestKind trait. A valueless request doesn't.
 [[nodiscard]] constexpr bool putsOffTheIdleExit(const Request& request) noexcept
 {
-    return Detail::putsOff(request);
+    constexpr const auto& putsOff = Detail::KindTable<Request>::PUTS_OFF_THE_IDLE_EXIT;
+    const std::size_t index = request.index();
+    return index < putsOff.size() && putsOff[index];
 }
 
 /// Where a server's idle timeout reads the time: an empty one is steady_clock. Tests pass a clock they
