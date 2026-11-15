@@ -4,6 +4,7 @@
 #include "Core/EnvRead.h"
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
+#include "Core/FrameLoopState.h"
 #include "Core/FramePacing.h"
 #include "Core/FrameWake.h"
 #include "Core/GraphicsReset.h"
@@ -39,7 +40,6 @@
 #include <cstring>
 #include <exception>
 #include <functional>
-#include <limits>
 #include <memory>
 #include <optional>
 #include <ranges>
@@ -85,36 +85,15 @@ thread_local std::optional<std::reference_wrapper<Application>> g_StackApplicati
 // longer delta only settles further, as it would have in real time.
 constexpr float MAX_DELTA_TIME = 1.0F;
 
-// When no SDL events arrive, render the next frame this long after the previous one started
-// (FramePacing::computeIdleWaitMs, #1276). This holds the idle render rate at 20 fps, reducing CPU usage when the display
-// hasn't changed. Mouse movement and keyboard events wake the sleep immediately,
-// so interactive frame rate is unaffected.
-constexpr int IDLE_FRAME_SLEEP_MS = 50;
-// The frame rate that idle sleep gives without input. Motion that needs no more than this is left
-// to the idle path rather than paced (FramePacing::computeAnimationRate, #1125).
-constexpr double IDLE_FRAME_RATE = 1000.0 / IDLE_FRAME_SLEEP_MS;
-
-// The fastest the loop paces frames, whatever asks: a visible chart or NowBar moving fast enough
-// (Core::AnimationRequest, #1037/#1125) or input (#1153). A whole number of display refreshes never
-// slower than this (FramePacing::vblanksPerFrame, #1126): 60 fps at 60/120 Hz, 75 at 75 Hz, 72 at
-// 144 Hz, 82.5 at 165 Hz. A move/resize interaction is capped at the display rate instead.
-constexpr double MAX_FRAME_RATE = 60.0;
-
 // The refresh rate assumed when SDL does not report the display's (#1126).
 constexpr double FALLBACK_REFRESH_HZ = 60.0;
 
-// The hidden rate, ~5 fps, for the hidden window that still draws (FramePacing::computeHiddenWait):
-// before the first frame, and on a native Wayland minimize. Any other hidden window draws no frames
-// at all (#3156). Any event (e.g. SDL_EVENT_WINDOW_RESTORED) wakes immediately, so restore latency
-// is unaffected.
-constexpr int MINIMIZED_FRAME_SLEEP_MS = 200;
 // How long the no-frames wait of a hidden window lasts at most (#3156): see WindowConstants.h.
 constexpr int HIDDEN_WAIT_TIMEOUT_MS = static_cast<int>(WINDOW_HIDDEN_WAIT_TIMEOUT.count());
 constexpr int CLOAKED_POLL_INTERVAL_MS = static_cast<int>(WINDOW_CLOAKED_POLL_INTERVAL.count());
-// The slow floor of a static frame (#3156 stage 2): see WindowConstants.h.
-constexpr int STATIC_FRAME_FLOOR_MS = static_cast<int>(STATIC_FRAME_FLOOR_INTERVAL.count());
-static_assert(STATIC_FRAME_FLOOR_MS > IDLE_FRAME_SLEEP_MS, "the floor is slower than the idle rate it replaces");
-static_assert(static_cast<double>(MAX_DELTA_TIME) * 1000.0 >= STATIC_FRAME_FLOOR_MS, "deltaTime covers a floor frame's real time");
+// The idle, hidden and static floor periods and the frame rate caps of the loop's waits: see FrameLoopState (#3791).
+static_assert(static_cast<double>(MAX_DELTA_TIME) * 1000.0 >= FrameLoopState::STATIC_FRAME_FLOOR_MS,
+              "deltaTime covers a floor frame's real time");
 
 // During interactive move/resize, event delivery can be bursty depending on
 // compositor/window-manager behavior. Keep redraw active for a short grace
@@ -122,7 +101,7 @@ static_assert(static_cast<double>(MAX_DELTA_TIME) * 1000.0 >= STATIC_FRAME_FLOOR
 // without forcing continuous high-rate rendering when idle.
 constexpr double INTERACTION_REDRAW_GRACE_SECONDS = 0.35;
 // How long after an input event (a wheel, a button, a key, text: WindowEventRouting::isInputEvent) the
-// regular frame stays paced at MAX_FRAME_RATE instead of dropping to the idle wait (#843). Dear ImGui
+// regular frame stays paced at FrameLoopState::MAX_FRAME_RATE instead of dropping to the idle wait (#843). Dear ImGui
 // finishes reacting to input over the next frame or two (a popup or combo list is drawn the frame after
 // it opens, a clicked tab's content the frame after the click, hover and tooltip delays tick per frame),
 // and at the 20 fps idle rate each of those frames came 50 ms apart. Long enough to cover ImGui's
@@ -504,6 +483,91 @@ void Application::detachAllLayers()
     m_LayerStack.clear();
 }
 
+// What run()'s loop phases (FrameLoopState) call out to (#3791): the clock, SDL's paced delay and event
+// wait, renderFrame() with the frame's deltaTime, the GPU recovery's bound on a wait and the layers'
+// onHiddenUpdate().
+class Application::LoopHost final : public IFrameLoopHost
+{
+  public:
+    LoopHost(Application& app, const double lastTime) : m_App(app), m_LastTime(lastTime)
+    {
+#ifdef _WIN32
+        if (!m_IdleWaitTimer.active())
+        {
+            spdlog::warn("Frame pacing: no high-resolution timer; idle waits end on the system timer's tick");
+        }
+#endif
+    }
+
+    [[nodiscard]] double now() override
+    {
+        return getTime();
+    }
+
+    void delayPreciseNs(const std::uint64_t nanoseconds) override
+    {
+        SDL_DelayPrecise(nanoseconds);
+    }
+
+    bool renderFrame(const bool resizeTriggeredFrame, FrameTimes* times) override
+    {
+        return m_App.renderFrame(computeDeltaTime(),
+                                 resizeTriggeredFrame,
+                                 times != nullptr ? &times->updateMs : nullptr,
+                                 times != nullptr ? &times->renderMs : nullptr,
+                                 times != nullptr ? &times->postRenderMs : nullptr,
+                                 times != nullptr ? &times->swapMs : nullptr);
+    }
+
+    // On Windows the wait's timeout is ended on time by a high-resolution timer (#3712): SDL's own
+    // ends on a system timer tick, 15.625 ms apart now that TaskSmack no longer raises the timer to
+    // 1 ms (see SDL_HINT_TIMER_RESOLUTION in the constructor).
+    FramePacing::IdleWaitOutcome waitForEvent(SDL_Event& event, const int timeoutMs) override
+    {
+#ifdef _WIN32
+        m_IdleWaitTimer.arm(timeoutMs);
+#endif
+        const auto outcome = FramePacing::waitForIdleEvent(
+            event,
+            [timeoutMs](SDL_Event& waited) { return SDL_WaitEventTimeout(&waited, timeoutMs); },
+            [](SDL_Event& polled) { return SDL_PollEvent(&polled); });
+#ifdef _WIN32
+        m_IdleWaitTimer.disarm();
+#endif
+        return outcome;
+    }
+
+    [[nodiscard]] int boundWaitMs(const int waitMs, const double nowSeconds) override
+    {
+        return m_App.m_GraphicsRecovery.boundWaitMs(waitMs, nowSeconds);
+    }
+
+    void hiddenUpdate() override
+    {
+        for (const auto& layer : m_App.m_LayerStack)
+        {
+            guardLayerCall(layer, "onHiddenUpdate", [&] { layer->onHiddenUpdate(); });
+        }
+    }
+
+  private:
+    float computeDeltaTime()
+    {
+        const double currentTime = getTime();
+        const float deltaTime = FramePacing::frameDeltaSeconds(m_LastTime, currentTime, MAX_DELTA_TIME);
+        m_App.m_LastFrameIntervalSeconds = FramePacing::frameIntervalSeconds(m_LastTime, currentTime);
+        m_LastTime = currentTime;
+        return deltaTime;
+    }
+
+    // NOLINTNEXTLINE(cppcoreguidelines-avoid-const-or-ref-data-members) - lives only inside run(), which the Application outlives
+    Application& m_App;
+    double m_LastTime;
+#ifdef _WIN32
+    IdleWaitTimer m_IdleWaitTimer;
+#endif
+};
+
 void Application::run()
 {
     if (!m_Window)
@@ -515,16 +579,7 @@ void Application::run()
     // name is the process name (see Platform::setMainThreadName).
     Platform::setMainThreadName(Platform::UI_THREAD_NAME);
 
-    double lastTime = getTime();
-
-    const auto computeDeltaTime = [this, &lastTime] -> float
-    {
-        const double currentTime = getTime();
-        const float deltaTime = FramePacing::frameDeltaSeconds(lastTime, currentTime, MAX_DELTA_TIME);
-        m_LastFrameIntervalSeconds = FramePacing::frameIntervalSeconds(lastTime, currentTime);
-        lastTime = currentTime;
-        return deltaTime;
-    };
+    const double lastTime = getTime();
 
     // The display's refresh rate, which frame pacing rounds to (#1126); re-read on a display change.
     const auto refreshDisplayRate = [this]
@@ -555,85 +610,18 @@ void Application::run()
 
     m_InteractionRedrawUntil = 0.0;
 
-    ResizePerfTraceStats resizeTraceStats;
-    bool wasTracingInteraction = false;
-    bool wasInteracting = false;
-    double lastResizeTraceLogTime = getTime();
-    // Snapshot of whether TitleBarLayer changed window geometry (position/size) during
-    // the PREVIOUS frame's onUpdate. Used to gate grace-period sleep: if no geometry
-    // changed last frame, we allow the idle sleep even inside the interaction grace window,
-    // preventing wasted renders when the window is stationary post-interaction.
-    bool geometryChangedLastFrame = false;
-    // The highest frame rate the previous frame's moving content asked for (Core::AnimationRequest,
-    // 0 = nothing moved visibly), and when the last frame started: together they pace the next
-    // frame (#1037, #1125).
-    double requestedAnimationFps = 0.0;
-    // The soonest frame the previous frame's content asked for, in seconds after it started
-    // (Core::AnimationRequest::requestFrameWithin(), infinity = none, #3156).
-    double requestedFrameWithinSeconds = std::numeric_limits<double>::infinity();
-    double lastFrameStart = getTime();
-    // The event that woke the idle wait, taken off the queue by SDL_WaitEventTimeout(): the next
-    // iteration's drain dispatches it before anything else, and before that iteration renders (#1409).
-    std::optional<SDL_Event> idleWakeEvent;
-    // Whether a frame has been drawn yet: until then a hidden window draws at the hidden rate, so the
-    // first update publishes the loaded settings even in an app started minimized (#3156).
-    bool drewFirstFrame = false;
-    // P3 skips in a row, for the FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS bound (#1410).
-    std::uint32_t consecutiveSkippedRenders = 0;
-    // When the input redraw grace ends (FramePacing::computeInputRedrawUntil, #843): until then the
-    // regular frame is paced as an input frame, so the frames after a click or a key come at the full
-    // rate, not the idle one. 0 = no input yet.
-    double inputRedrawUntil = 0.0;
-    std::uint64_t loopStart = 0;
-    ResizePerfLoopTiming loopTiming;
-    // Wait up to @p timeoutMs for an event, timing the wait for the trace when @p traced. Wait with a
-    // real SDL_Event, not nullptr: the event that wakes the loop is taken off the queue here and handed
-    // to the next iteration's drain, which dispatches it before rendering (#1409). With nullptr the
-    // event stayed queued and the frame after the wait rendered straight after the wake, showing the
-    // state from before the input. A wait that times out polls once more (#1450): a wake from another
-    // thread can reach it late, with the event already queued, and that event is a wake too.
-    // On Windows the wait's timeout is ended on time by a high-resolution timer (#3712): SDL's own
-    // ends on a system timer tick, 15.625 ms apart now that TaskSmack no longer raises the timer to
-    // 1 ms (see SDL_HINT_TIMER_RESOLUTION in the constructor).
-#ifdef _WIN32
-    IdleWaitTimer idleWaitTimer;
-    if (!idleWaitTimer.active())
+    // Everything the loop keeps between and within iterations (#3791); its phases are FrameLoopState's methods.
+    FrameLoopState loop;
+    loop.lastResizeTraceLogTime = getTime();
+    loop.lastFrameStart = getTime();
+    LoopHost host(*this, lastTime);
+    const auto finishTracedLoop = [&loop](std::uint64_t end)
     {
-        spdlog::warn("Frame pacing: no high-resolution timer; idle waits end on the system timer's tick");
-    }
-#endif
-    const auto waitForEvent = [&](int timeoutMs, bool traced) -> FramePacing::IdleWaitOutcome
-    {
-        const auto waitStart = traced ? SDL_GetPerformanceCounter() : 0;
-        SDL_Event wakeEvent;
-#ifdef _WIN32
-        idleWaitTimer.arm(timeoutMs);
-#endif
-        const auto outcome = FramePacing::waitForIdleEvent(
-            wakeEvent,
-            [timeoutMs](SDL_Event& event) { return SDL_WaitEventTimeout(&event, timeoutMs); },
-            [](SDL_Event& event) { return SDL_PollEvent(&event); });
-#ifdef _WIN32
-        idleWaitTimer.disarm();
-#endif
-        if (outcome != FramePacing::IdleWaitOutcome::TimedOut)
-        {
-            idleWakeEvent = wakeEvent;
-        }
-        if (traced)
-        {
-            loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
-            loopTiming.waitTimeoutMs = timeoutMs;
-        }
-        return outcome;
-    };
-    const auto finishTracedLoop = [&](std::uint64_t end)
-    {
-        if (loopStart == 0)
+        if (loop.loopStart == 0)
         {
             return;
         }
-        const double wallMs = resizePerfElapsedMs(loopStart, end);
+        const double wallMs = resizePerfElapsedMs(loop.loopStart, end);
         resizePerfOperations().loops.record(wallMs);
         if (wallMs > 100.0)
         {
@@ -641,40 +629,22 @@ void Application::run()
             // a wait far past its own timeout was spent in SDL's message pump, not waiting (#3552).
             spdlog::info("ResizePerfLoop: beginCounter={} endCounter={} wall={:.3f} ms drain={:.3f} ms wait={:.3f} ms "
                          "vsync={:.3f} ms framePhases={:.3f} ms other={:.3f} ms waitTimeout={} ms waitOverrun={:.3f} ms",
-                         loopStart,
+                         loop.loopStart,
                          end,
                          wallMs,
-                         loopTiming.drainMs,
-                         loopTiming.waitMs,
-                         loopTiming.vsyncMs,
-                         loopTiming.frameMs,
-                         loopTiming.otherMs(wallMs),
-                         loopTiming.waitTimeoutMs,
-                         loopTiming.waitOverrunMs());
+                         loop.loopTiming.drainMs,
+                         loop.loopTiming.waitMs,
+                         loop.loopTiming.vsyncMs,
+                         loop.loopTiming.frameMs,
+                         loop.loopTiming.otherMs(wallMs),
+                         loop.loopTiming.waitTimeoutMs,
+                         loop.loopTiming.waitOverrunMs());
         }
     };
 
-    // Deliver-to-deliver loop intervals (#843 measurement kit): renderFrame() stamps each presented
-    // frame's end (recordResizePerfFrameEnd), and the gap from the previous one is the cadence the
-    // user sees, skipped renders included. The previous frame's end is kept in resizeTraceStats, so
-    // the `= {}` resets at idle<->interaction transitions drop the interval that spans both states.
-    const auto recordDeliveredFrame = [&]
-    {
-        resizeTraceStats.recordDeliveredFrameEnd(resizePerfOperations().previousFrameEnd, SDL_GetPerformanceFrequency());
-    };
-
-    // The framebuffer size of the last WindowResizedEvent, so an SDL_EVENT_WINDOW_EXPOSED can tell
-    // a repaint (same size) from a resize that surfaced only as an expose (#1154).
-    std::pair<int, int> lastResizePixelSize = m_Window->getSizeInPixels();
-
-    // The present bound during an interactive resize (#882, FramePacing::computeResizePresent): when the
-    // framebuffer size last changed, and whether a held frame is still owed. Windows only: there #3511's
-    // supervised run still hit a 2.5 s present inside the driver after a few seconds of rapid resizing.
-    // A Wayland compositor paces a resize to the client's commits itself, so holding them there would
-    // only slow the resize, and no X11 stall has been reported.
-    double lastSizeChangeTime = -std::numeric_limits<double>::infinity();
-    bool resizePresentOwed = false;
-    const double resizePresentMinInterval = VideoBackend::isWindows() ? FramePacing::RESIZE_PRESENT_MIN_INTERVAL_SECONDS : 0.0;
+    loop.lastResizePixelSize = m_Window->getSizeInPixels();
+    // Windows only (see FrameLoopState::resizePresentMinInterval).
+    loop.resizePresentMinInterval = VideoBackend::isWindows() ? FramePacing::RESIZE_PRESENT_MIN_INTERVAL_SECONDS : 0.0;
 
     spdlog::info("Entering main loop");
 
@@ -684,8 +654,8 @@ void Application::run()
         {
             const auto now = SDL_GetPerformanceCounter();
             finishTracedLoop(now);
-            loopStart = now;
-            loopTiming = {};
+            loop.loopStart = now;
+            loop.loopTiming = {};
         }
         // Process SDL events
         bool needsResizeRedraw = false;
@@ -695,7 +665,7 @@ void Application::run()
         SDL_Event sdlEvent;
         const bool traceResizePerfThisFrame = m_ResizePerfTraceEnabled;
         // Snapshot geometry-changed flag from previous frame, then reset for this frame.
-        geometryChangedLastFrame = m_WindowGeometryChangedThisFrame;
+        loop.geometryChangedLastFrame = m_WindowGeometryChangedThisFrame;
         m_WindowGeometryChangedThisFrame = false;
         // Always capture drain start: used by P0 budget check and P3 skip-render decision
         // regardless of whether tracing is active.
@@ -704,10 +674,10 @@ void Application::run()
         // iteration's idle wait comes first: SDL_WaitEventTimeout() took it off the queue (#1409).
         const auto pollAndDispatch = [&] -> bool
         {
-            if (idleWakeEvent.has_value())
+            if (loop.idleWakeEvent.has_value())
             {
-                sdlEvent = *idleWakeEvent;
-                idleWakeEvent.reset();
+                sdlEvent = *loop.idleWakeEvent;
+                loop.idleWakeEvent.reset();
             }
             else if (!SDL_PollEvent(&sdlEvent))
             {
@@ -744,11 +714,11 @@ void Application::run()
                 ++resizeEventCount;
                 // A new size, not the same size again (SDL's RESIZED and PIXEL_SIZE_CHANGED carry one
                 // size twice): the resize present bound runs while the size keeps changing (#882).
-                if (pixelSize != lastResizePixelSize)
+                if (pixelSize != loop.lastResizePixelSize)
                 {
-                    lastSizeChangeTime = getTime();
+                    loop.lastSizeChangeTime = getTime();
                 }
-                lastResizePixelSize = pixelSize;
+                loop.lastResizePixelSize = pixelSize;
                 WindowResizedEvent resizeEvent(pixelSize.first, pixelSize.second);
                 raiseEvent(resizeEvent);
                 needsResizeRedraw = true;
@@ -787,7 +757,7 @@ void Application::run()
                 // idle sleep, so the regular frame below repaints. Only an expose that reveals a
                 // new size counts as a resize.
                 if (const auto pixelSize = m_Window->getSizeInPixels();
-                    WindowEventRouting::exposeChangesSize(lastResizePixelSize, pixelSize))
+                    WindowEventRouting::exposeChangesSize(loop.lastResizePixelSize, pixelSize))
                 {
                     handleResize(pixelSize);
                 }
@@ -844,12 +814,13 @@ void Application::run()
         const double totalDrainMs = std::chrono::duration<double, std::milli>(eventDrainEnd - eventDrainStart).count();
         if (traceResizePerfThisFrame)
         {
-            loopTiming.drainMs = totalDrainMs;
+            loop.loopTiming.drainMs = totalDrainMs;
         }
         // Input this drain restarts the input redraw grace (#843); while it runs, the regular frame below
         // is paced as an input frame (FramePacing::computeFrameRateCap) rather than taking the idle wait.
-        inputRedrawUntil = FramePacing::computeInputRedrawUntil(getTime(), inputEventCount, inputRedrawUntil, INPUT_REDRAW_GRACE_SECONDS);
-        const bool inputGraceActive = FramePacing::isWithinInteractionGrace(getTime(), inputRedrawUntil);
+        loop.inputRedrawUntil =
+            FramePacing::computeInputRedrawUntil(getTime(), inputEventCount, loop.inputRedrawUntil, INPUT_REDRAW_GRACE_SECONDS);
+        const bool inputGraceActive = FramePacing::isWithinInteractionGrace(getTime(), loop.inputRedrawUntil);
         // recordEventBatch() for THIS drain is deferred until after the interaction-transition
         // reset below (isInteracting depends on resizeEventCount/needsResizeRedraw from this
         // same drain), so the batch that triggers a transition lands in the correctly-reset
@@ -860,10 +831,6 @@ void Application::run()
         // in this drain would break out before recordEventBatch() executes at all, silently
         // dropping the final drain from the "shutdown" summary.
 
-        // Keep interactive move/resize visually responsive across platforms
-        // without reintroducing per-event rendering stalls: render at most once
-        // per drained event batch.
-        bool didImmediateResizeRedraw = false;
         // Whether a renderFrame() this iteration drew: not while drawing is suspended after a GPU
         // reset (#3484), when it returns without a frame and nothing may count as one.
         bool drewFrame = false;
@@ -876,7 +843,7 @@ void Application::run()
         // Wayland. Restore adaptive vsync when the interaction ends (after the
         // grace period expires) so idle frames remain tear-free.
         const auto vsyncStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
-        switch (FramePacing::computeVsyncTransition(wasInteracting, isInteracting, m_Spec.VSync, m_VsyncDisabledForInteraction))
+        switch (FramePacing::computeVsyncTransition(loop.wasInteracting, isInteracting, m_Spec.VSync, m_VsyncDisabledForInteraction))
         {
         // While drawing is suspended after a GPU reset (#3484) there is no working context to set it
         // on: only the wanted state is kept, and the replacement applies it.
@@ -899,27 +866,27 @@ void Application::run()
         }
         if (traceResizePerfThisFrame)
         {
-            loopTiming.vsyncMs = resizePerfElapsedMs(vsyncStart, SDL_GetPerformanceCounter());
+            loop.loopTiming.vsyncMs = resizePerfElapsedMs(vsyncStart, SDL_GetPerformanceCounter());
         }
 
-        if (m_ResizePerfTraceEnabled && wasTracingInteraction && !tracingInteraction)
+        if (m_ResizePerfTraceEnabled && loop.wasTracingInteraction && !tracingInteraction)
         {
-            logResizePerfTraceSummary(resizeTraceStats, "interaction-end");
-            resizeTraceStats = {};
+            logResizePerfTraceSummary(loop.resizeTraceStats, "interaction-end");
+            loop.resizeTraceStats = {};
             // Restart the cadence here too (mirroring the idle->interaction reset below):
             // lastResizeTraceLogTime is at most one 0.5s interaction-progress tick stale, so
             // without this the first post-interaction idle-progress window comes up short of a
             // full IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS, rather than starting fresh at the
             // moment idle begins.
-            lastResizeTraceLogTime = getTime();
+            loop.lastResizeTraceLogTime = getTime();
         }
         // Flush the partial idle interval before resetting, so rare stalls and tail counts
         // are not discarded when the user begins the next interaction.
-        if (m_ResizePerfTraceEnabled && !wasTracingInteraction && tracingInteraction)
+        if (m_ResizePerfTraceEnabled && !loop.wasTracingInteraction && tracingInteraction)
         {
-            logResizePerfTraceSummary(resizeTraceStats, "idle-end");
-            resizeTraceStats = {};
-            lastResizeTraceLogTime = getTime();
+            logResizePerfTraceSummary(loop.resizeTraceStats, "idle-end");
+            loop.resizeTraceStats = {};
+            loop.lastResizeTraceLogTime = getTime();
         }
 
         // Record THIS drain now that any transition reset above has run, so it's classified
@@ -927,9 +894,9 @@ void Application::run()
         // ended.
         if (traceResizePerfThisFrame)
         {
-            resizeTraceStats.recordEventBatch(
+            loop.resizeTraceStats.recordEventBatch(
                 drain.eventCount, resizeEventCount, totalDrainMs, drain.maxSingleEventMs, drain.budgetExceeded);
-            resizeTraceStats.inputEvents += inputEventCount;
+            loop.resizeTraceStats.inputEvents += inputEventCount;
         }
 
         // Deferred from just after the drain (see comment above) so this frame's batch is
@@ -954,14 +921,14 @@ void Application::run()
         const bool skipRenderThisFrame = FramePacing::computeSkipRenderThisFrame(totalDrainMs,
                                                                                  DRAIN_SKIP_RENDER_MS,
                                                                                  m_Window->isMinimized(),
-                                                                                 consecutiveSkippedRenders,
+                                                                                 loop.consecutiveSkippedRenders,
                                                                                  FramePacing::MAX_CONSECUTIVE_SKIPPED_RENDERS);
         // Counted regardless of interaction state (not just tracingInteraction): an idle drain
         // that overruns the budget also skips rendering, and the idle-progress/shutdown
         // summaries should reflect that instead of always reporting skippedFrames=0 for idle.
         if (skipRenderThisFrame && traceResizePerfThisFrame)
         {
-            ++resizeTraceStats.skippedRenderFrames;
+            ++loop.resizeTraceStats.skippedRenderFrames;
         }
 
         // Minimized, covered (#1125), or on Windows cloaked, behind a locked or disconnected session or
@@ -976,220 +943,54 @@ void Application::run()
         const WindowVisibility::HiddenState hiddenState = m_Window->hiddenState();
         const bool isHidden = hiddenState != WindowVisibility::HiddenState::Shown; // Window::isHidden()
         const FramePacing::HiddenWait hiddenWait =
-            FramePacing::computeHiddenWait(hiddenState, drewFirstFrame, HIDDEN_WAIT_TIMEOUT_MS, CLOAKED_POLL_INTERVAL_MS);
+            FramePacing::computeHiddenWait(hiddenState, loop.drewFirstFrame, HIDDEN_WAIT_TIMEOUT_MS, CLOAKED_POLL_INTERVAL_MS);
         // Nothing to redraw while no frames are drawn; the event that shows the window draws the newest data.
         wakeCoalescer.setPaused(hiddenWait.drawsNoFrames);
 
-        // isHidden, not only minimized: an occluded window that gets a move/resize event must not render
-        // at the display rate through the interaction grace period either (#1125). Within the grace, only
-        // when there is something new to show (#3511): an iteration with no events and no client-side
-        // geometry change falls to the regular frame below (paced, or the idle wait) instead of presenting
-        // the same frame again.
-        if (traceResizePerfThisFrame &&
-            FramePacing::isDeferredInteractionFrame(
-                needsResizeRedraw, forceInteractionRedraw, hadEvents, geometryChangedLastFrame, isHidden, skipRenderThisFrame))
-        {
-            ++resizeTraceStats.deferredInteractionFrames;
-        }
-        // While the size keeps changing, at most one frame per RESIZE_PRESENT_MIN_INTERVAL_SECONDS (#882): a
-        // held iteration draws and presents nothing and waits for the next event or the end of the hold
-        // below; the frame it owes is drawn once the hold ends, at the size of the moment. Not while
-        // the hidden window draws no frames: the event that shows it draws the newest state.
-        const FramePacing::ResizePresent resizePresent = hiddenWait.drawsNoFrames
-                                                           ? FramePacing::ResizePresent::Unbounded
-                                                           : FramePacing::computeResizePresent({
-                                                                 .nowSeconds = getTime(),
-                                                                 .lastSizeChangeSeconds = lastSizeChangeTime,
-                                                                 .lastFrameStartSeconds = lastFrameStart,
-                                                                 .frameOwed = resizePresentOwed,
-                                                                 .minIntervalSeconds = resizePresentMinInterval,
-                                                                 .burstWindowSeconds = FramePacing::RESIZE_BURST_WINDOW_SECONDS,
+        // The move/resize frame and the resize present hold (#882), then the iteration's wait, then the
+        // regular frame (#3791: FrameLoopState's phases, in this order).
+        const FrameLoopState::InteractionFrameResult interaction =
+            loop.interactionFrame(host,
+                                  {
+                                      .drawsNoFrames = hiddenWait.drawsNoFrames,
+                                      .needsResizeRedraw = needsResizeRedraw,
+                                      .forceInteractionRedraw = forceInteractionRedraw,
+                                      .hadEvents = hadEvents,
+                                      .isHidden = isHidden,
+                                      .skipRenderThisFrame = skipRenderThisFrame,
+                                      .traced = traceResizePerfThisFrame,
+                                      .displayRefreshHz = m_DisplayRefreshHz,
+                                  });
+        drewFrame = drewFrame || interaction.drewFrame;
+
+        const FrameLoopState::WaitResult waited = loop.waits(host,
+                                                             {
+                                                                 .hiddenWait = hiddenWait,
+                                                                 .hadEvents = hadEvents,
+                                                                 .inputGraceActive = inputGraceActive,
+                                                                 .isHidden = isHidden,
+                                                                 .holdPresent = interaction.holdPresent,
+                                                                 .didImmediateResizeRedraw = interaction.didImmediateResizeRedraw,
+                                                                 .interactionRedrawUntil = m_InteractionRedrawUntil,
+                                                                 .traced = traceResizePerfThisFrame,
+                                                                 .displayRefreshHz = m_DisplayRefreshHz,
                                                              });
-        const bool holdPresent = resizePresent == FramePacing::ResizePresent::Hold;
-        const bool presentOwedFrame = resizePresent == FramePacing::ResizePresent::PresentOwed;
-        if (hiddenWait.drawsNoFrames)
+        if (waited.idleWaitOutcome.has_value())
         {
-            resizePresentOwed = false;
-        }
-        const bool wantsInteractionFrame = FramePacing::computeShouldRenderInteractionFrame(needsResizeRedraw || presentOwedFrame,
-                                                                                            forceInteractionRedraw,
-                                                                                            hadEvents,
-                                                                                            geometryChangedLastFrame,
-                                                                                            isHidden,
-                                                                                            skipRenderThisFrame);
-        // Only a held move/resize frame is owed: a regular frame the hold delays (an animation, an idle
-        // frame) comes through the regular path anyway once the hold ends.
-        if (holdPresent && wantsInteractionFrame)
-        {
-            resizePresentOwed = true;
-            if (traceResizePerfThisFrame)
-            {
-                ++resizeTraceStats.heldResizePresents;
-            }
-        }
-        if (wantsInteractionFrame && !holdPresent)
-        {
-            // Vsync is off during an interaction, so a stream of mouse events would otherwise render
-            // unbounded (#1153): cap it at the display rate, which vsync would have given.
-            const double interactionWaitSeconds = FramePacing::computeFrameWaitSeconds(
-                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, AnimationRequest::FULL_RATE));
-            if (interactionWaitSeconds > 0.0)
-            {
-                const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
-                SDL_DelayPrecise(static_cast<Uint64>(interactionWaitSeconds * 1.0e9));
-                if (traceResizePerfThisFrame)
-                {
-                    loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
-                    loopTiming.waitTimeoutMs = -1; // a paced delay, not an event wait
-                }
-            }
-            lastFrameStart = getTime();
-            double updateMs = 0.0;
-            double renderMs = 0.0;
-            double postRenderMs = 0.0;
-            double swapMs = 0.0;
-            const bool drewResizeFrame = renderFrame(computeDeltaTime(),
-                                                     true,
-                                                     traceResizePerfThisFrame ? &updateMs : nullptr,
-                                                     traceResizePerfThisFrame ? &renderMs : nullptr,
-                                                     traceResizePerfThisFrame ? &postRenderMs : nullptr,
-                                                     traceResizePerfThisFrame ? &swapMs : nullptr);
-            drewFrame = drewFrame || drewResizeFrame;
-            if (traceResizePerfThisFrame && drewResizeFrame)
-            {
-                resizeTraceStats.recordFrame(true, updateMs, renderMs, postRenderMs, swapMs);
-                recordDeliveredFrame();
-                loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
-                if (presentOwedFrame)
-                {
-                    ++resizeTraceStats.owedResizePresents;
-                }
-            }
-            // Paid by any attempt, drawn or not: while drawing is suspended after a GPU reset (#3484) an
-            // owed frame kept owing would make every iteration try again without waiting.
-            resizePresentOwed = false;
-            didImmediateResizeRedraw = true;
+            ++m_IdleWaitCount;
+            m_LastIdleWaitWoke = *waited.idleWaitOutcome == FramePacing::IdleWaitOutcome::Woke;
+            m_LastIdleWaitPolledEvent = *waited.idleWaitOutcome == FramePacing::IdleWaitOutcome::PolledAfterTimeout;
         }
 
-        // Pace the regular frame:
-        // - Something moving visibly asked for more frames than idling gives, or input arrived --
-        //   this drain, or recently enough that its grace still runs (#843): cap the frame rate
-        //   (FramePacing::computeFrameRateCap) at a whole number of display refreshes. Charts keep a
-        //   steady rate whatever the input (#1037), only as fast as their motion needs (#1125); input
-        //   frames are capped too (#1153). Events that arrive during the wait are handled by the next
-        //   drain, at most one period later.
-        // - Otherwise, with the event queue empty, decide whether to sleep or render immediately:
-        //   - Inside the grace period: skip the sleep and fall through to renderFrame so the
-        //     display stays current during burst gaps between resize/move events.
-        //   - Outside the grace period: sleep (FramePacing::computeIdlePeriodMs) to reduce CPU/GPU usage
-        //     when the display hasn't changed: ~20 fps while something moves slowly or a grace runs, 5 fps
-        //     for a hidden window that still draws, and for a static frame until the slow floor
-        //     (STATIC_FRAME_FLOOR_INTERVAL) or a deadline the frame asked for (#3156). Any SDL event
-        //     wakes the sleep immediately, keeping interactive frame rate unaffected, and so does a
-        //     publication (the wake event above). The waking event is dispatched before the next
-        //     frame renders (#1409): see idleWakeEvent.
-        // A hidden window that draws nothing (#3156) only waits, for at most hiddenWait.timeoutMs, and
-        // runs the layers' onHiddenUpdate(). After a drain that handled events it doesn't wait: the next
-        // iteration drains again, and waits once the queue is empty. The event that shows the window
-        // again wakes the wait; the next iteration dispatches it and draws.
-        const double animationFps = FramePacing::computeAnimationRate(requestedAnimationFps, IDLE_FRAME_RATE, MAX_FRAME_RATE);
-        const double frameRateCap = FramePacing::computeFrameRateCap(animationFps, hadEvents || inputGraceActive, isHidden, MAX_FRAME_RATE);
-        if (hiddenWait.drawsNoFrames)
-        {
-            if (!hadEvents)
-            {
-                // No longer than the next retry of a failed context replacement (#3484).
-                static_cast<void>(waitForEvent(m_GraphicsRecovery.boundWaitMs(hiddenWait.timeoutMs, getTime()), traceResizePerfThisFrame));
-            }
-            for (const auto& layer : m_LayerStack)
-            {
-                guardLayerCall(layer, "onHiddenUpdate", [&] { layer->onHiddenUpdate(); });
-            }
-        }
-        // A held present (#882): no frame this iteration. Wait for the next event, which the next drain
-        // handles at once, or for the end of the hold, when the owed frame is drawn. The event pump never
-        // stops: any event ends the wait.
-        else if (holdPresent)
-        {
-            // No longer than the next retry of a failed context replacement (#3484).
-            static_cast<void>(
-                waitForEvent(m_GraphicsRecovery.boundWaitMs(
-                                 FramePacing::resizePresentHoldMs(getTime(), lastFrameStart, resizePresentMinInterval), getTime()),
-                             traceResizePerfThisFrame));
-        }
-        // Not after a move/resize frame, which waited for the display rate already; but a grace iteration
-        // that deferred its frame (#3511) still paces an animation or input frame here.
-        else if (FramePacing::computeUsesPacedRegularFrame(frameRateCap, didImmediateResizeRedraw))
-        {
-            const double waitSeconds = FramePacing::computeFrameWaitSeconds(
-                getTime() - lastFrameStart, FramePacing::framePeriodSeconds(m_DisplayRefreshHz, frameRateCap));
-            if (waitSeconds > 0.0)
-            {
-                const auto waitStart = traceResizePerfThisFrame ? SDL_GetPerformanceCounter() : 0;
-                SDL_DelayPrecise(static_cast<Uint64>(waitSeconds * 1.0e9));
-                if (traceResizePerfThisFrame)
-                {
-                    loopTiming.waitMs = resizePerfElapsedMs(waitStart, SDL_GetPerformanceCounter());
-                    loopTiming.waitTimeoutMs = -1; // a paced delay, not an event wait
-                }
-            }
-        }
-        else if (!hadEvents)
-        {
-            const bool keepInteractionRedrawActive = FramePacing::isWithinInteractionGrace(getTime(), m_InteractionRedrawUntil);
-            // During the grace period, allow sleep if window geometry did not change last frame.
-            // This prevents ~20 wasted renders after the user releases mouse while the window
-            // is stationary. SDL_WaitEventTimeout wakes immediately on any event, so
-            // responsiveness is unaffected. geometryChangedLastFrame reflects the previous
-            // frame's onUpdate result (1-frame lag is intentional and benign).
-            if (FramePacing::computeShouldSleepWhenIdle(keepInteractionRedrawActive, geometryChangedLastFrame))
-            {
-                // The first frame comes at the idle rate, as before: it is not a static frame yet.
-                const int periodMs = FramePacing::computeIdlePeriodMs(
-                    {
-                        .requestedFps = requestedAnimationFps,
-                        .frameWithinSeconds = requestedFrameWithinSeconds,
-                        .isHidden = isHidden,
-                        .graceActive = keepInteractionRedrawActive || inputGraceActive || !drewFirstFrame,
-                    },
-                    {.idleMs = IDLE_FRAME_SLEEP_MS, .hiddenMs = MINIMIZED_FRAME_SLEEP_MS, .staticFloorMs = STATIC_FRAME_FLOOR_MS});
-                // No longer than the next retry of a failed context replacement (#3484).
-                const int sleepMs =
-                    m_GraphicsRecovery.boundWaitMs(FramePacing::computeIdleWaitMs(periodMs, getTime() - lastFrameStart), getTime());
-                const auto waitOutcome = waitForEvent(sleepMs, traceResizePerfThisFrame);
-                ++m_IdleWaitCount;
-                m_LastIdleWaitWoke = waitOutcome == FramePacing::IdleWaitOutcome::Woke;
-                m_LastIdleWaitPolledEvent = waitOutcome == FramePacing::IdleWaitOutcome::PolledAfterTimeout;
-            }
-        }
-
-        // A wake on an event skips this render: the next iteration drains the event first, then
-        // renders, paced as any input-driven frame (#1153) (#1409).
-        // A held present (#882) skips it too: the owed frame follows once the hold ends.
-        const bool renderRegularFrame = FramePacing::computeShouldRenderRegularFrame(
-            idleWakeEvent.has_value(), didImmediateResizeRedraw, skipRenderThisFrame, hiddenWait.drawsNoFrames, holdPresent);
-        if (renderRegularFrame)
-        {
-            resizePresentOwed = false; // a frame at the current size pays any held one (#882)
-            lastFrameStart = getTime();
-            double updateMs = 0.0;
-            double renderMs = 0.0;
-            double postRenderMs = 0.0;
-            double swapMs = 0.0;
-            const bool drewRegularFrame = renderFrame(computeDeltaTime(),
-                                                      false,
-                                                      traceResizePerfThisFrame ? &updateMs : nullptr,
-                                                      traceResizePerfThisFrame ? &renderMs : nullptr,
-                                                      traceResizePerfThisFrame ? &postRenderMs : nullptr,
-                                                      traceResizePerfThisFrame ? &swapMs : nullptr);
-            drewFrame = drewFrame || drewRegularFrame;
-            if (traceResizePerfThisFrame && drewRegularFrame)
-            {
-                resizeTraceStats.recordFrame(false, updateMs, renderMs, postRenderMs, swapMs);
-                recordDeliveredFrame();
-                loopTiming.frameMs = updateMs + renderMs + postRenderMs + swapMs;
-            }
-        }
+        const bool drewRegularFrame = loop.regularFrame(host,
+                                                        {
+                                                            .didImmediateResizeRedraw = interaction.didImmediateResizeRedraw,
+                                                            .skipRenderThisFrame = skipRenderThisFrame,
+                                                            .drawsNoFrames = hiddenWait.drawsNoFrames,
+                                                            .holdPresent = interaction.holdPresent,
+                                                            .traced = traceResizePerfThisFrame,
+                                                        });
+        drewFrame = drewFrame || drewRegularFrame;
 
         // Log periodically regardless of interaction state (perf-plan #843 phase 0): idle
         // frames use a longer cadence than interaction frames (see
@@ -1197,17 +998,17 @@ void Application::run()
         // logging so idle and interactive numbers are directly comparable.
         const double perfTraceLogIntervalSeconds =
             isInteracting ? RESIZE_PERF_TRACE_LOG_INTERVAL_SECONDS : IDLE_PERF_TRACE_LOG_INTERVAL_SECONDS;
-        if (traceResizePerfThisFrame && ((getTime() - lastResizeTraceLogTime) >= perfTraceLogIntervalSeconds))
+        if (traceResizePerfThisFrame && ((getTime() - loop.lastResizeTraceLogTime) >= perfTraceLogIntervalSeconds))
         {
-            logResizePerfTraceSummary(resizeTraceStats, isInteracting ? "interaction-progress" : "idle-progress");
+            logResizePerfTraceSummary(loop.resizeTraceStats, isInteracting ? "interaction-progress" : "idle-progress");
             // Reset only the per-interval counters, NOT the rolling percentile sample windows:
             // a periodic log within the same idle/interaction state should let those windows
             // keep accumulating past PERCENTILE_WINDOW_SIZE's threshold for a meaningful p99,
             // rather than restarting from an empty window (and a degenerate p99==max) every
             // single interval. The full `= {}` reset above/below at actual state transitions
             // still clears everything, including the rolling windows.
-            resizeTraceStats.resetIntervalCounters();
-            lastResizeTraceLogTime = getTime();
+            loop.resizeTraceStats.resetIntervalCounters();
+            loop.lastResizeTraceLogTime = getTime();
         }
 
         // Read after this iteration's render(s): what they drew decides how the next frame is paced.
@@ -1216,21 +1017,21 @@ void Application::run()
         const bool renderedFrame = drewFrame;
         if (renderedFrame)
         {
-            requestedAnimationFps = AnimationRequest::consume();
-            requestedFrameWithinSeconds = AnimationRequest::consumeFrameWithin();
-            drewFirstFrame = true;
+            loop.requestedAnimationFps = AnimationRequest::consume();
+            loop.requestedFrameWithinSeconds = AnimationRequest::consumeFrameWithin();
+            loop.drewFirstFrame = true;
         }
-        consecutiveSkippedRenders =
-            FramePacing::nextConsecutiveSkippedRenders(consecutiveSkippedRenders, skipRenderThisFrame, renderedFrame);
+        loop.consecutiveSkippedRenders =
+            FramePacing::nextConsecutiveSkippedRenders(loop.consecutiveSkippedRenders, skipRenderThisFrame, renderedFrame);
 
-        wasTracingInteraction = tracingInteraction;
-        wasInteracting = isInteracting;
+        loop.wasTracingInteraction = tracingInteraction;
+        loop.wasInteracting = isInteracting;
     }
 
     if (m_ResizePerfTraceEnabled)
     {
         finishTracedLoop(SDL_GetPerformanceCounter());
-        logResizePerfTraceSummary(resizeTraceStats, "shutdown");
+        logResizePerfTraceSummary(loop.resizeTraceStats, "shutdown");
         logResizePerfOperationSummary();
         logResizePerfAnchor();
     }
