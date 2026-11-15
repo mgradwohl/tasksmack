@@ -311,9 +311,10 @@ jobs:
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       # Xvfb runs no window manager, so the tests that need one skip in the step above (#3845): a window minimized
-      # before its first frame (minimize needs a manager to iconify it), a position the manager honours, and a native
-      # maximize through EWMH (#1339). Here they run under openbox, a small EWMH window manager, on their own display;
-      # a skip fails the step, so a test that stops reaching the manager can't pass quietly.
+      # before its first frame (minimize needs a manager to iconify it) and a native maximize through EWMH (#1339).
+      # Here they run under openbox, a small EWMH window manager, on their own display; a skip fails the step, so a
+      # test that stops reaching the manager can't pass quietly. WindowTest.SetAndGetPositionRoundTrip still skips:
+      # openbox places a decorated window by its frame, not at the client position asked for.
       - name: Window-manager tests (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         run: |
@@ -326,7 +327,7 @@ jobs:
             sleep 2
             status=0
             build/debug/tests/TaskSmackTests \
-              --gtest_filter="WindowTest.SetAndGetPositionRoundTrip:WindowTest.ANativelyDecoratedWindowMaximizesAndRestoresThroughSDL" \
+              --gtest_filter="WindowTest.ANativelyDecoratedWindowMaximizesAndRestoresThroughSDL" \
               2>&1 | tee wm-tests.log || status=$?
             build/debug/tests/TaskSmackAppTests \
               --gtest_filter="UiLayersOnDisplayTest.AWindowMinimizedBeforeItsFirstFrameGetsTheDisplayScaleBackOnRestore" \
@@ -334,8 +335,8 @@ jobs:
             kill "$manager"
             exit "$status"'
           ran="$(grep -c '^\[       OK \]' wm-tests.log || true)"
-          if grep -q '\[  SKIPPED \]' wm-tests.log || [[ "$ran" -ne 3 ]]; then
-            echo "::error title=Window-manager tests::under openbox, $ran of the 3 window-manager tests passed; a skip means the manager didn't act"
+          if grep -q '\[  SKIPPED \]' wm-tests.log || [[ "$ran" -ne 2 ]]; then
+            echo "::error title=Window-manager tests::under openbox, $ran of the 2 window-manager tests passed; a skip means the manager didn't act"
             exit 1
           fi
 
