@@ -301,7 +301,7 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
     src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
-    src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
+    src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
     src/Platform/Sha256.cpp                  # SHA-256 of an executable, for Look up on VirusTotal (#3094)

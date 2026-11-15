@@ -53,10 +53,10 @@ namespace Platform
 /// Creates the platform-appropriate IProcessActions implementation.
 [[nodiscard]] std::unique_ptr<IProcessActions> makeProcessActions();
 
-/// The privileged broker (#2307, #2308): on Linux the pkexec-started helper, where the .deb or .rpm
-/// installed it and TaskSmack isn't already root; on Windows TaskSmackHelper.exe started through UAC
+/// The privileged broker (#2307, #2308): Windows only, TaskSmackHelper.exe started through UAC
 /// (#2550), where it is beside TaskSmack.exe in an install only an administrator can change and
-/// TaskSmack isn't already elevated; null otherwise. Not started here: the first
+/// TaskSmack isn't already elevated; null otherwise. Linux has no helper (#3580): it runs TaskSmack as
+/// Administrator (root) instead. Not started here: the first
 /// IProcessActions::runAuthorized() starts it, after the password or consent prompt. @p ownerWindow is
 /// the native window that prompt belongs to (an HWND on Windows, so the UAC prompt comes up in front of
 /// TaskSmack), or null; polkit's agent places its own. App makes one and shares it between every
