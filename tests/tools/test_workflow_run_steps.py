@@ -151,6 +151,9 @@ echo "RESULT=$out"
 """
 
 
+# The steps run on ubuntu runners only, and tools/bench-across-launches.py run starts each launch, ./tools/bench.sh,
+# as a program, which Windows can't do with a shell script.
+@unittest.skipIf(os.name == "nt", "the benchmark gate's steps run on Linux")
 class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
     """#3476: a benchmark the gate flags is re-measured in 4 more separate launches, and the median across the 5
     launches is checked at the same thresholds. A slow launch passes; a real regression stays red."""
@@ -175,7 +178,7 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         bench_sh.write_text(BENCH_SH_STUB, encoding="utf-8", newline="\n")
         bench_sh.chmod(bench_sh.stat().st_mode | stat.S_IXUSR)
         (self.stub / "write_launch.py").write_text(BENCH_LAUNCH_WRITER, encoding="utf-8")
-        # Files bash reads are written with LF on every platform (here, the counter and the STUB_DATES clocks): a
+        # Files bash reads are written with LF on every platform (here, the counter): a
         # CRLF line from Python's Windows default would reach bash's arithmetic with its \r.
         (self.stub / "count").write_text("1\n", encoding="utf-8", newline="\n")
         shutil.copy(REPO / "perf-data" / "linux-ci-thresholds.json", self.work / "perf-data" / "linux-ci-thresholds.json")
@@ -199,10 +202,6 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
             # GitHub's bash runs a step with -e. python3 is this interpreter (Git Bash's may be the Store alias).
             "set -e\n"
             f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}\n'
-            # With STUB_DATES, `date +%s` answers from that file, a line per call, so a deadline can pass
-            # between two launches without waiting for it.
-            'date() { if [[ -n "${STUB_DATES:-}" ]]; then head -n 1 "$STUB_DATES"; sed -i 1d "$STUB_DATES"; '
-            'else command date "$@"; fi; }\n'
             f'cd "{posix(self.work)}"\n' + step.run
         )
         env = {key: value.strip("'") for key, value in step.env.items()}
@@ -360,21 +359,16 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         # The second runner has a budget of its own.
         self.assertEqual(self.handoff(check_exit, outputs["exit_code"]), ("true", ["BM_Big"]))
 
-    @unittest.skipIf(os.name == "nt", "timeout's process-group kill is POSIX; the step runs on Linux")
     def test_a_launch_past_the_deadline_is_stopped_and_the_flag_stands(self):
         # #3508: the estimate can be short, so each launch runs under timeout with what's left of the budget.
         # 4 s: the plan's estimate for one benchmark with no timed repetitions is 1 s a launch, 4 s in all.
         first = {**self.BASELINE, "BM_Big": 1600.0}
         launches = [{"BM_Big": 1000.0}] * 4
-        # The step's two clock reads (its start, then before launch 2) are the same second, so launch 2 gets the
-        # whole 4 s even when the real clock would tick between them. The real timeout still kills the launch.
-        now = int(time.time())
-        dates = self.tmp / "dates"
-        dates.write_text(f"{now}\n{now}\n", encoding="utf-8", newline="\n")
+        # tools/bench-across-launches.py run stops the launch at the deadline: its whole process group, the stub's
+        # sleep included. The deadline between launches is tested there (test_bench_across_launches.py).
         started = time.monotonic()
         check_exit, remeasure, outputs = self.gate(first, launches, {
-            "MAX_SECONDS": "4", "STUB_SLOW_LAUNCH": "2", "STUB_SLOW_SECONDS": "30",
-            "JOB_START_EPOCH": str(now), "STUB_DATES": posix(dates)})
+            "MAX_SECONDS": "4", "STUB_SLOW_LAUNCH": "2", "STUB_SLOW_SECONDS": "30", "JOB_START_EPOCH": str(int(time.time()))})
         self.assertLess(time.monotonic() - started, 25, "the slow launch was killed, not waited out")
         self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
         self.assertEqual(outputs["exit_code"], "1")
@@ -383,23 +377,6 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertIn("Out of time: launch 2 of 5 stopped after 4s, past the 4s budget. The flags stand", report)
         self.assertFalse((self.work / "perf-data" / "launches" / "2").exists(), "the killed launch's partial output")
         self.assertFalse((self.work / "perf-data" / "benchmark-across-launches.json").exists())
-
-    def test_the_deadline_passing_between_launches_stops_them(self):
-        first = {**self.BASELINE, "BM_Big": 1600.0}
-        launches = [{"BM_Big": 1000.0}] * 4
-        now = int(time.time())
-        dates = self.tmp / "dates"
-        # The step reads the clock once at its start, then before each launch: launch 2 starts with the whole
-        # budget, and launch 3 finds it gone.
-        dates.write_text(f"{now}\n{now}\n{now + 600}\n", encoding="utf-8", newline="\n")
-        check_exit, remeasure, outputs = self.gate(
-            first, launches, {"JOB_START_EPOCH": str(now), "STUB_DATES": posix(dates)})
-        self.assertEqual(remeasure.returncode, 0, remeasure.stdout + remeasure.stderr)
-        self.assertEqual(outputs["exit_code"], "1")
-        self.assertTrue(self.fails(check_exit, outputs["exit_code"]))
-        self.assertEqual(len((self.stub / "filters.log").read_text(encoding="utf-8").splitlines()), 1, "launch 2 only")
-        report = (self.work / "benchmark-across-launches-output.txt").read_text(encoding="utf-8")
-        self.assertIn("Out of time: launch 3 of 5 not started, past the 600s budget. The flags stand", report)
 
     def test_a_failed_launch_fails_the_step(self):
         first = {**self.BASELINE, "BM_Big": 1600.0}
@@ -411,6 +388,9 @@ class HeavyChecksAcrossLaunchesTests(unittest.TestCase):
         self.assertIn("no usable median in launch 3", remeasure.stdout + remeasure.stderr)
 
 
+# The steps run on ubuntu runners only, and tools/bench-across-launches.py run starts each launch, ./tools/bench.sh,
+# as a program, which Windows can't do with a shell script.
+@unittest.skipIf(os.name == "nt", "the benchmark gate's steps run on Linux")
 class HeavyChecksSecondRunnerTests(unittest.TestCase):
     """#3623: flags that stood on benchmark-regression's runner are re-measured on a fresh runner, in 5 launches
     of the same binary, and that runner's median decides. A slow host can't fail the gate alone; a real
