@@ -86,21 +86,21 @@ $AppKeys = @('HKLM:\SOFTWARE\TaskSmack Contributors\TaskSmack', 'HKLM:\SOFTWARE\
 $RunKeyPath = 'Software\Microsoft\Windows\CurrentVersion\Run'
 $SentinelName = 'TaskSmackCiUpgradeSentinel'
 # The settings v0.8.0's config.toml changed from the defaults: section, key, and the value as TaskSmack
-# writes it today. Keep in step with tools/release-smoke-check.ps1's list. With -Stable, only the ones whose
-# key every release since v0.8.0 writes the same way, which the previous release's own save must keep. The
-# font size isn't one: v0.10.0 writes [font] size = 'large', and point_size came later (#3501), so it is
-# checked only once the upgraded build has migrated the file.
-function Get-FixtureSettings([switch]$Stable) {
-    $settings = @(
-        @('theme', 'id', "'dracula'"),
-        @('font', 'point_size', '10'),
-        @('sampling', 'interval_ms', '2000'),
-        @('sampling', 'history_max_seconds', '600'),
-        @('ui', 'show_privilege_notice', 'false'),
-        @('process_columns', 'threads', 'true'),
-        @('process_columns', 'user', 'false')
-    )
-    if ($Stable) { $settings = @($settings | Where-Object { $_[0] -ne 'font' }) }
+# writes it today, read from the fixture's expected list beside it (config-v0.8.0.expected.txt, #3831), the
+# one list every release check reads. With -Stable, only the "stable" ones, whose key every release since
+# v0.8.0 writes the same way, which the previous release's own save must keep. The "migrated" ones aren't:
+# v0.10.0 writes [font] size = 'large', and point_size came later (#3501), so they are checked only once
+# the upgraded build has migrated the file.
+function Get-FixtureSettings([string]$Fixture, [switch]$Stable) {
+    $expectedFile = [System.IO.Path]::ChangeExtension($Fixture, '.expected.txt')
+    if (-not (Test-Path -LiteralPath $expectedFile)) { throw "$expectedFile is missing: it lists the settings v0.8.0's config.toml must keep." }
+    $settings = @(Get-Content -LiteralPath $expectedFile | Where-Object { $_.Trim() -and -not $_.StartsWith('#') } | ForEach-Object {
+            $columns = @($_.Trim() -split ' ')
+            if ($columns.Count -ne 4 -or $columns[3] -notin @('stable', 'migrated')) { throw "$expectedFile has a line that isn't '<section> <key> <value> stable|migrated': $_" }
+            , $columns
+        })
+    if ($settings.Count -eq 0) { throw "$expectedFile lists no settings." }
+    if ($Stable) { $settings = @($settings | Where-Object { $_[3] -eq 'stable' }) }
     return , $settings
 }
 
@@ -346,7 +346,7 @@ try {
     $configFile = Join-Path $configDir 'config.toml'
     Copy-Item -LiteralPath $Fixture -Destination $configFile
     $problems = Invoke-HeadlessLaunch -Exe $exe -Label "previous-$previousVersion" -LogDir $logDir
-    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings -Stable) }
+    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings $Fixture -Stable) }
     Add-Result "Run $previousVersion once from v0.8.0's config" $problems "it quit by itself and saved $configFile"
     $configTree = Get-FileTree $configDir
     $runCommand = "`"$exe`" --minimized"
@@ -404,7 +404,7 @@ try {
 
     # 5. The upgraded TaskSmack, from the user's config.
     $problems = Invoke-HeadlessLaunch -Exe $exe -Label "upgraded-$newVersion" -LogDir $logDir -Strict
-    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings) }
+    if (-not $problems.Count) { $problems = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings $Fixture) }
     Add-Result "Start the upgraded $newVersion" $problems 'it started headless from the user config, quit by itself with exit code 0 and kept v0.8.0''s settings'
 
     # 6. The uninstall. NSIS's uninstaller copies itself to %TEMP% and runs from there, so the end state is polled for.
@@ -426,7 +426,7 @@ try {
         # The user's config outlives the uninstall (cmake/CPackProjectConfig.cmake.in, "The uninstall mark").
         if (-not (Test-Path -LiteralPath $configFile -PathType Leaf)) { $left += "$configFile, the user's config, is gone" }
         else {
-            $kept = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings)
+            $kept = Test-FixtureConfig @(Get-Content -LiteralPath $configFile) (Get-FixtureSettings $Fixture)
             if ($kept.Count) { $left += "$configFile lost settings: $($kept -join '; ')" }
         }
         if (-not $left.Count) { break }

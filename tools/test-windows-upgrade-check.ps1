@@ -157,8 +157,10 @@ Assert-True ($problems.Count -eq 1 -and $problems[0] -match "^\[font\] point_siz
 
 # The previous release's own save is held to the keys unchanged since v0.8.0 (#3757: v0.10.0 writes
 # [font] size = 'large', not point_size); the upgraded build's save is held to all of them.
-$full = Get-FixtureSettings
-$stable = Get-FixtureSettings -Stable
+# The settings come from the fixture's expected list (#3831), the one every release check reads.
+$fixturePath = Join-Path $PSScriptRoot '../tests/App/fixtures/config-v0.8.0.toml'
+$full = Get-FixtureSettings $fixturePath
+$stable = Get-FixtureSettings $fixturePath -Stable
 Assert-True ($full.Count -eq 7 -and @($full | Where-Object { $_[0] -eq 'font' -and $_[1] -eq 'point_size' }).Count -eq 1) "The full list should have 7 settings with [font] point_size, got $($full.Count)"
 Assert-True ($stable.Count -eq 6 -and @($stable | Where-Object { $_[0] -eq 'font' }).Count -eq 0) "The stable list should be the other 6, got $(($stable | ForEach-Object { "$($_[0]).$($_[1])" }) -join ', ')"
 $v0100 = @('config_version = 2', '', '[font]', "size = 'large'", '', '[process_columns]', 'threads = true', 'user = false', '',
@@ -167,4 +169,25 @@ $problems = Test-FixtureConfig $v0100 $stable
 Assert-True ($problems.Count -eq 0) "v0.10.0's save should pass the stable list: $($problems -join '; ')"
 $problems = Test-FixtureConfig $v0100 $full
 Assert-True ($problems.Count -eq 1 -and $problems[0] -match '^\[font\] point_size is missing') "v0.10.0's save should fail the full list on point_size alone: $($problems -join '; ')"
+# Every stable setting is what the v0.8.0 fixture itself holds, so the list can't drift from the file.
+$fixtureLines = @(Get-Content -LiteralPath $fixturePath)
+foreach ($setting in $stable) {
+    $actual = Get-TomlValue $fixtureLines $setting[0] $setting[1]
+    Assert-True ($actual -ceq $setting[2]) "[$($setting[0])] $($setting[1]) is $actual in config-v0.8.0.toml, not the expected list's $($setting[2])"
+}
+# A malformed or missing list is refused, not read as no settings.
+$temp = Join-Path ([System.IO.Path]::GetTempPath()) "tasksmack-expected-$([guid]::NewGuid().ToString('N'))"
+New-Item -ItemType Directory -Path $temp | Out-Null
+try {
+    $fake = Join-Path $temp 'config-v0.8.0.toml'
+    $refused = { param($lines) Set-Content -LiteralPath (Join-Path $temp 'config-v0.8.0.expected.txt') $lines; try { Get-FixtureSettings $fake | Out-Null; $false } catch { $true } }
+    Assert-True (-not (Test-Path (Join-Path $temp 'config-v0.8.0.expected.txt')) -and (& { try { Get-FixtureSettings $fake | Out-Null; $false } catch { $true } })) 'A missing expected list was accepted'
+    Assert-True (& $refused @('# only a comment', '')) 'An expected list with no settings was accepted'
+    Assert-True (& $refused @('theme id dracula')) 'A line with no stability column was accepted'
+    Assert-True (& $refused @('theme id dracula sometimes')) 'A line with an unknown stability column was accepted'
+    Set-Content -LiteralPath (Join-Path $temp 'config-v0.8.0.expected.txt') @('# comment', '', "theme id 'dracula' stable", 'font point_size 10 migrated')
+    Assert-True ((Get-FixtureSettings $fake).Count -eq 2 -and (Get-FixtureSettings $fake -Stable).Count -eq 1) 'Comments and blank lines weren''t skipped'
+} finally {
+    Remove-Item -LiteralPath $temp -Recurse -Force
+}
 Write-Host 'windows-upgrade-check tests passed'

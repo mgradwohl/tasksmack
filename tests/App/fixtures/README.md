@@ -38,3 +38,13 @@ empty.
 The file is v0.8.0's own Linux output, byte for byte, except for a final newline: v0.8.0 wrote none, and the
 repository's `end-of-file-fixer` hook added one. Windows writes the same TOML keys to `%APPDATA%\TaskSmack\config.toml`;
 only `[window] x`/`y` are in that display's coordinates.
+
+## config-v0.8.0.expected.txt
+
+The settings an upgrade from v0.8.0 must keep, one per line: section, key, the value as TaskSmack writes it
+today, and `stable` (every release since v0.8.0 writes the key the same way) or `migrated` (only a build that
+has migrated the file writes it, like `[font] point_size`, #3501). It is the one list the release checks read
+(#3831): `release.yml`'s `validate-linux-upgrade`, `tools/release-smoke-check.sh`, `tools/release-smoke-check.ps1`
+and `tools/windows-upgrade-check.ps1`. Each finds it beside the fixture, so a setting changed in the fixture is
+changed here once. `tests/tools/test_upgrade_settings_list.py` checks that every `stable` line matches the
+fixture.

@@ -3383,6 +3383,9 @@ installed `.exe` (`TaskSmack.exe`, `TaskSmackHelper.exe`, `Uninstall.exe`, and n
 signature check as the `.zip`'s; the installed `TaskSmack.exe` runs the same smoke check where it is
 (`release-smoke-check.ps1 -InPlace`, with config dirs of its own and Mesa's DLLs beside it only for the
 launches); and `Uninstall.exe /S` must remove the folder, the Uninstall key and the Start menu entries again.
+The settings every one of those upgrade and smoke checks expects v0.8.0's config to keep are one list,
+`tests/App/fixtures/config-v0.8.0.expected.txt`, read by `release.yml`, `release-smoke-check.sh/.ps1` and
+`windows-upgrade-check.ps1`; change it there and in the fixture, nowhere else (#3831).
 Beyond the clean quit, the Linux checks assert on the actual startup log for confirmation that
 assets resolved -- an "Assets directory found:" line, no "Icon font not found" warning, and at
 least one "Loaded theme:" line -- since `src/UI/AssetPath.cpp` and `Theme.cpp` both fall back

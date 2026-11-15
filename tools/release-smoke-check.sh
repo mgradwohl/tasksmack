@@ -27,7 +27,7 @@
 # v0.8.0 saved (tests/App/fixtures/config-v0.8.0.toml). The second run must save the file in today's
 # format (config_version) and keep the settings changed in v0.8.0's UI when the fixture was made
 # (tests/App/fixtures/README.md), each of which differs from the default. validate-linux-upgrade
-# checks the same settings; keep the two lists in step.
+# checks the same settings, all read from config-v0.8.0.expected.txt beside the fixture (#3831).
 
 set -uo pipefail
 if [[ $# -ne 4 ]]; then
@@ -40,16 +40,23 @@ log_prefix="$3"
 fixture="$4"
 ALIVE_SECONDS=5
 QUIT_TIMEOUT_SECONDS=60
-# Section, key and the value as TaskSmack writes it.
-FIXTURE_SETTINGS=(
-  "theme id 'dracula'"
-  "font point_size 10"
-  "sampling interval_ms 2000"
-  "sampling history_max_seconds 600"
-  "ui show_privilege_notice false"
-  "process_columns threads true"
-  "process_columns user false"
-)
+# Section, key and the value as TaskSmack writes it: tests/App/fixtures/config-v0.8.0.expected.txt, beside
+# the fixture, the one list every release check reads (#3831). Its fourth column is the unused "when".
+FIXTURE_SETTINGS=()
+if [[ -n "$fixture" ]]; then
+  expected_file="${fixture%.toml}.expected.txt"
+  if [[ ! -f "$expected_file" ]]; then
+    echo "$expected_file is missing: it lists the settings v0.8.0's config.toml must keep." >&2
+    exit 2
+  fi
+  while read -r line; do
+    case "$line" in '' | '#'*) ;; *) FIXTURE_SETTINGS+=("$line") ;; esac
+  done < "$expected_file"
+  if [[ "${#FIXTURE_SETTINGS[@]}" -eq 0 ]]; then
+    echo "$expected_file lists no settings." >&2
+    exit 2
+  fi
+fi
 
 # The value of <key> in [<section>] of a config.toml, as written.
 toml_value() {
@@ -111,7 +118,7 @@ launch() {
     fi
     local entry section key expected actual lost=0
     for entry in "${FIXTURE_SETTINGS[@]}"; do
-      read -r section key expected <<<"$entry"
+      read -r section key expected _ <<<"$entry"
       actual=$(toml_value "$config" "$section" "$key")
       if [[ "$actual" != "$expected" ]]; then
         echo "$run: [$section] $key is ${actual:-missing} after the save, not v0.8.0's $expected." >&2

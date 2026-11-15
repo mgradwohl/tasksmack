@@ -1487,6 +1487,7 @@ jobs:
           sparse-checkout: |
             tools/release-smoke-check.sh
             tests/App/fixtures/config-v0.8.0.toml
+            tests/App/fixtures/config-v0.8.0.expected.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1665,7 +1666,9 @@ jobs:
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           path: repo
-          sparse-checkout: tests/App/fixtures/config-v0.8.0.toml
+          sparse-checkout: |
+            tests/App/fixtures/config-v0.8.0.toml
+            tests/App/fixtures/config-v0.8.0.expected.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -1818,17 +1821,19 @@ jobs:
         # it finds config.toml where v0.8.0 saved it. It quits by itself as validate-linux-package's
         # smoke check does (TASKSMACK_SCREENSHOT, #2720): exit 0, a frame, no [error] or [critical]
         # line, and the file saved in today's format with the settings changed in v0.8.0's UI kept.
-        # Keep the list in step with validate-linux-package's smoke check.
+        # The settings come from tests/App/fixtures/config-v0.8.0.expected.txt, as validate-linux-package's
+        # smoke check reads them (#3831).
         run: |
-          settings=(
-            "theme id 'dracula'"
-            "font point_size 10"
-            "sampling interval_ms 2000"
-            "sampling history_max_seconds 600"
-            "ui show_privilege_notice false"
-            "process_columns threads true"
-            "process_columns user false"
-          )
+          # The settings to keep, from the one list (#3831): section, key, value, and when it applies.
+          expected_file="${V080_CONFIG%.toml}.expected.txt"
+          settings=()
+          while read -r line; do
+            case "$line" in ''|'#'*) ;; *) settings+=("$line") ;; esac
+          done < "$expected_file"
+          if [[ "${#settings[@]}" -eq 0 ]]; then
+            echo "$expected_file lists no settings." >&2
+            exit 1
+          fi
           toml_value() {
             awk -v want="$2" -v key="$3" '
               /^\[/ { section = substr($0, 2, length($0) - 2); next }
@@ -1865,7 +1870,7 @@ jobs:
           fi
           lost=0
           for entry in "${settings[@]}"; do
-            read -r section key expected <<<"$entry"
+            read -r section key expected _ <<<"$entry"
             actual=$(toml_value "$config" "$section" "$key")
             if [[ "$actual" != "$expected" ]]; then
               echo "[$section] $key is ${actual:-missing} after the upgrade, not v0.8.0's $expected." >&2
@@ -2063,6 +2068,7 @@ jobs:
             tools/verify-windows-signatures.ps1
             tools/release-smoke-check.ps1
             tests/App/fixtures/config-v0.8.0.toml
+            tests/App/fixtures/config-v0.8.0.expected.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
@@ -2668,6 +2674,7 @@ jobs:
             cmake/VerifyWindowsSignatures.cmake
             packaging/winget/TaskSmack.TaskSmack.installer.yaml
             tests/App/fixtures/config-v0.8.0.toml
+            tests/App/fixtures/config-v0.8.0.expected.txt
             tools/verify-windows-signatures.ps1
             tools/windows-upgrade-check.ps1
           sparse-checkout-cone-mode: false
@@ -3228,6 +3235,7 @@ jobs:
             tools/release-smoke-check.ps1
             tools/verify-windows-signatures.ps1
             tests/App/fixtures/config-v0.8.0.toml
+            tests/App/fixtures/config-v0.8.0.expected.txt
           sparse-checkout-cone-mode: false
           persist-credentials: false
 
