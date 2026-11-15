@@ -263,7 +263,8 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
     {
         return refused("not a plain local folder path");
     }
-    // Under the user profiles folder, one folder or more below it.
+    // Inside a user's profile folder: two folders or more below the user profiles folder (C:\Users\pat\TaskSmack,
+    // never C:\Users\pat itself).
     std::vector<std::wstring> components;
     for (const std::filesystem::path& part : dir.relative_path())
     {

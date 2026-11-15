@@ -165,6 +165,12 @@ namespace Platform
 [[nodiscard]] SessionAccount readSessionAccount();
 
 #ifdef _WIN32
+/// Whether TaskSmack runs elevated through UAC (TokenElevationTypeFull, #3920): its environment may then be the
+/// less-privileged side's (a same-user elevation reads the user's own HKCU\Environment), so main.cpp ignores the
+/// TASKSMACK_CONFIG_DIR test hook. False unelevated, and with UAC off, where every process of the account already
+/// runs with its full token and there is no less-privileged side (a hosted CI runner, whose tests set the hook).
+[[nodiscard]] bool elevatedThroughUac();
+
 /// The elevated copy's wait for the Standard TaskSmack that restarted it (#2728), process @p pid created at
 /// @p startTicks, to exit: bounded, so a Standard copy that hangs doesn't stop it, and skipped for a PID another
 /// process has taken. Another account's elevation often may not open the process (Unopenable); the instance
