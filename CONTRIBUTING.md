@@ -1194,8 +1194,8 @@ folder is checked in full (#3528).
 Coverage reports are written to `coverage/` (gitignored).
 
 CI heavy checks also publish a line-coverage summary and compare it with a floor (`LINUX_COVERAGE_THRESHOLD` and
-`WINDOWS_COVERAGE_THRESHOLD` in `heavy-checks.yml`): Linux below 95% fails the coverage job, Windows below 85%
-warns.
+`WINDOWS_COVERAGE_THRESHOLD` in `heavy-checks.yml`): Linux below 95% fails the coverage job, Windows below 93%
+fails it too (#3842).
 
 The report counts all of `src/`, not just the files linked into `TaskSmackTests`: the coverage
 scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `llvm-cov` as an extra
@@ -3091,7 +3091,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
 - **`devcontainer.yml`**: Builds the dev container's image (`.devcontainer/Dockerfile`, from `tools/setup-dev.sh`) and, inside it, runs `tools/check-prereqs.sh` and configures the debug preset, whenever the image's inputs change (#136).
 - **`renovate-docs-sri.yml`**: On Renovate's docs-site PRs, regenerates `docs/index.html`'s `integrity=` hashes and `docs/cdn-integrity.json` (`tools/docs-sri.py --update`) and pushes them back with `RENOVATE_TOKEN`, so CI runs on the fixed commit (#3661).
 

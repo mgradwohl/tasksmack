@@ -1454,6 +1454,20 @@ class HeavyChecksCodecovUploadTests(unittest.TestCase):
                 self.assertEqual(step.condition, self.CONDITION)
 
 
+class HeavyChecksCoverageFloorTests(unittest.TestCase):
+    """#3842: the Windows line-coverage floor is 93% and a drop below it fails the job, as Linux's does."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+
+    def test_windows_floor_is_93_and_below_it_fails_the_step(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        self.assertIn("WINDOWS_COVERAGE_THRESHOLD: '93'", text)
+        step = find_step(self.WORKFLOW, "Check coverage threshold", job="win-coverage")
+        self.assertIn("::error title=Windows coverage::", step.run)
+        self.assertNotIn("::warning title=Windows coverage::Line coverage", step.run)
+        self.assertIn("exit 1", step.run)
+
+
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
     whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""

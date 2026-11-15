@@ -55,11 +55,12 @@ env:
   LLVM_SEMVER_VERSION: '23.1.5'
   # Floors for LINE coverage (see the "Check coverage threshold" steps, #1543). Linux: 95%, and a
   # drop below it FAILS the coverage job (maintainer, 2026-10-15, closing #1891), set when the nightly
-  # run read 95.51% of lines. Windows: 85%, warn-only (maintainer, 2026-10-12, when it read 89.8%;
-  # 91.54% on 2026-10-15). They were 66% and 61%, from the 2026-10-08 baseline (68.9%, 63.8%).
+  # run read 95.51% of lines. Windows: 93%, and a drop below it FAILS the win-coverage job too
+  # (maintainer, 2026-11-14, #3842; it read 95.3% then, and was a 85% warn-only floor since 2026-10-12, when
+  # it read 89.8%; 91.54% on 2026-10-15). They were 66% and 61%, from the 2026-10-08 baseline (68.9%, 63.8%).
   # codecov.yml's `auto` target is the per-change ratchet.
   LINUX_COVERAGE_THRESHOLD: '95'
-  WINDOWS_COVERAGE_THRESHOLD: '85'
+  WINDOWS_COVERAGE_THRESHOLD: '93'
 
 permissions: {}
 
@@ -173,8 +174,8 @@ jobs:
 
       # Line coverage, the number Codecov and the docs use, summed from coverage/coverage.lcov (LH/LF).
       # The TOTAL row of `llvm-cov report` is not parsed by position: its last column is branch
-      # coverage, which this step used to report as "coverage" (#1543). Warn-only; codecov.yml's
-      # `auto` target is the real ratchet, this floor just flags a large drop in the job summary.
+      # coverage, which this step used to report as "coverage" (#1543). A drop below the floor fails the
+      # job (#1891); codecov.yml's `auto` target is the per-change ratchet, this floor catches a large drop.
       - name: Check coverage threshold
         if: always()
         env:
@@ -347,7 +348,7 @@ jobs:
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "Coverage output file not found"
           }
 
-      # Same rule as the Linux job: line coverage from coverage/coverage.lcov, warn-only (#1543).
+      # Same rule as the Linux job: line coverage from coverage/coverage.lcov; below the floor it fails (#3842).
       - name: Check coverage threshold
         if: always()
         shell: pwsh
@@ -370,10 +371,11 @@ jobs:
           }
           $coverage = [math]::Round(100.0 * $hit / $found, 2)
           Write-Host "📊 Windows line coverage: $coverage% ($hit/$found lines)"
-          Write-Host "🎯 Warning floor: $threshold%"
+          Write-Host "🎯 Floor: $threshold%"
           if ($coverage -lt $threshold) {
-            Write-Host "::warning title=Windows coverage::Line coverage $coverage% is below the $threshold% floor"
-            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "`n⚠️ **Windows Coverage Warning:** line coverage $coverage% is below the $threshold% floor"
+            Write-Host "::error title=Windows coverage::Line coverage $coverage% is below the $threshold% floor"
+            Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "`n❌ **Windows Coverage Failure:** line coverage $coverage% is below the $threshold% floor"
+            exit 1
           } else {
             Add-Content -Path $env:GITHUB_STEP_SUMMARY -Value "`n✅ **Windows Coverage Status:** line coverage $coverage% ($hit/$found lines) meets the $threshold% floor"
           }
