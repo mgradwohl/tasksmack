@@ -10,6 +10,7 @@
 #include "Core/LocaleSetup.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FontPointSize.h"
@@ -32,6 +33,7 @@
 #include <fstream>
 #include <iterator>
 #include <locale>
+#include <memory>
 #include <optional>
 #include <random>
 #include <string>
@@ -56,6 +58,22 @@ namespace App
 {
 namespace
 {
+
+/// A held handed-over folder of a test's own (#3787): only its path. A hand-off saves only while one is held.
+class HeldTestFolder final : public Platform::IHandedOverFolder
+{
+  public:
+    explicit HeldTestFolder(std::filesystem::path path) : m_Path(std::move(path))
+    {}
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept override
+    {
+        return m_Path;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
 
 // ========== Test Fixtures ==========
 
@@ -2597,7 +2615,8 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
 
     // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
     const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
-    Core::ConfigDirOverride::adoptHandedOver(m_TempDir);
+    const auto held = std::make_shared<HeldTestFolder>(m_TempDir);
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
     auto& config = UserConfig::get();
     config.load();
     config.settings().themeId = "mocha";
@@ -2606,6 +2625,55 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
 
     EXPECT_TRUE(std::filesystem::is_symlink(link));
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
+}
+
+// #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as
+// the staging file is named) can't leave the write going on with nothing held.
+TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWrite)
+{
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    auto held = std::make_shared<HeldTestFolder>(m_TempDir);
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
+    auto& config = UserConfig::get();
+    config.load();
+    bool heldDuringWrite = false;
+    config.setTempNameSourceForTesting(
+        [&held, &heldDuringWrite]
+        {
+            held.reset(); // the owner lets go mid-write
+            heldDuringWrite = Core::ConfigDirOverride::handedOverFolder() != nullptr;
+            return 1U;
+        });
+    config.settings().themeId = "nord";
+    config.save();
+    EXPECT_TRUE(heldDuringWrite) << "the save's own hold kept it";
+    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "nord") << "the save that began held finished";
+    EXPECT_EQ(Core::ConfigDirOverride::handedOverFolder(), nullptr) << "let go once the save is done";
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+}
+
+// #3787: a hand-off whose held folder has been let go fails closed: its config is neither read nor saved.
+TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderNoLongerHeldIsNeitherReadNorSaved)
+{
+    // Not the default theme, so a read can be told from defaults.
+    writeFile(m_ConfigPath, "[theme]\nid = \"mocha\"\n");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    auto held = std::make_shared<HeldTestFolder>(m_TempDir);
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().themeId, "mocha") << "read while it is held";
+
+    held.reset();
+    config.settings().themeId = "nord";
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "mocha") << "not saved once let go";
+    config.resetConfigPathForTesting(m_ConfigPath); // read afresh
+    config.load();
+    EXPECT_NE(config.settings().themeId, "mocha") << "not read once let go: defaults";
+    Core::ConfigDirOverride::setActiveForTesting(previous);
 }
 
 #ifndef _WIN32
@@ -2650,7 +2718,8 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderSwappedForALinkIsNotSavedInto
     writeFile(m_ConfigPath, "[theme]\nid = \"arctic-fire\"\n");
     // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
     const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
-    Core::ConfigDirOverride::adoptHandedOver(m_TempDir);
+    const auto held = std::make_shared<HeldTestFolder>(m_TempDir);
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
     auto& config = UserConfig::get();
     config.load();
 

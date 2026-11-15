@@ -562,6 +562,7 @@ set(TASKSMACK_HEADERS
     src/Platform/IStartAtLogin.h
     src/Platform/SessionAccount.h
     src/Platform/IElevatedRestart.h
+    src/Platform/IHandedOverFolder.h
     src/Domain/StartAtLogin.h
     src/App/StartAtLoginSetting.h
     src/App/SessionAccountCheck.h

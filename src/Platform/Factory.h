@@ -3,6 +3,9 @@
 #include "Platform/IDiskProbe.h"
 #include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
+#ifdef _WIN32
+#include "Platform/IHandedOverFolder.h" // checkHandedOverConfigDir()
+#endif
 #include "Platform/IHttpsClient.h"
 #include "Platform/IPathProvider.h"
 #include "Platform/IPowerProbe.h"
@@ -170,9 +173,10 @@ HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks);
 
 /// Whether the config directory an elevated restart was handed (--config-dir, #2728) may be used: a real folder
 /// in a user's profile, with no junction or link on its path, owned by no administrator or system account, its
-/// config.toml and lock file neither links nor hard links; held open from then on so it can't be swapped. The
-/// error says why not (Windows::ElevatedRestart::checkConfigDir(), the trust boundary in IElevatedRestart.h).
-[[nodiscard]] std::expected<void, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir);
+/// config.toml and lock file neither links nor hard links; then held open, and checked again through that handle.
+/// The folder held is returned for main.cpp to own for the rest of the run (#3787). The error says why not
+/// (Windows::ElevatedRestart::checkConfigDir(), the trust boundary in IElevatedRestart.h).
+[[nodiscard]] std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir);
 
 /// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
 /// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.

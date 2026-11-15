@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -329,12 +330,26 @@ struct FakeDisk
     bool lockExists = false;     ///< tasksmack.lock is there
     bool configIsFolder = false; ///< config.toml is a folder
     bool linksKnown = true;      ///< The hard-link count can be read
+    // Through the held handle (#3775):
+    DWORD heldAttributes = FILE_ATTRIBUTE_DIRECTORY; ///< What the held folder's handle reports
+    std::wstring finalPath{};                        // NOLINT(readability-redundant-member-init) - empty: the path that was opened
+    bool finalPathKnown = true;
+    HANDLE held = nullptr;         ///< The handle openToPin() gave out
+    HANDLE ownerAskedOf = nullptr; ///< The handle the owner was read through
+    int pinsAtFileCheck = -1;      ///< How many holds there were when config.toml or the lock was first checked
 };
 
 [[nodiscard]] FakeDisk& fakeDisk()
 {
     static FakeDisk fake;
     return fake;
+}
+
+/// The path the fake openToPin() was last given.
+[[nodiscard]] std::wstring& openedPath()
+{
+    static std::wstring path;
+    return path;
 }
 
 DWORD WINAPI fakeAttributes(LPCWSTR path)
@@ -346,6 +361,10 @@ DWORD WINAPI fakeAttributes(LPCWSTR path)
     }
     const bool config = text.ends_with(L".toml");
     const bool lock = text.ends_with(L".lock");
+    if ((config || lock) && fakeDisk().pinsAtFileCheck < 0)
+    {
+        fakeDisk().pinsAtFileCheck = fakeDisk().pins;
+    }
     if ((config && !fakeDisk().configExists) || (lock && !fakeDisk().lockExists))
     {
         return INVALID_FILE_ATTRIBUTES;
@@ -368,25 +387,63 @@ std::optional<DWORD> fakeLinkCount(const std::wstring& /*path*/)
     return fakeDisk().configLinks;
 }
 
-std::optional<bool> fakeOwnerIsPrivileged(const std::wstring& /*path*/)
+std::optional<bool> fakeOwnerIsPrivileged(HANDLE handle)
 {
+    fakeDisk().ownerAskedOf = handle;
     return fakeDisk().privilegedOwner;
 }
 
-bool fakePin(const std::wstring& /*path*/)
+/// Holds an unnamed event of this process's own in place of the folder, so the handle checkConfigDir() hands back
+/// is a real one it can close.
+HANDLE fakeOpenToPin(const std::wstring& path)
 {
     ++fakeDisk().pins;
-    return fakeDisk().pinned;
+    openedPath() = path;
+    if (!fakeDisk().pinned)
+    {
+        return INVALID_HANDLE_VALUE;
+    }
+    fakeDisk().held = CreateEventW(nullptr, TRUE, FALSE, nullptr);
+    return fakeDisk().held;
+}
+
+BOOL WINAPI fakeFileInformation(HANDLE handle, LPBY_HANDLE_FILE_INFORMATION info)
+{
+    if (handle != fakeDisk().held)
+    {
+        return FALSE; // asked of some other handle than the one held
+    }
+    *info = BY_HANDLE_FILE_INFORMATION{};
+    info->dwFileAttributes = fakeDisk().heldAttributes;
+    return TRUE;
+}
+
+DWORD WINAPI fakeFinalPath(HANDLE handle, LPWSTR buffer, DWORD size, DWORD /*flags*/)
+{
+    if (handle != fakeDisk().held || !fakeDisk().finalPathKnown)
+    {
+        return 0;
+    }
+    const std::wstring path = LR"(\\?\)" + (fakeDisk().finalPath.empty() ? openedPath() : fakeDisk().finalPath);
+    if (size <= path.size())
+    {
+        return static_cast<DWORD>(path.size() + 1);
+    }
+    std::ranges::copy(path, buffer);
+    std::span(buffer, size)[path.size()] = L'\0';
+    return static_cast<DWORD>(path.size());
 }
 
 const ConfigDirFunctions DISK_FAKES{
     .getFileAttributes = &fakeAttributes,
     .linkCount = &fakeLinkCount,
+    .openToPin = &fakeOpenToPin,
+    .getFileInformation = &fakeFileInformation,
+    .getFinalPath = &fakeFinalPath,
     .ownerIsPrivileged = &fakeOwnerIsPrivileged,
-    .pin = &fakePin,
 };
 
-[[nodiscard]] std::expected<void, std::string> check(std::wstring_view dir)
+[[nodiscard]] std::expected<UniqueHandle, std::string> check(std::wstring_view dir)
 {
     return checkConfigDir(std::filesystem::path(dir), std::filesystem::path(PROFILES), DISK_FAKES);
 }
@@ -471,6 +528,83 @@ TEST(ElevatedRestartConfigDirTest, AMissingFolderOrOneSwappedBeforeItIsHeldIsRef
     return checked.has_value() ? std::string("(taken)") : checked.error();
 }
 
+// #3787: the folder held is the caller's, by the very handle every later check was made through.
+TEST(ElevatedRestartConfigDirTest, TheHeldFolderIsHandedBackToTheCaller)
+{
+    fakeDisk() = FakeDisk{};
+    const auto checked = check(GOOD_DIR);
+    ASSERT_TRUE(checked.has_value()) << checked.error();
+    EXPECT_EQ(checked->get(), fakeDisk().held);
+
+    auto second = check(GOOD_DIR);
+    ASSERT_TRUE(second.has_value()) << second.error();
+    const PinnedFolder folder(std::filesystem::path(GOOD_DIR), std::move(*second));
+    EXPECT_EQ(folder.path(), std::filesystem::path(GOOD_DIR));
+    EXPECT_EQ(folder.handle(), fakeDisk().held) << "a second check holds a folder of its own, not replacing the first";
+    EXPECT_NE(checked->get(), folder.handle());
+    DWORD flags = 0;
+    EXPECT_NE(GetHandleInformation(checked->get(), &flags), FALSE) << "the first is still open";
+}
+
+// The config.toml and lock checks come only once the folder is held: it can't be renamed away by then, so their
+// paths name files in the folder held, not in one that took its place.
+TEST(ElevatedRestartConfigDirTest, TheFilesAreCheckedOnlyOnceTheFolderIsHeld)
+{
+    fakeDisk() = FakeDisk{.lockExists = true};
+    ASSERT_TRUE(check(GOOD_DIR).has_value());
+    EXPECT_EQ(fakeDisk().pinsAtFileCheck, 1) << "held before config.toml or the lock is looked at";
+
+    fakeDisk() = FakeDisk{.privilegedOwner = true};
+    ASSERT_FALSE(check(GOOD_DIR).has_value());
+    EXPECT_EQ(fakeDisk().pinsAtFileCheck, -1) << "a folder refused through its handle has no files checked";
+}
+
+// #3775: the owner is read through the held handle, so it is the owner of the folder held, not of whatever the path
+// named when it was checked.
+TEST(ElevatedRestartConfigDirTest, TheOwnerIsReadThroughTheHeldHandle)
+{
+    fakeDisk() = FakeDisk{};
+    ASSERT_TRUE(check(GOOD_DIR).has_value());
+    EXPECT_NE(fakeDisk().ownerAskedOf, nullptr);
+    EXPECT_EQ(fakeDisk().ownerAskedOf, fakeDisk().held);
+
+    fakeDisk() = FakeDisk{.privilegedOwner = true};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("owned by an administrator or system account")) << refusal(GOOD_DIR);
+    EXPECT_EQ(fakeDisk().ownerAskedOf, fakeDisk().held);
+}
+
+// #3775: a folder that is a reparse point, or no folder, by the time it is held is refused by what its handle says.
+TEST(ElevatedRestartConfigDirTest, AFolderThatIsAReparsePointOnceHeldIsRefused)
+{
+    for (const DWORD attributes :
+         {static_cast<DWORD>(FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT), static_cast<DWORD>(FILE_ATTRIBUTE_NORMAL)})
+    {
+        fakeDisk() = FakeDisk{.heldAttributes = attributes};
+        EXPECT_TRUE(refusal(GOOD_DIR).contains("can't be held open, or changed while it was checked")) << refusal(GOOD_DIR);
+        EXPECT_EQ(fakeDisk().ownerAskedOf, nullptr) << "refused before anything else is read through it";
+    }
+}
+
+// #3775: the folder held must be the folder checked: its final path is the checked path itself.
+TEST(ElevatedRestartConfigDirTest, AHeldFolderWhoseFinalPathDiffersIsRefused)
+{
+    fakeDisk() = FakeDisk{.finalPath = LR"(C:\ProgramData\Elsewhere)"};
+    const std::string why = refusal(GOOD_DIR);
+    EXPECT_TRUE(why.contains("the folder it holds is C:\\ProgramData\\Elsewhere, not the folder checked")) << why;
+    EXPECT_EQ(fakeDisk().ownerAskedOf, nullptr);
+
+    fakeDisk() = FakeDisk{.finalPathKnown = false};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains("can't be named")) << refusal(GOOD_DIR);
+
+    fakeDisk() = FakeDisk{.finalPath = LR"(C:\USERS\pat\appdata\roaming\taskSmack)"};
+    EXPECT_EQ(refusal(GOOD_DIR), "(taken)") << "case doesn't matter, as on NTFS";
+
+    // A path longer than the first buffer: asked again with the size it needs.
+    const std::wstring deep = std::wstring(GOOD_DIR) + L"\\" + std::wstring(300, L'd');
+    fakeDisk() = FakeDisk{.finalPath = deep};
+    EXPECT_TRUE(refusal(GOOD_DIR).contains(std::string(300, 'd'))) << "the long final path is read whole";
+}
+
 // #3676: each refusal says which check failed, so the log says why the elevated copy fell back to its own folder.
 TEST(ElevatedRestartConfigDirTest, EachRefusalOfThePathSaysWhy)
 {
@@ -513,7 +647,7 @@ TEST(ElevatedRestartConfigDirTest, ALinkedOrHardLinkedLockFileIsRefusedToo)
 
     fakeDisk() = FakeDisk{.configExists = false, .configLinks = 2, .lockExists = true};
     EXPECT_TRUE(refusal(GOOD_DIR).contains("its tasksmack.lock is hard-linked")) << refusal(GOOD_DIR);
-    EXPECT_EQ(fakeDisk().pins, 0);
+    EXPECT_EQ(fakeDisk().pins, 1) << "held first, then refused";
 }
 
 TEST(ElevatedRestartConfigDirTest, AConfigThatIsAFolderOrWhoseLinksCantBeCountedIsRefused)
@@ -523,7 +657,7 @@ TEST(ElevatedRestartConfigDirTest, AConfigThatIsAFolderOrWhoseLinksCantBeCounted
 
     fakeDisk() = FakeDisk{.linksKnown = false};
     EXPECT_TRUE(refusal(GOOD_DIR).contains("its config.toml is hard-linked")) << "a count that can't be read is no proof of one link";
-    EXPECT_EQ(fakeDisk().pins, 0);
+    EXPECT_EQ(fakeDisk().pins, 1) << "held first, then refused";
 }
 
 TEST(ElevatedRestartConfigDirTest, AFolderOutsideTheRealProfilesFolderIsRefused)
@@ -559,7 +693,7 @@ TEST(ElevatedRestartConfigDirTest, TheRealOwnerCheckRefusesAFolderWindowsOwns)
 }
 
 /// An owner check that says every folder is a user's: the real one would refuse a folder an elevated test run made.
-std::optional<bool> userOwned(const std::wstring& /*path*/)
+std::optional<bool> userOwned(HANDLE /*handle*/)
 {
     return false;
 }
@@ -593,6 +727,12 @@ class ScratchFolder
         std::error_code error;
         std::filesystem::create_directories(configDir(), error);
         EXPECT_FALSE(error) << error.message();
+        // As Windows names it (a temp folder under an 8.3 name, as on a hosted runner, say), so the held folder's
+        // final path is the path checked.
+        if (std::filesystem::path real = std::filesystem::canonical(m_Path, error); !error)
+        {
+            m_Path = std::move(real);
+        }
     }
     // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: what escapes it ends the run, as a failed test should
     ~ScratchFolder()
@@ -627,7 +767,7 @@ TEST(ElevatedRestartConfigDirTest, TheRealLinkCountSeesAHardLinkedConfig)
     std::ofstream(config) << "theme = \"dark\"\n";
     const std::filesystem::path elsewhere = scratch.root() / L"elsewhere.toml";
     ASSERT_NE(CreateHardLinkW(elsewhere.c_str(), config.c_str(), nullptr), FALSE) << GetLastError();
-    const ConfigDirFunctions realLinks{.getFileAttributes = &::GetFileAttributesW, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    const ConfigDirFunctions realLinks{.getFileAttributes = &::GetFileAttributesW, .ownerIsPrivileged = &userOwned};
     const auto linked = checkConfigDir(scratch.configDir(), scratch.root(), realLinks);
     ASSERT_FALSE(linked.has_value());
     EXPECT_TRUE(linked.error().contains("its config.toml is hard-linked")) << linked.error();
@@ -635,7 +775,7 @@ TEST(ElevatedRestartConfigDirTest, TheRealLinkCountSeesAHardLinkedConfig)
     // A config.toml that is there for the attribute check and gone for the count: refused, not taken as one link.
     std::filesystem::remove(elsewhere);
     std::filesystem::remove(config);
-    const ConfigDirFunctions vanished{.getFileAttributes = &configAlwaysThere, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    const ConfigDirFunctions vanished{.getFileAttributes = &configAlwaysThere, .ownerIsPrivileged = &userOwned};
     const auto gone = checkConfigDir(scratch.configDir(), scratch.root(), vanished);
     ASSERT_FALSE(gone.has_value());
     EXPECT_TRUE(gone.error().contains("hard-linked")) << gone.error();
@@ -647,7 +787,7 @@ TEST(ElevatedRestartConfigDirTest, TheRealHoldRefusesWhatIsNoLongerAFolder)
     // What passed as a folder is a file, or nothing at all, by the time it is held.
     const std::filesystem::path file = scratch.configDir() / L"settings";
     std::ofstream(file) << "not a folder";
-    const ConfigDirFunctions swapped{.getFileAttributes = &everythingAFolder, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    const ConfigDirFunctions swapped{.getFileAttributes = &everythingAFolder, .ownerIsPrivileged = &userOwned};
     for (const std::filesystem::path& dir : {file, scratch.configDir() / L"gone"})
     {
         const auto checked = checkConfigDir(dir, scratch.root(), swapped);
@@ -658,14 +798,23 @@ TEST(ElevatedRestartConfigDirTest, TheRealHoldRefusesWhatIsNoLongerAFolder)
 
 TEST(ElevatedRestartConfigDirTest, TheRealHoldKeepsTheFolderFromBeingRemoved)
 {
-    // This test program's own folder, held for the rest of the run: it can't be removed while the program runs anyway.
+    // This test program's own folder, held while this test runs: it can't be removed while the program runs anyway.
     std::array<wchar_t, MAX_PATH> image{};
     const DWORD length = GetModuleFileNameW(nullptr, image.data(), static_cast<DWORD>(image.size()));
     ASSERT_GT(length, 0U);
     ASSERT_LT(length, image.size());
     const std::filesystem::path folder = std::filesystem::path(std::wstring(image.data(), length)).parent_path();
     ASSERT_TRUE(folder.has_relative_path() && folder.parent_path().has_relative_path()) << folder.string();
-    const ConfigDirFunctions held{.getFileAttributes = &::GetFileAttributesW, .linkCount = nullptr, .ownerIsPrivileged = &userOwned};
+    // The check holds a folder only at its final path: one reached through a subst or mapped drive, or named by an
+    // 8.3 name, is (rightly) refused, so there is nothing to test here.
+    std::error_code realError;
+    const std::filesystem::path real = std::filesystem::canonical(folder, realError);
+    if (realError || CompareStringOrdinal(real.c_str(), -1, folder.c_str(), -1, TRUE) != CSTR_EQUAL)
+    {
+        GTEST_SKIP() << "this program's folder " << folder.string() << " isn't at its final path ("
+                     << (realError ? realError.message() : real.string()) << ")";
+    }
+    const ConfigDirFunctions held{.getFileAttributes = &::GetFileAttributesW, .ownerIsPrivileged = &userOwned};
     const auto checked = checkConfigDir(folder, folder.parent_path().parent_path(), held);
     ASSERT_TRUE(checked.has_value()) << checked.error();
 

@@ -1,11 +1,13 @@
 #include "ConfigDirOverride.h"
 
 #include "Core/EnvRead.h"
+#include "Platform/IHandedOverFolder.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 #include <system_error>
@@ -46,10 +48,17 @@ std::optional<std::filesystem::path>& current()
     return dir;
 }
 
-/// Whether current() was handed over by an elevated restart (adoptHandedOver()).
-bool& handedOverFlag()
+/// An elevated restart's hand-off (adoptHandedOver()), kept apart from current() (#3780) and checked first, so a
+/// hand-off session never runs current()'s initialiser: TASKSMACK_CONFIG_DIR is never read, nor its directory made.
+struct HandOff
 {
-    static bool handed = false;
+    std::optional<std::filesystem::path> dir;                ///< Set: active() is this
+    std::weak_ptr<const Platform::IHandedOverFolder> folder; ///< The held folder, which main.cpp owns
+};
+
+HandOff& handOff()
+{
+    static HandOff handed;
     return handed;
 }
 
@@ -64,15 +73,18 @@ bool& lessPrivilegedFlag()
 
 const std::optional<std::filesystem::path>& active()
 {
+    if (handOff().dir.has_value())
+    {
+        return handOff().dir;
+    }
     return current();
 }
 
-void adoptHandedOver(const std::filesystem::path& dir)
+void adoptHandedOver(const std::filesystem::path& dir, std::weak_ptr<const Platform::IHandedOverFolder> folder)
 {
     std::error_code ec;
     const std::filesystem::path absolute = std::filesystem::absolute(dir, ec);
-    current() = ec ? dir : absolute.lexically_normal();
-    handedOverFlag() = true;
+    handOff() = HandOff{.dir = ec ? dir : absolute.lexically_normal(), .folder = std::move(folder)};
 }
 
 void markLessPrivilegedFolder()
@@ -82,18 +94,28 @@ void markLessPrivilegedFolder()
 
 bool handedOver()
 {
-    return (current().has_value() && handedOverFlag()) || lessPrivilegedFlag();
+    return handOff().dir.has_value() || lessPrivilegedFlag();
+}
+
+std::shared_ptr<const Platform::IHandedOverFolder> handedOverFolder()
+{
+    return handOff().dir.has_value() ? handOff().folder.lock() : nullptr;
+}
+
+bool handedOverFolderReleased()
+{
+    return handOff().dir.has_value() && handOff().folder.expired();
 }
 
 bool fromTestHook()
 {
-    return current().has_value() && !handedOverFlag();
+    return !handOff().dir.has_value() && current().has_value();
 }
 
 void setActiveForTesting(std::optional<std::filesystem::path> dir)
 {
+    handOff() = HandOff{};
     current() = std::move(dir);
-    handedOverFlag() = false;
     lessPrivilegedFlag() = false;
 }
 
