@@ -37,7 +37,8 @@
 //   drain ends the Worker Failed rather than std::terminate; so does a thread that can't be started. A Failed
 //   worker is reported once, by the next request() or find(): every path queued is answered Unknown with
 //   the reason, and so is each path asked for after, so none stays "not checked yet" for good, and the
-//   reason is logged once.
+//   reason is logged once. Those answers read no publisher: find() leaves the caller's alone, and ended() tells
+//   the caller to read it itself, as the probe did before #3703, so a new process still gets one (#3862).
 //
 // Free of <windows.h>: the calls are SignatureFunctions, so the queueing, the caching and the hand-over are
 // tested on every platform with fakes (tests/Platform/WindowsMath/test_WindowsSignatureWorker.cpp).
@@ -148,7 +149,8 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
     /// A path the table has forgotten (it overflowed), or never admitted (it was full), is requested again
     /// on its turn (#3403). With an answer, @p publisher (when given) is set to the publisher read with it
-    /// (#3703); it is left alone without one.
+    /// (#3703); it is left alone without one, and with an answer made because the worker ended, which read
+    /// none (#3862: ended() says so).
     [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path, std::string* publisher = nullptr)
     {
         std::string key = pathKey(path);
@@ -162,11 +164,20 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
             requestLocked(path, std::move(key), Asker::LaterSample);
             return std::nullopt;
         }
-        if (publisher != nullptr && found->second.result.has_value())
+        if (publisher != nullptr && found->second.result.has_value() && found->second.publisherRead)
         {
             *publisher = found->second.publisher;
         }
         return found->second.result;
+    }
+
+    /// Whether the worker has ended (#3862): no thread could be started, or a drain failed. It stays ended, and
+    /// answers every path Unknown with the reason (logged once, by this call or the next request() or find()),
+    /// but reads no publisher with those answers: the caller reads that itself.
+    [[nodiscard]] bool ended()
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return workerEndedLocked();
     }
 
     /// Marks the start of the probe's next sample (#3403): a path waiting its turn keeps it until the end of
@@ -211,6 +222,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     {
         std::optional<SignatureCheck> result; ///< The last answer; nullopt while queued
         std::string publisher;                ///< Read with it (#3703); empty with no answer, or none named
+        bool publisherRead = false;           ///< The answer came from a check, which read the publisher (#3862)
         bool queued = false;
     };
 
@@ -307,6 +319,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         }
         state->result.reset();
         state->publisher.clear();
+        state->publisherRead = false;
         state->queued = true;
         ++m_QueuedCount; // not queued before: a queued path returned at the top
         submitDrainLocked();
@@ -495,6 +508,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
                 if (const auto found = m_Paths.find(key); found != m_Paths.end())
                 {
                     found->second.publisher = std::move(publisher);
+                    found->second.publisherRead = true;
                     found->second.result = std::move(check);
                     markAnsweredLocked(found->second);
                 }
