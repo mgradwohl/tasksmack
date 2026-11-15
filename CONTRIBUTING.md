@@ -1343,7 +1343,10 @@ pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
-`check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+`check-cflite-paths` pre-commit hook fails if they differ (#2533). A target's sources pull in more than that filter
+watches, so every PR's Linux debug job also builds every target with `.clusterfuzzlite/build.sh` and runs each on one
+empty input ("Fuzz targets build (Linux)", #3837): a change anywhere that breaks a fuzzer's build or start fails the PR,
+not main. Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
 A release candidate's campaign gives each target 600 seconds instead (#2783):
 `gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's

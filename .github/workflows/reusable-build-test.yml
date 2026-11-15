@@ -386,6 +386,35 @@ jobs:
       # timing run and regression gate stay in heavy-checks.yml. Runs after the tests so a
       # benchmark-only break doesn't hide test results; reconfiguring the same tree only adds the
       # benchmarks subdirectory, so the targets already built stay up to date.
+      # Every fuzz target compiled and linked as ClusterFuzzLite builds it (.clusterfuzzlite/build.sh), on every PR
+      # (#3837). cflite_pr.yml fuzzes only when a path it watches changes, and a target's sources pull in more than it
+      # watches (fuzz_user_config: SessionUser.h, NewFileOwner.h, App/Panels/*...), so a change there could break a
+      # fuzzer's build unseen until main (#3657). Here with this job's clang and libstdc++, which the runner's libFuzzer
+      # runtime is built against; each binary then runs one empty input, so a target that can't start fails here too.
+      - name: Fuzz targets build (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        env:
+          CXX: clang++
+          CXXFLAGS: -O1 -fsanitize=fuzzer-no-link
+          LIB_FUZZING_ENGINE: -fsanitize=fuzzer
+          OUT: ${{ runner.temp }}/fuzzers
+          FUZZ_DEPS_DIR: ${{ runner.temp }}/fuzz-deps
+        run: |
+          set -o pipefail
+          bash .clusterfuzzlite/build.sh
+          built=0
+          for fuzzer in "$OUT"/fuzz_*; do
+            [[ -x "$fuzzer" && ! -d "$fuzzer" ]] || continue
+            "$fuzzer" -runs=1 >/dev/null 2>&1 || { echo "::error title=Fuzz targets::$(basename "$fuzzer") didn't run one input"; exit 1; }
+            built=$((built + 1))
+          done
+          expected="$(grep -c '^build_fuzzer ' .clusterfuzzlite/build.sh)"
+          if [[ "$built" -ne "$expected" ]]; then
+            echo "::error title=Fuzz targets::built and ran $built fuzzers, but build.sh builds $expected"
+            exit 1
+          fi
+          echo "Built and ran $built fuzz targets."
+
       - name: Build benchmarks (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_benchmarks
         run: |
