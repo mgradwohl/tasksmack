@@ -60,12 +60,13 @@
 #ifdef _WIN32
 // spdlog's msvc_sink.h is itself guarded on _WIN32; the other sinks are portable.
 #include <spdlog/sinks/msvc_sink.h>
+
+#include <cstdint> // std::uint32_t, the Standard TaskSmack's PID in the hand-off (#3781)
 #endif
 
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
-#include <cstdint>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <cstdlib>
 #include <exception>
@@ -271,8 +272,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
         spdlog::info("Taking the instance lock, trying for up to {:.1f} s while the Standard TaskSmack lets go of it",
                      inSeconds(lockPatience));
     }
-    const auto lockStarted = std::chrono::steady_clock::now();
 #ifdef _WIN32
+    const auto lockStarted = std::chrono::steady_clock::now();
     // A handed-over folder's lock is opened only through the folder held (#3774), never by its path.
     const std::unique_ptr<App::InstanceLock> instanceLock =
         handedOverFolder != nullptr
@@ -282,6 +283,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
     const std::unique_ptr<App::InstanceLock> instanceLock =
         App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
 #endif
+#ifdef _WIN32
+    // Windows only, as the hand-off is (#3580): how long the lock's tries took, for the log (#3781).
     const auto lockWaited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lockStarted);
     if (handoffSession)
     {
@@ -289,6 +292,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
                      inSeconds(lockWaited),
                      instanceLock->status() == App::InstanceLock::Status::HeldByAnotherInstance ? "still held" : "done");
     }
+#endif
     if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock->status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
