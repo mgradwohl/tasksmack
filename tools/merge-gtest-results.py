@@ -3,7 +3,7 @@
 tools/merge-gtest-results.py -- One JUnit report with a testcase per Google Test case (#1871).
 
 Usage:
-    merge-gtest-results.py <ctest-junit.xml>... <gtest-results-dir> <output.xml>
+    merge-gtest-results.py [--later <gtest.xml>]... <ctest-junit.xml>... <gtest-results-dir> <output.xml>
 
 ctest runs one entry per gtest suite (cmake/GTestSuites.cmake), so its --output-junit report has a
 testcase per suite. Each entry also writes gtest's own XML report, one testcase per case, to
@@ -11,6 +11,12 @@ testcase per suite. Each entry also writes gtest's own XML report, one testcase 
 the reports of the entries ctest ran, plus the ctest entries that have no gtest report (the script
 tests) or did not pass (a crash or timeout leaves no report, and a failing entry's output names
 the cases it ran). Shards of one suite are merged back into one testsuite.
+
+--later names a gtest XML report from a step that ran after ctest and ran cases ctest skipped (the
+real-system and root steps, which only run where CI asks, #3840). A later result for a case replaces
+that case's skip, so it counts once, by its real result; a case ctest ran is never replaced, and a
+later skip never replaces a result. A later case no earlier report has is added. A later report that
+doesn't exist (the step didn't run) is skipped.
 
 Several ctest reports (Windows ARM64 runs the script tests in a second ctest run, #2832) merge as
 one. A ctest report that doesn't exist is skipped; when none does (the build failed before the tests
@@ -34,7 +40,25 @@ def passed(entry: ET.Element) -> bool:
     return entry.get("status") == "run" and entry.find("failure") is None and entry.find("error") is None
 
 
-def merge(ctest_junits: list[Path], gtest_dir: Path) -> ET.Element:
+def is_skipped(case: ET.Element) -> bool:
+    return case.find("skipped") is not None or case.get("status") in ("notrun", "disabled")
+
+
+def apply_later(suites: dict[str, ET.Element], later: Path) -> None:
+    """Fold a later gtest report in: its result replaces a skip of the same case, and never a real result."""
+    for suite in ET.parse(later).getroot().iter("testsuite"):
+        merged = suites.setdefault(suite.get("name", ""), ET.Element("testsuite", name=suite.get("name", "")))
+        existing = {c.get("name"): c for c in merged.findall("testcase")}
+        for case in suite.findall("testcase"):
+            before = existing.get(case.get("name"))
+            if before is None:
+                merged.append(case)
+            elif is_skipped(before) and not is_skipped(case):
+                merged.remove(before)
+                merged.append(case)
+
+
+def merge(ctest_junits: list[Path], gtest_dir: Path, later: list[Path] | None = None) -> ET.Element:
     suites: dict[str, ET.Element] = {}  # gtest suite name -> merged <testsuite>
     kept = ET.Element("testsuite", name="ctest")
     for entry in [e for junit in ctest_junits for e in ET.parse(junit).getroot().iter("testcase")]:
@@ -47,6 +71,10 @@ def merge(ctest_junits: list[Path], gtest_dir: Path) -> ET.Element:
                 continue
         kept.append(entry)
 
+    for report in later or []:
+        if report.is_file():
+            apply_later(suites, report)
+
     root = ET.Element("testsuites", name="AllTests")
     for suite in [*sorted(suites.values(), key=lambda s: s.get("name", "")), kept]:
         cases = suite.findall("testcase")
@@ -54,7 +82,7 @@ def merge(ctest_junits: list[Path], gtest_dir: Path) -> ET.Element:
             continue
         failures = sum(1 for c in cases if c.find("failure") is not None)
         errors = sum(1 for c in cases if c.find("error") is not None)
-        skipped = sum(1 for c in cases if c.find("skipped") is not None or c.get("status") in ("notrun", "disabled"))
+        skipped = sum(1 for c in cases if is_skipped(c))
         time = sum(float(c.get("time", "0") or 0) for c in cases)
         suite.set("tests", str(len(cases)))
         suite.set("failures", str(failures))
@@ -69,15 +97,22 @@ def merge(ctest_junits: list[Path], gtest_dir: Path) -> ET.Element:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) < 4:
+    args, later = [], []
+    rest = iter(argv[1:])
+    for arg in rest:
+        if arg == "--later":
+            later.append(Path(next(rest, "")))
+        else:
+            args.append(arg)
+    if len(args) < 3:
         print(__doc__, file=sys.stderr)
         return 2
-    ctest_junits, gtest_dir, output = [Path(a) for a in argv[1:-2]], Path(argv[-2]), Path(argv[-1])
+    ctest_junits, gtest_dir, output = [Path(a) for a in args[:-2]], Path(args[-2]), Path(args[-1])
     found = [junit for junit in ctest_junits if junit.is_file()]
     if not found:
         print(f"merge-gtest-results: {', '.join(map(str, ctest_junits))} not found; nothing to merge", file=sys.stderr)
         return 0
-    root = merge(found, gtest_dir)
+    root = merge(found, gtest_dir, later)
     ET.indent(root)
     ET.ElementTree(root).write(output, encoding="utf-8", xml_declaration=True)
     print(
