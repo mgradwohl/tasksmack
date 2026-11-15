@@ -58,6 +58,11 @@ TEST(CgroupProcessTypeTest, TheUsersOtherProcessesContainersAndAHiddenPathAreBac
     EXPECT_EQ(classify(user + "user@1000.service/session.slice/org.gnome.Shell@wayland.service\n", false), BACKGROUND);
     // An autostarted program runs as a service, not an app scope.
     EXPECT_EQ(classify(user + "user@1000.service/app.slice/app-gnome-evolution\\x2dalarm\\x2dnotify-1800.service\n", false), BACKGROUND);
+    // #3856: an app launched as a service instance is an app, as Group: App says; xdg's autostart instance isn't.
+    EXPECT_EQ(classify(user + "user@1000.service/app.slice/app-org.kde.konsole@3f2a9c1e.service\n", false), APP);
+    EXPECT_EQ(classify(user + "user@1000.service/app.slice/app-gnome-org.gnome.Nautilus@12.service\n", false), APP);
+    EXPECT_EQ(classify(user + "user@1000.service/app.slice/app-foo@autostart.service\n", false), BACKGROUND);
+    EXPECT_EQ(classify(user + "user@1000.service/app.slice/app-foo@.service\n", false), BACKGROUND);
     EXPECT_EQ(classify(user + "session-2.scope\n", false), BACKGROUND); // an ssh or tty login's shell
     EXPECT_EQ(classify("0::/machine.slice/libpod-0123abcd.scope/container\n", true), BACKGROUND);
     // Docker's systemd driver puts containers under system.slice: the container wins over the path.
