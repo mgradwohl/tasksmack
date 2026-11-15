@@ -110,7 +110,7 @@ struct StatIdentity
     return ::stat(path.c_str(), &entry) != 0 && errno == ENOENT;
 }
 
-/// A process TaskSmack and the root helper don't act on, whatever the action (#2447, #2641, #2774).
+/// A process TaskSmack doesn't act on, whatever the action and whatever its rights (#2447, #2641, #2774).
 enum class ProtectedProcess : std::uint8_t
 {
     Init,         ///< PID 1
@@ -176,6 +176,17 @@ enum class ProtectedProcess : std::uint8_t
 [[nodiscard]] constexpr bool isPermissionError(int err) noexcept
 {
     return err == EPERM || err == EACCES;
+}
+
+/// A failure for want of permission (#3768). There is no helper to redo it since #3580, so the message says what can:
+/// a TaskSmack started as administrator. Run as root already, the message is left as it is.
+[[nodiscard]] ProcessActionResult permissionRefusal(std::string message)
+{
+    if (::geteuid() != 0)
+    {
+        message += " (TaskSmack (Administrator) can do this)";
+    }
+    return ProcessActionResult::denied(std::move(message));
 }
 
 [[nodiscard]] std::string signalErrorMessage(int err)
@@ -956,10 +967,9 @@ constexpr ChangeWording SCHED_POLICY_WORDING{.lower = "scheduling policy", .lead
     }
 
     spdlog::warn("Failed to set {} for PID {}: {}", wording.lower, target.pid, errorMsg);
-    // A thread refused for want of permission (another user's process, or a raise without
-    // CAP_SYS_NICE): the privileged helper may make the whole change (#2308).
-    return isPermissionError(change.firstError) ? ProcessActionResult::denied(std::move(errorMsg))
-                                                : ProcessActionResult::error(std::move(errorMsg));
+    // A thread refused for want of permission (another user's process, or a raise without CAP_SYS_NICE): an
+    // Administrator session can make the whole change (#3768).
+    return isPermissionError(change.firstError) ? permissionRefusal(std::move(errorMsg)) : ProcessActionResult::error(std::move(errorMsg));
 }
 
 } // namespace
@@ -1162,7 +1172,7 @@ ProcessActionResult LinuxProcessControl::setSchedPolicy(const ProcessTarget& tar
         return ProcessActionResult::error("Invalid PID");
     }
     // Normal, Batch and Idle at priority 0 (#3086), FIFO and round robin at 1 to 99 (#3219): Deadline and any other
-    // pair stop here, before sched_setscheduler(2), as the broker protocol's decoder stops them for the root helper.
+    // pair stop here, before sched_setscheduler(2).
     const int linuxPolicy = settableSchedPolicyToLinux(policy);
     if (linuxPolicy < 0)
     {
@@ -1394,7 +1404,7 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
             return ProcessActionResult::error(std::format("PID {} no longer holds this socket", target.pid));
         }
         const std::string message = std::system_category().message(descriptor.error());
-        return isPermissionError(descriptor.error()) ? ProcessActionResult::denied(message) : ProcessActionResult::error(message);
+        return isPermissionError(descriptor.error()) ? permissionRefusal(message) : ProcessActionResult::error(message);
     }
     // A copy of the process's descriptor, in this process: shutting it down acts on the one socket both refer to,
     // and the process's own descriptor stays open, reporting an error on its next use.
@@ -1408,7 +1418,7 @@ ProcessActionResult LinuxProcessControl::closeConnection(const ProcessTarget& ta
         }
         const std::string message = std::system_category().message(err);
         // EPERM: no ptrace access to another user's process, which an Administrator session has (CAP_SYS_PTRACE).
-        return isPermissionError(err) ? ProcessActionResult::denied(message) : ProcessActionResult::error(message);
+        return isPermissionError(err) ? permissionRefusal(message) : ProcessActionResult::error(message);
     }
     const FdGuard copyGuard(copy);
     // The copy is whatever the process held at that number when it was taken: if it closed the socket since and
@@ -1476,8 +1486,8 @@ ProcessActionResult LinuxProcessControl::sendSignalNumber(const ProcessTarget& t
         spdlog::info("Not sending {}: {}", signalName, *nothing);
         return ProcessActionResult::error(*nothing);
     }
-    // Suspending itself would leave this process stopped with nothing to resume it: TaskSmack frozen, or
-    // the root helper stopped for good, which the user can neither resume nor end (#2641).
+    // Suspending itself would leave this process stopped with nothing to resume it: TaskSmack frozen, which the user
+    // can neither resume nor end from it (#2641).
     // NOLINTNEXTLINE(misc-include-cleaner) - SIGSTOP is provided by <signal.h>
     if (signal == SIGSTOP && target.pid == ::getpid())
     {
@@ -1497,8 +1507,8 @@ ProcessActionResult LinuxProcessControl::sendSignalNumber(const ProcessTarget& t
     const int err = errno;
     const std::string errorMsg = signalErrorMessage(err);
     spdlog::warn("Failed to send {} to PID {}: {}", signalName, target.pid, errorMsg);
-    // EPERM: another user's process, which the privileged helper may signal (#2308).
-    return isPermissionError(err) ? ProcessActionResult::denied(errorMsg) : ProcessActionResult::error(errorMsg);
+    // EPERM: another user's process, which an Administrator session may signal (#3768).
+    return isPermissionError(err) ? permissionRefusal(errorMsg) : ProcessActionResult::error(errorMsg);
 }
 
 namespace

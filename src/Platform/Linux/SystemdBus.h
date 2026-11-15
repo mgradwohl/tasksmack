@@ -52,7 +52,7 @@ inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 
 /// Longest an action call that may prompt for a password waits (#2402): systemd holds its answer until
 /// the user answers polkit's agent, so CALL_TIMEOUT_USEC would give up on nearly everyone typing one.
-/// pkexec's own bound (PkexecBroker::CONNECT_TIMEOUT). A stop request still ends the wait at once.
+/// A stop request still ends the wait at once.
 inline constexpr std::uint64_t INTERACTIVE_CALL_TIMEOUT_USEC = 120'000'000;
 
 /// How long an action's call may take: INTERACTIVE_CALL_TIMEOUT_USEC when it may prompt (the user's
