@@ -70,6 +70,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace
@@ -641,7 +642,8 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 // lazy read was taken in), each dialog was drawn and none is left, the main tab ends on the machine tab, the unknown
 // theme leaves the startup theme, and metrics=off leaves the overlay hidden. DemoLayer plays a script by its clock,
 // so the steps are half a second or more apart, many frames: the selection a full second before the Overview, the
-// Overview a frame or more before section=, and the Modules read a second before the script leaves the Overview.
+// Overview a frame or more before section=, and the Modules read a second before the script leaves the Overview;
+// the step that leaves it waits, bounded, until that read was taken in (#4008).
 TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
 {
     if (!hasDisplay())
@@ -659,6 +661,13 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
     ASSERT_TRUE(parsedDemo.steps.has_value()) << parsedDemo.warning;
     const std::vector<App::DemoOverride::Step> steps = parsedDemo.steps.value_or(std::vector<App::DemoOverride::Step>{});
     ASSERT_EQ(steps.size(), 15U) << App::DemoOverride::describe(steps);
+    // The step that leaves the Overview, held until the Modules read section=modules started is taken in (#4008).
+    constexpr std::size_t LEAVE_OVERVIEW_STEP = 4;
+    constexpr double MODULES_READ_WAIT_SECONDS = 10.0;
+    ASSERT_TRUE(std::holds_alternative<App::DemoOverride::SectionAction>(steps[LEAVE_OVERVIEW_STEP - 1].action))
+        << App::DemoOverride::describe(steps);
+    ASSERT_TRUE(std::holds_alternative<App::DemoOverride::DetailsAction>(steps[LEAVE_OVERVIEW_STEP].action))
+        << App::DemoOverride::describe(steps);
     // The two steps that name nothing are warned about and skipped (DemoLayer), on purpose here (#2718).
     TestSupport::expectLogWarning("'nosuchtab' names no tab; skipped");
     TestSupport::expectLogWarning("'nosuchtheme' is not a loaded theme; skipped");
@@ -684,7 +693,26 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
         app.pushLayer<App::AboutLayer>();
         app.pushLayer<App::SettingsLayer>();
         app.pushLayer<App::ElevationNoticeLayer>();
-        const App::DemoLayer& demo = app.pushLayer<App::DemoLayer>(steps, shell, m_Dir / "steps-metrics.csv");
+        auto& demo = app.pushLayer<App::DemoLayer>(steps, shell, m_Dir / "steps-metrics.csv");
+        // The Modules read runs on a worker and is taken in by a later frame's update(), and one dropped as stale
+        // (the target moved under it) is started again only while the section is drawn open (#4008). So
+        // details=network, the step that leaves the Overview, waits until the read is taken in, for at most
+        // MODULES_READ_WAIT_SECONDS; past that it goes on and the check below fails.
+        const App::ProcessModulesView& modules = shell.processDetailsPanelForTesting().modulesViewForTesting();
+        demo.setStepGateForTesting(
+            [&modules, heldSince = std::optional<double>{}](std::size_t next) mutable
+            {
+                if (next != LEAVE_OVERVIEW_STEP || modules.hasRead())
+                {
+                    return true;
+                }
+                const double now = Core::Application::getTime();
+                if (!heldSince.has_value())
+                {
+                    heldSince = now;
+                }
+                return now - *heldSince > MODULES_READ_WAIT_SECONDS;
+            });
         app.pushLayer<ObserverLayer>(run.observed, [&demo, total = steps.size()] { return demo.stepsIssued() == total; });
         app.run();
         demoStarted = demo.started();

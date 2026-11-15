@@ -27,7 +27,9 @@
 
 #include <cstddef>
 #include <filesystem>
+#include <functional>
 #include <optional>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -66,7 +68,19 @@ class DemoLayer : public Core::Layer
         return m_Next;
     }
 
+    /// Test seam (#4008): before a due step is issued, @p mayIssue is asked with its index. While it answers
+    /// false the step waits, the script's clock stands still (so every later step keeps its spacing) and
+    /// frames keep coming, so a test can let what a step started finish (a section's background read) before
+    /// the next step changes the view. The test bounds the wait. Unset, the steps follow the clock alone.
+    void setStepGateForTesting(std::function<bool(std::size_t)> mayIssue)
+    {
+        m_StepGate = std::move(mayIssue);
+    }
+
   private:
+    /// How soon a frame is asked for while the gate holds a step, so it is asked again.
+    static constexpr double GATE_POLL_SECONDS = 0.05;
+
     /// Makes one step's request; a tab or theme the step names but the app doesn't have is logged and skipped.
     void issue(const DemoOverride::Step& step) const;
 
@@ -74,8 +88,10 @@ class DemoLayer : public Core::Layer
     ShellLayer* m_Shell = nullptr;                     ///< Never null
     std::optional<std::filesystem::path> m_MetricsCsv; ///< Where metrics=export writes; nullopt: nowhere
     bool m_Started = false;
-    double m_StartTime = 0.0; ///< App clock at the settle point; the steps' times count from it
-    std::size_t m_Next = 0;   ///< The next step to issue
+    double m_StartTime = 0.0;                    ///< App clock at the settle point; the steps' times count from it
+    std::size_t m_Next = 0;                      ///< The next step to issue
+    std::function<bool(std::size_t)> m_StepGate; ///< setStepGateForTesting()'s gate; empty: none
+    std::optional<double> m_HeldSince;           ///< App clock when the gate began holding the next step
 };
 
 } // namespace App
