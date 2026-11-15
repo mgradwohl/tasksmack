@@ -5,12 +5,13 @@
 // in the build (TASKSMACK_HAS_CURL undefined) there is no client, Platform::makeHttpsClient() gives null, and
 // the update check isn't offered.
 //
-// The same contract as WinHTTP's: https on port 443 only (redirects too, each checked before it is followed),
-// the system's CA store with certificate and host-name verification on, the User-Agent and Accept headers the
-// request names and nothing else (no cookies, no .netrc, no credentials of TaskSmack's; a proxy the user set
-// in https_proxy is used as they set it, credentials and all), the whole request bounded by its timeout, the
-// body capped at maxBodyBytes, and a stop that ends a transfer in progress. Synchronous, on the update check's
-// worker, so only a libcurl that is thread-safe and resolves names asynchronously is used (usable()).
+// The same contract as WinHTTP's: https on port 443 only (redirects too, each checked before it is followed, and
+// none for a request carrying extra headers, #3761), the system's CA store with certificate and host-name
+// verification on, the User-Agent and Accept headers the request names and nothing else (no cookies, no .netrc,
+// no credentials of TaskSmack's; a proxy the user set in https_proxy is used as they set it, credentials and all),
+// the whole request bounded by its timeout, the body capped at maxBodyBytes, and a stop that ends a transfer in
+// progress. Synchronous, on the update check's worker, so only a libcurl that is thread-safe and resolves names
+// asynchronously is used (usable()).
 
 #include "Platform/IHttpsClient.h"
 
@@ -69,10 +70,12 @@ using TransferFunction = std::function<TransferStep(const std::string& url, std:
 /// get()'s redirect chain (#3238, tested through a fake @p transfer, #3374): @p transfer for @p url, then for the
 /// URL each 3xx reply's location names, until a reply that isn't a redirect. Every transfer shares the time to
 /// @p deadline, and none starts once it has passed. A redirect redirectRefusal() refuses, one past MAX_REDIRECTS,
-/// a body past @p maxBodyBytes, a stop and a failed transfer each end it with why.
+/// any redirect when @p carriesHeaders (the request's extra headers would go with it, #3761), a body past
+/// @p maxBodyBytes, a stop and a failed transfer each end it with why.
 [[nodiscard]] std::expected<HttpsResponse, std::string> followRedirects(std::string url,
                                                                         std::chrono::steady_clock::time_point deadline,
                                                                         std::size_t maxBodyBytes,
+                                                                        bool carriesHeaders,
                                                                         const TransferFunction& transfer);
 
 } // namespace LinuxHttpsDetail

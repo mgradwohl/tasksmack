@@ -4,8 +4,8 @@
 /// wording of its errors, how an asynchronous call's completion is waited for, a whole request through fake
 /// WinHTTP calls (stopped while a call is still running, or unwound by a throw mid-flight, #3342), and real
 /// WinHTTP stopped or timed out against a loopback listener that never answers (#3333), and the extra headers
-/// (#3646): each added with WinHttpAddRequestHeaders, a CR or LF refused, and no value logged. No test reaches
-/// past 127.0.0.1.
+/// (#3646): each added with WinHttpAddRequestHeaders, a CR or LF refused, no value logged, and no redirect followed
+/// with them (#3761). No test reaches past 127.0.0.1.
 
 #include "Platform/Factory.h"
 #include "Platform/IHttpsClient.h"
@@ -237,6 +237,10 @@ struct FakeHttp // NOLINT(clang-analyzer-optin.performance.Padding)
     std::wstring sentHeaders;               ///< What WinHttpSendRequest was given as its headers
     bool addHeadersFails = false;           ///< WinHttpAddRequestHeaders answers FALSE
     int opens = 0;                          ///< WinHttpOpen calls
+    DWORD replyStatus = 200;                ///< The reply's status
+    bool hasLocation = false;               ///< The reply names a Location (#3761)
+    DWORD disabledFeatures = 0;             ///< What WINHTTP_OPTION_DISABLE_FEATURE was given
+    int locationQueries = 0;                ///< WinHttpQueryHeaders asked for the Location
 
     template<typename Predicate> void waitUntil(Predicate predicate)
     {
@@ -353,6 +357,11 @@ BOOL WINAPI fakeSetOption(HINTERNET /*handle*/, DWORD option, LPVOID buffer, DWO
         const std::scoped_lock lock(fakeHttp().mutex);
         fakeHttp().context = *static_cast<const DWORD_PTR*>(buffer);
     }
+    if (option == WINHTTP_OPTION_DISABLE_FEATURE)
+    {
+        const std::scoped_lock lock(fakeHttp().mutex);
+        fakeHttp().disabledFeatures = *static_cast<const DWORD*>(buffer);
+    }
     return TRUE;
 }
 
@@ -409,9 +418,20 @@ BOOL WINAPI fakeReceiveResponse(HINTERNET /*handle*/, LPVOID /*reserved*/)
     return TRUE;
 }
 
-BOOL WINAPI fakeQueryHeaders(HINTERNET /*handle*/, DWORD /*level*/, LPCWSTR /*name*/, LPVOID buffer, LPDWORD length, LPDWORD /*index*/)
+BOOL WINAPI fakeQueryHeaders(HINTERNET /*handle*/, DWORD level, LPCWSTR /*name*/, LPVOID buffer, LPDWORD length, LPDWORD /*index*/)
 {
-    *static_cast<DWORD*>(buffer) = 200;
+    FakeHttp& fake = fakeHttp();
+    const std::scoped_lock lock(fake.mutex);
+    if (level == WINHTTP_QUERY_LOCATION)
+    {
+        // Asked with no buffer, for the size: as WinHTTP answers when the header is there, and when it isn't.
+        ++fake.locationQueries;
+        EXPECT_EQ(buffer, nullptr);
+        *length = fake.hasLocation ? 64 : 0;
+        ::SetLastError(fake.hasLocation ? ERROR_INSUFFICIENT_BUFFER : ERROR_WINHTTP_HEADER_NOT_FOUND);
+        return FALSE;
+    }
+    *static_cast<DWORD*>(buffer) = fake.replyStatus;
     *length = sizeof(DWORD);
     return TRUE;
 }
@@ -671,6 +691,70 @@ TEST(WindowsHttpsFakeRequestTest, AHeaderWinHttpRefusesFailsTheRequestNamingTheC
     EXPECT_FALSE(log.contains(DUMMY_KEY)) << log;
     EXPECT_EQ(scope.fake().reached, Step::None); // nothing was sent
     EXPECT_EQ(scope.fake().requestCloses, 1);
+}
+
+// #3761: WinHTTP sends the headers it was given on to wherever a redirect points, so a request carrying extra
+// headers (VirusTotal's x-apikey) turns WinHTTP's redirects off, and a redirect that comes back ends it.
+TEST(WindowsHttpsFakeRequestTest, ARequestCarryingExtraHeadersTurnsRedirectsOffAndOneWithoutKeepsThem)
+{
+    {
+        FakeHttpScope scope;
+        WindowsHttpsClient client(fakeFunctions());
+        HttpsRequest request = validRequest();
+        request.headers = {{"x-apikey", std::string(DUMMY_KEY)}};
+        const std::stop_source stop;
+        ASSERT_TRUE(client.get(request, stop.get_token()).has_value());
+        EXPECT_NE(scope.fake().disabledFeatures & WINHTTP_DISABLE_REDIRECTS, 0U);
+        EXPECT_NE(scope.fake().disabledFeatures & WINHTTP_DISABLE_COOKIES, 0U);
+        EXPECT_NE(scope.fake().disabledFeatures & WINHTTP_DISABLE_AUTHENTICATION, 0U);
+        EXPECT_EQ(scope.fake().locationQueries, 0) << "a 200 isn't a redirect";
+    }
+    {
+        FakeHttpScope scope;
+        WindowsHttpsClient client(fakeFunctions());
+        const std::stop_source stop;
+        ASSERT_TRUE(client.get(validRequest(), stop.get_token()).has_value());
+        EXPECT_EQ(scope.fake().disabledFeatures & WINHTTP_DISABLE_REDIRECTS, 0U) << "the update check still follows them";
+        EXPECT_NE(scope.fake().disabledFeatures & WINHTTP_DISABLE_COOKIES, 0U);
+    }
+}
+
+TEST(WindowsHttpsFakeRequestTest, ARedirectReplyToARequestCarryingExtraHeadersEndsItUnread)
+{
+    for (const DWORD status : {301U, 302U, 303U, 307U, 308U})
+    {
+        FakeHttpScope scope;
+        scope.fake().replyStatus = status;
+        scope.fake().hasLocation = true;
+        WindowsHttpsClient client(fakeFunctions());
+        HttpsRequest request = validRequest();
+        request.headers = {{"x-apikey", std::string(DUMMY_KEY)}};
+        const std::stop_source stop;
+        std::expected<HttpsResponse, std::string> response;
+        const std::string log = capturedLog([&] { response = client.get(request, stop.get_token()); });
+
+        ASSERT_FALSE(response.has_value()) << status;
+        EXPECT_EQ(response.error(), HEADERS_REDIRECT_REFUSAL);
+        EXPECT_EQ(scope.fake().locationQueries, 1);
+        EXPECT_EQ(scope.fake().reached, Step::Receive) << "the redirect's body isn't read";
+        EXPECT_EQ(scope.fake().requestCloses, 1);
+        EXPECT_FALSE(log.contains(DUMMY_KEY)) << log;
+    }
+}
+
+TEST(WindowsHttpsFakeRequestTest, AThreeHundredWithoutALocationIsTheReplyEvenWithExtraHeaders)
+{
+    FakeHttpScope scope;
+    scope.fake().replyStatus = 304;
+    scope.fake().body.clear();
+    WindowsHttpsClient client(fakeFunctions());
+    HttpsRequest request = validRequest();
+    request.headers = {{"x-apikey", std::string(DUMMY_KEY)}};
+    const std::stop_source stop;
+    const auto response = client.get(request, stop.get_token());
+    ASSERT_TRUE(response.has_value()) << response.error();
+    EXPECT_EQ(response->status, 304);
+    EXPECT_EQ(scope.fake().locationQueries, 1);
 }
 
 /// Stops a request while @p step is pending, and checks the worker closes the request handle once, itself,
