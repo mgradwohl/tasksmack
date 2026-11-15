@@ -25,12 +25,11 @@
 //   further each sample instead of the first ones over and over. The probe marks each sample with
 //   beginSample(), and a turn nobody asks for through a whole sample is over.
 //
-// The thread is a Domain::Worker (#3343). The path table stays the queue, as ProcessIconCache's load queue
+// The thread is a Domain::DrainTrigger (#3343, #3999). The path table stays the queue, as ProcessIconCache's load queue
 // does (#3468): it is what keeps each path queued once, bounds it, takes turns and counts what is queued, and
-// a Worker job per path would only restate that, with a scan of its queue on every request. The Worker's job
-// is one drain of the table's queue, one queued at most (MergeByKey, every drain the same): a path queued
-// while a drain waits merges into it, and one queued while a drain runs queues the next, which may have
-// found the queue empty already.
+// a Worker job per path would only restate that, with a scan of its queue on every request. The trigger's job
+// is one drain of the table's queue, one queued at most: a path queued while a drain waits merges into it,
+// and one queued while a drain runs queues the next, which may have found the queue empty already.
 // - The thread starts with the first request, and is stopped and joined by the destructor; a check in
 //   progress finishes first (WinVerifyTrust can't be interrupted, so no cancel hook is armed), and the rest of
 //   the queue is dropped. A pause between files ends at the stop.
@@ -52,7 +51,7 @@
 // Locks: m_Mutex is taken before the Worker's own (request() submits under it). The Worker never calls back
 // into this class under its lock: a drain takes m_Mutex on the worker's thread with no Worker lock held.
 
-#include "Domain/Worker.h"
+#include "Domain/DrainTrigger.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/ThreadName.h"
 #include "WindowsImageSignature.h"
@@ -122,17 +121,10 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
           m_Options(options),
           m_Faults(std::move(faults)),
           m_Cache(options.maxCachedFiles),
-          m_Worker(
-              {
-                  .threadName = SIGNATURE_CHECK_THREAD_NAME,
-                  .capacity = 1,
-                  .admission = Domain::Admission::MergeByKey,
-                  .sameKey = [](const Drain& /*queued*/, const Drain& /*incoming*/) noexcept { return true; },
-              },
-              [this](Drain& /*job*/, const std::stop_token& stop, CheckWorker::JobContext& /*context*/) { drain(stop); })
+          m_Drain(SIGNATURE_CHECK_THREAD_NAME, [this](const std::stop_token& stop) { drain(stop); })
     {}
 
-    /// Stops the worker and joins it (a check in progress finishes first): m_Worker, the last member, goes
+    /// Stops the worker and joins it (a check in progress finishes first): m_Drain, the last member, goes
     /// first, while the table it files into is alive.
     ~BasicSignatureWorker() = default;
 
@@ -236,14 +228,6 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         std::uint64_t askedInSample{}; ///< The last sample (beginSample()) that asked for it
     };
 
-    /// One drain of m_Queue, as the Worker's job; it carries nothing.
-    struct Drain
-    {};
-    /// The Worker publishes nothing: a check files its answer in m_Paths.
-    struct Drained
-    {};
-    using CheckWorker = Domain::Worker<Drain, Drained>;
-
     /// A path waiting in m_Queue, with its m_Paths key, made at admission: so taking it back, answering it
     /// and checking it make no key, and the take-back after a refused drain (no memory) allocates nothing.
     struct QueuedPath
@@ -336,7 +320,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
             failQueuedLocked(*m_EndNote); // the worker has ended: answered at once, never left queued
             return;
         }
-        const Domain::SubmitResult result = m_Faults.refuseDrain() ? Domain::SubmitResult::Refused : m_Worker.submit(Drain{});
+        const Domain::SubmitResult result = m_Faults.refuseDrain() ? Domain::SubmitResult::Refused : m_Drain.wake();
         if (result == Domain::SubmitResult::Refused)
         {
             // No drain queued (no memory to queue one; a queued drain would have merged), and the one running,
@@ -381,15 +365,13 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
             }
             return true;
         }
-        const Domain::WorkerState state = m_Worker.state();
-        if (state == Domain::WorkerState::Running)
+        if (!m_Drain.failed())
         {
             return false;
         }
         // The reason first: if copying it throws, nothing has changed, and the next call reports it. A sweep
         // cut short (no memory) leaves the rest queued and counted, and the next call goes on with it.
-        std::string note = state == Domain::WorkerState::Failed ? "The signature checks have stopped: " + m_Worker.failure()
-                                                                : "The signature checks have stopped";
+        std::string note = "The signature checks have stopped: " + m_Drain.failure();
         for (PathState& entry : m_Paths | std::views::values)
         {
             if (entry.queued)
@@ -547,8 +529,8 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
     std::optional<std::string> m_EndNote;               // Set once the Worker is seen ended: why (#3343)
     // The worker's thread's
-    bool m_Started = false; // onWorkerStart has been called
-    CheckWorker m_Worker;   // Last: stopped and joined first, while the rest is alive
+    bool m_Started = false;       // onWorkerStart has been called
+    Domain::DrainTrigger m_Drain; // Last: stopped and joined first, while the rest is alive (#3999)
 };
 
 /// The worker that ships: no faults.
