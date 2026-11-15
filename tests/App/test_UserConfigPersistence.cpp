@@ -2627,6 +2627,32 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+// #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as
+// the staging file is named) can't leave the write going on with nothing held.
+TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWrite)
+{
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    auto held = std::make_shared<HeldTestFolder>(m_TempDir);
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
+    auto& config = UserConfig::get();
+    config.load();
+    bool heldDuringWrite = false;
+    config.setTempNameSourceForTesting(
+        [&held, &heldDuringWrite]
+        {
+            held.reset(); // the owner lets go mid-write
+            heldDuringWrite = Core::ConfigDirOverride::handedOverFolder() != nullptr;
+            return 1U;
+        });
+    config.settings().themeId = "nord";
+    config.save();
+    EXPECT_TRUE(heldDuringWrite) << "the save's own hold kept it";
+    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "nord") << "the save that began held finished";
+    EXPECT_EQ(Core::ConfigDirOverride::handedOverFolder(), nullptr) << "let go once the save is done";
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+}
+
 // #3787: a hand-off whose held folder has been let go fails closed: its config is neither read nor saved.
 TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderNoLongerHeldIsNeitherReadNorSaved)
 {

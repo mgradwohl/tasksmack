@@ -14,6 +14,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
 #include "Domain/VirusTotal.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/ThreadName.h"
 #include "ProcessColumnConfig.h"
 #include "UI/ChartWidgets.h"
@@ -30,6 +31,7 @@
 #include <filesystem>
 #include <format>
 #include <locale>
+#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
@@ -834,8 +836,10 @@ void UserConfig::load()
     // The baseline save() merges against, until a file is read: the settings TaskSmack starts with.
     m_Synced = m_Settings;
 
-    // A handed-over folder no longer held as checked (#3787) is read no more than it is written: defaults.
-    if (Core::ConfigDirOverride::handedOverFolderReleased())
+    // A handed-over folder no longer held as checked (#3787) is read no more than it is written: defaults. The hold
+    // is taken first and kept for the whole read, so it can't be let go between this check and the read.
+    const std::shared_ptr<const Platform::IHandedOverFolder> held = Core::ConfigDirOverride::handedOverFolder();
+    if (held == nullptr && Core::ConfigDirOverride::handedOverFolderReleased())
     {
         spdlog::error("Not reading {}: its folder isn't held open as it was when it was checked; using defaults",
                       Core::pathToUtf8(m_ConfigPath));
@@ -905,8 +909,10 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
     // A config folder an elevated restart was handed (#2728) is saved into only while the folder checked at startup
     // is still held (#3787): otherwise nothing says this is still that folder, so nothing is made or written there.
+    // The hold is taken first and kept for the whole write, so it can't be let go between this check and the write.
     const bool handedOver = Core::ConfigDirOverride::handedOver();
-    if (Core::ConfigDirOverride::handedOverFolderReleased())
+    const std::shared_ptr<const Platform::IHandedOverFolder> held = Core::ConfigDirOverride::handedOverFolder();
+    if (held == nullptr && Core::ConfigDirOverride::handedOverFolderReleased())
     {
         spdlog::error("Not saving settings: {} isn't held open as it was when it was checked", Core::pathToUtf8(configDir));
         return false;

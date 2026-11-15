@@ -331,24 +331,6 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
         }
         prefix += L'\\';
     }
-    // The files an elevated TaskSmack opens there: neither links nor hard links to a file elsewhere.
-    for (const std::wstring_view name : {std::wstring_view(L"config.toml"), std::wstring_view(L"tasksmack.lock")})
-    {
-        const std::wstring file = (dir / name).native();
-        const DWORD attributes = functions.getFileAttributes(file.c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES)
-        {
-            continue; // not there yet: created as a plain file
-        }
-        if ((attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0)
-        {
-            return refused(std::format("its {} is a link or a folder", WinString::wideToUtf8(name)));
-        }
-        if (functions.linkCount(file) != std::optional<DWORD>{1})
-        {
-            return refused(std::format("its {} is hard-linked to another file", WinString::wideToUtf8(name)));
-        }
-    }
     // Held open, and from here on checked through that handle (#3775): the folder it holds is the one checked
     // above only if it is still a real folder, no reparse point, at the same path, and the user's.
     UniqueHandle pinned(functions.openToPin(text));
@@ -375,6 +357,25 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
     if (*privileged)
     {
         return refused("it is owned by an administrator or system account, not a user");
+    }
+    // The files an elevated TaskSmack opens there: neither links nor hard links to a file elsewhere. Checked only
+    // once the folder is held, so it can't be renamed away and these paths name files in the folder held.
+    for (const std::wstring_view name : {std::wstring_view(L"config.toml"), std::wstring_view(L"tasksmack.lock")})
+    {
+        const std::wstring file = (dir / name).native();
+        const DWORD attributes = functions.getFileAttributes(file.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            continue; // not there yet: created as a plain file
+        }
+        if ((attributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0)
+        {
+            return refused(std::format("its {} is a link or a folder", WinString::wideToUtf8(name)));
+        }
+        if (functions.linkCount(file) != std::optional<DWORD>{1})
+        {
+            return refused(std::format("its {} is hard-linked to another file", WinString::wideToUtf8(name)));
+        }
     }
     return pinned;
 }

@@ -336,6 +336,7 @@ struct FakeDisk
     bool finalPathKnown = true;
     HANDLE held = nullptr;         ///< The handle openToPin() gave out
     HANDLE ownerAskedOf = nullptr; ///< The handle the owner was read through
+    int pinsAtFileCheck = -1;      ///< How many holds there were when config.toml or the lock was first checked
 };
 
 [[nodiscard]] FakeDisk& fakeDisk()
@@ -360,6 +361,10 @@ DWORD WINAPI fakeAttributes(LPCWSTR path)
     }
     const bool config = text.ends_with(L".toml");
     const bool lock = text.ends_with(L".lock");
+    if ((config || lock) && fakeDisk().pinsAtFileCheck < 0)
+    {
+        fakeDisk().pinsAtFileCheck = fakeDisk().pins;
+    }
     if ((config && !fakeDisk().configExists) || (lock && !fakeDisk().lockExists))
     {
         return INVALID_FILE_ATTRIBUTES;
@@ -537,6 +542,21 @@ TEST(ElevatedRestartConfigDirTest, TheHeldFolderIsHandedBackToTheCaller)
     EXPECT_EQ(folder.path(), std::filesystem::path(GOOD_DIR));
     EXPECT_EQ(folder.handle(), fakeDisk().held) << "a second check holds a folder of its own, not replacing the first";
     EXPECT_NE(checked->get(), folder.handle());
+    DWORD flags = 0;
+    EXPECT_NE(GetHandleInformation(checked->get(), &flags), FALSE) << "the first is still open";
+}
+
+// The config.toml and lock checks come only once the folder is held: it can't be renamed away by then, so their
+// paths name files in the folder held, not in one that took its place.
+TEST(ElevatedRestartConfigDirTest, TheFilesAreCheckedOnlyOnceTheFolderIsHeld)
+{
+    fakeDisk() = FakeDisk{.lockExists = true};
+    ASSERT_TRUE(check(GOOD_DIR).has_value());
+    EXPECT_EQ(fakeDisk().pinsAtFileCheck, 1) << "held before config.toml or the lock is looked at";
+
+    fakeDisk() = FakeDisk{.privilegedOwner = true};
+    ASSERT_FALSE(check(GOOD_DIR).has_value());
+    EXPECT_EQ(fakeDisk().pinsAtFileCheck, -1) << "a folder refused through its handle has no files checked";
 }
 
 // #3775: the owner is read through the held handle, so it is the owner of the folder held, not of whatever the path
@@ -627,7 +647,7 @@ TEST(ElevatedRestartConfigDirTest, ALinkedOrHardLinkedLockFileIsRefusedToo)
 
     fakeDisk() = FakeDisk{.configExists = false, .configLinks = 2, .lockExists = true};
     EXPECT_TRUE(refusal(GOOD_DIR).contains("its tasksmack.lock is hard-linked")) << refusal(GOOD_DIR);
-    EXPECT_EQ(fakeDisk().pins, 0);
+    EXPECT_EQ(fakeDisk().pins, 1) << "held first, then refused";
 }
 
 TEST(ElevatedRestartConfigDirTest, AConfigThatIsAFolderOrWhoseLinksCantBeCountedIsRefused)
@@ -637,7 +657,7 @@ TEST(ElevatedRestartConfigDirTest, AConfigThatIsAFolderOrWhoseLinksCantBeCounted
 
     fakeDisk() = FakeDisk{.linksKnown = false};
     EXPECT_TRUE(refusal(GOOD_DIR).contains("its config.toml is hard-linked")) << "a count that can't be read is no proof of one link";
-    EXPECT_EQ(fakeDisk().pins, 0);
+    EXPECT_EQ(fakeDisk().pins, 1) << "held first, then refused";
 }
 
 TEST(ElevatedRestartConfigDirTest, AFolderOutsideTheRealProfilesFolderIsRefused)
@@ -707,6 +727,12 @@ class ScratchFolder
         std::error_code error;
         std::filesystem::create_directories(configDir(), error);
         EXPECT_FALSE(error) << error.message();
+        // As Windows names it (a temp folder under an 8.3 name, as on a hosted runner, say), so the held folder's
+        // final path is the path checked.
+        if (std::filesystem::path real = std::filesystem::canonical(m_Path, error); !error)
+        {
+            m_Path = std::move(real);
+        }
     }
     // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: what escapes it ends the run, as a failed test should
     ~ScratchFolder()
@@ -772,13 +798,22 @@ TEST(ElevatedRestartConfigDirTest, TheRealHoldRefusesWhatIsNoLongerAFolder)
 
 TEST(ElevatedRestartConfigDirTest, TheRealHoldKeepsTheFolderFromBeingRemoved)
 {
-    // This test program's own folder, held for the rest of the run: it can't be removed while the program runs anyway.
+    // This test program's own folder, held while this test runs: it can't be removed while the program runs anyway.
     std::array<wchar_t, MAX_PATH> image{};
     const DWORD length = GetModuleFileNameW(nullptr, image.data(), static_cast<DWORD>(image.size()));
     ASSERT_GT(length, 0U);
     ASSERT_LT(length, image.size());
     const std::filesystem::path folder = std::filesystem::path(std::wstring(image.data(), length)).parent_path();
     ASSERT_TRUE(folder.has_relative_path() && folder.parent_path().has_relative_path()) << folder.string();
+    // The check holds a folder only at its final path: one reached through a subst or mapped drive, or named by an
+    // 8.3 name, is (rightly) refused, so there is nothing to test here.
+    std::error_code realError;
+    const std::filesystem::path real = std::filesystem::canonical(folder, realError);
+    if (realError || CompareStringOrdinal(real.c_str(), -1, folder.c_str(), -1, TRUE) != CSTR_EQUAL)
+    {
+        GTEST_SKIP() << "this program's folder " << folder.string() << " isn't at its final path ("
+                     << (realError ? realError.message() : real.string()) << ")";
+    }
     const ConfigDirFunctions held{.getFileAttributes = &::GetFileAttributesW, .ownerIsPrivileged = &userOwned};
     const auto checked = checkConfigDir(folder, folder.parent_path().parent_path(), held);
     ASSERT_TRUE(checked.has_value()) << checked.error();
