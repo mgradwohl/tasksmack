@@ -1294,7 +1294,7 @@ TEST_F(ProcessActionsBlockRenderTest, PriorityAndIoPriorityAreSeparateCardsOneUn
         (void) runFrame(body);
         hovered += text;
     }
-    EXPECT_TRUE(hovered.contains("current: unknown")) << hovered;
+    EXPECT_TRUE(hovered.contains("Current I/O priority: unknown")) << hovered;
 }
 
 TEST_F(ProcessActionsBlockRenderTest, OnARowTallerThanItTheActionsCardIsStillAsTallAsItsContent)

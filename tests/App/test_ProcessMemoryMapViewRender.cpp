@@ -168,6 +168,20 @@ TEST(ProcessMemoryMapViewTest, DropsAReadForAPreviousSelection)
     EXPECT_FALSE(view.hasRead());
 }
 
+TEST(ProcessMemoryMapViewTest, HasResidentIsSetOnceByApplyResultAndClearedWithTheRows)
+{
+    ProcessMemoryMapView view;
+    EXPECT_FALSE(view.hasResident());
+    view.applyResult(linuxMap(), true);
+    EXPECT_TRUE(view.hasResident());
+    view.applyResult(windowsMap(), true);
+    EXPECT_FALSE(view.hasResident());
+    view.applyResult(linuxMap(), true);
+    ASSERT_TRUE(view.hasResident());
+    view.applyResult(MemoryMapReadResult{.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = "x"}, true);
+    EXPECT_FALSE(view.hasResident());
+}
+
 TEST(ProcessMemoryMapViewTest, TotalsByKindLargestFirstThenTheTotal)
 {
     ProcessMemoryMapView view;

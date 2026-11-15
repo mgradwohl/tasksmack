@@ -20,7 +20,6 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
-#include "Domain/UpdateCheck.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -60,7 +59,6 @@
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
-#include "version.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -461,11 +459,7 @@ void ProcessDetailsPanel::renderContent()
     m_Views->m_ActionsView.holdPriorityChanges(
         ProcessActionsBlock::actionsHoldReason(m_Views->m_PriorityView.applying(), m_PriorityHeldElsewhere));
     // Look up on VirusTotal (#3094): the key as Settings has it now, so a key set or cleared takes effect at once.
-    m_Views->m_ActionsView.setVirusTotal({
-        .client = m_LookupClient,
-        .apiKey = UserConfig::get().settings().virusTotalApiKey,
-        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
-    });
+    m_Views->m_ActionsView.setVirusTotal(m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey));
 
     renderPane(killRequested);
 
