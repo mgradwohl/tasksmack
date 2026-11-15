@@ -105,6 +105,10 @@ struct WindowsProcessFunctions
     /// finds the entry point and the image's size, ProcessImageInformation): no Look up on VirusTotal
     /// (canHashImage false).
     DWORD(WINAPI* getMappedFileName)(HANDLE process, LPVOID address, LPWSTR name, DWORD size) = nullptr;
+    /// VirtualQueryEx(), on the verified handle (#3861): whether the entry point is in an image mapping, and, for an
+    /// image the loader mapped elsewhere (a .NET executable, one relocated from its preferred base), the scan for
+    /// the image still named as the process started. Null: the entry point is taken as the image, and no scan.
+    SIZE_T(WINAPI* virtualQueryEx)(HANDLE process, LPCVOID address, PMEMORY_BASIC_INFORMATION info, SIZE_T size) = nullptr;
     /// Explorer asked to show that executable selected (#3426). Null queryFullProcessImageName, or no
     /// selectInFolder and no startProcess here: no Open file location (canOpenFileLocation false), as in
     /// TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps it the user's own).
@@ -249,9 +253,11 @@ class WindowsProcessActions : public IProcessActions
     /// Look up on VirusTotal (#3646, Windows' half of #3094): the SHA-256 of the file the process's image was mapped
     /// from (#3861), through the same identity check as every action, as 64 lowercase hex digits. Not the file at
     /// QueryFullProcessImageNameW's path: a running image can be renamed and another file put at its old name. The
-    /// file is the one GetMappedFileNameW names at the image's entry point, opened without FILE_SHARE_DELETE so it
-    /// can't be renamed while it is held, then checked: its own name must still be the image's and its size the
-    /// image's (ProcessImageInformation), or it is refused as renamed or replaced. It is hashed through that handle.
+    /// file is the one GetMappedFileNameW names at the image (its entry point, or for an image mapped elsewhere the
+    /// one still named as the process started), opened without FILE_SHARE_DELETE so it can't be renamed while it is
+    /// held, then checked: the file under the image's name read again must be the held one by volume serial and file
+    /// ID, and its size the image's (ProcessImageInformation), or it is refused as renamed or replaced; a check that
+    /// can't be made is refused as unconfirmed. It is hashed through that handle.
     /// The System process (PID 4) is refused before anything is opened, and PID 0 is invalid; a process that exits
     /// while its file is read is refused. As TaskSmack's user, never the elevated helper (BrokeredProcessActions
     /// keeps it in-process), so TaskSmackHelper.exe answers with IProcessActions' refusal.
