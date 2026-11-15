@@ -2,7 +2,7 @@
 /// @brief The TASKSMACK_CONFIG_DIR parser and resolver (#1596)
 
 #include "Core/ConfigDirOverride.h"
-#include "Platform/IHandedOverFolder.h"
+#include "Mocks/HandedOverTestFolder.h"
 
 #include <SDL3/SDL_stdinc.h>
 #include <gtest/gtest.h>
@@ -15,7 +15,6 @@
 #include <optional>
 #include <string>
 #include <system_error>
-#include <utility>
 
 namespace Core::ConfigDirOverride
 {
@@ -111,22 +110,6 @@ TEST(ConfigDirOverrideTest, ARootSessionsInvokingUsersFolderCountsAsHandedOver)
     EXPECT_FALSE(handedOver()) << "a test's override starts with nothing handed over";
 }
 
-/// A held folder of a test's own: only its path.
-class TestFolder final : public Platform::IHandedOverFolder
-{
-  public:
-    explicit TestFolder(std::filesystem::path path) : m_Path(std::move(path))
-    {}
-
-    [[nodiscard]] const std::filesystem::path& path() const noexcept override
-    {
-        return m_Path;
-    }
-
-  private:
-    std::filesystem::path m_Path;
-};
-
 // #3787: only a weak reference to the held folder is kept, so once its owner (main.cpp) lets it go, nothing here
 // keeps it, and the hand-off says it is no longer held.
 TEST(ConfigDirOverrideTest, TheHeldFolderIsOnlyEverTheOwnersToKeep)
@@ -134,7 +117,7 @@ TEST(ConfigDirOverrideTest, TheHeldFolderIsOnlyEverTheOwnersToKeep)
     // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
     const std::optional<std::filesystem::path> previous = active();
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "handed-over";
-    auto folder = std::make_shared<TestFolder>(dir);
+    auto folder = std::make_shared<TestSupport::HandedOverTestFolder>(dir);
 
     adoptHandedOver(dir, folder);
     EXPECT_TRUE(handedOver());

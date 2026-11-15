@@ -197,8 +197,15 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // An elevated restart tries it again while the Standard copy it replaces closes (#2728): that copy holds it
     // until it has saved its settings, so the settings below are read only after its last save.
     const std::filesystem::path instanceLockPath = App::instanceLockPath(userConfig.configPath().parent_path());
+    const std::chrono::milliseconds lockPatience = handoffSession ? Platform::HANDOFF_LOCK_PATIENCE : std::chrono::milliseconds{0};
+#ifdef _WIN32
+    // A handed-over folder's lock is opened only through the folder held (#3774), never by its path.
     const std::unique_ptr<App::InstanceLock> instanceLock =
-        App::acquireInstanceLock(instanceLockPath, handoffSession ? Platform::HANDOFF_LOCK_PATIENCE : std::chrono::milliseconds{0});
+        handedOverFolder != nullptr ? App::acquireInstanceLock(*handedOverFolder, instanceLockPath.filename(), lockPatience)
+                                    : App::acquireInstanceLock(instanceLockPath, lockPatience);
+#else
+    const std::unique_ptr<App::InstanceLock> instanceLock = App::acquireInstanceLock(instanceLockPath, lockPatience);
+#endif
     if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock->status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));

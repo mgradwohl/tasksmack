@@ -10,7 +10,7 @@
 #include "Core/LocaleSetup.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
-#include "Platform/IHandedOverFolder.h"
+#include "Mocks/HandedOverTestFolder.h"
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FontPointSize.h"
@@ -59,21 +59,8 @@ namespace App
 namespace
 {
 
-/// A held handed-over folder of a test's own (#3787): only its path. A hand-off saves only while one is held.
-class HeldTestFolder final : public Platform::IHandedOverFolder
-{
-  public:
-    explicit HeldTestFolder(std::filesystem::path path) : m_Path(std::move(path))
-    {}
-
-    [[nodiscard]] const std::filesystem::path& path() const noexcept override
-    {
-        return m_Path;
-    }
-
-  private:
-    std::filesystem::path m_Path;
-};
+/// A handed-over folder of a test's own (#3774, #3787): a hand-off reads and saves only through one that is held.
+using HeldTestFolder = TestSupport::HandedOverTestFolder;
 
 // ========== Test Fixtures ==========
 
@@ -2638,18 +2625,45 @@ TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWr
     auto& config = UserConfig::get();
     config.load();
     bool heldDuringWrite = false;
-    config.setTempNameSourceForTesting(
+    held->setDuringReplace(
         [&held, &heldDuringWrite]
         {
             held.reset(); // the owner lets go mid-write
             heldDuringWrite = Core::ConfigDirOverride::handedOverFolder() != nullptr;
-            return 1U;
         });
     config.settings().themeId = "nord";
     config.save();
     EXPECT_TRUE(heldDuringWrite) << "the save's own hold kept it";
     EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "nord") << "the save that began held finished";
     EXPECT_EQ(Core::ConfigDirOverride::handedOverFolder(), nullptr) << "let go once the save is done";
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+}
+
+// #3774: a held handed-over folder's config.toml is read, saved and created only through the folder held, and a save
+// keeps the keys it doesn't own, as a save by path does.
+TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsReadAndSavedThroughTheFolderHeld)
+{
+    writeFile(m_ConfigPath, "[theme]\nid = \"mocha\"\n[mine]\nkept = true\n");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    const auto held = std::make_shared<HeldTestFolder>(m_TempDir);
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, held);
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().themeId, "mocha");
+    const std::uint32_t afterLoad = held->calls();
+    EXPECT_GE(afterLoad, 1U) << "read through the folder";
+
+    config.settings().themeId = "nord";
+    config.save();
+    EXPECT_GT(held->calls(), afterLoad) << "saved through the folder";
+    const toml::table saved = parsed(m_ConfigPath);
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), "nord");
+    EXPECT_EQ(saved["mine"]["kept"].value<bool>(), true) << "a key TaskSmack doesn't own is kept";
+
+    std::filesystem::remove(m_ConfigPath);
+    EXPECT_TRUE(config.writeIfMissing(config.settings())) << "created through the folder to open it";
+    EXPECT_TRUE(std::filesystem::is_regular_file(m_ConfigPath));
     Core::ConfigDirOverride::setActiveForTesting(previous);
 }
 

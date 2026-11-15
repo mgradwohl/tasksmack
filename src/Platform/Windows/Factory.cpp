@@ -35,6 +35,7 @@
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/HelperLauncher.h"
+#include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/PipeBroker.h"
 #include "WinString.h"
 #include "WindowsDebugPrivilege.h"
@@ -291,7 +292,7 @@ std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverCo
     {
         return std::unexpected(std::move(pinned.error()));
     }
-    return std::make_shared<Windows::ElevatedRestart::PinnedFolder>(dir, std::move(*pinned));
+    return std::make_shared<Windows::PinnedFolder>(dir, std::move(*pinned));
 }
 
 bool enableDebugPrivilege()

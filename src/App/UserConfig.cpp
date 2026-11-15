@@ -665,6 +665,97 @@ void readSettings(const toml::table& config, UserSettings& settings)
     return table;
 }
 
+/// config.toml as a save writes it: @p document (the file as it is, or empty when @p fileExists is false) with
+/// @p settings merged over it against @p synced, the settings last read or written, and the header comments.
+/// nullopt when it can't be serialised (logged). Shared by a save by path and one into a handed-over folder (#3774).
+[[nodiscard]] std::optional<std::string>
+renderConfig(toml::table& document, bool fileExists, const UserSettings& settings, const UserSettings& synced)
+{
+    // Write only what TaskSmack changed since it last read or wrote the file; everything else in
+    // the file, including edits made while TaskSmack runs, stays as it is (#1122).
+    const toml::table mine = buildTable(settings);
+    // A file in the old format, listing every column, is rewritten to list only the chosen ones
+    // (#1376), once; the version written below keeps it from being migrated again.
+    migrateLegacyProcessColumns(document, mine);
+    // A new file gets every setting; an existing one -- even one created or repaired since startup --
+    // gets only the keys whose value TaskSmack changed from its baseline.
+    UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(synced) : toml::table{}, mine);
+    // A file from before point sizes (#3375) gets the point size its named size meant, and loses the name.
+    migrateLegacyFontSize(document, settings.fontPointSize);
+    // No chosen column left (all reset, or none ever chosen): no empty [process_columns] header.
+    if (const auto* columns = document.get_as<toml::table>("process_columns"); columns != nullptr && columns->empty())
+    {
+        document.erase("process_columns");
+    }
+    // A file written by a newer TaskSmack keeps its higher version.
+    if (configVersionOf(document) < CONFIG_FORMAT_VERSION)
+    {
+        document.insert_or_assign(CONFIG_VERSION_KEY, CONFIG_FORMAT_VERSION);
+    }
+    // Settings TaskSmack wrote once but never applied, and has since dropped (#1123): removed, so
+    // the file doesn't keep advertising tuning that does nothing.
+    UserConfigHelpers::eraseRetiredKeys(document);
+
+    // Write a temporary file beside it and rename it over the original, so a crash mid-write can't
+    // leave the config truncated or empty (#1122). This does not make the new contents durable
+    // across a power loss: nothing is synced to disk. Each save gets its own, exclusively created
+    // temporary file, so two TaskSmack instances can't write into the same one.
+    std::ostringstream text;
+    // Classic, not the global locale: config.toml is machine-read, so a decimal-comma or digit-grouping
+    // user locale must never reach it (#1648). toml++ also formats its numbers in the classic locale.
+    text.imbue(std::locale::classic());
+    text << "# TaskSmack user configuration\n";
+    text << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
+    text << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
+    text << "# Notes:\n";
+    text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
+    text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
+    text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
+    text << "#   [sampling] udp_event_trace: count UDP per process (true/false, default false: TCP only): on Windows "
+            "through a kernel network event trace when TaskSmack runs as administrator, on Linux through an "
+            "eBPF counter in an Administrator session\n";
+    text << "#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates "
+            "(1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also "
+            "a gap in its chart); read at startup\n";
+    text << "#   [ui] chart_smooth_factor: how slowly live values and the bars beside charts follow each sample (0.0-0.95), "
+            "as a fraction of the refresh interval; read at startup\n";
+    text << "#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup\n";
+    text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
+    text << "#   [ui] cpu_details_expanded: whether the Overview's CPU Details block is expanded (true/false); its heading "
+            "toggles it\n";
+    text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
+            "on integrated GPUs\n";
+    text << "#   [ui] interface_scale: the size of text and controls in percent (100-300), in place of the display's own "
+            "scale; 0 = Auto (the display's). For a display that reports the wrong scale, such as WSLg's 100%\n";
+    text << "#   [font] point_size: the size of body text in points (7-32, default 8); headings are 2 points larger. It "
+            "replaces the named size of earlier versions, [font] size\n";
+    text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
+            "a position off every connected display is ignored at startup\n";
+    text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
+    text << "#   config_version: the format of this file (written by TaskSmack; don't change it)\n";
+    text << "#   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, "
+            "which hide one this system can't fill\n";
+    text << "#   [process_meters]: what a column draws behind its value: \"off\", \"bar\" or \"sparkline\" (recent history); "
+            "Columns > Show meter\n";
+    text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
+    text << "#   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default "
+            "false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack\n";
+    text << "#   [windows] start_at_sign_in, start_at_sign_in_seen_by, replace_task_manager: written by TaskSmack while "
+            "Start at sign-in or Replace Task Manager is on, so an upgrade that removed one can put it back\n";
+    text << "#   [virustotal] api_key: your own VirusTotal API key, for Look up on VirusTotal (only an executable's SHA-256 is "
+            "sent); while it is set, TaskSmack saves this file readable by you only\n";
+    text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
+    text << document;
+    // Stream exceptions are off, so a failed insertion (say, allocation) only sets badbit; its
+    // output would be incomplete. Stop before staging anything over the intact config.
+    if (!text)
+    {
+        spdlog::error("Not saving settings: couldn't serialise them");
+        return std::nullopt;
+    }
+    return std::move(text).str();
+}
+
 } // namespace
 
 auto UserConfig::get() -> UserConfig&
@@ -845,6 +936,34 @@ void UserConfig::load()
                       Core::pathToUtf8(m_ConfigPath));
         return;
     }
+    // Held, it is read only through the folder held, relative to its handle (#3774).
+    if (const std::shared_ptr<const Platform::IHandedOverFolder>& folder = held; folder != nullptr)
+    {
+        const auto text = folder->readFile(m_ConfigPath.filename());
+        if (!text.has_value() || m_ConfigPath.parent_path() != folder->path())
+        {
+            spdlog::error("Not reading {}: {}; using defaults",
+                          Core::pathToUtf8(m_ConfigPath),
+                          text.has_value() ? std::string("it isn't in the handed-over folder") : text.error());
+            return;
+        }
+        if (!text->has_value())
+        {
+            spdlog::info("No config file found at {}, using defaults", Core::pathToUtf8(m_ConfigPath));
+            return;
+        }
+        try
+        {
+            readSettings(toml::parse(**text, Core::pathToUtf8(m_ConfigPath)), m_Settings);
+            m_Synced = m_Settings;
+            spdlog::info("Loaded config from {}", Core::pathToUtf8(m_ConfigPath));
+        }
+        catch (const toml::parse_error& err)
+        {
+            spdlog::error("Failed to parse config file: {}", err.what());
+        }
+        return;
+    }
 
     // error_code overloads: an unreadable config directory falls back to defaults instead of
     // throwing out of startup (#1124).
@@ -916,6 +1035,11 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     {
         spdlog::error("Not saving settings: {} isn't held open as it was when it was checked", Core::pathToUtf8(configDir));
         return false;
+    }
+    // Held, it is written only through the folder held, relative to its handle (#3774): no path to it is followed.
+    if (held != nullptr)
+    {
+        return writeIntoHandedOver(*held, settings);
     }
     std::error_code ec;
 #ifndef _WIN32
@@ -1056,89 +1180,12 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         originalPermissions = status.permissions();
     }
 
-    // Write only what TaskSmack changed since it last read or wrote the file; everything else in
-    // the file, including edits made while TaskSmack runs, stays as it is (#1122).
-    const toml::table mine = buildTable(settings);
-    // A file in the old format, listing every column, is rewritten to list only the chosen ones
-    // (#1376), once; the version written below keeps it from being migrated again.
-    migrateLegacyProcessColumns(document, mine);
-    // A new file gets every setting; an existing one -- even one created or repaired since startup --
-    // gets only the keys whose value TaskSmack changed from its baseline.
-    UserConfigHelpers::mergeOwnedKeys(document, fileExists ? buildTable(m_Synced) : toml::table{}, mine);
-    // A file from before point sizes (#3375) gets the point size its named size meant, and loses the name.
-    migrateLegacyFontSize(document, settings.fontPointSize);
-    // No chosen column left (all reset, or none ever chosen): no empty [process_columns] header.
-    if (const auto* columns = document.get_as<toml::table>("process_columns"); columns != nullptr && columns->empty())
+    const std::optional<std::string> rendered = renderConfig(document, fileExists, settings, m_Synced);
+    if (!rendered.has_value())
     {
-        document.erase("process_columns");
-    }
-    // A file written by a newer TaskSmack keeps its higher version.
-    if (configVersionOf(document) < CONFIG_FORMAT_VERSION)
-    {
-        document.insert_or_assign(CONFIG_VERSION_KEY, CONFIG_FORMAT_VERSION);
-    }
-    // Settings TaskSmack wrote once but never applied, and has since dropped (#1123): removed, so
-    // the file doesn't keep advertising tuning that does nothing.
-    UserConfigHelpers::eraseRetiredKeys(document);
-
-    // Write a temporary file beside it and rename it over the original, so a crash mid-write can't
-    // leave the config truncated or empty (#1122). This does not make the new contents durable
-    // across a power loss: nothing is synced to disk. Each save gets its own, exclusively created
-    // temporary file, so two TaskSmack instances can't write into the same one.
-    std::ostringstream text;
-    // Classic, not the global locale: config.toml is machine-read, so a decimal-comma or digit-grouping
-    // user locale must never reach it (#1648). toml++ also formats its numbers in the classic locale.
-    text.imbue(std::locale::classic());
-    text << "# TaskSmack user configuration\n";
-    text << "# Written by TaskSmack. Keys it doesn't use are kept, but comments in this file are not.\n";
-    text << "# Edits made while TaskSmack is running are kept unless TaskSmack changes the same setting.\n";
-    text << "# Notes:\n";
-    text << "#   [sampling] interval_ms: refresh cadence (100-5000ms); affects all samplers\n";
-    text << "#   [sampling] history_max_seconds: timeline history window (10-1800s)\n";
-    text << "#   [sampling] socket_stats_cache_ttl_ms: Linux only; per-process network stat cache TTL (0-5000ms)\n";
-    text << "#   [sampling] udp_event_trace: count UDP per process (true/false, default false: TCP only): on Windows "
-            "through a kernel network event trace when TaskSmack runs as administrator, on Linux through an "
-            "eBPF counter in an Administrator session\n";
-    text << "#   [metrics] max_sane_rate_bps: network rate ceiling for process and interface rates "
-            "(1e9-1e11 bytes/sec); a higher rate is taken for a bad reading and shown as 0 (an interface's is also "
-            "a gap in its chart); read at startup\n";
-    text << "#   [ui] chart_smooth_factor: how slowly live values and the bars beside charts follow each sample (0.0-0.95), "
-            "as a fraction of the refresh interval; read at startup\n";
-    text << "#   [ui] chart_tau_ms_min/max: the shortest (5-100ms) and longest (100-2000ms) that easing may take; read at startup\n";
-    text << "#   [ui] show_privilege_notice: show startup dialog when running without elevated privileges (true/false)\n";
-    text << "#   [ui] cpu_details_expanded: whether the Overview's CPU Details block is expanded (true/false); its heading "
-            "toggles it\n";
-    text << "#   [ui] chart_anti_aliasing: smooth chart line/fill edges (true/false); disable for lower CPU/GPU cost "
-            "on integrated GPUs\n";
-    text << "#   [ui] interface_scale: the size of text and controls in percent (100-300), in place of the display's own "
-            "scale; 0 = Auto (the display's). For a display that reports the wrong scale, such as WSLg's 100%\n";
-    text << "#   [font] point_size: the size of body text in points (7-32, default 8); headings are 2 points larger. It "
-            "replaces the named size of earlier versions, [font] size\n";
-    text << "#   [window] width/height/x/y: the window's normal (restored) size and position, kept while it is maximized; "
-            "a position off every connected display is ignored at startup\n";
-    text << "#   [window] maximized: reopen maximized; Restore returns to width/height/x/y\n";
-    text << "#   config_version: the format of this file (written by TaskSmack; don't change it)\n";
-    text << "#   [process_columns]: columns you showed (true) or hid (false); a column not listed follows the defaults, "
-            "which hide one this system can't fill\n";
-    text << "#   [process_meters]: what a column draws behind its value: \"off\", \"bar\" or \"sparkline\" (recent history); "
-            "Columns > Show meter\n";
-    text << "#   [process_table] layout: saved column widths, order and sort (written by TaskSmack; delete it to reset)\n";
-    text << "#   [updates] check_daily: ask GitHub once a day whether a newer TaskSmack release exists (true/false, default "
-            "false: nothing is sent); last_check, latest_version, latest_url and dismissed_version are written by TaskSmack\n";
-    text << "#   [windows] start_at_sign_in, start_at_sign_in_seen_by, replace_task_manager: written by TaskSmack while "
-            "Start at sign-in or Replace Task Manager is on, so an upgrade that removed one can put it back\n";
-    text << "#   [virustotal] api_key: your own VirusTotal API key, for Look up on VirusTotal (only an executable's SHA-256 is "
-            "sent); while it is set, TaskSmack saves this file readable by you only\n";
-    text << "#   Themes: built-in themes in assets/themes. Add custom .toml themes beside this config under a 'themes' folder.\n\n";
-    text << document;
-    // Stream exceptions are off, so a failed insertion (say, allocation) only sets badbit; its
-    // output would be incomplete. Stop before staging anything over the intact config.
-    if (!text)
-    {
-        spdlog::error("Not saving settings: couldn't serialise them");
         return false;
     }
-    const std::string contents = std::move(text).str();
+    const std::string& contents = *rendered;
 
     std::filesystem::path tempPath;
     // Removes the staging file on any way out of save() -- an early return or an exception -- but
@@ -1347,8 +1394,73 @@ void UserConfig::flushPendingSave()
     m_Writer.flush();
 }
 
+bool UserConfig::writeIntoHandedOver(const Platform::IHandedOverFolder& folder, const UserSettings& settings)
+{
+    const std::filesystem::path name = m_ConfigPath.filename();
+    if (m_ConfigPath.parent_path() != folder.path())
+    {
+        spdlog::error(
+            "Not saving settings: {} isn't in the handed-over folder {}", Core::pathToUtf8(m_ConfigPath), Core::pathToUtf8(folder.path()));
+        return false;
+    }
+    // Start from the file as it is; one that can't be read (a link, a hard link, not in the folder) or parsed is
+    // left alone, as a save by path leaves it.
+    const auto existing = folder.readFile(name);
+    if (!existing.has_value())
+    {
+        spdlog::error("Not saving settings: {}", existing.error());
+        return false;
+    }
+    toml::table document;
+    const bool fileExists = existing->has_value();
+    if (fileExists)
+    {
+        try
+        {
+            document = toml::parse(**existing, Core::pathToUtf8(m_ConfigPath));
+        }
+        catch (const toml::parse_error& err)
+        {
+            spdlog::error(
+                "Not saving settings: {} can't be read or parsed ({}); fix or remove it", Core::pathToUtf8(m_ConfigPath), err.what());
+            return false;
+        }
+    }
+    const std::optional<std::string> rendered = renderConfig(document, fileExists, settings, m_Synced);
+    if (!rendered.has_value())
+    {
+        return false;
+    }
+    if (const auto replaced = folder.replaceFile(name, *rendered); !replaced.has_value())
+    {
+        spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), replaced.error());
+        return false;
+    }
+    m_Synced = settings;
+    m_IsLoaded = false; // the next load() reads it afresh, as after a save by path
+    return true;
+}
+
 bool UserConfig::writeIfMissing(const UserSettings& settings)
 {
+    // A handed-over folder is asked through the folder held (#3774), never by a path to it.
+    if (const auto folder = Core::ConfigDirOverride::handedOverFolder(); folder != nullptr)
+    {
+        const auto there = [&folder, this]
+        {
+            const auto existing = folder->readFile(m_ConfigPath.filename());
+            return existing.has_value() && existing->has_value();
+        };
+        if (there())
+        {
+            return true;
+        }
+        if (writeSettings(settings))
+        {
+            spdlog::info("Saved config to {} to open it", Core::pathToUtf8(m_ConfigPath));
+        }
+        return there();
+    }
     std::error_code ec;
     if (std::filesystem::exists(m_ConfigPath, ec))
     {

@@ -13,8 +13,10 @@
 #include <implot.h>
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -92,7 +94,51 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
             loadedSchemes.push_back(std::move(*scheme));
         }
     }
+    adoptThemes(std::move(discoveredThemes), std::move(loadedSchemes), themesDir);
+}
 
+void Theme::loadThemes(const std::vector<ThemeSource>& sources, const std::filesystem::path& themesDir)
+{
+    spdlog::info("Loading themes from: {}", Core::pathToUtf8(themesDir));
+    std::vector<DiscoveredTheme> discoveredThemes;
+    std::vector<ColorScheme> loadedSchemes;
+    for (const ThemeSource& source : sources)
+    {
+        const auto info = ThemeLoader::loadThemeInfoFromString(source.text, source.path);
+        auto scheme = info.has_value() ? ThemeLoader::loadThemeFromString(source.text, Core::pathToUtf8(source.path)) : std::nullopt;
+        if (info.has_value() && scheme.has_value())
+        {
+            discoveredThemes.push_back(DiscoveredTheme{
+                .id = info->id,
+                .name = info->name,
+                .description = info->description,
+                .path = info->path,
+            });
+            loadedSchemes.push_back(std::move(*scheme));
+        }
+    }
+    // Sorted by name, as discoverThemes() sorts what it finds.
+    std::vector<std::size_t> order(discoveredThemes.size());
+    for (std::size_t i = 0; i < order.size(); ++i)
+    {
+        order[i] = i;
+    }
+    std::ranges::sort(order,
+                      [&discoveredThemes](std::size_t a, std::size_t b) { return discoveredThemes[a].name < discoveredThemes[b].name; });
+    std::vector<DiscoveredTheme> sortedThemes;
+    std::vector<ColorScheme> sortedSchemes;
+    for (const std::size_t i : order)
+    {
+        sortedThemes.push_back(std::move(discoveredThemes[i]));
+        sortedSchemes.push_back(std::move(loadedSchemes[i]));
+    }
+    adoptThemes(std::move(sortedThemes), std::move(sortedSchemes), themesDir);
+}
+
+void Theme::adoptThemes(std::vector<DiscoveredTheme> discoveredThemes,
+                        std::vector<ColorScheme> loadedSchemes,
+                        const std::filesystem::path& themesDir)
+{
     if (loadedSchemes.empty())
     {
         // Keep whatever is already loaded: the built-in fallback from the constructor, or the

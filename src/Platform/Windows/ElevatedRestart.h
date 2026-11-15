@@ -29,7 +29,6 @@
 // clang-format on
 
 #include "Platform/IElevatedRestart.h"
-#include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -39,7 +38,6 @@
 #include <filesystem>
 #include <optional>
 #include <string>
-#include <utility>
 
 namespace Platform::Windows::ElevatedRestart
 {
@@ -132,29 +130,6 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
 
 /// checkConfigDir() against this machine's user profiles folder (FOLDERID_UserProfiles).
 [[nodiscard]] std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::path& dir);
-
-/// A handed-over config folder that passed checkConfigDir(), held open by its handle for as long as this lives.
-class PinnedFolder final : public IHandedOverFolder
-{
-  public:
-    PinnedFolder(std::filesystem::path path, UniqueHandle handle) noexcept : m_Path(std::move(path)), m_Handle(std::move(handle))
-    {}
-
-    [[nodiscard]] const std::filesystem::path& path() const noexcept override
-    {
-        return m_Path;
-    }
-
-    /// The held folder's handle, still owned by this object.
-    [[nodiscard]] HANDLE handle() const noexcept
-    {
-        return m_Handle.get();
-    }
-
-  private:
-    std::filesystem::path m_Path;
-    UniqueHandle m_Handle;
-};
 
 /// The IElevatedRestart a Standard TaskSmack is given (Platform::makeElevatedRestart()).
 class WindowsElevatedRestart final : public IElevatedRestart
