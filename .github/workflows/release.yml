@@ -44,6 +44,17 @@ env:
   # always a real release. Read as $DRY_RUN in scripts and env.DRY_RUN in `if:` conditions.
   DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dry_run }}
 
+  # The WinGet submission tool (#3486), read by publish-winget and by rehearse-winget's dry run (#3822). One release
+  # of Microsoft's wingetcreate, pinned by its SHA-256.
+  WINGETCREATE_VERSION: v1.12.13.0
+  WINGETCREATE_SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
+  # The manifest schema that wingetcreate release reads, validates (its bundled WinGetUtil 1.12.350) and writes:
+  # `update` rewrites every manifest to it. winget-pkgs accepts it (1.28.0 is recommended, "1.12.0 is also
+  # accepted"), and no wingetcreate release writes 1.28.0 yet. The packaging/winget templates must be on the same
+  # version (tools/winget-manifest.ps1 checks), and "Submit the update" checks what wingetcreate wrote. Change it
+  # together with the pin.
+  WINGETCREATE_MANIFEST_VERSION: '1.12.0'
+
   # Authenticode signing of the Windows packages (#2302; docs/code-signing-policy.md): sign-windows signs
   # TaskSmack.exe and TaskSmackHelper.exe in both architectures' .zips, and both NSIS uninstallers, and
   # sign-windows-installer both NSIS installers, through Azure Artifact Signing, with the Public Trust
@@ -2770,10 +2781,11 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-linux-administrator, validate-windows-package, fetch-previous-windows-release, validate-windows-upgrade]
+    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-linux-administrator, validate-windows-package, fetch-previous-windows-release, validate-windows-upgrade, rehearse-winget]
     # Every job it needs must succeed, except sign-windows and sign-windows-installer, which are skipped
     # while signing is off (SIGNING_ENABLED, only on a dry run), and validate-windows-upgrade, which is skipped when
-    # fetch-previous-windows-release found no earlier release with a Windows installer (#3757). Without this
+    # fetch-previous-windows-release found no earlier release with a Windows installer (#3757); rehearse-winget is
+    # skipped on a tag run (#3822). Without this
     # `if:`, those skips would skip the release too.
     if: >-
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
@@ -2784,6 +2796,7 @@ jobs:
       needs.fetch-previous-windows-release.result == 'success' &&
       (needs.validate-windows-upgrade.result == 'success' ||
       (needs.fetch-previous-windows-release.outputs.found != 'true' && needs.validate-windows-upgrade.result == 'skipped')) &&
+      (needs.rehearse-winget.result == 'success' || needs.rehearse-winget.result == 'skipped') &&
       (needs.sign-windows.result == 'success' ||
       (needs.validate.outputs.signing != 'true' && needs.sign-windows.result == 'skipped')) &&
       (needs.sign-windows-installer.result == 'success' ||
@@ -3524,6 +3537,126 @@ jobs:
           printf '\n**Result: %s**\n' "$msg" >> "$GITHUB_STEP_SUMMARY"
           echo "::error title=${SUMMARY_TITLE}::$msg"
 
+  rehearse-winget:
+    name: Rehearse the WinGet Manifests (dry run)
+    # #3822: publish-winget runs on a tag only, so without this its manifest step would first run on a real release.
+    # On a dry run this builds the previous published release's WinGet manifests and checks them, the way
+    # publish-winget checks what wingetcreate wrote: schema version, package version, installer URLs and hashes
+    # (tools/check-winget-manifests.ps1, against the installers fetch-previous-windows-release verified). It never
+    # submits and never sees WINGET_TOKEN: it has no `environment:` and no secrets, and the winget-pkgs reads it
+    # makes are anonymous. tests/tools/test_workflow_run_steps.py keeps it that way.
+    #
+    # Two manifest sets: tools/winget-manifest.ps1's, from packaging/winget/'s templates and the previous
+    # release's SHA256SUMS (the first submission's path), always; and wingetcreate's own `update`, the path
+    # publish-winget takes, once TaskSmack.TaskSmack is in winget-pkgs (an update reads the previous version's
+    # manifests there; until the first, manual submission is merged it notices and skips).
+    needs: [fetch-previous-windows-release]
+    if: >-
+      ${{ !cancelled() && github.event_name == 'workflow_dispatch' && inputs.dry_run &&
+      needs.fetch-previous-windows-release.result == 'success' &&
+      needs.fetch-previous-windows-release.outputs.found == 'true' }}
+    runs-on: windows-2025
+    timeout-minutes: 15
+    permissions:
+      contents: read  # gh api: the previous release's publish date
+    env:
+      PREVIOUS_TAG: ${{ needs.fetch-previous-windows-release.outputs.tag }}
+      WINGET_PACKAGE_ID: TaskSmack.TaskSmack
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - name: Check out the manifest tools and templates
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          path: repo
+          sparse-checkout: |
+            .github/workflows/release.yml
+            packaging/winget
+            tools/check-winget-manifests.ps1
+            tools/winget-manifest.ps1
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Download the previous release's Windows installers
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: windows-previous-release
+          path: previous/
+
+      - name: Build and check the manifests from the templates
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:PREVIOUS_TAG.Substring(1)
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:PREVIOUS_TAG" | ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0) { Write-Error "Couldn't read the release $env:PREVIOUS_TAG."; exit 1 }
+          $date = ([datetime]$release.published_at).ToUniversalTime().ToString('yyyy-MM-dd')
+          $out = Join-Path $env:RUNNER_TEMP 'winget-templates'
+          & repo/tools/winget-manifest.ps1 -Version $version -ReleaseDir previous -ReleaseDate $date -OutDir $out
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & repo/tools/check-winget-manifests.ps1 -ManifestDir (Join-Path $out "manifests/t/TaskSmack/TaskSmack/$version") `
+            -Version $version -Tag $env:PREVIOUS_TAG -Repository $env:GITHUB_REPOSITORY `
+            -ManifestVersion $env:WINGETCREATE_MANIFEST_VERSION -InstallerDir previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "- WinGet rehearsal: $env:PREVIOUS_TAG's manifests built from the templates and checked (ManifestVersion $env:WINGETCREATE_MANIFEST_VERSION, URLs, SHA-256)." |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
+      - name: Check whether TaskSmack.TaskSmack is in winget-pkgs
+        # An `update` needs the package's first version merged. A confirmed 404 is "not yet"; anything but 200 or 404
+        # fails, so the rehearsal never skips on an outage.
+        id: package
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $out = @(gh api -i --silent "repos/microsoft/winget-pkgs/contents/manifests/t/TaskSmack/TaskSmack" 2>&1 | ForEach-Object { "$_" })
+          $status = if ($out.Count -gt 0 -and $out[0] -match '^HTTP/\S+ (\d{3})') { [int]$Matches[1] } else { 0 }
+          if ($status -eq 200) { 'present=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append; exit 0 }
+          if ($status -ne 404) { Write-Error "GET the winget-pkgs folder returned $status ($($out -join ' ')); re-run the job."; exit 1 }
+          $msg = "$env:WINGET_PACKAGE_ID isn't in microsoft/winget-pkgs yet, so wingetcreate's update can't be rehearsed; only the template manifests were checked."
+          Write-Host "::notice title=WinGet::$msg"
+          "- WinGet rehearsal: $msg" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          'present=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          # gh exited 1 on the 404, and the step's shell would end with that code.
+          exit 0
+
+      - name: Install wingetcreate
+        if: steps.package.outputs.present == 'true'
+        run: |
+          $exe = Join-Path $env:RUNNER_TEMP 'wingetcreate.exe'
+          Invoke-WebRequest -Uri "https://github.com/microsoft/winget-create/releases/download/$env:WINGETCREATE_VERSION/wingetcreate.exe" -OutFile $exe
+          $hash = (Get-FileHash -LiteralPath $exe -Algorithm SHA256).Hash
+          if ($hash -ne $env:WINGETCREATE_SHA256) {
+            Write-Error "wingetcreate.exe $env:WINGETCREATE_VERSION has SHA-256 $hash, not the pinned $env:WINGETCREATE_SHA256."
+            exit 1
+          }
+          "WINGETCREATE=$exe" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Build and check the manifests with wingetcreate update
+        # publish-winget's `update`, with no token and no `submit`: the previous release's installers are
+        # downloaded from its release page, hashed and written to a folder, which is then checked.
+        if: steps.package.outputs.present == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $version = $env:PREVIOUS_TAG.Substring(1)
+          $base = "https://github.com/$env:GITHUB_REPOSITORY/releases/download/$env:PREVIOUS_TAG"
+          $release = gh api "repos/$env:GITHUB_REPOSITORY/releases/tags/$env:PREVIOUS_TAG" | ConvertFrom-Json
+          $date = ([datetime]$release.published_at).ToUniversalTime().ToString('yyyy-MM-dd')
+          $out = Join-Path $env:RUNNER_TEMP 'winget-update'
+          & $env:WINGETCREATE update $env:WINGET_PACKAGE_ID --version $version `
+            --urls "$base/TaskSmack-$version-win64.exe|x64" "$base/TaskSmack-$version-windows-arm64.exe|arm64" `
+            --release-notes-url "https://github.com/$env:GITHUB_REPOSITORY/releases/tag/$env:PREVIOUS_TAG" `
+            --release-date $date --out $out
+          if ($LASTEXITCODE -ne 0) { Write-Error "wingetcreate update exit $LASTEXITCODE; see the step log"; exit 1 }
+          $dirs = @(Get-ChildItem -LiteralPath $out -Recurse -File -Filter '*.yaml' | ForEach-Object DirectoryName | Sort-Object -Unique)
+          if ($dirs.Count -ne 1) { Write-Error "wingetcreate update wrote manifests in [$($dirs -join ', ')], not one folder"; exit 1 }
+          & repo/tools/check-winget-manifests.ps1 -ManifestDir $dirs[0] -Version $version -Tag $env:PREVIOUS_TAG `
+            -Repository $env:GITHUB_REPOSITORY -ManifestVersion $env:WINGETCREATE_MANIFEST_VERSION -InstallerDir previous
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          "- WinGet rehearsal: wingetcreate update wrote $env:PREVIOUS_TAG's manifests and they check out; no pull request was opened." |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+
   publish-winget:
     name: Submit the WinGet Update
     # Opens the winget-pkgs pull request that adds this release to TaskSmack.TaskSmack (#3486; docs/dev/
@@ -3561,14 +3694,6 @@ jobs:
       TAG: ${{ github.ref_name }}
       WINGET_PACKAGE_ID: TaskSmack.TaskSmack
       WINGET_FORK_USER: tasksmack-boop
-      WINGETCREATE_VERSION: v1.12.13.0
-      WINGETCREATE_SHA256: 24042bd37915805615e6cf969ac57c6439124c3fe85823327f5f3fb24bd9ffea
-      # The manifest schema that wingetcreate release reads, validates (its bundled WinGetUtil 1.12.350) and writes:
-      # `update` rewrites every manifest to it. winget-pkgs accepts it (1.28.0 is recommended, "1.12.0 is also
-      # accepted"), and no wingetcreate release writes 1.28.0 yet. The packaging/winget templates must be on the same
-      # version (tools/winget-manifest.ps1 checks), and "Submit the update" checks what wingetcreate wrote. Change it
-      # together with the pin.
-      WINGETCREATE_MANIFEST_VERSION: '1.12.0'
     defaults:
       run:
         shell: pwsh

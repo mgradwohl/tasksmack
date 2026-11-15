@@ -36,6 +36,9 @@
   notes": the job waits out a missing or draft release and fails once its limit passes, then replaces
   release.yml's placeholder body with tools/compose-release-notes.py's notes and never edits notes
   someone wrote (#3144). `gh` is a stub; the composer and the guide's template are the real ones.
+- release.yml rehearse-winget (#3822): the dry run builds and checks the previous release's WinGet manifests
+  with no secret, no environment and no `submit`, so the only job that can read WINGET_TOKEN is publish-winget,
+  which a tag push alone starts. Read from the workflow's text; nothing runs.
 - .github/actions/setup-llvm "LLVM package cache key" and install-llvm.sh: every caller gets a weekly LLVM
   package cache key with a restore-key, a pinned release keeps its exact key (#3393), and the script
   installs an exact hit without apt.llvm.org, refreshes an older entry and falls back to it when
@@ -2104,6 +2107,80 @@ class SetupLlvmInstallTests(unittest.TestCase):
         self.assertEqual(out["staged"], "true")
         self.assertEqual(len(self.staged()), len(LLVM_NAMED) + 2)
         self.assertIn("Staged 8 LLVM 23.1.6 .debs", result.stdout)
+
+
+class WingetRehearsalTests(unittest.TestCase):
+    """release.yml rehearse-winget (#3822): a dry run exercises the WinGet manifests without the means to submit."""
+
+    @staticmethod
+    def job(name: str) -> list[str]:
+        """The job's lines, comments left out."""
+        lines = (WORKFLOWS / "release.yml").read_text(encoding="utf-8").splitlines()
+        start = next(i for i, line in enumerate(lines) if line == f"  {name}:")
+        end = next((i for i in range(start + 1, len(lines)) if re.match(r"^  [A-Za-z0-9_-]+:\s*$", lines[i])), len(lines))
+        return [line for line in lines[start:end] if not line.lstrip().startswith("#")]
+
+    def test_the_rehearsal_has_no_secret_environment_or_submission(self):
+        text = "\n".join(self.job("rehearse-winget"))
+        for forbidden in ("secrets.", "WINGET_TOKEN", "WINGET_CREATE_GITHUB_TOKEN", "environment:", "submit", "--submit", "id-token"):
+            self.assertNotIn(forbidden, text, f"rehearse-winget mentions {forbidden}")
+        self.assertRegex(text, r"(?m)^    permissions:\n      contents: read")
+        # Only `wingetcreate update` is run, never another subcommand.
+        self.assertEqual(re.findall(r"WINGETCREATE update|WINGETCREATE submit|WINGETCREATE \w+", text), ["WINGETCREATE update"])
+
+    def test_the_package_check_ends_with_exit_zero(self):
+        # `gh api` exits 1 on the 404 that means "not in winget-pkgs yet"; pwsh's wrapper ends a step with the last
+        # native exit code, so without an explicit exit the dry run failed on the case it is meant to pass.
+        step = find_step(WORKFLOWS / "release.yml", "Check whether TaskSmack.TaskSmack is in winget-pkgs", job="rehearse-winget")
+        self.assertEqual(step.run.rstrip().splitlines()[-1].strip(), "exit 0")
+
+    @unittest.skipUnless(PWSH, "needs pwsh")
+    def test_every_step_script_parses_as_powershell(self):
+        # A backtick before a `u` (as in "`update`" inside a double-quoted string) is a Unicode escape and a parse
+        # error: the first dry run failed on one.
+        for name in step_names(WORKFLOWS / "release.yml", "rehearse-winget"):
+            run = find_step(WORKFLOWS / "release.yml", name, job="rehearse-winget").run
+            if not run:
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "step.ps1"
+                path.write_text(run + "\n", encoding="utf-8")
+                parse = (
+                    "$e = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+                    f"'{path}', [ref]$null, [ref]$e) | Out-Null; $e | ForEach-Object {{ $_.Message }}; exit $e.Count"
+                )
+                result = subprocess.run(
+                    [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", parse],
+                    capture_output=True, text=True, encoding="utf-8", check=False, timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, f"{name}: {result.stdout}{result.stderr}")
+
+    def test_the_rehearsal_runs_on_a_dry_run_only(self):
+        condition = "".join(self.job("rehearse-winget")).split("if: >-")[1].split("runs-on:")[0]
+        self.assertIn("github.event_name == 'workflow_dispatch'", condition)
+        self.assertIn("inputs.dry_run", condition)
+
+    def test_only_publish_winget_reads_the_winget_token_and_only_on_a_tag_push(self):
+        text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+        uncommented = [line for line in text.splitlines() if not line.lstrip().startswith("#")]
+        holders = [line for line in uncommented if "secrets.WINGET_TOKEN" in line]
+        self.assertEqual(len(holders), 2, holders)  # the token check's env and the submit step's env
+        publish = [line for line in self.job("publish-winget") if "secrets.WINGET_TOKEN" in line]
+        self.assertEqual(holders, publish)
+        self.assertEqual(len([line for line in self.job("publish-winget") if "WINGETCREATE submit" in line]), 1)
+        condition = "".join(self.job("publish-winget")).split("if: >-")[1].split("runs-on:")[0]
+        self.assertIn("github.event_name == 'push'", condition)
+
+    def test_create_release_waits_for_the_rehearsal(self):
+        lines = self.job("create-release")
+        self.assertIn("rehearse-winget", next(line for line in lines if line.startswith("    needs:")))
+        self.assertTrue(any("needs.rehearse-winget.result == 'success'" in line and "'skipped'" in line for line in lines))
+
+    def test_the_wingetcreate_pins_are_the_workflows_own_and_listed_once(self):
+        text = (WORKFLOWS / "release.yml").read_text(encoding="utf-8")
+        for pin in ("WINGETCREATE_VERSION", "WINGETCREATE_SHA256", "WINGETCREATE_MANIFEST_VERSION"):
+            self.assertEqual(len(re.findall(rf"(?m)^  {pin}: ", text)), 1, pin)
+            self.assertEqual(len(re.findall(rf"(?m)^\s+{pin}: ", text)), 1, pin)
 
 
 def _is_setup_llvm(test: unittest.TestCase) -> bool:
