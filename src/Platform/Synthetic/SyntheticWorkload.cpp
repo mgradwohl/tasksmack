@@ -1000,7 +1000,7 @@ struct SlotIdentity
 
 /// The Type column's word for a process in @p unit, as Linux classifies it (CgroupProcessType, #3430): an app's
 /// scope is an App, the user's own services are Background Processes, and the system's are System Processes.
-[[nodiscard]] std::string processTypeOf(std::string_view unit, bool userService)
+[[nodiscard]] std::string_view processTypeOf(std::string_view unit, bool userService)
 {
     if (unit.starts_with("app-"))
     {
@@ -1050,7 +1050,7 @@ struct SlotIdentity
         identity.unit = (parent != nullptr) ? parent->unit : std::string{};
         break;
     }
-    identity.processType = processTypeOf(identity.unit, userService && !identity.unit.starts_with("app-"));
+    identity.processType = std::string(processTypeOf(identity.unit, userService && !identity.unit.starts_with("app-")));
     if (entry.name.starts_with("pipewire"))
     {
         identity.schedPolicy = SchedPolicy::RoundRobin; // rtkit's real-time audio
