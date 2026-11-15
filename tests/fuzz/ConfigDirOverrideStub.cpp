@@ -8,7 +8,6 @@
 // so no held folder was let go either (handedOverFolderReleased(), #3787).
 
 #include "Core/ConfigDirOverride.h"
-#include "Platform/IHandedOverFolder.h"
 
 #include <filesystem>
 #include <optional>

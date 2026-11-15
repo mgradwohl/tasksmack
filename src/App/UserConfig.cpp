@@ -30,7 +30,6 @@
 #include <filesystem>
 #include <format>
 #include <locale>
-#include <memory>
 #include <mutex>
 #include <optional>
 #include <random>
