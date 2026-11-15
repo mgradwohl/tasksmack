@@ -196,5 +196,19 @@ class RootTestFilterTests(unittest.TestCase):
                 self.assertNotIn("RootCapabilitiesRootTest.*:", text, "a hand-kept copy of the filter")
 
 
+class PinnedLlvmMajorTests(unittest.TestCase):
+    """#3824: the hooks are pinned by commit, with the tag in a `# frozen:` comment; the LLVM major still reads."""
+
+    def test_the_major_comes_from_the_frozen_clang_format_tag(self):
+        config = (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        match = re.search(r"mirrors-clang-format\s+rev: [0-9a-f]{40} # frozen: v(\d+)\.", config)
+        self.assertIsNotNone(match, "mirrors-clang-format is pinned by commit, with its tag frozen beside it")
+        result = subprocess.run(
+            [BASH, "-c", 'source "$1"; pinned_llvm_major', "test", posix(COMMON_SH)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), match.group(1))
+
+
 if __name__ == "__main__":
     unittest.main()

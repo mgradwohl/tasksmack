@@ -14,7 +14,9 @@
 // beside the real probes; only the App composition root constructs it, and only when the
 // TASKSMACK_SYNTHETIC environment variable asks for it.
 
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"
 
@@ -22,6 +24,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -154,6 +157,14 @@ class Workload
         double rssPhase = 0.0;
         std::int32_t threads = 1;
         std::int32_t handles = 0;
+        // Fixed for the slot's life, from its kind and family, never the random streams (#3872): the systemd unit it
+        // was launched in (ProcessCounters::services), the Type column's word, the CPU scheduling policy and the I/O
+        // priority (nullopt for a kernel thread, as Linux reports it).
+        std::string unit;
+        std::string processType;
+        SchedPolicy schedPolicy = SchedPolicy::Normal;
+        std::uint32_t rtPriority = 0;
+        std::optional<IoPriority> ioPriority;
     };
 
     /// Per-band sums of base * amplitude * {cos, sin}(phase) over every slot, plus the sum of the

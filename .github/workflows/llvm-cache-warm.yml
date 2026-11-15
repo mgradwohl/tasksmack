@@ -1,0 +1,70 @@
+name: LLVM Cache Warm
+
+# Keeps release.yml's LLVM package cache from being evicted (#3825). A tag run installs LLVM_LINUX_RELEASE's .debs from
+# the cache main saved (Linux-llvm-debs-<release>-ubuntu24.04-<arch>-...), because apt.llvm.org keeps only its newest
+# build: once it moves on, a cache miss fails the release at Setup LLVM. GitHub evicts a cache no run has read for 7
+# days, and nothing but release.yml reads this one, so between releases it went cold. Twice a week this restores it
+# on each architecture, the way build-linux does (setup-llvm with the same inputs, so the same key), which counts as
+# a read. It saves nothing: only release.yml's main and release/* runs save the entry.
+on:
+  schedule:
+    - cron: '41 9 * * 1,4'  # Monday and Thursday
+  workflow_dispatch:
+
+concurrency:
+  group: llvm-cache-warm
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  warm:
+    name: Restore the release's LLVM packages (${{ matrix.arch }})
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x64
+            runner: ubuntu-24.04
+          - arch: arm64
+            runner: ubuntu-24.04-arm
+    steps:
+      - name: Check out the setup action and release.yml
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/actions/setup-llvm
+            .github/workflows/release.yml
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Read release.yml's LLVM pins
+        # From release.yml itself, so the key here can't drift from the one a tag run restores.
+        id: pins
+        run: |
+          version="$(sed -n "s/^  LLVM_VERSION: '\([0-9]*\)'.*/\1/p" .github/workflows/release.yml)"
+          release="$(sed -n "s/^  LLVM_LINUX_RELEASE: '\([0-9.]*\)'.*/\1/p" .github/workflows/release.yml)"
+          if [[ -z "$version" || -z "$release" ]]; then
+            echo "::error title=LLVM cache warm::couldn't read LLVM_VERSION and LLVM_LINUX_RELEASE from release.yml"
+            exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "release=$release" >> "$GITHUB_OUTPUT"
+
+      - name: Setup LLVM, from the release's package cache
+        id: llvm
+        uses: ./.github/actions/setup-llvm
+        with:
+          llvm-version: ${{ steps.pins.outputs.version }}
+          expect-release: ${{ steps.pins.outputs.release }}
+
+      - name: The cache was there
+        # A miss means the entry is already gone (or never saved): a dry run of release.yml from main saves it again.
+        if: steps.llvm.outputs.package-cache-hit != 'true'
+        run: |
+          echo "::error title=LLVM cache warm::no cached LLVM ${{ steps.pins.outputs.release }} packages on ${{ matrix.arch }}: run release.yml from main with dry_run to save them before the next tag"
+          exit 1

@@ -4,7 +4,9 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/Synthetic/SyntheticProbes.h"
 #include "Platform/Synthetic/SyntheticWorkload.h"
@@ -500,6 +502,91 @@ TEST(SyntheticWorkloadTest, ProcessTotalsMatchTheProcesses)
     EXPECT_NEAR(received / INTERVAL, mid.netReceivedBytesPerSec, mid.netReceivedBytesPerSec * 0.05);
     EXPECT_NEAR(faults / INTERVAL, mid.pageFaultsPerSec, mid.pageFaultsPerSec * 0.05);
     EXPECT_NEAR(energy / INTERVAL / 1e6, mid.powerWatts, mid.powerWatts * 0.05);
+}
+
+// #3872: the per-process fields Linux reports and the PGO run and UI scenarios need: the unit a process was launched
+// in (an app's scope for the browser and its children, so Group: App has an app), its type, its CPU policy and its I/O
+// priority, each in every kind it takes, and fixed for a process's life.
+TEST(SyntheticWorkloadTest, ProcessesHaveTheirUnitTypePolicyAndIoPriority)
+{
+    const Platform::ProcessCapabilities caps = Workload::processCapabilities();
+    EXPECT_TRUE(caps.hasServices);
+    EXPECT_TRUE(caps.hasAppUnits);
+    EXPECT_TRUE(caps.hasProcessType);
+    EXPECT_TRUE(caps.hasSchedPolicy);
+    EXPECT_TRUE(caps.hasIoPriority);
+
+    const Workload workload = makeWorkload(spec(2000));
+    const auto processes = processesAt(workload, NOW);
+    std::set<Platform::SchedPolicy> policies;
+    std::set<Platform::IoPriorityClass> ioClasses;
+    std::set<std::string> types;
+    std::map<std::int32_t, const Platform::ProcessCounters*> byPid;
+    for (const auto& process : processes)
+    {
+        byPid.emplace(process.pid, &process);
+        policies.insert(process.schedPolicy);
+        types.insert(process.processType);
+        if (process.ioPriority.has_value())
+        {
+            ioClasses.insert(process.ioPriority->ioClass);
+        }
+        if (process.schedPolicy == Platform::SchedPolicy::Fifo || process.schedPolicy == Platform::SchedPolicy::RoundRobin)
+        {
+            EXPECT_GE(process.rtPriority, 1U) << process.name;
+            EXPECT_LE(process.rtPriority, 99U) << process.name;
+        }
+        else
+        {
+            EXPECT_EQ(process.rtPriority, 0U) << process.name;
+        }
+        if (process.command.empty()) // a kernel thread: no unit, no I/O priority
+        {
+            EXPECT_TRUE(process.services.empty()) << process.name;
+            EXPECT_FALSE(process.ioPriority.has_value()) << process.name;
+            EXPECT_EQ(process.processType, "System Process") << process.name;
+        }
+    }
+    EXPECT_EQ(policies,
+              (std::set{Platform::SchedPolicy::Idle,
+                        Platform::SchedPolicy::Batch,
+                        Platform::SchedPolicy::Normal,
+                        Platform::SchedPolicy::RoundRobin,
+                        Platform::SchedPolicy::Fifo}));
+    EXPECT_EQ(ioClasses,
+              (std::set{Platform::IoPriorityClass::None, Platform::IoPriorityClass::BestEffort, Platform::IoPriorityClass::Idle}));
+    EXPECT_EQ(types, (std::set<std::string>{"App", "Background Process", "System Process"}));
+
+    // The browser's processes share its app scope, which names the app.
+    const auto browser = std::ranges::find_if(processes, [](const auto& p) { return p.name == "firefox"; });
+    ASSERT_NE(browser, processes.end());
+    EXPECT_TRUE(browser->services.starts_with("app-gnome-firefox-")) << browser->services;
+    EXPECT_EQ(browser->processType, "App");
+    std::size_t children = 0;
+    for (const auto& process : processes)
+    {
+        if (process.parentPid == browser->pid)
+        {
+            EXPECT_EQ(process.services, browser->services) << process.name;
+            ++children;
+        }
+    }
+    EXPECT_GT(children, 0U);
+
+    // Fixed for a process's life.
+    const auto earlier = byIdentity(processes);
+    for (const auto& [identity, later] : byIdentity(processesAt(workload, NOW + 60.0)))
+    {
+        const auto same = earlier.find(identity);
+        if (same == earlier.end())
+        {
+            continue; // started since
+        }
+        EXPECT_EQ(later.services, same->second.services) << later.name;
+        EXPECT_EQ(later.processType, same->second.processType) << later.name;
+        EXPECT_EQ(later.schedPolicy, same->second.schedPolicy) << later.name;
+        EXPECT_EQ(later.ioPriority, same->second.ioPriority) << later.name;
+    }
 }
 
 TEST(SyntheticWorkloadTest, WaveIntegralMatchesItsRate)

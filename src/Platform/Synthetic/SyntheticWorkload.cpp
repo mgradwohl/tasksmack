@@ -1,7 +1,9 @@
 #include "SyntheticWorkload.h"
 
 #include "Platform/CpuAffinity.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/SchedPolicy.h"
 #include "Platform/StorageTypes.h"
 #include "Platform/SystemTypes.h"
 
@@ -13,6 +15,7 @@
 #include <cstdint>
 #include <format>
 #include <numbers>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -973,6 +976,103 @@ struct SlotResources
     return resources;
 }
 
+/// A slot's fixed identity (#3872): what Linux would report for such a process, from its kind, its name and its
+/// parent's, never the random streams, so the machine's shape doesn't change. The I/O priority and CPU policy give
+/// the I/O Priority and Policy columns something to format and sort; the unit and type give Group: App, Group:
+/// Unit and the Type column their groups.
+struct SlotIdentity
+{
+    std::string unit;
+    std::string processType;
+    SchedPolicy schedPolicy = SchedPolicy::Normal;
+    std::uint32_t rtPriority = 0;
+    std::optional<IoPriority> ioPriority;
+};
+
+/// The program a command runs, without its folder or arguments: "/usr/bin/pipewire -c x" is "pipewire".
+[[nodiscard]] std::string programOf(const std::string& command, const std::string& name)
+{
+    const std::string_view program = std::string_view(command).substr(0, command.find(' '));
+    const std::size_t slash = program.rfind('/');
+    const std::string_view base = (slash == std::string_view::npos) ? program : program.substr(slash + 1);
+    return base.empty() ? name : std::string(base);
+}
+
+/// The Type column's word for a process in @p unit, as Linux classifies it (CgroupProcessType, #3430): an app's
+/// scope is an App, the user's own services are Background Processes, and the system's are System Processes.
+[[nodiscard]] std::string_view processTypeOf(std::string_view unit, bool userService)
+{
+    if (unit.starts_with("app-"))
+    {
+        return "App";
+    }
+    return userService ? "Background Process" : "System Process";
+}
+
+[[nodiscard]] SlotIdentity identityOf(const Pending& entry, std::int32_t nice, std::int32_t pid, const SlotIdentity* parent)
+{
+    SlotIdentity identity;
+    const std::string program = programOf(entry.command, entry.name);
+    bool userService = parent != nullptr && parent->processType == "Background Process"; // under the user's systemd
+    switch (entry.kind)
+    {
+    case Kind::Kernel:
+        identity.processType = "System Process";
+        if (entry.name.starts_with("migration/"))
+        {
+            identity.schedPolicy = SchedPolicy::Fifo; // the stopper threads, at the top real-time priority
+            identity.rtPriority = 99;
+        }
+        return identity; // no unit, and no I/O priority for a kernel thread
+    case Kind::Init:
+        identity.unit = "init.scope";
+        break;
+    case Kind::Daemon:
+        identity.unit = program + ".service";
+        identity.ioPriority = IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = std::clamp((nice + 20) / 5, 0, 7)};
+        break;
+    case Kind::Session:
+        if (parent != nullptr && parent->unit == "init.scope")
+        {
+            identity.unit = "user@1000.service"; // the user's own systemd
+            userService = true;
+        }
+        else
+        {
+            identity.unit = program + ".service"; // one of its services, under user@1000.service
+        }
+        break;
+    case Kind::BrowserMain:
+    case Kind::EditorMain:
+        identity.unit = std::format("app-gnome-{}-{}.scope", entry.name, pid);
+        break;
+    default:
+        identity.unit = (parent != nullptr) ? parent->unit : std::string{};
+        break;
+    }
+    identity.processType = std::string(processTypeOf(identity.unit, userService && !identity.unit.starts_with("app-")));
+    if (entry.name.starts_with("pipewire"))
+    {
+        identity.schedPolicy = SchedPolicy::RoundRobin; // rtkit's real-time audio
+        identity.rtPriority = 20;
+    }
+    else if (nice >= 19)
+    {
+        identity.schedPolicy = SchedPolicy::Idle; // tracker-miner-fs runs as SCHED_IDLE
+        identity.ioPriority = IoPriority{.ioClass = IoPriorityClass::Idle, .level = 0};
+    }
+    else if (entry.kind == Kind::BuildWorker)
+    {
+        identity.schedPolicy = SchedPolicy::Batch;
+        identity.ioPriority = IoPriority{.ioClass = IoPriorityClass::Idle, .level = 0};
+    }
+    if (!identity.ioPriority.has_value())
+    {
+        identity.ioPriority = IoPriority{.ioClass = IoPriorityClass::None, .level = 0}; // never set, as most are
+    }
+    return identity;
+}
+
 } // namespace
 
 // =============================================================================
@@ -1076,6 +1176,8 @@ void Workload::buildProcesses()
     SplitMix64 rng(m_Spec.seed);
     m_Slots.clear();
     m_Slots.reserve(pending.size());
+    std::vector<SlotIdentity> identities; // parallel to m_Slots, for each child's parent
+    identities.reserve(pending.size());
     std::int32_t nextPid = 1;
     std::size_t churnIndex = 0;
     for (const Pending& entry : pending)
@@ -1113,6 +1215,15 @@ void Workload::buildProcesses()
         slot.rssPhase = resources.rssPhase;
         slot.threads = resources.threads;
         slot.handles = resources.handles;
+
+        const SlotIdentity* parentIdentity = (entry.parent >= 0) ? &identities.at(static_cast<std::size_t>(entry.parent)) : nullptr;
+        SlotIdentity identity = identityOf(entry, slot.nice, slot.pid, parentIdentity);
+        slot.unit = identity.unit;
+        slot.processType = identity.processType;
+        slot.schedPolicy = identity.schedPolicy;
+        slot.rtPriority = identity.rtPriority;
+        slot.ioPriority = identity.ioPriority;
+        identities.push_back(std::move(identity));
         m_Slots.push_back(std::move(slot));
     }
 
@@ -1258,6 +1369,11 @@ void Workload::processesAt(double uptime, std::vector<ProcessCounters>& out) con
             counters.state = (cpuNow > 0.3) ? 'R' : 'S';
         }
         counters.nice = slot.nice;
+        counters.schedPolicy = slot.schedPolicy;
+        counters.rtPriority = slot.rtPriority;
+        counters.ioPriority = slot.ioPriority;
+        counters.services = slot.unit;
+        counters.processType = slot.processType;
         counters.startTimeTicks = toCounter(start * TICKS);
         counters.startTimeEpoch = m_BootUnixSeconds + static_cast<std::uint64_t>(std::max(0.0, start));
         counters.userTime = toCounter(cpuSeconds * 0.82 * TICKS);
@@ -1471,6 +1587,12 @@ ProcessCapabilities Workload::processCapabilities() noexcept
     caps.hasSharedMemory = true;
     caps.hasPrivateBytes = true;
     caps.hasSwapBytes = true;
+    // Linux's per-process identity (#3872): the unit a process was launched in, its type, policy and I/O priority.
+    caps.hasServices = true;
+    caps.hasAppUnits = true;
+    caps.hasProcessType = true;
+    caps.hasSchedPolicy = true;
+    caps.hasIoPriority = true;
     caps.pageFaultCountBits = 64;
     return caps;
 }

@@ -133,13 +133,17 @@ find_python() {
 }
 
 # Print the LLVM major version CI pins: the mirrors-clang-format `rev:` in .pre-commit-config.yaml,
-# which moves with the LLVM_VERSION the CI workflows install. Prints nothing if it can't be read.
+# which moves with the LLVM_VERSION the CI workflows install. Prints nothing if it can't be read. The rev is a
+# commit with its tag in a `# frozen: v23.1.5` comment (#3824), which is read first; a plain `rev: v23.1.5` too.
 pinned_llvm_major() {
-    local common_dir config
+    local common_dir config line
     common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     config="${common_dir}/../.pre-commit-config.yaml"
     [[ -f "$config" ]] || return 0
-    grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true
+    line="$(grep -A1 'mirrors-clang-format' "$config" | grep 'rev:' | head -1 || true)"
+    if [[ "$line" =~ frozen:\ *v?([0-9]+)\. ]] || [[ "$line" =~ rev:\ *v?([0-9]+)\. ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
 }
 
 # Warn when an LLVM tool's major version differs from the one CI pins (pinned_llvm_major).
