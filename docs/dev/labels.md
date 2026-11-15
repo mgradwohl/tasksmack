@@ -13,7 +13,7 @@ description gives its meaning.
 | **Priority**: when | greyscale, dark to light | `pri:high`, `pri:medium`, `pri:low` | the maintainer |
 | **Lane and planning** | purple | `agent:Windows`, `agent:WSL`, `parity` | the triager |
 | **Area** | teal | `windows`, `linux`, `ui`, `gpu`, `networking`, `architecture`, `accessibility`, `globalization` | the filer, or the PR labeler |
-| **Automation** | green | `ci`, `ci:arm64`, `tooling`, `release`, `dependencies` | the PR labeler, Dependabot, Renovate, or by hand |
+| **Automation** | green | `ci`, `ci:arm64`, `ci:revert-ok`, `tooling`, `release`, `dependencies` | the PR labeler, Dependabot, Renovate, or by hand |
 | **Alert** | red | `ci-red-main` | `main-health.yml` only |
 | **Process** | magenta | `code-review`, `manual close`, `merging`, `question` | see below |
 | **Outside contributors** | GitHub defaults | `good first issue`, `help wanted` | the maintainer |
@@ -84,6 +84,9 @@ order.
   by hand for anything else. The labeler can't start the run by adding the label, so `arm64.yml` also reads
   those globs itself (`tools/arm64-paths.py`) and runs a PR whose changes match them on its first push (#3930).
   ARM64 is not a required check.
+- **`ci:revert-ok`:** this PR deliberately undoes recent merged work, so `ci.yml`'s revert guard (#3986) clears its
+  findings. Add it by hand, only for a real revert or fix-forward; a description that names the reverted PR
+  (`Reverts #N`) clears that one merge instead. The maintainer approved the label on 2026-11-15.
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
 - **`winget-health.yml`:** opens, rewrites and closes one issue, "WinGet: TaskSmack.TaskSmack <version> isn't
   published", labelled `release` and `agent:Windows` and found by that title among the open `release` issues
