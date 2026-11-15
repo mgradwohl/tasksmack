@@ -4519,13 +4519,8 @@ void ProcessesPanel::renderAffinityDialog()
     {
         return;
     }
-    const Platform::ProcessTarget target = m_AffinityDialog.target();
-    runRowAction(
-        std::format("Setting the CPU affinity of PID {}...", target.pid),
-        [actions = m_ProcessActions.get(), target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
-        [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
-        { return affinityResultMessage(name, pid, cpus, result); },
-        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
+    Detail::DialogApply apply = affinityApply(m_ProcessActions.get(), m_AffinityDialog, *cpus);
+    runRowAction(std::move(apply.pending), std::move(apply.work), std::move(apply.format), std::move(apply.retry));
 }
 
 void ProcessesPanel::renderSchedPolicyDialog()
@@ -4535,21 +4530,8 @@ void ProcessesPanel::renderSchedPolicyDialog()
     {
         return;
     }
-    const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
-    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
-    runRowAction(
-        std::format("Setting the scheduling policy of PID {}...", target.pid),
-        [actions = m_ProcessActions.get(), target, setting = *setting, realtime]
-        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority, realtime); },
-        [name = m_SchedPolicyDialog.name(), pid = target.pid, setting = *setting](const Platform::ProcessActionResult& result)
-        { return schedPolicyResultMessage(name, pid, setting, result); },
-        Platform::AuthorizedAction{
-            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
-            .target = target,
-            .schedPolicy = setting->policy,
-            .realtimeThreads = realtime,
-            .rtPriority = setting->rtPriority,
-        });
+    Detail::DialogApply apply = schedPolicyApply(m_ProcessActions.get(), m_SchedPolicyDialog, *setting);
+    runRowAction(std::move(apply.pending), std::move(apply.work), std::move(apply.format), std::move(apply.retry));
 }
 
 template<typename Work>

@@ -229,4 +229,10 @@ class ProcessSchedPolicyDialog
                                                                    const SchedPolicySetting& setting,
                                                                    const Platform::ProcessActionResult& result);
 
+/// Apply on @p dialog with @p setting (#3886): set it on the dialog's process through @p actions, which outlives the
+/// run, demoting its real-time threads as the dialog says (realtimeThreads()), with schedPolicyResultMessage() as
+/// the line. No retry: the policy is Linux's, and Linux has no helper to redo a refusal (#3580).
+[[nodiscard]] Detail::DialogApply
+schedPolicyApply(Platform::IProcessActions* actions, const ProcessSchedPolicyDialog& dialog, const SchedPolicySetting& setting);
+
 } // namespace App

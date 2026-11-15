@@ -365,4 +365,17 @@ Detail::ActionResultMessage affinityResultMessage(const std::string& name,
     return {.ok = true, .text = std::move(text)};
 }
 
+Detail::DialogApply
+affinityApply(Platform::IProcessActions* actions, const ProcessAffinityDialog& dialog, const Platform::CpuAffinity& cpus)
+{
+    const Platform::ProcessTarget target = dialog.target();
+    return {
+        .pending = std::format("Setting the CPU affinity of PID {}...", target.pid),
+        .work = [actions, target, cpus] { return actions->setAffinity(target, cpus); },
+        .format = [name = dialog.name(), pid = target.pid, cpus](const Platform::ProcessActionResult& result)
+        { return affinityResultMessage(name, pid, cpus, result); },
+        .retry = Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = cpus},
+    };
+}
+
 } // namespace App
