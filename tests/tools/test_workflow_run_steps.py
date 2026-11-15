@@ -1508,7 +1508,7 @@ class RealSystemOnArm64Tests(unittest.TestCase):
 
     def test_arm64_skips_are_honored_on_arm64_only_and_carry_a_reason(self):
         run = find_step(self.WORKFLOW, self.STEP).run
-        self.assertIn("$arm64Skips = @{}", run)
+        self.assertIn("$arm64Skips = @{", run)
         self.assertIn("if ($env:RUNNER_ARCH -eq 'ARM64')", run)
         self.assertIn("$arm64Skips[$name]", run)
         # They join the allowlist before the check that uses it, never after.

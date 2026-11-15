@@ -462,7 +462,16 @@ void expectExplorerShowsTheFolder(const std::wstring& folderName)
 
     Platform::WindowsProcessActions actions;
     const ProcessActionResult result = actions.openFileLocation(stub.target());
-    ASSERT_TRUE(result.success) << result.errorMessage;
+    if (!result.success && !result.withheldPath.empty() && !hadShell)
+    {
+        // The product withholds the open when it can't reach the desktop's Explorer to open as the signed-in user
+        // (UnelevatedShell: no shell window to ask), which is a runner with no interactive shell (#3823: the
+        // windows-11-arm image). Only that case skips: a withheld open while a shell exists stays a failure.
+        GTEST_SKIP() << "this runner's desktop has no shell (GetShellWindow() is null), so Windows' shell can't open "
+                        "the folder as the signed-in user: "
+                     << result.errorMessage;
+    }
+    ASSERT_TRUE(result.success) << result.errorMessage << " (GetShellWindow() was " << (hadShell ? "set" : "null") << ")";
 
     HWND shown = nullptr;
     std::vector<HWND> newWindows; // every new folder window, the right one or not: each is closed at the end
