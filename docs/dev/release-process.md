@@ -464,6 +464,17 @@ environment, and in order it:
 6. looks the pull request up on winget-pkgs (search, up to 6 tries 20 s apart) and links it in the step summary.
    Only an open or merged pull request counts, not an earlier rejected one. If none turns up, the job fails.
 
+A dry run exercises the manifest half without the means to submit (#3822). `rehearse-winget` has no `environment:`
+and no secret, so it can't read `WINGET_TOKEN`, and it runs no `submit`; `tests/tools/test_workflow_run_steps.py`
+fails if that changes. It takes the previous published release's installers (verified by
+`fetch-previous-windows-release`), builds that release's manifests from `packaging/winget/`'s templates with
+`tools/winget-manifest.ps1`, and checks them with `tools/check-winget-manifests.ps1`: every file on
+`WINGETCREATE_MANIFEST_VERSION`, the package identifier and version, both installers' release URLs, and each
+`InstallerSha256` against the installer's own hash. Once `TaskSmack.TaskSmack` is in winget-pkgs it also runs
+`wingetcreate update` (anonymously, no `--submit`) for that release and checks what it wrote the same way. Until
+then, the update half notices and skips, as `publish-winget` does. `create-release` waits for the rehearsal, so a
+failing one fails the dry run.
+
 The pull request shows as `tasksmack-boop`, the machine account whose address is `tasksmack@uppercutwoodworks.com`
 (#3493); the manifests have no e-mail field. The account's first pull request gets `Needs-CLA` until someone
 signs the Microsoft CLA as `tasksmack-boop`. Nobody needs to act on later ones unless their validation fails or a

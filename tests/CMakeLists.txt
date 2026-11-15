@@ -129,6 +129,11 @@ if(WIN32)
         # Fixture SHA256SUMS files; nothing is downloaded, and winget isn't needed.
         add_test(NAME WingetManifestScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-winget-manifest.ps1)
+        # tools/check-winget-manifests.ps1, which release.yml's dry run runs on the previous release's manifests
+        # (#3822): schema, version, installer URLs and hashes, from manifests winget-manifest.ps1 wrote and then
+        # broke one way at a time. Fixture installers; nothing is downloaded, and winget isn't needed.
+        add_test(NAME CheckWingetManifestsScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-winget-manifests.ps1)
         # tools/release-smoke-check.ps1 starts each run in an empty work folder (#3530). Only its work-folder
         # functions run, in TEMP; the smoke check itself launches TaskSmack, so it never runs here.
         add_test(NAME ReleaseSmokeCheckScript
@@ -157,12 +162,14 @@ if(WIN32)
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
             BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
             BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript WingetManifestScript
-            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript PROPERTIES
+            ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
+            CheckWingetManifestsScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
             VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
             WingetManifestScript ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
+            CheckWingetManifestsScript
             PROPERTIES TIMEOUT 120)
         set_tests_properties(EtwCaptureScript BenchScript BenchAcrossLaunchesPs1Script PROPERTIES TIMEOUT 180)
     else()
@@ -172,7 +179,7 @@ if(WIN32)
                         "CheckPrereqsScript, SetupDevScript, VerifyWindowsSignaturesScript, "
                         "BuildWindowsInstallerScript, ResizePerfSummaryScript, MeasureIdleScript, "
                         "WingetManifestScript, ClangTidyHeadersScript, FormatSourcesScript, "
-                        "ReleaseSmokeCheckScript and WindowsUpgradeCheckScript tests "
+                        "ReleaseSmokeCheckScript, WindowsUpgradeCheckScript and CheckWingetManifestsScript tests "
                         "are not registered. Install PowerShell 7 to run them.")
     endif()
     # The Authenticode gate on packaging TaskSmackHelper.exe (#2550): the build's own, unsigned
