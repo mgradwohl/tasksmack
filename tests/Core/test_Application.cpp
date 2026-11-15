@@ -733,10 +733,12 @@ struct StaticFrameObserved
 ///
 /// Then a real Domain::BackgroundSampler publishes: armed on a quiet frame (one the floor brought, so
 /// no other wake is queued), its one pass samples PUBLISH_DELAY_MS into the floor wait that follows and
-/// wakes the loop, as every pass does. The next frame must come at once, well before the floor would
-/// have drawn it, with a publication wake taken. An attempt counts only when no SDL event came between
-/// its arming and that frame (like KeyDuringIdleWaitLayer's); an excluded one is stopped, its own late
-/// wake is let through, and a new one is armed on the next quiet frame.
+/// wakes the loop, as every pass does. The next frame after the commit must come at once, well before the
+/// floor would have drawn it, with a publication wake taken. A frame an SDL event or a grace brings before
+/// the commit doesn't judge the attempt, which goes on to the frame after the commit (#3819): on the CI
+/// desktop a focus change lands in the 100 ms before most commits. An attempt counts only when no SDL
+/// event came between the commit and its frame (like KeyDuringIdleWaitLayer's); an excluded one is
+/// stopped, its own late wake is let through, and a new one is armed on the next quiet frame.
 /// The sampler is stopped in onDetach(), before ~Application() destroys the window (#1502).
 class StaticFrameLayer : public Core::Layer
 {
@@ -867,10 +869,24 @@ class StaticFrameLayer : public Core::Layer
         const std::uint64_t wakesTaken = wakes - m_WakesBefore;
         const bool waitWoke = Core::ApplicationTestAccessor::lastIdleWaitWoke(app);
         const bool waitPolled = Core::ApplicationTestAccessor::lastIdleWaitPolledEvent(app);
-        // An excluded attempt's sampler is mid-sample: stopping it waits for that, and its wake, pushed as
-        // the pass ends, draws one more frame, which isn't quiet, so nothing is armed on it.
-        m_Publisher.reset();
         const std::uint64_t armedToFrameMs = (frameNs - m_ArmedAtNs) / 1'000'000U;
+        if (publishedAt == 0 && (events > 0 || inGrace))
+        {
+            // #3819: an SDL event (on the CI runner, a focus change as other tests' windows come and go) or
+            // a move/resize grace drew a frame before the publication committed. That says nothing about
+            // the publication's own frame, and the sampler is still mid-sample, so the attempt goes on and
+            // the first frame after the commit judges it. A quiet frame before the commit still does: the
+            // floor would have drawn it early.
+            m_Observed.attemptLog += std::format("#{}: before the commit, armed->frame {} ms, events [{}], grace {}; ",
+                                                 m_Observed.attempts,
+                                                 armedToFrameMs,
+                                                 eventTypes,
+                                                 inGrace);
+            return;
+        }
+        // An excluded attempt's sampler may still be finishing its pass: stopping it waits for that, and its
+        // wake, if not taken yet, draws one more frame, which isn't quiet, so nothing is armed on it.
+        m_Publisher.reset();
         const std::uint64_t publishToFrameMs = publishedAt != 0 ? (frameNs - publishedAt) / 1'000'000U : 0U;
         m_Observed.attemptLog += std::format("#{}: armed->frame {} ms, published {}, publish->frame {} ms, wakes taken {}, events [{}], "
                                              "idle wait woke {} polled {}, grace {}, hidden {}; ",

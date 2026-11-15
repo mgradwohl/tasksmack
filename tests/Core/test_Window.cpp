@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <exception>
+#include <ios>
 #include <iterator>
 #include <memory>
 #include <optional>
@@ -705,6 +706,47 @@ TEST_F(WindowTest, ApplySavedGeometryKeepsAnOffScreenPositionOnADisplay)
 }
 
 #ifdef _WIN32
+namespace
+{
+
+// The window's native handle, for the Win32 calls these tests make.
+[[nodiscard]] HWND nativeHandle(const Window& window)
+{
+    return static_cast<HWND>(
+        SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+}
+
+// Pumps events until SDL says the window is minimized, or a timeout (#3819). SDL sets its flag from the
+// window's own messages (WM_WINDOWPOSCHANGED with IsIconic()), and on the CI runner's shared desktop,
+// where other test processes' windows come and go and take the activation, one pump straight after the
+// minimize did not always find it there. Waits on the state, never on a frame count or a fixed sleep.
+[[nodiscard]] bool waitForMinimized(const Window& window)
+{
+    constexpr auto MINIMIZE_TIMEOUT = std::chrono::seconds{5};
+    constexpr auto POLL_INTERVAL = std::chrono::milliseconds{10};
+    const auto deadline = std::chrono::steady_clock::now() + MINIMIZE_TIMEOUT;
+    SDL_PumpEvents();
+    while (!window.isMinimized() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(POLL_INTERVAL);
+        SDL_PumpEvents();
+    }
+    return window.isMinimized();
+}
+
+// What SDL and Windows each say about the window, for a failure message: a window Windows minimized
+// that SDL never heard of reads differently from one Windows never minimized.
+[[nodiscard]] std::string describeMinimizeState(const Window& window)
+{
+    auto* const hwnd = nativeHandle(window);
+    std::ostringstream text;
+    text << "SDL flags 0x" << std::hex << SDL_GetWindowFlags(window.getHandle()) << std::dec << ", IsIconic " << (IsIconic(hwnd) != FALSE)
+         << ", IsWindowVisible " << (IsWindowVisible(hwnd) != FALSE) << ", foreground " << (GetForegroundWindow() == hwnd);
+    return text.str();
+}
+
+} // namespace
+
 // #1279: the borderless window's subclass procedure turns only Win+Down into a restore. Every other
 // shell minimize of the client-side maximized window -- the taskbar button, here, with no key held --
 // still reaches SDL and minimizes it, and the window comes back maximized, as a native one does.
@@ -720,17 +762,15 @@ TEST_F(WindowTest, ShellMinimizeWithoutWinDownStillMinimizesTheMaximizedWindow)
         {
             GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
         }
-        auto* const hwnd = static_cast<HWND>(
-            SDL_GetPointerProperty(SDL_GetWindowProperties(window.getHandle()), SDL_PROP_WINDOW_WIN32_HWND_POINTER, nullptr));
+        auto* const hwnd = nativeHandle(window);
         ASSERT_NE(hwnd, nullptr);
 
         SendMessageW(hwnd, WM_SYSCOMMAND, SC_MINIMIZE, 0);
-        SDL_PumpEvents();
 
-        EXPECT_TRUE(window.isMinimized());
+        ASSERT_TRUE(waitForMinimized(window)) << "the shell's minimize never minimized the window: " << describeMinimizeState(window);
         EXPECT_TRUE(window.isMaximized());
         EXPECT_FALSE(window.restoreForShellMinimize()); // Win+Down is not held
-        EXPECT_TRUE(window.isMinimized());
+        EXPECT_TRUE(window.isMinimized()) << describeMinimizeState(window);
     }
     catch (const std::exception& e)
     {
@@ -792,8 +832,7 @@ TEST_F(WindowTest, MinimizeAlreadyCarriedOutWithWinDownIsUndoneAndRestored)
             GTEST_SKIP() << "Maximize unavailable on this display (headless environment)";
         }
         window.minimize();
-        SDL_PumpEvents();
-        ASSERT_TRUE(window.isMinimized());
+        ASSERT_TRUE(waitForMinimized(window)) << "SDL_MinimizeWindow() never minimized the window: " << describeMinimizeState(window);
 
         EXPECT_TRUE(window.restoreForShellMinimize());
 
