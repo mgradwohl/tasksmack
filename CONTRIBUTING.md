@@ -3397,6 +3397,15 @@ over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, s
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
 the fixture's settings kept.
 
+`validate-linux-administrator` checks the "TaskSmack (Administrator)" launcher (#3905), x64, on a VM runner,
+since pkexec needs a running polkitd. It installs this run's `.deb` with `pkexec`, `polkitd` and Xvfb. `pkaction`
+must know `app.tasksmack.TaskSmack.administrator`, with `exec.path` `/usr/bin/TaskSmack` and `allow_gui`, and the
+installed launcher's `Exec` must be `pkexec /usr/bin/TaskSmack`. A CI-only polkit rule then lets the runner's user
+through without a password, and the job runs the launcher's own command under Xvfb. TaskSmack must open its
+window as root with 13 effective capabilities (#3621), quit on SIGTERM, and save the settings to the runner user's
+`~/.config/tasksmack`, owned by them, while root's stays untouched: the user comes from `PKEXEC_UID`, which CI's
+sudo-based "Root launch (Linux)" doesn't reach. The password dialog stays a manual check.
+
 `validate-windows-upgrade` checks the Windows installer's upgrade over the last published release (#3757), on
 both architectures. `fetch-previous-windows-release` (Linux, where cosign runs) picks the published release
 with the highest `vX.Y.Z` below the version being built, so a patch on `release/X.Y` upgrades from that line

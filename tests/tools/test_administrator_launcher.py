@@ -74,9 +74,12 @@ class AdministratorLauncherTest(unittest.TestCase):
     def test_only_the_system_packages_install_both_files(self):
         rules = INSTALL_RULES.read_text(encoding="utf-8")
         for name in (LAUNCHER.name, POLICY.name):
-            match = re.search(re.escape(name) + r"\s+DESTINATION\s+\S+\s+COMPONENT\s+(\w+)", rules)
+            match = re.search(re.escape(name) + r"\s+DESTINATION\s+\S+\s+COMPONENT\s+(\w+)(\s+EXCLUDE_FROM_ALL)?", rules)
             self.assertIsNotNone(match, name)
             self.assertEqual(match.group(1), "administrator", name)
+            # A plain `cmake --install --prefix P` leaves it out (#3898): both files name /usr/bin/TaskSmack
+            # whatever P is. The packages still get it, by naming the component.
+            self.assertIsNotNone(match.group(2), f"{name} must be EXCLUDE_FROM_ALL")
         packages = re.search(r'if\(CPACK_GENERATOR STREQUAL "DEB" OR CPACK_GENERATOR STREQUAL "RPM"\)\s*\n\s*set\(CPACK_INSTALL_CMAKE_PROJECTS "([^"]*)"',
                              CPACK_CONFIG.read_text(encoding="utf-8"))
         self.assertIsNotNone(packages)

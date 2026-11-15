@@ -151,15 +151,20 @@ endif()
 # "TaskSmack (Administrator)" (#3580): a second launcher that runs pkexec /usr/bin/TaskSmack, and the polkit
 # action that lets pkexec start it with the display. In the "administrator" component, which the .deb and .rpm
 # carry (cmake/CPackProjectConfig.cmake.in): the action names TaskSmack's path in a system install, which the
-# portable .tar.gz doesn't have; from one, start TaskSmack with sudo instead.
+# portable .tar.gz doesn't have; from one, start TaskSmack with sudo instead. EXCLUDE_FROM_ALL (#3898): a plain
+# `cmake --install --prefix P` (tools/install-local.sh, a source install) leaves both out, since both name
+# /usr/bin/TaskSmack whatever P is, and polkit reads actions only from /usr/share; the packages name the
+# component, so CPack still installs it.
 if(UNIX AND NOT APPLE)
     install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.Administrator.desktop
         DESTINATION ${CMAKE_INSTALL_DATADIR}/applications
         COMPONENT administrator
+        EXCLUDE_FROM_ALL
     )
     install(FILES ${CMAKE_SOURCE_DIR}/assets/linux/app.tasksmack.TaskSmack.Administrator.policy
         DESTINATION ${CMAKE_INSTALL_DATADIR}/polkit-1/actions
         COMPONENT administrator
+        EXCLUDE_FROM_ALL
     )
 endif()
 
