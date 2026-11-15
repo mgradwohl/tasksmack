@@ -18,7 +18,7 @@
 // worker, waited for) is destroyed first.
 
 #include "App/Panels/ProcessActionRun.h"
-#include "App/Panels/RestartAsAdministratorButton.h"
+#include "App/Panels/RefusalOffer.h"
 #include "Domain/PriorityConfig.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
@@ -131,8 +131,7 @@ class ProcessPriorityView
     void onSelectionChanged() noexcept
     {
         ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
-        m_Retry.reset();
-        m_OfferRestart = false;
+        m_Offer.clear();
         m_NiceValue = Domain::Priority::NORMAL_NICE;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -164,8 +163,7 @@ class ProcessPriorityView
         m_Changed = true;
         m_EditTarget = target;
         m_Error.clear();
-        m_Retry.reset(); // a new edit replaces the refused one
-        m_OfferRestart = false;
+        m_Offer.clear(); // a new edit replaces the refused one
     }
 
     /// Drops a pending edit that may be for a process other than @p liveTarget, which the panel can
@@ -229,8 +227,7 @@ class ProcessPriorityView
             finishApply(Platform::ProcessActionResult::error("Process actions unavailable"), revertTo);
             return;
         }
-        m_Retry.reset();
-        m_OfferRestart = false;
+        m_Offer.clear();
         m_ApplyTarget = target;
         Platform::AuthorizedAction retry;
         retry.kind = Platform::AuthorizedAction::Kind::SetPriority;
@@ -253,15 +250,22 @@ class ProcessPriorityView
     /// of permission, the platform can ask for authorization, and nothing has changed since.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !applying() && !heldForOtherPriorityChange();
+        return refusalOffer() == RefusalOfferKind::Retry;
     }
 
     /// Whether the error line offers "Restart as administrator..." in its place (#3669): the last apply was
     /// refused for want of permission, there is no helper to retry it, and TaskSmack can restart elevated
-    /// (RestartAsAdministrator::offersRestart()). Gone with the next edit, apply or selection change.
+    /// (decideRefusalOffer()). Gone with the next edit, apply or selection change.
     [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
     {
-        return m_OfferRestart && !applying();
+        return refusalOffer() == RefusalOfferKind::Restart;
+    }
+
+    /// What the error line offers beside it now (drawRefusalOffer()): nothing while an apply runs, and no
+    /// "Authenticate and retry" while another priority change is held (heldForOtherPriorityChange()).
+    [[nodiscard]] RefusalOfferKind refusalOffer() const noexcept
+    {
+        return m_Offer.shown(applying(), heldForOtherPriorityChange());
     }
 
     /// Whether another priority change for this process is asked about or running elsewhere, and why
@@ -290,12 +294,16 @@ class ProcessPriorityView
     /// password prompt (IProcessActions::runAuthorized()), on the apply worker.
     void retryAuthorized()
     {
-        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
+        if (!offersAuthenticateAndRetry())
         {
             return;
         }
-        const Retry retry = *m_Retry;
-        m_Retry.reset();
+        const std::optional<Retry> taken = m_Offer.takeRetry();
+        if (!taken.has_value())
+        {
+            return;
+        }
+        const Retry& retry = *taken;
         m_ApplyTarget = retry.action.target;
         static_cast<void>(m_ApplyRun.start(
             std::format("Waiting for authorization to set the priority of PID {}...", retry.action.target.pid),
@@ -410,13 +418,9 @@ class ProcessPriorityView
                     const Platform::AuthorizedAction& action,
                     std::int32_t revertTo)
     {
-        const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
-        if (result.permissionDenied && helperCanRedo)
-        {
-            m_Retry = Retry{.action = action, .actions = actions, .revertTo = revertTo};
-            return;
-        }
-        m_OfferRestart = RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered());
+        static_cast<void>(m_Offer.offer(result.permissionDenied,
+                                        Retry{.action = action, .actions = actions, .revertTo = revertTo},
+                                        actions->actionCapabilities().canAuthorizeInteractively));
     }
 
     /// An apply's result, on the UI thread.
@@ -440,8 +444,7 @@ class ProcessPriorityView
     std::string m_Error;            // Persistent error message for priority changes
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
-    std::optional<Retry> m_Retry;
-    bool m_OfferRestart = false;                       // offersRestartAsAdministrator(): the last apply was refused, with no helper (#3669)
+    RefusalOffer<Retry> m_Offer;                       // The error line's Retry or Restart as administrator (#2308, #3669); no timeout
     const char* m_HoldReason = nullptr;                // Another priority change runs elsewhere: Apply waits, saying why (#3429, #3467)
     Platform::ProcessTarget m_ApplyTarget = NO_TARGET; // The process the running apply is for (applyingTarget())
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.

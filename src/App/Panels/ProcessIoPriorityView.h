@@ -27,6 +27,7 @@
 #include "App/Panels/IoPriorityText.h"
 #include "App/Panels/LazyBackgroundRead.h"
 #include "App/Panels/ProcessActionRun.h"
+#include "App/Panels/RefusalOffer.h"
 #include "App/Panels/RestartAsAdministratorButton.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/SamplingConfig.h"
@@ -372,8 +373,7 @@ class ProcessIoPriorityView
     void onSelectionChanged() noexcept
     {
         ++m_Generation; // an apply still running reports to nobody: its process is no longer shown
-        m_Retry.reset();
-        m_OfferRestart = false;
+        m_Offer.clear();
         m_Edit = {};
         m_Changed = false;
         m_EditTarget = NO_TARGET;
@@ -468,8 +468,7 @@ class ProcessIoPriorityView
         m_Changed = true;
         m_EditTarget = target;
         m_Error.clear();
-        m_Retry.reset(); // a new edit replaces the refused one
-        m_OfferRestart = false;
+        m_Offer.clear(); // a new edit replaces the refused one
     }
 
     /// The user picked class @p ioClass in the combo for @p target. A class with levels keeps the
@@ -547,8 +546,7 @@ class ProcessIoPriorityView
             finishApply(Platform::ProcessActionResult::error("Process actions unavailable"));
             return;
         }
-        m_Retry.reset();
-        m_OfferRestart = false;
+        m_Offer.clear();
         Platform::AuthorizedAction retry;
         retry.kind = Platform::AuthorizedAction::Kind::SetIoPriority;
         retry.target = target;
@@ -562,16 +560,10 @@ class ProcessIoPriorityView
                 if (generation == m_Generation)
                 {
                     finishApply(result);
-                    const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
-                    if (result.permissionDenied && helperCanRedo)
-                    {
-                        m_Retry = Retry{.action = retry, .actions = actions};
-                    }
-                    else // no helper to retry it (#3669): Restart as administrator... instead, where TaskSmack can restart
-                    {
-                        m_OfferRestart = RestartAsAdministrator::offersRestart(
-                            result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered());
-                    }
+                    // Authenticate and retry through the helper, or with none, Restart as administrator... (#3669).
+                    static_cast<void>(m_Offer.offer(result.permissionDenied,
+                                                    Retry{.action = retry, .actions = actions},
+                                                    actions->actionCapabilities().canAuthorizeInteractively));
                 }
             }));
     }
@@ -579,7 +571,7 @@ class ProcessIoPriorityView
     /// Whether the error line offers "Authenticate and retry" (#2308), as ProcessPriorityView's does.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !applying();
+        return refusalOffer() == RefusalOfferKind::Retry;
     }
 
     /// Whether the error line offers "Restart as administrator..." in its place (#3669), as
@@ -587,7 +579,13 @@ class ProcessIoPriorityView
     /// retry it, where TaskSmack can restart elevated.
     [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
     {
-        return m_OfferRestart && !applying();
+        return refusalOffer() == RefusalOfferKind::Restart;
+    }
+
+    /// What the error line offers beside it now (drawRefusalOffer()): nothing while an apply runs.
+    [[nodiscard]] RefusalOfferKind refusalOffer() const noexcept
+    {
+        return m_Offer.shown(applying());
     }
 
     /// Whether the read line offers "Restart as administrator..." (#3669): the read of the process's
@@ -605,12 +603,16 @@ class ProcessIoPriorityView
     /// password prompt (IProcessActions::runAuthorized()), on the apply worker.
     void retryAuthorized()
     {
-        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
+        if (!offersAuthenticateAndRetry())
         {
             return;
         }
-        const Retry retry = *m_Retry;
-        m_Retry.reset();
+        const std::optional<Retry> taken = m_Offer.takeRetry();
+        if (!taken.has_value())
+        {
+            return;
+        }
+        const Retry& retry = *taken;
         static_cast<void>(m_ApplyRun.start(
             std::format("Waiting for authorization to set the I/O priority of PID {}...", retry.action.target.pid),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
@@ -742,7 +744,7 @@ class ProcessIoPriorityView
     Platform::ProcessTarget m_CurrentTarget = NO_TARGET;
     std::string m_Error;
     std::string m_ReadError;
-    std::optional<Retry> m_Retry;
+    RefusalOffer<Retry> m_Offer; // The error line's Retry or Restart as administrator (#2308, #3669); never ticked: no timeout
     // The current value's read and its cadence. Destroying the view waits for at most one read, which
     // touches only the panel's actions.
     Detail::LazyBackgroundRead<Platform::IoPriorityReadResult> m_Read{
@@ -751,7 +753,6 @@ class ProcessIoPriorityView
     std::optional<Platform::IoPriority> m_Current;
     bool m_Changed = false;
     bool m_ApplyWhenReadDenied = false; // allowApplyWhenReadDenied()'s
-    bool m_OfferRestart = false;        // offersRestartAsAdministrator(): the last apply was refused, with no helper (#3669)
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };

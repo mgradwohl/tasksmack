@@ -28,6 +28,7 @@
 #include "App/Panels/ProcessTableNavigation.h"
 #include "App/Panels/ProcessTreeFlatten.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
+#include "App/Panels/RefusalOffer.h"
 #include "App/Panels/RunTaskDialog.h"
 #include "App/Panels/StuckProcesses.h"
 #include "App/Panels/UdpTraceSwitch.h"
@@ -439,15 +440,24 @@ class ProcessesPanel : public Panel
     /// refused priority change (Efficiency mode included) while Process Details has one running for that process (#3467).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_RowRetry.has_value() && m_RowActionResultSeconds > 0.0F && !rowActionRunning() &&
-               (!Detail::changesPriority(m_RowRetry->action.kind) || !priorityHeldElsewhere(m_RowRetry->action.target));
+        return rowRefusalOffer() == RefusalOfferKind::Retry;
     }
 
     /// Whether the toolbar offers "Restart as administrator..." after a refused row action (#3658): refused for
     /// want of permission, with no helper to retry it, where TaskSmack can restart elevated.
     [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
     {
-        return m_RowOfferRestart && m_RowActionResultSeconds > 0.0F && !rowActionRunning();
+        return rowRefusalOffer() == RefusalOfferKind::Restart;
+    }
+
+    /// What the toolbar offers beside a refused row action's line now (drawRefusalOffer()): nothing while a row
+    /// action runs, and no "Authenticate and retry" for a priority change held elsewhere (offersAuthenticateAndRetry()).
+    [[nodiscard]] RefusalOfferKind rowRefusalOffer() const noexcept
+    {
+        const RowRetry* retry = m_RowOffer.retry();
+        const bool retryHeld =
+            retry != nullptr && Detail::changesPriority(retry->action.kind) && priorityHeldElsewhere(retry->action.target);
+        return m_RowOffer.shown(rowActionRunning(), retryHeld);
     }
 
     /// The file an elevated TaskSmack's Open file location didn't show (#3669), while its result is up: the toolbar
@@ -455,7 +465,7 @@ class ProcessesPanel : public Panel
     [[nodiscard]] const std::string& rowWithheldPath() const noexcept
     {
         static const std::string none;
-        return (m_RowActionResultSeconds > 0.0F && !rowActionRunning()) ? m_RowWithheldPath : none;
+        return (m_RowOffer.lineShown() && !rowActionRunning()) ? m_RowWithheldPath : none;
     }
 
     /// Presses the toolbar's "Authenticate and retry", for tests.
@@ -694,11 +704,10 @@ class ProcessesPanel : public Panel
         Platform::AuthorizedAction action;
         RowResultFormat format;
     };
-    std::optional<RowRetry> m_RowRetry;
-    bool m_RowOfferRestart = false; // offersRestartAsAdministrator(): the last row action was refused, with no helper (#3658)
-    std::string m_RowWithheldPath;  // rowWithheldPath(): the last row action's withheld file (#3669)
+    // The toolbar result line's countdown, and its Retry or Restart as administrator (#2308, #3658).
+    RefusalOffer<RowRetry> m_RowOffer;
+    std::string m_RowWithheldPath;                 // rowWithheldPath(): the last row action's withheld file (#3669)
     Detail::ActionResultMessage m_RowActionResult; // Shown in the toolbar for a few seconds
-    float m_RowActionResultSeconds = 0.0F;
     // The process the row menu was opened on, copied on the same right-press that selected it: the
     // table re-sorts every sample, so by the button's release another row can be under the pointer
     // and the menu would act on a process other than the highlighted one (#1365).

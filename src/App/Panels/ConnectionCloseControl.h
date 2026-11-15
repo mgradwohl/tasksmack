@@ -14,7 +14,7 @@
 #include "App/Panels/ConnectionsView.h"
 #include "App/Panels/ProcessActionRun.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
-#include "App/Panels/RestartAsAdministratorButton.h"
+#include "App/Panels/RefusalOffer.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 
@@ -121,44 +121,46 @@ class ConnectionCloseControl
             [this, actions, retry](const Platform::ProcessActionResult& result)
             {
                 finish(m_RunRow, result);
-                const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
-                if (result.permissionDenied && helperCanRedo)
-                {
-                    m_Retry = Retry{.actions = actions, .action = retry};
-                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS; // time to read it and decide
-                }
-                // No helper to retry it (#3669): Restart as administrator... instead, where TaskSmack can restart.
-                else if (RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered()))
-                {
-                    m_OfferRestart = true;
-                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
-                }
+                // Retry as administrator through the helper, or with none, Restart as administrator... (#3669).
+                static_cast<void>(m_Offer.offer(result.permissionDenied,
+                                                Retry{.actions = actions, .action = retry},
+                                                actions->actionCapabilities().canAuthorizeInteractively));
             }));
     }
 
     /// Whether the result line offers "Retry as administrator" (#2308; AuthorizeWording::RETRY_TEXT).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        return m_Retry.has_value() && !busy();
+        return m_Offer.shown(busy()) == RefusalOfferKind::Retry;
     }
 
     /// Whether the result line offers "Restart as administrator..." in its place (#3669): the close was refused
     /// for want of permission, with no helper to retry it, where TaskSmack can restart elevated.
     [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
     {
-        return m_OfferRestart && !busy();
+        return m_Offer.shown(busy()) == RefusalOfferKind::Restart;
+    }
+
+    /// What the result line offers beside it now: Retry or Restart as administrator, or neither (drawRefusalOffer()).
+    [[nodiscard]] RefusalOfferKind refusalOffer() const noexcept
+    {
+        return m_Offer.shown(busy());
     }
 
     /// "Retry as administrator" was pressed: the refused close again, by the helper as an administrator,
     /// after its UAC prompt (IProcessActions::runAuthorized()).
     void retryAuthorized()
     {
-        if (!m_Retry.has_value() || busy())
+        if (busy())
         {
             return;
         }
-        const Retry retry = *m_Retry;
-        m_Retry.reset();
+        const std::optional<Retry> taken = m_Offer.takeRetry();
+        if (!taken.has_value())
+        {
+            return;
+        }
+        const Retry& retry = *taken;
         static_cast<void>(m_Run.start(
             std::format("Waiting for authorization to close {}'s connection...", m_RunRow.process),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
@@ -175,15 +177,9 @@ class ConnectionCloseControl
         {
             return;
         }
-        if (m_ResultSecondsLeft > 0.0F)
+        if (m_Offer.tick(deltaSeconds))
         {
-            m_ResultSecondsLeft -= deltaSeconds;
-            if (m_ResultSecondsLeft <= 0.0F)
-            {
-                m_Result = {};
-                m_Retry.reset();
-                m_OfferRestart = false;
-            }
+            m_Result = {};
         }
     }
 
@@ -222,8 +218,6 @@ class ConnectionCloseControl
 
     void finish(const ConnectionRow& row, const Platform::ProcessActionResult& result)
     {
-        m_Retry.reset();
-        m_OfferRestart = false;
         if (result.success)
         {
             m_Result = {.ok = true, .text = std::format("Closed {}'s connection to {}", row.process, row.remote)};
@@ -235,18 +229,16 @@ class ConnectionCloseControl
                 .text = std::format("Couldn't close {}'s connection to {}: {}", row.process, row.remote, result.errorMessage),
             };
         }
-        m_ResultSecondsLeft = RESULT_SECONDS;
+        m_Offer.showLine(RESULT_SECONDS); // the last close's offer goes with its line
         m_Closed = m_Closed || result.success;
     }
 
     std::optional<ConnectionRow> m_Pending;
     std::string m_Question;
     bool m_ShowConfirm = false;
-    std::optional<Retry> m_Retry;
-    bool m_OfferRestart = false; ///< offersRestartAsAdministrator(): refused, with no helper (#3669)
+    RefusalOffer<Retry> m_Offer; ///< The result line's countdown, and its Retry or Restart as administrator (#2308, #3669)
     ConnectionRow m_RunRow;      ///< The connection the running (or last) close is for
     Detail::ActionResultMessage m_Result;
-    float m_ResultSecondsLeft = 0.0F;
     bool m_Closed = false;
     // Last, so it is destroyed (stopping and waiting for the worker) before the members its finish uses.
     ProcessActionRun m_Run;

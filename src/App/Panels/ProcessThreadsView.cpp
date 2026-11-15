@@ -1,12 +1,11 @@
 #include "ProcessThreadsView.h"
 
 #include "AuthenticateToReadButton.h"
-#include "AuthorizeWording.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessDetailsPanel_ActionHelpers.h"
-#include "RestartAsAdministratorButton.h"
+#include "RefusalOffer.h"
 #include "ThreadActionControl.h"
 #include "UI/CellText.h"
 #include "UI/FrameOutline.h"
@@ -244,19 +243,8 @@ void ProcessThreadsView::renderActionResult()
     ImGui::PushStyleColor(ImGuiCol_Text, result.ok ? scheme.textSuccess : scheme.textError);
     ImGui::TextWrapped("%s", result.text.c_str());
     ImGui::PopStyleColor();
-    // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
-    if (m_ActionControl.offersAuthenticateAndRetry())
-    {
-        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
-        {
-            m_ActionControl.retryAuthorized();
-        }
-        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
-    }
-    else if (m_ActionControl.offersRestartAsAdministrator())
-    {
-        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
-    }
+    // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3669).
+    static_cast<void>(drawRefusalOffer(m_ActionControl.refusalOffer(), [this] { m_ActionControl.retryAuthorized(); }));
 }
 
 void ProcessThreadsView::renderConfirmation(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)

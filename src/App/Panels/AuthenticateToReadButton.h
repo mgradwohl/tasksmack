@@ -10,9 +10,8 @@
 // a refused read offers "Restart as administrator..." instead (#3658, RestartAsAdministratorButton.h).
 
 #include "AuthorizeWording.h"
+#include "RefusalOffer.h"
 #include "RestartAsAdministratorButton.h"
-
-#include <imgui.h>
 
 #include <concepts>
 
@@ -35,21 +34,17 @@ concept AuthenticatingView = requires(View& view, const View& constView) {
 /// otherwise.
 template<AuthenticatingView View> void drawAuthenticateToReadButton(View& view)
 {
+    // offersAuthenticateToRead() is the helper's say: it offers the read only for a refusal it can redo.
     const bool offersRead = view.offersAuthenticateToRead();
-    if (RestartAsAdministrator::offersRestart(view.readRefusedForPermission(), offersRead, RestartAsAdministrator::offered()))
-    {
-        static_cast<void>(RestartAsAdministrator::drawButton());
-        return;
-    }
-    if (!offersRead)
-    {
-        return;
-    }
-    if (ImGui::SmallButton(AuthorizeWording::READ_LABEL))
-    {
-        view.requestAuthorizedRead();
-    }
-    ImGui::SetItemTooltip("%s", AuthorizeWording::READ_TOOLTIP);
+    const RefusalOfferKind kind = decideRefusalOffer(
+        view.readRefusedForPermission() || offersRead, /*retryable=*/true, offersRead, RestartAsAdministrator::offered());
+    static_cast<void>(drawRefusalOffer(
+        kind,
+        [&view] { view.requestAuthorizedRead(); },
+        RefusalOfferButton{
+            .retryLabel = AuthorizeWording::READ_LABEL,
+            .retryTooltip = AuthorizeWording::READ_TOOLTIP,
+        }));
 }
 
 } // namespace App::Detail

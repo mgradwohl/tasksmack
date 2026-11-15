@@ -1,6 +1,5 @@
 #include "ProcessActionsView.h"
 
-#include "AuthorizeWording.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
@@ -11,7 +10,7 @@
 #include "ProcessDumpView.h"
 #include "ProcessSchedPolicyDialog.h"
 #include "ProcessWaitChainDialog.h"
-#include "RestartAsAdministratorButton.h"
+#include "RefusalOffer.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 #include "VirusTotalLookup.h"
@@ -381,19 +380,8 @@ void ProcessActionsView::renderResultFeedback()
     // The colour comes from the result's flag, not from searching its text for "Error" (#1203).
     const ImVec4 color = m_LastResult.ok ? theme.scheme().textSuccess : theme.scheme().textError;
     ImGui::TextColored(color, "%s", m_LastResult.text.c_str());
-    // A permission refusal an administrator could redo (#2308): the shield and the words, never colour alone.
-    if (offersAuthenticateAndRetry())
-    {
-        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
-        {
-            retryAuthorized();
-        }
-        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
-    }
-    else if (offersRestartAsAdministrator())
-    {
-        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3658)
-    }
+    // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3658).
+    static_cast<void>(drawRefusalOffer(refusalOffer(), [this] { retryAuthorized(); }));
     ImGui::Spacing();
 }
 

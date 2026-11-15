@@ -8,6 +8,7 @@
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessPriorityView.h"
+#include "RefusalOffer.h"
 #include "RestartAsAdministratorButton.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/IconsFontAwesome6.h"
@@ -176,19 +177,9 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         ImGui::PushTextWrapPos(0.0F);
         ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_Error.c_str());
         ImGui::PopTextWrapPos();
-        // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
-        if (offersAuthenticateAndRetry())
-        {
-            if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
-            {
-                retryAuthorized();
-            }
-            ImGui::SetItemTooltip("%s", AuthorizeWording::IO_PRIORITY_TOOLTIP);
-        }
-        else if (offersRestartAsAdministrator())
-        {
-            static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
-        }
+        // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3669).
+        static_cast<void>(drawRefusalOffer(
+            refusalOffer(), [this] { retryAuthorized(); }, RefusalOfferButton{.retryTooltip = AuthorizeWording::IO_PRIORITY_TOOLTIP}));
     }
     else if (!m_ReadError.empty())
     {
