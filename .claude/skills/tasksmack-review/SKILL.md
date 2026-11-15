@@ -125,6 +125,10 @@ Changes under `.github/workflows/` need the maintainer's explicit OK before they
 - **release.yml is proven by a dry run:** `gh workflow run release.yml --ref <branch> -f dry_run=true`. The PR states
   the run and each affected job's result. Tag runs and dry runs differ only where they must: publishing, attesting,
   and the signing gate.
+- **Required checks and the merge queue (#3818):** a workflow behind a required check keeps its `merge_group`
+  trigger, and nothing in it skips the check or cancels a queue run on a merge group: no `pull_request`-only `if`,
+  path classifier or PR-number concurrency group. `REQUIRED_CHECKS` in `tests/tools/test_workflow_run_steps.py`
+  changes with the ruleset.
 - **Skipped dependencies:** a job whose `needs:` include one that can be skipped (signing while it's off) uses
   `if: ${{ !cancelled() && needs.<job>.result == 'success' }}`. The implicit `success()` treats a skipped
   dependency as a failure and silently skips the job (#2721).

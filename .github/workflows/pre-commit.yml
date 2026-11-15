@@ -5,11 +5,16 @@ on:
     branches: [main, 'release/**']
   pull_request:
     branches: [main, 'release/**']
+  # "Run pre-commit checks" is a required check, so a merge queue's merge group runs it too (#3818).
+  merge_group:
+    types: [checks_requested]
 
 # A new push to a PR cancels that PR's superseded run; pushes to main or a release branch get one
-# group per commit and are never cancelled.
+# group per commit and are never cancelled. A merge group is keyed on its own ref
+# (refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>, one per queue entry), so queue runs never
+# cancel each other (#3818).
 concurrency:
-  group: pre-commit-${{ github.event.pull_request.number || github.sha }}
+  group: pre-commit-${{ github.event.pull_request.number || (github.event_name == 'merge_group' && github.ref) || github.sha }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions: {}
@@ -57,12 +62,18 @@ jobs:
         with:
           persist-credentials: false
 
-      # A pull request's version lands on its base branch; a push's is on the pushed branch. Both
-      # reach the shell as environment variables, never as inline expressions.
+      # A pull request's version lands on its base branch; a push's is on the pushed branch; a merge
+      # group's on the branch its queue merges into (merge_group.base_ref, refs/heads/<branch>; its
+      # own ref_name is gh-readonly-queue/<branch>/pr-<N>-<sha>, #3818). They reach the shell as
+      # environment variables, never as inline expressions.
       - name: Compare PROJECT_VERSION with the published release tags
         env:
           BRANCH: ${{ github.base_ref || github.ref_name }}
+          MERGE_GROUP_BASE_REF: ${{ github.event.merge_group.base_ref }}
         run: |
+          if [[ -n "$MERGE_GROUP_BASE_REF" ]]; then
+            BRANCH="${MERGE_GROUP_BASE_REF#refs/heads/}"
+          fi
           python3 -I tools/check-version-ahead.py --self-test
           git ls-remote --tags --refs origin 'v*' > "$RUNNER_TEMP/release-tags.txt"
           python3 -I tools/check-version-ahead.py --branch "$BRANCH" --tags-file "$RUNNER_TEMP/release-tags.txt"

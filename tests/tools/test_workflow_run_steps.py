@@ -43,6 +43,12 @@
   package cache key with a restore-key, a pinned release keeps its exact key (#3393), and the script
   installs an exact hit without apt.llvm.org, refreshes an older entry and falls back to it when
   apt.llvm.org is down, and still fails a cold miss (#3635). sudo, apt-get, curl and dpkg are stubs.
+- Merge queue (#3818): every check the "Main Builds" ruleset requires (REQUIRED_CHECKS, kept in one place)
+  comes from a workflow with the `merge_group` trigger, and none is skipped on a merge group. Each producing
+  workflow's jobs are simulated from their own `if:` expressions (a small expression evaluator), with the detect
+  jobs' steps run for real, and the CI Success and OSV gates' steps run on the results. Concurrency groups never
+  join two queue entries, no push or workflow_run trigger fires for a gh-readonly-queue branch, a merge group
+  saves no clang-tidy result cache, and pre-commit's version guard reads the queue's base branch.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -64,6 +70,7 @@ import tempfile
 import time
 import unittest
 import zipfile
+from dataclasses import dataclass, field
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -2181,6 +2188,596 @@ class WingetRehearsalTests(unittest.TestCase):
         for pin in ("WINGETCREATE_VERSION", "WINGETCREATE_SHA256", "WINGETCREATE_MANIFEST_VERSION"):
             self.assertEqual(len(re.findall(rf"(?m)^  {pin}: ", text)), 1, pin)
             self.assertEqual(len(re.findall(rf"(?m)^\s+{pin}: ", text)), 1, pin)
+
+
+# ---- Merge queue (#3818) --------------------------------------------------------------------------------------------
+
+# The status checks the "Main Builds" ruleset requires. UPDATE THIS LIST WHENEVER THE RULESET'S REQUIRED CHECKS
+# CHANGE: with a merge queue on, every one of them must report on a merge group, or the queue waits on it forever.
+REQUIRED_CHECKS = (
+    "CI Success",
+    "Run pre-commit checks",
+    "OSV Scan Required",
+    "Dependency Review",
+    "Static Analysis (Windows)",
+    "Analyze C++",
+)
+
+QUEUE_SHA = "0123456789abcdef0123456789abcdef01234567"
+QUEUE_REF = f"refs/heads/gh-readonly-queue/main/pr-3818-{QUEUE_SHA}"
+
+
+def queue_context(ref: str = QUEUE_REF, sha: str = QUEUE_SHA, base: str = "main") -> dict[str, object]:
+    """The `github` context of a merge_group run: no pull request, and a gh-readonly-queue ref of its own."""
+    return {
+        "github.event_name": "merge_group",
+        "github.ref": ref,
+        "github.ref_name": ref[len("refs/heads/"):],
+        "github.sha": sha,
+        "github.repository": "example/tasksmack",
+        "github.event.merge_group.base_ref": f"refs/heads/{base}",
+        "github.event.merge_group.base_sha": "f" * 40,
+        "github.event.merge_group.head_sha": sha,
+        "github.event.merge_group.head_ref": ref,
+    }
+
+
+def pull_request_context(number: int = 42, sha: str = "a" * 40) -> dict[str, object]:
+    return {
+        "github.event_name": "pull_request",
+        "github.ref": f"refs/pull/{number}/merge",
+        "github.ref_name": f"{number}/merge",
+        "github.sha": sha,
+        "github.repository": "example/tasksmack",
+        "github.base_ref": "main",
+        "github.head_ref": "feature",
+        "github.event.pull_request.number": str(number),
+        "github.event.pull_request.head.repo.full_name": "example/tasksmack",
+    }
+
+
+def push_context(ref: str = "refs/heads/main", sha: str = "b" * 40) -> dict[str, object]:
+    return {
+        "github.event_name": "push",
+        "github.ref": ref,
+        "github.ref_name": ref[len("refs/heads/"):],
+        "github.sha": sha,
+        "github.repository": "example/tasksmack",
+    }
+
+
+_EXPR_TOKEN = re.compile(
+    r"\s*(?:(?P<str>'(?:[^']|'')*')|(?P<num>\d+(?:\.\d+)?)|(?P<op>==|!=|&&|\|\||<=|>=|[!()<>,])"
+    r"|(?P<id>[A-Za-z_][A-Za-z0-9_-]*(?:\.(?:\*|[A-Za-z_][A-Za-z0-9_-]*))*))"
+)
+_STATUS_FUNCTIONS = ("always", "success", "failure", "cancelled")
+
+
+class Expression:
+    """A GitHub Actions expression evaluator for the subset these workflows' `if:` and `group:` use: literals,
+    context paths, `!`, `==`/`!=`, `&&`/`||` (which return an operand, as GitHub's do), parentheses and
+    always()/success()/failure()/cancelled()/startsWith()/contains(). An unknown context path is null."""
+
+    def __init__(self, text: str, context: dict[str, object]):
+        self.text = text.strip()
+        self.tokens: list[tuple[str, str]] = []
+        position = 0
+        while position < len(self.text):
+            match = _EXPR_TOKEN.match(self.text, position)
+            if match is None or match.end() == position:
+                raise ValueError(f"can't tokenize {self.text[position:]!r} in {self.text!r}")
+            kind = match.lastgroup or ""
+            self.tokens.append((kind, match.group(kind)))
+            position = match.end()
+            while position < len(self.text) and self.text[position].isspace():
+                position += 1
+        self.index = 0
+        self.context = context
+
+    @staticmethod
+    def truthy(value: object) -> bool:
+        return value not in (None, False, "", 0)
+
+    @staticmethod
+    def loose(value: object) -> str:
+        """The value as GitHub compares it: strings ignore case, booleans are true/false, null is empty."""
+        if value is None:
+            return ""
+        if value is True:
+            return "true"
+        if value is False:
+            return "false"
+        return str(value).lower()
+
+    def peek(self) -> tuple[str, str] | None:
+        return self.tokens[self.index] if self.index < len(self.tokens) else None
+
+    def take(self, value: str | None = None) -> tuple[str, str]:
+        token = self.peek()
+        if token is None or (value is not None and token[1] != value):
+            raise ValueError(f"expected {value!r} at token {self.index} of {self.text!r}")
+        self.index += 1
+        return token
+
+    def evaluate(self) -> object:
+        value = self.or_()
+        if self.peek() is not None:
+            raise ValueError(f"trailing tokens in {self.text!r}")
+        return value
+
+    def or_(self) -> object:
+        value = self.and_()
+        while self.peek() == ("op", "||"):
+            self.take()
+            right = self.and_()
+            value = value if self.truthy(value) else right
+        return value
+
+    def and_(self) -> object:
+        value = self.compare()
+        while self.peek() == ("op", "&&"):
+            self.take()
+            right = self.compare()
+            value = right if self.truthy(value) else value
+        return value
+
+    def compare(self) -> object:
+        value = self.unary()
+        while self.peek() in (("op", "=="), ("op", "!=")):
+            operator = self.take()[1]
+            right = self.unary()
+            equal = self.loose(value) == self.loose(right)
+            value = equal if operator == "==" else not equal
+        return value
+
+    def unary(self) -> object:
+        if self.peek() == ("op", "!"):
+            self.take()
+            return not self.truthy(self.unary())
+        return self.primary()
+
+    def primary(self) -> object:
+        kind, value = self.take()
+        if (kind, value) == ("op", "("):
+            inner = self.or_()
+            self.take(")")
+            return inner
+        if kind == "str":
+            return value[1:-1].replace("''", "'")
+        if kind == "num":
+            return float(value)
+        if kind != "id":
+            raise ValueError(f"unexpected {value!r} in {self.text!r}")
+        if value in ("true", "false"):
+            return value == "true"
+        if value == "null":
+            return None
+        if self.peek() == ("op", "("):
+            self.take()
+            args: list[object] = []
+            if self.peek() != ("op", ")"):
+                args.append(self.or_())
+                while self.peek() == ("op", ","):
+                    self.take()
+                    args.append(self.or_())
+            self.take(")")
+            return self.call(value, args)
+        return self.context.get(value)
+
+    def call(self, name: str, args: list[object]) -> object:
+        if name == "always":
+            return True
+        if name == "success":
+            return bool(self.context.get("__success__", True))
+        if name in ("failure", "cancelled"):
+            return False
+        if name == "startsWith":
+            return self.loose(args[0]).startswith(self.loose(args[1]))
+        if name == "contains":
+            haystack = args[0]
+            if isinstance(haystack, (list, tuple)):
+                return any(self.loose(item) == self.loose(args[1]) for item in haystack)
+            return self.loose(args[1]) in self.loose(haystack)
+        raise ValueError(f"unsupported function {name}() in {self.text!r}")
+
+
+def _strip_braces(expression: str) -> str:
+    expression = expression.strip()
+    if expression.startswith("${{") and expression.endswith("}}"):
+        return expression[3:-2].strip()
+    return expression
+
+
+def evaluate(expression: str, context: dict[str, object]) -> object:
+    return Expression(_strip_braces(expression), context).evaluate()
+
+
+def condition_holds(condition: str, context: dict[str, object]) -> bool:
+    """Whether a job or step `if:` passes; with no status function in it, GitHub's implicit success() applies."""
+    if not condition:
+        return bool(context.get("__success__", True))
+    condition = _strip_braces(condition)
+    if not any(re.search(rf"\b{name}\(", condition) for name in _STATUS_FUNCTIONS):
+        condition = f"success() && ({condition})"
+    return Expression.truthy(evaluate(condition, context))
+
+
+def render(text: str, context: dict[str, object]) -> str:
+    """Replaces each `${{ expression }}` in `text` by its value in `context` (null renders empty)."""
+
+    def replace(match: re.Match[str]) -> str:
+        value = Expression(match.group(1), context).evaluate()
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        return "" if value is None else str(value)
+
+    return re.sub(r"\$\{\{\s*(.*?)\s*\}\}", replace, text)
+
+
+@dataclass
+class WorkflowJob:
+    key: str
+    name: str = ""
+    condition: str = ""
+    needs: list[str] = field(default_factory=list)
+    with_values: dict[str, str] = field(default_factory=dict)
+
+
+def _unquote(value: str) -> str:
+    value = value.split(" #", 1)[0].strip()
+    if len(value) >= 2 and value[0] == value[-1] and value[0] in "'\"":
+        return value[1:-1]
+    return value
+
+
+def _inline_list(value: str) -> list[str]:
+    value = value.split(" #", 1)[0].strip()
+    if value.startswith("[") and value.endswith("]"):
+        return [_unquote(item) for item in value[1:-1].split(",") if item.strip()]
+    return [_unquote(value)] if value else []
+
+
+def _code_lines(path: Path) -> list[str]:
+    return [line for line in path.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#")]
+
+
+def _indent_of(line: str) -> int:
+    return len(line) - len(line.lstrip(" "))
+
+
+def _top_level_block(lines: list[str], key: str) -> list[str]:
+    """The lines under the top-level `key:` (`on:`, `jobs:`, `concurrency:`), up to the next top-level key."""
+    start = next((i for i, line in enumerate(lines) if re.match(rf"^['\"]?{key}['\"]?:\s*$", line)), None)
+    if start is None:
+        return []
+    end = next((i for i in range(start + 1, len(lines)) if lines[i].strip() and _indent_of(lines[i]) == 0), len(lines))
+    return lines[start + 1:end]
+
+
+def _children(block: list[str]) -> dict[str, tuple[str, list[str]]]:
+    """Each key at the block's first indent: its inline value and the lines nested under it."""
+    present = [line for line in block if line.strip()]
+    if not present:
+        return {}
+    indent = _indent_of(present[0])
+    out: dict[str, tuple[str, list[str]]] = {}
+    current: str | None = None
+    for line in block:
+        if line.strip() and _indent_of(line) == indent and not line.lstrip().startswith("- "):
+            key, _, value = line.strip().partition(":")
+            current = _unquote(key)
+            out[current] = (value.strip(), [])
+        elif current is not None:
+            out[current][1].append(line)
+    return out
+
+
+def _list_value(inline: str, nested: list[str]) -> list[str]:
+    if inline:
+        return _inline_list(inline)
+    return [_unquote(line.strip()[2:]) for line in nested if line.strip().startswith("- ")]
+
+
+def _scalar(inline: str, nested: list[str]) -> str:
+    if inline in (">", ">-", "|", "|-"):
+        return " ".join(line.strip() for line in nested if line.strip())
+    return _unquote(inline)
+
+
+def workflow_triggers(path: Path) -> dict[str, dict[str, tuple[str, list[str]]]]:
+    """Each `on:` event and its keys (`branches`, `types`, ...)."""
+    return {event: _children(nested) for event, (_, nested) in _children(_top_level_block(_code_lines(path), "on")).items()}
+
+
+def workflow_jobs(path: Path) -> dict[str, WorkflowJob]:
+    jobs: dict[str, WorkflowJob] = {}
+    for key, (_, body) in _children(_top_level_block(_code_lines(path), "jobs")).items():
+        job = WorkflowJob(key=key)
+        fields = _children(body)
+        if "name" in fields:
+            job.name = _scalar(*fields["name"])
+        if "if" in fields:
+            job.condition = _scalar(*fields["if"])
+        if "needs" in fields:
+            job.needs = _list_value(*fields["needs"])
+        if "with" in fields:
+            job.with_values = {name: _scalar(*value) for name, value in _children(fields["with"][1]).items()}
+        jobs[key] = job
+    return jobs
+
+
+def concurrency_group(path: Path) -> str:
+    fields = _children(_top_level_block(_code_lines(path), "concurrency"))
+    return _scalar(*fields["group"]) if "group" in fields else ""
+
+
+def _filter_matches(pattern: str, value: str) -> bool:
+    """A GitHub branch filter glob: `**` crosses `/`, `*` doesn't."""
+    regex = ""
+    index = 0
+    while index < len(pattern):
+        if pattern.startswith("**", index):
+            regex += ".*"
+            index += 2
+        elif pattern[index] == "*":
+            regex += "[^/]*"
+            index += 1
+        else:
+            regex += re.escape(pattern[index])
+            index += 1
+    return re.fullmatch(regex, value) is not None
+
+
+def branch_triggers(keys: dict[str, tuple[str, list[str]]], branch: str) -> bool:
+    """Whether an event with these filter keys (push or workflow_run) fires for `branch`."""
+    if "branches" in keys:
+        return any(_filter_matches(pattern, branch) for pattern in _list_value(*keys["branches"]))
+    if "branches-ignore" in keys:
+        return not any(_filter_matches(pattern, branch) for pattern in _list_value(*keys["branches-ignore"]))
+    # A push filtered by tags alone never fires for a branch.
+    return "tags" not in keys and "tags-ignore" not in keys
+
+
+def run_workflow_step(workflow: Path, job: str, step_name: str, context: dict[str, object], directory: Path,
+                      prelude: str = "") -> tuple[subprocess.CompletedProcess, dict[str, str]]:
+    """Runs one step's bash with its `${{ }}` rendered from `context`; returns the result and its GITHUB_OUTPUT."""
+    step = find_step(workflow, step_name, job=job)
+    output = directory / "github-output.txt"
+    output.write_text("", encoding="utf-8")
+    env = {key: render(value, context) for key, value in step.env.items()}
+    env.update({
+        "GITHUB_OUTPUT": posix(output),
+        "GITHUB_STEP_SUMMARY": posix(directory / "summary.md"),
+        "RUNNER_TEMP": posix(directory),
+    })
+    result = run_bash(prelude + render(step.run, context), directory, env)
+    outputs = {}
+    for line in output.read_text(encoding="utf-8").splitlines():
+        key, sep, value = line.partition("=")
+        if sep:
+            outputs[key] = value
+    return result, outputs
+
+
+class MergeQueueTests(unittest.TestCase):
+    """#3818: every required check runs, and can pass, on a merge queue's merge group."""
+
+    GATE_STEP = "Check all required jobs passed"
+
+    @staticmethod
+    def producers(check: str) -> list[tuple[Path, WorkflowJob]]:
+        """The jobs named `check` in workflows a pull request triggers (static-analysis.yml's dispatch-only
+        "Static Analysis (Windows)" never reports on a pull request, so it is not the required one)."""
+        found = []
+        for path in sorted(WORKFLOWS.glob("*.yml")):
+            if "pull_request" not in workflow_triggers(path):
+                continue
+            for job in workflow_jobs(path).values():
+                if job.name == check:
+                    found.append((path, job))
+        return found
+
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix="3818-merge-queue-"))
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def simulate(self, path: Path, context: dict[str, object]) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+        """Every job's result ('success' or 'skipped') for a run in which every job that starts succeeds; the
+        detect jobs' outputs come from running their own steps."""
+        jobs = workflow_jobs(path)
+        results: dict[str, str] = {}
+        outputs: dict[str, dict[str, str]] = {}
+        pending = list(jobs)
+        while pending:
+            ready = [key for key in pending if all(need in results for need in jobs[key].needs)]
+            self.assertTrue(ready, f"{path.name}: a needs cycle or an unknown job among {pending}")
+            for key in ready:
+                job = jobs[key]
+                scope = self.with_needs(context, {need: results[need] for need in job.needs}, outputs)
+                scope["__success__"] = all(results[need] == "success" for need in job.needs)
+                results[key] = "success" if condition_holds(job.condition, scope) else "skipped"
+                outputs[key] = self.job_outputs(path, job, scope) if results[key] == "success" else {}
+                pending.remove(key)
+        return results, outputs
+
+    def job_outputs(self, path: Path, job: WorkflowJob, scope: dict[str, object]) -> dict[str, str]:
+        detect_steps = {
+            ("ci.yml", "detect-docs-only"): "Classify the changes",
+            ("codeql.yml", "detect-docs-only"): "Normalize output",
+            ("osv-scanner.yml", "detect-relevant-changes"): "Normalize output",
+        }
+        step = detect_steps.get((path.name, job.key))
+        if step is not None:
+            result, out = run_workflow_step(path, job.key, step, scope, self.tmp)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return out
+        if "clang_tidy" in job.with_values:
+            # reusable-build-test.yml's tidy outputs for a run whose clang-tidy passed on every file.
+            ran = Expression.truthy(evaluate(job.with_values["clang_tidy"], scope))
+            return {"tidy-mode": "all", "tidy-outcome": "success"} if ran else {"tidy-mode": "", "tidy-outcome": ""}
+        return {}
+
+    @staticmethod
+    def with_needs(context: dict[str, object], results: dict[str, str],
+                   outputs: dict[str, dict[str, str]]) -> dict[str, object]:
+        scope = dict(context)
+        for key, result in results.items():
+            scope[f"needs.{key}.result"] = result
+            for name, value in outputs.get(key, {}).items():
+                scope[f"needs.{key}.outputs.{name}"] = value
+        return scope
+
+    def run_ci_gate(self, context: dict[str, object], results: dict[str, str],
+                    outputs: dict[str, dict[str, str]]) -> subprocess.CompletedProcess:
+        scope = self.with_needs(context, results, outputs)
+        result, _ = run_workflow_step(WORKFLOWS / "ci.yml", "ci-success", self.GATE_STEP, scope, self.tmp)
+        return result
+
+    def test_every_required_check_has_a_producer_with_the_merge_group_trigger(self):
+        for check in REQUIRED_CHECKS:
+            with self.subTest(check=check):
+                producers = self.producers(check)
+                self.assertTrue(producers, f"no pull_request workflow has a job named {check!r}; update REQUIRED_CHECKS")
+                for path, _job in producers:
+                    triggers = workflow_triggers(path)
+                    self.assertIn("merge_group", triggers, f"{path.name} reports {check!r} but has no merge_group trigger")
+                    self.assertEqual(_list_value(*triggers["merge_group"]["types"]), ["checks_requested"], path.name)
+
+    def test_no_required_check_is_skipped_on_a_merge_group(self):
+        for check in REQUIRED_CHECKS:
+            for path, job in self.producers(check):
+                with self.subTest(check=check, workflow=path.name):
+                    results, _ = self.simulate(path, queue_context())
+                    self.assertEqual(results[job.key], "success", f"{check!r} ({path.name} {job.key}) is skipped")
+
+    def test_ci_runs_the_pull_request_gate_jobs_on_a_merge_group_and_ci_success_passes(self):
+        results, outputs = self.simulate(WORKFLOWS / "ci.yml", queue_context())
+        # The classifier gives a merge group every job: nothing the PR gate builds is skipped on the combined tree.
+        self.assertEqual(outputs["detect-docs-only"], {
+            "docs_only": "false", "linux_only": "false", "windows_only": "false", "automation_only": "false",
+            "docs_site": "true",
+        })
+        for key in ("build-linux-debug", "build-linux-release", "build-windows-debug", "static-analysis-windows",
+                    "asan-ubsan", "docs-hygiene"):
+            self.assertEqual(results[key], "success", f"{key} doesn't run on a merge group")
+        self.assertEqual(outputs["build-linux-debug"]["tidy-mode"], "all")
+        self.assertEqual(outputs["build-windows-debug"]["tidy-mode"], "all")
+        result = self.run_ci_gate(queue_context(), results, outputs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("All required CI jobs passed", result.stdout)
+
+    def test_ci_success_fails_a_merge_group_whose_sanitizer_build_or_tidy_job_did_not_run(self):
+        results, outputs = self.simulate(WORKFLOWS / "ci.yml", queue_context())
+        for key in ("asan-ubsan", "build-linux-debug", "build-windows-debug", "static-analysis-windows"):
+            with self.subTest(job=key):
+                result = self.run_ci_gate(queue_context(), {**results, key: "skipped"}, outputs)
+                self.assertNotEqual(result.returncode, 0, f"CI Success passed a merge group with {key} skipped")
+
+    def test_pull_request_and_push_runs_are_unchanged(self):
+        # A pull request still runs ASan+UBSan and the Windows tidy report; a push to main still runs neither.
+        pr_results, pr_outputs = self.simulate(WORKFLOWS / "ci.yml", pull_request_context())
+        self.assertEqual(pr_results["asan-ubsan"], "success")
+        self.assertEqual(pr_results["static-analysis-windows"], "success")
+        self.assertEqual(pr_results["automation-checks"], "skipped")
+        push_results, push_outputs = self.simulate(WORKFLOWS / "ci.yml", push_context())
+        self.assertEqual(push_results["asan-ubsan"], "skipped")
+        self.assertEqual(push_results["static-analysis-windows"], "skipped")
+        self.assertEqual(push_outputs["build-linux-debug"]["tidy-mode"], "")
+        result = self.run_ci_gate(push_context(), push_results, push_outputs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        # A pull request's gate still requires ASan+UBSan.
+        result = self.run_ci_gate(pull_request_context(), {**pr_results, "asan-ubsan": "skipped"}, pr_outputs)
+        self.assertNotEqual(result.returncode, 0)
+
+    def test_osv_scan_required_scans_and_passes_on_a_merge_group(self):
+        path = WORKFLOWS / "osv-scanner.yml"
+        results, outputs = self.simulate(path, queue_context())
+        self.assertEqual(outputs["detect-relevant-changes"], {"relevant": "true"})
+        self.assertEqual(results["generate-sbom"], "success")
+        self.assertEqual(results["vulnerability-scan"], "success")
+        scope = self.with_needs(queue_context(), results, outputs)
+        result, _ = run_workflow_step(path, "osv-scan-required", "Check scan result", scope, self.tmp)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Vulnerability scan passed.", result.stdout)
+
+    def test_codeql_analyzes_a_merge_group_in_full(self):
+        results, outputs = self.simulate(WORKFLOWS / "codeql.yml", queue_context())
+        self.assertEqual(outputs["detect-docs-only"], {"docs_only": "false"})
+        self.assertEqual(results["analyze"], "success")
+
+    def test_dependency_review_uses_an_action_that_reads_the_merge_group_refs(self):
+        # dependency-review-action v5 takes the base and head from merge_group.base_sha/head_sha itself; without
+        # that, a merge_group run fails with "Both a base ref and head ref must be provided".
+        step = find_step(WORKFLOWS / "dependency-review.yml", "Review dependencies for CVEs", job="dependency-review")
+        self.assertRegex(step.uses, r"^actions/dependency-review-action@[0-9a-f]{40} # v([5-9]|\d{2,})\.")
+        self.assertEqual(step.condition, "")
+
+    def test_concurrency_groups_never_join_two_queue_entries(self):
+        other_sha = "fedcba9876543210fedcba9876543210fedcba98"
+        other = queue_context(ref=f"refs/heads/gh-readonly-queue/main/pr-3819-{other_sha}", sha=other_sha)
+        paths = sorted({path for check in REQUIRED_CHECKS for path, _ in self.producers(check)})
+        for path in paths:
+            group = concurrency_group(path)
+            if not group:
+                continue
+            with self.subTest(workflow=path.name):
+                self.assertNotEqual(render(group, queue_context()), render(group, other))
+                # A pull request's pushes still share one group, so a new push cancels the last one's run.
+                self.assertEqual(render(group, pull_request_context(sha="1" * 40)),
+                                 render(group, pull_request_context(sha="2" * 40)))
+
+    def test_no_push_or_workflow_run_trigger_fires_for_a_queue_branch(self):
+        for branch in (f"gh-readonly-queue/main/pr-3818-{QUEUE_SHA}", f"gh-readonly-queue/release/0.10/pr-3818-{QUEUE_SHA}"):
+            for path in sorted(WORKFLOWS.glob("*.yml")):
+                triggers = workflow_triggers(path)
+                for event in ("push", "workflow_run"):
+                    if event in triggers:
+                        with self.subTest(workflow=path.name, event=event, branch=branch):
+                            self.assertFalse(branch_triggers(triggers[event], branch),
+                                             f"{path.name}'s {event} trigger fires for the merge queue's {branch}")
+        # The filters still match what they should.
+        self.assertTrue(branch_triggers(workflow_triggers(WORKFLOWS / "ci.yml")["push"], "release/0.10"))
+        self.assertTrue(branch_triggers(workflow_triggers(WORKFLOWS / "copilot-setup-steps.yml")["push"], "feature/x"))
+
+    def test_merge_groups_never_save_the_clang_tidy_result_cache(self):
+        step = find_step(WORKFLOWS / "reusable-build-test.yml", "Save clang-tidy results")
+        cases = ((queue_context(), False), (pull_request_context(), False), (push_context(), True),
+                 ({**push_context(), "github.event_name": "schedule"}, True))
+        for context, saves in cases:
+            with self.subTest(event=context["github.event_name"]):
+                scope = {**context, "steps.tidy-cache.outcome": "success"}
+                self.assertEqual(condition_holds(step.condition, scope), saves)
+
+    def test_the_version_guard_reads_the_queue_base_branch(self):
+        prelude = 'python3() { printf "%s\\n" "$*" >> calls.log; }\ngit() { :; }\n'
+        step = "Compare PROJECT_VERSION with the published release tags"
+        log = self.tmp / "calls.log"
+        cases = [
+            (queue_context(ref=f"refs/heads/gh-readonly-queue/main/pr-1-{QUEUE_SHA}"), "main"),
+            (queue_context(ref=f"refs/heads/gh-readonly-queue/release/0.10/pr-1-{QUEUE_SHA}", base="release/0.10"),
+             "release/0.10"),
+            ({**pull_request_context(), "github.base_ref": "release/0.9"}, "release/0.9"),
+            (push_context(ref="refs/heads/release/0.9"), "release/0.9"),
+        ]
+        for context, branch in cases:
+            with self.subTest(event=context["github.event_name"], branch=branch):
+                if log.exists():
+                    log.unlink()
+                result, _ = run_workflow_step(WORKFLOWS / "pre-commit.yml", "version-ahead", step, context, self.tmp,
+                                              prelude=prelude)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(f"--branch {branch} ", log.read_text(encoding="utf-8"))
+
+    def test_the_expression_evaluator_matches_github_on_the_shapes_used(self):
+        context = {"a": "x", "n": None}
+        self.assertEqual(evaluate("n || a", context), "x")
+        self.assertEqual(evaluate("a && 'y'", context), "y")
+        self.assertFalse(Expression.truthy(evaluate("n && a", context)))
+        self.assertTrue(evaluate("a == 'X'", context))  # string comparison ignores case
+        self.assertTrue(evaluate("!(a != 'x')", context))
+        self.assertTrue(evaluate("startsWith('refs/heads/release/1', 'refs/heads/release/')", context))
+        self.assertFalse(condition_holds("a == 'x'", {**context, "__success__": False}))
+        self.assertTrue(condition_holds("always() && a == 'x'", {**context, "__success__": False}))
 
 
 def _is_setup_llvm(test: unittest.TestCase) -> bool:

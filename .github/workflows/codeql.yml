@@ -5,6 +5,12 @@ on:
     branches: [main, 'release/**']
   pull_request:
     branches: [main, 'release/**']
+  # "Analyze C++" is a required check, so a merge queue's merge group runs it too (#3818), with the full
+  # analysis a push gets: the docs-only skip below is for pull requests only. Its ref
+  # (refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>) names one queue entry, so the concurrency group
+  # below never puts two queue runs together.
+  merge_group:
+    types: [checks_requested]
   schedule:
     # Run weekly on Sundays at 10:00 UTC
     - cron: '0 10 * * 0'

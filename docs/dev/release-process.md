@@ -130,8 +130,8 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    ```
 
    The "Main Builds" ruleset requires status checks on `release/*`. Its **"Do not require status checks on
-   creation"** setting must stay on: Dependency Review runs only on pull requests, so a branch cut from a main
-   commit could never satisfy it, and the push would be refused (v0.10.0, 2026-11-03).
+   creation"** setting must stay on: Dependency Review runs only on pull requests and merge groups, so a branch
+   cut from a main commit could never satisfy it, and the push would be refused (v0.10.0, 2026-11-03).
 
    Right after the cut, bump main to `X.(Y+1).0`: a PR that changes only `project(TaskSmack VERSION ...)` in
    `CMakeLists.txt`. From then on main's builds read `X.(Y+1).0-dev`, above every `X.Y.*` patch. Until that bump
