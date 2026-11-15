@@ -74,7 +74,8 @@ std::string replace(const std::filesystem::path& path, std::string_view text)
     {
         staging = stagingName(path, random);
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
-        fd = ::open(staging.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, 0666);
+        // 0644 less the umask: readable by the desktop and other users, as a desktop entry is, never writable by them.
+        fd = ::open(staging.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
         if (fd < 0 && errno != EEXIST)
         {
             return std::format("couldn't create {}: {}", staging.string(), errnoText(errno));
