@@ -5,7 +5,7 @@ name: WinGet Health
 # publish-winget job opens the pull request that adds it; this follows that pull request to the merge. While the
 # version isn't there and its pull request carries a label that needs us (a validation error, author feedback, the
 # CLA), or none is open, or 7 days have passed since the release, it keeps ONE tracking issue open (title
-# "WinGet: TaskSmack.TaskSmack <version> isn't published", labels `release` and `agent:Windows`, found by that exact
+# "WinGet: TaskSmack.TaskSmack <version> isn't published", labels `bug`, `release` and `agent:Windows`, found by that exact
 # title among the open `release` issues; never `ci-red-main`, which means main is red and holds every merge) and
 # closes it once the version is on the default branch. Before the first, manual submission (no
 # TaskSmack.TaskSmack in winget-pkgs at all) it does nothing. docs/dev/release-process.md, "Publishing to WinGet".
@@ -41,7 +41,7 @@ jobs:
           PACKAGE_ID: TaskSmack.TaskSmack
           PACKAGE_PATH: manifests/t/TaskSmack/TaskSmack
           WINGET_REPO: microsoft/winget-pkgs
-          LABELS: release,agent:Windows
+          LABELS: bug,release,agent:Windows
           GRACE_DAYS: '7'
           # winget-pkgs labels (gh api repos/microsoft/winget-pkgs/labels) that mean the pull request is stuck until
           # someone acts: every *Error* and *Failed* label except the Waived-* ones, and these.

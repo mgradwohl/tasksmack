@@ -464,7 +464,7 @@ jobs:
       # real OS paths are exercised on the ARM64 binary that ships. A case ARM64 can't run skips inside the test
       # with its reason; any that is expected there goes in $arm64Skips below, with that reason.
       - name: Real-system tests (Windows)
-        if: always() && runner.os == 'Windows' && inputs.build && steps.build-windows.outcome == 'success'
+        if: ${{ !cancelled() && runner.os == 'Windows' && inputs.build && steps.build-windows.outcome == 'success' }}
         shell: pwsh
         timeout-minutes: 10
         env:

@@ -1565,6 +1565,15 @@ class RealSystemOnArm64Tests(unittest.TestCase):
         self.assertIn("runner.os == 'Windows'", step.condition)
         self.assertIn("steps.build-windows.outcome == 'success'", step.condition)
 
+    def test_the_step_never_starts_after_a_cancel_or_without_a_good_build(self):
+        # #3906: always() is true on a cancelled run, which started a 10-minute machine-changing run on a runner
+        # that was shutting down.
+        step = find_step(self.WORKFLOW, self.STEP)
+        self.assertNotIn("always()", step.condition)
+        self.assertIn("!cancelled()", step.condition)
+        self.assertIn("steps.build-windows.outcome == 'success'", step.condition)
+        self.assertIn("inputs.build", step.condition)
+
     def test_the_plain_windows_ctest_step_still_skips_arm64_for_its_own_step(self):
         # ARM64's ctest runs in "Test (Windows ARM64)", which this change leaves alone.
         self.assertIn("runner.arch != 'ARM64'", find_step(self.WORKFLOW, "Test (Windows)").condition)
