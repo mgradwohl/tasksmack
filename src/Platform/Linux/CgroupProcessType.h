@@ -65,9 +65,15 @@ namespace Detail
     {
         return false;
     }
-    const std::string_view name = unit.substr(0, unit.size() - SERVICE.size());
+    std::string_view name = unit;
+    name.remove_suffix(SERVICE.size());
     const std::size_t at = name.find('@');
-    return at != std::string_view::npos && at + 1 < name.size() && name.substr(at + 1) != "autostart";
+    if (at == std::string_view::npos || at + 1 >= name.size())
+    {
+        return false;
+    }
+    const std::string_view instance(name.data() + at + 1, name.size() - at - 1); // no substr: it may throw
+    return instance != "autostart";
 }
 
 /// Whether @p path's first component is exactly @p unit: "/system.slice" and "/system.slice/x.service" are, but
