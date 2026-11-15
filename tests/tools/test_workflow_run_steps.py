@@ -2096,6 +2096,12 @@ class WingetRehearsalTests(unittest.TestCase):
         # Only `wingetcreate update` is run, never another subcommand.
         self.assertEqual(re.findall(r"WINGETCREATE update|WINGETCREATE submit|WINGETCREATE \w+", text), ["WINGETCREATE update"])
 
+    def test_the_package_check_ends_with_exit_zero(self):
+        # `gh api` exits 1 on the 404 that means "not in winget-pkgs yet"; pwsh's wrapper ends a step with the last
+        # native exit code, so without an explicit exit the dry run failed on the case it is meant to pass.
+        step = find_step(WORKFLOWS / "release.yml", "Check whether TaskSmack.TaskSmack is in winget-pkgs", job="rehearse-winget")
+        self.assertEqual(step.run.rstrip().splitlines()[-1].strip(), "exit 0")
+
     def test_the_rehearsal_runs_on_a_dry_run_only(self):
         condition = "".join(self.job("rehearse-winget")).split("if: >-")[1].split("runs-on:")[0]
         self.assertIn("github.event_name == 'workflow_dispatch'", condition)
