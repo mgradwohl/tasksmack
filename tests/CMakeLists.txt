@@ -398,6 +398,11 @@ add_test(NAME CheckCachePruneTriggersScript
 add_test(NAME ComposeReleaseNotesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_compose_release_notes.py)
 
+# tests/App/fixtures/config-v0.8.0.expected.txt, the one list of settings an upgrade must keep, stays well
+# formed and equal to the fixture, and the release checks that read it keep no list of their own (#3831).
+add_test(NAME UpgradeSettingsList
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_upgrade_settings_list.py)
+
 # tools/check-cflite-paths.py keeps the ClusterFuzzLite baseline build's paths equal to PR fuzzing's (#2533).
 add_test(NAME CheckCflitePathsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cflite_paths.py)

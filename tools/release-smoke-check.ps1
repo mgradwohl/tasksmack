@@ -134,16 +134,12 @@ try {
   $mesaDlls | ForEach-Object { Copy-Item -LiteralPath $_.FullName -Destination $pkg }
   $exe = Join-Path $pkg 'TaskSmack.exe'
   $Fixture = (Resolve-Path -LiteralPath $Fixture).Path
-  # Section, key and the value as TaskSmack writes it.
-  $fixtureSettings = @(
-    @('theme', 'id', "'dracula'"),
-    @('font', 'point_size', '10'),
-    @('sampling', 'interval_ms', '2000'),
-    @('sampling', 'history_max_seconds', '600'),
-    @('ui', 'show_privilege_notice', 'false'),
-    @('process_columns', 'threads', 'true'),
-    @('process_columns', 'user', 'false')
-  )
+  # Section, key and the value as TaskSmack writes it: config-v0.8.0.expected.txt beside the fixture,
+  # the one list every release check reads (#3831). Its fourth column is the unused "when".
+  $expectedFile = [System.IO.Path]::ChangeExtension($Fixture, '.expected.txt')
+  if (-not (Test-Path -LiteralPath $expectedFile)) { Write-Error "$expectedFile is missing: it lists the settings v0.8.0's config.toml must keep."; exit 2 }
+  $fixtureSettings = @(Get-Content -LiteralPath $expectedFile | Where-Object { $_.Trim() -and -not $_.StartsWith('#') } | ForEach-Object { , @($_.Trim() -split ' ') })
+  if ($fixtureSettings.Count -eq 0) { Write-Error "$expectedFile lists no settings."; exit 2 }
   # One config dir per launch: an empty one, then one holding v0.8.0's config.toml.
   $launches = @(
     @{ Name = 'fresh config'; ConfigDir = (Join-Path $work 'config'); Seed = $null },

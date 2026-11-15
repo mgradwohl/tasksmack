@@ -1,0 +1,16 @@
+# The settings v0.8.0's config.toml (config-v0.8.0.toml) changed from the defaults, as TaskSmack writes them
+# today: what an upgrade must keep. The one list every release check reads (#3831):
+#   .github/workflows/release.yml (validate-linux-upgrade), tools/release-smoke-check.sh,
+#   tools/release-smoke-check.ps1 and tools/windows-upgrade-check.ps1.
+# One setting per line: <section> <key> <value as written> <when>, split on spaces (so a value has none).
+# <when> is "stable" for a key every release since v0.8.0 writes the same way, which the previous release's
+# own save must keep and the fixture itself holds, or "migrated" for a key only a build that has migrated
+# the file writes (v0.10.0 writes [font] size = 'large'; point_size came with #3501), checked only after
+# the upgraded build has saved. Blank lines and lines starting with # are skipped.
+theme id 'dracula' stable
+font point_size 10 migrated
+sampling interval_ms 2000 stable
+sampling history_max_seconds 600 stable
+ui show_privilege_notice false stable
+process_columns threads true stable
+process_columns user false stable
