@@ -1479,9 +1479,9 @@ TEST_F(ProcessesPanelRenderTest, SetSchedulingPolicyFromTheRowMenuAppliesTheDial
     panel->onDetach();
 }
 
-// #3086: leaving Idle without CAP_SYS_NICE is refused for want of permission; Authenticate and retry sends the
-// same policy through runAuthorized().
-TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRetry)
+// #3086: leaving Idle without CAP_SYS_NICE is refused for want of permission. No retry is offered, even where the
+// actions could ask for authorization (#3886): the policy is Linux's, and no helper redoes it (#3580).
+TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersNoRetry)
 {
     TestMocks::MockProcessActions* actions = nullptr;
     const auto panel = schedPolicyPanel(Platform::SchedPolicy::Idle, actions);
@@ -1500,19 +1500,17 @@ TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRe
     pressModalFilledButton(*panel, "Apply");
     panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->setSchedPolicyCount(), 1);
-    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
-    panel->retryRowActionAuthorizedForTesting();
-    panel->waitForRowActionForTesting();
-    EXPECT_EQ(actions->runAuthorizedCount(), 1);
-    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
-    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::Normal);
-    EXPECT_EQ(actions->lastAuthorizedAction().target.pid, menuPid.value_or(-1));
+    EXPECT_TRUE(actions->actionCapabilities().canAuthorizeInteractively) << "a retry would be possible";
+    const std::string line = renderAndCapture(*panel);
+    EXPECT_TRUE(line.contains("Permission denied")) << line;
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry());
+    EXPECT_EQ(actions->runAuthorizedCount(), 0);
     panel->onDetach();
 }
 
 // #3219: real time from the row menu: RR shows the warning, Apply asks to confirm naming the process, and Set sets RR
-// at the slider's priority (50 for a process not on real time); refused for want of permission, Authenticate and
-// retry sends the same policy and priority through runAuthorized().
+// at the slider's priority (50 for a process not on real time); refused for want of permission, no retry is
+// offered (#3886).
 TEST_F(ProcessesPanelRenderTest, RoundRobinFromTheRowMenuIsSetAfterTheConfirm)
 {
     TestMocks::MockProcessActions* actions = nullptr;
@@ -1540,12 +1538,8 @@ TEST_F(ProcessesPanelRenderTest, RoundRobinFromTheRowMenuIsSetAfterTheConfirm)
     EXPECT_EQ(actions->lastSchedPolicy(), Platform::SchedPolicy::RoundRobin);
     EXPECT_EQ(actions->lastRtPriority(), 50);
     EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
-    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
-    panel->retryRowActionAuthorizedForTesting();
-    panel->waitForRowActionForTesting();
-    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
-    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::RoundRobin);
-    EXPECT_EQ(actions->lastAuthorizedAction().rtPriority, 50);
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry());
+    EXPECT_EQ(actions->runAuthorizedCount(), 0);
     panel->onDetach();
 }
 
