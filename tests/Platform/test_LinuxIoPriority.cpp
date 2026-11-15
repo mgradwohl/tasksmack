@@ -128,6 +128,20 @@ TEST(LinuxIoPriorityTest, EpermForRealtimeNamesTheCapability)
     EXPECT_EQ(message.find("another user"), std::string::npos) << message;
 }
 
+// #3763: holding CAP_SYS_NICE, which the slider offered Realtime for, a Realtime refusal is an older kernel's rule
+// (CAP_SYS_ADMIN only), not a missing CAP_SYS_NICE: the message says so, and what the highest settable class is.
+TEST(LinuxIoPriorityTest, EpermForRealtimeWithCapSysNiceNamesTheKernelsRule)
+{
+    const std::string message = ioPriorityErrorMessage(EPERM, IoPriorityClass::Realtime, 1234, true);
+    EXPECT_NE(message.find("CAP_SYS_ADMIN"), std::string::npos) << message;
+    EXPECT_NE(message.find("this kernel"), std::string::npos) << message;
+    EXPECT_NE(message.find("Best effort at level 0"), std::string::npos) << message;
+    EXPECT_NE(message.find("1234"), std::string::npos) << message;
+    EXPECT_EQ(message.find("needs CAP_SYS_NICE"), std::string::npos) << message;
+    // Another class's refusal is still another user's process, whatever this one holds.
+    EXPECT_NE(ioPriorityErrorMessage(EPERM, IoPriorityClass::BestEffort, 1234, true).find("belongs to another user"), std::string::npos);
+}
+
 TEST(LinuxIoPriorityTest, EpermOtherwiseNamesAnotherUser)
 {
     constexpr std::array<IoPriorityClass, 3> CLASSES{IoPriorityClass::None, IoPriorityClass::BestEffort, IoPriorityClass::Idle};
