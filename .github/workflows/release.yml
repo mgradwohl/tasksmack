@@ -1461,7 +1461,8 @@ jobs:
     # reusing the build-linux runner where libc++/mesa dev packages already
     # happen to be present.
     container:
-      image: ubuntu:24.04
+      # By digest (#3908): the release gate's base can't change under one tag's runs. Renovate refreshes it by PR.
+      image: ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5
     # Container jobs default `run` steps to `sh` (dash on Ubuntu), not bash, even though
     # every other job in this workflow gets bash by default on the bare VM runner. The
     # steps below use bash-only [[ ... ]] conditions, which dash doesn't support.
@@ -1640,7 +1641,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     container:
-      image: ubuntu:26.04
+      # By digest (#3908), as validate-linux-package's.
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
     # As in validate-linux-package: a container job's `run` steps default to sh, not bash.
     defaults:
       run:

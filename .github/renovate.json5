@@ -38,6 +38,16 @@
   rangeStrategy: 'pin',
 
   customManagers: [
+    // ── release.yml's validation containers (#3908) ──────────────────────
+    // ubuntu:<version>@sha256:<digest>: the digest is refreshed by PR when Ubuntu republishes the tag; the
+    // version itself is left alone (the release gate tests that Ubuntu release on purpose).
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/release\\.yml$/'],
+      matchStrings: ['image: (?<depName>ubuntu):(?<currentValue>[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[0-9a-f]{64})'],
+      datasourceTemplate: 'docker',
+      versioningTemplate: 'docker',
+    },
     // ── cmake/Dependencies.cmake ──────────────────────────────────────────
     {
       customType: 'regex',
@@ -549,6 +559,15 @@
   // github-actions[bot]; Renovate ignores that author, so it still rebases those branches.
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   packageRules: [
+    // release.yml's validation containers (#3908): only their digests are refreshed. Each tests one Ubuntu release on
+    // purpose (24.04's package, 26.04's upgrade), so moving 24.04 up is a decision for a person, not a Renovate PR.
+    {
+      matchManagers: ['custom.regex'],
+      matchDatasources: ['docker'],
+      matchDepNames: ['ubuntu'],
+      matchUpdateTypes: ['major', 'minor', 'patch'],
+      enabled: false,
+    },
     {
       // The docs site's minor and patch CDN bumps in one PR (#3661): each rewrites docs/cdn-integrity.json, so separate
       // PRs conflicted with each other once one merged.
