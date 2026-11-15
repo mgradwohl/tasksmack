@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT OR GPL-2.0-only
 //
-// The helper's per-process UDP byte counter (#3366), the Linux side of "Count UDP traffic per process" (Windows
-// counts with ETW). It sums the bytes each process sends and receives over UDP into a map keyed by tgid, and the
-// helper reads the map. It reads no kernel structure, only the functions' arguments and return values, so it needs
-// no vmlinux.h and builds the same for x86_64 and ARM64 (maintainer, 2026-11-07).
+// TaskSmack's per-process UDP byte counter (#3366), loaded when it runs as root (#3580), the Linux side of "Count UDP traffic per process"
+// (Windows counts with ETW). It sums the bytes each process sends and receives over UDP into a map keyed by tgid, and TaskSmack reads the
+// map. It reads no kernel structure, only the functions' arguments and return values, so it needs no vmlinux.h and builds the same for
+// x86_64 and ARM64 (maintainer, 2026-11-07).
 //
 // Two attach modes, loaded one at a time by UdpByteCounter.cpp:
 //   - fentry/fexit (5.17+ with BTF): bpf_get_func_ret and bpf_get_func_arg_cnt work whatever the function's
@@ -38,7 +38,7 @@ struct udp_bytes
     __u64 rx;
 };
 
-// LRU-bounded, so processes that exited age out without the helper deleting them.
+// LRU-bounded, so processes that exited age out without TaskSmack deleting them.
 struct
 {
     __uint(type, BPF_MAP_TYPE_LRU_HASH);

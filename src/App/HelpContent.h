@@ -89,13 +89,16 @@ using ShortcutMask = std::array<bool, KeyboardShortcuts::SHORTCUT_HELP.size()>;
     return static_cast<std::size_t>(std::ranges::count(mask, true));
 }
 
-/// The label for the platform the column's capability note (columnCapabilityNote()) applies to, or
-/// empty when the column has none. The Processes header's tooltip shows that note only where the
-/// probe lacks the counter; the reference names the platform instead, so it reads the same on every
-/// machine. Windows has no user-mode per-process UDP byte counters (#1258).
+/// When the column's capability note (columnCapabilityNote()) applies, or empty when the column has none. The
+/// Processes header's tooltip shows that note only where the probe lacks the counter; the reference names when instead,
+/// so it reads the same on every machine (#3799): Windows counts UDP once its network event trace is on in Settings,
+/// and Linux once TaskSmack runs as administrator (the eBPF counter); otherwise both count TCP only.
 [[nodiscard]] constexpr std::string_view columnNotePlatform(ProcessColumn col) noexcept
 {
-    return columnCapabilityNote(col, /*hasUdpNetworkCounters=*/false).empty() ? std::string_view{} : std::string_view{"On Windows:"};
+    return columnCapabilityNote(col, /*hasUdpNetworkCounters=*/false).empty()
+             ? std::string_view{}
+             : std::string_view{"Unless UDP is counted (Windows: the network event trace in Settings; Linux: TaskSmack "
+                                "(Administrator)):"};
 }
 
 } // namespace App::HelpContent

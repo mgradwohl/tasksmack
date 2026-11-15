@@ -5,6 +5,7 @@
 // strings it returns. Shared by the update check's release reply and Look up on VirusTotal's file report.
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -12,7 +13,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <vector>
 
 namespace Domain::Json
 {
@@ -87,10 +87,12 @@ class Reader
     }
 
     /// Steps over one value of any kind, checking it is well formed. Iterative: nested arrays and objects
-    /// are tracked on a stack of their closing brackets, at most MAX_NESTING deep.
+    /// are tracked on a fixed stack of their closing brackets, at most MAX_NESTING deep, so it allocates nothing
+    /// (#3795).
     [[nodiscard]] bool skipValue()
     {
-        std::vector<char> closers;
+        std::array<char, MAX_NESTING> closers{};
+        std::size_t depth = 0;
         while (true)
         {
             // A value is expected here.
@@ -103,11 +105,11 @@ class Reader
                 const char closer = (c == '{') ? '}' : ']';
                 if (!consume(closer)) // not empty: its first member or element follows
                 {
-                    if (closers.size() >= MAX_NESTING)
+                    if (depth >= MAX_NESTING)
                     {
                         return false;
                     }
-                    closers.push_back(closer);
+                    closers.at(depth++) = closer;
                     if (closer == '}' && !skipMemberName())
                     {
                         return false;
@@ -123,55 +125,59 @@ class Reader
             // After a value: a ',' and the next, or the closing bracket, until the outermost one closes.
             while (true)
             {
-                if (closers.empty())
+                if (depth == 0)
                 {
                     return true;
                 }
                 skipSpace();
                 if (consume(','))
                 {
-                    if (closers.back() == '}' && !skipMemberName())
+                    if (closers.at(depth - 1) == '}' && !skipMemberName())
                     {
                         return false;
                     }
                     break; // to the next value
                 }
-                if (!consume(closers.back()))
+                if (!consume(closers.at(depth - 1)))
                 {
                     return false;
                 }
-                closers.pop_back();
+                --depth;
             }
         }
     }
 
-    /// A non-negative integer (VirusTotal's engine counts, #3094), or nullopt for any other value, which is then
-    /// skipped whole. Out of std::uint64_t's range is nullopt too.
-    [[nodiscard]] std::optional<std::uint64_t> readUnsigned()
+    /// A non-negative integer (VirusTotal's engine counts, #3094) into @p value; any other well-formed value is
+    /// skipped whole and leaves @p value nullopt, as does one out of std::uint64_t's range. false when the value is
+    /// malformed (#3795): a skip that failed, or a number with a leading zero ("01"), which JSON doesn't allow.
+    [[nodiscard]] bool readUnsigned(std::optional<std::uint64_t>& value)
     {
+        value.reset();
         const std::size_t start = m_Pos;
         if (!isJsonDigit(peek()))
         {
-            static_cast<void>(skipValue());
-            return std::nullopt;
+            return skipValue();
         }
         while (isJsonDigit(peek()))
         {
             ++m_Pos;
         }
+        if (m_Text[start] == '0' && m_Pos - start > 1)
+        {
+            return false;
+        }
         if (peek() == '.' || peek() == 'e' || peek() == 'E')
         {
             m_Pos = start;
-            static_cast<void>(skipValue());
-            return std::nullopt;
+            return skipValue();
         }
-        std::uint64_t value = 0;
-        const auto [end, error] = std::from_chars(m_Text.data() + start, m_Text.data() + m_Pos, value);
-        if (error != std::errc{} || end != m_Text.data() + m_Pos)
+        std::uint64_t parsed = 0;
+        const auto [end, error] = std::from_chars(m_Text.data() + start, m_Text.data() + m_Pos, parsed);
+        if (error == std::errc{} && end == m_Text.data() + m_Pos)
         {
-            return std::nullopt;
+            value = parsed;
         }
-        return value;
+        return true;
     }
 
   private:

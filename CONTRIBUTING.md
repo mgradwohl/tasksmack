@@ -173,6 +173,9 @@ steps in order, checks that the docs still give each command it runs, and stops 
 place a newcomer would trip (`-ContinueOnFinding` records them all). It writes a step table to
 `results.md` in `-OutDir`. Its help (`Get-Help tools/newcomer-check.ps1 -Full`) has the Windows
 Sandbox options.
+On Linux, `tools/newcomer-check.sh` does the same in a fresh Ubuntu 24.04 WSL distro (`wsl --install
+Ubuntu-24.04 --name tasksmack-newcomer`): copy only the script in and run it there, as `--help` says; it installs
+packages with sudo, so not on your own machine either.
 
 ### Linux Pre-Requisites
 

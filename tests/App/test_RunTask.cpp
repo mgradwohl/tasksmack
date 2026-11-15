@@ -369,4 +369,19 @@ TEST_F(RunTaskDialogTest, TheAppsBrowseChoosesNothingWithoutAWindow)
 }
 
 } // namespace
+// #3805: in TaskSmack (Administrator) the administrator tick asks for no password, and its tooltip doesn't promise one;
+// a Standard session's still says one comes first.
+TEST(RunTaskTooltipTest, TheAdministratorTickSaysWhetherAPasswordComes)
+{
+    const std::string_view standard = RunTaskDialog::administratorTooltip(false);
+    const std::string_view elevated = RunTaskDialog::administratorTooltip(true);
+#ifdef _WIN32
+    EXPECT_EQ(standard, elevated) << "Windows offers the tick only when TaskSmack isn't elevated";
+#else
+    EXPECT_TRUE(standard.contains("password first")) << standard;
+    EXPECT_FALSE(elevated.contains("password first")) << elevated;
+    EXPECT_TRUE(elevated.contains("as root")) << elevated;
+#endif
+}
+
 } // namespace App

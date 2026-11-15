@@ -655,13 +655,13 @@ class ProcessIoPriorityView
         return m_Current;
     }
 
-    /// The process's current I/O priority in words, "current: best-effort 4" ("current: unknown" before a read or when
-    /// it failed): the I/O priority card header's tooltip, and the note after Apply where it fits. @p currentNice and
+    /// The process's current I/O priority in words, "Current I/O priority: best-effort 4" ("Current I/O priority: unknown" before a read or
+    /// when it failed): the I/O priority card header's tooltip, and the note after Apply where it fits. @p currentNice and
     /// @p schedPolicy word a class never set (Detail::describeIoPriority()).
     [[nodiscard]] std::string currentText(std::optional<std::int32_t> currentNice, Platform::SchedPolicy schedPolicy) const
     {
-        return m_Current.has_value() ? "current: " + Detail::describeIoPriority(*m_Current, currentNice, schedPolicy)
-                                     : std::string("current: unknown");
+        return m_Current.has_value() ? "Current I/O priority: " + Detail::describeIoPriority(*m_Current, currentNice, schedPolicy)
+                                     : std::string("Current I/O priority: unknown");
     }
 
     /// Why the last read failed, empty when it did not.

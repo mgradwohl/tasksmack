@@ -12,6 +12,7 @@
 
 #ifdef _WIN32
 #include <chrono>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -51,6 +52,7 @@ struct FakeCalls
     // timer it points at. The test passes the timer itself, as that context is.
     bool hadContext = false;
     std::vector<std::int64_t> dueTimes;
+    std::vector<std::string_view> order;   // "set" (SetWaitableTimerEx) and "wait" (SetThreadpoolWait), as called
     std::vector<HANDLE> waitRegistrations; // each SetThreadpoolWait's handle, null to stop waiting
     int cancels = 0;
     int closedHandles = 0;
@@ -93,6 +95,7 @@ BOOL WINAPI fakeSetTimer(HANDLE /*timer*/,
                          ULONG /*delay*/)
 {
     fake().dueTimes.push_back(due->QuadPart);
+    fake().order.emplace_back("set");
     return fake().failSet ? FALSE : TRUE;
 }
 
@@ -118,6 +121,7 @@ PTP_WAIT WINAPI fakeCreateWait(PTP_WAIT_CALLBACK callback, PVOID context, PTP_CA
 VOID WINAPI fakeSetWait(PTP_WAIT /*wait*/, HANDLE handle, PFILETIME /*timeout*/)
 {
     fake().waitRegistrations.push_back(handle);
+    fake().order.emplace_back("wait");
 }
 
 VOID WINAPI fakeWaitCallbacks(PTP_WAIT /*wait*/, BOOL /*cancelPending*/)
@@ -225,12 +229,24 @@ TEST_F(IdleWaitTimerTest, TheSignalPostsAWakeToTheLoopThread)
     EXPECT_EQ(fake().postedMessages, (std::vector<UINT>{WM_NULL}));
 }
 
+// #3797: the timer is set, which resets a signal disarm() left behind, before the wait is registered on it; the
+// other order would see that old signal and wake the loop at once.
+TEST_F(IdleWaitTimerTest, ArmSetsTheTimerBeforeItRegistersTheWait)
+{
+    IdleWaitTimer timer(fakeFunctions());
+    timer.arm(50);
+    timer.disarm();
+    timer.arm(50);
+    EXPECT_EQ(fake().order, (std::vector<std::string_view>{"set", "wait", "wait", "set", "wait"}))
+        << "each arm sets, then registers; the disarm between stops the wait";
+}
+
 TEST_F(IdleWaitTimerTest, AFailedSetLeavesNothingRegistered)
 {
     fake().failSet = true;
     IdleWaitTimer timer(fakeFunctions());
     timer.arm(50);
-    EXPECT_EQ(fake().waitRegistrations, (std::vector<HANDLE>{fakeTimerHandle(), nullptr}));
+    EXPECT_TRUE(fake().waitRegistrations.empty()) << "the wait is registered only once the timer is set";
     timer.disarm();
     EXPECT_EQ(fake().cancels, 0) << "never armed";
 }

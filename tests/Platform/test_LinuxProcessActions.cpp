@@ -28,6 +28,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <clocale>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -914,8 +915,9 @@ TEST(LinuxProcessActionsTest, SignallingAnotherUsersProcessSaysPermissionDenied)
     LinuxProcessActions actions;
     const ProcessActionResult result = actions.resume(*rootProcess);
     EXPECT_FALSE(result.success);
-    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user");
-    EXPECT_TRUE(result.permissionDenied); // what an administrator could do: BrokeredProcessActions retries it (#2308)
+    // #3768: no helper redoes it since #3580, so the message says what can (this test skips as root, below).
+    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user (TaskSmack (Administrator) can do this)");
+    EXPECT_TRUE(result.permissionDenied); // what an administrator could do
 }
 
 // #2447: as root the kernel accepts a signal to init or a kernel thread and drops it, so TaskSmack would
@@ -1840,7 +1842,10 @@ TEST_F(LinuxProcessActionsFaultTest, ASignalTheKernelRefusesSaysWhy)
     plan().sendErrno = ESRCH;
     EXPECT_EQ(m_Actions.terminate(ownTarget()).errorMessage, "Process not found - may have already exited");
     plan().sendErrno = EPERM;
-    EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Permission denied - process belongs to another user");
+    const std::string refused = m_Actions.kill(ownTarget()).errorMessage;
+    EXPECT_TRUE(refused.starts_with("Permission denied - process belongs to another user")) << refused;
+    // #3768: not run as root, it says what can do it, no helper since #3580; as root (the CI root pass) it says nothing more.
+    EXPECT_EQ(refused.ends_with(" (TaskSmack (Administrator) can do this)"), ::geteuid() != 0) << refused;
     plan().sendErrno = EINVAL;
     const SleepingChild other; // not this process, which is never suspended (#2641)
     ASSERT_TRUE(other.started());
@@ -2806,6 +2811,30 @@ TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIs)
     ASSERT_TRUE(target.has_value());
     LinuxProcessActions actions;
     const auto refused = actions.imageSha256(*target, std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
+}
+
+// #3857: in a session whose language translates strerror (German here), another user's image is still said to be
+// theirs: the refusal is told by the open's errno, not by matching English text.
+TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIsInAnyLanguage)
+{
+    struct stat init{};
+    if (::geteuid() == 0 || ::stat("/proc/1", &init) != 0 || init.st_uid == ::geteuid())
+    {
+        GTEST_SKIP() << "needs PID 1 to be another user's, and not to run as root";
+    }
+    const std::string previous = std::setlocale(LC_MESSAGES, nullptr); // NOLINT(concurrency-mt-unsafe) - test thread
+    if (std::setlocale(LC_MESSAGES, "de_DE.UTF-8") == nullptr)         // NOLINT(concurrency-mt-unsafe) - test thread
+    {
+        GTEST_SKIP() << "no de_DE.UTF-8 locale here";
+    }
+    const std::optional<ProcessTarget> target = targetOf(1);
+    LinuxProcessActions actions;
+    const auto refused = target.has_value() ? actions.imageSha256(*target, std::stop_token{})
+                                            : std::expected<std::string, std::string>(std::unexpected(std::string{}));
+    std::setlocale(LC_MESSAGES, previous.c_str()); // NOLINT(concurrency-mt-unsafe) - test thread
+    ASSERT_TRUE(target.has_value());
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
 }

@@ -11,7 +11,10 @@
 #include <cerrno>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <new>
+#include <string>
+#include <vector>
 
 #include <sys/wait.h>
 
@@ -34,6 +37,20 @@ TEST(CommandOutputTest, KeepsWhatItPrintsAndItsExitStatus)
     EXPECT_TRUE(run.started);
     EXPECT_EQ(run.exitCode, 1);
     EXPECT_TRUE(run.output.empty());
+}
+
+// #3760: given an environment, the program gets that one and nothing of TaskSmack's own.
+TEST(CommandOutputTest, AGivenEnvironmentReplacesTaskSmacksOwn)
+{
+    ASSERT_EQ(::setenv("TASKSMACK_TEST_3760", "inherited", 1), 0);
+    const std::vector<std::string> environment{"PATH=/usr/bin:/bin", "ONLY_THIS=given"};
+    CommandOutput run = runForOutput({"/bin/sh", "-c", "printf '%s|%s' \"$ONLY_THIS\" \"$TASKSMACK_TEST_3760\""}, 5s, 1024, &environment);
+    EXPECT_TRUE(run.started);
+    EXPECT_EQ(run.output, "given|") << "only the given environment";
+
+    run = runForOutput({"/bin/sh", "-c", "printf '%s' \"$TASKSMACK_TEST_3760\""}, 5s, 1024);
+    EXPECT_EQ(run.output, "inherited") << "without one, TaskSmack's own";
+    ::unsetenv("TASKSMACK_TEST_3760");
 }
 
 TEST(CommandOutputTest, AProgramThatIsntThereDoesntStart)

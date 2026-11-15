@@ -690,7 +690,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     // MSVC STL false positive: the analyzer loses track of make_shared's control block (shared_ptr's
     // _Rep) returned by copyProcess() and reports a leak; ownership is a plain shared_ptr.
     // NOLINTNEXTLINE(clang-analyzer-cplusplus.NewDeleteLeaks)
-    std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(newGeneration->rows(), watchedPid) : nullptr;
+    std::shared_ptr<const ProcessSnapshot> watchedSnapshot = (watchedPid > 0) ? copyProcess(*newGeneration, watchedPid) : nullptr;
     // Its PSS and USS (#1885), which cost the kernel a walk of every mapping: for this one process
     // only, outside the lock. The rare re-copy under the lock below (the watch changed meanwhile)
     // goes without them until the next refresh.
@@ -763,7 +763,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
             if (pidNow != watchedPid)
             {
                 // watchProcess() ran between the copy above and this lock: rare, so copy again here.
-                watchedSnapshot = copyProcess(m_Generation->rows(), pidNow);
+                watchedSnapshot = copyProcess(*m_Generation, pidNow);
             }
             displacedSample = pushWatchedSampleLocked(ProcessSample{
                 .snapshot = std::move(watchedSnapshot),
@@ -808,10 +808,10 @@ std::shared_ptr<const ProcessSnapshot> ProcessModel::findSnapshot(std::int32_t p
     return {m_Generation, row}; // shares the generation's ownership: no copy of the row
 }
 
-std::shared_ptr<const ProcessSnapshot> ProcessModel::copyProcess(const std::vector<ProcessSnapshot>& snapshots, std::int32_t pid)
+std::shared_ptr<const ProcessSnapshot> ProcessModel::copyProcess(const ProcessGeneration& generation, std::int32_t pid)
 {
-    const auto it = std::ranges::find(snapshots, pid, &ProcessSnapshot::pid);
-    return (it != snapshots.end()) ? std::make_shared<const ProcessSnapshot>(*it) : nullptr;
+    const ProcessSnapshot* const row = generation.find(pid);
+    return row != nullptr ? std::make_shared<const ProcessSnapshot>(*row) : nullptr;
 }
 
 ProcessSample ProcessModel::pushWatchedSampleLocked(ProcessSample sample)
@@ -839,7 +839,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
     // The replacement ring is allocated here, before the lock, and the old one (with the previous
     // watch's samples) is destroyed after it is released.
     std::vector<ProcessSample> ring(WATCHED_SAMPLE_CAPACITY);
-    std::shared_ptr<const std::vector<ProcessSnapshot>> current;
+    std::shared_ptr<const ProcessGeneration> current;
     std::uint64_t currentVersion = 0;
     double currentSampleTime = 0.0;
     Platform::ProcessCapabilities currentCapabilities;
@@ -850,7 +850,7 @@ void ProcessModel::watchProcess(std::int32_t pid)
         m_WatchedSamples.swap(ring);
         m_WatchedSampleStart = 0;
         m_WatchedSampleCount = 0;
-        current = rowsOf(m_Generation);
+        current = m_Generation;
         currentVersion = m_SnapshotVersion;
         currentSampleTime = m_SnapshotSampleTimeSeconds;
         currentCapabilities = m_PublishedCapabilities;
