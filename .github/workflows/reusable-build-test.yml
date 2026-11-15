@@ -427,8 +427,11 @@ jobs:
       # fails when none ran, so a guard that stops seeing CI can't pass as a run of skips; each case's result is
       # in the Job Summary and the artifact (ci-real-system-results.xml). Then it checks the runner for anything a
       # test made and left (throwaway accounts and services, scratch registry values and Program Files folders).
+      # It runs on the Windows ARM64 leg too (#3823), where "Test (Windows ARM64)" below runs the ctest part, so the
+      # real OS paths are exercised on the ARM64 binary that ships. A case ARM64 can't run skips inside the test
+      # with its reason; any that is expected there goes in $arm64Skips below, with that reason.
       - name: Real-system tests (Windows)
-        if: always() && runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build && steps.build-windows.outcome == 'success'
+        if: always() && runner.os == 'Windows' && inputs.build && steps.build-windows.outcome == 'success'
         shell: pwsh
         timeout-minutes: 10
         env:
@@ -473,6 +476,15 @@ jobs:
             'CiRealSystemSystemMenuChildTest.ShowsTheMenuUntilItIsAnswered',
             'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet'
           )
+          # Skips only the ARM64 leg expects: test name = the reason it can't run there, which the test's own skip message
+          # repeats. None yet (#3823); an entry needs both, and applies on ARM64 only, so x64 still fails on that skip.
+          $arm64Skips = @{}
+          if ($env:RUNNER_ARCH -eq 'ARM64') {
+            foreach ($name in $arm64Skips.Keys) {
+              Write-Host "::notice title=Real-system tests::$name may skip on ARM64: $($arm64Skips[$name])"
+              $expectedSkips += $name
+            }
+          }
           $unexpected = @($cases | Where-Object { $_.Result -ne 'COMPLETED' -and $expectedSkips -notcontains $_.Test })
           if ($unexpected.Count -gt 0) {
             Write-Host "::error title=Real-system tests::$($unexpected.Count) CiRealSystem test(s) skipped that aren't expected to: $(($unexpected | ForEach-Object { $_.Test }) -join ', ')"

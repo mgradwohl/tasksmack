@@ -1483,6 +1483,38 @@ class Arm64LabelerTests(unittest.TestCase):
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:arm64')", text)
 
 
+class RealSystemOnArm64Tests(unittest.TestCase):
+    """#3823: the Windows real-system tests run on the ARM64 leg too, with the same guards as on x64."""
+
+    WORKFLOW = WORKFLOWS / "reusable-build-test.yml"
+    STEP = "Real-system tests (Windows)"
+
+    def test_the_step_has_no_architecture_guard(self):
+        step = find_step(self.WORKFLOW, self.STEP)
+        self.assertNotIn("runner.arch", step.condition)
+        self.assertIn("runner.os == 'Windows'", step.condition)
+        self.assertIn("steps.build-windows.outcome == 'success'", step.condition)
+
+    def test_the_plain_windows_ctest_step_still_skips_arm64_for_its_own_step(self):
+        # ARM64's ctest runs in "Test (Windows ARM64)", which this change leaves alone.
+        self.assertIn("runner.arch != 'ARM64'", find_step(self.WORKFLOW, "Test (Windows)").condition)
+        self.assertIn("runner.arch == 'ARM64'", find_step(self.WORKFLOW, "Test (Windows ARM64)").condition)
+
+    def test_the_none_ran_check_and_the_unexpected_skip_allowlist_remain(self):
+        run = find_step(self.WORKFLOW, self.STEP).run
+        self.assertIn("if ($ran -eq 0)", run)
+        self.assertIn("$expectedSkips = @(", run)
+        self.assertIn("skipped that aren't expected to", run)
+
+    def test_arm64_skips_are_honored_on_arm64_only_and_carry_a_reason(self):
+        run = find_step(self.WORKFLOW, self.STEP).run
+        self.assertIn("$arm64Skips = @{}", run)
+        self.assertIn("if ($env:RUNNER_ARCH -eq 'ARM64')", run)
+        self.assertIn("$arm64Skips[$name]", run)
+        # They join the allowlist before the check that uses it, never after.
+        self.assertLess(run.index("$expectedSkips += $name"), run.index("$unexpected = "))
+
+
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
     whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
