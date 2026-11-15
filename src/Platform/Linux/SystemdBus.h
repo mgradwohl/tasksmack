@@ -52,7 +52,7 @@ inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 
 /// Longest an action call that may prompt for a password waits (#2402): systemd holds its answer until
 /// the user answers polkit's agent, so CALL_TIMEOUT_USEC would give up on nearly everyone typing one.
-/// pkexec's own bound (PkexecBroker::CONNECT_TIMEOUT). A stop request still ends the wait at once.
+/// A stop request still ends the wait at once.
 inline constexpr std::uint64_t INTERACTIVE_CALL_TIMEOUT_USEC = 120'000'000;
 
 /// How long an action's call may take: INTERACTIVE_CALL_TIMEOUT_USEC when it may prompt (the user's
@@ -197,6 +197,11 @@ struct LoginSessionsRead
 /// Reads every logind session (org.freedesktop.login1). @p currentSessionId (XDG_SESSION_ID) marks the
 /// session TaskSmack runs in. Unprivileged.
 [[nodiscard]] LoginSessionsRead readLoginSessions(std::string_view currentSessionId);
+
+/// The logind session this process is in, from its cgroup (sd_pid_get_session), or empty when it is in none or the
+/// build has no libsystemd (#3890). A TaskSmack started by pkexec or sudo stays in the invoking user's session scope
+/// though its environment has lost XDG_SESSION_ID.
+[[nodiscard]] std::string sessionOfThisProcess();
 
 /// What sessionAction() says to a Disconnect: Linux offers Lock in its place (#3076).
 inline constexpr std::string_view DISCONNECT_UNSUPPORTED = "Linux has no Disconnect; Lock takes its place";

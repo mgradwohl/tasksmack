@@ -54,6 +54,8 @@ constexpr const char* COMMAND_HINT = "konsole, or /usr/bin/foot --title Rescue";
 constexpr const char* COMMAND_NOTE = "No shell runs it, so $VARIABLES, ~ and wildcards stay as typed. Quote a word with spaces in it.";
 constexpr const char* ADMINISTRATOR_TOOLTIP = "Asks for an administrator's password first (Linux: through pkexec). A program with a window "
                                               "may not open this way, because pkexec doesn't pass on your display.";
+/// TaskSmack (Administrator), started as root (#3580): no prompt, the program just runs as root (#3594, #3805).
+constexpr const char* ADMINISTRATOR_TOOLTIP_ELEVATED = "Runs it as root, with no password: TaskSmack itself runs as administrator.";
 #endif
 
 /// The app's file dialog over its window, starting in /usr/bin, where most programs are; with no window
@@ -122,10 +124,20 @@ RunTaskDialog::RunTaskDialog() : RunTaskDialog(&sdlBrowse)
 RunTaskDialog::RunTaskDialog(Browse browse) : m_Browse(std::move(browse))
 {}
 
-void RunTaskDialog::open(std::vector<std::string> recent, bool canRunAsAdministrator)
+const char* RunTaskDialog::administratorTooltip([[maybe_unused]] bool alreadyAdministrator) noexcept
+{
+#ifdef _WIN32
+    return ADMINISTRATOR_TOOLTIP; // Windows offers the tick only when TaskSmack isn't elevated (#3427)
+#else
+    return alreadyAdministrator ? ADMINISTRATOR_TOOLTIP_ELEVATED : ADMINISTRATOR_TOOLTIP;
+#endif
+}
+
+void RunTaskDialog::open(std::vector<std::string> recent, bool canRunAsAdministrator, bool alreadyAdministrator)
 {
     m_Recent = std::move(recent);
     m_CanRunAsAdministrator = canRunAsAdministrator;
+    m_AlreadyAdministrator = alreadyAdministrator;
     if (!m_CanRunAsAdministrator)
     {
         m_AsAdministrator = false;
@@ -255,7 +267,7 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
     if (m_CanRunAsAdministrator)
     {
         UI::Widgets::outlinedCheckbox("Run as administrator", &m_AsAdministrator);
-        ImGui::SetItemTooltip("%s", ADMINISTRATOR_TOOLTIP);
+        ImGui::SetItemTooltip("%s", administratorTooltip(m_AlreadyAdministrator));
     }
 
     const bool typed = m_Command.find_first_not_of(" \t\n") != std::string::npos;

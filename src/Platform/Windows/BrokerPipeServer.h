@@ -1,7 +1,7 @@
 #pragma once
 
 // The privileged helper's side of the Windows broker transport (#2311): answers BrokerProtocol requests
-// from TaskSmack over a BrokerPipe, with the session rules of the Linux helper (Linux/BrokerServer.h):
+// from TaskSmack over a BrokerPipe, with the session rules (BrokerSessionRules.h):
 // a Hello of this protocol version first, an ErrorReply to a frame that doesn't decode, a too-large
 // reply turned into an ErrorReply, and an idle exit only user requests put off. What a request does is
 // the handler's: TaskSmackHelper.exe (#2517) hands it the shared request mapping and the Windows

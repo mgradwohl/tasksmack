@@ -371,7 +371,8 @@ struct ProcessActionCapabilities
     /// gdb's gcore), and that is the normal case, not a fallback (#2241).
     bool dumpsFromSnapshot = false;
     /// runAuthorized() can retry a permissionDenied failure as an administrator, after a password
-    /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
+    /// prompt (Windows only: TaskSmackHelper.exe, #2308; Linux runs as Administrator instead, #3580). The UI then offers "Authenticate and
+    /// retry".
     bool canAuthorizeInteractively = false;
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
     /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).

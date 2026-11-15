@@ -76,6 +76,15 @@ void readCurrent(ProcessIoPriorityView& view,
 
 // --- Helpers -------------------------------------------------------------------------------------
 
+TEST(ProcessIoPriorityViewTest, CurrentTextMatchesThePriorityCardsCasing)
+{
+    ProcessIoPriorityView view;
+    EXPECT_EQ(view.currentText(std::nullopt, Platform::SchedPolicy::Normal), "Current I/O priority: unknown");
+    TestMocks::MockProcessActions mock;
+    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    EXPECT_TRUE(view.currentText(std::nullopt, Platform::SchedPolicy::Normal).starts_with("Current I/O priority: "));
+}
+
 TEST(ProcessIoPriorityViewTest, ClassNamesAndLevels)
 {
     EXPECT_EQ(Detail::ioPriorityClassName(IoPriorityClass::None), "Default");

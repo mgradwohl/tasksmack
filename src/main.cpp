@@ -363,9 +363,11 @@ auto runApp(const App::LaunchOptions& launch) -> int
                      Domain::ProcessSecurity::capabilitySetText(capabilityDrop.after.effective));
         if (capabilityDrop.threads > 1)
         {
-            spdlog::warn("Administrator session: {} threads were running when root's capabilities were narrowed; only the "
-                         "first was narrowed",
-                         capabilityDrop.threads);
+            // capset() narrows only the calling thread (#3765): the others already running keep root's full sets.
+            spdlog::warn("Administrator session: {} threads were running when root's capabilities were narrowed; only this "
+                         "thread was narrowed, and the other {} keep root's full sets",
+                         capabilityDrop.threads,
+                         capabilityDrop.threads - 1);
         }
     }
     else if (capabilityDrop.root)

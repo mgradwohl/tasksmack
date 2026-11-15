@@ -441,9 +441,9 @@ class ProcessModel : public ISamplable
     /// (for the caller to destroy after releasing the lock). Requires m_Mutex held exclusively.
     [[nodiscard]] ProcessSample pushWatchedSampleLocked(ProcessSample sample);
 
-    /// A shared copy of process @p pid as @p snapshots lists it, or nullptr when it isn't listed.
-    [[nodiscard]] static std::shared_ptr<const ProcessSnapshot> copyProcess(const std::vector<ProcessSnapshot>& snapshots,
-                                                                            std::int32_t pid);
+    /// A shared copy of process @p pid's row in @p generation, found through its PID index as findSnapshot() finds it
+    /// (#3789: the same row when a read lists a PID twice, and no scan of every row), or nullptr when it isn't listed.
+    [[nodiscard]] static std::shared_ptr<const ProcessSnapshot> copyProcess(const ProcessGeneration& generation, std::int32_t pid);
 
     [[nodiscard]] static ProcessSnapshot computeSnapshot(const Platform::ProcessCounters& current,
                                                          const Platform::ProcessCounters* previous,

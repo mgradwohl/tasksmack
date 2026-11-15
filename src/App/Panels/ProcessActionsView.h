@@ -367,9 +367,9 @@ class ProcessActionsView
   public:
     /// Look up on VirusTotal's client and key (#3094), from Process Details each frame: the button shows only when
     /// VirusTotalLookup::offered() says so.
-    void setVirusTotal(VirusTotalLookup::Context context)
+    void setVirusTotal(const VirusTotalLookup::Context& context)
     {
-        m_VirusTotal = std::move(context);
+        m_VirusTotal = context;
     }
 
     /// The process a pending confirm is about, as it was when its button was pressed.

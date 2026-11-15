@@ -19,6 +19,8 @@ on:
       - 'tools/bench.sh'
       - 'tools/check-benchmark-regression.py'
       - 'tools/bench-across-launches.py'
+      - 'tools/bench-manifest.py'
+      - 'tools/merge-benchmark-baselines.py'
       - '.github/workflows/heavy-checks.yml'
   schedule:
     # Nightly at 04:00 UTC (was weekly): coverage, Windows coverage, benchmarks; the sanitizer
@@ -173,8 +175,8 @@ jobs:
 
       # Line coverage, the number Codecov and the docs use, summed from coverage/coverage.lcov (LH/LF).
       # The TOTAL row of `llvm-cov report` is not parsed by position: its last column is branch
-      # coverage, which this step used to report as "coverage" (#1543). Warn-only; codecov.yml's
-      # `auto` target is the real ratchet, this floor just flags a large drop in the job summary.
+      # coverage, which this step used to report as "coverage" (#1543). Below LINUX_COVERAGE_THRESHOLD it FAILS the
+      # job (maintainer, 2026-10-15, closing #1891; #3844); codecov.yml's `auto` target is the finer ratchet.
       - name: Check coverage threshold
         if: always()
         env:

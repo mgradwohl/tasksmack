@@ -72,6 +72,25 @@ jobs:
         run: |
           set -euo pipefail
 
+          # A GET through gh api, tried up to 4 times with backoff (#3826): one 502, a rate limit or a reply cut short
+          # (gh's --jq then fails) used to fail the whole check and leave the red-main issue a run behind. Only reads:
+          # a comment or a close is never sent twice.
+          gh_api() {
+            local delay=5 try out
+            for try in 1 2 3 4; do
+              if out=$(gh api "$@"); then
+                [[ -z "$out" ]] || printf '%s\n' "$out"
+                return 0
+              fi
+              echo "gh api $1: try $try of 4 failed" >&2
+              if (( try < 4 )); then
+                sleep "$delay"
+                delay=$(( delay * 2 ))
+              fi
+            done
+            return 1
+          }
+
           # Fills `red` with a line per watched workflow (or job) whose latest finished run on the
           # branch failed. tests/tools/test_workflow_run_steps.py runs this function on its own.
           judge_branch() {
@@ -89,7 +108,7 @@ jobs:
             while IFS='|' read -r file name; do
               [[ -n "$file" ]] || continue
               for event in push schedule; do
-                latest=$(gh api "repos/$REPO/actions/workflows/$file/runs?branch=$branch&event=$event&status=completed&per_page=10" \
+                latest=$(gh_api "repos/$REPO/actions/workflows/$file/runs?branch=$branch&event=$event&status=completed&per_page=10" \
                   --jq '[.workflow_runs[] | select(.conclusion != "cancelled" and .conclusion != "skipped")][0]
                         | select(. != null) | "\(.conclusion)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
                 [[ -n "$latest" ]] || continue
@@ -109,7 +128,7 @@ jobs:
               [[ -n "$file" ]] || continue
               while IFS='|' read -r run_id url sha created; do
                 [[ -n "$run_id" ]] || continue
-                conclusion=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" </dev/null \
+                conclusion=$(gh_api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" </dev/null \
                   --jq "[.jobs[] | select(.name == \"$job\" or (.name | startswith(\"$job / \")))
                          | .conclusion | select(. != null and . != \"skipped\" and . != \"cancelled\")]
                         | if length == 0 then empty
@@ -120,7 +139,7 @@ jobs:
                   red+="- **${name}** (${job}): \`${conclusion}\` on \`${sha}\` (${created}): ${url}"$'\n'
                 fi
                 break
-              done < <(gh api "repos/$REPO/actions/workflows/$file/runs?branch=$branch&event=$event&status=completed&per_page=20" \
+              done < <(gh_api "repos/$REPO/actions/workflows/$file/runs?branch=$branch&event=$event&status=completed&per_page=20" \
                 --jq '.workflow_runs[] | "\(.id)|\(.html_url)|\(.head_sha[0:8])|\(.created_at)"')
             done <<<"$WATCHED_JOBS"
           }
@@ -131,7 +150,7 @@ jobs:
             local title="CI: $branch is red"
             # REST only: `gh issue edit`/`view` go through GraphQL fields that fail on this repo.
             local issue
-            issue=$(gh api "repos/$REPO/issues?labels=$LABEL&state=open&per_page=50" \
+            issue=$(gh_api "repos/$REPO/issues?labels=$LABEL&state=open&per_page=50" \
               --jq ".[] | select(.title == \"$title\") | .number" | head -n1)
             local run_link="[${GITHUB_WORKFLOW}](${SERVER}/${REPO}/actions/runs/${GITHUB_RUN_ID})"
 
@@ -165,7 +184,7 @@ jobs:
             # Comment only when a workflow turns red that the issue didn't already list, so a workflow
             # that stays red across several merges doesn't add a comment per merge.
             local previous
-            previous=$(gh api "repos/$REPO/issues/$issue" --jq .body)
+            previous=$(gh_api "repos/$REPO/issues/$issue" --jq .body)
             gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f body="$body"
             # The triggering run is one branch's, so only that branch's issue gets the comment (#2951).
             if [[ "$branch" == "${TRIGGER_BRANCH:-}" ]] &&

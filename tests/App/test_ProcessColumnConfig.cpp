@@ -196,6 +196,11 @@ TEST(ProcessColumnConfigTest, NetworkColumnsNoteTheyAreTcpOnlyWithoutUdpCounters
         const std::string_view withUdp = columnCapabilityNote(col, true);
         EXPECT_TRUE(withUdp.contains("TCP and UDP")) << getColumnInfo(col).configKey;
         EXPECT_FALSE(withUdp.contains("TCP only")) << getColumnInfo(col).configKey;
+#ifndef _WIN32
+        // #3799: on Linux it's the eBPF counter that counts UDP, not a Windows event trace.
+        EXPECT_TRUE(withUdp.contains("eBPF")) << withUdp;
+        EXPECT_FALSE(withUdp.contains("Windows")) << withUdp;
+#endif
     }
 }
 

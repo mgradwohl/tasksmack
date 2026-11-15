@@ -363,7 +363,12 @@ enum class ColumnAlign : std::uint8_t
     }
     if (hasUdpNetworkCounters)
     {
+        // How each platform counts it (#3799): Windows' opt-in event trace, Linux's eBPF counter as root.
+#ifdef _WIN32
         return "TCP and UDP: UDP is counted by a Windows network event trace (Settings)";
+#else
+        return "TCP and UDP: UDP is counted by an eBPF counter TaskSmack loads when it runs as administrator";
+#endif
     }
     return "TCP only: UDP traffic (QUIC/HTTP3, video calls, games, DNS) is not counted";
 }
