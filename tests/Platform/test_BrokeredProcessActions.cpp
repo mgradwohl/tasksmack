@@ -259,9 +259,10 @@ TEST(BrokeredProcessActionsTest, AnUnknownKindOrSignalIsNoRequestNeverATerminate
     EXPECT_FALSE(brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal}).has_value());
 
     const Fixture f(/*connected=*/false);
-    for (const AuthorizedAction& action :
-         {AuthorizedAction{.kind = unknownKind, .target = TARGET},
-          AuthorizedAction{.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal}})
+    for (const AuthorizedAction& action : {
+             AuthorizedAction{.kind = unknownKind, .target = TARGET},
+             AuthorizedAction{.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal},
+         })
     {
         const ProcessActionResult result = f.actions->runAuthorized(action, std::stop_token{});
         EXPECT_FALSE(result.success);

@@ -15,6 +15,7 @@
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
