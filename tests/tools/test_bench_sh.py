@@ -653,6 +653,115 @@ class BenchShTest(unittest.TestCase):
         self.assertEqual(ran, {"bin/python"}, output)
         self.assertFalse(store_ran)
 
+    # ---- --baseline (#3912): bench.ps1 -Baseline's check across launches, on Linux ----------------------------
+
+    BASELINE_STUB = r"""#!/usr/bin/env bash
+# One launch per call: BM_X takes the next of STUB_TIMES (comma-separated), BM_Y is always 50 ns.
+out=""
+for arg in "$@"; do
+    case "${arg}" in --benchmark_out=*) out="${arg#--benchmark_out=}" ;; esac
+done
+n=$(( $(cat "${STUB_COUNT}") + 1 ))
+echo "${n}" > "${STUB_COUNT}"
+printf '%s\n' "$*" >> "${STUB_COUNT}.args"
+IFS=, read -r -a times <<< "${STUB_TIMES}"
+t="${times[$(( n - 1 ))]}"
+row() { printf '{"name": "%s", "run_name": "%s", "run_type": "%s", %s "iterations": 10, "real_time": %s, "cpu_time": %s, "time_unit": "ns"}' "$@"; }
+printf '{"context": {"host_name": "h", "executable": "/x/TaskSmackBenchmarks"}, "benchmarks": [%s, %s, %s, %s]}\n' \
+    "$(row BM_X BM_X iteration '"repetition_index": 0,' "${t}" "${t}")" \
+    "$(row BM_X_median BM_X aggregate '"aggregate_name": "median",' "${t}" "${t}")" \
+    "$(row BM_Y BM_Y iteration '"repetition_index": 0,' 50 50)" \
+    "$(row BM_Y_median BM_Y aggregate '"aggregate_name": "median",' 50 50)" > "${out}"
+"""
+
+    def run_with_baseline(self, name: str, times: list[float], *options: str):
+        """bench.sh --baseline against BM_X 100 ns, BM_Y 50 ns; the full run reads times[0], launch n times[n-1]."""
+        stub = self.root / "build" / "fake" / "bin" / "BaselineStub"
+        stub.write_text(self.BASELINE_STUB, encoding="utf-8", newline="\n")
+        stub.chmod(stub.stat().st_mode | stat.S_IXUSR)
+        count = self.root / f"{name}.count"
+        count.write_text("0\n", encoding="utf-8", newline="\n")
+        baseline = self.root / "baseline.json"
+        baseline.write_text(json.dumps({"benchmarks": [
+            {"name": f"{bm}_median", "run_name": bm, "aggregate_name": "median", "real_time": ns, "cpu_time": ns,
+             "time_unit": "ns"} for bm, ns in (("BM_X", 100.0), ("BM_Y", 50.0))]}), encoding="utf-8")
+        code, output, results, manifests = self.run_bench(
+            name, 0, binary=stub, leading=("--baseline", posix(baseline), *options, "fake", "--"),
+            env_extra={"STUB_COUNT": posix(count), "STUB_TIMES": ",".join(str(t) for t in times)})
+        launches = int(count.read_text(encoding="utf-8").split()[0])
+        return code, output, results, launches, (self.root / f"{name}.count.args")
+
+    @unittest.skipIf(os.name == "nt", "Git Bash isn't a supported shell for --baseline: bench.ps1 -Baseline is Windows'")
+    def test_baseline_one_slow_launch_passes_across_launches(self):
+        code, output, results, launches, args = self.run_with_baseline("slow-launch", [160, 101, 99, 158, 102])
+        self.assertEqual(code, 0, output)
+        self.assertEqual(launches, 5, "the full run and 4 more launches")
+        self.assertIn("launch 1: 160.00ns (+60.0%)", output)
+        self.assertIn("median: 102.00ns (+2.0%)", output)
+        self.assertIn(": passed", output)
+        self.assertIn(f"RESULT={posix(results[0])}", output.splitlines())
+        # Each further launch: the same arguments, then the plan's filter, which Google Benchmark takes.
+        further = args.read_text(encoding="utf-8").splitlines()[1:]
+        self.assertEqual(len(further), 4)
+        for line in further:
+            self.assertTrue(line.endswith("--benchmark_filter=BM_X --benchmark_filter=^(BM_X)$"), line)
+        work = results[0].with_suffix(".across-launches")
+        self.assertEqual(sorted(p.name for p in work.iterdir() if p.is_dir()), ["2", "3", "4", "5"])
+        self.assertTrue((work / "combined.json").is_file())
+
+    @unittest.skipIf(os.name == "nt", "Git Bash isn't a supported shell for --baseline: bench.ps1 -Baseline is Windows'")
+    def test_baseline_a_real_regression_fails(self):
+        code, output, results, launches, _ = self.run_with_baseline("slow-all", [160, 158, 162, 101, 161])
+        self.assertEqual(code, 1, output)
+        self.assertIn("median: 160.00ns (+60.0%)", output)
+        self.assertIn(": failed (exit 1)", output)
+        # --check-arg reaches both checks: at a 70% threshold the full run already passes.
+        code, output, _, launches, _ = self.run_with_baseline("slow-all-70", [160], "--check-arg=--threshold=70")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(launches, 1)
+
+    @unittest.skipIf(os.name == "nt", "Git Bash isn't a supported shell for --baseline: bench.ps1 -Baseline is Windows'")
+    def test_baseline_a_clean_run_launches_nothing_more(self):
+        code, output, results, launches, _ = self.run_with_baseline("clean", [101], "--launches", "2")
+        self.assertEqual(code, 0, output)
+        self.assertEqual(launches, 1)
+        self.assertNotIn("Median across", output)
+
+    @unittest.skipIf(os.name == "nt", "Git Bash isn't a supported shell for --baseline: bench.ps1 -Baseline is Windows'")
+    def test_baseline_over_budget_the_flags_stand(self):
+        # 1 s of setup a launch for BM_X: 4 s for 4, over 1.
+        code, output, results, launches, _ = self.run_with_baseline("budget", [160, 101], "--budget-seconds=1")
+        self.assertEqual(code, 1, output)
+        self.assertEqual(launches, 1)
+        self.assertIn("flags stand as regressions", output)
+
+    def test_baseline_options_are_checked_before_the_run(self):
+        missing = posix(self.root / "no-such-baseline.json")
+        for leading, message in (
+            (("--baseline", missing, "fake", "--"), "Baseline not found"),
+            (("--launches", "3", "fake", "--"), "need --baseline"),
+            (("--baseline", missing, "--launches", "0", "fake", "--"), "Baseline not found"),
+        ):
+            with self.subTest(leading=leading):
+                code, output, results, manifests = self.run_bench(f"bad-{len(leading)}-{message[:4]}", 0, leading=leading)
+                self.assertEqual(code, 2, output)
+                self.assertIn(message, output)
+                self.assertNotIn("Running benchmarks", output)
+        baseline = self.root / "b.json"
+        baseline.write_text("{}", encoding="utf-8")
+        for value in ("--current=x.json", "--current-man=m.json", "--regr", "--base"):
+            with self.subTest(check_arg=value):
+                code, output, _, _ = self.run_bench(f"bad-check-{value[2:6]}", 0,
+                                                    leading=("--baseline", posix(baseline), f"--check-arg={value}", "fake", "--"))
+                self.assertEqual(code, 2, output)
+                self.assertIn("is not allowed in --check-arg", output)
+        for option, value in (("--launches", "0"), ("--launches", "x"), ("--budget-seconds", "soon")):
+            with self.subTest(option=option, value=value):
+                code, output, _, _ = self.run_bench(f"bad-{option}-{value}", 0,
+                                                    leading=("--baseline", posix(baseline), option, value, "fake", "--"))
+                self.assertEqual(code, 2, output)
+                self.assertIn(f"{option} takes", output)
+
     def test_help_prints_the_header_and_runs_nothing(self):
         # #2254: -h / --help as the first argument, as Get-Help is for bench.ps1.
         for flag in ("-h", "--help"):

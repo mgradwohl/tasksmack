@@ -1660,22 +1660,27 @@ before. The re-runs are bounded: `plan` estimates them from the full run's own t
 which sums to the suite's wall time within a few percent, plus a second per benchmark per launch; a
 `/manual_time` benchmark reports less than it runs, so it counts 25x plus 5 s), and refuses, leaving the
 flags as regressions, past 10 minutes or past what the job's 45 minutes leave after a 5-minute margin.
-Since an estimate can still be short, the launches also share a hard deadline at that budget: each runs
-under `timeout` with what's left, and a launch that hits it, or a budget gone before the next launch,
-stops the re-measurement with the flags standing, says so, and still writes the summary and artifact
-(#3508). A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
+Since an estimate can still be short, the launches also share a hard deadline at that budget: a launch
+still running there is stopped (its whole process group), and that, or a budget gone before the next
+launch, stops the re-measurement with the flags standing, says so, and still writes the summary and
+artifact (#3508). Steps 2 and 3 are one command, `tools/bench-across-launches.py run` (#3830): the plan,
+the launches, the deadline and the combine, shared by this job, `benchmark-second-runner` and
+`bench.sh --baseline`, and unit-tested in `tests/tools/test_bench_across_launches.py`. A typical flag of a few ns-scale benchmarks (5-8 s each) costs under 3 minutes. The
 `benchmark-results` artifact holds the launches (`perf-data/launches/`), the combined run
-(`perf-data/benchmark-across-launches.json`) and its report. To do the same by hand after a local run:
+(`perf-data/benchmark-across-launches.json`) and its report. To do the same locally, pass `--baseline` to
+`bench.sh` (#3912), as `bench.ps1 -Baseline` below: it checks the run, measures any flagged benchmark in
+`--launches` more launches (default 4) within `--budget-seconds` (default 600), each a `bench.sh` run of its
+own with the same preset, binary, `--core` and arguments, checks the median across them, and exits with that
+check's code (0 passed, 1 regressions, low coverage or flags that stand, 2 unusable input or a launch on
+another core class, 3 a failed launch). `--check-arg` passes an option to both checks, one per flag; the
+options the script sets itself (`--baseline`, `--current`, `--current-manifest`, `--regressions-out`) and
+their abbreviations are refused. The launches and the combined run go to `<result>.across-launches/`:
 
 ```bash
-python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current FIRST.json \
-    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json --regressions-out regressions.json
-filter=$(python3 tools/bench-across-launches.py plan --current FIRST.json --regressions regressions.json)
-for i in 1 2 3 4; do ./tools/bench.sh benchmark -- --benchmark_filter="$filter"; done   # note each RESULT=
-python3 tools/bench-across-launches.py combine --first FIRST.json --regressions regressions.json \
-    --baseline perf-data/linux-ci-baseline.json --output combined.json LAUNCH-2.json LAUNCH-3.json ...
-python3 tools/check-benchmark-regression.py --baseline perf-data/linux-ci-baseline.json --current combined.json \
-    --threshold 40 --threshold-overrides perf-data/linux-ci-thresholds.json
+./tools/bench.sh --baseline perf-data/linux-baseline.json
+# CI's thresholds, against CI's baseline (a hosted runner's numbers; see below)
+./tools/bench.sh --baseline perf-data/linux-ci-baseline.json --check-arg=--threshold=40 \
+    --check-arg=--threshold-overrides=perf-data/linux-ci-thresholds.json
 ```
 
 **Flags that stand go to a second runner** (#3623). Every launch above runs on one host, and `ubuntu-26.04`
@@ -1688,7 +1693,7 @@ MHz and caches, plus the manifest's model) with a NOTE when the two runs' cache 
 still stand after the launches (or weren't re-measured: over budget, out of time), the job hands the names,
 its binary, its full run and what its gate judged to `benchmark-second-runner` instead of failing. That job
 runs on a fresh runner, builds nothing, runs the flagged benchmarks alone in 5 launches of the same binary
-(`bench-across-launches.py combine --exclude-first`, so the first host's values aren't counted), and checks
+(`bench-across-launches.py run --exclude-first`, so the first host's values aren't counted), and checks
 the median at the same thresholds and overrides. Every other benchmark comes from what the first runner's
 gate judged, for the same coverage: its medians across launches for the ones it re-measured, not its first
 launch's, so a benchmark its launches cleared isn't failed again on one launch (#3692). The full run is only

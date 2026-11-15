@@ -2,10 +2,25 @@
 # bench.sh — Run TaskSmack benchmarks with consistent settings.
 #
 # Usage:
-#   ./tools/bench.sh [--core performance|any] [preset] [-- <extra args>]
+#   ./tools/bench.sh [--core performance|any] [--baseline FILE [--launches N] [--budget-seconds S]
+#                    [--check-arg ARG]...] [preset] [-- <extra args>]
 #   ./tools/bench.sh -h | --help              # print this help
 #
 # preset defaults to 'benchmark'.
+# --baseline FILE (#3912, as bench.ps1's -Baseline, #3448): once the run succeeds, check it against FILE
+# with tools/check-benchmark-regression.py (its default thresholds, then each --check-arg, e.g.
+# --check-arg=--threshold=40; --baseline, --current, --current-manifest and --regressions-out, which
+# the script sets itself, are refused there, and so is any abbreviation of them). When the check flags regressions, the flagged benchmarks
+# alone run again in N more separate launches (--launches, default 4: 5 in all with the full run),
+# each a bench.sh run of its own with the same preset, binary, --core and arguments plus the plan's
+# --benchmark_filter, and each one's median across the launches' medians is checked again at the same
+# thresholds and coverage: heavy-checks.yml's method, through the same tools/bench-across-launches.py
+# run. Not best-of-N, so a benchmark slow in most launches still fails. The launches may take
+# --budget-seconds (default 600): past it, or when nothing can be re-measured (a coverage loss alone),
+# the flags stand. A launch whose manifest records another core class than the full run's is exit 2,
+# with nothing combined. The launches, the flagged names and the combined run go to
+# <result>.across-launches/ next to the result. The script then exits with the last check's code: 0
+# passed, 1 regressions or low coverage (or the flags stand), 2 unusable input, 3 a launch failed.
 # --core (#3198, as bench.ps1's -Core): "performance" pins the run to the logical CPUs of the fastest
 # class with taskset, leaving out CPU 0 and its SMT sibling (CPU 0 takes most interrupts) while that
 # still leaves at least four, and never fewer than four (#3413: the concurrent benchmarks run four
@@ -20,7 +35,8 @@
 # mean/median/stddev/cv aggregates, and a provenance sidecar at
 # perf-data/<preset>-<timestamp>.manifest.json (git state, binary SHA-256, build config, benchmark
 # args, anonymized machine class; written by tools/bench-manifest.py, see CONTRIBUTING.md
-# "Benchmark Output"). On success the last line is RESULT=<result file path>, for scripts to read.
+# "Benchmark Output"). On success the last line is RESULT=<result file path>, for scripts to read
+# (a failed --baseline check still prints it, then exits with the check's code).
 #
 # Environment overrides (used by the script tests):
 #   TASKSMACK_BENCH_BIN      benchmark binary (default build/<preset>/bin/TaskSmackBenchmarks); a
@@ -43,7 +59,9 @@
 #   ./tools/bench.sh --core any               # not pinned, even on a hybrid CPU
 #   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
 #
-# Compare a run against the baseline:
+#   ./tools/bench.sh --baseline perf-data/linux-baseline.json   # and check it, across launches
+#
+# Compare a run against the baseline yourself (one launch's medians, which a noisy launch can fail):
 #   python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
 #       --current perf-data/benchmark-<timestamp>.json
 
@@ -67,19 +85,72 @@ fi
 source "${SCRIPT_DIR}/common.sh"
 
 # ---------- defaults ---------------------------------------------------------
-# --core MODE / --core=MODE before the preset (#3198).
+# The script's options, before the preset: --core MODE (#3198) and --baseline FILE with its
+# --launches, --budget-seconds and --check-arg (#3912), each as "--name value" or "--name=value".
 CORE=""
+BASELINE=""
+LAUNCHES=4
+BUDGET_SECONDS=600
+CHECK_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "${1}" in
-        --core) CORE="${2:-}"; shift $(( $# > 1 ? 2 : 1 )) ;;
-        --core=*) CORE="${1#--core=}"; shift ;;
+        --core|--baseline|--launches|--budget-seconds|--check-arg)
+            NAME="${1}"; VALUE="${2-}"
+            if [[ $# -lt 2 ]]; then
+                echo "${NAME} needs a value." >&2
+                exit 2
+            fi
+            shift 2 ;;
+        --core=*|--baseline=*|--launches=*|--budget-seconds=*|--check-arg=*)
+            NAME="${1%%=*}"; VALUE="${1#*=}"; shift ;;
         *) break ;;
     esac
-    if [[ "${CORE}" != "performance" && "${CORE}" != "any" ]]; then
-        echo "--core takes 'performance' or 'any', not '${CORE}'." >&2
-        exit 2
-    fi
+    case "${NAME}" in
+        --core)
+            CORE="${VALUE}"
+            if [[ "${CORE}" != "performance" && "${CORE}" != "any" ]]; then
+                echo "--core takes 'performance' or 'any', not '${CORE}'." >&2
+                exit 2
+            fi ;;
+        --baseline)
+            BASELINE="${VALUE}"
+            # Checked before the run, so a mistake fails now and not after a 25-minute run.
+            if [[ ! -f "${BASELINE}" ]]; then
+                echo "Baseline not found: ${BASELINE}" >&2
+                exit 2
+            fi
+            BASELINE="$(cd -- "$(dirname -- "${BASELINE}")" && pwd)/$(basename -- "${BASELINE}")" ;;
+        --launches)
+            LAUNCHES="${VALUE}"
+            if [[ ! "${LAUNCHES}" =~ ^[1-9][0-9]*$ ]]; then
+                echo "--launches takes a whole number of at least 1, not '${LAUNCHES}'." >&2
+                exit 2
+            fi ;;
+        --budget-seconds)
+            BUDGET_SECONDS="${VALUE}"
+            if [[ ! "${BUDGET_SECONDS}" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+                echo "--budget-seconds takes a number of seconds, not '${BUDGET_SECONDS}'." >&2
+                exit 2
+            fi ;;
+        --check-arg)
+            # The checker options this script sets itself, or an abbreviation of one (the checker's
+            # argparse accepts any unique prefix of a long option), are refused, as bench.ps1 does.
+            CHECK_NAME="${VALUE%%=*}"
+            if [[ "${CHECK_NAME}" == --?* ]]; then
+                for OWNED in --baseline --current --current-manifest --regressions-out; do
+                    if [[ "${OWNED}" == "${CHECK_NAME}"* ]]; then
+                        echo "'${VALUE}' is not allowed in --check-arg: the checker reads it as ${OWNED}, which bench.sh sets for each check itself." >&2
+                        exit 2
+                    fi
+                done
+            fi
+            CHECK_ARGS+=("${VALUE}") ;;
+    esac
 done
+if [[ -z "${BASELINE}" ]] && { [[ "${LAUNCHES}" != 4 || "${BUDGET_SECONDS}" != 600 ]] || (( ${#CHECK_ARGS[@]} > 0 )); }; then
+    echo "--launches, --budget-seconds and --check-arg need --baseline." >&2
+    exit 2
+fi
 PRESET="${1:-benchmark}"
 if [[ "${PRESET}" == "--" ]]; then
     PRESET="benchmark"
@@ -268,11 +339,55 @@ if [[ ${MANIFEST_EXIT} -ne 0 ]]; then
     exit "${MANIFEST_EXIT}"
 fi
 
+# --baseline (#3912): the check, with any flagged benchmark measured across launches, as bench.ps1
+# -Baseline and heavy-checks.yml do. Each further launch is this script again, in a process of its
+# own, with the same preset, binary, --core and arguments plus the plan's --benchmark_filter (Google
+# Benchmark takes the last one), so it is pinned, sampled, redacted and given a manifest the same way.
+CHECK_EXIT=0
+if [[ -n "${BASELINE}" ]]; then
+    WORK_DIR="${OUT_DIR}/${STEM}.across-launches"
+    mkdir -p "${WORK_DIR}"
+    CHECKER="${SCRIPT_DIR}/check-benchmark-regression.py"
+    echo
+    echo "Checking against ${BASELINE}"
+    "${PY}" "${CHECKER}" ${CHECK_ARGS[@]+"${CHECK_ARGS[@]}"} --baseline "${BASELINE}" --current "${OUT_FILE}" \
+        --regressions-out "${WORK_DIR}/regressions.json" || CHECK_EXIT=$?
+    # Only flagged regressions are re-measured; a pass, or a usage error, stands.
+    if (( CHECK_EXIT == 1 )); then
+        echo
+        RUN_EXIT=0
+        TASKSMACK_BENCH_BIN="${BENCH_BIN}" "${PY}" "${SCRIPT_DIR}/bench-across-launches.py" run \
+            --current "${OUT_FILE}" --regressions "${WORK_DIR}/regressions.json" --baseline "${BASELINE}" \
+            --output "${WORK_DIR}/combined.json" --work-dir "${WORK_DIR}" --first-manifest "${MANIFEST_FILE}" \
+            --launches "${LAUNCHES}" --budget-seconds "${BUDGET_SECONDS}" \
+            -- "${BASH}" "${SCRIPT_DIR}/bench.sh" ${CORE:+--core "${CORE}"} "${PRESET}" -- "$@" || RUN_EXIT=$?
+        if (( RUN_EXIT == 0 )); then
+            echo
+            echo "Checking the median across $(( LAUNCHES + 1 )) launches against ${BASELINE}"
+            CHECK_EXIT=0
+            "${PY}" "${CHECKER}" ${CHECK_ARGS[@]+"${CHECK_ARGS[@]}"} --baseline "${BASELINE}" \
+                --current "${WORK_DIR}/combined.json" --current-manifest "${MANIFEST_FILE}" || CHECK_EXIT=$?
+        else
+            CHECK_EXIT=${RUN_EXIT}
+        fi
+    fi
+fi
+
 echo
 echo "Results written to: ${OUT_FILE}"
 echo "Provenance manifest: ${MANIFEST_FILE}"
-echo "Compare against a baseline (median per benchmark, regressions over the threshold fail):"
-echo "  python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current ${OUT_FILE}"
-# Machine-readable result path, printed only on success (as the profile-* scripts print TRACE=):
-# heavy-checks.yml reads it instead of guessing from a glob that also matches the manifest (#2249).
+if [[ -n "${BASELINE}" ]]; then
+    if (( CHECK_EXIT == 0 )); then
+        echo "Checked against ${BASELINE}: passed"
+    else
+        echo "Checked against ${BASELINE}: failed (exit ${CHECK_EXIT})"
+    fi
+else
+    echo "Compare against a baseline across launches with --baseline, or on this run alone:"
+    echo "  python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current ${OUT_FILE}"
+fi
+# Machine-readable result path, printed once the run succeeded (as the profile-* scripts print
+# TRACE=), even when a --baseline check then fails: heavy-checks.yml reads it instead of guessing from
+# a glob that also matches the manifest (#2249).
 echo "RESULT=${OUT_FILE}"
+exit "${CHECK_EXIT}"

@@ -7,6 +7,10 @@ Usage:
         [--launches 4] [--budget-seconds 600]
     bench-across-launches.py combine --first FIRST.json --regressions REGRESSIONS.json \
         --output COMBINED.json [--baseline BASELINE.json] [--exclude-first] LAUNCH.json ...
+    bench-across-launches.py run --current FIRST.json --regressions REGRESSIONS.json \
+        --baseline BASELINE.json --output COMBINED.json --work-dir DIR [--first JUDGED.json] \
+        [--exclude-first] [--first-manifest FIRST.manifest.json] [--launches 4] [--budget-seconds 600] \
+        [--report REPORT.txt] -- COMMAND ...
 
 On a shared hosted runner one launch of the benchmark binary can read a ns-scale benchmark 40-80%
 slower than the next launch of the same binary: where the heap and the code land, and the noisy
@@ -48,17 +52,41 @@ host from the code. The flagged benchmarks' medians then come from the LAUNCH.js
 second runner's verdict is its own; FIRST.json still supplies every other benchmark, for the same
 coverage, and the output's context is the first LAUNCH.json's: the machine that measured them.
 
-Exit codes: 0 done; 1 (plan) nothing to re-measure, or over budget; 2 usage error or unusable input.
+run (#3830, #3912): plan, the further launches, and combine, in one place for heavy-checks.yml's two benchmark
+jobs and bench.sh --baseline. The plan is made from FIRST.json; each launch runs COMMAND with
+--benchmark_filter=<the plan's filter> appended and TASKSMACK_BENCH_OUT_DIR set to DIR/<launch number>, as
+bench.sh reads it, and its result is the file its last RESULT= line names. The launches are numbered 2 to
+--launches + 1 after the full run, or 1 to --launches with --exclude-first, where none of them is the full
+run. Every launch shares one deadline, --budget-seconds from the start: a launch that would start past it
+isn't started, and one still running at it is stopped (its whole process group, SIGTERM and then SIGKILL 10 s
+later) and its directory deleted, since a killed run leaves an unredacted partial result. Either way, as when
+the plan refuses, the flags stand (exit 1). With --first-manifest, a launch whose manifest
+(<result>.manifest.json) records another placement.core_class than it fails (exit 2), as bench.ps1 -Baseline
+checks (#3163): a run pinned elsewhere can't share a median. The combine then reads --first (FIRST.json when
+not given) and writes COMBINED.json; the regression check on it is the caller's, with the caller's
+thresholds. Each launch's output goes to the console; the plan's estimate, any out-of-time notice, the
+combine's table and every error also go to --report when it is given, for a job summary.
+
+Exit codes: 0 done; 1 (plan) nothing to re-measure, or over budget; (run) the same, or out of time, so the
+flags stand; 2 usage error or unusable input; 3 (run) a launch failed or wrote no result.
 """
 
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import math
+import os
+import shutil
+import signal
 import statistics
+import subprocess
 import sys
+import threading
+import time
 from pathlib import Path
+from typing import TextIO
 
 TIME_UNIT_NS = {"ns": 1.0, "us": 1e3, "ms": 1e6, "s": 1e9}
 # Google Benchmark compiles the filter as a POSIX extended regex (std::regex::extended): these are
@@ -69,6 +97,10 @@ SETUP_SECONDS_PER_BENCHMARK = 1.0
 # than it runs; see the docstring.
 MANUAL_TIME_FACTOR = 25.0
 MANUAL_TIME_SETUP_SECONDS = 5.0
+# run: how long a stopped launch gets between SIGTERM and SIGKILL, as heavy-checks.yml's timeout --kill-after.
+KILL_AFTER_SECONDS = 10.0
+# run's clock, a seam for the tests: the deadline is measured on it.
+clock = time.monotonic
 
 
 class InputError(Exception):
@@ -158,27 +190,36 @@ def median_row(data: dict, name: str) -> dict | None:
     return medians[0]
 
 
-def plan(args: argparse.Namespace) -> int:
-    names = load_regressions(args.regressions)
-    first = load_run(args.current)
+def planned_filter(names: list[str], first: dict, launches: int, budget_seconds: float, out: TextIO) -> str | None:
+    """The filter for re-running @p names @p launches more times within @p budget_seconds, or None when there is
+    nothing to re-measure or it would take longer. Says which, and the estimate, on @p out."""
     if not names:
-        print("Nothing to re-measure: the check flagged no regression.", file=sys.stderr)
-        return 1
+        print("Nothing to re-measure: the check flagged no regression.", file=out)
+        return None
     per_launch = sum(launch_seconds(first, n) for n in names)
-    estimate = per_launch * args.launches
+    estimate = per_launch * launches
     print(
-        f"{len(names)} flagged benchmark(s), about {per_launch:.0f}s a launch: {args.launches} more launch(es) "
-        f"take about {estimate:.0f}s of the {args.budget_seconds:.0f}s budget.",
-        file=sys.stderr,
+        f"{len(names)} flagged benchmark(s), about {per_launch:.0f}s a launch: {launches} more launch(es) "
+        f"take about {estimate:.0f}s of the {budget_seconds:.0f}s budget.",
+        file=out,
     )
-    if estimate > args.budget_seconds:
+    if estimate > budget_seconds:
         print(
             f"Over budget: the {len(names)} flagged benchmark(s) are not re-measured, so the flags stand as "
             "regressions.",
-            file=sys.stderr,
+            file=out,
         )
+        return None
+    return benchmark_filter(names)
+
+
+def plan(args: argparse.Namespace) -> int:
+    names = load_regressions(args.regressions)
+    first = load_run(args.current)
+    pattern = planned_filter(names, first, args.launches, args.budget_seconds, sys.stderr)
+    if pattern is None:
         return 1
-    print(benchmark_filter(names))
+    print(pattern)
     return 0
 
 
@@ -249,6 +290,153 @@ def combine(args: argparse.Namespace) -> int:
     return 0
 
 
+class Tee:
+    """Writes to every stream it holds: the console and the report."""
+
+    def __init__(self, *streams: TextIO) -> None:
+        self.streams = streams
+
+    def write(self, text: str) -> int:
+        for stream in self.streams:
+            stream.write(text)
+        return len(text)
+
+    def flush(self) -> None:
+        for stream in self.streams:
+            stream.flush()
+
+
+def stop(process: subprocess.Popen) -> None:
+    """Stops @p process and, on POSIX, every process in its group (bench.sh and the benchmark binary it runs)."""
+    if os.name == "nt":
+        process.kill()
+        process.wait()
+        return
+    for sig, wait in ((signal.SIGTERM, KILL_AFTER_SECONDS), (signal.SIGKILL, None)):
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(process.pid, sig)
+        try:
+            process.wait(timeout=wait)
+            return
+        except subprocess.TimeoutExpired:
+            continue
+
+
+def launch_once(command: list[str], out_dir: Path, seconds: float, console: TextIO) -> tuple[int | None, str | None]:
+    """Runs @p command for at most @p seconds with TASKSMACK_BENCH_OUT_DIR=@p out_dir, its output on @p console.
+    Returns its exit code and the path its last RESULT= line named, or (None, None) when it was stopped."""
+    env = {**os.environ, "TASKSMACK_BENCH_OUT_DIR": str(out_dir)}
+    # A session of its own, so a stop reaches the whole group (POSIX only; Windows ignores it).
+    group = {"start_new_session": True} if os.name != "nt" else {}
+    try:
+        process = subprocess.Popen(
+            command, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=env, text=True, encoding="utf-8",
+            errors="replace", bufsize=1, **group)
+    except OSError as error:
+        print(f"ERROR: cannot start {command[0]}: {error}", file=sys.stderr)
+        return 127, None
+    results: list[str] = []
+
+    def pump() -> None:
+        assert process.stdout is not None
+        for line in process.stdout:
+            console.write(line)
+            console.flush()
+            if line.startswith("RESULT="):
+                results.append(line[len("RESULT="):].rstrip("\r\n"))
+
+    reader = threading.Thread(target=pump, daemon=True)
+    reader.start()
+    try:
+        code = process.wait(timeout=max(seconds, 0.0))
+    except subprocess.TimeoutExpired:
+        stop(process)
+        reader.join(timeout=5)
+        return None, None
+    reader.join(timeout=30)
+    return code, (results[-1] if results else None)
+
+
+def core_class(manifest: Path) -> str:
+    """The placement.core_class a bench.sh manifest records, "(none)" without one, "(no manifest)" when unreadable."""
+    try:
+        data = json.loads(manifest.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return "(no manifest)"
+    placement = data.get("placement") if isinstance(data, dict) else None
+    value = placement.get("core_class") if isinstance(placement, dict) else None
+    return "(none)" if value is None else str(value)
+
+
+def run(args: argparse.Namespace, console: TextIO) -> int:
+    deadline = clock() + args.budget_seconds
+    budget_text = f"{args.budget_seconds:g}"
+    names = load_regressions(args.regressions)
+    first = load_run(args.current)
+    pattern = planned_filter(names, first, args.launches, args.budget_seconds, sys.stdout)
+    if pattern is None:
+        return 1
+
+    def out_of_time(what: str) -> int:
+        print(f"Out of time: {what}, past the {budget_text}s budget. The flags stand as regressions.")
+        return 1
+
+    first_class = core_class(args.first_manifest) if args.first_manifest is not None else None
+    total = args.launches if args.exclude_first else args.launches + 1
+    grouped = os.environ.get("GITHUB_ACTIONS") == "true"
+    results: list[Path] = []
+    for number in range(total - args.launches + 1, total + 1):
+        remaining = deadline - clock()
+        if remaining <= 0:
+            return out_of_time(f"launch {number} of {total} not started")
+        directory = args.work_dir / str(number)
+        directory.mkdir(parents=True, exist_ok=True)
+        print(f"::group::Launch {number} of {total}" if grouped else f"\nLaunch {number} of {total}: --benchmark_filter={pattern}",
+              file=console, flush=True)
+        code, result = launch_once([*args.launch_command, f"--benchmark_filter={pattern}"], directory, remaining, console)
+        if grouped:
+            print("::endgroup::", file=console, flush=True)
+        if code is None:
+            shutil.rmtree(directory, ignore_errors=True)
+            return out_of_time(f"launch {number} of {total} stopped after {remaining:.0f}s")
+        if code != 0:
+            print(f"ERROR: launch {number} failed (exit {code})", file=sys.stderr)
+            return 3
+        if not result or not Path(result).is_file():
+            print(f"ERROR: launch {number}'s output JSON not found (it printed RESULT={result or ''})", file=sys.stderr)
+            return 3
+        if first_class is not None:
+            launch_class = core_class(Path(result).with_suffix(".manifest.json"))
+            if launch_class != first_class:
+                print(f"ERROR: launch {number} ran on core class {launch_class}, not the full run's {first_class}, so "
+                      "its times can't share a median with the full run's. Nothing is combined.", file=sys.stderr)
+                return 2
+        results.append(Path(result))
+
+    # A flagged benchmark with no usable median in some launch fails here (exit 2), not quietly.
+    return combine(argparse.Namespace(
+        regressions=args.regressions, first=args.first or args.current, launches=results, baseline=args.baseline,
+        output=args.output, exclude_first=args.exclude_first))
+
+
+def run_reported(args: argparse.Namespace) -> int:
+    """run, with what it says (not the launches' own output) also appended to --report."""
+    console = sys.stdout
+
+    def guarded() -> int:
+        try:
+            return run(args, console)
+        except InputError as error:
+            print(f"ERROR: {error}", file=sys.stderr)
+            return 2
+
+    if args.report is None:
+        return guarded()
+    with open(args.report, "a", encoding="utf-8") as report, \
+            contextlib.redirect_stdout(Tee(sys.stdout, report)), contextlib.redirect_stderr(Tee(sys.stderr, report)):
+        return guarded()
+
+
 def positive_int(value: str) -> int:
     parsed = int(value)
     if parsed < 1:
@@ -280,11 +468,37 @@ def main(argv: list[str]) -> int:
         "--exclude-first", action="store_true",
         help="the launches ran on another runner: take the flagged medians from them alone (#3623)")
     combiner.add_argument("launches", nargs="+", type=Path, help="the further launches' JSON files")
+    runner = sub.add_parser("run", help="plan, the further launches and combine (#3830)")
+    runner.add_argument("--current", required=True, type=Path, help="the full run the plan estimates from")
+    runner.add_argument("--regressions", required=True, type=Path, help="check-benchmark-regression.py --regressions-out")
+    runner.add_argument("--baseline", required=True, type=Path, help="print each launch against this baseline")
+    runner.add_argument("--output", required=True, type=Path, help="the combined run")
+    runner.add_argument("--work-dir", required=True, type=Path, help="each launch's results go to <work-dir>/<number>")
+    runner.add_argument("--first", type=Path, default=None, help="the run the combine takes the others from (--current)")
+    runner.add_argument("--exclude-first", action="store_true", help="the launches ran on another runner (#3623)")
+    runner.add_argument("--first-manifest", type=Path, default=None, help="every launch must share its core class")
+    runner.add_argument("--launches", type=positive_int, default=4, help="further launches (default 4)")
+    runner.add_argument("--budget-seconds", type=budget, default=600.0, help="time they may take (default 600)")
+    runner.add_argument("--report", type=Path, default=None, help="also append what run says here")
+    # Everything after the first "--" is the launch command, its own "--" included.
+    command: list[str] = []
+    if argv[:1] == ["run"]:
+        if "--" not in argv:
+            print("ERROR: run needs the launch command after --", file=sys.stderr)
+            return 2
+        split = argv.index("--")
+        argv, command = argv[:split], argv[split + 1:]
+        if not command:
+            print("ERROR: run needs the launch command after --", file=sys.stderr)
+            return 2
     try:
         args = parser.parse_args(argv)
     except SystemExit as error:
         return 0 if error.code == 0 else 2
     try:
+        if args.command == "run":
+            args.launch_command = command
+            return run_reported(args)
         return plan(args) if args.command == "plan" else combine(args)
     except InputError as error:
         print(f"ERROR: {error}", file=sys.stderr)

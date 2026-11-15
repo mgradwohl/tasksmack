@@ -693,8 +693,8 @@ jobs:
       # to re-measure and fails as before. Bounded twice over, by a budget of 10 minutes or what the
       # job's 45 minutes leave after a 5-minute margin for the steps after it, whichever is less:
       # tools/bench-across-launches.py estimates the re-runs from the full run's own timings and
-      # refuses past the budget, and the launches share a hard deadline at the budget (each runs
-      # under `timeout` with what's left). Either way the flags stand as regressions, the output
+      # refuses past the budget, and the launches share a hard deadline at the budget (one still
+      # running there is stopped). Either way the flags stand as regressions, the output
       # says so, and the summary and upload steps still run. A typical flag (a few ns-scale
       # benchmarks, 5-8 s each) costs under 3 minutes.
       - name: Re-measure flagged benchmarks across launches
@@ -710,65 +710,28 @@ jobs:
           now=$(date +%s)
           left=$(( JOB_TIMEOUT_SECONDS - (now - JOB_START_EPOCH) - MARGIN_SECONDS ))
           budget=$(( left < MAX_SECONDS ? left : MAX_SECONDS ))
-          # The estimate can be short (a /manual_time benchmark reports less than it runs, #3508), so the
-          # launches also share a hard deadline: the budget, from here.
-          deadline=$(( now + budget ))
-          out_of_time() {
-            echo "Out of time: $1, past the ${budget}s budget. The flags stand as regressions." \
-              | tee -a benchmark-across-launches-output.txt
+          # The plan, the launches and the combine are tools/bench-across-launches.py run (#3830), shared with the
+          # second runner's step and bench.sh --baseline: exit 0 combined, 1 the flags stand (nothing to
+          # re-measure, over budget, or out of time: the estimate can be short, a /manual_time benchmark reports
+          # less than it runs, #3508, so the launches also share a hard deadline at the budget and one still
+          # running there is stopped, its whole process group), anything else a failed launch or unusable input.
+          # Each launch is a separate bench.sh process, writing to perf-data/launches/<number>.
+          status=0
+          python3 tools/bench-across-launches.py run \
+            --current perf-data/benchmark-current.json \
+            --regressions "$RUNNER_TEMP/regressions.json" \
+            --baseline perf-data/linux-ci-baseline.json \
+            --output perf-data/benchmark-across-launches.json \
+            --work-dir perf-data/launches \
+            --launches "$LAUNCHES" --budget-seconds "$budget" \
+            --report benchmark-across-launches-output.txt \
+            -- ./tools/bench.sh benchmark -- || status=$?
+          if (( status == 1 )); then
             echo "exit_code=1" >> "$GITHUB_OUTPUT"
             exit 0
-          }
-          planned=0
-          filter=$(python3 tools/bench-across-launches.py plan \
-                     --current perf-data/benchmark-current.json \
-                     --regressions "$RUNNER_TEMP/regressions.json" \
-                     --launches "$LAUNCHES" --budget-seconds "$budget" \
-                     2> benchmark-across-launches-output.txt) || planned=$?
-          cat benchmark-across-launches-output.txt
-          if [[ "$planned" -ne 0 ]]; then
-            echo "exit_code=1" >> "$GITHUB_OUTPUT"
-            exit 0
+          elif (( status != 0 )); then
+            exit "$status"
           fi
-          results=()
-          for launch in $(seq 2 $(( LAUNCHES + 1 ))); do
-            remaining=$(( deadline - $(date +%s) ))
-            if (( remaining <= 0 )); then
-              out_of_time "launch ${launch} of $(( LAUNCHES + 1 )) not started"
-            fi
-            echo "::group::Launch ${launch} of $(( LAUNCHES + 1 ))"
-            # A separate process each time, in a directory of its own. timeout signals bench.sh's whole
-            # process group, the benchmark binary included; pipefail keeps its status through the tee.
-            mkdir -p "perf-data/launches/${launch}"
-            status=0
-            ( set -o pipefail
-              TASKSMACK_BENCH_OUT_DIR="perf-data/launches/${launch}" timeout --kill-after=10s "${remaining}s" \
-                ./tools/bench.sh benchmark -- --benchmark_filter="$filter" | tee "$RUNNER_TEMP/launch-${launch}.txt" ) \
-              || status=$?
-            echo "::endgroup::"
-            if (( status == 124 || status == 137 )); then
-              # A killed launch leaves an unredacted partial result; it isn't uploaded.
-              rm -rf "perf-data/launches/${launch}"
-              out_of_time "launch ${launch} of $(( LAUNCHES + 1 )) stopped after ${remaining}s"
-            elif (( status != 0 )); then
-              echo "ERROR: launch ${launch} failed (exit ${status})" >&2
-              exit "$status"
-            fi
-            result=$(sed -n 's/^RESULT=//p' "$RUNNER_TEMP/launch-${launch}.txt" | tail -n 1)
-            if [[ -z "$result" || ! -f "$result" ]]; then
-              echo "ERROR: launch ${launch}'s output JSON not found (bench.sh printed RESULT=${result})" >&2
-              exit 1
-            fi
-            results+=("$result")
-          done
-          # A flagged benchmark with no usable median in some launch fails here (exit 2), not quietly.
-          ( set -o pipefail
-            python3 tools/bench-across-launches.py combine \
-              --first perf-data/benchmark-current.json \
-              --regressions "$RUNNER_TEMP/regressions.json" \
-              --baseline perf-data/linux-ci-baseline.json \
-              --output perf-data/benchmark-across-launches.json \
-              "${results[@]}" 2>&1 | tee -a benchmark-across-launches-output.txt )
           echo "" | tee -a benchmark-across-launches-output.txt
           # The same arguments as "Check for regression": the same thresholds and overrides. The names that
           # still stand go to the second runner (#3623).
@@ -958,64 +921,29 @@ jobs:
           LAUNCHES: '5'
           MAX_SECONDS: '1200'
         run: |
-          now=$(date +%s)
-          deadline=$(( now + MAX_SECONDS ))
-          out_of_time() {
-            echo "Out of time: $1, past the ${MAX_SECONDS}s budget. The flags stand as regressions." \
-              | tee -a benchmark-second-runner-output.txt
+          # tools/bench-across-launches.py run (#3830), as benchmark-regression's step: exit 0 combined, 1 the
+          # flags stand, anything else a failed launch or unusable input. What the first runner's gate judged
+          # supplies the other benchmarks, for the same coverage: its across-launches medians where it re-measured
+          # them, so a benchmark its launches cleared isn't judged again on one launch (#3692). Its values of the
+          # flagged ones aren't counted, and this runner's launches are numbered from 1.
+          status=0
+          TASKSMACK_BENCH_BIN="$PWD/second-runner/TaskSmackBenchmarks" \
+            python3 tools/bench-across-launches.py run \
+            --current second-runner/benchmark-current.json \
+            --first second-runner/benchmark-judged.json --exclude-first \
+            --regressions second-runner/regressions.json \
+            --baseline perf-data/linux-ci-baseline.json \
+            --output perf-data/benchmark-second-runner.json \
+            --work-dir perf-data/second-runner \
+            --launches "$LAUNCHES" --budget-seconds "$MAX_SECONDS" \
+            --report benchmark-second-runner-output.txt \
+            -- ./tools/bench.sh benchmark -- || status=$?
+          if (( status == 1 )); then
             echo "exit_code=1" >> "$GITHUB_OUTPUT"
             exit 0
-          }
-          planned=0
-          filter=$(python3 tools/bench-across-launches.py plan \
-                     --current second-runner/benchmark-current.json \
-                     --regressions second-runner/regressions.json \
-                     --launches "$LAUNCHES" --budget-seconds "$MAX_SECONDS" \
-                     2> benchmark-second-runner-output.txt) || planned=$?
-          cat benchmark-second-runner-output.txt
-          if [[ "$planned" -ne 0 ]]; then
-            echo "exit_code=1" >> "$GITHUB_OUTPUT"
-            exit 0
+          elif (( status != 0 )); then
+            exit "$status"
           fi
-          results=()
-          for launch in $(seq 1 "$LAUNCHES"); do
-            remaining=$(( deadline - $(date +%s) ))
-            if (( remaining <= 0 )); then
-              out_of_time "launch ${launch} of ${LAUNCHES} not started"
-            fi
-            echo "::group::Launch ${launch} of ${LAUNCHES}"
-            mkdir -p "perf-data/second-runner/${launch}"
-            status=0
-            ( set -o pipefail
-              TASKSMACK_BENCH_BIN="$PWD/second-runner/TaskSmackBenchmarks" \
-              TASKSMACK_BENCH_OUT_DIR="perf-data/second-runner/${launch}" timeout --kill-after=10s "${remaining}s" \
-                ./tools/bench.sh benchmark -- --benchmark_filter="$filter" | tee "$RUNNER_TEMP/launch-${launch}.txt" ) \
-              || status=$?
-            echo "::endgroup::"
-            if (( status == 124 || status == 137 )); then
-              rm -rf "perf-data/second-runner/${launch}"
-              out_of_time "launch ${launch} of ${LAUNCHES} stopped after ${remaining}s"
-            elif (( status != 0 )); then
-              echo "ERROR: launch ${launch} failed (exit ${status})" >&2
-              exit "$status"
-            fi
-            result=$(sed -n 's/^RESULT=//p' "$RUNNER_TEMP/launch-${launch}.txt" | tail -n 1)
-            if [[ -z "$result" || ! -f "$result" ]]; then
-              echo "ERROR: launch ${launch}'s output JSON not found (bench.sh printed RESULT=${result})" >&2
-              exit 1
-            fi
-            results+=("$result")
-          done
-          # What the first runner's gate judged supplies the other benchmarks, for the same coverage: its
-          # across-launches medians where it re-measured them, so a benchmark its launches cleared isn't judged
-          # again on one launch (#3692). Its values of the flagged ones aren't counted.
-          ( set -o pipefail
-            python3 tools/bench-across-launches.py combine \
-              --first second-runner/benchmark-judged.json --exclude-first \
-              --regressions second-runner/regressions.json \
-              --baseline perf-data/linux-ci-baseline.json \
-              --output perf-data/benchmark-second-runner.json \
-              "${results[@]}" 2>&1 | tee -a benchmark-second-runner-output.txt )
           echo "" | tee -a benchmark-second-runner-output.txt
           # The same arguments as benchmark-regression's checks: the same thresholds and overrides.
           python3 tools/check-benchmark-regression.py \
