@@ -3,6 +3,12 @@
     Generate code coverage report using llvm-cov (Windows).
 .DESCRIPTION
     Builds with coverage instrumentation, runs tests, and generates HTML report.
+
+    With TASKSMACK_COVERAGE_REAL_SYSTEM=1 in the environment it also runs the CI real-system tests
+    (TaskSmackTests --gtest_filter=CiRealSystem*) with TASKSMACK_CI_REAL_SYSTEM=1, which their guard
+    (tests/Support/CiRealSystem.h) honours only on a disposable GitHub-hosted runner, as
+    tools/coverage.sh's root pass does on Linux (#3374, #3835). They change the machine: Heavy Checks'
+    win-coverage job sets it, and nothing else should. Never set it locally.
 .PARAMETER Preset
     CMake preset to use for the coverage build (default: win-coverage)
 .PARAMETER ShowDetails
@@ -196,13 +202,23 @@ try {
         exit 1
     }
     $uiScenarioSynthetic = $syntheticMatch.Matches[0].Groups[1].Value
-    # Each run: the suite, its gtest filter and its TASKSMACK_SYNTHETIC (either may be empty).
+    # The CI real-system tests (#3835): Heavy Checks' win-coverage job asks for them, on a disposable runner, so the
+    # real OS paths they drive (the shell, Explorer, the system menu, the folder dialog, the elevated helper) count.
+    # They get a run of their own with TASKSMACK_CI_REAL_SYSTEM=1, as CI's "Real-system tests (Windows)" step runs
+    # them, and the main run leaves them out. Anywhere else they skip in the main run, as their guard says.
+    $realSystem = $env:TASKSMACK_COVERAGE_REAL_SYSTEM -eq '1'
+    $mainFilter = if ($realSystem) { "-CiRealSystem*" } else { "" }
+    # Each run: the suite, its gtest filter and its TASKSMACK_SYNTHETIC (either may be empty), and whether it's the
+    # real-system run.
     $runs = @(
-        @{ Suite = "TaskSmackTests"; Filter = ""; Synthetic = "" },
-        @{ Suite = "TaskSmackThemeTests"; Filter = ""; Synthetic = "" },
-        @{ Suite = "TaskSmackAppTests"; Filter = "-UiScenarioTest.*"; Synthetic = "" },
-        @{ Suite = "TaskSmackAppTests"; Filter = "UiScenarioTest.*"; Synthetic = $uiScenarioSynthetic }
+        @{ Suite = "TaskSmackTests"; Filter = $mainFilter; Synthetic = ""; RealSystem = $false },
+        @{ Suite = "TaskSmackThemeTests"; Filter = ""; Synthetic = ""; RealSystem = $false },
+        @{ Suite = "TaskSmackAppTests"; Filter = "-UiScenarioTest.*"; Synthetic = ""; RealSystem = $false },
+        @{ Suite = "TaskSmackAppTests"; Filter = "UiScenarioTest.*"; Synthetic = $uiScenarioSynthetic; RealSystem = $false }
     )
+    if ($realSystem) {
+        $runs += @{ Suite = "TaskSmackTests"; Filter = "CiRealSystem*"; Synthetic = ""; RealSystem = $true }
+    }
     foreach ($run in $runs) {
         $suite = $run.Suite
         $label = if ($run.Filter) { "$suite ($($run.Filter))" } else { $suite }
@@ -211,16 +227,45 @@ try {
         $arguments = [System.Collections.Generic.List[string]]::new()
         if ($run.Filter) { $arguments.Add("--gtest_filter=$($run.Filter)") }
         if ($run.Synthetic) { $env:TASKSMACK_SYNTHETIC = $run.Synthetic }
+        $realSystemResults = Join-Path $BuildDir "coverage-real-system-results.xml"
+        if ($run.RealSystem) {
+            Remove-Item -LiteralPath $realSystemResults -ErrorAction SilentlyContinue
+            $arguments.Add("--gtest_output=xml:$realSystemResults")
+            $env:TASKSMACK_CI_REAL_SYSTEM = '1'
+        }
         try {
             & "$BuildDir\tests\$suite.exe" $arguments.ToArray()
             $suiteExit = $LASTEXITCODE
         }
         finally {
-            Remove-Item Env:TASKSMACK_SYNTHETIC -ErrorAction SilentlyContinue
+            Remove-Item Env:TASKSMACK_SYNTHETIC, Env:TASKSMACK_CI_REAL_SYSTEM -ErrorAction SilentlyContinue
         }
         if ($suiteExit -ne 0) {
             Write-Warning "$label failed (exit code $suiteExit); generating the coverage report, then failing."
             $failedSuites.Add($label)
+        }
+        if ($run.RealSystem) {
+            # As CI's real-system step checks: some test must have run, and none may skip with the guard's own message
+            # (ciRealSystemSkipReason(), "a CI real-system test: ..."), which would mean it didn't see the runner, and
+            # the report would leave out the paths it was asked to count. A test's own skip (no memory compression on
+            # a Server image, a child half started alone) is expected.
+            $ran = 0
+            $guarded = 0
+            if (Test-Path -LiteralPath $realSystemResults) {
+                foreach ($case in ([xml](Get-Content -Raw -LiteralPath $realSystemResults)).SelectNodes('//testcase')) {
+                    $skip = $case.SelectSingleNode('skipped')
+                    if ($null -ne $skip) {
+                        if ($skip.GetAttribute('message') -match 'a CI real-system test: ') { $guarded++ }
+                    } elseif ($case.GetAttribute('result') -eq 'completed') {
+                        $ran++
+                    }
+                }
+            }
+            Write-Host "$ran CiRealSystem test(s) ran; $guarded skipped by the guard."
+            if ($ran -eq 0 -or $guarded -gt 0) {
+                Write-Warning "$label didn't run as asked: $ran ran and $guarded skipped by the guard (TASKSMACK_CI_REAL_SYSTEM, GITHUB_ACTIONS, RUNNER_ENVIRONMENT)."
+                if (-not $failedSuites.Contains($label)) { $failedSuites.Add($label) }
+            }
         }
     }
 

@@ -20,9 +20,8 @@
 namespace App
 {
 
-// LCOV_EXCL_START - TrackPopupMenu runs a modal menu loop until it is answered. CiRealSystemSystemMenuTest
-// (tests/Platform/test_CiRealSystemWindowsApp.cpp) answers it on the CI runner, but win-coverage doesn't run that
-// group, so the lines would count as uncovered (#2039, #3490).
+// TrackPopupMenu runs a modal menu loop until it is answered. CiRealSystemSystemMenuTest
+// (tests/Platform/test_CiRealSystemWindowsApp.cpp) answers it on the CI runner, in win-coverage too (#3835).
 TitleBarView::Action showWindowsSystemMenu(void* nativeWindow, bool maximized, int screenX, int screenY)
 {
     auto* hwnd = static_cast<HWND>(nativeWindow);
@@ -62,7 +61,6 @@ TitleBarView::Action showWindowsSystemMenu(void* nativeWindow, bool maximized, i
     }
     return action;
 }
-// LCOV_EXCL_STOP
 
 } // namespace App
 

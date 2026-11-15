@@ -8,7 +8,8 @@
 /// Every such test derives from CiRealSystemTest (or calls requireCiRealSystem()), so it skips unless both:
 ///   - TASKSMACK_CI_REAL_SYSTEM=1, which only CI sets: the steps that run the group
 ///     (.github/workflows/reusable-build-test.yml, "Real-system tests (Windows)" and "Root tests (Linux)")
-///     and Heavy Checks' coverage root pass (tools/coverage.sh, TASKSMACK_COVERAGE_REAL_SYSTEM, #3374);
+///     and Heavy Checks' coverage jobs (TASKSMACK_COVERAGE_REAL_SYSTEM: tools/coverage.sh's root pass, #3374,
+///     and tools/coverage.ps1's real-system run, #3835);
 ///   - the runner looks disposable: GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted, which a
 ///     self-hosted runner or a developer's machine doesn't have.
 /// The daytime test filter excludes CiRealSystem* as well (AGENTS.md), and that step fails when the whole group
