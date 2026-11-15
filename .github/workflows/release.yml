@@ -300,7 +300,7 @@ jobs:
         uses: ./.github/actions/setup-python-glad
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
         with:
           # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
           # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
@@ -548,7 +548,7 @@ jobs:
         uses: ./.github/actions/setup-nsis
 
       - name: Setup ccache
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
         with:
           # Force the action's pinned, SHA-256-verified ccache binary; 'detect' would pick up
           # Strawberry Perl's bundled ccache 4.9.1 already on the image PATH (#1406).
