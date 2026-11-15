@@ -814,7 +814,8 @@ Three established ways to get real coverage of such a file's logic:
    IFEO key or Run value).
    The step runs on the Windows ARM64 leg too (`arm64.yml`, #3823), on the ARM64 binary. A case ARM64 can't run
    skips inside the test with a reason, and goes in the step's `$arm64Skips` (name and reason), which only the
-   ARM64 leg honors.
+   ARM64 leg honors. One x64 can't run goes in `$x64Skips` the same way: today the Memory Compression test, since
+   the windows-2025 Server image leaves compression off, while the windows-11-arm client runs it (#3839).
    - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps, or with
      `--hung-window` shows a window and stops answering it; a service is `TaskSmackCiService.exe`, which only
      waits to be stopped), and end it and remove what the test made in a scope guard: a registry value, a key,

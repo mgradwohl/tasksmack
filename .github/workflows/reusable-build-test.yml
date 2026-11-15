@@ -500,15 +500,27 @@ jobs:
             exit 1
           }
           Write-Host "$ran of $(@($cases).Count) CiRealSystem tests ran"
-          # A skip is expected only for the three child halves, which run inside their parent test's child process and
-          # skip when started on their own, and for the Memory Compression test, which skips on an image that leaves
-          # memory compression off (#3838). Any other skip is a test that quietly stopped running: fail and name it.
+          # A skip is expected on every leg only for the three child halves, which run inside their parent test's child
+          # process and skip when started on their own. Any other skip is a test that quietly stopped running: fail and
+          # name it, unless the leg's own list below expects it.
           $expectedSkips = @(
             'CiRealSystemRealtimeTest.ChildSetsRealtimeAsAStandardUser',
             'CiRealSystemFolderPickerChildTest.ShowsTheDialogUntilItIsAnswered',
-            'CiRealSystemSystemMenuChildTest.ShowsTheMenuUntilItIsAnswered',
-            'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet'
+            'CiRealSystemSystemMenuChildTest.ShowsTheMenuUntilItIsAnswered'
           )
+          # Skips only the x64 leg expects, in the same form: the Memory Compression test (#3838, #3839). windows-2025
+          # is a Server image, which leaves memory compression off, and turning it on (Enable-MMAgent -MemoryCompression)
+          # takes a reboot a job can't do. windows-11-arm is the client, where compression is on and the test runs and
+          # passes, so a skip there fails.
+          $x64Skips = @{
+            'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet' = 'memory compression is off on the windows-2025 Server image, and turning it on takes a reboot: it runs on the ARM64 leg (#3839)'
+          }
+          if ($env:RUNNER_ARCH -ne 'ARM64') {
+            foreach ($name in $x64Skips.Keys) {
+              Write-Host "::notice title=Real-system tests::$name may skip on x64: $($x64Skips[$name])"
+              $expectedSkips += $name
+            }
+          }
           # Skips only the ARM64 leg expects: test name = the reason it can't run there, which the test's own skip message
           # repeats. Today the two Open file location cases, which fail on ARM64 (#3979, found by #3823's ARM64 run): the
           # shell's ShellWindows list has no desktop window there, so the unelevated open can't reach Explorer's
