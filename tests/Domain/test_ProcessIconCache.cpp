@@ -5,6 +5,7 @@
 /// (loadPending() runs the queued loads on the test's thread).
 
 #include "Domain/ProcessIconCache.h"
+#include "Domain/ProcessIconCacheImpl.h" // IWYU pragma: keep - the member definitions FaultyCache needs
 #include "Platform/IProcessIconSource.h"
 
 #include <gtest/gtest.h>
@@ -119,12 +120,45 @@ class FakeIconSource final : public Platform::IProcessIconSource
 
 constexpr int SIZE = 16;
 
+/// The faults a test arms on a cache made with InjectedFaults (#3792); each fires once.
+struct ArmedFaults
+{
+    std::atomic<bool> refuseNextDrain{false}; ///< The next drain submit() answers Refused
+    std::atomic<bool> failNextDrain{false};   ///< The next drain throws once admitted, before it loads anything
+};
+
+/// The fault policy these tests put in place of NoIconCacheFaults, the one the cache ships with (#3792).
+struct InjectedFaults
+{
+    std::shared_ptr<ArmedFaults> armed = std::make_shared<ArmedFaults>();
+
+    [[nodiscard]] bool refuseDrain() const
+    {
+        return armed->refuseNextDrain.exchange(false);
+    }
+    void drainStarting() const
+    {
+        if (armed->failNextDrain.exchange(false))
+        {
+            throw std::runtime_error("drain failed for testing");
+        }
+    }
+};
+
+using FaultyCache = BasicProcessIconCache<InjectedFaults>;
+
 class ProcessIconCacheTest : public ::testing::Test
 {
   protected:
     [[nodiscard]] std::unique_ptr<ProcessIconCache> makeCache(ProcessIconCacheConfig config = {.startWorker = false})
     {
         return std::make_unique<ProcessIconCache>(std::make_unique<FakeIconSource>(m_State), config);
+    }
+
+    /// A cache with a worker whose faults the test arms through @p faults.
+    [[nodiscard]] std::unique_ptr<FaultyCache> makeFaultyCache(const InjectedFaults& faults)
+    {
+        return std::make_unique<FaultyCache>(std::make_unique<FakeIconSource>(m_State), ProcessIconCacheConfig{}, faults);
     }
 
     std::shared_ptr<FakeIconSourceState> m_State = std::make_shared<FakeIconSourceState>();
@@ -421,8 +455,8 @@ TEST_F(ProcessIconCacheTest, TheWorkerLoadsWithoutTheCallersHelp)
 }
 
 /// Looks process @p key up until it has an icon, or 10 s pass; the icon, or nullptr.
-std::shared_ptr<const ProcessIconImage>
-lookupUntilLoaded(ProcessIconCache& cache, std::uint64_t key, std::int32_t pid, std::string_view name)
+template<typename Cache>
+std::shared_ptr<const ProcessIconImage> lookupUntilLoaded(Cache& cache, std::uint64_t key, std::int32_t pid, std::string_view name)
 {
     std::shared_ptr<const ProcessIconImage> icon = cache.lookup(key, pid, name, SIZE);
     const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
@@ -513,11 +547,12 @@ TEST_F(ProcessIconCacheTest, ALoadWhoseDrainIsRefusedIsAskedAgainAndLoads)
     // loads, rather than the row keeping the generic icon for good.
     m_State->paths[1] = "/bin/a";
     m_State->iconSides["/bin/a"] = SIZE;
-    auto cache = makeCache(ProcessIconCacheConfig{});
+    const InjectedFaults faults;
+    auto cache = makeFaultyCache(faults);
 
-    cache->refuseNextDrainForTesting();
+    faults.armed->refuseNextDrain = true;
     EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
-    const ProcessIconCache::Stats refused = cache->stats();
+    const FaultyCache::Stats refused = cache->stats();
     EXPECT_EQ(refused.queued, 0U) << "the refused load was taken back";
     EXPECT_EQ(refused.processes, 0U) << "and the row with it, so its next lookup asks again";
 
@@ -569,9 +604,10 @@ TEST_F(ProcessIconCacheTest, AWorkerThatFailsAfterAdmittingADrainIsReportedOnceA
     m_State->paths[1] = "/bin/a";
     m_State->iconSides["/bin/a"] = SIZE;
     const LogCapture log;
-    auto cache = makeCache(ProcessIconCacheConfig{});
+    const InjectedFaults faults;
+    auto cache = makeFaultyCache(faults);
 
-    cache->failNextDrainForTesting();
+    faults.armed->failNextDrain = true;
     EXPECT_EQ(cache->lookup(1, 1, "a", SIZE), nullptr);
     ASSERT_TRUE(waitUntil(
         [&cache, &log, STOPPED]

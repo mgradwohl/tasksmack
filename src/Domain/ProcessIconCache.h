@@ -27,6 +27,13 @@
 // dropping its oldest request forgets that row's entry, so the row asks again (#1800). The Worker's job
 // is only "drain the queue", one queued at most, so the worker's thread is the only thread, started with
 // the first load queued.
+//
+// The faults its tests need (a drain refused, a drain that throws once admitted) come in through a policy,
+// as Worker's StopState does (#3792): the cache is BasicProcessIconCache<Faults>, and ProcessIconCache, the
+// one that ships, has NoIconCacheFaults, whose hooks are empty constexpr functions the optimiser removes. So
+// the shipped cache has no test flags, no throw paths for them, and no lock taken to read one. Its member
+// definitions are in ProcessIconCacheImpl.h, instantiated for NoIconCacheFaults once, in ProcessIconCache.cpp;
+// a test includes that header to instantiate the cache with its own policy.
 
 #include "Domain/LruMap.h"
 #include "Domain/Worker.h"
@@ -104,7 +111,26 @@ struct ProcessIconCacheConfig
     return hash;
 }
 
-class ProcessIconCache
+/// ProcessIconCache's fault policy: no faults. A test substitutes a policy, with the same members, that
+/// injects them; each hook is called through the cache's copy of the policy, so a test's can hold state.
+struct NoIconCacheFaults
+{
+    /// Whether the next drain submit() is answered Refused without asking the worker, as it is when there
+    /// is no memory to queue one: the one case a queued load could be left with no drain to run it. Called
+    /// on the looking-up thread, without the cache's lock.
+    [[nodiscard]] static constexpr bool refuseDrain() noexcept
+    {
+        return false;
+    }
+    /// Called first by each drain, on the worker's thread, once it was admitted and before it loads
+    /// anything. A test's may throw, as the drain's own bookkeeping can when memory runs out: the worker
+    /// ends Failed with the loads queued still waiting. (The Worker itself can't fail a job it admitted
+    /// before the body runs, #3472; a body can.)
+    static constexpr void drainStarting() noexcept
+    {}
+};
+
+template<typename Faults = NoIconCacheFaults> class BasicProcessIconCache
 {
   public:
     struct Stats
@@ -118,13 +144,15 @@ class ProcessIconCache
         std::uint64_t loads = 0;    ///< Icon reads asked of the source (loadIcon calls)
     };
 
-    explicit ProcessIconCache(std::unique_ptr<Platform::IProcessIconSource> source, ProcessIconCacheConfig config = {});
-    ~ProcessIconCache();
+    explicit BasicProcessIconCache(std::unique_ptr<Platform::IProcessIconSource> source,
+                                   ProcessIconCacheConfig config = {},
+                                   Faults faults = {});
+    ~BasicProcessIconCache();
 
-    ProcessIconCache(const ProcessIconCache&) = delete;
-    ProcessIconCache& operator=(const ProcessIconCache&) = delete;
-    ProcessIconCache(ProcessIconCache&&) = delete;
-    ProcessIconCache& operator=(ProcessIconCache&&) = delete;
+    BasicProcessIconCache(const BasicProcessIconCache&) = delete;
+    BasicProcessIconCache& operator=(const BasicProcessIconCache&) = delete;
+    BasicProcessIconCache(BasicProcessIconCache&&) = delete;
+    BasicProcessIconCache& operator=(BasicProcessIconCache&&) = delete;
 
     /// The icon of process @p uniqueKey (PID @p pid, named @p name) at @p sizePx, or nullptr while it
     /// loads and when it has none. Queues the load the first time the process is seen at that size.
@@ -145,23 +173,6 @@ class ProcessIconCache
     std::size_t loadPending();
 
     [[nodiscard]] Stats stats() const;
-
-    /// Has the next drain submit() answer Refused without asking the worker, as it does when there is no
-    /// memory to queue one: the one case a queued load could be left with no drain to run it.
-    void refuseNextDrainForTesting()
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_RefuseNextDrain = true;
-    }
-
-    /// Has the next drain throw on the worker's thread once it was admitted, before it loads anything, as
-    /// its own bookkeeping can when memory runs out: the worker ends Failed with the loads it had queued still
-    /// waiting. (The Worker itself can't fail a job it admitted before the body runs, #3472; a body can.)
-    void failNextDrainForTesting()
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_FailNextDrain = true;
-    }
 
   private:
     struct Request
@@ -208,6 +219,7 @@ class ProcessIconCache
 
     std::unique_ptr<Platform::IProcessIconSource> m_Source;
     ProcessIconCacheConfig m_Config;
+    Faults m_Faults; // Empty for the cache that ships (NoIconCacheFaults)
     bool m_FoldCase = false;
     bool m_KeyByName = false; // the source's findsIconsByName() (#2462)
 
@@ -228,10 +240,12 @@ class ProcessIconCache
     std::uint64_t m_NextIconId = 1;
     std::uint64_t m_Loads = 0;
     std::atomic<bool> m_WorkerFailureReported{false}; // reportWorkerFailure() has logged that the worker failed
-    bool m_RefuseNextDrain = false;                   // refuseNextDrainForTesting(); under m_Mutex
-    bool m_FailNextDrain = false;                     // failNextDrainForTesting(); under m_Mutex
 
     LoadWorker m_Worker; // Last: stopped and joined before the state above is destroyed
 };
+
+/// The cache that ships: no faults. Its members are instantiated once, in ProcessIconCache.cpp.
+using ProcessIconCache = BasicProcessIconCache<>;
+extern template class BasicProcessIconCache<NoIconCacheFaults>;
 
 } // namespace Domain

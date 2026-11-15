@@ -43,6 +43,12 @@
 // Free of <windows.h>: the calls are SignatureFunctions, so the queueing, the caching and the hand-over are
 // tested on every platform with fakes (tests/Platform/WindowsMath/test_WindowsSignatureWorker.cpp).
 //
+// The faults those tests need (a drain refused, a key or an end answer that can't be made for want of memory)
+// come in through a policy, as Domain::Worker's StopState does (#3792): the worker is
+// BasicSignatureWorker<Faults>, and SignatureWorker, the one that ships, has NoSignatureWorkerFaults, whose
+// hooks are empty constexpr functions the optimiser removes. So the shipped worker carries no test flags and
+// no throw paths for them.
+//
 // Locks: m_Mutex is taken before the Worker's own (request() submits under it). The Worker never calls back
 // into this class under its lock: a drain takes m_Mutex on the worker's thread with no Worker lock held.
 
@@ -60,7 +66,6 @@
 #include <deque>
 #include <exception>
 #include <mutex>
-#include <new>
 #include <optional>
 #include <ranges>
 #include <stop_token>
@@ -84,12 +89,38 @@ struct WorkerOptions
     void (*onWorkerStart)() = nullptr;
 };
 
-class SignatureWorker
+/// The signature worker's fault policy: no faults. A test substitutes a policy, with the same members, that
+/// injects them; each hook is called through the worker's copy of the policy, so a test's can hold state. Every
+/// hook is called under the worker's m_Mutex, on the thread that asked (request(), find()).
+struct NoSignatureWorkerFaults
+{
+    /// Whether the next drain submit() is answered Refused without asking the Worker, as it is when there is
+    /// no memory to queue one: the one case a queued path could be left with no drain to run it.
+    [[nodiscard]] static constexpr bool refuseDrain() noexcept
+    {
+        return false;
+    }
+    /// After the take-back that follows a refused drain. A test's refuseDrain() may have every key made under
+    /// the lock throw std::bad_alloc until then (makingKey()), as the memory that just ran out would: the
+    /// take-back must not need one.
+    static constexpr void tookBack() noexcept
+    {}
+    /// Before each key made under the lock. A test's may throw std::bad_alloc.
+    static constexpr void makingKey() noexcept
+    {}
+    /// Before each answer made for a path queued after the worker ended. A test's may throw std::bad_alloc, as
+    /// copying the end note can when memory has run out: the path stays queued, for the next call to answer.
+    static constexpr void makingEndAnswer() noexcept
+    {}
+};
+
+template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
 {
   public:
-    SignatureWorker(const SignatureFunctions& functions, const WorkerOptions& options)
+    BasicSignatureWorker(const SignatureFunctions& functions, const WorkerOptions& options, Faults faults = {})
         : m_Fns(functions),
           m_Options(options),
+          m_Faults(std::move(faults)),
           m_Cache(options.maxCachedFiles),
           m_Worker(
               {
@@ -103,13 +134,13 @@ class SignatureWorker
 
     /// Stops the worker and joins it (a check in progress finishes first): m_Worker, the last member, goes
     /// first, while the table it files into is alive.
-    ~SignatureWorker() = default;
+    ~BasicSignatureWorker() = default;
 
-    SignatureWorker(const SignatureWorker&) = delete;
-    SignatureWorker& operator=(const SignatureWorker&) = delete;
+    BasicSignatureWorker(const BasicSignatureWorker&) = delete;
+    BasicSignatureWorker& operator=(const BasicSignatureWorker&) = delete;
     // Not movable: the thread holds `this`
-    SignatureWorker(SignatureWorker&&) = delete;
-    SignatureWorker& operator=(SignatureWorker&&) = delete;
+    BasicSignatureWorker(BasicSignatureWorker&&) = delete;
+    BasicSignatureWorker& operator=(BasicSignatureWorker&&) = delete;
 
     /// Queues a check of @p path (UTF-8) for a process just seen, unless one is queued already or the table
     /// is full of queued paths (then it isn't admitted, and find() asks again later). Its last
@@ -183,24 +214,6 @@ class SignatureWorker
         return m_QueuedCount;
     }
 
-    /// Has the next drain submit() answer Refused without asking the Worker, as it does when there is no
-    /// memory to queue one (tests): the one case a queued path could be left with no drain to run it. The
-    /// take-back that follows runs with every key made under the lock throwing std::bad_alloc, as the memory
-    /// that just ran out would: it must not need one.
-    void refuseNextDrainForTesting()
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_RefuseNextDrain = true;
-    }
-
-    /// Has the next answer made for a path queued after the worker ended throw std::bad_alloc, as copying
-    /// the end note can when memory has run out (tests): the path stays queued, for the next call to answer.
-    void failNextEndAnswerForTesting()
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_EndAnswerFails = true;
-    }
-
   private:
     struct PathState
     {
@@ -239,14 +252,11 @@ class SignatureWorker
         std::string key;
     };
 
-    /// pathKey() under m_Mutex: every key made under the lock goes through here, so a test can have it throw
-    /// where an allocation can't be allowed to (refuseNextDrainForTesting()).
+    /// pathKey() under m_Mutex: every key made under the lock goes through here, so a test's fault policy can
+    /// have it throw where an allocation can't be allowed to: the take-back after a refused drain.
     [[nodiscard]] std::string keyLocked(std::string_view path)
     {
-        if (std::exchange(m_KeysFail, false))
-        {
-            throw std::bad_alloc();
-        }
+        m_Faults.makingKey();
         return pathKey(path);
     }
 
@@ -326,8 +336,7 @@ class SignatureWorker
             failQueuedLocked(*m_EndNote); // the worker has ended: answered at once, never left queued
             return;
         }
-        const bool refuseForTesting = std::exchange(m_RefuseNextDrain, false);
-        const Domain::SubmitResult result = refuseForTesting ? Domain::SubmitResult::Refused : m_Worker.submit(Drain{});
+        const Domain::SubmitResult result = m_Faults.refuseDrain() ? Domain::SubmitResult::Refused : m_Worker.submit(Drain{});
         if (result == Domain::SubmitResult::Refused)
         {
             // No drain queued (no memory to queue one; a queued drain would have merged), and the one running,
@@ -335,7 +344,6 @@ class SignatureWorker
             // back, so find() asks again on a later sample, rather than leave them "not checked yet" for good.
             // A drain that does run meanwhile finds less to do. Memory has just run out, so this allocates
             // nothing: each entry carries its key, and the lookups, erases and clear make none.
-            m_KeysFail = refuseForTesting;
             for (const QueuedPath& queued : m_Queue)
             {
                 if (const auto found = m_Paths.find(queued.key); found != m_Paths.end() && found->second.queued)
@@ -345,7 +353,7 @@ class SignatureWorker
                 }
             }
             m_Queue.clear();
-            m_KeysFail = false;
+            m_Faults.tookBack();
             m_Idle.notify_all();
             return;
         }
@@ -430,10 +438,7 @@ class SignatureWorker
         {
             if (const auto found = m_Paths.find(queued.key); found != m_Paths.end())
             {
-                if (std::exchange(m_EndAnswerFails, false))
-                {
-                    throw std::bad_alloc(); // failNextEndAnswerForTesting(): the note's copy, out of memory
-                }
+                m_Faults.makingEndAnswer(); // a test's may throw, as the note's copy can out of memory
                 found->second.result = SignatureCheck{.signature = ImageSignature::Unknown, .note = std::string(note), .signer = {}};
                 markAnsweredLocked(found->second);
             }
@@ -528,6 +533,7 @@ class SignatureWorker
 
     SignatureFunctions m_Fns;
     WorkerOptions m_Options;
+    Faults m_Faults;        // Empty for the worker that ships (NoSignatureWorkerFaults); used under m_Mutex
     SignatureCache m_Cache; // The worker's thread stores into it; it has its own lock
     mutable std::mutex m_Mutex;
     std::condition_variable_any m_Pause; // The pause between files waits on it, for the job's stop only
@@ -540,12 +546,12 @@ class SignatureWorker
     std::uint64_t m_Sample = 0;                         // beginSample() calls: the probe's samples
     bool m_Checking = false;                            // The worker holds a path it has taken off the queue
     std::optional<std::string> m_EndNote;               // Set once the Worker is seen ended: why (#3343)
-    bool m_RefuseNextDrain = false;                     // refuseNextDrainForTesting()
-    bool m_KeysFail = false;                            // keyLocked() throws once: refuseNextDrainForTesting()
-    bool m_EndAnswerFails = false;                      // failQueuedLocked() throws once: failNextEndAnswerForTesting()
     // The worker's thread's
     bool m_Started = false; // onWorkerStart has been called
     CheckWorker m_Worker;   // Last: stopped and joined first, while the rest is alive
 };
+
+/// The worker that ships: no faults.
+using SignatureWorker = BasicSignatureWorker<>;
 
 } // namespace Platform::WindowsSignature

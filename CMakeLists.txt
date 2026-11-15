@@ -602,6 +602,7 @@ set(TASKSMACK_HEADERS
     src/Domain/LruMap.h
     src/Domain/PidIndex.h
     src/Domain/ProcessIconCache.h
+    src/Domain/ProcessIconCacheImpl.h
     src/UI/IconTextureCache.h
     src/App/Panels/ProcessIconView.h
     src/App/Panels/ProcessSchedPolicyDialog.h

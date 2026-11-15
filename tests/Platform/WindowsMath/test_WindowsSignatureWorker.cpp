@@ -219,6 +219,52 @@ template<typename Done> [[nodiscard]] bool waitUntil(Done done)
     return true;
 }
 
+/// The faults a test arms on a worker made with InjectedFaults (#3792); each fires once.
+struct ArmedFaults
+{
+    std::atomic<bool> refuseNextDrain{false}; ///< The next drain submit() answers Refused
+    std::atomic<bool> keysFail{false};        ///< The next key made under the lock throws (the take-back's)
+    std::atomic<bool> endAnswerFails{false};  ///< The next answer made after the worker ended throws
+};
+
+/// The fault policy these tests put in place of NoSignatureWorkerFaults, the one the worker ships with
+/// (#3792). A refused drain's take-back runs with every key made under the lock throwing std::bad_alloc, as
+/// the memory that just ran out would: it must not need one.
+struct InjectedFaults
+{
+    std::shared_ptr<ArmedFaults> armed = std::make_shared<ArmedFaults>();
+
+    [[nodiscard]] bool refuseDrain() const
+    {
+        const bool refuse = armed->refuseNextDrain.exchange(false);
+        if (refuse)
+        {
+            armed->keysFail = true;
+        }
+        return refuse;
+    }
+    void tookBack() const
+    {
+        armed->keysFail = false;
+    }
+    void makingKey() const
+    {
+        if (armed->keysFail.exchange(false))
+        {
+            throw std::bad_alloc();
+        }
+    }
+    void makingEndAnswer() const
+    {
+        if (armed->endAnswerFails.exchange(false))
+        {
+            throw std::bad_alloc(); // the note's copy, out of memory
+        }
+    }
+};
+
+using FaultyWorker = BasicSignatureWorker<InjectedFaults>;
+
 class SignatureWorkerTest : public ::testing::Test
 {
   protected:
@@ -246,8 +292,8 @@ TEST_F(SignatureWorkerTest, ARequestIsAnsweredLaterOnTheWorkersOwnThread)
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     const std::optional<SignatureCheck> check = worker.find("C:\\APP.EXE");
     ASSERT_TRUE(check.has_value()) << "the same path in another case";
-    EXPECT_EQ(check->signature, ImageSignature::Embedded);
-    EXPECT_EQ(check->signer, "Signer of C:\\app.exe");
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Embedded);
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of C:\\app.exe");
     EXPECT_TRUE(fakes().started.load());
     const std::scoped_lock lock(fakes().mutex);
     EXPECT_NE(fakes().checkThread, std::this_thread::get_id());
@@ -363,7 +409,7 @@ TEST_F(SignatureWorkerTest, AnUnreadableFileIsAnsweredUnknown)
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     const std::optional<SignatureCheck> check = worker.find("gone.exe");
     ASSERT_TRUE(check.has_value());
-    EXPECT_EQ(check->signature, ImageSignature::Unknown);
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
     EXPECT_EQ(worker.cachedFileCount(), 0U) << "a failure isn't kept";
 }
 
@@ -376,8 +422,8 @@ TEST_F(SignatureWorkerTest, ACheckThatThrowsIsAnsweredUnknownWithItsMessage)
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     const std::optional<SignatureCheck> check = worker.find("bad.exe");
     ASSERT_TRUE(check.has_value());
-    EXPECT_EQ(check->signature, ImageSignature::Unknown);
-    EXPECT_EQ(check->note, "the check threw");
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
+    EXPECT_EQ(check.value_or(SignatureCheck{}).note, "the check threw");
 }
 
 TEST_F(SignatureWorkerTest, AFullPathTableForgetsAnsweredPathsAndFindAsksAgain)
@@ -784,11 +830,12 @@ TEST_F(SignatureWorkerTest, APathWhoseEndAnswerCouldNotBeMadeIsAnsweredByTheNext
         setStamp(path, 1);
     }
     fakes().throwNonException = true;
-    SignatureWorker worker(fakeFunctions(), {});
+    const InjectedFaults faults;
+    FaultyWorker worker(fakeFunctions(), {}, faults);
     worker.request("a"); // its check throws 42: the worker fails
     ASSERT_TRUE(waitUntil([&worker] { return worker.find("a").has_value(); })) << "the failure is seen";
 
-    worker.failNextEndAnswerForTesting();
+    faults.armed->endAnswerFails = true;
     EXPECT_THROW(worker.request("c"), std::bad_alloc);
     EXPECT_EQ(worker.queuedPathCount(), 1U) << "c is left queued: its answer couldn't be made";
     EXPECT_FALSE(worker.waitUntilIdle(0ms));
@@ -844,8 +891,9 @@ TEST_F(SignatureWorkerTest, APathWhoseDrainIsRefusedIsTakenBackAndCheckedWhenAsk
     // the paths queued. They are taken back, so a later sample's find() queues them again, rather than
     // leaving them "not checked yet" for good.
     setStamp("a", 1);
-    SignatureWorker worker(fakeFunctions(), {});
-    worker.refuseNextDrainForTesting();
+    const InjectedFaults faults;
+    FaultyWorker worker(fakeFunctions(), {}, faults);
+    faults.armed->refuseNextDrain = true;
     worker.request("a");
     EXPECT_EQ(worker.queuedPathCount(), 0U) << "taken back";
     EXPECT_EQ(worker.pathCount(), 0U) << "and forgotten, so it is asked for again";
@@ -867,9 +915,10 @@ TEST_F(SignatureWorkerTest, TheTakeBackAfterARefusedDrainAllocatesNoKeyForALongP
     setStamp(first, 1);
     setStamp(second, 1);
     setGate(false); // first's check is held, so second is queued behind it when its drain is refused
-    SignatureWorker worker(fakeFunctions(), {});
+    const InjectedFaults faults;
+    FaultyWorker worker(fakeFunctions(), {}, faults);
     worker.request(first);
-    worker.refuseNextDrainForTesting();
+    faults.armed->refuseNextDrain = true;
     EXPECT_NO_THROW(worker.request(second)) << "the take-back makes no key";
     EXPECT_LE(worker.queuedPathCount(), 1U) << "second, at least, taken back; first may be in its check";
     setGate(true);
