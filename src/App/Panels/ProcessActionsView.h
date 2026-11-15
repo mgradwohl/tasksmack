@@ -958,11 +958,6 @@ class ProcessActionsView
                                     bool on,
                                     bool afterButtons);
 
-    bool m_ShowConfirmDialog = false;
-    bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
-    Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
-    ConfirmTarget m_ConfirmTarget;
-    Detail::ActionResultMessage m_LastResult;
     /// A permission refusal "Authenticate and retry" would redo (#2308): the action, the actions it was
     /// refused through (the panel's, which outlive this view), and its result line's wording.
     struct Retry
@@ -971,7 +966,13 @@ class ProcessActionsView
         Platform::IProcessActions* actions = nullptr;
         ResultFormat format;
     };
-    RefusalOffer<Retry> m_Offer;       ///< The result line's countdown, and its Retry or Restart as administrator (#2308, #3658)
+    // First: among the most-aligned members, and one that can go anywhere, so nothing pads before it (the padding check).
+    RefusalOffer<Retry> m_Offer; ///< The result line's countdown, and its Retry or Restart as administrator (#2308, #3658)
+    bool m_ShowConfirmDialog = false;
+    bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
+    Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
+    ConfirmTarget m_ConfirmTarget;
+    Detail::ActionResultMessage m_LastResult;
     std::uint64_t m_Generation = 0;    // bumped by onSelectionChanged() (#2389)
     std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
     // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.
