@@ -197,9 +197,26 @@ void DemoLayer::onUpdate(float /*deltaTime*/)
     // The step whose time has come, before any layer renders, so this frame shows it. One a frame (#3582): when a
     // slow frame leaves several due, each still gets a frame of its own, so open=help is drawn before the
     // close=dialog after it, and the next one follows on the very next frame.
-    const double elapsed = Core::Application::getTime() - m_StartTime;
+    const double now = Core::Application::getTime();
+    double elapsed = now - m_StartTime;
     if (m_Next < m_Steps.size() && static_cast<double>(m_Steps[m_Next].timeMs) / DemoOverride::MILLIS_PER_SECOND <= elapsed)
     {
+        // A test's gate (#4008) holding the step: the clock stands still until it lets go, and a frame comes soon to ask again.
+        if (m_StepGate && !m_StepGate(m_Next))
+        {
+            if (!m_HeldSince.has_value())
+            {
+                m_HeldSince = now;
+            }
+            Core::AnimationRequest::requestFrameWithin(GATE_POLL_SECONDS);
+            return;
+        }
+        if (m_HeldSince.has_value())
+        {
+            m_StartTime += now - *m_HeldSince;
+            elapsed = now - m_StartTime;
+            m_HeldSince.reset();
+        }
         const DemoOverride::Step& step = m_Steps[m_Next];
         spdlog::info("{}: step {} of {}: {}", DemoOverride::ENV_VAR, m_Next + 1, m_Steps.size(), DemoOverride::describe(step));
         issue(step);
