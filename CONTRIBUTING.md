@@ -3161,7 +3161,7 @@ opens PRs; the same CI gate applies before merge.
   `clang-format` mirror's *major* bumps are gated like LLVM's, since its formatting follows the compiler's
   major. Windows CI has no Renovate-tracked Ninja or ccache pins: Ninja comes with the runner image (bump
   `setup-windows-llvm`'s `ninja-version` input when the image changes) and ccache comes from
-  `hendrikmuhs/ccache-action`'s pinned release.
+  `hendrikmuhs/ccache-action`'s pinned release (one use, in `.github/actions/setup-ccache`, #3829).
 - *Tier 2, a PR opens only after someone ticks it on the Dependency Dashboard*
   (`dependencyDashboardApproval: true`), for every update, not just major ones:
   - **LLVM**, grouped into one PR: `LLVM_VERSION`/`LLVM_SEMVER_VERSION` in the workflows that run a compiler
