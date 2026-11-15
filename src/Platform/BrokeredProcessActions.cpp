@@ -1,6 +1,7 @@
 #include "BrokeredProcessActions.h"
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokeredReader.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
@@ -372,160 +373,71 @@ CpuAffinityLayout BrokeredProcessActions::affinityLayout() const
     return m_Inner->affinityLayout();
 }
 
-std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
-                                                                std::shared_ptr<IPrivilegedBroker> broker)
+namespace
 {
-    if (broker == nullptr || reader == nullptr || !reader->hasEnvironment())
+
+/// @p reader decorated with @p broker as @p Decorated, or @p reader as it is when there is no broker or nothing to read.
+template<typename Traits, typename Decorated = BrokeredReader<Traits>>
+[[nodiscard]] std::unique_ptr<typename Traits::Reader> decorated(std::unique_ptr<typename Traits::Reader> reader,
+                                                                 std::shared_ptr<IPrivilegedBroker> broker)
+{
+    if (broker == nullptr || reader == nullptr || !Traits::has(*reader))
     {
         return reader;
     }
-    return std::make_unique<BrokeredEnvironmentReader>(std::move(reader), std::move(broker));
+    return std::make_unique<Decorated>(std::move(reader), std::move(broker));
 }
 
-BrokeredEnvironmentReader::BrokeredEnvironmentReader(std::unique_ptr<IProcessEnvironmentReader> inner,
-                                                     std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
+} // namespace
 
-bool BrokeredEnvironmentReader::hasEnvironment() const
+std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
+                                                                std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return m_Inner->hasEnvironment();
-}
-
-EnvironmentReadResult BrokeredEnvironmentReader::readEnvironment(const ProcessTarget& target)
-{
-    EnvironmentReadResult result = m_Inner->readEnvironment(target);
-    if (result.status != EnvironmentReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
-}
-
-bool BrokeredEnvironmentReader::canReadAuthorized() const
-{
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
-EnvironmentReadResult BrokeredEnvironmentReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
-    {
-        return m_Inner->readEnvironment(target);
-    }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
-    {
-        // The prompt was dismissed or the helper couldn't start: the refusal stands.
-        return {.status = EnvironmentReadStatus::PermissionDenied, .variables = {}};
-    }
-    return viaBroker(target, stopToken);
-}
-
-EnvironmentReadResult BrokeredEnvironmentReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::EnvironmentRequest{.target = target}, stopToken);
-    if (response.has_value())
-    {
-        if (const auto* reply = std::get_if<Broker::EnvironmentReply>(&*response))
-        {
-            return reply->result;
-        }
-    }
-    return {.status = EnvironmentReadStatus::Failed, .variables = {}};
+    return decorated<EnvironmentReadTraits>(std::move(reader), std::move(broker));
 }
 
 std::unique_ptr<IProcessModulesReader> withPrivilegedBroker(std::unique_ptr<IProcessModulesReader> reader,
                                                             std::shared_ptr<IPrivilegedBroker> broker)
 {
-    if (broker == nullptr || reader == nullptr || !reader->hasModules())
-    {
-        return reader;
-    }
-    return std::make_unique<BrokeredModulesReader>(std::move(reader), std::move(broker));
+    return decorated<ModulesReadTraits>(std::move(reader), std::move(broker));
 }
 
 std::unique_ptr<IProcessOpenFilesReader> withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader> reader,
                                                               std::shared_ptr<IPrivilegedBroker> broker)
 {
-    if (broker == nullptr || reader == nullptr || !reader->hasOpenFiles())
-    {
-        return reader;
-    }
-    return std::make_unique<BrokeredOpenFilesReader>(std::move(reader), std::move(broker));
+    return decorated<OpenFilesReadTraits, BrokeredOpenFilesReader>(std::move(reader), std::move(broker));
 }
 
-BrokeredModulesReader::BrokeredModulesReader(std::unique_ptr<IProcessModulesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
-
-bool BrokeredModulesReader::hasModules() const
+std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
+                                                                std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return m_Inner->hasModules();
+    return decorated<ConnectionsReadTraits>(std::move(reader), std::move(broker));
 }
 
-ModulesReadResult BrokeredModulesReader::readModules(const ProcessTarget& target)
+std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
+                                                            std::shared_ptr<IPrivilegedBroker> broker)
 {
-    ModulesReadResult result = m_Inner->readModules(target);
-    if (result.status != ModulesReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
+    return decorated<ThreadsReadTraits>(std::move(reader), std::move(broker));
 }
 
-bool BrokeredModulesReader::canReadAuthorized() const
+std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
+                                                              std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
-ModulesReadResult BrokeredModulesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
-    {
-        return m_Inner->readModules(target);
-    }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
-    {
-        return {.status = ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}}; // the refusal stands
-    }
-    return viaBroker(target, stopToken);
-}
-
-ModulesReadResult BrokeredModulesReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ModulesRequest{.target = target}, stopToken);
-    if (!response.has_value())
-    {
-        return {
-            .status = ModulesReadStatus::Failed,
-            .modules = {},
-            .detail = "The administrator helper couldn't be asked: " + response.error(),
-        };
-    }
-    if (const auto* reply = std::get_if<Broker::ModulesReply>(&*response))
-    {
-        return reply->result;
-    }
-    return {.status = ModulesReadStatus::Failed, .modules = {}, .detail = "The administrator helper gave an unexpected answer"};
+    return decorated<MemoryMapReadTraits>(std::move(reader), std::move(broker));
 }
 
 BrokeredOpenFilesReader::BrokeredOpenFilesReader(std::unique_ptr<IProcessOpenFilesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
+    : BrokeredReader(std::move(inner), std::move(broker))
 {}
-
-bool BrokeredOpenFilesReader::hasOpenFiles() const
-{
-    return m_Inner->hasOpenFiles();
-}
 
 std::size_t BrokeredOpenFilesReader::handlesScanned() const noexcept
 {
-    return m_Inner->handlesScanned();
+    return inner().handlesScanned();
 }
 
 void BrokeredOpenFilesReader::beginBatch()
 {
-    m_Inner->beginBatch();
+    inner().beginBatch();
     m_InBatch = true;
     m_BatchUnanswered = false;
     m_Expected.clear();
@@ -538,7 +450,7 @@ void BrokeredOpenFilesReader::endBatch() noexcept
     m_BatchUnanswered = false;
     m_Expected.clear();
     m_NextExpected = 0;
-    m_Inner->endBatch();
+    inner().endBatch();
 }
 
 void BrokeredOpenFilesReader::expectAuthorizedReads(std::span<const ProcessTarget> targets)
@@ -603,17 +515,14 @@ void BrokeredOpenFilesReader::askBatch(std::size_t from, const std::stop_token& 
             asked.push_back(index);
         }
     }
-    std::expected<Broker::Response, std::string> response = m_Broker->call(request, stopToken);
+    std::expected<Broker::Response, std::string> response = privilegedBroker().call(request, stopToken);
     if (!response.has_value())
     {
         // The channel broke or timed out: the first target says why, and the rest are asked for one at a time, as
         // before (the broker's next call then says it isn't connected).
         m_BatchUnanswered = true;
-        OpenFilesReadResult failed;
-        failed.status = OpenFilesReadStatus::Failed;
-        failed.detail = "The administrator helper couldn't be asked: " + response.error();
         m_Expected[from].answered = true;
-        m_Expected[from].result = std::move(failed);
+        m_Expected[from].result = OpenFilesReadTraits::failed(std::string(HELPER_COULDNT_BE_ASKED) + response.error());
         return;
     }
     auto* const reply = std::get_if<Broker::OpenFilesBatchReply>(&*response);
@@ -630,258 +539,21 @@ void BrokeredOpenFilesReader::askBatch(std::size_t from, const std::stop_token& 
     }
 }
 
-OpenFilesReadResult BrokeredOpenFilesReader::readOpenFiles(const ProcessTarget& target)
-{
-    OpenFilesReadResult result = m_Inner->readOpenFiles(target);
-    if (result.status != OpenFilesReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
-}
-
-bool BrokeredOpenFilesReader::canReadAuthorized() const
-{
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
 OpenFilesReadResult BrokeredOpenFilesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
 {
     if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
     {
-        return m_Inner->readOpenFiles(target);
+        return inner().readOpenFiles(target);
     }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
+    if (!helperConnected(stopToken))
     {
-        OpenFilesReadResult refused; // the refusal stands
-        refused.status = OpenFilesReadStatus::PermissionDenied;
-        return refused;
+        return OpenFilesReadTraits::refused(); // the refusal stands
     }
     if (std::optional<OpenFilesReadResult> batched = fromBatch(target, stopToken); batched.has_value())
     {
         return std::move(*batched);
     }
     return viaBroker(target, stopToken);
-}
-
-OpenFilesReadResult BrokeredOpenFilesReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::OpenFilesRequest{.target = target}, stopToken);
-    OpenFilesReadResult failed;
-    failed.status = OpenFilesReadStatus::Failed;
-    if (!response.has_value())
-    {
-        failed.detail = "The administrator helper couldn't be asked: " + response.error();
-        return failed;
-    }
-    if (const auto* reply = std::get_if<Broker::OpenFilesReply>(&*response))
-    {
-        return reply->result;
-    }
-    failed.detail = "The administrator helper gave an unexpected answer";
-    return failed;
-}
-
-std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
-                                                                std::shared_ptr<IPrivilegedBroker> broker)
-{
-    if (broker == nullptr || reader == nullptr || !reader->hasConnections())
-    {
-        return reader;
-    }
-    return std::make_unique<BrokeredConnectionsReader>(std::move(reader), std::move(broker));
-}
-
-BrokeredConnectionsReader::BrokeredConnectionsReader(std::unique_ptr<IProcessConnectionsReader> inner,
-                                                     std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
-
-bool BrokeredConnectionsReader::hasConnections() const
-{
-    return m_Inner->hasConnections();
-}
-
-ConnectionsReadResult BrokeredConnectionsReader::readConnections(const ProcessTarget& target)
-{
-    ConnectionsReadResult result = m_Inner->readConnections(target);
-    if (result.status != ConnectionsReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
-}
-
-bool BrokeredConnectionsReader::canReadAuthorized() const
-{
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
-ConnectionsReadResult BrokeredConnectionsReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
-    {
-        return m_Inner->readConnections(target);
-    }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
-    {
-        return {.status = ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}}; // the refusal stands
-    }
-    return viaBroker(target, stopToken);
-}
-
-ConnectionsReadResult BrokeredConnectionsReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ConnectionsRequest{.target = target}, stopToken);
-    if (!response.has_value())
-    {
-        return {
-            .status = ConnectionsReadStatus::Failed,
-            .connections = {},
-            .detail = "The administrator helper couldn't be asked: " + response.error(),
-        };
-    }
-    if (const auto* reply = std::get_if<Broker::ConnectionsReply>(&*response))
-    {
-        return reply->result;
-    }
-    return {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = "The administrator helper gave an unexpected answer"};
-}
-
-std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
-                                                            std::shared_ptr<IPrivilegedBroker> broker)
-{
-    if (broker == nullptr || reader == nullptr || !reader->hasThreads())
-    {
-        return reader;
-    }
-    return std::make_unique<BrokeredThreadsReader>(std::move(reader), std::move(broker));
-}
-
-BrokeredThreadsReader::BrokeredThreadsReader(std::unique_ptr<IProcessThreadsReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
-
-bool BrokeredThreadsReader::hasThreads() const
-{
-    return m_Inner->hasThreads();
-}
-
-ThreadsReadResult BrokeredThreadsReader::readThreads(const ProcessTarget& target)
-{
-    ThreadsReadResult result = m_Inner->readThreads(target);
-    if (result.status != ThreadsReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
-}
-
-bool BrokeredThreadsReader::canReadAuthorized() const
-{
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
-ThreadsReadResult BrokeredThreadsReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
-    {
-        return m_Inner->readThreads(target);
-    }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
-    {
-        return {.status = ThreadsReadStatus::PermissionDenied, .threads = {}, .detail = {}}; // the refusal stands
-    }
-    return viaBroker(target, stopToken);
-}
-
-ThreadsReadResult BrokeredThreadsReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::ThreadsRequest{.target = target}, stopToken);
-    if (!response.has_value())
-    {
-        return {
-            .status = ThreadsReadStatus::Failed,
-            .threads = {},
-            .detail = "The administrator helper couldn't be asked: " + response.error(),
-        };
-    }
-    if (const auto* reply = std::get_if<Broker::ThreadsReply>(&*response))
-    {
-        return reply->result;
-    }
-    return {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = "The administrator helper gave an unexpected answer"};
-}
-
-std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
-                                                              std::shared_ptr<IPrivilegedBroker> broker)
-{
-    if (broker == nullptr || reader == nullptr || !reader->hasMemoryMap())
-    {
-        return reader;
-    }
-    return std::make_unique<BrokeredMemoryMapReader>(std::move(reader), std::move(broker));
-}
-
-BrokeredMemoryMapReader::BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : m_Inner(std::move(inner)), m_Broker(std::move(broker))
-{}
-
-bool BrokeredMemoryMapReader::hasMemoryMap() const
-{
-    return m_Inner->hasMemoryMap();
-}
-
-MemoryMapReadResult BrokeredMemoryMapReader::readMemoryMap(const ProcessTarget& target)
-{
-    MemoryMapReadResult result = m_Inner->readMemoryMap(target);
-    if (result.status != MemoryMapReadStatus::PermissionDenied || m_Broker == nullptr || !m_Broker->connected())
-    {
-        return result;
-    }
-    return viaBroker(target, std::stop_token{});
-}
-
-bool BrokeredMemoryMapReader::canReadAuthorized() const
-{
-    return m_Broker != nullptr && m_Broker->readsOtherUsers();
-}
-
-MemoryMapReadResult BrokeredMemoryMapReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
-    {
-        return m_Inner->readMemoryMap(target);
-    }
-    if (!m_Broker->connected() && !m_Broker->connect(stopToken).has_value())
-    {
-        return {.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false}; // the refusal stands
-    }
-    return viaBroker(target, stopToken);
-}
-
-MemoryMapReadResult BrokeredMemoryMapReader::viaBroker(const ProcessTarget& target, const std::stop_token& stopToken)
-{
-    const std::expected<Broker::Response, std::string> response = m_Broker->call(Broker::MemoryMapRequest{.target = target}, stopToken);
-    if (!response.has_value())
-    {
-        return {
-            .status = MemoryMapReadStatus::Failed,
-            .mappings = {},
-            .detail = "The administrator helper couldn't be asked: " + response.error(),
-            .truncated = false,
-        };
-    }
-    if (const auto* reply = std::get_if<Broker::MemoryMapReply>(&*response))
-    {
-        return reply->result;
-    }
-    return {
-        .status = MemoryMapReadStatus::Failed,
-        .mappings = {},
-        .detail = "The administrator helper gave an unexpected answer",
-        .truncated = false,
-    };
 }
 
 } // namespace Platform
