@@ -464,6 +464,16 @@ TEST(StartupViewTest, ScheduledTasksAreLabelledAndWindowsOwnAreHiddenByDefault)
         << "Cleanup, then Updater";
 }
 
+TEST(StartupViewTest, CountLeavesOutTheHiddenMicrosoftEntries)
+{
+    // #3891: 140 entries, 115 of them Windows' own and hidden, and an empty filter that shows the other 25.
+    EXPECT_EQ(startupCountLabel(25, 140, 115, false), "25 of 25 startup apps (115 hidden)");
+    EXPECT_EQ(startupCountLabel(3, 140, 115, false), "3 of 25 startup apps (115 hidden)") << "a filter on top of them";
+    EXPECT_EQ(startupCountLabel(140, 140, 115, true), "140 of 140 startup apps") << "shown, they count";
+    EXPECT_EQ(startupCountLabel(4, 4, 0, false), "4 of 4 startup apps") << "none to hide, nothing to say";
+    EXPECT_EQ(startupCountLabel(0, 2, 2, false), "0 of 0 startup apps (2 hidden)") << "every entry hidden";
+}
+
 TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
 {
     Domain::StartupPublication publication = makePublication();
@@ -475,12 +485,14 @@ TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
     windows.osComponent = true;
     publication.entries.push_back(windows);
     publication.version = 5;
-    EXPECT_TRUE(captureFrame(publication, state).contains("Show Microsoft entries"));
+    const std::string hidden = captureFrame(publication, state);
+    EXPECT_TRUE(hidden.contains("Show Microsoft entries"));
     EXPECT_EQ(state.rows.size(), 4U);
     EXPECT_EQ(state.osComponentCount, 1U);
+    EXPECT_TRUE(hidden.contains("4 of 4 startup apps (1 hidden)")) << "the hidden entry isn't counted as filtered out (#3891)";
 
     state.showOsComponents = true; // as a click on the checkbox sets it
-    static_cast<void>(captureFrame(publication, state));
+    EXPECT_TRUE(captureFrame(publication, state).contains("5 of 5 startup apps"));
     EXPECT_EQ(state.rows.size(), 5U);
 
     // Disabled, it reads Disabled, not "Not started here": it is read-only, not for another desktop.
