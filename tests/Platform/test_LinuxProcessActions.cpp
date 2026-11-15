@@ -28,6 +28,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <clocale>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -2810,6 +2811,30 @@ TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIs)
     ASSERT_TRUE(target.has_value());
     LinuxProcessActions actions;
     const auto refused = actions.imageSha256(*target, std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
+}
+
+// #3857: in a session whose language translates strerror (German here), another user's image is still said to be
+// theirs: the refusal is told by the open's errno, not by matching English text.
+TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIsInAnyLanguage)
+{
+    struct stat init{};
+    if (::geteuid() == 0 || ::stat("/proc/1", &init) != 0 || init.st_uid == ::geteuid())
+    {
+        GTEST_SKIP() << "needs PID 1 to be another user's, and not to run as root";
+    }
+    const std::string previous = std::setlocale(LC_MESSAGES, nullptr); // NOLINT(concurrency-mt-unsafe) - test thread
+    if (std::setlocale(LC_MESSAGES, "de_DE.UTF-8") == nullptr)         // NOLINT(concurrency-mt-unsafe) - test thread
+    {
+        GTEST_SKIP() << "no de_DE.UTF-8 locale here";
+    }
+    const std::optional<ProcessTarget> target = targetOf(1);
+    LinuxProcessActions actions;
+    const auto refused = target.has_value() ? actions.imageSha256(*target, std::stop_token{})
+                                            : std::expected<std::string, std::string>(std::unexpected(std::string{}));
+    std::setlocale(LC_MESSAGES, previous.c_str()); // NOLINT(concurrency-mt-unsafe) - test thread
+    ASSERT_TRUE(target.has_value());
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
 }

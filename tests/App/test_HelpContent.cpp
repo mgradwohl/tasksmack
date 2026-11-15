@@ -85,7 +85,10 @@ TEST(HelpContentTest, OnlyTheNetworkColumnsCarryAPlatformNote)
     for (const ProcessColumn col : allProcessColumns())
     {
         const bool network = col == ProcessColumn::NetSent || col == ProcessColumn::NetReceived;
-        EXPECT_EQ(columnNotePlatform(col), network ? "On Windows:" : "") << toIndex(col);
+        // #3799: the note applies on both platforms, each until UDP is counted its own way.
+        EXPECT_EQ(columnNotePlatform(col),
+                  network ? "Unless UDP is counted (Windows: the network event trace in Settings; Linux: TaskSmack (Administrator)):" : "")
+            << toIndex(col);
     }
 }
 

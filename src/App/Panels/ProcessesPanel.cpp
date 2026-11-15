@@ -2071,7 +2071,8 @@ void ProcessesPanel::renderContent()
             // Not the recent commands of a handed-over config folder in an elevated session (#2728).
             m_RunTaskDialog.open(
                 RunTaskHistory::offered(UserConfig::get().settings().recentCommands, Core::ConfigDirOverride::handedOver()),
-                m_ActionCapabilities.canRunProgramAsAdministrator);
+                m_ActionCapabilities.canRunProgramAsAdministrator,
+                !processCapabilities().hasReducedPrivileges);
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
