@@ -51,15 +51,23 @@ namespace
     return broker;
 }
 
+/// What @p make makes for @p scenario: a synthetic run's as it is, and a real run's behind the shared broker, so
+/// that an administrator can finish what TaskSmack's own call is refused (#2308, #3814). Every reader or action set
+/// the helper can stand in for is made through this, so none can miss the broker on one path.
+template<typename Make> [[nodiscard]] auto brokered(const Synthetic::Scenario* scenario, Make make) -> decltype(make(scenario))
+{
+    decltype(make(scenario)) made = make(scenario);
+    if (scenario != nullptr)
+    {
+        return made; // a synthetic run uses no helper
+    }
+    return Platform::withPrivilegedBroker(std::move(made), sharedPrivilegedBroker());
+}
+
 /// @p scenario's process actions, or the platform's, which an administrator can finish (#2308).
 [[nodiscard]] std::unique_ptr<Platform::IProcessActions> processActionsFor(const Synthetic::Scenario* scenario)
 {
-    std::unique_ptr<Platform::IProcessActions> actions = Synthetic::makeProcessActions(scenario);
-    if (scenario != nullptr)
-    {
-        return actions;
-    }
-    return Platform::withPrivilegedBroker(std::move(actions), sharedPrivilegedBroker());
+    return brokered(scenario, Synthetic::makeProcessActions);
 }
 
 } // namespace
@@ -105,12 +113,8 @@ ProcessesPanelPlatform makeProcessesPanelPlatform(const Synthetic::Scenario* sce
     };
     // Find handles (#3067): the readers Process Details uses, another user's processes through the helper.
     // A search reads the open files in one batch (#3357): on Windows, one pass over the system handle table.
-    platform.openFiles = (scenario == nullptr)
-                           ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
-                           : Synthetic::makeProcessOpenFilesReader(scenario);
-    platform.modules = (scenario == nullptr)
-                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
-                         : Synthetic::makeProcessModulesReader(scenario);
+    platform.openFiles = brokered(scenario, Synthetic::makeProcessOpenFilesReader);
+    platform.modules = brokered(scenario, Synthetic::makeProcessModulesReader);
     return platform;
 }
 
@@ -133,22 +137,12 @@ ProcessDetailsReaders makeProcessDetailsReaders(const Synthetic::Scenario* scena
 {
     return {
         .actions = processActionsFor(scenario),
-        .environment = (scenario == nullptr)
-                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessEnvironmentReader(scenario), sharedPrivilegedBroker())
-                         : Synthetic::makeProcessEnvironmentReader(scenario),
-        .connections = (scenario == nullptr)
-                         ? Platform::withPrivilegedBroker(Synthetic::makeProcessConnectionsReader(scenario), sharedPrivilegedBroker())
-                         : Synthetic::makeProcessConnectionsReader(scenario),
-        .modules = (scenario == nullptr)
-                     ? Platform::withPrivilegedBroker(Synthetic::makeProcessModulesReader(scenario), sharedPrivilegedBroker())
-                     : Synthetic::makeProcessModulesReader(scenario),
+        .environment = brokered(scenario, Synthetic::makeProcessEnvironmentReader),
+        .connections = brokered(scenario, Synthetic::makeProcessConnectionsReader),
+        .modules = brokered(scenario, Synthetic::makeProcessModulesReader),
         .security = Synthetic::makeProcessSecurityReader(scenario),
-        .openFiles = (scenario == nullptr)
-                       ? Platform::withPrivilegedBroker(Synthetic::makeProcessOpenFilesReader(scenario), sharedPrivilegedBroker())
-                       : Synthetic::makeProcessOpenFilesReader(scenario),
-        .threads = (scenario == nullptr)
-                     ? Platform::withPrivilegedBroker(Synthetic::makeProcessThreadsReader(scenario), sharedPrivilegedBroker())
-                     : Synthetic::makeProcessThreadsReader(scenario),
+        .openFiles = brokered(scenario, Synthetic::makeProcessOpenFilesReader),
+        .threads = brokered(scenario, Synthetic::makeProcessThreadsReader),
         .memoryMap = App::makeProcessMemoryMapReader(scenario), // qualified: ADL also finds Synthetic's
     };
 }
@@ -157,8 +151,7 @@ std::unique_ptr<Platform::IProcessMemoryMapReader> makeProcessMemoryMapReader(co
 {
     // Windows' helper reads an elevated or another user's process's map when TaskSmack's own read is refused, and
     // "Authenticate to read" starts it (#3665). Linux has no helper (#3580): a root TaskSmack reads every map itself.
-    return (scenario == nullptr) ? Platform::withPrivilegedBroker(Synthetic::makeProcessMemoryMapReader(scenario), sharedPrivilegedBroker())
-                                 : Synthetic::makeProcessMemoryMapReader(scenario);
+    return brokered(scenario, Synthetic::makeProcessMemoryMapReader);
 }
 
 std::unique_ptr<Platform::IProcessActions> makeConnectionsPanelActions(const Synthetic::Scenario* scenario)

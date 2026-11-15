@@ -1,11 +1,18 @@
 /// @file test_PanelPlatforms.cpp
 /// @brief What PanelPlatforms makes for a real run: the sign-in entry (#3093), the probes no helper reads
 /// through since protocol v23 (#3580), the crash history's and System Information's, and the memory map reader,
-/// which Windows' helper reads through again since v25 (#3665).
+/// which Windows' helper reads through again since v25 (#3665), and every Process Details reader the helper
+/// stands in for (#3814).
 
+#include "App/PanelPlatformTypes.h"
 #include "App/PanelPlatforms.h"
 #include "Mocks/FakeBroker.h"
+#include "Platform/IProcessConnections.h"
+#include "Platform/IProcessEnvironment.h"
 #include "Platform/IProcessMemoryMap.h"
+#include "Platform/IProcessModules.h"
+#include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <gtest/gtest.h>
@@ -57,6 +64,57 @@ TEST(PanelPlatformsTest, TheMemoryMapReaderReadsThroughTheHelper)
         EXPECT_TRUE(memoryMap->canReadAuthorized());
         broker->setReadsOtherUsers(false); // a helper that runs as another account (#2769): no prompt
         EXPECT_FALSE(memoryMap->canReadAuthorized());
+    }
+    EXPECT_EQ(broker->connectCount(), 0);
+    EXPECT_TRUE(broker->requests().empty());
+}
+
+// #3814: every reader Process Details has that the helper can read for goes through the shared broker on a real run
+// (brokered()), so none misses it: each offers "Authenticate to read" where the helper reads other users' processes,
+// and none where it runs as another account (#2769). Making them asks the broker nothing.
+TEST(PanelPlatformsTest, EveryProcessDetailsReaderTheHelperReadsForGoesThroughIt)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    broker->setReadsOtherUsers(true);
+    Detail::setSharedPrivilegedBrokerForTesting(broker);
+    const ProcessDetailsReaders readers = makeProcessDetailsReaders(nullptr);
+    Detail::setSharedPrivilegedBrokerForTesting(nullptr);
+
+    ASSERT_NE(readers.environment, nullptr);
+    ASSERT_NE(readers.connections, nullptr);
+    ASSERT_NE(readers.modules, nullptr);
+    ASSERT_NE(readers.openFiles, nullptr);
+    ASSERT_NE(readers.threads, nullptr);
+    ASSERT_NE(readers.memoryMap, nullptr);
+    // Where the platform has the reader at all: one it lacks stays undecorated, with nothing to authenticate.
+    for (const bool readsOtherUsers : {true, false})
+    {
+        SCOPED_TRACE(readsOtherUsers);
+        broker->setReadsOtherUsers(readsOtherUsers);
+        if (readers.environment->hasEnvironment())
+        {
+            EXPECT_EQ(readers.environment->canReadAuthorized(), readsOtherUsers);
+        }
+        if (readers.connections->hasConnections())
+        {
+            EXPECT_EQ(readers.connections->canReadAuthorized(), readsOtherUsers);
+        }
+        if (readers.modules->hasModules())
+        {
+            EXPECT_EQ(readers.modules->canReadAuthorized(), readsOtherUsers);
+        }
+        if (readers.openFiles->hasOpenFiles())
+        {
+            EXPECT_EQ(readers.openFiles->canReadAuthorized(), readsOtherUsers);
+        }
+        if (readers.threads->hasThreads())
+        {
+            EXPECT_EQ(readers.threads->canReadAuthorized(), readsOtherUsers);
+        }
+        if (readers.memoryMap->hasMemoryMap())
+        {
+            EXPECT_EQ(readers.memoryMap->canReadAuthorized(), readsOtherUsers);
+        }
     }
     EXPECT_EQ(broker->connectCount(), 0);
     EXPECT_TRUE(broker->requests().empty());
