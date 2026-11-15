@@ -1602,9 +1602,11 @@ SocketTrafficReading LinuxProcessProbe::readSocketTraffic() const
         // Forget them: a later connection reusing one of their inodes would otherwise inherit its
         // first-seen time, look older than the map, and not trigger the early rebuild (#1327 review).
         // A failed reading (returned above) leaves them alone: its sockets are unknown, not closed.
-        const std::scoped_lock lock{m_UnownedSocketsMutex};
-        m_UnownedSocketsFirstSeen.clear();
-        appendUdpTraffic(reading);
+        {
+            const std::scoped_lock lock{m_UnownedSocketsMutex};
+            m_UnownedSocketsFirstSeen.clear();
+        }
+        appendUdpTraffic(reading); // the UDP map walk, never under the lock (#3860), as on the main path
         return reading;
     }
 
