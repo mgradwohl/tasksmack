@@ -17,6 +17,10 @@
 #endif
 #include <windows.h>
 // clang-format on
+
+#include "Platform/IHandedOverFolder.h"
+
+#include <utility>
 #else
 #include "App/NewFileOwner.h"
 
@@ -104,23 +108,7 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
         m_Error = std::system_category().message(static_cast<int>(::GetLastError()));
         return;
     }
-    OVERLAPPED overlapped{};
-    if (::LockFileEx(handle, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped) == 0)
-    {
-        const DWORD lastError = ::GetLastError();
-        ::CloseHandle(handle);
-        if (lastError == ERROR_LOCK_VIOLATION)
-        {
-            m_Status = Status::HeldByAnotherInstance;
-        }
-        else
-        {
-            m_Error = std::system_category().message(static_cast<int>(lastError));
-        }
-        return;
-    }
-    m_Handle = handle;
-    m_Status = Status::Acquired;
+    lock(handle);
 #else
     // O_CLOEXEC: a program TaskSmack starts (a file manager, say) mustn't inherit the descriptor
     // and so hold the lock after TaskSmack exits. O_NOFOLLOW: never lock, or create, a link's target.
@@ -162,6 +150,41 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
 #endif
 }
 
+#ifdef _WIN32
+InstanceLock::InstanceLock(const Platform::IHandedOverFolder& folder, const std::filesystem::path& name)
+{
+    // The folder is there (it was held at startup): nothing is created on the way to it, only the file itself.
+    auto handle = folder.openLockFile(name);
+    if (!handle.has_value())
+    {
+        m_Error = std::move(handle.error());
+        return;
+    }
+    lock(*handle);
+}
+
+void InstanceLock::lock(void* handle)
+{
+    OVERLAPPED overlapped{};
+    if (::LockFileEx(static_cast<HANDLE>(handle), LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &overlapped) == 0)
+    {
+        const DWORD lastError = ::GetLastError();
+        ::CloseHandle(static_cast<HANDLE>(handle));
+        if (lastError == ERROR_LOCK_VIOLATION)
+        {
+            m_Status = Status::HeldByAnotherInstance;
+        }
+        else
+        {
+            m_Error = std::system_category().message(static_cast<int>(lastError));
+        }
+        return;
+    }
+    m_Handle = handle;
+    m_Status = Status::Acquired;
+}
+#endif
+
 InstanceLock::~InstanceLock()
 {
 #ifdef _WIN32
@@ -177,17 +200,41 @@ InstanceLock::~InstanceLock()
 #endif
 }
 
-std::unique_ptr<InstanceLock>
-acquireInstanceLock(const std::filesystem::path& lockPath, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery)
+namespace
+{
+
+/// Takes a lock with @p take; while another process holds it, tries again every @p retryEvery until @p patience
+/// has passed.
+template<typename Take>
+[[nodiscard]] std::unique_ptr<InstanceLock>
+retryLock(const Take& take, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery)
 {
     const auto deadline = std::chrono::steady_clock::now() + patience;
-    auto lock = std::make_unique<InstanceLock>(lockPath);
+    auto lock = take();
     while (lock->status() == InstanceLock::Status::HeldByAnotherInstance && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::sleep_for(retryEvery);
         lock.reset(); // this one's file handle first, so the next try opens it afresh
-        lock = std::make_unique<InstanceLock>(lockPath);
+        lock = take();
     }
     return lock;
 }
+
+} // namespace
+
+std::unique_ptr<InstanceLock>
+acquireInstanceLock(const std::filesystem::path& lockPath, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery)
+{
+    return retryLock([&lockPath] { return std::make_unique<InstanceLock>(lockPath); }, patience, retryEvery);
+}
+
+#ifdef _WIN32
+std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFolder& folder,
+                                                  const std::filesystem::path& name,
+                                                  std::chrono::milliseconds patience,
+                                                  std::chrono::milliseconds retryEvery)
+{
+    return retryLock([&folder, &name] { return std::make_unique<InstanceLock>(folder, name); }, patience, retryEvery);
+}
+#endif
 } // namespace App

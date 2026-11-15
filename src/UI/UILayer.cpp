@@ -1,9 +1,11 @@
 #include "UILayer.h"
 
 #include "Core/Application.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/ResizePerfOperation.h"
+#include "Core/Utf8Path.h"
 #include "Core/WindowEvents.h"
 #include "UI/AssetPath.h"
 #include "UI/ChartWidgets.h"
@@ -31,6 +33,8 @@
 #include <stdexcept>
 #include <string>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 namespace
 {
@@ -142,7 +146,26 @@ void UILayer::onAttach()
         // directory from throwing out of onAttach.
         const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
         std::error_code ec;
-        if (std::filesystem::is_directory(userThemesDir, ec))
+        // A hand-off session never falls through to the path below: readHandedOverFiles() answers for it, an error
+        // once its folder is no longer held.
+        if (auto handedOver = Core::ConfigDirOverride::readHandedOverFiles("themes", ".toml"); handedOver.has_value())
+        {
+            // A handed-over config folder's themes (#3774): listed and read through the folder held, never by path.
+            if (!handedOver->has_value())
+            {
+                spdlog::warn("Skipping user themes in {}: {}", Core::pathToUtf8(userThemesDir), handedOver->error());
+            }
+            else if (!(*handedOver)->empty())
+            {
+                std::vector<Theme::ThemeSource> sources;
+                for (Core::ConfigDirOverride::HandedOverFile& file : **handedOver)
+                {
+                    sources.push_back(Theme::ThemeSource{.path = std::move(file.path), .text = std::move(file.text)});
+                }
+                Theme::get().loadThemes(sources, userThemesDir);
+            }
+        }
+        else if (std::filesystem::is_directory(userThemesDir, ec))
         {
             Theme::get().loadThemes(userThemesDir);
         }

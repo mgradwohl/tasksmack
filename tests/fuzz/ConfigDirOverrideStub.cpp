@@ -5,7 +5,7 @@
 // .clusterfuzzlite/fetch-deps.sh). The fuzzer exercises parseSettings(), never the config
 // directory, so "no override" -- TaskSmack's behaviour with the variable unset -- is all it needs. With no
 // override, nothing was handed over by an elevated restart either (handedOver(), #2728), which UserConfig's save asks,
-// so there is no held folder, nor one let go (handedOverFolder(), handedOverFolderReleased(), #3787).
+// so there is no held folder to read or write through, nor one let go (handedOverFolder(), #3774, #3787).
 
 #include "Core/ConfigDirOverride.h"
 #include "Platform/IHandedOverFolder.h"

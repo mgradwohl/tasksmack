@@ -20,6 +20,11 @@
 #include <utility>
 #include <vector>
 
+namespace Platform
+{
+class IHandedOverFolder;
+} // namespace Platform
+
 namespace App
 {
 
@@ -334,6 +339,9 @@ class UserConfig
     /// The file write behind save() and saveInBackground(): @p settings merged into the file as it is.
     /// Logs why when it fails. Serialised by m_WriteMutex; on success @p settings becomes m_Synced.
     [[nodiscard]] bool writeSettings(const UserSettings& settings);
+    /// writeSettings() for a config folder an elevated restart was handed and still holds (#3774): config.toml read
+    /// and replaced only through @p folder, relative to the folder held. Called with m_WriteMutex held.
+    [[nodiscard]] bool writeIntoHandedOver(const Platform::IHandedOverFolder& folder, const UserSettings& settings);
     /// writeSettings() as the background writer's sink, on its worker.
     [[nodiscard]] bool writeInBackground(const UserSettings& settings);
     /// The background writer's failure report, once for a run of failed writes.

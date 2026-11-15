@@ -7,6 +7,13 @@
 #include <optional>
 #include <string>
 
+#ifdef _WIN32
+namespace Platform
+{
+class IHandedOverFolder;
+} // namespace Platform
+#endif
+
 namespace App
 {
 
@@ -53,6 +60,11 @@ class InstanceLock
     /// directory) if needed. Running as root with another user's config directory (sudo -E), what it
     /// creates is given to that user (#2437), or the user's next normal run couldn't open the lock.
     explicit InstanceLock(const std::filesystem::path& lockPath, const Testing& testing = {});
+#ifdef _WIN32
+    /// Tries to take the lock on file @p name in @p folder, a config folder an elevated restart was handed (#2728),
+    /// opened only through the folder held (#3774): never by a path to it, so nothing on the way is looked up again.
+    InstanceLock(const Platform::IHandedOverFolder& folder, const std::filesystem::path& name);
+#endif
     ~InstanceLock();
 
     InstanceLock(const InstanceLock&) = delete;
@@ -80,6 +92,11 @@ class InstanceLock
     void* m_Handle = nullptr; // HANDLE; nullptr when not held
 #else
     int m_Fd = -1; // -1 when not held
+#endif
+
+#ifdef _WIN32
+    /// Takes the byte-range lock on @p handle, an open lock file this object now owns.
+    void lock(void* handle);
 #endif
 };
 
@@ -109,5 +126,13 @@ inline constexpr int ALREADY_RUNNING_EXIT_CODE = 75;
 [[nodiscard]] std::unique_ptr<InstanceLock> acquireInstanceLock(const std::filesystem::path& lockPath,
                                                                 std::chrono::milliseconds patience,
                                                                 std::chrono::milliseconds retryEvery = std::chrono::milliseconds{100});
+
+#ifdef _WIN32
+/// acquireInstanceLock() on file @p name in a handed-over config folder, opened only through the folder held (#3774).
+[[nodiscard]] std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFolder& folder,
+                                                                const std::filesystem::path& name,
+                                                                std::chrono::milliseconds patience,
+                                                                std::chrono::milliseconds retryEvery = std::chrono::milliseconds{100});
+#endif
 
 } // namespace App

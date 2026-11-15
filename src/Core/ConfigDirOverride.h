@@ -19,14 +19,20 @@
 
 #include "Core/EnvUtils.h"
 #include "Platform/AsciiTrim.h"
-#include "Platform/IHandedOverFolder.h"
 
 #include <cctype>
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
+
+namespace Platform
+{
+class IHandedOverFolder; // Platform/IHandedOverFolder.h: Core holds only a weak reference to one
+} // namespace Platform
 
 namespace Core::ConfigDirOverride
 {
@@ -78,6 +84,21 @@ void markLessPrivilegedFolder();
 /// The held folder adoptHandedOver() was given, while its owner (main.cpp) still holds it; null when nothing was
 /// handed over, or it is no longer held.
 [[nodiscard]] std::shared_ptr<const Platform::IHandedOverFolder> handedOverFolder();
+
+/// A file read from the held handed-over folder (readHandedOverFiles()).
+struct HandedOverFile
+{
+    std::filesystem::path path; ///< Its full path, for what is logged and shown
+    std::string text;
+};
+
+/// The plain files in folder @p folder of the held handed-over folder whose names end in @p extension, each listed
+/// and read through it (#3774), relative to the folder held: the user themes, for the UI, which uses no Platform
+/// type. nullopt only when nothing was handed over (read by path then, if at all); an error when the folder can't be
+/// listed, or a hand-off's folder is no longer held. A file that can't be
+/// read (a link, a hard link) is skipped, and logged.
+[[nodiscard]] std::optional<std::expected<std::vector<HandedOverFile>, std::string>>
+readHandedOverFiles(const std::filesystem::path& folder, std::string_view extension);
 
 /// Whether an elevated restart handed a folder over (adoptHandedOver()) that is no longer held, or was never given
 /// one: such a hand-off fails closed, and UserConfig neither reads nor saves there. False with no hand-off, and in a

@@ -732,29 +732,49 @@ auto ThemeLoader::userThemesSkippedMessage(const std::filesystem::path& userThem
     return "Skipping user themes in " + Core::pathToUtf8(userThemesDir) + ": " + error.message();
 }
 
+namespace
+{
+
+/// A theme's metadata from its parsed table @p tbl, read from @p path.
+[[nodiscard]] ThemeInfo themeInfoOf(const toml::table& tbl, const std::filesystem::path& path)
+{
+    ThemeInfo info;
+    info.path = path;
+    info.id = Core::pathToUtf8(path.stem()); // filename without extension
+    // Index through node_view, which is null-safe: table::get() returns nullptr for a missing key, and calling
+    // value_or() on that crashed at startup (#1095).
+    if (const auto* meta = tbl["meta"].as_table())
+    {
+        info.name = (*meta)["name"].value_or(info.id);
+        info.description = (*meta)["description"].value_or(std::string{});
+    }
+    else
+    {
+        info.name = info.id;
+    }
+    return info;
+}
+
+} // namespace
+
+auto ThemeLoader::loadThemeInfoFromString(std::string_view tomlText, const std::filesystem::path& path) -> std::optional<ThemeInfo>
+{
+    try
+    {
+        return themeInfoOf(toml::parse(tomlText, Core::pathToUtf8(path)), path);
+    }
+    catch (const toml::parse_error& err)
+    {
+        spdlog::error("Failed to parse theme {}: {}", Core::pathToUtf8(path), err.description());
+        return std::nullopt;
+    }
+}
+
 auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optional<ThemeInfo>
 {
     try
     {
-        auto tbl = toml::parse_file(Core::pathToUtf8(path));
-
-        ThemeInfo info;
-        info.path = path;
-        info.id = Core::pathToUtf8(path.stem()); // filename without extension
-
-        // Read meta section. Index through node_view, which is null-safe: table::get() returns
-        // nullptr for a missing key, and calling value_or() on that crashed at startup (#1095).
-        if (const auto* meta = tbl["meta"].as_table())
-        {
-            info.name = (*meta)["name"].value_or(info.id);
-            info.description = (*meta)["description"].value_or(std::string{});
-        }
-        else
-        {
-            info.name = info.id;
-        }
-
-        return info;
+        return themeInfoOf(toml::parse_file(Core::pathToUtf8(path)), path);
     }
     catch (const toml::parse_error& err)
     {

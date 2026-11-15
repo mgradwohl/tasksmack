@@ -2,6 +2,7 @@
 
 #include "Platform/IElevatedRestart.h"
 #include "Platform/Windows/BrokerHelper.h"
+#include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -82,33 +83,6 @@ namespace
 {
     return CompareStringOrdinal(left.c_str(), static_cast<int>(left.size()), right.c_str(), static_cast<int>(right.size()), TRUE) ==
            CSTR_EQUAL;
-}
-
-/// GetFinalPathNameByHandleW's path for @p handle as a plain drive path, without the \\?\ prefix; nullopt when
-/// it can't be read.
-[[nodiscard]] std::optional<std::wstring> finalPathOf(HANDLE handle, ConfigDirFunctions::FinalPathFn getFinalPath)
-{
-    std::wstring path(MAX_PATH, L'\0');
-    for (int attempt = 0; attempt < 2; ++attempt)
-    {
-        const DWORD length = getFinalPath(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (length == 0)
-        {
-            return std::nullopt;
-        }
-        if (length < path.size())
-        {
-            path.resize(length);
-            constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
-            if (path.starts_with(LONG_PREFIX) && !path.starts_with(LR"(\\?\UNC\)"))
-            {
-                path.erase(0, LONG_PREFIX.size());
-            }
-            return path;
-        }
-        path.assign(length, L'\0'); // too short: length is the size it needs, with its terminator
-    }
-    return std::nullopt;
 }
 
 } // namespace

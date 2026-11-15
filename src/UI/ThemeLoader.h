@@ -65,6 +65,16 @@ class ThemeLoader
     static auto loadThemeInfo(const std::filesystem::path& path) -> std::optional<ThemeInfo>;
 
     /**
+     * @brief Load theme metadata from TOML text, exactly as loadThemeInfo() reads a file but with no file I/O
+     * @param tomlText Contents of a theme file
+     * @param path The file it came from: the theme's id is its stem, and it names the theme in log messages
+     * @return ThemeInfo if valid, nullopt on error
+     *
+     * For a theme read through a handed-over config folder (#3774), never by its path.
+     */
+    static auto loadThemeInfoFromString(std::string_view tomlText, const std::filesystem::path& path) -> std::optional<ThemeInfo>;
+
+    /**
      * @brief Convert a hex color string to ImVec4
      * @param hex Hex string like "#FF4081" or "#FF408180" (with alpha)
      * @return ImVec4 with normalized RGBA values

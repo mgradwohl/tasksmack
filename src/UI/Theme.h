@@ -271,6 +271,17 @@ class Theme
     /// @param themesDir Path to themes directory (e.g., "assets/themes")
     void loadThemes(const std::filesystem::path& themesDir);
 
+    /// A theme file already read: its path and text.
+    struct ThemeSource
+    {
+        std::filesystem::path path;
+        std::string text;
+    };
+
+    /// As loadThemes(themesDir), for theme files already read, so nothing is opened here: the user themes of a
+    /// handed-over config folder, read through the folder held (#3774). @p themesDir names them in the log.
+    void loadThemes(const std::vector<ThemeSource>& sources, const std::filesystem::path& themesDir);
+
     /// Get list of discovered themes
     [[nodiscard]] auto discoveredThemes() const -> const std::vector<DiscoveredTheme>&
     {
@@ -503,6 +514,10 @@ class Theme
   private:
     Theme();
     ~Theme() = default;
+
+    /// Takes @p discovered and @p loaded, the themes read from @p themesDir, in place of a lone fallback or over
+    /// what is loaded, by id (#1127); keeps what is loaded when they are empty.
+    void adoptThemes(std::vector<DiscoveredTheme> discovered, std::vector<ColorScheme> loaded, const std::filesystem::path& themesDir);
 
     std::vector<DiscoveredTheme> m_DiscoveredThemes;
     std::vector<ColorScheme> m_LoadedSchemes;

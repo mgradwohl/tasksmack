@@ -17,12 +17,14 @@
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/Event.h"
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
 #include "Domain/StartAtLogin.h"
 #include "Domain/VirusTotal.h"
 #include "Platform/HostEnvironment.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/IStartAtLogin.h"
 #include "UI/Theme.h"
 
@@ -320,7 +322,20 @@ void SettingsLayer::onRender()
             [dir = dir] // a copy of its own, movable
             {
                 // Made on first use; a failure is logged, and the path opened anyway (the handler
-                // says what it can't open).
+                // says what it can't open). In a handed-over config folder (#3774), only through the folder held.
+                if (const std::shared_ptr<const Platform::IHandedOverFolder> folder = Core::ConfigDirOverride::handedOverFolder();
+                    folder != nullptr)
+                {
+                    if (const auto made = folder->createFolder(dir.filename()); !made.has_value())
+                    {
+                        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), made.error());
+                    }
+                    return;
+                }
+                if (Core::ConfigDirOverride::handedOverFolderReleased())
+                {
+                    return; // the folder isn't held as it was checked: nothing is made in it
+                }
                 std::error_code ec;
                 std::filesystem::create_directories(dir, ec);
                 if (ec)

@@ -1,17 +1,21 @@
 #include "ConfigDirOverride.h"
 
 #include "Core/EnvRead.h"
+#include "Core/Utf8Path.h"
 #include "Platform/IHandedOverFolder.h"
 
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace Core::ConfigDirOverride
 {
@@ -82,9 +86,7 @@ const std::optional<std::filesystem::path>& active()
 
 void adoptHandedOver(const std::filesystem::path& dir, std::weak_ptr<const Platform::IHandedOverFolder> folder)
 {
-    std::error_code ec;
-    const std::filesystem::path absolute = std::filesystem::absolute(dir, ec);
-    handOff() = HandOff{.dir = ec ? dir : absolute.lexically_normal(), .folder = std::move(folder)};
+    handOff() = HandOff{.dir = Platform::handedOverFolderPath(dir), .folder = std::move(folder)};
 }
 
 void markLessPrivilegedFolder()
@@ -100,6 +102,45 @@ bool handedOver()
 std::shared_ptr<const Platform::IHandedOverFolder> handedOverFolder()
 {
     return handOff().dir.has_value() ? handOff().folder.lock() : nullptr;
+}
+
+std::optional<std::expected<std::vector<HandedOverFile>, std::string>> readHandedOverFiles(const std::filesystem::path& folder,
+                                                                                           std::string_view extension)
+{
+    // The hold first, kept for the whole listing and every read; then whether a hand-off let go of it.
+    const std::shared_ptr<const Platform::IHandedOverFolder> held = handedOverFolder();
+    if (held == nullptr)
+    {
+        if (handedOverFolderReleased())
+        {
+            return std::unexpected(std::string("the handed-over folder isn't held open as it was when it was checked"));
+        }
+        return std::nullopt;
+    }
+    auto names = held->listFiles(folder);
+    if (!names.has_value())
+    {
+        return std::unexpected(std::move(names.error()));
+    }
+    std::vector<HandedOverFile> files;
+    for (const std::filesystem::path& name : *names)
+    {
+        if (name.extension() != std::filesystem::path(extension))
+        {
+            continue;
+        }
+        auto text = held->readFile(folder / name);
+        if (!text.has_value())
+        {
+            spdlog::warn("Skipping {}: {}", Core::pathToUtf8(held->path() / folder / name), text.error());
+            continue;
+        }
+        if (text->has_value())
+        {
+            files.push_back(HandedOverFile{.path = held->path() / folder / name, .text = std::move(**text)});
+        }
+    }
+    return files;
 }
 
 bool handedOverFolderReleased()

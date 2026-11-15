@@ -6,6 +6,7 @@
 #include "Platform/IElevatedRestart.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/ElevatedRestart.h"
+#include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <gtest/gtest.h>
