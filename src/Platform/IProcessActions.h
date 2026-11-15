@@ -297,7 +297,6 @@ struct AuthorizedAction
         SetEfficiencyMode, ///< efficiencyMode (#3071)
         CloseConnection,   ///< socketInode (#3066)
         ThreadAction,      ///< tid and threadAction (#3069)
-        SetSchedPolicy,    ///< schedPolicy (#3086)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
@@ -315,9 +314,7 @@ struct AuthorizedAction
     std::int32_t level = 4;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     CpuAffinity cpus{};
-    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch, Idle, FIFO or round robin
-    RealtimeThreads realtimeThreads = RealtimeThreads::Keep; ///< SetSchedPolicy: whether the dialog warned
-    std::int32_t rtPriority = 0;                             ///< SetSchedPolicy: 1 to 99 for FIFO and round robin, else 0 (#3219)
+    // No SetSchedPolicy (#3886): the policy is Linux's, and Linux has no helper to redo a refused one (#3580).
 };
 
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.
@@ -371,7 +368,8 @@ struct ProcessActionCapabilities
     /// gdb's gcore), and that is the normal case, not a fallback (#2241).
     bool dumpsFromSnapshot = false;
     /// runAuthorized() can retry a permissionDenied failure as an administrator, after a password
-    /// prompt (Linux: the pkexec-started helper, #2308). The UI then offers "Authenticate and retry".
+    /// prompt (Windows only: TaskSmackHelper.exe, #2308; Linux runs as Administrator instead, #3580). The UI then offers "Authenticate and
+    /// retry".
     bool canAuthorizeInteractively = false;
     /// openFileLocation(): the file manager can be asked to show a process's executable (#3064; Linux:
     /// FileManager1 over D-Bus or xdg-open; Windows: SHOpenFolderAndSelectItems or explorer.exe /select, #3426).
@@ -630,8 +628,10 @@ class IProcessActions
 
     /// In the helper (#3327, Windows): @p priorityClass, carried by an off's request, is what that off restores for
     /// @p target, replacing whatever this helper remembers, Idle included. TaskSmack has seen every on since, while
-    /// this helper may hold a class from an earlier on whose off ran elsewhere. 0, or a value that isn't a priority
-    /// class, changes nothing. By default nothing is remembered.
+    /// this helper may hold a class from an earlier on whose off ran elsewhere. Realtime is never taken from a request
+    /// (#3776): an approved off would set it without Realtime's own warning, so the off restores the class this helper
+    /// remembers, or else Normal. 0, or a value that isn't a priority class, changes nothing. By default nothing is
+    /// remembered.
     virtual void setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
     {
         static_cast<void>(target);

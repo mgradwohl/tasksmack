@@ -77,41 +77,4 @@ ServiceActionResult LinuxServiceActions::setStartType(std::string_view name, Ser
     return SystemdBus::setUnitStartType(name, startType);
 }
 
-ServiceActionResult LinuxServiceActions::runAuthorized(ServiceAction action,
-                                                       std::string_view name,
-                                                       ServiceStartType startType,
-                                                       const std::stop_token& stopToken)
-{
-    if (!m_Available)
-    {
-        return ServiceActionResult::failed("systemd isn't running");
-    }
-    constexpr bool PROMPT = true;
-    switch (action)
-    {
-    case ServiceAction::Start:
-        return SystemdBus::startUnit(name, stopToken, m_Wait, PROMPT);
-    case ServiceAction::Stop:
-        return SystemdBus::stopUnit(name, stopToken, m_Wait, PROMPT);
-    case ServiceAction::Restart:
-    {
-        // As restart(): stop, then start, both allowed to prompt (polkit keeps the first answer for the
-        // second with its usual auth_admin_keep), and a stop request between the two skips the start.
-        ServiceActionResult stopped = SystemdBus::stopUnit(name, stopToken, m_Wait, PROMPT);
-        if (!stopped.ok)
-        {
-            return stopped;
-        }
-        if (stopToken.stop_requested())
-        {
-            return ServiceActionResult::stopRequested();
-        }
-        return SystemdBus::startUnit(name, stopToken, m_Wait, PROMPT);
-    }
-    case ServiceAction::SetStartType:
-        return SystemdBus::setUnitStartType(name, startType, PROMPT, stopToken);
-    }
-    return ServiceActionResult::failed("Unknown action");
-}
-
 } // namespace Platform

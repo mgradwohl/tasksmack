@@ -33,23 +33,23 @@
 namespace UI::Widgets
 {
 
-/// Shortest a stacked history chart may be, in body ems: 90px at the Medium preset on a 1.0 display
-/// scale (em = 32/3 px) and 180px at Even Huger. At Small and Medium, where chart text is the body
-/// size, the chart-text floor below applies instead.
+/// Shortest a stacked history chart may be, in body ems: 90px at the default 8 pt body size
+/// (FONT_POINT_SIZE_DEFAULT) on a 1.0 display scale (em = 32/3 px) and 180px at 16 pt. At 7 and 8 pt,
+/// where chart text is the body size, the chart-text floor below applies instead.
 ///
-/// Chosen so that Even Huger, where the axis labels are largest, keeps exactly the 180px these
-/// charts used to be fixed at. A larger multiple would make the charts taller than before at the
-/// big presets and push a tab that used to fit into scrolling.
+/// Chosen so that 16 pt, the largest of the named sizes the Font size setting replaced (#3375), keeps
+/// exactly the 180px these charts used to be fixed at. A larger multiple would make the charts taller
+/// than before at the large sizes and push a tab that used to fit into scrolling.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_EM = 8.4375F;
 
 /// Shortest a stacked history chart may be in ems of its own axis text, when that text is
-/// the body size (7 and 8 pt; see UI::chartFontPointSize()): 11.25 is the proportion the Medium preset had when its chart
+/// the body size (7 and 8 pt; see UI::chartFontPointSize()): 11.25 is the proportion an 8 pt body had when its chart
 /// text was 8px in a 90px chart, which kept six Y-axis labels (and, while charts had one, a legend row)
-/// inside the plot. Moving chart text up to the body size at Medium (#1194) without this would have
+/// inside the plot. Moving chart text up to the body size at 8 pt (#1194) without this would have
 /// clipped them.
 inline constexpr float HISTORY_PLOT_MIN_HEIGHT_CHART_EM = 11.25F;
 
-/// Tallest a stacked history chart may grow, in ems: 360px at the Medium preset, twice the 180px
+/// Tallest a stacked history chart may grow, in ems: 360px at 8 pt, twice the 180px
 /// these charts used to be fixed at. Yields to HISTORY_PLOT_MIN_FILL_SHARE on a tab with few charts.
 inline constexpr float HISTORY_PLOT_MAX_HEIGHT_EM = 33.75F;
 
@@ -70,9 +70,9 @@ inline constexpr float HISTORY_PLOT_FILL_MARGIN_PX = 2.0F;
     const float em = (std::isfinite(emPx) && emPx > 0.0F) ? emPx : 1.0F;
     const float chartEm = (std::isfinite(chartEmPx) && chartEmPx > 0.0F) ? chartEmPx : em;
     const float bodyFloor = HISTORY_PLOT_MIN_HEIGHT_EM * em;
-    // Only body-sized chart text (Small and Medium) needs the taller floor. From Large up the chart
-    // text is a step smaller than the body, as it always was, and the body floor keeps those presets'
-    // charts the height they were (180px at Even Huger).
+    // Only body-sized chart text (7 and 8 pt) needs the taller floor. Above that the chart text is a
+    // step smaller than the body, as it always was, and the body floor keeps those sizes' charts the
+    // height they were (180px at 16 pt).
     return (chartEm >= em) ? std::max(bodyFloor, HISTORY_PLOT_MIN_HEIGHT_CHART_EM * chartEm) : bodyFloor;
 }
 
@@ -115,7 +115,7 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
     // Whole pixels only. ImGui lays items out on whole pixels, so a fractional plot height is
     // rounded differently from one chart to the next, and the caller -- which measures the non-plot
     // height as "what the frame used, less the plots" -- sees that rounding as a change in the
-    // non-plot height. That fed back into the next frame: at 2147x1409 on Even Huger the height
+    // non-plot height. That fed back into the next frame: at 2147x1409 at 16 pt (then the Even Huger size) the height
     // cycled 233.94 -> 234.69 -> 234.44 -> 234.19 every four frames and the charts visibly
     // shimmered. With whole-pixel heights the layout is exact and the measurement is stable.
     return std::floor(std::clamp(each, minHeight, maxHeight));
@@ -126,7 +126,7 @@ computeFillPlotHeight(float emPx, float availableHeightPx, float nonPlotHeightPx
 /// shares of the height but never less than `reservedMinHeightPx`.
 ///
 /// One share was not always enough: with the charts filling the region (#1278), eight disks in an
-/// 800x1400 region at Medium need four grid rows, about 708px with their heading, but one share
+/// 800x1400 region at 8 pt need four grid rows, about 708px with their heading, but one share
 /// left them 601px, so the tab scrolled (#1370 review). The reserve is the grid's real minimum
 /// (UI::Widgets::computeChartGridMinimumHeight()), and the charts share what is left.
 ///

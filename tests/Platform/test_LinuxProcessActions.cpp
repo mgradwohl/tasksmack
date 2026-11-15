@@ -28,6 +28,7 @@
 #include <array>
 #include <cerrno>
 #include <chrono>
+#include <clocale>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -750,27 +751,11 @@ TEST(LinuxProcessActionsTest, SetSchedPolicyRefusesDeadlineABadPriorityAnInvalid
     EXPECT_EQ(schedulerOf(static_cast<id_t>(child.target().pid)), initial);
 }
 
-// #3219: a child set to round robin at priority 1, the least real time there is, on every thread, then back to
-// Normal. Only where this user may: CAP_SYS_NICE, or an RLIMIT_RTPRIO of at least 1 (the audio group often has
-// one); else skipped, since an unprivileged real-time request is refused by design.
-TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
+/// Round Robin at priority 1 set on a sleeping child, and on every one of its threads (#3219). @p hasCap: whether this
+/// run has CAP_SYS_NICE, which canSetRealtimeSchedPolicy reports. A kernel that refuses real time to this cgroup (RT
+/// group scheduling with no budget) skips.
+void expectRoundRobinOnEveryThread(bool hasCap)
 {
-    const std::optional<std::string> status = [] -> std::optional<std::string>
-    {
-        std::ifstream file("/proc/self/status");
-        if (!file)
-        {
-            return std::nullopt;
-        }
-        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
-    }();
-    const bool hasCap = ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
-    rlimit rtprio{};
-    const bool hasLimit = ::getrlimit(RLIMIT_RTPRIO, &rtprio) == 0 && rtprio.rlim_cur >= 1;
-    if (!hasCap && !hasLimit)
-    {
-        GTEST_SKIP() << "this user may not set real time: no CAP_SYS_NICE and RLIMIT_RTPRIO is 0";
-    }
     const SleepingChild child(2);
     ASSERT_TRUE(child.started());
     ASSERT_TRUE(child.threadsReady());
@@ -800,6 +785,30 @@ TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
     {
         EXPECT_EQ(schedulerOf(tid), SCHED_OTHER) << "thread " << tid;
     }
+}
+
+// #3219: a child set to round robin at priority 1, the least real time there is, on every thread, then back to
+// Normal. Only where this user may: CAP_SYS_NICE, or an RLIMIT_RTPRIO of at least 1 (the audio group often has
+// one); else skipped, since an unprivileged real-time request is refused by design.
+TEST(LinuxProcessActionsTest, SetSchedPolicySetsRoundRobinWhereThisUserMay)
+{
+    const std::optional<std::string> status = [] -> std::optional<std::string>
+    {
+        std::ifstream file("/proc/self/status");
+        if (!file)
+        {
+            return std::nullopt;
+        }
+        return std::string((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+    }();
+    const bool hasCap = ProcPrivileges::canSetRealtimeSchedPolicy(status ? ProcPrivileges::parseCapEff(*status) : std::nullopt);
+    rlimit rtprio{};
+    const bool hasLimit = ::getrlimit(RLIMIT_RTPRIO, &rtprio) == 0 && rtprio.rlim_cur >= 1;
+    if (!hasCap && !hasLimit)
+    {
+        GTEST_SKIP() << "this user may not set real time: no CAP_SYS_NICE and RLIMIT_RTPRIO is 0";
+    }
+    expectRoundRobinOnEveryThread(hasCap);
 }
 
 // =============================================================================
@@ -914,8 +923,9 @@ TEST(LinuxProcessActionsTest, SignallingAnotherUsersProcessSaysPermissionDenied)
     LinuxProcessActions actions;
     const ProcessActionResult result = actions.resume(*rootProcess);
     EXPECT_FALSE(result.success);
-    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user");
-    EXPECT_TRUE(result.permissionDenied); // what an administrator could do: BrokeredProcessActions retries it (#2308)
+    // #3768: no helper redoes it since #3580, so the message says what can (this test skips as root, below).
+    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user (TaskSmack (Administrator) can do this)");
+    EXPECT_TRUE(result.permissionDenied); // what an administrator could do
 }
 
 // #2447: as root the kernel accepts a signal to init or a kernel thread and drops it, so TaskSmack would
@@ -1840,7 +1850,10 @@ TEST_F(LinuxProcessActionsFaultTest, ASignalTheKernelRefusesSaysWhy)
     plan().sendErrno = ESRCH;
     EXPECT_EQ(m_Actions.terminate(ownTarget()).errorMessage, "Process not found - may have already exited");
     plan().sendErrno = EPERM;
-    EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Permission denied - process belongs to another user");
+    const std::string refused = m_Actions.kill(ownTarget()).errorMessage;
+    EXPECT_TRUE(refused.starts_with("Permission denied - process belongs to another user")) << refused;
+    // #3768: not run as root, it says what can do it, no helper since #3580; as root (the CI root pass) it says nothing more.
+    EXPECT_EQ(refused.ends_with(" (TaskSmack (Administrator) can do this)"), ::geteuid() != 0) << refused;
     plan().sendErrno = EINVAL;
     const SleepingChild other; // not this process, which is never suspended (#2641)
     ASSERT_TRUE(other.started());
@@ -2806,6 +2819,30 @@ TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIs)
     ASSERT_TRUE(target.has_value());
     LinuxProcessActions actions;
     const auto refused = actions.imageSha256(*target, std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
+}
+
+// #3857: in a session whose language translates strerror (German here), another user's image is still said to be
+// theirs: the refusal is told by the open's errno, not by matching English text.
+TEST(LinuxProcessActionsTest, ImageSha256OfAnotherUsersProcessSaysWhoseItIsInAnyLanguage)
+{
+    struct stat init{};
+    if (::geteuid() == 0 || ::stat("/proc/1", &init) != 0 || init.st_uid == ::geteuid())
+    {
+        GTEST_SKIP() << "needs PID 1 to be another user's, and not to run as root";
+    }
+    const std::string previous = std::setlocale(LC_MESSAGES, nullptr); // NOLINT(concurrency-mt-unsafe) - test thread
+    if (std::setlocale(LC_MESSAGES, "de_DE.UTF-8") == nullptr)         // NOLINT(concurrency-mt-unsafe) - test thread
+    {
+        GTEST_SKIP() << "no de_DE.UTF-8 locale here";
+    }
+    const std::optional<ProcessTarget> target = targetOf(1);
+    LinuxProcessActions actions;
+    const auto refused = target.has_value() ? actions.imageSha256(*target, std::stop_token{})
+                                            : std::expected<std::string, std::string>(std::unexpected(std::string{}));
+    std::setlocale(LC_MESSAGES, previous.c_str()); // NOLINT(concurrency-mt-unsafe) - test thread
+    ASSERT_TRUE(target.has_value());
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), "Its executable can't be read: it belongs to another user");
 }
@@ -4366,6 +4403,18 @@ TEST(LinuxEfficiencyModeRealTest, TheRealCgroupFileCallsStayUnderTheCgroupRoot)
     const std::optional<std::string> own = real.procCgroup(static_cast<std::int32_t>(::getpid()));
     ASSERT_TRUE(own.has_value());
     EXPECT_FALSE(own->empty());
+}
+
+// #3836: Round Robin, which LinuxProcessActionsTest skips wherever the user may not set real time (every CI runner
+// as a user), set as root, which may. Only as root: CI's PR root step and the coverage job's root pass run this suite,
+// so a skip there (a kernel refusing real time) fails the step.
+TEST(LinuxProcessActionsRootTest, AsRootSetSchedPolicySetsRoundRobin)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+    }
+    expectRoundRobinOnEveryThread(true);
 }
 
 // #3620, #3374: as root, a tool TaskSmack runs as root comes only from the system's own directories. A fake strace,

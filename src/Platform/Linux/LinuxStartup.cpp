@@ -7,6 +7,8 @@
 #include "Platform/Linux/CommandOutput.h"
 #include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/ReplaceFile.h"
+#include "Platform/Linux/RootTools.h"
 #include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdUnitFile.h"
 #include "Platform/Linux/XdgAutostart.h"
@@ -90,54 +92,73 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
     return files;
 }
 
-/// Whether @p word is an environment assignment ("LD_LIBRARY_PATH=/opt/x/lib"): a shell name before its '='.
-[[nodiscard]] bool isAssignment(std::string_view word)
+/// @p text single-quoted for a POSIX shell, a '%' escaped as cron's line handling would otherwise end the command there.
+[[nodiscard]] std::string singleQuoted(std::string_view text)
 {
-    const std::size_t equals = word.find('=');
-    if (equals == std::string_view::npos || equals == 0)
+    std::string out = "'";
+    for (const char c : text)
     {
-        return false;
+        if (c == '\'')
+        {
+            out += "'\\''";
+        }
+        else if (c == '%')
+        {
+            out += "\\%";
+        }
+        else
+        {
+            out += c;
+        }
     }
-    const std::string_view name = word.substr(0, equals);
-    const auto nameChar = [](char c)
-    {
-        return c == '_' || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9');
-    };
-    return std::ranges::all_of(name, nameChar) && (name.front() < '0' || name.front() > '9');
+    out += '\'';
+    return out;
 }
 
-/// The program @p entry runs: TryExec, else the first word of Exec past any VAR=value and an `env` with
-/// its options, resolved on $PATH (@p searchPath) when it has no '/'. Empty when there's none.
+/// @p words as one POSIX shell command line, so CronTab::program() reads them as the words they are: each quoted, an
+/// assignment's value only (NAME='value'), since a quoted NAME= would no longer be one.
+[[nodiscard]] std::string shellQuoted(const std::vector<std::string>& words)
+{
+    std::string line;
+    for (const std::string& word : words)
+    {
+        if (!line.empty())
+        {
+            line += ' ';
+        }
+        const std::size_t equals = word.find('=');
+        if (equals != std::string::npos && CronTab::Detail::isShellName(std::string_view(word).substr(0, equals)))
+        {
+            line += word.substr(0, equals + 1) + singleQuoted(std::string_view(word).substr(equals + 1));
+        }
+        else
+        {
+            line += singleQuoted(word);
+        }
+    }
+    return line;
+}
+
+/// The program @p entry runs: TryExec, else the first word of Exec read as cron's jobs are (#3769, CronTab::program():
+/// past VAR=value prefixes and an `env` with its options), resolved on the PATH it gets when it has no '/': one set on
+/// the line itself, /bin:/usr/bin after `env -i` or `env -u PATH` (execvp's default), else $PATH (@p searchPath).
+/// Empty when there's none.
 [[nodiscard]] std::string programOf(const XdgAutostart::Entry& entry, std::string_view searchPath)
 {
     std::string program = entry.tryExec;
+    std::string linePath;
     if (program.empty())
     {
-        bool afterEnv = false;
-        bool skipNext = false; // env's -u NAME, -C DIR
-        for (const std::string& word : DesktopEntryIcons::splitExec(entry.exec))
+        const CronTab::Program found = CronTab::program(shellQuoted(DesktopEntryIcons::splitExec(entry.exec)));
+        program = found.word;
+        if (found.path.has_value())
         {
-            if (skipNext)
-            {
-                skipNext = false;
-                continue;
-            }
-            if (afterEnv && word.starts_with('-'))
-            {
-                skipNext = word == "-u" || word == "-C" || word == "--unset" || word == "--chdir";
-                continue;
-            }
-            if (isAssignment(word))
-            {
-                continue;
-            }
-            if (!afterEnv && (word == "env" || word.ends_with("/env")))
-            {
-                afterEnv = true;
-                continue;
-            }
-            program = word;
-            break;
+            linePath = *found.path;
+            searchPath = linePath;
+        }
+        else if (found.pathRemoved)
+        {
+            searchPath = "/bin:/usr/bin";
         }
     }
     if (program.empty() || program.contains('/'))
@@ -179,33 +200,11 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
     return desktops.empty() ? std::string("This desktop doesn't start it (NotShowIn)") : "Starts only in " + desktops;
 }
 
-/// Writes @p text to @p path through a temporary file renamed over it, so a failure leaves the old file.
+/// Writes @p text to @p path through a staging file renamed over it, so a failure leaves the old file, and nothing
+/// planted beside it is followed (ReplaceFile, #3771). A replaced file keeps its permissions.
 [[nodiscard]] bool writeFile(const std::filesystem::path& path, const std::string& text)
 {
-    std::filesystem::path temporary = path;
-    temporary += std::format(".tasksmack-{}.tmp", ::getpid());
-    {
-        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-        if (!file || !file.write(text.data(), static_cast<std::streamsize>(text.size())) || !file.flush())
-        {
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
-            return false;
-        }
-    }
-    std::error_code ec;
-    // A replaced file keeps its permissions; a new one gets the umask's, as any file the user makes.
-    if (const std::filesystem::file_status old = std::filesystem::status(path, ec); !ec && std::filesystem::is_regular_file(old))
-    {
-        std::filesystem::permissions(temporary, old.permissions(), ec);
-    }
-    std::filesystem::rename(temporary, path, ec);
-    if (ec)
-    {
-        std::filesystem::remove(temporary, ec);
-        return false;
-    }
-    return true;
+    return ReplaceFile::replace(path, text).empty();
 }
 
 /// Why a systemd user unit enabled for every user (/etc/systemd/user) can't be switched here, and how an
@@ -405,8 +404,20 @@ CronSources cronSources()
         std::mutex mutex;
         std::optional<std::chrono::steady_clock::time_point> readAt;
         std::optional<std::string> text;
+        std::optional<std::string> crontab;                  ///< The crontab to run, set once below
+        std::optional<std::vector<std::string>> environment; ///< As root, the environment it gets
     };
     const auto cache = std::make_shared<Cache>();
+    // As root (#3760), crontab only from the system's own directories, only a file root put there, and with an
+    // environment of TaskSmack's: a PATH the invoking user preserved (sudo -E) would otherwise run their own program as
+    // root, about once a minute. Resolved once, here on the Startup sampler's thread.
+    const bool root = ::geteuid() == 0;
+    const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read once, on the sampler's thread
+    cache->crontab = RootTools::find("crontab", root, pathEnv != nullptr ? pathEnv : "");
+    if (root)
+    {
+        cache->environment = RootTools::rootEnvironment();
+    }
     CronSources sources;
     sources.userCrontab = [cache] -> std::optional<std::string>
     {
@@ -415,8 +426,18 @@ CronSources cronSources()
         if (!cache->readAt.has_value() || now - *cache->readAt >= std::chrono::seconds(Domain::Sampling::STARTUP_CRON_REFRESH_SECONDS))
         {
             // Exit 1 with "no crontab for <user>" on stderr when there's none: no jobs, not an error to show.
-            const CommandOutput run = runForOutput({"crontab", "-l"}, std::chrono::seconds(2), std::size_t{256} * 1024);
-            cache->text = (run.started && run.exitCode == 0) ? std::optional<std::string>(run.output) : std::nullopt;
+            if (cache->crontab.has_value())
+            {
+                const CommandOutput run = runForOutput({*cache->crontab, "-l"},
+                                                       std::chrono::seconds(2),
+                                                       std::size_t{256} * 1024,
+                                                       cache->environment.has_value() ? &*cache->environment : nullptr);
+                cache->text = (run.started && run.exitCode == 0) ? std::optional<std::string>(run.output) : std::nullopt;
+            }
+            else
+            {
+                cache->text = std::nullopt; // no crontab this session may run
+            }
             cache->readAt = now;
         }
         return cache->text;
@@ -654,8 +675,8 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.scope = system ? StartupScope::Machine : StartupScope::User;
         entry.enabled = found.enabled; // linked into a .wants directory: that is what "enabled" is
         // The user's own: switched through the user manager, as systemctl --user does (#3425). One enabled for every
-        // user is an administrator's to change, and stays read-only here: systemd has no D-Bus call for it, and the
-        // helper writes no files (maintainer, 2026-11-06). The reason says how.
+        // user is an administrator's to change, and stays read-only here: systemd has no D-Bus call for it, and TaskSmack
+        // doesn't write the system's unit files (maintainer, 2026-11-06). The reason says how.
         if (found.owner == Owner::AllUsers)
         {
             entry.notSwitchableReason = allUsersUnitReason(name);

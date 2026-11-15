@@ -5,10 +5,14 @@ name: ARM64
 # ci.yml's x64 jobs. ARM64 bakes in CI for a release cycle before release.yml ships it (phase 3).
 #
 # Kept out of ci.yml on purpose: it is not part of "CI Success" or any required check, and a pull
-# request runs it only with the `ci:arm64` label. Opting in needs the `labeled` event, which in
+# request runs it only when it carries the `ci:arm64` label or changes one of the paths that label is
+# for (#3930): pr-labeler adds the label for a change to the build system or arch-specific code
+# (`.github/labeler.yml`, #3820), and anyone can add it by hand. The labeler's GITHUB_TOKEN can't start
+# a run by adding the label, so the `detect` job reads those same globs itself and a PR's first push
+# runs ARM64 without waiting for the label. Opting in needs the `labeled` event, which in
 # ci.yml would re-run (and cancel) the whole x64 CI whenever pr-labeler or anyone adds a label.
-# Without the label every job here is skipped before a runner is assigned, so a PR's cost is
-# unchanged.
+# For any other PR every build job is skipped before a runner is assigned (detect is a few seconds on
+# a small runner), so a PR's cost is nearly unchanged.
 on:
   push:
     branches: [main, 'release/**']
@@ -33,13 +37,62 @@ concurrency:
 permissions: {}
 
 jobs:
+  # Decides whether the build jobs run (#3930): always for a push, the schedule or a manual run; for a
+  # pull request when it carries `ci:arm64` or its changes match the labeler's `ci:arm64` globs, read from
+  # .github/labeler.yml by tools/arm64-paths.py so the paths are listed once. A `labeled` event for some
+  # other label runs nothing. Anything unexpected (git or the script failing) runs ARM64.
+  detect:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      run: ${{ steps.decide.outputs.run }}
+    steps:
+      # The merge commit GitHub builds (refs/pull/N/merge) and its two parents, so HEAD^1..HEAD is
+      # exactly what the pull request changes on the base branch it would merge into. Skipped when the
+      # label is already there, or the event can't run anything.
+      - name: Check out the pull request's merge commit
+        if: >-
+          github.event_name == 'pull_request' && github.event.action != 'labeled' &&
+          !contains(github.event.pull_request.labels.*.name, 'ci:arm64')
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide whether ARM64 runs
+        id: decide
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_ACTION: ${{ github.event.action }}
+          LABEL_NAME: ${{ github.event.label.name }}
+          HAS_LABEL: ${{ contains(github.event.pull_request.labels.*.name, 'ci:arm64') }}
+        run: |
+          if [[ "$EVENT_NAME" != 'pull_request' ]]; then
+            run=true; why="a ${EVENT_NAME} run always runs ARM64"
+          elif [[ "$EVENT_ACTION" == 'labeled' && "$LABEL_NAME" != 'ci:arm64' ]]; then
+            run=false; why="the '${LABEL_NAME}' label doesn't run ARM64"
+          elif [[ "$HAS_LABEL" == 'true' ]]; then
+            run=true; why="the pull request has the ci:arm64 label"
+          elif run="$(python3 -I tools/arm64-paths.py --labeler .github/labeler.yml --base 'HEAD^1' --head HEAD)"; then
+            if [[ "$run" == 'true' ]]; then
+              why="the changes match the ci:arm64 paths in .github/labeler.yml"
+            else
+              why="the changes match none of the ci:arm64 paths in .github/labeler.yml"
+            fi
+          else
+            run=true; why="the path check failed, so ARM64 runs"
+            echo "::warning title=ARM64::tools/arm64-paths.py failed; running ARM64."
+          fi
+          echo "run=${run}" >> "$GITHUB_OUTPUT"
+          echo "ARM64 run: ${run} (${why})" | tee -a "$GITHUB_STEP_SUMMARY"
+
   # ubuntu-26.04-arm: clang-23/libc++ from apt.llvm.org's arm64 packages (setup-llvm), Xvfb plus
   # Mesa's llvmpipe for the display suites, as on x64.
   build-linux-arm64:
-    if: >-
-      github.event_name != 'pull_request' ||
-      (contains(github.event.pull_request.labels.*.name, 'ci:arm64') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'ci:arm64'))
+    needs: detect
+    if: needs.detect.outputs.run == 'true'
     permissions:
       contents: read
       checks: write
@@ -54,10 +107,8 @@ jobs:
   # second attempt on this runner only, where pwsh itself crashes now and then (#2832): see
   # "Test (Windows ARM64)" in reusable-build-test.yml.
   build-windows-arm64:
-    if: >-
-      github.event_name != 'pull_request' ||
-      (contains(github.event.pull_request.labels.*.name, 'ci:arm64') &&
-       (github.event.action != 'labeled' || github.event.label.name == 'ci:arm64'))
+    needs: detect
+    if: needs.detect.outputs.run == 'true'
     permissions:
       contents: read
       checks: write

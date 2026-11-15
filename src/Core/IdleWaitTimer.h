@@ -141,13 +141,16 @@ class IdleWaitTimer
         }
         LARGE_INTEGER dueTime{};
         dueTime.QuadPart = *due;
-        // The thread-pool wait is one-shot: registered again for each wait, before the timer is set.
-        m_Fns.setThreadpoolWait(m_Wait, m_Timer, nullptr);
+        // The timer first (#3797): setting it resets its signal. disarm() can stop the pool's wait after the
+        // auto-reset timer signalled but before the pool took the signal, which leaves the timer signalled;
+        // a wait registered on it before the set would see that old signal and wake the loop at once. A timer
+        // due before the wait below is registered stays signalled until it is, so that wake isn't lost.
         if (m_Fns.setWaitableTimerEx(m_Timer, &dueTime, 0, nullptr, nullptr, nullptr, 0) == FALSE)
         {
-            m_Fns.setThreadpoolWait(m_Wait, nullptr, nullptr);
             return;
         }
+        // The thread-pool wait is one-shot: registered again for each wait.
+        m_Fns.setThreadpoolWait(m_Wait, m_Timer, nullptr);
         m_Armed = true;
     }
 

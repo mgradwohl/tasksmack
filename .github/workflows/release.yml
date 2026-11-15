@@ -1461,7 +1461,8 @@ jobs:
     # reusing the build-linux runner where libc++/mesa dev packages already
     # happen to be present.
     container:
-      image: ubuntu:24.04
+      # By digest (#3908): the release gate's base can't change under one tag's runs. Renovate refreshes it by PR.
+      image: ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5
     # Container jobs default `run` steps to `sh` (dash on Ubuntu), not bash, even though
     # every other job in this workflow gets bash by default on the bare VM runner. The
     # steps below use bash-only [[ ... ]] conditions, which dash doesn't support.
@@ -1640,7 +1641,8 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     container:
-      image: ubuntu:26.04
+      # By digest (#3908), as validate-linux-package's.
+      image: ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
     # As in validate-linux-package: a container job's `run` steps default to sh, not bash.
     defaults:
       run:
@@ -1874,6 +1876,139 @@ jobs:
             exit 1
           fi
           echo "The upgraded TaskSmack started from v0.8.0's config.toml, quit by itself and kept its settings."
+
+  validate-linux-administrator:
+    name: Validate the TaskSmack (Administrator) Launcher Through pkexec (x64)
+    needs: [build-linux]
+    # A VM runner, not validate-linux-package's container: pkexec needs a running polkitd and systemd, and the job
+    # installs a polkit rule (#3905, which brings back #2723's check for #3580's launcher). CI's "Root launch
+    # (Linux)" starts TaskSmack with sudo; this is the path the menu entry takes: the installed .desktop's Exec,
+    # through the installed polkit action, so TaskSmack learns its user from PKEXEC_UID and keeps the display by
+    # allow_gui. The password dialog itself stays a manual check.
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read  # Required to download the linux-packages-x64 artifact from this run
+    env:
+      ACTION_ID: app.tasksmack.TaskSmack.administrator
+      LAUNCHER: /usr/share/applications/app.tasksmack.TaskSmack.Administrator.desktop
+    steps:
+      - name: Download Linux packages
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: linux-packages-x64
+          path: dist/
+
+      - name: Install the .deb with pkexec, polkitd and Xvfb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends ./dist/*.deb pkexec polkitd xvfb xauth x11-utils
+
+      - name: The launcher's polkit action is registered and names the installed TaskSmack
+        # pkaction exits non-zero for an action polkit doesn't know: a typo in the id, a policy polkitd rejects, or
+        # one installed where polkit doesn't look. pkexec starts only the program exec.path names, and keeps
+        # DISPLAY and XAUTHORITY only with allow_gui.
+        run: |
+          pkaction --action-id "$ACTION_ID" --verbose | tee pkaction.txt
+          grep -q 'org.freedesktop.policykit.exec.path -> /usr/bin/TaskSmack$' pkaction.txt
+          grep -q 'org.freedesktop.policykit.exec.allow_gui -> true$' pkaction.txt
+          test -x /usr/bin/TaskSmack
+          grep -qx 'Exec=pkexec /usr/bin/TaskSmack' "$LAUNCHER"
+
+      - name: Allow the runner's user without a password
+        # A rule for the CI runner only, as #2723's was.
+        run: |
+          user="$(id -un)"
+          printf '%s\n' \
+            'polkit.addRule(function (action, subject) {' \
+            "    if (action.id == \"$ACTION_ID\" && subject.user == \"$user\") {" \
+            '        return polkit.Result.YES;' \
+            '    }' \
+            '});' | sudo tee /etc/polkit-1/rules.d/49-tasksmack-ci.rules
+          sudo systemctl restart polkit
+
+      - name: The launcher's command starts TaskSmack as root with the user's settings
+        # The command comes from the installed launcher. pkexec keeps no other variable, so TASKSMACK_SCREENSHOT
+        # can't end the run: TaskSmack runs until its window is up, then gets SIGTERM, which SDL turns into a normal
+        # quit that saves the settings. The signal needs sudo, since TaskSmack runs as root; only the start went
+        # through pkexec. Then the "Root launch (Linux)" checks: the user's config.toml, owned by them, root's
+        # untouched, and the narrowed capabilities.
+        run: |
+          set -o pipefail
+          user="$(id -un)"
+          config="$HOME/.config/tasksmack"
+          rm -rf "$config"
+          sudo rm -rf /root/.config/tasksmack
+          command="$(sed -n 's/^Exec=//p' "$LAUNCHER")"
+          cat > launch.sh <<'SCRIPT'
+          set -u
+          # Word-split on purpose: the launcher's Exec is "pkexec /usr/bin/TaskSmack", with no quoting.
+          # shellcheck disable=SC2086
+          $LAUNCH_COMMAND > admin-launch.log 2>&1 &
+          # pkexec execs TaskSmack in place, so this is TaskSmack's pid, as root: kill -0 from the runner's user
+          # would fail with EPERM, so whether it still runs is whether /proc has it, and not as a zombie (our child
+          # until the wait below reaps it).
+          alive() { [[ -d "/proc/$1" ]] && ! grep -q '^State:[[:space:]]*Z' "/proc/$1/status" 2>/dev/null; }
+          launched=$!
+          for _ in $(seq 60); do
+            if xwininfo -root -tree | grep -q '"TaskSmack'; then
+              echo "window=up" > window.txt
+              # Its sets once it's drawing: the narrowing (#3621) happens before the first frame.
+              grep '^CapEff:' "/proc/$launched/status" > caps.txt || true
+              break
+            fi
+            if ! alive "$launched"; then
+              break
+            fi
+            sleep 1
+          done
+          if alive "$launched"; then
+            sudo kill -TERM "$launched"
+          fi
+          for _ in $(seq 30); do
+            alive "$launched" || break
+            sleep 1
+          done
+          if alive "$launched"; then
+            echo "TaskSmack didn't quit within 30 s of SIGTERM" >&2
+            sudo kill -KILL "$launched" || true
+            exit 1
+          fi
+          wait "$launched"
+          SCRIPT
+          status=0
+          LAUNCH_COMMAND="$command" xvfb-run -a -s "-screen 0 1280x800x24 -noreset" bash launch.sh || status=$?
+          cat admin-launch.log
+          failed=0
+          if [[ "$status" -ne 0 ]]; then
+            echo "::error title=Administrator launch::'$command' under Xvfb ended with status $status"
+            failed=1
+          fi
+          if [[ ! -f window.txt ]]; then
+            echo "::error title=Administrator launch::'$command' opened no TaskSmack window within 60 s"
+            failed=1
+          fi
+          if [[ ! -f "$config/config.toml" ]]; then
+            echo "::error title=Administrator launch::TaskSmack through pkexec didn't save $config/config.toml, $user's settings (PKEXEC_UID)"
+            failed=1
+          elif [[ "$(stat -c %U "$config/config.toml")" != "$user" || "$(stat -c %U "$config")" != "$user" ]]; then
+            echo "::error title=Administrator launch::$config or its config.toml isn't owned by $user"
+            failed=1
+          fi
+          # From /proc, not its log: a release build logs at warn, and pkexec drops TASKSMACK_LOG_LEVEL.
+          kept="$(python3 -c 'import sys; print(bin(int(sys.argv[1], 16)).count("1"))' "$(awk '{print $2}' caps.txt 2>/dev/null || true)" 2>/dev/null || echo none)"
+          # Narrowed (#3621): some kept, and fewer than root holds (#3836: a bound, as CI's Root launch).
+          full="$(sudo python3 -c 'import re; print(bin(int(re.search(r"CapBnd:\s*(\w+)", open("/proc/self/status").read()).group(1), 16)).count("1"))')"
+          if [[ "$kept" == none ]] || (( kept < 1 || kept >= full )); then
+            echo "::error title=Administrator launch::TaskSmack through pkexec kept $kept effective capabilities of root's $full: not narrowed (#3621)"
+            failed=1
+          fi
+          if sudo test -e /root/.config/tasksmack; then
+            echo "::error title=Administrator launch::TaskSmack through pkexec wrote root's own config, not $user's"
+            failed=1
+          fi
+          exit "$failed"
 
   validate-windows-package:
     name: Validate Windows Release Artifacts (${{ matrix.arch }})
@@ -2628,7 +2763,7 @@ jobs:
 
   create-release:
     name: Create GitHub Release
-    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-windows-package, fetch-previous-windows-release, validate-windows-upgrade]
+    needs: [validate, build-linux, build-windows, sign-windows, build-windows-installer, sign-windows-installer, validate-linux-package, validate-linux-upgrade, validate-linux-administrator, validate-windows-package, fetch-previous-windows-release, validate-windows-upgrade]
     # Every job it needs must succeed, except sign-windows and sign-windows-installer, which are skipped
     # while signing is off (SIGNING_ENABLED, only on a dry run), and validate-windows-upgrade, which is skipped when
     # fetch-previous-windows-release found no earlier release with a Windows installer (#3757). Without this
@@ -2637,6 +2772,7 @@ jobs:
       ${{ !cancelled() && needs.build-linux.result == 'success' && needs.build-windows.result == 'success' &&
       needs.build-windows-installer.result == 'success' &&
       needs.validate-linux-package.result == 'success' && needs.validate-linux-upgrade.result == 'success' &&
+      needs.validate-linux-administrator.result == 'success' &&
       needs.validate-windows-package.result == 'success' &&
       needs.fetch-previous-windows-release.result == 'success' &&
       (needs.validate-windows-upgrade.result == 'success' ||

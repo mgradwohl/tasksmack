@@ -165,7 +165,7 @@ The key distinction is **construction-time wiring** (allowed in App panels) vs *
 - **ServicesPanel:** Windows services or systemd units, with their own sampler (`ts-sampler-svc`) once the tab is shown.
 - **StartupPanel:** startup apps (Windows Run keys, Startup folders and packaged apps; Linux XDG autostart, systemd units and cron), with their own sampler (`ts-sampler-auto`) while the tab is shown.
 - **ConnectionsPanel:** every TCP and UDP socket and its process, with its own sampler (`ts-sampler-conn`) once the tab is shown.
-- **UsersPanel:** signed-in users and their sessions, with its own sampler (`ts-sampler-user`) once the tab is shown (#3377 folds it into Processes › Group: User).
+- **UserSessionsFeed:** the signed-in sessions, which Processes › Group: User shows under each account (#3377), with their own sampler (`ts-sampler-user`) while the Processes tab is shown grouped by User. ShellPanels owns it; it isn't a tab.
 - **SystemInfoPanel:** System Information, read on demand off the UI thread.
 
 ## Process Scalability

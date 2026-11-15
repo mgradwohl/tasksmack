@@ -19,8 +19,7 @@
 
 #include <imgui.h>
 
-#include <chrono>
-#include <cstdint>
+#include <cstddef>
 #include <string>
 
 namespace App
@@ -30,13 +29,6 @@ namespace
 {
 
 constexpr const char* SESSION_MENU_POPUP_ID = "##UserSessionMenu";
-
-/// Now, as the sessions' idle times are told from (CLOCK_REALTIME µs).
-[[nodiscard]] std::uint64_t nowUsec()
-{
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-}
 
 /// Whether the table shows @p column this frame: a hidden one is drawn into nowhere.
 [[nodiscard]] bool tableShows(ProcessColumn column)
@@ -55,6 +47,17 @@ void ProcessesPanel::refreshSessions()
     // Read only while this table shows them, grouped by User (ProcessGrouping::sessionsDemand()); only a
     // change does anything.
     m_UserSessions->setProcessesView(m_IsActiveTab, m_GroupBy);
+    // The session actions' worker: a finished one's line, which goes after a while, and the session's new
+    // state read at once. Whatever the grouping (#3803): an action started under Group: User finishes, and its line
+    // times out, after the grouping changed, so it isn't stale when Group: User comes back.
+    if (SessionActionControl* const actions = m_UserSessions->actions(); actions != nullptr)
+    {
+        actions->update(ImGui::GetIO().DeltaTime);
+        if (actions->takeDone())
+        {
+            m_UserSessions->requestRefresh();
+        }
+    }
     const Domain::UsersModel* const model = m_UserSessions->model();
     if (model == nullptr || m_GroupBy != ProcessGrouping::GroupBy::User)
     {
@@ -64,16 +67,6 @@ void ProcessesPanel::refreshSessions()
     if (!m_SessionsPublication || m_SessionsPublication->version != model->version())
     {
         m_SessionsPublication = model->publication(); // shared, not copied: one atomic load with nothing new
-    }
-    // The session actions' worker: a finished one's line, which goes after a while, and the session's new
-    // state read at once.
-    if (SessionActionControl* const actions = m_UserSessions->actions(); actions != nullptr)
-    {
-        actions->update(ImGui::GetIO().DeltaTime);
-        if (actions->takeDone())
-        {
-            m_UserSessions->requestRefresh();
-        }
     }
 }
 
@@ -111,11 +104,23 @@ void ProcessesPanel::renderSessionMenu()
     ImGui::EndPopup();
 }
 
-void ProcessesPanel::renderSessionRow(const Platform::UserSession& session)
+void ProcessesPanel::renderSessionRow(std::size_t groupIndex, std::size_t sessionIndex)
 {
+    const Platform::UserSession& session = m_Groups[groupIndex].sessions[sessionIndex];
     ImGui::TableNextRow();
     const auto& scheme = UI::Theme::get().scheme();
-    const std::string status = UserGrouping::sessionStatus(session, nowUsec());
+    // Its name and status, built once per groups rebuild and the status once a minute (#3807), not every frame.
+    GroupRowTexts& texts = groupRowTexts(groupIndex);
+    const std::string& status = texts.sessionStatus[sessionIndex];
+    if (texts.sessionName.size() != m_Groups[groupIndex].sessions.size())
+    {
+        texts.sessionName.assign(m_Groups[groupIndex].sessions.size(), {});
+    }
+    std::string& rowName = texts.sessionName[sessionIndex];
+    if (rowName.empty())
+    {
+        rowName = std::string(ICON_FA_DESKTOP "  ") + UserGrouping::sessionRowName(session);
+    }
     const bool statusColumnShown = tableShows(ProcessColumn::Status);
     int colIdx = 0;
     for (const ProcessColumn col : allProcessColumns())
@@ -153,13 +158,18 @@ void ProcessesPanel::renderSessionRow(const Platform::UserSession& session)
             // One level in, as the account's processes are; the status beside the place when Status is hidden.
             const float indent = ProcessTreeIndent::INDENT_PER_LEVEL_EM * ImGui::GetFontSize();
             ImGui::Indent(indent);
-            std::string name = std::string(ICON_FA_DESKTOP "  ") + UserGrouping::sessionRowName(session);
-            if (!statusColumnShown)
-            {
-                name += " \xC2\xB7 " + status; // " · "
-            }
             ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
-            UI::Widgets::cellText(name);
+            if (statusColumnShown)
+            {
+                UI::Widgets::cellText(rowName);
+            }
+            else
+            {
+                std::string withStatus = rowName; // " · " and the status, with the Status column hidden
+                withStatus += " \xC2\xB7 ";
+                withStatus += status;
+                UI::Widgets::cellText(withStatus);
+            }
             ImGui::PopStyleColor();
             ImGui::Unindent(indent);
         }

@@ -300,8 +300,20 @@ endif()
 #   -fstack-clash-protection: probe each stack page, so a large allocation can't jump the guard page
 #   -fcf-protection=full (x86-64) / -mbranch-protection=standard (AArch64): CET IBT+SHSTK or BTI+PAC
 #   -D_FORTIFY_SOURCE=3: also checks sizes known only at run time (needs optimization: release only)
-#   _LIBCPP_HARDENING_MODE_FAST: libc++'s cheap bounds and precondition checks
+#   _LIBCPP_HARDENING_MODE_FAST: libc++'s cheap bounds and precondition checks (tasksmack_apply_libcxx_hardening)
 # The app's objects (TaskSmackApp) and the executable take it; the third-party libraries keep their own flags.
+# libc++'s FAST hardening (#3605): an out-of-bounds operator[] on a span or vector, or front() on an empty
+# container, traps instead of reading past the end. The app takes it (above), and so do the test executables
+# that compile its sources (#3900), so a check that would abort the shipped, root-running TaskSmack fails a test or
+# a fuzz run first (.clusterfuzzlite/build.sh passes the same define). FAST in every build type, the mode that
+# ships: TaskSmackAppTests links TaskSmackApp's own objects, which a test-only mode would mix with.
+function(tasksmack_apply_libcxx_hardening target)
+    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        return()
+    endif()
+    target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
+endfunction()
+
 function(tasksmack_apply_privileged_hardening target)
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
         return()
@@ -313,7 +325,7 @@ function(tasksmack_apply_privileged_hardening target)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
         target_compile_options(${target} PRIVATE -mbranch-protection=standard)
     endif()
-    target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
+    tasksmack_apply_libcxx_hardening(${target})
     if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
         # After the directory-wide -D_FORTIFY_SOURCE=2 above, so it replaces it
         target_compile_options(${target} PRIVATE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)

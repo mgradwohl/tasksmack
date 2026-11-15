@@ -4,6 +4,7 @@
 /// given, and the up-front ptrace check that turns a doomed attach into a clear message.
 
 #include "Platform/Linux/ProcPrivileges.h"
+#include "Platform/Linux/RootTools.h"
 #include "Platform/Linux/SyscallTrace.h"
 
 #include <gtest/gtest.h>
@@ -436,6 +437,53 @@ TEST(SyscallTraceTest, ATerminalServerCantCarryTaskSmacksRootToStrace)
     const SyscallTrace::PtraceContext fileCap{
         .ptraceScope = 1, .sameCredentials = false, .privileged = true, .privilegeIsInherited = false};
     EXPECT_FALSE(serverTerminalRefusal(42, fileCap, "/usr/bin/ptyxis").has_value());
+}
+
+// #3760: a tool TaskSmack runs as root (crontab, every Startup sample) is found only in the system's directories, never
+// in a directory of the invoking user's PATH, and runs with an environment of TaskSmack's own; not as root, PATH decides.
+TEST(RootToolsTest, AsRootAToolIsNeverFoundOnTheUsersPath)
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack-3760-path";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::filesystem::path planted = dir / "crontab";
+    {
+        std::ofstream file(planted);
+        file << "#!/bin/sh\necho planted\n";
+    }
+    std::filesystem::permissions(planted, std::filesystem::perms::owner_all, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::string pathEnv = dir.string() + ":/usr/bin:/bin";
+
+    EXPECT_EQ(RootTools::find("crontab", false, pathEnv), planted.string()) << "not root: PATH decides";
+    const std::optional<std::string> asRoot = RootTools::find("crontab", true, pathEnv);
+    EXPECT_NE(asRoot, planted.string()) << "as root, never the user's directory";
+    if (asRoot.has_value())
+    {
+        EXPECT_TRUE(asRoot->starts_with('/'));
+    }
+    EXPECT_TRUE(RootTools::find("sh", true, pathEnv).has_value()) << "a system tool is still found as root";
+    EXPECT_EQ(RootTools::rootEnvironment(), (std::vector<std::string>{std::string("PATH=") + std::string(ROOT_TOOL_PATH)}));
+
+    std::filesystem::remove_all(dir, ec);
+}
+
+// #3855: a program TaskSmack starts as root and as itself keeps TaskSmack's environment (the display, the session bus)
+// but gets the system's PATH, whatever PATH TaskSmack itself was started with.
+TEST(RootToolsTest, AsRootAChildKeepsTheEnvironmentButNotThePath)
+{
+    std::array<const char*, 5> env{
+        "DISPLAY=:0", "PATH=/home/someone/bin:/usr/bin", "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus", "PATHLIKE=kept", nullptr};
+    const std::vector<std::string> out = RootTools::withRootPath(env.data());
+    EXPECT_EQ(out,
+              (std::vector<std::string>{"DISPLAY=:0",
+                                        "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
+                                        "PATHLIKE=kept",
+                                        std::string("PATH=") + std::string(ROOT_TOOL_PATH)}));
+    std::array<const char*, 1> none{nullptr};
+    EXPECT_EQ(RootTools::withRootPath(none.data()), (std::vector<std::string>{std::string("PATH=") + std::string(ROOT_TOOL_PATH)}))
+        << "a PATH is set even when there was none";
 }
 
 } // namespace

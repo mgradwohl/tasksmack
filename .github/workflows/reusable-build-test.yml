@@ -149,15 +149,9 @@ jobs:
       # build-less main run would save an empty cache.
       - name: Setup ccache
         id: ccache
-        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-        continue-on-error: true
         if: inputs.build
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        uses: ./.github/actions/setup-ccache
         with:
-          # The action's pinned, SHA-256-verified ccache (4.13.6) on both OSes: Ubuntu's apt ccache
-          # 4.9.1 lacks the --evict-older-than that evict-old-files uses (4.11+), and 'detect' on
-          # Windows would pick up Strawberry Perl's bundled 4.9.1 from the image PATH (#1406).
-          install: binary
           # Include the LLVM version so caches from different toolchains don't mix, and the
           # architecture on a non-x64 runner (#2214; x64 keeps its existing key).
           key: ${{ runner.os }}-${{ runner.arch != 'X64' && format('{0}-', runner.arch) || '' }}${{ inputs.build_type }}-llvm${{ runner.os == 'Windows' && inputs.llvm-semver-version || inputs.llvm-version }}
@@ -169,25 +163,13 @@ jobs:
           # 1250M holds main's tree and a PR's changes (x64 and ARM64); Windows Debug used 0.6 of 0.75 GB
           # at 96% hits; Release builds fit in about 0.2 GB.
           max-size: ${{ (runner.os == 'Windows' && inputs.build_type == 'debug' && '750M') || (runner.os == 'Linux' && inputs.build_type == 'debug' && '1250M') || '500M' }}
-          # Pull requests restore main's cache but never save their own: a PR-ref entry is
-          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
-          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
-          save: ${{ github.ref == 'refs/heads/main' }}
-          evict-old-files: job
           # The post step prints `ccache -s -vv`: hits, misses and why calls were uncacheable.
           verbose: 2
-
-      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
-      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
-      - name: Build without ccache (its setup failed)
-        if: steps.ccache.outcome == 'failure'
-        shell: bash
-        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # inode_cache: remember each source and header's hash by file ID and timestamps, so a hit
       # doesn't re-hash every include. ccache leaves it off by default on Windows (#1875).
       - name: Configure ccache (Windows)
-        if: inputs.build && runner.os == 'Windows' && steps.ccache.outcome == 'success'
+        if: inputs.build && runner.os == 'Windows' && steps.ccache.outputs.available == 'true'
         shell: bash
         run: |
           ccache --set-config=inode_cache=true
@@ -310,6 +292,36 @@ jobs:
           TASKSMACK_ALLOCATION_HOOK_LOG: ${{ github.workspace }}/build/${{ inputs.build_type }}/allocation-hook.log
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
+      # Xvfb runs no window manager, so the tests that need one skip in the step above (#3845): a window minimized
+      # before its first frame (minimize needs a manager to iconify it) and a native maximize through EWMH (#1339).
+      # Here they run under openbox, a small EWMH window manager, on their own display; a skip fails the step, so a
+      # test that stops reaching the manager can't pass quietly. WindowTest.SetAndGetPositionRoundTrip still skips:
+      # openbox places a decorated window by its frame, not at the client position asked for.
+      - name: Window-manager tests (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        run: |
+          set -o pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends openbox
+          xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" bash -c '
+            set -o pipefail
+            openbox & manager=$!
+            sleep 2
+            status=0
+            build/debug/tests/TaskSmackTests \
+              --gtest_filter="WindowTest.ANativelyDecoratedWindowMaximizesAndRestoresThroughSDL" \
+              2>&1 | tee wm-tests.log || status=$?
+            build/debug/tests/TaskSmackAppTests \
+              --gtest_filter="UiLayersOnDisplayTest.AWindowMinimizedBeforeItsFirstFrameGetsTheDisplayScaleBackOnRestore" \
+              2>&1 | tee -a wm-tests.log || status=$?
+            kill "$manager"
+            exit "$status"'
+          ran="$(grep -c '^\[       OK \]' wm-tests.log || true)"
+          if grep -q '\[  SKIPPED \]' wm-tests.log || [[ "$ran" -ne 2 ]]; then
+            echo "::error title=Window-manager tests::under openbox, $ran of the 2 window-manager tests passed; a skip means the manager didn't act"
+            exit 1
+          fi
+
       # The tests that need root, run as root (#3058, #3580): the runner's passwordless sudo is the only root CI has.
       # A skip fails the step as well, so a root run that quietly skips can't pass. DetachedSpawnTest.AsRoot*
       # (#3298, #3491): a RunAs's supplementary groups need root to set. UdpByteCounterRootTest (#3366) loads the
@@ -323,10 +335,15 @@ jobs:
           set -o pipefail
           # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
+          # The same suites as tools/coverage.sh's root pass, from one list (root_test_filter, tools/common.sh; #3836),
+          # and as many passes as the filter lists: a root test added later is counted, never a hand-kept number.
+          filter="$(bash -c 'source tools/common.sh && root_test_filter')"
+          listed="$(build/debug/tests/TaskSmackTests --gtest_filter="$filter" --gtest_list_tests | grep -c '^  ')"
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            build/debug/tests/TaskSmackTests --gtest_filter='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*' 2>&1 | tee root-test.log
-          if grep -q '\[  SKIPPED \]' root-test.log || ! grep -q '\[  PASSED  \] 8 tests' root-test.log; then
-            echo "::error title=Root tests::DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest, RootCapabilitiesRootTest and LinuxProcessActionsRootTest didn't all run and pass as root"
+            build/debug/tests/TaskSmackTests --gtest_filter="$filter" \
+              --gtest_output=xml:build/debug/real-system-results.xml 2>&1 | tee root-test.log
+          if [[ "$listed" -eq 0 ]] || grep -q '\[  SKIPPED \]' root-test.log || ! grep -q "\[  PASSED  \] $listed tests" root-test.log; then
+            echo "::error title=Root tests::the $listed root tests ($filter) didn't all run and pass as root"
             exit 1
           fi
 
@@ -362,8 +379,12 @@ jobs:
             failed=1
           fi
           # An Administrator session keeps only the capabilities it uses (#3621), and saved the settings above with them.
-          if ! grep -q "Administrator session: kept 13 of root's capabilities" root-launch.log; then
-            echo "::error title=Root launch::TaskSmack as root didn't narrow its capabilities (#3621): no 'kept 13' line in its log"
+          # Narrowed (#3621): some kept, and fewer than root holds. A bound, not a number, so a change to the set the
+          # session keeps (RootCapabilities) doesn't need this step edited too (#3836).
+          kept="$(sed -n "s/.*Administrator session: kept \([0-9]*\) of root's capabilities.*/\1/p" root-launch.log | head -n 1)"
+          full="$(sudo python3 -c 'import re; print(bin(int(re.search(r"CapBnd:\s*(\w+)", open("/proc/self/status").read()).group(1), 16)).count("1"))')"
+          if [[ -z "$kept" ]] || (( kept < 1 || kept >= full )); then
+            echo "::error title=Root launch::TaskSmack as root didn't narrow its capabilities (#3621): kept '${kept:-none}' of root's $full"
             failed=1
           fi
           if sudo test -e /root/.config/tasksmack; then
@@ -377,6 +398,35 @@ jobs:
       # timing run and regression gate stay in heavy-checks.yml. Runs after the tests so a
       # benchmark-only break doesn't hide test results; reconfiguring the same tree only adds the
       # benchmarks subdirectory, so the targets already built stay up to date.
+      # Every fuzz target compiled and linked as ClusterFuzzLite builds it (.clusterfuzzlite/build.sh), on every PR
+      # (#3837). cflite_pr.yml fuzzes only when a path it watches changes, and a target's sources pull in more than it
+      # watches (fuzz_user_config: SessionUser.h, NewFileOwner.h, App/Panels/*...), so a change there could break a
+      # fuzzer's build unseen until main (#3657). Here with this job's clang and libstdc++, which the runner's libFuzzer
+      # runtime is built against; each binary then runs one empty input, so a target that can't start fails here too.
+      - name: Fuzz targets build (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        env:
+          CXX: clang++
+          CXXFLAGS: -O1 -fsanitize=fuzzer-no-link
+          LIB_FUZZING_ENGINE: -fsanitize=fuzzer
+          OUT: ${{ runner.temp }}/fuzzers
+          FUZZ_DEPS_DIR: ${{ runner.temp }}/fuzz-deps
+        run: |
+          set -o pipefail
+          bash .clusterfuzzlite/build.sh
+          built=0
+          for fuzzer in "$OUT"/fuzz_*; do
+            [[ -x "$fuzzer" && ! -d "$fuzzer" ]] || continue
+            "$fuzzer" -runs=1 >/dev/null 2>&1 || { echo "::error title=Fuzz targets::$(basename "$fuzzer") didn't run one input"; exit 1; }
+            built=$((built + 1))
+          done
+          expected="$(grep -c '^build_fuzzer ' .clusterfuzzlite/build.sh)"
+          if [[ "$built" -ne "$expected" ]]; then
+            echo "::error title=Fuzz targets::built and ran $built fuzzers, but build.sh builds $expected"
+            exit 1
+          fi
+          echo "Built and ran $built fuzz targets."
+
       - name: Build benchmarks (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_benchmarks
         run: |
@@ -408,7 +458,7 @@ jobs:
       # TASKSMACK_CI_REAL_SYSTEM=1 on a GitHub-hosted runner (GITHUB_ACTIONS, RUNNER_ENVIRONMENT, which the runner
       # sets): only this step asks, and the ctest above saw them skip. One process, so they run serially. The step
       # fails when none ran, so a guard that stops seeing CI can't pass as a run of skips; each case's result is
-      # in the Job Summary and the artifact (ci-real-system-results.json). Then it checks the runner for anything a
+      # in the Job Summary and the artifact (ci-real-system-results.xml). Then it checks the runner for anything a
       # test made and left (throwaway accounts and services, scratch registry values and Program Files folders).
       - name: Real-system tests (Windows)
         if: always() && runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build && steps.build-windows.outcome == 'success'
@@ -418,18 +468,21 @@ jobs:
           TASKSMACK_CI_REAL_SYSTEM: '1'
           BUILD_DIR: build/win-${{ inputs.build_type }}
         run: |
-          $results = "$env:BUILD_DIR/ci-real-system-results.json"
+          $results = "$env:BUILD_DIR/ci-real-system-results.xml"
           $ifeo = 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options'
           $debuggerBefore = (Get-ItemProperty "$ifeo\taskmgr.exe" -ErrorAction SilentlyContinue).Debugger
-          & "$env:BUILD_DIR/tests/TaskSmackTests.exe" --gtest_filter='CiRealSystem*' "--gtest_output=json:$results"
+          & "$env:BUILD_DIR/tests/TaskSmackTests.exe" --gtest_filter='CiRealSystem*' "--gtest_output=xml:$results"
           $code = $LASTEXITCODE
           if (-not (Test-Path $results)) {
             Write-Host "::error title=Real-system tests::TaskSmackTests wrote no results (exit $code)"
             exit 1
           }
-          $cases = (Get-Content -Raw $results | ConvertFrom-Json).testsuites | ForEach-Object { $suite = $_.name; $_.testsuite | ForEach-Object {
-            $why = if ($_.failures) { ($_.failures | ForEach-Object { $_.failure }) -join ' / ' } elseif ($_.skipped) { $_.skipped.message } else { '' }
-            [pscustomobject]@{ Test = "$suite.$($_.name)"; Result = $_.result; Failed = [bool]$_.failures; Note = (($why -split "`n")[0]) }
+          # gtest's XML (#3840): the merge step folds it into the test-case report, so these cases count by their result.
+          $cases = ([xml](Get-Content -Raw $results)).SelectNodes('//testsuite') | ForEach-Object { $suite = $_.GetAttribute('name'); $_.SelectNodes('testcase') | ForEach-Object {
+            $failures = @($_.SelectNodes('failure'))
+            $skip = $_.SelectSingleNode('skipped')
+            $why = if ($failures.Count -gt 0) { ($failures | ForEach-Object { $_.GetAttribute('message') }) -join ' / ' } elseif ($skip) { $skip.GetAttribute('message') } else { '' }
+            [pscustomobject]@{ Test = "$suite.$($_.GetAttribute('name'))"; Result = $_.GetAttribute('result').ToUpperInvariant(); Failed = ($failures.Count -gt 0); Note = (($why -split "`n")[0]) }
           } }
           "### CI real-system tests (Windows)`n" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           "| Test | Result | Note |`n|---|---|---|" | Out-File -Append $env:GITHUB_STEP_SUMMARY
@@ -444,6 +497,20 @@ jobs:
             exit 1
           }
           Write-Host "$ran of $(@($cases).Count) CiRealSystem tests ran"
+          # A skip is expected only for the three child halves, which run inside their parent test's child process and
+          # skip when started on their own, and for the Memory Compression test, which skips on an image that leaves
+          # memory compression off (#3838). Any other skip is a test that quietly stopped running: fail and name it.
+          $expectedSkips = @(
+            'CiRealSystemRealtimeTest.ChildSetsRealtimeAsAStandardUser',
+            'CiRealSystemFolderPickerChildTest.ShowsTheDialogUntilItIsAnswered',
+            'CiRealSystemSystemMenuChildTest.ShowsTheMenuUntilItIsAnswered',
+            'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet'
+          )
+          $unexpected = @($cases | Where-Object { $_.Result -ne 'COMPLETED' -and $expectedSkips -notcontains $_.Test })
+          if ($unexpected.Count -gt 0) {
+            Write-Host "::error title=Real-system tests::$($unexpected.Count) CiRealSystem test(s) skipped that aren't expected to: $(($unexpected | ForEach-Object { $_.Test }) -join ', ')"
+            exit 1
+          }
           # The runner's state after them (#3490): each test removes what it made in a scope guard, and the later
           # steps share the runner, so anything left is an error.
           $left = @()
@@ -491,13 +558,14 @@ jobs:
       # testcase per case, to gtest-results/. Fold those into one JUnit file so the artifact and the
       # Job Summary still list every case. A missing ctest report (the build failed) writes nothing.
       # Windows ARM64 writes a second ctest report, the script tests' (#2832); elsewhere it doesn't
-      # exist and is skipped.
+      # exist and is skipped. The real-system (Windows) and root (Linux) steps run cases the ctest run skipped; their
+      # gtest XML is passed with --later, so each case counts once, by its real result (#3840).
       - name: Merge test results
         if: always() && inputs.build
         shell: bash
         env:
           BUILD_DIR: build/${{ runner.os == 'Windows' && 'win-' || '' }}${{ inputs.build_type }}
-        run: python tools/merge-gtest-results.py "$BUILD_DIR/test-results.xml" "$BUILD_DIR/test-results-pwsh-script.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
+        run: python tools/merge-gtest-results.py --later "$BUILD_DIR/real-system-results.xml" --later "$BUILD_DIR/ci-real-system-results.xml" "$BUILD_DIR/test-results.xml" "$BUILD_DIR/test-results-pwsh-script.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
 
       # Which tests ran with the allocation-failure hook armed (#3342), in the Job Summary. Linux builds
       # compile the hook in (only sanitizer builds and Windows leave it out), so --require fails the job
@@ -529,7 +597,7 @@ jobs:
             build/win-${{ inputs.build_type }}/test-results.xml
             build/win-${{ inputs.build_type }}/test-results-pwsh-script.xml
             build/win-${{ inputs.build_type }}/test-results-cases.xml
-            build/win-${{ inputs.build_type }}/ci-real-system-results.json
+            build/win-${{ inputs.build_type }}/ci-real-system-results.xml
           retention-days: 5
 
       - name: Publish test results to Job Summary

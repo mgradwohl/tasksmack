@@ -402,6 +402,10 @@ add_test(NAME ComposeReleaseNotesScript
 add_test(NAME CheckCflitePathsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cflite_paths.py)
 
+# tools/arm64-paths.py decides from the labeler's `ci:arm64` globs whether a change runs ARM64 CI (#3930).
+add_test(NAME Arm64PathsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_arm64_paths.py)
+
 # tools/check-dll-loads.py keeps src/ from loading a DLL by bare name (#2530).
 add_test(NAME CheckDllLoadsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_dll_loads.py)
@@ -490,6 +494,7 @@ set(COMMON_TEST_SOURCES
     Core/test_EnvUtils.cpp
     Core/test_FramebufferCapture.cpp
     Core/test_GraphicsReset.cpp
+    Core/test_LibcxxHardening.cpp # the app's libc++ checks in the tests too (#3900)
     Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -969,6 +974,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_RootCapabilities.cpp  # what an Administrator session keeps of root's capabilities (#3621)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
+    Platform/test_ReplaceFile.cpp  # a file replaced whole, through an unpredictable O_EXCL staging file (#3771)
     Platform/test_CronTab.cpp # cron tables for the Linux Startup tab (#3425)
     Platform/test_CommandOutput.cpp # a short command's output, for crontab -l (#3425)
     Platform/test_LinuxHttpsClient.cpp  # the update check's HTTPS client on Linux: libcurl (#3238)
@@ -1369,6 +1375,7 @@ endif()
 # test_BrokerProtocol.cpp checks fuzz_broker_protocol's seeds: one per message kind, each decoding (#2643).
 target_compile_definitions(TaskSmackTests PRIVATE
     TASKSMACK_BROKER_FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/fuzz_broker_protocol"
+    TASKSMACK_SMBIOS_FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/fuzz_smbios" # test_SmbiosParser.cpp (#3848)
 )
 
 # test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517). The helper
@@ -1491,6 +1498,7 @@ endif()
 
 tasksmack_apply_default_warnings(TaskSmackTests)
 tasksmack_apply_text_encoding(TaskSmackTests)
+tasksmack_apply_libcxx_hardening(TaskSmackTests) # libc++'s checks, as the app ships with them (#3900)
 
 # Precompiled headers for tests (speeds up compilation)
 if(TASKSMACK_ENABLE_PCH)
@@ -1556,6 +1564,7 @@ target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_D
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)
+tasksmack_apply_libcxx_hardening(TaskSmackThemeTests) # libc++'s checks, as the app ships with them (#3900)
 tasksmack_gtest_add_suites(TaskSmackThemeTests DISCOVERY_TIMEOUT ${TASKSMACK_GTEST_DISCOVERY_TIMEOUT} PROPERTIES TIMEOUT 300)
 
 # Tests that need the whole app (#1395): a real Core::Application with the real UI::Theme, UILayer and
@@ -1568,6 +1577,7 @@ add_executable(TaskSmackAppTests
     $<TARGET_OBJECTS:TaskSmackApp>
 )
 tasksmack_configure_app_target(TaskSmackAppTests)
+tasksmack_apply_libcxx_hardening(TaskSmackAppTests) # libc++'s checks, as the app ships with them (#3900)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
 target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"

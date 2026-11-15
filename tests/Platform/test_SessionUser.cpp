@@ -169,6 +169,27 @@ TEST(SessionUserTest, AnAdministratorSessionStartedForAUserIsAnotherAccount)
     EXPECT_EQ(sessionAccount(0, env({{"PKEXEC_UID", "1000"}}), noRoot).account, "root");
 }
 
+// #3773: this process's invoking user is looked up once, not on every open-link action: the same result each time,
+// and any other uid still asks the passwd database.
+TEST(SessionUserTest, ThisProcesssInvokingUserIsLookedUpOnce)
+{
+    const std::optional<InvokingUser>& first = processInvokingUser();
+    EXPECT_EQ(&first, &processInvokingUser()) << "one cached answer";
+    const uid_t self = ::getuid();
+    const std::optional<Account> own = processAccount(self);
+    const std::optional<Account> direct = systemAccount(self);
+    ASSERT_EQ(own.has_value(), direct.has_value());
+    if (own.has_value())
+    {
+        EXPECT_EQ(own->name, direct->name);
+        EXPECT_EQ(own->home, direct->home);
+    }
+    if (::geteuid() != 0)
+    {
+        EXPECT_FALSE(first.has_value()) << "not root: no invoking user";
+    }
+}
+
 TEST(SessionUserTest, ThisUsersProcessHasNoInvokingUserHome)
 {
     if (::geteuid() == 0)

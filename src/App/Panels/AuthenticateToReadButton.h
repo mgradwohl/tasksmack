@@ -1,10 +1,11 @@
 #pragma once
 
-// The "Authenticate to read" button (#2309) that Process Details' Connections, Modules, Open files, Threads and
-// Environment sections draw under a read refused for want of permission: the lock and the words
-// (AuthorizeWording.h), its tooltip, and the press handed to the view, which reads as an
-// administrator on its next update() (LazyBackgroundRead::requestAuthorized()). One helper for the
-// four (#2567), so the flow changes in one place; each view still decides when it is offered.
+// The "Read as administrator" button (#2309) that Process Details' Connections, Modules, Open files, Memory map,
+// Threads and Environment sections draw under a read refused for want of permission, on Windows, through its
+// helper (Linux has none since #3580): the lock and the words (AuthorizeWording.h), its tooltip, and the press
+// handed to the view, which reads as an administrator on its next update() (LazyBackgroundRead::requestAuthorized()).
+// One function for all of them (#2567), so the flow changes in one place; each view still decides when it is
+// offered.
 // Where there is no helper to read as an administrator (Windows' .zip, or a copy the user can change),
 // a refused read offers "Restart as administrator..." instead (#3658, RestartAsAdministratorButton.h).
 

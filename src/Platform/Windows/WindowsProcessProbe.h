@@ -342,7 +342,7 @@ class WindowsProcessProbe : public IProcessProbe
         std::string appUserModelId;
         std::string appName;
         bool packageRead = false;                                  // Whether the package was read
-        bool appNameRead = false;                                  // Whether appName was asked for appUserModelId
+        bool appNameRead = false;                                  // Whether appUserModelId was named (an empty name is asked again)
         std::chrono::steady_clock::time_point nextWindowAppIdLook; // When its windows are next looked at
 
         /// Take @p id as the process's AppUserModelID; a different one than before drops the name read for the

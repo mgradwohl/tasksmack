@@ -34,12 +34,13 @@ namespace Platform
 namespace
 {
 
-/// What runAuthorized() says of an action no broker request does (#3580).
-constexpr std::string_view NOT_THROUGH_THE_HELPER = "Setting a scheduling policy isn't available through the administrator helper";
+/// What runAuthorized() says of an action no broker request does: a kind or signal brokerRequestFor() doesn't know
+/// (#3778).
+constexpr std::string_view NOT_THROUGH_THE_HELPER = "This action isn't available through the administrator helper";
 
 } // namespace
 
-Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
+std::optional<Broker::Signal> brokerSignalFor(ProcessSignal signal) noexcept
 {
     switch (signal)
     {
@@ -54,7 +55,7 @@ Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
     case ProcessSignal::User2:
         return Broker::Signal::User2;
     }
-    return Broker::Signal::Hangup; // unreachable: every signal is above
+    return std::nullopt; // a signal not above (#3778): no request, never one that sends another signal
 }
 
 std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
@@ -76,10 +77,15 @@ std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
         return Broker::IoPriorityRequest{.target = action.target, .ioClass = action.ioClass, .level = action.level};
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
-    case Kind::SetSchedPolicy:
-        return std::nullopt; // Linux's, and Linux has no helper since #3580: protocol v23 has no SetSchedPolicy
     case Kind::SendSignal:
-        return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
+    {
+        const std::optional<Broker::Signal> signal = brokerSignalFor(action.signal);
+        if (!signal.has_value())
+        {
+            return std::nullopt;
+        }
+        return Broker::SignalRequest{.target = action.target, .signal = *signal};
+    }
     case Kind::SetEfficiencyMode:
         return Broker::EfficiencyModeRequest{.target = action.target, .on = action.efficiencyMode};
     case Kind::CloseConnection:
@@ -96,7 +102,8 @@ std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
             .action = action.threadAction,
         };
     }
-    return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
+    // A kind not above (#3778): no request, so the helper is never asked to end a process it wasn't asked to.
+    return std::nullopt;
 }
 
 std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions, std::shared_ptr<IPrivilegedBroker> broker)

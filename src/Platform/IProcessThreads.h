@@ -111,8 +111,9 @@ class IProcessThreadsReader
     /// unknown start time (0) is refused with IdentityUnknown.
     [[nodiscard]] virtual ThreadsReadResult readThreads(const ProcessTarget& target) = 0;
 
-    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
-    /// pkexec-started helper, #3069). The UI then offers "Authenticate to read" on PermissionDenied.
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Windows only:
+    /// TaskSmackHelper.exe, #3069; Linux runs as Administrator instead, #3580). The UI then offers "Authenticate to read" on
+    /// PermissionDenied.
     [[nodiscard]] virtual bool canReadAuthorized() const
     {
         return false;

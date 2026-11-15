@@ -180,9 +180,6 @@ TEST(BrokeredProcessActionsTest, EachActionMapsToItsRequest)
               (Broker::Request{Broker::PriorityRequest{.target = TARGET, .nice = -10}}));
     EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SetAffinity, .target = TARGET, .cpus = cpus})),
               (Broker::Request{Broker::AffinityRequest{.target = TARGET, .cpus = cpus}}));
-    // #3580: protocol v23 has no SetSchedPolicy, Linux's, whose helper is gone: no request does it.
-    EXPECT_FALSE(
-        brokerRequestFor({.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Idle}).has_value());
 }
 
 // #3580: the Realtime I/O class and real-time scheduling are the in-process actions' own: a running helper adds
@@ -244,6 +241,33 @@ TEST(BrokeredProcessActionsTest, EachSignalMapsToTheHelpersSignal)
     EXPECT_EQ(brokerSignalFor(ProcessSignal::Quit), Broker::Signal::Quit);
     EXPECT_EQ(brokerSignalFor(ProcessSignal::User1), Broker::Signal::User1);
     EXPECT_EQ(brokerSignalFor(ProcessSignal::User2), Broker::Signal::User2);
+}
+
+// #3778: a kind or a signal the mapping doesn't know (one added later, its case missed) is no request at all, never a
+// Terminate the elevated helper would carry out, and runAuthorized() refuses it before any prompt.
+TEST(BrokeredProcessActionsTest, AnUnknownKindOrSignalIsNoRequestNeverATerminate)
+{
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
+    const auto unknownKind = static_cast<AuthorizedAction::Kind>(0xFF);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
+    const auto unknownSignal = static_cast<ProcessSignal>(0xFF);
+    EXPECT_FALSE(brokerSignalFor(unknownSignal).has_value());
+    EXPECT_FALSE(brokerRequestFor({.kind = unknownKind, .target = TARGET}).has_value());
+    EXPECT_FALSE(brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal}).has_value());
+
+    const Fixture f(/*connected=*/false);
+    for (const AuthorizedAction& action : {
+             AuthorizedAction{.kind = unknownKind, .target = TARGET},
+             AuthorizedAction{.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal},
+         })
+    {
+        const ProcessActionResult result = f.actions->runAuthorized(action, std::stop_token{});
+        EXPECT_FALSE(result.success);
+        EXPECT_FALSE(result.permissionDenied);
+        EXPECT_EQ(result.errorMessage, "This action isn't available through the administrator helper");
+    }
+    EXPECT_EQ(f.broker->connectCount(), 0) << "no prompt for a request the helper can't be sent";
+    EXPECT_TRUE(f.broker->requests().empty());
 }
 
 TEST(BrokeredProcessActionsTest, OpeningTheFileLocationAndRunningAProgramStayInProcessEvenWhenRefused)
@@ -720,7 +744,7 @@ TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHel
 }
 
 // #3580: a scheduling policy is Linux's, and no helper sets one since protocol v23: setSchedPolicy() is the in-process
-// actions', a permission refusal included, and runAuthorized() refuses it without a prompt.
+// actions', a permission refusal included, and no AuthorizedAction asks for one (#3886).
 TEST(BrokeredProcessActionsTest, ASchedulingPolicyNeverReachesTheHelper)
 {
     const Fixture f(/*connected=*/true);
@@ -732,15 +756,6 @@ TEST(BrokeredProcessActionsTest, ASchedulingPolicyNeverReachesTheHelper)
     EXPECT_EQ(f.inner->lastRtPriority(), 20);
     EXPECT_EQ(f.inner->lastRealtimeThreads(), Platform::RealtimeThreads::Change);
     EXPECT_TRUE(f.broker->requests().empty());
-
-    const Fixture fresh(/*connected=*/false);
-    const ProcessActionResult authorized = fresh.actions->runAuthorized(
-        {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Normal}, std::stop_token{});
-    EXPECT_FALSE(authorized.success);
-    EXPECT_EQ(authorized.errorMessage, "Setting a scheduling policy isn't available through the administrator helper");
-    EXPECT_EQ(fresh.broker->connectCount(), 0) << "no prompt for what the helper can't do";
-    EXPECT_TRUE(fresh.broker->requests().empty());
-    EXPECT_EQ(fresh.inner->setSchedPolicyCount(), 0);
 
     // The capability is the inner actions', passed through.
     f.inner->setCapabilities({.canSetSchedPolicy = true});
@@ -757,15 +772,6 @@ TEST(BrokeredProcessActionsTest, AnAffinityTheProcessAcceptsNeverReachesTheHelpe
     EXPECT_EQ(f.inner->setAffinityCount(), 1);
     EXPECT_EQ(f.inner->lastAffinity(), cpus);
     EXPECT_TRUE(f.broker->requests().empty());
-}
-
-TEST(BrokeredProcessActionsTest, AnUnknownActionKindAsksForTheGentlestSignal)
-{
-    // Every Kind maps to its own request; one outside the enum (a corrupt value) falls back to Terminate
-    // rather than to anything more drastic.
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
-    const AuthorizedAction corrupt{.kind = static_cast<AuthorizedAction::Kind>(0xEE), .target = TARGET};
-    EXPECT_EQ(brokerRequestFor(corrupt), (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate}}));
 }
 
 TEST(BrokeredProcessActionsTest, WithoutAHelperRunAuthorizedRefusesAndNothingIsRetried)

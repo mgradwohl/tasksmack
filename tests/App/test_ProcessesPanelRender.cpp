@@ -1479,9 +1479,9 @@ TEST_F(ProcessesPanelRenderTest, SetSchedulingPolicyFromTheRowMenuAppliesTheDial
     panel->onDetach();
 }
 
-// #3086: leaving Idle without CAP_SYS_NICE is refused for want of permission; Authenticate and retry sends the
-// same policy through runAuthorized().
-TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRetry)
+// #3086: leaving Idle without CAP_SYS_NICE is refused for want of permission. No retry is offered, even where the
+// actions could ask for authorization (#3886): the policy is Linux's, and no helper redoes it (#3580).
+TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersNoRetry)
 {
     TestMocks::MockProcessActions* actions = nullptr;
     const auto panel = schedPolicyPanel(Platform::SchedPolicy::Idle, actions);
@@ -1500,19 +1500,17 @@ TEST_F(ProcessesPanelRenderTest, ARefusedSchedulingPolicyOffersAuthenticateAndRe
     pressModalFilledButton(*panel, "Apply");
     panel->waitForRowActionForTesting();
     EXPECT_EQ(actions->setSchedPolicyCount(), 1);
-    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
-    panel->retryRowActionAuthorizedForTesting();
-    panel->waitForRowActionForTesting();
-    EXPECT_EQ(actions->runAuthorizedCount(), 1);
-    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
-    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::Normal);
-    EXPECT_EQ(actions->lastAuthorizedAction().target.pid, menuPid.value_or(-1));
+    EXPECT_TRUE(actions->actionCapabilities().canAuthorizeInteractively) << "a retry would be possible";
+    const std::string line = renderAndCapture(*panel);
+    EXPECT_TRUE(line.contains("Permission denied")) << line;
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry());
+    EXPECT_EQ(actions->runAuthorizedCount(), 0);
     panel->onDetach();
 }
 
 // #3219: real time from the row menu: RR shows the warning, Apply asks to confirm naming the process, and Set sets RR
-// at the slider's priority (50 for a process not on real time); refused for want of permission, Authenticate and
-// retry sends the same policy and priority through runAuthorized().
+// at the slider's priority (50 for a process not on real time); refused for want of permission, no retry is
+// offered (#3886).
 TEST_F(ProcessesPanelRenderTest, RoundRobinFromTheRowMenuIsSetAfterTheConfirm)
 {
     TestMocks::MockProcessActions* actions = nullptr;
@@ -1540,12 +1538,8 @@ TEST_F(ProcessesPanelRenderTest, RoundRobinFromTheRowMenuIsSetAfterTheConfirm)
     EXPECT_EQ(actions->lastSchedPolicy(), Platform::SchedPolicy::RoundRobin);
     EXPECT_EQ(actions->lastRtPriority(), 50);
     EXPECT_EQ(actions->lastTarget().pid, menuPid.value_or(-1));
-    ASSERT_TRUE(panel->offersAuthenticateAndRetry());
-    panel->retryRowActionAuthorizedForTesting();
-    panel->waitForRowActionForTesting();
-    EXPECT_EQ(actions->lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
-    EXPECT_EQ(actions->lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::RoundRobin);
-    EXPECT_EQ(actions->lastAuthorizedAction().rtPriority, 50);
+    EXPECT_FALSE(panel->offersAuthenticateAndRetry());
+    EXPECT_EQ(actions->runAuthorizedCount(), 0);
     panel->onDetach();
 }
 
@@ -3794,6 +3788,46 @@ TEST_F(ProcessesPanelRenderTest, GroupByContainerShowsHeadersWithTotalsAndCollap
     panel->onDetach(); // TearDown restores the settings
 }
 
+// #3807: group headers are formatted once per groups rebuild, not every frame: frames with the same data reuse the
+// header names (and the totals and statuses beside them), and a collapse, which changes the caret, rebuilds them.
+TEST_F(ProcessesPanelRenderTest, GroupHeadersAreFormattedOncePerRebuildNotEveryFrame)
+{
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::Container;
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            auto web = TestMocks::makeProcessCounters(100, "nginx", 'S', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
+            web.container = "docker:1a2b3c4d5e6f";
+            Platform::ProcessCapabilities caps;
+            caps.hasContainer = true;
+            probe->setCapabilities(caps);
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0)).withProcess(web);
+            return ProcessesPanelPlatform{
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
+        });
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+    std::string text = renderAndCapture(*panel);
+    ASSERT_TRUE(text.contains("docker:1a2b3c4d5e6f (1)")) << text;
+    const std::size_t builds = panel->groupHeaderTextBuildsForTesting();
+    for (int frame = 0; frame < 10; ++frame)
+    {
+        text = renderAndCapture(*panel);
+    }
+    EXPECT_TRUE(text.contains("docker:1a2b3c4d5e6f (1)")) << text;
+    EXPECT_TRUE(text.contains("Ungrouped (1)")) << text;
+    // Two headers drawn ten times would be twenty builds if formatted every frame; a sample that lands meanwhile
+    // rebuilds the groups once (two builds), which is allowed twice over.
+    EXPECT_LE(panel->groupHeaderTextBuildsForTesting() - builds, 4U) << "ten frames, the same headers";
+    panel->onDetach();
+}
+
 // #3428: where the probe reads no containers and no app units (Windows), a saved Group: Container stands
 // as None, the Group control doesn't offer Container or App, and the saved choice is kept for a system that
 // has them; choosing None there replaces it.
@@ -4037,6 +4071,49 @@ TEST_F(ProcessesPanelUserGroupsTest, ASessionsMenuSignsOutAfterAskingAndTheHeade
         std::this_thread::sleep_for(std::chrono::milliseconds(5));
     }
     EXPECT_GT(fake->m_Reads.load(), readsBefore) << "the done action asks for a fresh read";
+    panel->onDetach();
+    feed.stop();
+}
+
+// #3803: an action started under Group: User that finishes after the grouping changed still runs out its result line
+// and asks for a fresh read, so Group: User doesn't come back to a stale line.
+TEST_F(ProcessesPanelUserGroupsTest, AnActionThatFinishesAfterTheGroupingChangesLeavesNoStaleLine)
+{
+    auto fake =
+        std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice"), signIn("5", "carol")});
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.start();
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    // carol has no process, so her header is there only once the sessions are read: alice's header has its menu then.
+    ASSERT_TRUE(renderUntil(*panel, "carol (0)").contains("carol (0)"));
+    ASSERT_NE(feed.actions(), nullptr);
+
+    // alice's header: her one session's Lock, which runs at once; then the table is grouped another way.
+    static_cast<void>(rightClickRow(*panel, 0));
+    ASSERT_NE(topPopup(), nullptr) << "the header's menu didn't open";
+    pressPopupItem(*panel, ICON_FA_LOCK "  Lock");
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::None;
+    const int readsBefore = fake->m_Reads.load();
+
+    // Long frames, so the line's few seconds pass in a few of them, while the worker finishes.
+    ImGui::GetIO().DeltaTime = 1.0F;
+    const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((feed.actions()->busy() || !feed.actions()->result().empty()) && std::chrono::steady_clock::now() < giveUp)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ImGui::GetIO().DeltaTime = 1.0F / 60.0F;
+    EXPECT_EQ(fake->calls(), (std::vector<std::string>{"lock 2"}));
+    EXPECT_FALSE(feed.actions()->busy());
+    EXPECT_TRUE(feed.actions()->result().empty()) << "the line ran out while not grouped by User";
+
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const std::string text = renderUntil(*panel, "carol (0)");
+    EXPECT_FALSE(text.contains("Locked alice's session")) << "a stale line: " << text;
+    EXPECT_GE(fake->m_Reads.load(), readsBefore);
     panel->onDetach();
     feed.stop();
 }

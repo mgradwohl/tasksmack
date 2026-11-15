@@ -20,7 +20,6 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
-#include "Domain/UpdateCheck.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/IProcessEnvironment.h"
@@ -60,13 +59,13 @@
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
-#include "version.h"
 
 #include <imgui.h>
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -461,11 +460,7 @@ void ProcessDetailsPanel::renderContent()
     m_Views->m_ActionsView.holdPriorityChanges(
         ProcessActionsBlock::actionsHoldReason(m_Views->m_PriorityView.applying(), m_PriorityHeldElsewhere));
     // Look up on VirusTotal (#3094): the key as Settings has it now, so a key set or cleared takes effect at once.
-    m_Views->m_ActionsView.setVirusTotal({
-        .client = m_LookupClient,
-        .apiKey = UserConfig::get().settings().virusTotalApiKey,
-        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
-    });
+    m_Views->m_ActionsView.setVirusTotal(m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey));
 
     renderPane(killRequested);
 
@@ -820,7 +815,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
     // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container, App
-    // and Architecture are optional; App is Windows' and Policy and Container Linux's), held in place.
+    // and Architecture are optional; App is Windows' and Policy and Container Linux's), held in place. Both tables can
+    // already be full, so a row added to either needs a larger array: add() asserts rather than drop it unseen
+    // (#3817; TheInfoTablesHoldEveryOptionalRow fills both).
     struct InfoRows
     {
         std::array<InfoRow, 10> rows{};
@@ -828,6 +825,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
         void add(InfoRow row) noexcept
         {
+            assert(count < rows.size() && "an info table has more rows than its array holds: make it larger");
             if (count < rows.size())
             {
                 rows[count++] = row;

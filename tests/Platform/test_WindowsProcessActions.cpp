@@ -54,6 +54,7 @@
 #include <system_error>
 #include <thread>
 #include <utility>
+#include <variant>
 #include <vector>
 
 namespace Platform
@@ -1835,6 +1836,43 @@ TEST_F(WindowsEfficiencyModeTest, AnOffsClassReplacesAStaleOneTheSameHelperKeptF
     EXPECT_TRUE(off.successNote.empty()) << off.successNote;
 }
 
+// #3776: an off whose request carries Realtime, to a helper that remembers no class, never sets Realtime: that would
+// skip Realtime's own warning and confirm. The process at Idle goes to Normal, as an off with no class known does.
+TEST_F(WindowsEfficiencyModeTest, AnOffsRealtimeFromTheRequestIsNeverRestoredByTheHelper)
+{
+    TaskSmackAndHelper sides;
+    FakeEco::priorityClass = REALTIME_PRIORITY_CLASS;
+    ASSERT_TRUE(sides.setEfficiencyMode(ecoTarget(7317), true).success); // in TaskSmack, which remembers Realtime
+    ASSERT_EQ(sides.taskSmackRemembers(ecoTarget(7317)), std::optional<std::uint32_t>{REALTIME_PRIORITY_CLASS});
+    TaskSmackAndHelper::denyTaskSmack(true);
+    FakeEco::classesSet.clear();
+    const auto off = sides.setEfficiencyMode(ecoTarget(7317), false);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    ASSERT_EQ(sides.helperRequests(), 1U);
+    EXPECT_EQ(sides.lastHelperRequest(),
+              (Broker::Request{
+                  Broker::EfficiencyModeRequest{.target = ecoTarget(7317), .on = false, .restorePriorityClass = REALTIME_PRIORITY_CLASS}}));
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{NORMAL_PRIORITY_CLASS})) << "never the request's Realtime";
+    EXPECT_EQ(FakeEco::priorityClass, static_cast<DWORD>(NORMAL_PRIORITY_CLASS));
+}
+
+// #3776: a request's Realtime for a helper that remembers a class of its own (its on ran there, from Above normal)
+// leaves that class to be restored: the Realtime is ignored, not taken.
+TEST_F(WindowsEfficiencyModeTest, AnOffsRealtimeFromTheRequestLeavesTheClassTheHelperRemembers)
+{
+    WindowsProcessActions helper(FakeEco::functions(), std::make_shared<EfficiencyModePriorities>());
+    FakeEco::priorityClass = ABOVE_NORMAL_PRIORITY_CLASS;
+    ASSERT_TRUE(helper.setEfficiencyMode(ecoTarget(7318), true).success);
+    ASSERT_EQ(helper.efficiencyPriorityClassToRestore(ecoTarget(7318)), std::optional<std::uint32_t>{ABOVE_NORMAL_PRIORITY_CLASS});
+    FakeEco::classesSet.clear();
+    const Broker::Response answer = BrokerServer::handleRequest(
+        Broker::EfficiencyModeRequest{.target = ecoTarget(7318), .on = false, .restorePriorityClass = REALTIME_PRIORITY_CLASS}, helper);
+    ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(answer));
+    const auto& off = std::get<Broker::ActionResult>(answer);
+    ASSERT_TRUE(off.success) << off.errorMessage;
+    EXPECT_EQ(FakeEco::classesSet, (std::vector<DWORD>{ABOVE_NORMAL_PRIORITY_CLASS})) << "the helper's own class, not Realtime";
+}
+
 // #3590 review: an unprivileged off restoring a remembered Realtime gets High from Windows. It is a permission
 // refusal that keeps Realtime remembered, never a success that forgets it.
 TEST_F(WindowsEfficiencyModeTest, AnOffWhoseRealtimeCameOutHighIsARefusalThatKeepsRealtime)
@@ -2020,14 +2058,18 @@ TEST_F(WindowsEfficiencyModeTest, OnlyARealPriorityClassIsRememberedForAnOff)
     actions.rememberEfficiencyPriorityClass(ecoTarget(7306), HIGH_PRIORITY_CLASS);
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
     // An on's Idle keeps the class remembered; an off request's Idle replaces it (#3590), and only a real class does.
+    // Realtime from a request is never taken (#3776): what was remembered stays, and with nothing remembered, nothing is.
     actions.rememberEfficiencyPriorityClass(ecoTarget(7306), IDLE_PRIORITY_CLASS);
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
     actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), 0x12345U);
     actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), 0);
+    actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), REALTIME_PRIORITY_CLASS);
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{HIGH_PRIORITY_CLASS});
     actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), IDLE_PRIORITY_CLASS);
     EXPECT_EQ(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)), std::optional<std::uint32_t>{IDLE_PRIORITY_CLASS});
     actions.forgetEfficiencyPriorityClass(ecoTarget(7306));
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)).has_value());
+    actions.setEfficiencyPriorityClassToRestore(ecoTarget(7306), REALTIME_PRIORITY_CLASS);
     EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(ecoTarget(7306)).has_value());
 
     // A refused class change keeps the class, so the helper's retry still restores it.

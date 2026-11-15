@@ -44,6 +44,29 @@
       - ".github/actionlint.yaml"
       - "CMakePresets.json"
 
+# Build-system and architecture-specific changes: pr-labeler adds this, and arm64.yml runs on a PR that
+# carries it (#3820). Not a required check. The label is added with GITHUB_TOKEN, and an event made with
+# that token starts no workflow, so arm64.yml's detect job reads these same globs (tools/arm64-paths.py) and
+# runs a PR whose changes match them on its first push (#3930); the label stays (sync-labels is false) and
+# also runs every later push. Keep each glob a quoted list item, which that tool reads.
+"ci:arm64":
+  - changed-files:
+    - any-glob-to-any-file:
+      - ".github/actions/**"
+      - ".github/workflows/arm64.yml"
+      - ".github/workflows/reusable-build-test.yml"
+      - "cmake/**"
+      - "CMakeLists.txt"
+      - "CMakePresets.json"
+      - "vcpkg*.json"
+      - "src/Platform/ProcessArchitecture.h"
+      - "src/Platform/Windows/WindowsProcessMachine*"
+      - "src/Platform/Windows/WindowsProcessDump*"
+      - "src/Platform/Windows/WindowsProcessEnvironmentReader*"
+      - "src/Platform/Linux/ElfArchitecture.h"
+      - "src/Platform/Linux/ProcFdParser.h"
+      - "src/Platform/Linux/bpf/**"
+
 "tooling":
   - changed-files:
     - any-glob-to-any-file:

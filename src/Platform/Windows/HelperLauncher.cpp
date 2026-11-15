@@ -104,9 +104,13 @@ namespace
     {
         return reworded(map->result.detail); // Process Details' memory map (#3665)
     }
+    if (auto* const threads = std::get_if<Broker::ThreadsReply>(&response))
+    {
+        return reworded(threads->result.detail); // Process Details' threads (#3777)
+    }
     if (auto* const error = std::get_if<Broker::ErrorReply>(&response))
     {
-        return reworded(error->message); // a read without a reply that carries words: threads (#3069)
+        return reworded(error->message); // a read the helper refuses outright, whoever's process it is
     }
     return false;
 }

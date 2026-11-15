@@ -11,6 +11,7 @@
 #include "PosixGuards.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
+#include "RootTools.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
 
@@ -76,38 +77,7 @@ using LinuxProcessDetail::sendThroughPidfd;
 using LinuxProcessDetail::verifyIdentity;
 using Posix::FdGuard;
 
-/// Whether @p path is a regular file this process may execute.
-[[nodiscard]] bool isExecutableFile(const std::string& path)
-{
-    struct stat info{};
-    return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && ::access(path.c_str(), X_OK) == 0;
-}
-
-/// As isExecutableFile(), for a tool TaskSmack runs as root (#3605): also one only root could have put where it
-/// resolves to (SyscallTrace::onlyRootCouldPlace()).
-[[nodiscard]] bool isRootTrustedExecutable(const std::string& path)
-{
-    if (!isExecutableFile(path))
-    {
-        return false;
-    }
-    std::error_code ec;
-    const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
-    if (ec)
-    {
-        return false;
-    }
-    return SyscallTrace::onlyRootCouldPlace(resolved.native(),
-                                            [](const std::string& entry) -> std::optional<SyscallTrace::PathOwnership>
-                                            {
-                                                struct stat info{};
-                                                if (::lstat(entry.c_str(), &info) != 0)
-                                                {
-                                                    return std::nullopt;
-                                                }
-                                                return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
-                                            });
-}
+using RootTools::isExecutableFile;
 
 /// The value of environment variable @p name, or empty when unset.
 [[nodiscard]] std::string_view environmentValue(const char* name)
@@ -293,8 +263,24 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
         args.push_back(const_cast<char*>(arg.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
     }
     args.push_back(nullptr);
+    // As root (#3855), gcore (a script that runs which, dirname and gdb by name) gets TaskSmack's environment with PATH
+    // set to the system's tool directories, so none of a helper it runs comes from the invoking user's PATH.
+    const bool root = ::geteuid() == 0;
+    const std::vector<std::string> rootEnvironment = root ? RootTools::withRootPath(environ) : std::vector<std::string>{};
+    std::vector<char*> envPointers;
+    if (root)
+    {
+        envPointers.reserve(rootEnvironment.size() + 1);
+        for (const std::string& entry : rootEnvironment)
+        {
+            envPointers.push_back(
+                const_cast<char*>(entry.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
+        }
+        envPointers.push_back(nullptr);
+    }
     pid_t child = -1; // NOLINT(misc-include-cleaner) - from <sys/types.h>, which clang-tidy 23 doesn't map
-    const int spawned = ::posix_spawn(&child, argv.front().c_str(), &actions, &attributes, args.data(), environ);
+    const int spawned =
+        ::posix_spawn(&child, argv.front().c_str(), &actions, &attributes, args.data(), root ? envPointers.data() : environ);
     ::posix_spawn_file_actions_destroy(&actions);
     ::posix_spawnattr_destroy(&attributes);
     {
@@ -485,11 +471,10 @@ SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
 {
     // As root, these run as root: only from the system's own directories, and only files root put there (#3605).
     const bool root = ::geteuid() == 0;
-    const std::string_view pathEnv = root ? SyscallTrace::ROOT_TOOL_PATH : environmentValue("PATH");
-    bool (*const usable)(const std::string&) = root ? &isRootTrustedExecutable : &isExecutableFile;
-    const auto find = [pathEnv, usable](std::string_view name)
+    const std::string_view pathEnv = environmentValue("PATH");
+    const auto find = [root, pathEnv](std::string_view name)
     {
-        return SyscallTrace::findExecutable(name, pathEnv, usable);
+        return RootTools::find(name, root, pathEnv);
     };
     SyscallTrace::Tools tools;
     tools.tracerPath = find("strace").value_or(std::string{});
@@ -602,7 +587,15 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
     {
         return std::unexpected(std::string("It has no executable file (a kernel thread)"));
     }
-    std::expected<Sha256::Digest, std::string> digest = Sha256::hashFile(image, stop);
+    // Another user's image is told by the open's errno (#3857), not by hashFile()'s message, which is strerror's text
+    // in the session's language: a German one never matched "Permission denied". A process that exits meanwhile is
+    // caught by the poll below either way.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int probe = ::open(image.c_str(), O_RDONLY | O_CLOEXEC);
+    const int probeError = errno;
+    const FdGuard probeGuard(probe);
+    const bool refused = probe < 0 && (probeError == EACCES || probeError == EPERM);
+    std::expected<Sha256::Digest, std::string> digest = refused ? std::unexpected(std::string("refused")) : Sha256::hashFile(image, stop);
     int exited = syscalls().pollPidfd(pidfd.get());
     while (exited < 0 && errno == EINTR)
     {
@@ -614,8 +607,7 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
     }
     if (!digest.has_value())
     {
-        // hashFile() names the open's errno in words; errno itself is the poll's by now.
-        if (digest.error().starts_with("couldn't open") && digest.error().contains("ermission denied"))
+        if (refused)
         {
             return std::unexpected(std::string("Its executable can't be read: it belongs to another user"));
         }

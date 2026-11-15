@@ -71,8 +71,8 @@ namespace
         return Broker::ActionResult::from(actions.closeConnection(close->target, close->socketInode));
     }
     // An off with the class TaskSmack remembers the on replaced (#3327): set here first, replacing any this helper
-    // kept from an earlier on, so the off restores it though this helper never saw the on. The on's reply carries the
-    // class it replaced back.
+    // kept from an earlier on, so the off restores it though this helper never saw the on. The actions ignore a
+    // Realtime class from the wire (#3776). The on's reply carries the class it replaced back.
     if (const auto* efficiency = std::get_if<Broker::EfficiencyModeRequest>(&request))
     {
         if (!efficiency->on && efficiency->restorePriorityClass != 0)

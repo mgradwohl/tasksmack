@@ -74,7 +74,6 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
-#include "Domain/UpdateCheck.h"
 #include "Domain/UsersModel.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
@@ -91,7 +90,6 @@
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
-#include "version.h"
 
 // clang-format off
 #include <imgui.h>
@@ -2073,7 +2071,8 @@ void ProcessesPanel::renderContent()
             // Not the recent commands of a handed-over config folder in an elevated session (#2728).
             m_RunTaskDialog.open(
                 RunTaskHistory::offered(UserConfig::get().settings().recentCommands, Core::ConfigDirOverride::handedOver()),
-                m_ActionCapabilities.canRunProgramAsAdministrator);
+                m_ActionCapabilities.canRunProgramAsAdministrator,
+                !processCapabilities().hasReducedPrivileges);
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
@@ -3761,12 +3760,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     }
     ImGui::SetItemTooltip("Searches the web for \"%s process\". Only the name is sent, never its path or command line.", proc.name.c_str());
     // Look up on VirusTotal (#3094): only with a key in Settings and a platform that can hash the image.
-    if (const VirusTotalLookup::Context lookup{
-            .client = m_LookupClient,
-            .apiKey = UserConfig::get().settings().virusTotalApiKey,
-            .userAgent = {},
-        };
-        VirusTotalLookup::offered(m_ActionCapabilities, lookup))
+    if (VirusTotalLookup::offered(m_ActionCapabilities, m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey)))
     {
         if (ImGui::MenuItem(ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal", nullptr, false, actionsIdle))
         {
@@ -4023,6 +4017,7 @@ void ProcessesPanel::rebuildGroupsIfStale(const std::vector<Domain::ProcessSnaps
                  ? ProcessGrouping::buildGroups(
                        snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending, sessions->sessions)
                  : ProcessGrouping::buildGroups(snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending);
+    m_GroupRowTexts.assign(m_Groups.size(), {}); // their text is rebuilt as each is drawn (#3807)
     const bool filtered = !m_CachedSearchTerm.empty();
     m_GroupedRows.clear();
     m_GroupedRows.reserve(m_CachedSortedIndices.size() + (m_Groups.size() * 2));
@@ -4069,7 +4064,7 @@ void ProcessesPanel::renderGroupedRows(const std::vector<Domain::ProcessSnapshot
             case GroupedRowKind::Session:
                 if (const auto& groupSessions = m_Groups[row.group].sessions; row.procIdx < groupSessions.size())
                 {
-                    renderSessionRow(groupSessions[row.procIdx]);
+                    renderSessionRow(row.group, row.procIdx);
                 }
                 break;
             case GroupedRowKind::NoMatches:
@@ -4087,10 +4082,32 @@ void ProcessesPanel::renderGroupedRows(const std::vector<Domain::ProcessSnapshot
     }
 }
 
+ProcessesPanel::GroupRowTexts& ProcessesPanel::groupRowTexts(std::size_t groupIndex)
+{
+    GroupRowTexts& texts = m_GroupRowTexts[groupIndex];
+    const ProcessGrouping::Group& group = m_Groups[groupIndex];
+    // Idle times are told in minutes: their text changes at most once a minute.
+    const std::uint64_t now = UserGrouping::nowUsec();
+    const std::uint64_t minute = now / 60'000'000U;
+    if (texts.statusMinute != minute)
+    {
+        texts.statusMinute = minute;
+        texts.headerStatus = group.sessions.empty() ? std::string{} : UserGrouping::groupStatus(group, now);
+        texts.sessionStatus.clear();
+        texts.sessionStatus.reserve(group.sessions.size());
+        for (const Platform::UserSession& session : group.sessions)
+        {
+            texts.sessionStatus.push_back(UserGrouping::sessionStatus(session, now));
+        }
+    }
+    return texts;
+}
+
 void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
 {
     const ProcessGrouping::Group& group = m_Groups[groupIndex];
     const bool collapsed = m_CollapsedGroups.contains(group.key);
+    GroupRowTexts& texts = groupRowTexts(groupIndex);
     ImGui::TableNextRow();
     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImGuiCol_TableHeaderBg));
     int colIdx = 0;
@@ -4138,23 +4155,28 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             // A signed-in account (#3377): its icon, "(you)" for TaskSmack's own, and its process count. Not
             // readable has sessions and never a process, so no count.
+            // Built once per groups rebuild (#3807): a collapse or expand rebuilds them, so the caret is current.
+            std::string& label = texts.headerName;
             const char* const caret = collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN;
-            std::string label;
-            if (group.key.empty())
+            if (label.empty())
             {
-                label = std::format("{} {} ({})", caret, ProcessGrouping::UNGROUPED_LABEL, group.members.size());
-            }
-            else if (group.notReadable)
-            {
-                label = std::format("{} {}", caret, group.label);
-            }
-            else
-            {
-                label = std::format("{} {}{} ({})",
-                                    caret,
-                                    group.sessions.empty() ? "" : ICON_FA_USER "  ",
-                                    UserGrouping::groupHeaderName(group),
-                                    group.members.size());
+                ++m_GroupHeaderTextBuilds;
+                if (group.key.empty())
+                {
+                    label = std::format("{} {} ({})", caret, ProcessGrouping::UNGROUPED_LABEL, group.members.size());
+                }
+                else if (group.notReadable)
+                {
+                    label = std::format("{} {}", caret, group.label);
+                }
+                else
+                {
+                    label = std::format("{} {}{} ({})",
+                                        caret,
+                                        group.sessions.empty() ? "" : ICON_FA_USER "  ",
+                                        UserGrouping::groupHeaderName(group),
+                                        group.members.size());
+                }
             }
             static_cast<void>(
                 UI::Widgets::cellText(label,
@@ -4164,10 +4186,14 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         }
         if (col == ProcessColumn::Status && !group.sessions.empty())
         {
-            // Its one session's status, or how many it has (#3377).
-            const auto now = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-            UI::Widgets::cellText(UserGrouping::groupStatus(group, now));
+            // Its one session's status, or how many it has (#3377), rebuilt once a minute (#3807).
+            UI::Widgets::cellText(texts.headerStatus);
+            continue;
+        }
+        std::optional<std::string>& cached = texts.totals[toIndex(col)];
+        if (cached.has_value())
+        {
+            renderRightAlignedText(*cached, ImGui::CalcTextSize(cached->c_str()).x);
             continue;
         }
         const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
@@ -4175,7 +4201,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             continue;
         }
-        // Marked with Σ: a rollup must never read as one process's figure (#838).
+        // Marked with Σ: a rollup must never read as one process's figure (#838). Formatted once per groups rebuild.
         std::string text;
         switch (col)
         {
@@ -4207,6 +4233,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         }
         text.insert(0, "\xCE\xA3 "); // U+03A3
         renderRightAlignedText(text, ImGui::CalcTextSize(text.c_str()).x);
+        cached = std::move(text);
     }
 }
 
@@ -4260,11 +4287,7 @@ void ProcessesPanel::lookUpRowOnVirusTotal(const Domain::ProcessSnapshot& proc)
 {
     // This row's identity: a reused PID's image is never hashed (#973).
     const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
-    VirusTotalLookup::Context lookup{
-        .client = m_LookupClient,
-        .apiKey = UserConfig::get().settings().virusTotalApiKey,
-        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
-    };
+    VirusTotalLookup::Context lookup = m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey);
     runRowAction(
         std::format("Looking up {} on VirusTotal...", proc.name),
         [actions = m_ProcessActions.get(), lookup = std::move(lookup), target, name = proc.name](const std::stop_token& stop)
@@ -4529,13 +4552,8 @@ void ProcessesPanel::renderAffinityDialog()
     {
         return;
     }
-    const Platform::ProcessTarget target = m_AffinityDialog.target();
-    runRowAction(
-        std::format("Setting the CPU affinity of PID {}...", target.pid),
-        [actions = m_ProcessActions.get(), target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
-        [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
-        { return affinityResultMessage(name, pid, cpus, result); },
-        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
+    Detail::DialogApply apply = affinityApply(m_ProcessActions.get(), m_AffinityDialog, *cpus);
+    runRowAction(std::move(apply.pending), std::move(apply.work), std::move(apply.format), std::move(apply.retry));
 }
 
 void ProcessesPanel::renderSchedPolicyDialog()
@@ -4545,21 +4563,8 @@ void ProcessesPanel::renderSchedPolicyDialog()
     {
         return;
     }
-    const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
-    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
-    runRowAction(
-        std::format("Setting the scheduling policy of PID {}...", target.pid),
-        [actions = m_ProcessActions.get(), target, setting = *setting, realtime]
-        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority, realtime); },
-        [name = m_SchedPolicyDialog.name(), pid = target.pid, setting = *setting](const Platform::ProcessActionResult& result)
-        { return schedPolicyResultMessage(name, pid, setting, result); },
-        Platform::AuthorizedAction{
-            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
-            .target = target,
-            .schedPolicy = setting->policy,
-            .realtimeThreads = realtime,
-            .rtPriority = setting->rtPriority,
-        });
+    Detail::DialogApply apply = schedPolicyApply(m_ProcessActions.get(), m_SchedPolicyDialog, *setting);
+    runRowAction(std::move(apply.pending), std::move(apply.work), std::move(apply.format), std::move(apply.retry));
 }
 
 template<typename Work>

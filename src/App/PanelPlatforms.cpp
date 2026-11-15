@@ -38,9 +38,9 @@ namespace
 }
 
 /// The one privileged broker every real run's IProcessActions shares (#2308): made once, on first use,
-/// and started only when the user first chooses "Authenticate and retry" ("Retry as administrator" on
-/// Windows). Null where there is none. Its prompt belongs to the main window (#2550), which exists
-/// before any panel asks for this. A test's broker, while one is set, comes first.
+/// and started only when the user first chooses "Retry as administrator" or "Read as administrator" (Windows).
+/// Null where there is none: on Linux always (#3580), and on Windows in a copy without the helper. Its prompt belongs to the main window
+/// (#2550), which exists before any panel asks for this. A test's broker, while one is set, comes first.
 [[nodiscard]] const std::shared_ptr<Platform::IPrivilegedBroker>& sharedPrivilegedBroker()
 {
     if (const std::shared_ptr<Platform::IPrivilegedBroker>& replaced = brokerForTesting(); replaced != nullptr)
@@ -173,7 +173,8 @@ std::shared_ptr<Platform::IUserSessions> makeSignedInSessions(const Synthetic::S
         return std::make_shared<Platform::UnsupportedUserSessions>();
     }
 #ifdef _WIN32
-    // Another user's session needs an administrator (#3076): the helper does it, as polkit does on Linux.
+    // Another user's session needs an administrator (#3076): the helper does it. Linux has none (#3580): logind acts
+    // for a root TaskSmack, and refuses another user's session to anyone else.
     return std::make_shared<Platform::BrokeredUserSessions>(Platform::makeUserSessions(), sharedPrivilegedBroker());
 #else
     return Platform::makeUserSessions();

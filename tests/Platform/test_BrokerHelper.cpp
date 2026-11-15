@@ -15,6 +15,7 @@
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
@@ -1668,20 +1669,23 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionReadsOnlyTheUsersOwnProcesses)
     EXPECT_TRUE(std::get<Broker::MemoryMapReply>(map).result.mappings.empty());
     EXPECT_EQ(std::get<Broker::MemoryMapReply>(map).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
 
-    // A read the filter doesn't name (threads, #3069) is refused outright, whoever's process it is.
-    for (const ProcessTarget& target : {mine, theirs})
-    {
-        const auto threads = handler(Broker::ThreadsRequest{.target = target});
-        ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(threads));
-        EXPECT_EQ(std::get<Broker::ErrorReply>(threads).message, BrokerHelper::OTHER_USERS_READ_REFUSED);
-    }
+    // #3777: another account's process's threads are refused as a failed read that says why, as the other reads are.
+    const auto threads = handler(Broker::ThreadsRequest{.target = theirs});
+    ASSERT_TRUE(std::holds_alternative<Broker::ThreadsReply>(threads));
+    EXPECT_EQ(std::get<Broker::ThreadsReply>(threads).result.status, ThreadsReadStatus::Failed);
+    EXPECT_TRUE(std::get<Broker::ThreadsReply>(threads).result.threads.empty());
+    EXPECT_EQ(std::get<Broker::ThreadsReply>(threads).result.detail, BrokerHelper::OTHER_USERS_READ_REFUSED);
     EXPECT_EQ(counting.calls->load(), 1) << "no refused read reached the readers";
+
+    // #3777: the user's own process's threads reach the readers.
+    static_cast<void>(handler(Broker::ThreadsRequest{.target = mine}));
+    EXPECT_EQ(counting.calls->load(), 2);
 
     // Actions aren't limited by owner: ending another account's process is what the administrator approved.
     const auto kill = handler(Broker::SignalRequest{.target = theirs, .signal = Broker::Signal::Kill});
     ASSERT_TRUE(std::holds_alternative<Broker::ActionResult>(kill));
     EXPECT_TRUE(std::get<Broker::ActionResult>(kill).success);
-    EXPECT_EQ(counting.calls->load(), 2);
+    EXPECT_EQ(counting.calls->load(), 3);
 }
 
 // #3221: each per-process read of the user's own process reaches the readers, and without a way to
@@ -1698,6 +1702,7 @@ TEST(BrokerHelperTest, AnOverTheShoulderSessionPassesEachReadOfTheUsersOwnProces
         Broker::OpenFilesRequest{.target = mine},
         Broker::ConnectionsRequest{.target = mine},
         Broker::MemoryMapRequest{.target = mine}, // #3665
+        Broker::ThreadsRequest{.target = mine},   // #3777
     };
     for (const Broker::Request& read : reads)
     {

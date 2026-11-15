@@ -187,22 +187,21 @@ TEST_F(LogindSessionsTest, LockAndSignOutGoToLogindAndAnotherUsersSessionIsRefus
     ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
     const std::stop_source stop;
 
-    EXPECT_TRUE(SystemdBus::sessionAction("2", SessionAction::Lock, false, stop.get_token()).ok);
+    EXPECT_TRUE(SystemdBus::sessionAction("2", SessionAction::Lock, stop.get_token()).ok);
     // Disconnect is Windows' (#3076): refused before the bus, never sent as TerminateSession.
-    const ServiceActionResult disconnect = SystemdBus::sessionAction("2", SessionAction::Disconnect, true, stop.get_token());
+    const ServiceActionResult disconnect = SystemdBus::sessionAction("2", SessionAction::Disconnect, stop.get_token());
     EXPECT_FALSE(disconnect.ok);
     EXPECT_EQ(disconnect.message, SystemdBus::DISCONNECT_UNSUPPORTED);
-    // bob's session: refused without a prompt, with no retry offered (#3580); allowed to prompt, it goes through.
-    const ServiceActionResult refused = SystemdBus::sessionAction("5", SessionAction::SignOut, false, stop.get_token());
+    // bob's session: refused without a prompt, with no retry offered (#3580, #3767).
+    const ServiceActionResult refused = SystemdBus::sessionAction("5", SessionAction::SignOut, stop.get_token());
     EXPECT_FALSE(refused.ok);
     EXPECT_FALSE(refused.needsAuthorization);
     EXPECT_EQ(refused.message, "Requires administrator: start TaskSmack (Administrator)");
-    EXPECT_TRUE(SystemdBus::sessionAction("5", SessionAction::SignOut, true, stop.get_token()).ok);
     // A session that has gone since the list was read.
-    const ServiceActionResult gone = SystemdBus::sessionAction("9", SessionAction::Lock, false, stop.get_token());
+    const ServiceActionResult gone = SystemdBus::sessionAction("9", SessionAction::Lock, stop.get_token());
     EXPECT_FALSE(gone.ok);
     EXPECT_FALSE(gone.needsAuthorization);
-    EXPECT_EQ(calls(), (std::vector<std::string>{"LockSession 2", "TerminateSession 5"}));
+    EXPECT_EQ(calls(), (std::vector<std::string>{"LockSession 2"})) << "bob's sign-out refused, never carried out";
 }
 
 // #3374: a stop request while logind hasn't answered the lock (TaskSmack closing) ends it as a cancellation. The
@@ -225,7 +224,7 @@ TEST_F(LogindSessionsTest, AStopRequestedWhileLogindHasntAnsweredCancelsTheActio
                        });
     ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
     const auto began = std::chrono::steady_clock::now();
-    const ServiceActionResult result = SystemdBus::sessionAction("2", SessionAction::Lock, false, stop.get_token());
+    const ServiceActionResult result = SystemdBus::sessionAction("2", SessionAction::Lock, stop.get_token());
     EXPECT_TRUE(result.cancelled) << result.message;
     EXPECT_EQ(calls(), (std::vector<std::string>{"LockSession"})) << "the stop came after the call was sent";
     EXPECT_LT(std::chrono::steady_clock::now() - began, std::chrono::microseconds(SystemdBus::CALL_TIMEOUT_USEC) / 2)
@@ -355,6 +354,20 @@ TEST(UserSessionsTest, AnUnsupportedRunListsAndDoesNothing)
     const ServiceActionResult result = sessions.act("2", SessionAction::Lock, false, {});
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.message, "Not supported on this platform");
+}
+
+// #3890: TaskSmack (Administrator), started by pkexec or sudo, has no XDG_SESSION_ID, so its own session comes from
+// logind; a set variable still wins, and an empty one counts as unset.
+TEST(LinuxUserSessionsTest, TheCurrentSessionComesFromLogindWhenTheVariableIsGone)
+{
+    const auto logind = []() -> std::string
+    {
+        return "c7";
+    };
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom("2", +logind), "2");
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom(nullptr, +logind), "c7");
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom("", +logind), "c7");
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom(nullptr, nullptr), "");
 }
 
 } // namespace

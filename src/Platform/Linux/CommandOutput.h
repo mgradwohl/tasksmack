@@ -22,11 +22,25 @@ struct CommandOutput
     std::string output;    ///< Its standard output, up to the byte limit
 };
 
-/// Runs @p argv (the program looked up on PATH) with stdin and stderr on /dev/null and no descriptor of TaskSmack's,
-/// and returns its standard output. Kills it (SIGKILL) if it hasn't finished within @p timeout, and keeps at most
+/// Runs @p argv (the program looked up on PATH unless it is a path) with stdin and stderr on /dev/null and no descriptor
+/// of TaskSmack's, and returns its standard output. Its environment is @p environment's "NAME=value" entries when given
+/// (#3760: as root, RootTools::rootEnvironment()), else TaskSmack's own. Kills it (SIGKILL) if it hasn't finished within @p timeout, and
+/// keeps at most
 /// @p maxBytes of output. A child that closes its output but keeps running is still killed at the timeout, and the
 /// child is killed and reaped on every way out, an exception included. Blocking, for at most about @p timeout: call
 /// it from a sampler or worker thread, never the UI thread.
-[[nodiscard]] CommandOutput runForOutput(const std::vector<std::string>& argv, std::chrono::milliseconds timeout, std::size_t maxBytes);
+[[nodiscard]] CommandOutput runForOutput(const std::vector<std::string>& argv,
+                                         std::chrono::milliseconds timeout,
+                                         std::size_t maxBytes,
+                                         const std::vector<std::string>* environment = nullptr);
+
+namespace Detail
+{
+
+/// Tests only (#3762): close the child's inherited descriptors one by one, from /proc/self/fd, as a glibc older than
+/// 2.34 has to, even where posix_spawn_file_actions_addclosefrom_np() is there. Off by default.
+void useListedClosesForTesting(bool on) noexcept;
+
+} // namespace Detail
 
 } // namespace Platform

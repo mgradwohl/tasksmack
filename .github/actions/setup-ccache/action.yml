@@ -1,0 +1,52 @@
+name: 'Setup ccache'
+description: >-
+  hendrikmuhs/ccache-action with the repo's settings (#3829), so the ten jobs that use it stay alike: the action's
+  pinned, SHA-256-verified ccache binary (Ubuntu's apt ccache 4.9.1 lacks the --evict-older-than that evict-old-files
+  uses, and 'detect' on Windows would pick up Strawberry Perl's 4.9.1 from the image PATH, #1406), and when the action
+  itself fails (a GitHub releases outage) a build without ccache rather than a red job: TASKSMACK_NO_CCACHE=1 keeps
+  CMake from finding a ccache left half set up (cmake/CompilerOptions.cmake).
+inputs:
+  key:
+    description: 'The cache key: the build, the LLVM version and, on a non-x64 runner, the architecture'
+    required: true
+  max-size:
+    description: "ccache's max size (sized from measurements, #3100)"
+    required: false
+    default: '500M'
+  save:
+    description: >-
+      Whether this run saves the cache. Pull requests restore main's but never save their own: a PR-ref entry is
+      readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
+    required: false
+    default: ${{ github.ref == 'refs/heads/main' }}
+  evict-old-files:
+    description: "Main runs drop entries this build didn't touch ('job'), so the saved cache tracks the tree; '' keeps them"
+    required: false
+    default: 'job'
+  verbose:
+    description: "1 or 2: the post step prints ccache's statistics (2: why calls were uncacheable)"
+    required: false
+    default: '0'
+outputs:
+  available:
+    description: "'true' when ccache is set up; 'false' when its setup failed and the build runs without it"
+    value: ${{ steps.ccache.outcome == 'success' }}
+runs:
+  using: 'composite'
+  steps:
+    - name: Setup ccache
+      id: ccache
+      continue-on-error: true
+      uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+      with:
+        install: binary
+        key: ${{ inputs.key }}
+        max-size: ${{ inputs.max-size }}
+        save: ${{ inputs.save }}
+        evict-old-files: ${{ inputs.evict-old-files }}
+        verbose: ${{ inputs.verbose }}
+
+    - name: Build without ccache (its setup failed)
+      if: steps.ccache.outcome == 'failure'
+      shell: bash
+      run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"

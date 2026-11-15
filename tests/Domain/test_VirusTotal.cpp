@@ -88,16 +88,46 @@ TEST(VirusTotalTest, EachStatusReadsAsItsOutcomeAndLine)
 
 TEST(JsonReaderTest, ReadsANonNegativeIntegerAndSkipsAnythingElse)
 {
+    std::optional<std::uint64_t> value;
     Json::Reader digits("18446744073709551615");
-    EXPECT_EQ(digits.readUnsigned(), std::optional<std::uint64_t>(18446744073709551615ULL));
+    EXPECT_TRUE(digits.readUnsigned(value));
+    EXPECT_EQ(value, std::optional<std::uint64_t>(18446744073709551615ULL));
     Json::Reader tooBig("18446744073709551616");
-    EXPECT_FALSE(tooBig.readUnsigned().has_value());
+    EXPECT_TRUE(tooBig.readUnsigned(value)) << "well formed, just out of range";
+    EXPECT_FALSE(value.has_value());
     Json::Reader fraction("2.5,");
-    EXPECT_FALSE(fraction.readUnsigned().has_value());
+    EXPECT_TRUE(fraction.readUnsigned(value));
+    EXPECT_FALSE(value.has_value());
     EXPECT_TRUE(fraction.consume(',')) << "the value is skipped whole";
     Json::Reader text(R"("7",)");
-    EXPECT_FALSE(text.readUnsigned().has_value());
+    EXPECT_TRUE(text.readUnsigned(value));
+    EXPECT_FALSE(value.has_value());
     EXPECT_TRUE(text.consume(','));
+    Json::Reader zero("0");
+    EXPECT_TRUE(zero.readUnsigned(value));
+    EXPECT_EQ(value, std::optional<std::uint64_t>(0));
+}
+
+// #3795: a number with a leading zero isn't JSON, and a value that can't be skipped is malformed: both say so, rather
+// than reading as a skipped count.
+TEST(JsonReaderTest, ALeadingZeroOrAnUnskippableValueIsMalformed)
+{
+    std::optional<std::uint64_t> value;
+    Json::Reader leadingZero("007");
+    EXPECT_FALSE(leadingZero.readUnsigned(value));
+    Json::Reader broken(R"({"a": )");
+    EXPECT_FALSE(broken.readUnsigned(value));
+    Json::Reader unclosed("[1, 2");
+    EXPECT_FALSE(unclosed.readUnsigned(value));
+    EXPECT_FALSE(value.has_value());
+}
+
+// #3795: a reply whose count is malformed isn't read as if its other counts were the verdict.
+TEST(JsonReaderTest, AReportWithALeadingZeroCountCantBeRead)
+{
+    const std::string body =
+        R"({"data":{"attributes":{"last_analysis_stats":{"malicious":01,"suspicious":0,"undetected":60,"harmless":5}}}})";
+    EXPECT_EQ(summary("bash", interpret(200, body)), "Couldn't look up bash on VirusTotal: its reply couldn't be read");
 }
 
 } // namespace

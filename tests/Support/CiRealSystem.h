@@ -5,14 +5,19 @@
 /// (a process at Realtime, a helper served from Program Files, a throwaway account, an Explorer window), which
 /// only a disposable CI runner may run.
 ///
-/// Every such test is in a suite named CiRealSystem*, derived from CiRealSystemTest, so it skips unless both:
+/// Every such test derives from CiRealSystemTest (or calls requireCiRealSystem()), so it skips unless both:
 ///   - TASKSMACK_CI_REAL_SYSTEM=1, which only CI sets: the steps that run the group
-///     (.github/workflows/reusable-build-test.yml, "Real-system tests (Windows)" and "Helper root test (Linux)")
+///     (.github/workflows/reusable-build-test.yml, "Real-system tests (Windows)" and "Root tests (Linux)")
 ///     and Heavy Checks' coverage root pass (tools/coverage.sh, TASKSMACK_COVERAGE_REAL_SYSTEM, #3374);
 ///   - the runner looks disposable: GITHUB_ACTIONS=true and RUNNER_ENVIRONMENT=github-hosted, which a
 ///     self-hosted runner or a developer's machine doesn't have.
 /// The daytime test filter excludes CiRealSystem* as well (AGENTS.md), and that step fails when the whole group
 /// skipped, so a guard that stops seeing CI can't pass as a run of skips. Never set the variable by hand.
+///
+/// The Windows suites are named CiRealSystem*. The Linux root ones keep their own names (UdpByteCounterRootTest,
+/// UdpTrafficCollectorRootTest, RootCapabilitiesRootTest's eBPF case) and use this guard too (#3896): they also skip
+/// unless they run as root, so an unprivileged run, the daytime filter's included, never runs them, and
+/// tools/coverage.sh counts their guarded skips by the skip message rather than by suite name.
 
 #include <gtest/gtest.h>
 

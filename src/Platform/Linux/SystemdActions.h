@@ -58,27 +58,6 @@ struct StartTypeSteps
     }
 }
 
-/// Whether @p name is a service's unit name (#2728) as systemd writes
-/// one -- 1 to 255 bytes of letters, digits and ":-_.\\@", ending in ".service" after at least one more --
-/// so a request can't name a path, another kind of unit, or an option.
-[[nodiscard]] constexpr bool isServiceUnitName(std::string_view name) noexcept
-{
-    constexpr std::string_view SUFFIX = ".service";
-    constexpr std::size_t MAX_UNIT_NAME = 255;
-    if (name.size() <= SUFFIX.size() || name.size() > MAX_UNIT_NAME || !name.ends_with(SUFFIX) || name.front() == '.' ||
-        name.front() == '-')
-    {
-        return false;
-    }
-    return std::ranges::all_of(name,
-                               [](char c)
-                               {
-                                   const bool letter = (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
-                                   const bool digit = c >= '0' && c <= '9';
-                                   return letter || digit || c == ':' || c == '-' || c == '_' || c == '.' || c == '\\' || c == '@';
-                               });
-}
-
 /// Why Automatic did nothing for a unit file without an [Install] section (static, generated, transient):
 /// EnableUnitFiles answers carries_install_info=false and changes nothing (#2146).
 inline constexpr const char* NO_INSTALL_SECTION_MESSAGE =
@@ -163,24 +142,13 @@ enum class WaitStep : std::uint8_t
 inline constexpr std::string_view INTERACTIVE_AUTHORIZATION_REQUIRED = "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired";
 
 /// A refused or failed call in the user's terms, from its D-Bus error name and @p message (the error's
-/// own text). @p timedOut: the call ran out of time.
-[[nodiscard]] inline std::string errorText(std::string_view errorName, std::string_view message, bool timedOut, bool interactive = false)
+/// own text). @p timedOut: the call ran out of time. No call lets polkit prompt (#3580, #3767), so a refusal reads the
+/// same however it came.
+[[nodiscard]] inline std::string errorText(std::string_view errorName, std::string_view message, bool timedOut)
 {
     if (timedOut)
     {
-        // Allowed to prompt, systemd still holds the request (#2402): it may yet act once the password
-        // is entered, so say so rather than report a plain failure.
-        return interactive ? "No answer in time; it may still happen if the password prompt is answered" : "systemd didn't answer in time";
-    }
-    // With a prompt allowed (#2304): still "interactive authorization required" means nothing could ask
-    // (no polkit agent in the session); access denied, that the prompt was dismissed or refused.
-    if (interactive && errorName == INTERACTIVE_AUTHORIZATION_REQUIRED)
-    {
-        return "No authentication agent is running to ask for the password";
-    }
-    if (interactive && errorName == "org.freedesktop.DBus.Error.AccessDenied")
-    {
-        return "Authentication was canceled or refused";
+        return "systemd didn't answer in time";
     }
     if (errorName == INTERACTIVE_AUTHORIZATION_REQUIRED || errorName == "org.freedesktop.DBus.Error.AccessDenied")
     {

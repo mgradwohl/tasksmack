@@ -173,6 +173,9 @@ steps in order, checks that the docs still give each command it runs, and stops 
 place a newcomer would trip (`-ContinueOnFinding` records them all). It writes a step table to
 `results.md` in `-OutDir`. Its help (`Get-Help tools/newcomer-check.ps1 -Full`) has the Windows
 Sandbox options.
+On Linux, `tools/newcomer-check.sh` does the same in a fresh Ubuntu 24.04 WSL distro (`wsl --install
+Ubuntu-24.04 --name tasksmack-newcomer`): copy only the script in and run it there, as `--help` says; it installs
+packages with sudo, so not on your own machine either.
 
 ### Linux Pre-Requisites
 
@@ -907,15 +910,15 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-the Processes table grouped by service, by app and by user (`processes-grouped-unit`, `processes-grouped-app`,
-`processes-grouped-user`, #3068, #3377; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
+the Processes table grouped by service, by app and by user, in the first dark theme (`processes-grouped-unit`,
+`processes-grouped-app`, `processes-grouped-user`, #3068, #3377; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
 service list Unit groups by, and only the Linux set takes `processes-grouped-app` so far), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
 `TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
 Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
 `details-modules`, `details-openfiles`, `details-connections`, and in the Linux set Environment and
 Security too: `details-environment`, `details-security`; Windows reads both sections as well, but
 `screenshots.ps1` doesn't take them yet) for one process,
-Services, Startup, Users (Windows only so far), Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
+Services, Startup, Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
 plus three animated WebPs at 12 fps built from frame sequences:
 `overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
 Processes table, selects the process and brings up its Process Details' Network tab) and
@@ -1194,8 +1197,8 @@ folder is checked in full (#3528).
 Coverage reports are written to `coverage/` (gitignored).
 
 CI heavy checks also publish a line-coverage summary and compare it with a floor (`LINUX_COVERAGE_THRESHOLD` and
-`WINDOWS_COVERAGE_THRESHOLD` in `heavy-checks.yml`): Linux below 95% fails the coverage job, Windows below 85%
-warns.
+`WINDOWS_COVERAGE_THRESHOLD` in `heavy-checks.yml`): Linux below 95% fails the coverage job, Windows below 93%
+fails it too (#3842).
 
 The report counts all of `src/`, not just the files linked into `TaskSmackTests`: the coverage
 scripts pass the instrumented app binary (`build/<preset>/bin/TaskSmack`) to `llvm-cov` as an extra
@@ -1340,7 +1343,10 @@ pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
-`check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+`check-cflite-paths` pre-commit hook fails if they differ (#2533). A target's sources pull in more than that filter
+watches, so every PR's Linux debug job also builds every target with `.clusterfuzzlite/build.sh` and runs each on one
+empty input ("Fuzz targets build (Linux)", #3837): a change anywhere that breaks a fuzzer's build or start fails the PR,
+not main. Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
 A release candidate's campaign gives each target 600 seconds instead (#2783):
 `gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's
@@ -3071,7 +3077,7 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
 
     To add a file, show the same for it, add it to `AUTOMATION` in the classifier with its reason, and add a case to `tests/tools/test_ci_change_classifier.py`. That test fails when an allowlisted file is missing, when a build input names one outside a comment, or when a `tests/tools` script names one without `Automation checks` running it.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
-- **`arm64.yml`**: Linux aarch64 (`ubuntu-26.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label (adding the label starts a run). It is not part of `CI Success` or any required check, and without the label its jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.msi` (`setup-windows-llvm`, pinned by SHA-256, as x64's `win64.msi` is) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
+- **`arm64.yml`**: Linux aarch64 (`ubuntu-26.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label or its changes match that label's paths (adding the label by hand starts a run; the PR labeler adds it for build-system and arch-specific paths, #3820, but with `GITHUB_TOKEN`, which starts no run, so a small `detect` job reads the same globs from `.github/labeler.yml` with `tools/arm64-paths.py` and a PR's first push runs, #3930). It is not part of `CI Success` or any required check, and for any other PR its build jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.msi` (`setup-windows-llvm`, pinned by SHA-256, as x64's `win64.msi` is) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.
 
 CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fetchcontent-cache`) are **saved only by runs on `main`** in every workflow, `release.yml` included (tag runs only restore); pull requests restore main's entries and never save their own, which keeps the repository under its Actions cache limit (20 GB since 2026-10-26). Runs on a `release/*` branch save none either, so its pull requests read `main`'s entries (the default branch's), like every other PR. One job per OS saves the FetchContent cache: Windows debug, and the Linux release build after its benchmark-enabled configure, so the saved sources include Google Benchmark. The FetchContent key hashes only what declares or patches dependencies: `cmake/Dependencies.cmake`, `cmake/patches/**`, and the `FetchContent_Declare(...)` blocks of `tests/CMakeLists.txt` and `benchmarks/CMakeLists.txt` (not those whole files, which change whenever a test is added, #1582). `cache-prune.yml` runs after each `main` run of a cache-saving workflow (listed under `cache-prune.yml` below) and deletes all but the newest entry of each ccache, FetchContent, configure-check, clang-tidy result and CodeQL TRAP cache family, so `main` stays under the quota and least-recently-used eviction never removes a live entry (#1583). The TRAP caches (one of about 640 MB per analyzed `main` commit) weren't pruned until #3101; their pile-up kept the repository over its limit, and the eviction removed `main`'s nightly clang-tidy result caches within hours of each save. clang-tidy doesn't compile through ccache; the debug jobs' tidy runs simply reuse the build's configured tree, and `static-analysis.yml` configures with the same flags (`TASKSMACK_ENABLE_PCH=OFF`, plus the Windows flags below) so every run computes the same result-cache keys. The Windows debug build configures with `-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF` (CI only; the presets keep ThinLTO in Debug), which cut its five links from about 50-70 s each to 1-5 s and drops ~530 `clang-scan-deps` runs per build. Its ccache is 750 MB with `inode_cache` on. The other ccache limits are sized from measured working sets (#3100): one full build fills about 614 MB (Linux Debug), 560 MB (ASan+UBSan), 641 MB (coverage) and 445 MB (TSan), so Linux Debug on x64 and ARM64, ASan+UBSan and coverage get 1250 MB (main's tree plus a pull request's changes), TSan 750 MB, and the rest (Release, IWYU, benchmarks, packaging, the Wayland matrix) keep 500 MB. Windows coverage gets 1250 MB too, with `inode_cache` on (#3148): at 500 MB it ran full with about 500 cleanups a build and 18-23% hits, and its `win-coverage` preset builds without ThinLTO or module scanning, like the Windows debug build. At most one entry per family survives pruning, so the ccache total is about 9 GB of the repository's 20 GB Actions cache limit, beside the CodeQL TRAP, LLVM and FetchContent caches; and every build job's post step prints `ccache -s -vv` (hits, misses and why calls were uncacheable); with `TASKSMACK_ENABLE_PCH=OFF`, as CI configures, the dependencies' own precompiled headers (SDL3's) are off too, since ccache can't cache a compile that uses one (#1875). Each build job's summary also gets a build profile from `.ninja_log` (`tools/ninja-build-profile.py`): time per edge kind and the slowest links.
@@ -3086,12 +3092,13 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
+- **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job warns below 85%; `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image.
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch code the benchmarks measure -- `src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory` -- or the benchmarks, their baseline and tools). The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
 - **`devcontainer.yml`**: Builds the dev container's image (`.devcontainer/Dockerfile`, from `tools/setup-dev.sh`) and, inside it, runs `tools/check-prereqs.sh` and configures the debug preset, whenever the image's inputs change (#136).
 - **`renovate-docs-sri.yml`**: On Renovate's docs-site PRs, regenerates `docs/index.html`'s `integrity=` hashes and `docs/cdn-integrity.json` (`tools/docs-sri.py --update`) and pushes them back with `RENOVATE_TOKEN`, so CI runs on the fixed commit (#3661).
 
@@ -3155,7 +3162,7 @@ opens PRs; the same CI gate applies before merge.
   `clang-format` mirror's *major* bumps are gated like LLVM's, since its formatting follows the compiler's
   major. Windows CI has no Renovate-tracked Ninja or ccache pins: Ninja comes with the runner image (bump
   `setup-windows-llvm`'s `ninja-version` input when the image changes) and ccache comes from
-  `hendrikmuhs/ccache-action`'s pinned release.
+  `hendrikmuhs/ccache-action`'s pinned release (one use, in `.github/actions/setup-ccache`, #3829).
 - *Tier 2, a PR opens only after someone ticks it on the Dependency Dashboard*
   (`dependencyDashboardApproval: true`), for every update, not just major ones:
   - **LLVM**, grouped into one PR: `LLVM_VERSION`/`LLVM_SEMVER_VERSION` in the workflows that run a compiler
@@ -3393,6 +3400,16 @@ and man pages aside, which the image's dpkg doesn't unpack), the Administrator l
 over. Last, it starts the upgraded `TaskSmack` with no `TASKSMACK_CONFIG_DIR`, so it finds v0.8.0's file
 itself. That run gets the same checks as the second smoke launch: a clean quit, no `[error]` line, and
 the fixture's settings kept.
+
+`validate-linux-administrator` checks the "TaskSmack (Administrator)" launcher (#3905), x64, on a VM runner,
+since pkexec needs a running polkitd. It installs this run's `.deb` with `pkexec`, `polkitd` and Xvfb. `pkaction`
+must know `app.tasksmack.TaskSmack.administrator`, with `exec.path` `/usr/bin/TaskSmack` and `allow_gui`, and the
+installed launcher's `Exec` must be `pkexec /usr/bin/TaskSmack`. A CI-only polkit rule then lets the runner's user
+through without a password, and the job runs the launcher's own command under Xvfb. TaskSmack must open its
+window as root with its capabilities narrowed (#3621: some kept, fewer than root holds), quit on SIGTERM, and save
+the settings to the runner user's `~/.config/tasksmack`, owned by them, while root's stays untouched: the user comes
+from `PKEXEC_UID`, which CI's sudo-based "Root launch (Linux)" doesn't reach. The password dialog stays a manual
+check.
 
 `validate-windows-upgrade` checks the Windows installer's upgrade over the last published release (#3757), on
 both architectures. `fetch-previous-windows-release` (Linux, where cosign runs) picks the published release
