@@ -246,6 +246,32 @@ TEST(BrokeredProcessActionsTest, EachSignalMapsToTheHelpersSignal)
     EXPECT_EQ(brokerSignalFor(ProcessSignal::User2), Broker::Signal::User2);
 }
 
+// #3778: a kind or a signal the mapping doesn't know (one added later, its case missed) is no request at all, never a
+// Terminate the elevated helper would carry out, and runAuthorized() refuses it before any prompt.
+TEST(BrokeredProcessActionsTest, AnUnknownKindOrSignalIsNoRequestNeverATerminate)
+{
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
+    const auto unknownKind = static_cast<AuthorizedAction::Kind>(0xFF);
+    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
+    const auto unknownSignal = static_cast<ProcessSignal>(0xFF);
+    EXPECT_FALSE(brokerSignalFor(unknownSignal).has_value());
+    EXPECT_FALSE(brokerRequestFor({.kind = unknownKind, .target = TARGET}).has_value());
+    EXPECT_FALSE(brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal}).has_value());
+
+    const Fixture f(/*connected=*/false);
+    for (const AuthorizedAction& action : {
+             AuthorizedAction{.kind = unknownKind, .target = TARGET},
+             AuthorizedAction{.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal},
+         })
+    {
+        const ProcessActionResult result = f.actions->runAuthorized(action, std::stop_token{});
+        EXPECT_FALSE(result.success);
+        EXPECT_FALSE(result.permissionDenied);
+    }
+    EXPECT_EQ(f.broker->connectCount(), 0) << "no prompt for a request the helper can't be sent";
+    EXPECT_TRUE(f.broker->requests().empty());
+}
+
 TEST(BrokeredProcessActionsTest, OpeningTheFileLocationAndRunningAProgramStayInProcessEvenWhenRefused)
 {
     // Both run as the user (the file manager; run's own elevation prompt), so a refusal is never retried
@@ -757,15 +783,6 @@ TEST(BrokeredProcessActionsTest, AnAffinityTheProcessAcceptsNeverReachesTheHelpe
     EXPECT_EQ(f.inner->setAffinityCount(), 1);
     EXPECT_EQ(f.inner->lastAffinity(), cpus);
     EXPECT_TRUE(f.broker->requests().empty());
-}
-
-TEST(BrokeredProcessActionsTest, AnUnknownActionKindAsksForTheGentlestSignal)
-{
-    // Every Kind maps to its own request; one outside the enum (a corrupt value) falls back to Terminate
-    // rather than to anything more drastic.
-    // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
-    const AuthorizedAction corrupt{.kind = static_cast<AuthorizedAction::Kind>(0xEE), .target = TARGET};
-    EXPECT_EQ(brokerRequestFor(corrupt), (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Terminate}}));
 }
 
 TEST(BrokeredProcessActionsTest, WithoutAHelperRunAuthorizedRefusesAndNothingIsRetried)

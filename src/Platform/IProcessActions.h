@@ -630,8 +630,10 @@ class IProcessActions
 
     /// In the helper (#3327, Windows): @p priorityClass, carried by an off's request, is what that off restores for
     /// @p target, replacing whatever this helper remembers, Idle included. TaskSmack has seen every on since, while
-    /// this helper may hold a class from an earlier on whose off ran elsewhere. 0, or a value that isn't a priority
-    /// class, changes nothing. By default nothing is remembered.
+    /// this helper may hold a class from an earlier on whose off ran elsewhere. Realtime is never taken from a request
+    /// (#3776): an approved off would set it without Realtime's own warning, so the off restores the class this helper
+    /// remembers, or else Normal. 0, or a value that isn't a priority class, changes nothing. By default nothing is
+    /// remembered.
     virtual void setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
     {
         static_cast<void>(target);

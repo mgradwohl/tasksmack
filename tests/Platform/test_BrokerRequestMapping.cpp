@@ -135,8 +135,8 @@ TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
 }
 
 // #3327 (v22): an off carrying the class TaskSmack remembers sets it first, replacing the helper's, so the helper's
-// off restores it though it never saw the on; one carrying 0 (unknown) sets nothing. An on's reply carries the class it
-// replaced.
+// off restores it though it never saw the on (the actions ignore Realtime, #3776); one carrying 0 (unknown) sets
+// nothing. An on's reply carries the class it replaced.
 TEST(BrokerRequestMappingTest, AnEfficiencyOffRemembersTheClassItCarriesFirstAndAnOnRepliesWithTheClassItReplaced)
 {
     TestMocks::MockProcessActions actions;
