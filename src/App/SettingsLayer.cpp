@@ -323,7 +323,8 @@ void SettingsLayer::onRender()
             {
                 // Made on first use; a failure is logged, and the path opened anyway (the handler
                 // says what it can't open). In a handed-over config folder (#3774), only through the folder held.
-                if (const auto folder = Core::ConfigDirOverride::handedOverFolder(); folder != nullptr)
+                if (const std::shared_ptr<const Platform::IHandedOverFolder> folder = Core::ConfigDirOverride::handedOverFolder();
+                    folder != nullptr)
                 {
                     if (const auto made = folder->createFolder(dir.filename()); !made.has_value())
                     {

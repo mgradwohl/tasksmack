@@ -1449,7 +1449,7 @@ bool UserConfig::writeIntoHandedOver(const Platform::IHandedOverFolder& folder, 
 bool UserConfig::writeIfMissing(const UserSettings& settings)
 {
     // A handed-over folder is asked through the folder held (#3774), never by a path to it.
-    if (const auto folder = Core::ConfigDirOverride::handedOverFolder(); folder != nullptr)
+    if (const std::shared_ptr<const Platform::IHandedOverFolder> folder = Core::ConfigDirOverride::handedOverFolder(); folder != nullptr)
     {
         const auto there = [&folder, this]
         {
