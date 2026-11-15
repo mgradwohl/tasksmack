@@ -5,7 +5,7 @@
 // BrokeredProcessActions does for the actions: read in-process first; a PermissionDenied read goes through the helper
 // at once while it runs, and otherwise is returned for the UI to offer "Authenticate to read" (readAuthorized()). The
 // helper reads with its capabilities, with the same identity check (PID and start time). A new read kind is a traits
-// struct below.
+// struct below and a decorator in BrokeredProcessActions.h that forwards its interface's four overrides.
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
@@ -33,15 +33,6 @@ namespace Platform
 inline constexpr std::string_view HELPER_COULDNT_BE_ASKED = "The administrator helper couldn't be asked: ";
 /// What a read through the helper says when the helper answered with another kind of reply.
 inline constexpr std::string_view HELPER_UNEXPECTED_ANSWER = "The administrator helper gave an unexpected answer";
-
-/// The two calls a reader interface names for itself (hasEnvironment(), readEnvironment(), ...), which a kind's Named
-/// base forwards to these, so BrokeredReader implements them once.
-template<typename Reader, typename Result> class ForwardedReader : public Reader
-{
-  protected:
-    [[nodiscard]] virtual bool has() const = 0;
-    [[nodiscard]] virtual Result read(const ProcessTarget& target) = 0;
-};
 
 /// Process Details' environment (#2309): its failures carry no detail.
 struct EnvironmentReadTraits
@@ -71,19 +62,6 @@ struct EnvironmentReadTraits
     {
         return {.status = EnvironmentReadStatus::Failed, .variables = {}};
     }
-
-    class Named : public ForwardedReader<Reader, Result>
-    {
-      public:
-        [[nodiscard]] bool hasEnvironment() const final
-        {
-            return has();
-        }
-        [[nodiscard]] Result readEnvironment(const ProcessTarget& target) final
-        {
-            return read(target);
-        }
-    };
 };
 
 /// Process Details' modules (#2309).
@@ -112,19 +90,6 @@ struct ModulesReadTraits
     {
         return {.status = ModulesReadStatus::Failed, .modules = {}, .detail = std::move(detail)};
     }
-
-    class Named : public ForwardedReader<Reader, Result>
-    {
-      public:
-        [[nodiscard]] bool hasModules() const final
-        {
-            return has();
-        }
-        [[nodiscard]] Result readModules(const ProcessTarget& target) final
-        {
-            return read(target);
-        }
-    };
 };
 
 /// Process Details' and Find handles' open files (#2309, #3578). BrokeredOpenFilesReader adds the batch.
@@ -158,19 +123,6 @@ struct OpenFilesReadTraits
         failed.detail = std::move(detail);
         return failed;
     }
-
-    class Named : public ForwardedReader<Reader, Result>
-    {
-      public:
-        [[nodiscard]] bool hasOpenFiles() const final
-        {
-            return has();
-        }
-        [[nodiscard]] Result readOpenFiles(const ProcessTarget& target) final
-        {
-            return read(target);
-        }
-    };
 };
 
 /// Process Details' connections (#2309).
@@ -199,19 +151,6 @@ struct ConnectionsReadTraits
     {
         return {.status = ConnectionsReadStatus::Failed, .connections = {}, .detail = std::move(detail)};
     }
-
-    class Named : public ForwardedReader<Reader, Result>
-    {
-      public:
-        [[nodiscard]] bool hasConnections() const final
-        {
-            return has();
-        }
-        [[nodiscard]] Result readConnections(const ProcessTarget& target) final
-        {
-            return read(target);
-        }
-    };
 };
 
 /// Process Details' threads (#3069).
@@ -240,19 +179,6 @@ struct ThreadsReadTraits
     {
         return {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = std::move(detail)};
     }
-
-    class Named : public ForwardedReader<Reader, Result>
-    {
-      public:
-        [[nodiscard]] bool hasThreads() const final
-        {
-            return has();
-        }
-        [[nodiscard]] Result readThreads(const ProcessTarget& target) final
-        {
-            return read(target);
-        }
-    };
 };
 
 /// Process Details' memory map (#3665): the helper reads the region list only, never the process's memory.
@@ -281,22 +207,8 @@ struct MemoryMapReadTraits
     {
         return {.status = MemoryMapReadStatus::Failed, .mappings = {}, .detail = std::move(detail), .truncated = false};
     }
-
-    class Named : public ForwardedReader<Reader, Result>
-    {
-      public:
-        [[nodiscard]] bool hasMemoryMap() const final
-        {
-            return has();
-        }
-        [[nodiscard]] Result readMemoryMap(const ProcessTarget& target) final
-        {
-            return read(target);
-        }
-    };
 };
 
-/// What BrokeredReader needs of a read kind's traits.
 /// What BrokeredReader needs of a read kind's traits.
 template<typename Traits>
 concept BrokeredReadTraits = requires(const Traits::Reader& reader, Traits::Reader& mutableReader, const ProcessTarget& target) {
@@ -306,12 +218,13 @@ concept BrokeredReadTraits = requires(const Traits::Reader& reader, Traits::Read
     { Traits::readInProcess(mutableReader, target) } -> std::same_as<typename Traits::Result>;
     { Traits::refused() } -> std::same_as<typename Traits::Result>;
     { Traits::failed(std::string{}) } -> std::same_as<typename Traits::Result>;
-    requires std::derived_from<typename Traits::Named, ForwardedReader<typename Traits::Reader, typename Traits::Result>>;
 };
 
-/// One read kind's reader that an administrator can finish (#2309, #3782), over the in-process reader and the broker.
-/// Not final only so BrokeredOpenFilesReader can add Find handles' batch.
-template<BrokeredReadTraits Traits> class BrokeredReader : public Traits::Named
+/// One read kind's read that an administrator can finish (#2309, #3782), over the in-process reader and the broker.
+/// It has no virtual members: each kind's decorator (BrokeredProcessActions.h) is a plain class that implements its
+/// interface's overrides by forwarding to one of these, so no virtual member of a class template is left for a
+/// compiler to instantiate or not.
+template<BrokeredReadTraits Traits> class BrokeredReader
 {
   public:
     using Reader = Traits::Reader;
@@ -321,12 +234,28 @@ template<BrokeredReadTraits Traits> class BrokeredReader : public Traits::Named
         : m_Inner(std::move(inner)), m_Broker(std::move(broker))
     {}
 
-    [[nodiscard]] bool canReadAuthorized() const override
+    [[nodiscard]] bool has() const
+    {
+        return Traits::has(*m_Inner);
+    }
+
+    /// The in-process read; a PermissionDenied one goes through the helper at once while it runs.
+    [[nodiscard]] Result read(const ProcessTarget& target)
+    {
+        Result result = Traits::readInProcess(*m_Inner, target);
+        if (result.status != Traits::PERMISSION_DENIED || m_Broker == nullptr || !m_Broker->connected())
+        {
+            return result;
+        }
+        return viaBroker(target, std::stop_token{});
+    }
+
+    [[nodiscard]] bool canReadAuthorized() const
     {
         return m_Broker != nullptr && m_Broker->readsOtherUsers();
     }
 
-    [[nodiscard]] Result readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
+    [[nodiscard]] Result readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
     {
         if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
         {
@@ -337,23 +266,6 @@ template<BrokeredReadTraits Traits> class BrokeredReader : public Traits::Named
             return Traits::refused(); // the prompt was dismissed or the helper couldn't start: the refusal stands
         }
         return viaBroker(target, stopToken);
-    }
-
-  protected:
-    [[nodiscard]] bool has() const final
-    {
-        return Traits::has(*m_Inner);
-    }
-
-    /// The in-process read; a PermissionDenied one goes through the helper at once while it runs.
-    [[nodiscard]] Result read(const ProcessTarget& target) final
-    {
-        Result result = Traits::readInProcess(*m_Inner, target);
-        if (result.status != Traits::PERMISSION_DENIED || m_Broker == nullptr || !m_Broker->connected())
-        {
-            return result;
-        }
-        return viaBroker(target, std::stop_token{});
     }
 
     /// Whether the helper is connected, connecting it if need be; false when the prompt was dismissed or the helper

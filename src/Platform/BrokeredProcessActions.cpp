@@ -377,7 +377,7 @@ namespace
 {
 
 /// @p reader decorated with @p broker as @p Decorated, or @p reader as it is when there is no broker or nothing to read.
-template<typename Traits, typename Decorated = BrokeredReader<Traits>>
+template<typename Traits, typename Decorated>
 [[nodiscard]] std::unique_ptr<typename Traits::Reader> decorated(std::unique_ptr<typename Traits::Reader> reader,
                                                                  std::shared_ptr<IPrivilegedBroker> broker)
 {
@@ -393,13 +393,13 @@ template<typename Traits, typename Decorated = BrokeredReader<Traits>>
 std::unique_ptr<IProcessEnvironmentReader> withPrivilegedBroker(std::unique_ptr<IProcessEnvironmentReader> reader,
                                                                 std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return decorated<EnvironmentReadTraits>(std::move(reader), std::move(broker));
+    return decorated<EnvironmentReadTraits, BrokeredEnvironmentReader>(std::move(reader), std::move(broker));
 }
 
 std::unique_ptr<IProcessModulesReader> withPrivilegedBroker(std::unique_ptr<IProcessModulesReader> reader,
                                                             std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return decorated<ModulesReadTraits>(std::move(reader), std::move(broker));
+    return decorated<ModulesReadTraits, BrokeredModulesReader>(std::move(reader), std::move(broker));
 }
 
 std::unique_ptr<IProcessOpenFilesReader> withPrivilegedBroker(std::unique_ptr<IProcessOpenFilesReader> reader,
@@ -411,33 +411,29 @@ std::unique_ptr<IProcessOpenFilesReader> withPrivilegedBroker(std::unique_ptr<IP
 std::unique_ptr<IProcessConnectionsReader> withPrivilegedBroker(std::unique_ptr<IProcessConnectionsReader> reader,
                                                                 std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return decorated<ConnectionsReadTraits>(std::move(reader), std::move(broker));
+    return decorated<ConnectionsReadTraits, BrokeredConnectionsReader>(std::move(reader), std::move(broker));
 }
 
 std::unique_ptr<IProcessThreadsReader> withPrivilegedBroker(std::unique_ptr<IProcessThreadsReader> reader,
                                                             std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return decorated<ThreadsReadTraits>(std::move(reader), std::move(broker));
+    return decorated<ThreadsReadTraits, BrokeredThreadsReader>(std::move(reader), std::move(broker));
 }
 
 std::unique_ptr<IProcessMemoryMapReader> withPrivilegedBroker(std::unique_ptr<IProcessMemoryMapReader> reader,
                                                               std::shared_ptr<IPrivilegedBroker> broker)
 {
-    return decorated<MemoryMapReadTraits>(std::move(reader), std::move(broker));
+    return decorated<MemoryMapReadTraits, BrokeredMemoryMapReader>(std::move(reader), std::move(broker));
 }
-
-BrokeredOpenFilesReader::BrokeredOpenFilesReader(std::unique_ptr<IProcessOpenFilesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
-    : BrokeredReader(std::move(inner), std::move(broker))
-{}
 
 std::size_t BrokeredOpenFilesReader::handlesScanned() const noexcept
 {
-    return inner().handlesScanned();
+    return m_Reader.inner().handlesScanned();
 }
 
 void BrokeredOpenFilesReader::beginBatch()
 {
-    inner().beginBatch();
+    m_Reader.inner().beginBatch();
     m_InBatch = true;
     m_BatchUnanswered = false;
     m_Expected.clear();
@@ -450,7 +446,7 @@ void BrokeredOpenFilesReader::endBatch() noexcept
     m_BatchUnanswered = false;
     m_Expected.clear();
     m_NextExpected = 0;
-    inner().endBatch();
+    m_Reader.inner().endBatch();
 }
 
 void BrokeredOpenFilesReader::expectAuthorizedReads(std::span<const ProcessTarget> targets)
@@ -515,7 +511,7 @@ void BrokeredOpenFilesReader::askBatch(std::size_t from, const std::stop_token& 
             asked.push_back(index);
         }
     }
-    std::expected<Broker::Response, std::string> response = privilegedBroker().call(request, stopToken);
+    std::expected<Broker::Response, std::string> response = m_Reader.privilegedBroker().call(request, stopToken);
     if (!response.has_value())
     {
         // The channel broke or timed out: the first target says why, and the rest are asked for one at a time, as
@@ -541,11 +537,11 @@ void BrokeredOpenFilesReader::askBatch(std::size_t from, const std::stop_token& 
 
 OpenFilesReadResult BrokeredOpenFilesReader::readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken)
 {
-    if (!canReadAuthorized()) // no helper, or none that could read it (#2550)
+    if (!m_Reader.canReadAuthorized()) // no helper, or none that could read it (#2550)
     {
-        return inner().readOpenFiles(target);
+        return m_Reader.inner().readOpenFiles(target);
     }
-    if (!helperConnected(stopToken))
+    if (!m_Reader.helperConnected(stopToken))
     {
         return OpenFilesReadTraits::refused(); // the refusal stands
     }
@@ -553,7 +549,7 @@ OpenFilesReadResult BrokeredOpenFilesReader::readAuthorized(const ProcessTarget&
     {
         return std::move(*batched);
     }
-    return viaBroker(target, stopToken);
+    return m_Reader.viaBroker(target, stopToken);
 }
 
 } // namespace Platform

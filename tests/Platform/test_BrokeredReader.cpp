@@ -1,6 +1,6 @@
 // Tests for BrokeredReader's traits (#3782): what each read kind's traits struct says a refusal and a failed read
-// through the helper are, and which request and reply it pairs. The decorators themselves are tested through the
-// BrokeredProcessActions aliases in test_BrokeredProcessActions.cpp.
+// through the helper are, and which request and reply it pairs. The decorators over it (BrokeredProcessActions.h) are
+// tested in test_BrokeredProcessActions.cpp.
 
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokeredReader.h"
