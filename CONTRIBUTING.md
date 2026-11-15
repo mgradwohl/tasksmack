@@ -1339,7 +1339,7 @@ ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressS
 | `fuzz_desktop_entry` | the `.desktop` entry parser and its `Exec` splitting (`Platform/Linux/DesktopEntryIcons.h`) | `tests/fuzz/corpus/fuzz_desktop_entry/` |
 | `fuzz_release_json` | the update check's GitHub releases JSON reader and version parser (`Domain/UpdateCheck.h`) | `tests/fuzz/corpus/fuzz_release_json/` |
 | `fuzz_virustotal_json` | the VirusTotal v3 file report reader (`Domain/VirusTotal.h`) | `tests/fuzz/corpus/fuzz_virustotal_json/` |
-| `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`, its codec `Platform/BrokerProtocol.cpp`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
