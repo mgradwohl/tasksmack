@@ -594,6 +594,26 @@ main() {
         echo -e "${GREEN}jinja2${NC}: ${jinja_ver}"
     fi
 
+    # The libraries the Linux build links (#3915), found with pkg-config as CMake finds them: libbpf is required since
+    # #3540 (configure fails without it), libsystemd and libcurl are optional and turn features off when missing.
+    if command -v pkg-config &>/dev/null; then
+        local entry lib pkg kind
+        for entry in "libbpf:libbpf-dev:required" "libsystemd:libsystemd-dev:optional" "libcurl:libcurl4-openssl-dev:optional"; do
+            IFS=: read -r lib pkg kind <<<"${entry}"
+            if pkg-config --exists "${lib}"; then
+                echo -e "${GREEN}${lib}${NC}: $(pkg-config --modversion "${lib}" 2>/dev/null || echo found)"
+            elif [[ "${kind}" == required ]]; then
+                echo -e "${RED}${lib}${NC}: not found (sudo apt install ${pkg}) - configure fails without it"
+                all_ok=1
+            else
+                echo -e "${YELLOW}${lib}${NC}: not found (sudo apt install ${pkg}) - optional; the features it serves are turned off"
+            fi
+        done
+    else
+        echo -e "${RED}pkg-config${NC}: not found (sudo apt install pkg-config) - configure needs it to find libbpf"
+        all_ok=1
+    fi
+
     echo
     if [[ "${all_ok}" -eq 0 ]]; then
         echo -e "${GREEN}All mandatory prerequisites are satisfied.${NC}"

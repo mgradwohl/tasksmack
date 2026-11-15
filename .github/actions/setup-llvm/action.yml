@@ -14,7 +14,7 @@ inputs:
     required: false
     default: 'false'
   install-clangd:
-    description: 'Install clangd'
+    description: 'Point the clangd alternative at the installed LLVM version (clangd itself is always installed with LLVM)'
     required: false
     default: 'false'
   install-coverage-tools:
@@ -174,7 +174,6 @@ runs:
         CACHE_MATCHED_KEY: ${{ steps.package-cache.outputs.cache-matched-key }}
         EXPECT_RELEASE: ${{ inputs.expect-release }}
         INSTALL_CCACHE: ${{ inputs.install-ccache }}
-        INSTALL_CLANGD: ${{ inputs.install-clangd }}
         INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
         INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
         INSTALL_NINJA: ${{ inputs.install-ninja }}

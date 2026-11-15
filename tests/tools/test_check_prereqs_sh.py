@@ -28,7 +28,9 @@ SUMMARY = re.compile(
 )
 
 
-class CheckPrereqsCcacheTests(unittest.TestCase):
+class CheckerTestBase(unittest.TestCase):
+    """Runs the checker with PATH set to a stub directory holding only the basic utilities (and the stubs a test adds)."""
+
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
         self.bin = Path(self._tmp.name) / "bin"
@@ -42,12 +44,6 @@ class CheckPrereqsCcacheTests(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def stub_ccache(self, body):
-        stub = self.bin / "ccache"
-        stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
-        stub.chmod(0o755)
-        return stub
-
     def run_checker(self):
         env = {"PATH": str(self.bin), "HOME": self._tmp.name}
         result = subprocess.run(
@@ -59,6 +55,14 @@ class CheckPrereqsCcacheTests(unittest.TestCase):
         self.assertRegex(out, r"(?m)^git: ", out)
         self.assertLess(out.index("ccache"), out.index("\ngit: "), out)
         return out
+
+
+class CheckPrereqsCcacheTests(CheckerTestBase):
+    def stub_ccache(self, body):
+        stub = self.bin / "ccache"
+        stub.write_text(f"#!/bin/sh\n{body}\n", encoding="utf-8")
+        stub.chmod(0o755)
+        return stub
 
     def ccache_row(self, out):
         rows = [line for line in out.splitlines() if line.startswith("ccache: ")]
@@ -96,6 +100,54 @@ class CheckPrereqsCcacheTests(unittest.TestCase):
     def test_absent_ccache(self):
         out = self.run_checker()
         self.assertEqual(self.ccache_row(out), "ccache: not found (recommended for faster rebuilds)")
+
+
+
+class CheckPrereqsLibraryTests(CheckerTestBase):
+    """#3915: the libraries the Linux build links, through pkg-config: libbpf required, libsystemd and libcurl optional."""
+
+    def stub_pkg_config(self, present):
+        stub = self.bin / "pkg-config"
+        stub.write_text(
+            "#!/bin/sh\n"
+            f'case "$2" in {"|".join(present) or "__none__"}) ;; *) exit 1 ;; esac\n'
+            'if [ "$1" = --modversion ]; then echo 9.9.9; fi\n',
+            encoding="utf-8",
+        )
+        stub.chmod(0o755)
+
+    def row(self, out, name):
+        rows = [line for line in out.splitlines() if line.startswith(f"{name}: ")]
+        self.assertEqual(len(rows), 1, out)
+        return rows[0]
+
+    def test_every_library_found(self):
+        self.stub_pkg_config(["libbpf", "libsystemd", "libcurl"])
+        out = self.run_checker()
+        self.assertEqual(self.row(out, "libbpf"), "libbpf: 9.9.9")
+        self.assertEqual(self.row(out, "libsystemd"), "libsystemd: 9.9.9")
+        self.assertEqual(self.row(out, "libcurl"), "libcurl: 9.9.9")
+
+    def test_missing_libbpf_fails_the_check(self):
+        self.stub_pkg_config(["libsystemd", "libcurl"])
+        out = self.run_checker()
+        self.assertEqual(
+            self.row(out, "libbpf"), "libbpf: not found (sudo apt install libbpf-dev) - configure fails without it"
+        )
+        self.assertIn("Some mandatory prerequisites are missing or out of date.", out)
+
+    def test_missing_optional_libraries_only_warn(self):
+        self.stub_pkg_config(["libbpf"])
+        out = self.run_checker()
+        self.assertTrue(self.row(out, "libsystemd").endswith("- optional; the features it serves are turned off"), out)
+        self.assertTrue(self.row(out, "libcurl").startswith("libcurl: not found (sudo apt install libcurl4-openssl-dev)"), out)
+
+    def test_no_pkg_config(self):
+        out = self.run_checker()
+        self.assertEqual(
+            self.row(out, "pkg-config"),
+            "pkg-config: not found (sudo apt install pkg-config) - configure needs it to find libbpf",
+        )
 
 
 if __name__ == "__main__":
