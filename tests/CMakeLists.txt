@@ -1165,6 +1165,9 @@ add_executable(TaskSmackTests
     # The Processes panel as a whole, with a mock probe through its seam (test_ProcessesPanelRender.cpp, #1546)
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanel.cpp
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanelUserGroups.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanelGroupRows.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanelRowActions.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessesPanelBatch.cpp
     # The icon beside each process name (#1800): the panels draw it; test_ProcessIconView.cpp runs it
     # headless with a fake texture backend
     ${CMAKE_SOURCE_DIR}/src/App/Panels/ProcessIconView.cpp

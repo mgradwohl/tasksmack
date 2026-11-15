@@ -232,6 +232,9 @@ set(TASKSMACK_SOURCES
     src/App/WindowOverride.cpp
     src/App/Panels/ProcessesPanel.cpp
     src/App/Panels/ProcessesPanelUserGroups.cpp # Group: User's sessions and their actions (#3377)
+    src/App/Panels/ProcessesPanelGroupRows.cpp # Group By's groups and their header rows (#3815)
+    src/App/Panels/ProcessesPanelRowActions.cpp # the row menu and its single-process actions (#3815)
+    src/App/Panels/ProcessesPanelBatch.cpp # the selection and tree actions and their dialogs (#3815)
     src/App/Panels/ProcessIconView.cpp
     src/App/Panels/ProcessDetailsPanel.cpp
     src/App/Panels/ProcessDetailsCharts.cpp
