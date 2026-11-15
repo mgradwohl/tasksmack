@@ -39,7 +39,8 @@ namespace
 constexpr const wchar_t* OPEN_VERB = L"open";
 constexpr const wchar_t* RUNAS_VERB = L"runas";
 
-// LCOV_EXCL_START - the real calls start a program or raise UAC, which no test may do (#3427)
+// The real calls start a program or raise UAC: only CiRealSystemRunTaskTest does, on the CI runner and in win-coverage
+// (#3427, #3835).
 /// TaskSmack's window when it is in front, which it is while the user presses Run, so a UAC prompt
 /// comes up over it rather than behind; else none.
 HWND foregroundWindowOfThisProcess() noexcept
@@ -80,7 +81,6 @@ bool realIsElevated()
 {
     return isProcessElevated();
 }
-// LCOV_EXCL_STOP
 
 /// What @p error from opening @p program means, said as the Run box would.
 [[nodiscard]] std::string shellRunFailure(DWORD error, std::string_view program)

@@ -811,7 +811,8 @@ Three established ways to get real coverage of such a file's logic:
    `RUNNER_ENVIRONMENT=github-hosted`). CI's "Real-system tests (Windows)" step sets it and runs
    `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran, or if
    the runner still has something a test made (a `tsci*` account or profile, a `TaskSmackCi*` service, folder,
-   IFEO key or Run value).
+   IFEO key or Run value). Heavy Checks' Windows coverage job runs them too (`tools/coverage.ps1` with
+   `TASKSMACK_COVERAGE_REAL_SYSTEM=1`, #3835), so the code they reach counts and needs no `LCOV_EXCL`.
    The step runs on the Windows ARM64 leg too (`arm64.yml`, #3823), on the ARM64 binary. A case ARM64 can't run
    skips inside the test with a reason, and goes in the step's `$arm64Skips` (name and reason), which only the
    ARM64 leg honors. One x64 can't run goes in `$x64Skips` the same way: today the Memory Compression test, since
@@ -1215,7 +1216,8 @@ cover; the HTML report and the `llvm-cov` summary still count them (#2039, #3221
 - Lines marked `LCOV_EXCL_START` ... `LCOV_EXCL_STOP` or `LCOV_EXCL_LINE`, each with a one-line reason: a
   modal shell dialog, a real `ShellExecuteW` launch, SDL or OpenGL setup failing, or a guard that the type's
   invariants make unreachable. Mark only code a test truly can't reach; anything a test or a seam could
-  drive gets a test instead.
+  drive gets a test instead. Code a `CiRealSystem*` test reaches is never marked: Windows coverage runs those
+  tests (#3835).
 - Defaulted comparisons (`operator==` / `operator<=>` ... `= default;`): clang folds one branch of the
   synthesized compare, so the line stays partly covered whatever a test does.
 

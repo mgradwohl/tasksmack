@@ -71,7 +71,8 @@ class Bstr
     return value;
 }
 
-// LCOV_EXCL_START - asks Explorer to start the default handler (a browser, editor or Explorer window); no test may (#2039)
+// Asks Explorer to start the default handler (a browser, editor or Explorer window): CiRealSystemFileLocationTest
+// does, through run(), on the CI runner and in win-coverage (#2039, #3835).
 /// open() and run(): IShellDispatch2::ShellExecute of @p target with @p arguments (none when empty), in Explorer.
 [[nodiscard]] std::expected<void, std::string> shellExecute(const std::wstring& target, const std::wstring& arguments)
 {
@@ -153,7 +154,7 @@ class Bstr
     const Bstr file(target.c_str());
     if (file.get() == nullptr)
     {
-        return std::unexpected(std::string("out of memory"));
+        return std::unexpected(std::string("out of memory")); // LCOV_EXCL_LINE - SysAllocString failing; no test can make it
     }
     const Bstr verb(L"open");
     // VARIANT is the union COM's automation calls take: its type tag and the matching member are set together.
@@ -168,7 +169,7 @@ class Bstr
     const Bstr parameters(arguments.c_str());
     if (!arguments.empty() && parameters.get() == nullptr)
     {
-        return std::unexpected(std::string("out of memory"));
+        return std::unexpected(std::string("out of memory")); // LCOV_EXCL_LINE - SysAllocString failing; no test can make it
     }
     VARIANT argumentsVariant = emptyVariant();
     if (!arguments.empty())
@@ -186,11 +187,10 @@ class Bstr
     }
     return {};
 }
-// LCOV_EXCL_STOP
 
 } // namespace
 
-// LCOV_EXCL_START - each asks Explorer to start a program; no test may (#2039)
+// Each asks Explorer to start a program. open() (a URL or a document, from App/PlatformOpen.cpp) has no CI test yet.
 std::expected<void, std::string> open(const std::wstring& target)
 {
     return shellExecute(target, {});
@@ -200,7 +200,6 @@ std::expected<void, std::string> run(const std::wstring& file, const std::wstrin
 {
     return shellExecute(file, arguments);
 }
-// LCOV_EXCL_STOP
 
 // NOLINTEND(misc-include-cleaner)
 

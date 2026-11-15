@@ -35,7 +35,9 @@ namespace Platform::Windows
 namespace
 {
 
-// LCOV_EXCL_START - the real calls open an Explorer window, which no test may do (#3426)
+// The real calls open an Explorer window: only CiRealSystemFileLocationTest does, on the CI runner and in win-coverage
+// (#3426, #3835). Its process is elevated, so it takes the unelevated-shell route; realSelectInFolder() and
+// realStartProcess(), which a process that isn't elevated takes, have no such test yet, and count as uncovered.
 HRESULT realSelectInFolder(const std::wstring& path)
 {
     const ComScope com;
@@ -92,7 +94,6 @@ std::string realSelectUnelevated(const std::wstring& explorer, const std::wstrin
     const auto ran = UnelevatedShell::run(explorer, commandArguments);
     return ran.has_value() ? std::string{} : ran.error();
 }
-// LCOV_EXCL_STOP
 
 [[nodiscard]] std::string hresultText(HRESULT hr)
 {

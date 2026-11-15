@@ -31,8 +31,8 @@
 namespace Platform::Windows
 {
 
-// LCOV_EXCL_START - the whole file is a modal IFileOpenDialog, which blocks until a user picks or cancels (#2039).
-// CiRealSystemFolderPickerTest shows and cancels it on the CI runner (#3490), a run the coverage job doesn't make.
+// The whole file is a modal IFileOpenDialog, which blocks until a user picks or cancels (#2039).
+// CiRealSystemFolderPickerTest shows and cancels it on the CI runner (#3490), in win-coverage too (#3835).
 // NOLINTBEGIN(misc-include-cleaner) - Windows APIs; Win32 types come from windows.h sub-headers
 namespace
 {
@@ -133,6 +133,5 @@ FolderChoice pickFolder(void* ownerWindow, const std::filesystem::path& initial,
     return std::optional<std::filesystem::path>(std::move(folder));
 }
 // NOLINTEND(misc-include-cleaner)
-// LCOV_EXCL_STOP
 
 } // namespace Platform::Windows

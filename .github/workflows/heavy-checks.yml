@@ -337,6 +337,10 @@ jobs:
           # than skips (coverage.ps1 only warns on test failures, but its output names them).
           TASKSMACK_REQUIRE_DISPLAY: '1'
           GALLIUM_DRIVER: llvmpipe
+          # And it runs the CI real-system tests (TASKSMACK_CI_REAL_SYSTEM=1 for that run only), as the Linux job's
+          # root pass does (#3374, #3835): this is a disposable GitHub-hosted runner, as their guard requires, so the
+          # shell, Explorer, system menu and folder dialog code they reach counts without an LCOV_EXCL.
+          TASKSMACK_COVERAGE_REAL_SYSTEM: '1'
         run: |
           $ErrorActionPreference = 'Stop'
           ./tools/coverage.ps1 -ShowDetails *>&1 | Tee-Object -FilePath coverage-output.txt
