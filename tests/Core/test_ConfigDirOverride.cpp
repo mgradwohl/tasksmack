@@ -188,5 +188,53 @@ TEST(ConfigDirOverrideDeathTest, AHandOffNeverTouchesTheTestHookDirectory)
     EXPECT_FALSE(std::filesystem::exists(envDir, ec));
 }
 
+/// In a death test's own child: TASKSMACK_CONFIG_DIR set to @p envDir, then the test hook ignored, as an elevated
+/// session does, with no hand-off. Exits 0 when there is no override, it is said to be ignored, and nothing made
+/// @p envDir.
+[[noreturn]] void elevatedInChild(const std::filesystem::path& envDir)
+{
+    const auto utf8 = envDir.u8string();
+    static_cast<void>(SDL_setenv_unsafe(std::string(ENV_VAR).c_str(), std::string(utf8.begin(), utf8.end()).c_str(), 1));
+    ignoreTestHook();
+    const bool noOverride = !active().has_value() && !fromTestHook() && !handedOver();
+    const bool saidIgnored = testHookIgnored();
+    std::error_code ec;
+    const bool envDirUntouched = !std::filesystem::exists(envDir, ec) && !ec;
+    std::exit(noOverride && saidIgnored && envDirUntouched ? 0 : 1); // NOLINT(concurrency-mt-unsafe) - the death test's own child
+}
+
+/// As elevatedInChild(), but with a hand-off adopted too: it is used, and the test hook still neither read nor made.
+[[noreturn]] void elevatedHandOffInChild(const std::filesystem::path& envDir, const std::filesystem::path& handedDir)
+{
+    const auto utf8 = envDir.u8string();
+    static_cast<void>(SDL_setenv_unsafe(std::string(ENV_VAR).c_str(), std::string(utf8.begin(), utf8.end()).c_str(), 1));
+    ignoreTestHook();
+    adoptHandedOver(handedDir);
+    const bool handOffUsed = active() == std::optional<std::filesystem::path>(handedDir.lexically_normal()) && !fromTestHook();
+    std::error_code ec;
+    const bool envDirUntouched = !std::filesystem::exists(envDir, ec) && !ec;
+    std::exit(handOffUsed && testHookIgnored() && envDirUntouched ? 0 : 1); // NOLINT(concurrency-mt-unsafe) - the death test's own child
+}
+
+// #3920: an elevated session that adopts no hand-off (one refused, or a launch as administrator) takes no folder from
+// TASKSMACK_CONFIG_DIR and makes none, and says the hook was ignored. In a child, where nothing has read active() yet.
+TEST(ConfigDirOverrideDeathTest, AnElevatedSessionIgnoresTheTestHook)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    const std::filesystem::path temp = std::filesystem::temp_directory_path();
+    const std::filesystem::path envDir =
+        temp / std::format("TaskSmack.ElevatedEnvDir.{}", std::chrono::steady_clock::now().time_since_epoch().count());
+    EXPECT_EXIT(elevatedInChild(envDir), ::testing::ExitedWithCode(0), "");
+    EXPECT_EXIT(elevatedHandOffInChild(envDir, temp / "TaskSmack.HandedOver"), ::testing::ExitedWithCode(0), "");
+    std::error_code ec;
+    EXPECT_FALSE(std::filesystem::exists(envDir, ec));
+}
+
+// #3920: unelevated (nothing ignored), the hook isn't said to be ignored, whatever the environment holds.
+TEST(ConfigDirOverrideTest, NothingIsIgnoredUnlessTheSessionIsElevated)
+{
+    EXPECT_FALSE(testHookIgnored());
+}
+
 } // namespace
 } // namespace Core::ConfigDirOverride

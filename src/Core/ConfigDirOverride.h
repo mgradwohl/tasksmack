@@ -76,6 +76,15 @@ void adoptHandedOver(const std::filesystem::path& dir, std::weak_ptr<const Platf
 /// SessionUser::invokingUserHome() names a user, and handedOver() is true from then on. Not thread-safe, as above.
 void markLessPrivilegedFolder();
 
+/// An elevated TaskSmack (#3920) ignores TASKSMACK_CONFIG_DIR from now on: its environment can come from the
+/// less-privileged side (a same-user elevation reads the user's own HKCU\Environment), so active() takes no directory
+/// from it and creates none. A hand-off it adopts is used as before; otherwise it keeps its own account's folder.
+/// main.cpp calls this first thing in an elevated session, before anything reads active(). Not thread-safe, as above.
+void ignoreTestHook();
+
+/// Whether TASKSMACK_CONFIG_DIR is set but ignored (ignoreTestHook()), for main.cpp to log once logging is up.
+[[nodiscard]] bool testHookIgnored();
+
 /// Whether the config directory is the less-privileged side's: one an elevated restart handed over (adoptHandedOver()),
 /// or, run as root for a user, that user's (markLessPrivilegedFolder()). UserConfig then writes through no link in it,
 /// and nothing read from it (a dump folder, recent commands) is offered to run elevated.

@@ -269,5 +269,19 @@ TEST(WindowsFactoryTest, TheHandOffWaitAndFolderCheckAreTheWindowsOnes)
     EXPECT_TRUE(checked.error().contains("not a plain local folder path")) << checked.error();
 }
 
+// #3920: elevated through UAC only when elevated at all; a hosted runner, elevated with UAC off, isn't, so its tests
+// keep the TASKSMACK_CONFIG_DIR hook.
+TEST(WindowsFactoryTest, ElevatedThroughUacOnlyWhenElevated)
+{
+    if (elevatedThroughUac())
+    {
+        EXPECT_TRUE(Windows::isProcessElevated());
+    }
+    if (!Windows::isProcessElevated())
+    {
+        EXPECT_FALSE(elevatedThroughUac());
+    }
+}
+
 } // namespace
 } // namespace Platform

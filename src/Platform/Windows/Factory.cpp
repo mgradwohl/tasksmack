@@ -280,6 +280,20 @@ std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow)
                                                                               Windows::ElevatedRestart::promptFor(type));
 }
 
+bool elevatedThroughUac()
+{
+    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+    if (Windows::UniqueHandle token; OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
+    {
+        DWORD size = 0;
+        if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
+        {
+            type = TokenElevationTypeDefault;
+        }
+    }
+    return type == TokenElevationTypeFull;
+}
+
 HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks)
 {
     return Windows::ElevatedRestart::waitForHandoff(static_cast<DWORD>(pid), startTicks);

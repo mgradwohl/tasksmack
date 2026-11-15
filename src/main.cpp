@@ -145,6 +145,12 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // own. The instance lock below, tried again for a while, covers a Standard copy this one couldn't wait on.
     // Logged below. A Linux session is never restarted (#3580), so there the arguments are ignored.
 #ifdef _WIN32
+    // Elevated through UAC, the environment may be the less-privileged side's: the TASKSMACK_CONFIG_DIR test hook is
+    // ignored, before anything reads the config directory, so nothing is read from or made where it points (#3920).
+    if (Platform::elevatedThroughUac()) // LCOV_EXCL_LINE - TaskSmack.exe only (#2039)
+    {
+        Core::ConfigDirOverride::ignoreTestHook(); // LCOV_EXCL_LINE
+    }
     const bool handoffSession = launch.handoffPid.has_value();
     std::optional<Platform::HandoffWait> handoffWait;
     std::string handoffDirRefused;
@@ -283,6 +289,12 @@ auto runApp(const App::LaunchOptions& launch) -> int
         {
             spdlog::info("Config directory (the launching user's, handed over): {}", Core::pathToUtf8(*configDir));
         }
+    }
+    if (Core::ConfigDirOverride::testHookIgnored())
+    {
+        spdlog::warn("{} is set but ignored: TaskSmack runs as administrator, and takes no folder from an environment the "
+                     "less-privileged side may have set",
+                     Core::ConfigDirOverride::ENV_VAR);
     }
 #ifdef _WIN32
     if (handoffWait.has_value())

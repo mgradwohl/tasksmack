@@ -119,7 +119,8 @@ struct ConfigDirFunctions
 };
 
 /// Whether @p dir, a config directory an elevated restart was handed (--config-dir), may be used (#2728): an
-/// absolute local path under @p profilesRoot (the user profiles folder, C:\Users), at least one folder below it,
+/// absolute local path inside a user's profile folder under @p profilesRoot (the user profiles folder, C:\Users): two
+/// folders below it or more (C:\Users\pat\TaskSmack, never C:\Users\pat itself),
 /// with no "." or ".." in it; every folder from the drive down to it a real folder, never a junction, link or
 /// other reparse point; config.toml and tasksmack.lock in it, where they exist, neither reparse points nor
 /// hard-linked elsewhere. Then it is held open, and the rest is checked through that handle (#3775), so it is the
