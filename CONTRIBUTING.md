@@ -812,6 +812,9 @@ Three established ways to get real coverage of such a file's logic:
    `TaskSmackTests --gtest_filter=CiRealSystem*` after the normal `ctest`. It fails if none of them ran, or if
    the runner still has something a test made (a `tsci*` account or profile, a `TaskSmackCi*` service, folder,
    IFEO key or Run value).
+   The step runs on the Windows ARM64 leg too (`arm64.yml`, #3823), on the ARM64 binary. A case ARM64 can't run
+   skips inside the test with a reason, and goes in the step's `$arm64Skips` (name and reason), which only the
+   ARM64 leg honors.
    - **Rules:** keep every child idle (suspended, or `TaskSmackCiStub.exe`, which only sleeps, or with
      `--hung-window` shows a window and stops answering it; a service is `TaskSmackCiService.exe`, which only
      waits to be stopped), and end it and remove what the test made in a scope guard: a registry value, a key,

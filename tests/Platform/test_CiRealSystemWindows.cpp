@@ -452,6 +452,11 @@ class CiRealSystemFileLocationTest : public TestSupport::CiRealSystemTest
 /// shows that folder (its title is the folder's name), and is closed.
 void expectExplorerShowsTheFolder(const std::wstring& folderName)
 {
+#if defined(_M_ARM64) || defined(__aarch64__)
+    // The unelevated shell open fails on windows-11-arm although the desktop has a shell (#3979, found by #3823's
+    // ARM64 run). The workflow's $arm64Skips names this case and cites the same issue; remove both when it's fixed.
+    GTEST_SKIP() << "Open file location fails on ARM64: #3979";
+#endif
     const ScratchFolder folder(std::filesystem::temp_directory_path() / folderName);
     const std::filesystem::path exe = folder.path() / L"TaskSmackCiStub.exe";
     copyFile(TASKSMACK_CI_STUB_PATH, exe);
@@ -462,7 +467,7 @@ void expectExplorerShowsTheFolder(const std::wstring& folderName)
 
     Platform::WindowsProcessActions actions;
     const ProcessActionResult result = actions.openFileLocation(stub.target());
-    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_TRUE(result.success) << result.errorMessage << " (GetShellWindow() was " << (hadShell ? "set" : "null") << ")";
 
     HWND shown = nullptr;
     std::vector<HWND> newWindows; // every new folder window, the right one or not: each is closed at the end
