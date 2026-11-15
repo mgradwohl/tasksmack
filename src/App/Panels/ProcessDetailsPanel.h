@@ -4,6 +4,7 @@
 #include "App/Panel.h"
 #include "App/PanelPlatformTypes.h"
 #include "App/Panels/ProcessGrouping.h"
+#include "App/Panels/VirusTotalLookup.h"
 #include "App/SelectOverride.h"
 #include "Core/Event.h"
 #include "Domain/CrashHistory.h"
@@ -417,6 +418,7 @@ class ProcessDetailsPanel : public Panel
 
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
+    VirusTotalLookup::ContextCache m_LookupContext;         ///< The Context made once, refreshed on a key change (#3802)
     std::shared_ptr<Platform::IHttpsClient> m_LookupClient; ///< Look up on VirusTotal's (#3094); none in the tests
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::ProcessCapabilities m_ProcessCapabilities;

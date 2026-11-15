@@ -32,6 +32,7 @@
 #include "App/Panels/StuckProcesses.h"
 #include "App/Panels/UdpTraceSwitch.h"
 #include "App/Panels/UserSessionsFeed.h"
+#include "App/Panels/VirusTotalLookup.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
 #include "App/UdpCountingStatus.h"
@@ -581,6 +582,7 @@ class ProcessesPanel : public Panel
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
     /// Look up on VirusTotal's client (#3094), made in onAttach(); none in a synthetic run or a test run, and the
     /// tests' setLookupClient().
+    VirusTotalLookup::ContextCache m_LookupContext; ///< The Context made once, refreshed on a key change (#3802)
     std::shared_ptr<Platform::IHttpsClient> m_LookupClient;
     Platform::ProcessActionCapabilities m_ActionCapabilities;
     Platform::CpuAffinityLayout m_AffinityLayout; // The Set affinity dialog's, read on the sampler thread (#3182)

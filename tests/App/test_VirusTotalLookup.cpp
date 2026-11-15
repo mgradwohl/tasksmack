@@ -144,5 +144,25 @@ TEST(VirusTotalLookupTest, AnUnknownFileARefusedKeyAndAnUnreachableServiceSaySo)
     EXPECT_EQ(offline.errorMessage, "Couldn't reach VirusTotal: libcurl: Couldn't resolve host name");
 }
 
+TEST(VirusTotalContextCacheTest, BuildsTheUserAgentOnceAndRefreshesOnlyWhenTheKeyChanges)
+{
+    VirusTotalLookup::ContextCache cache;
+    const auto client = std::make_shared<FakeHttpsClient>(std::unexpected(std::string("x")));
+    const VirusTotalLookup::Context& first = cache.get(client, "");
+    EXPECT_FALSE(first.userAgent.empty());
+    const std::string agent = first.userAgent;
+    EXPECT_EQ(cache.refreshes(), 0U);
+    EXPECT_EQ(cache.get(client, "").userAgent, agent);
+    EXPECT_EQ(cache.refreshes(), 0U);
+    const std::string key(64, 'a');
+    EXPECT_EQ(cache.get(client, key).apiKey, key);
+    EXPECT_EQ(cache.refreshes(), 1U);
+    EXPECT_EQ(cache.get(client, key).userAgent, agent);
+    EXPECT_EQ(cache.refreshes(), 1U);
+    EXPECT_EQ(cache.get(nullptr, key).client, nullptr);
+    EXPECT_EQ(cache.get(nullptr, "").apiKey, "");
+    EXPECT_EQ(cache.refreshes(), 2U);
+}
+
 } // namespace
 } // namespace App::VirusTotalLookupTest
