@@ -2861,6 +2861,91 @@ class CiRevertGuardTests(unittest.TestCase):
             self.assertFalse(marker.exists(), "the description was run as a command")
 
 
+@unittest.skipUnless(shutil.which("git"), "git not available")
+class HeavyChecksPushScopeTests(unittest.TestCase):
+    """#3834: Heavy Checks runs on pushes that touch App, Core, main.cpp or tests too, for the coverage jobs, and
+    push-scope keeps benchmark-regression to pushes that touch what the benchmarks measure."""
+
+    WORKFLOW = WORKFLOWS / "heavy-checks.yml"
+    JOB = "push-scope"
+    STEP = "Decide what this push runs"
+    COVERAGE_ONLY = {"src/App/**", "src/Core/**", "src/main.cpp", "tests/**"}
+
+    def push_paths(self) -> list[str]:
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        block = text.split("\n  push:\n", 1)[1].split("\n  schedule:", 1)[0]
+        return re.findall(r"^      - '([^']+)'$", block, re.MULTILINE)
+
+    def test_the_step_lists_the_push_filters_benchmark_paths(self):
+        paths = self.push_paths()
+        self.assertTrue(self.COVERAGE_ONLY <= set(paths), "the coverage-only paths are in the push filter")
+        step = find_step(self.WORKFLOW, self.STEP, job=self.JOB).run
+        listed = re.search(r"case \"\$path\" in\n(.*?)\)\n", step, re.DOTALL).group(1)
+        patterns = {p.strip() for p in listed.replace("\\\n", "").split("|")}
+        expected = {p.replace("/**", "/*") for p in paths if p not in self.COVERAGE_ONLY}
+        self.assertEqual(patterns, expected, "push-scope's case list is the push filter's benchmark half")
+
+    def test_benchmark_regression_waits_for_push_scope(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split("\n  benchmark-regression:\n", 1)[1].split("\n  # ", 1)[0]
+        self.assertIn("    needs: push-scope\n", job)
+        self.assertIn("needs.push-scope.outputs.benchmarks == 'true'", job)
+        for coverage in ("coverage", "win-coverage"):
+            block = text.split(f"\n  {coverage}:\n", 1)[1].split("\n    runs-on:", 1)[0]
+            self.assertNotIn("push-scope", block, f"{coverage} runs on every push the filter lets in")
+
+    def scope(self, event: str, changed: dict[str, str] | None, before: str | None = None) -> str:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            repo.mkdir()
+            env = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                   "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+                   "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True,
+                                      env=env).stdout.strip()
+
+            git("init", "-q", "-b", "main")
+            (repo / "README.md").write_text("start\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "start")
+            first = git("rev-parse", "HEAD")
+            for name, text in (changed or {}).items():
+                path = repo / name
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(text, encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "--allow-empty", "-m", "the push")
+            output = root / "output"
+            output.write_text("", encoding="utf-8")
+            step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+            result = run_bash(f'set -e\ncd "{posix(repo)}"\n' + step.run, root, {
+                "EVENT": event, "BEFORE": first if before is None else before, "SHA": git("rev-parse", "HEAD"),
+                "GITHUB_OUTPUT": posix(output)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            return dict(line.split("=", 1) for line in output.read_text(encoding="utf-8").splitlines())["benchmarks"]
+
+    def test_a_push_to_app_core_main_or_tests_runs_coverage_only(self):
+        for name in ("src/App/Panels/ProcessesPanel.cpp", "src/Core/Application.cpp", "src/main.cpp",
+                     "tests/App/test_x.cpp"):
+            with self.subTest(name=name):
+                self.assertEqual(self.scope("push", {name: "x\n"}), "false")
+
+    def test_a_push_to_a_benchmarked_path_runs_the_benchmarks(self):
+        for name in ("src/Domain/History.h", "src/Platform/Linux/X.cpp", "src/App/Panels/ProcessDetailsHistory.h",
+                     "benchmarks/bench_x.cpp", "tools/bench.sh", ".github/workflows/heavy-checks.yml"):
+            with self.subTest(name=name):
+                self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n", name: "x\n"}), "true")
+
+    def test_other_events_and_an_unusable_before_run_the_benchmarks(self):
+        self.assertEqual(self.scope("schedule", {"src/App/a.cpp": "x\n"}), "true")
+        self.assertEqual(self.scope("workflow_dispatch", {"src/App/a.cpp": "x\n"}), "true")
+        self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="0" * 40), "true")
+        self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="1" * 40), "true")
+
+
 if __name__ == "__main__":
     # With no --only-/--skip- flag every case runs, as before.
     only = [arg[len("--only-"):] for arg in sys.argv[1:] if arg.startswith("--only-") and arg[len("--only-"):] in GROUPS]
