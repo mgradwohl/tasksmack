@@ -24,10 +24,12 @@
 #include "Platform/ProcessTypes.h"
 #include "PriorityChangesInFlight.h"
 #include "ProcessDetailsHistory.h"
+#include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_HistoryHelpers.h"
 #include "ProcessSmoothedUsage.h"
 #include "UI/FillPlotLayout.h"
 
+#include <array>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -441,6 +443,8 @@ class ProcessDetailsPanel : public Panel
     PriorityChangesInFlight* m_PriorityChanges = nullptr;
     const char* m_PriorityHeldElsewhere = nullptr;                   // This frame's holdReason() for the shown process, or null
     std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
+    // The Overview cards' own content heights, last measured (#4029): each row is as tall as its tallest.
+    std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT> m_OverviewCardHeights{};
 
     // The Overview's Environment section (#179). The reader is created by the composition root (the
     // default constructor) and called only from updateWithSamples(), through the view, while the
