@@ -349,6 +349,110 @@ void logWindow(std::string_view what, HWND window)
                     (window != nullptr) ? describeProcess(ownerOf(window)) : std::string("(none)")));
 }
 
+[[nodiscard]] std::string classOf(HWND window)
+{
+    std::array<wchar_t, 128> name{};
+    const int length = GetClassNameW(window, name.data(), static_cast<int>(name.size()));
+    return narrow(std::wstring_view(name.data(), static_cast<std::size_t>(std::max(length, 0))));
+}
+
+/// The desktop's folder view: which top-level window (Progman or a WorkerW) holds SHELLDLL_DefView and its
+/// SysListView32, and whether they are visible. No DefView means Explorer never made the desktop's view.
+void logDesktopView()
+{
+    struct Found
+    {
+        int topLevels = 0;
+        std::vector<std::string> lines;
+    };
+    Found found;
+    EnumWindows(
+        [](HWND window, LPARAM param) -> BOOL
+        {
+            auto* into = reinterpret_cast<Found*>(param);
+            const std::string name = classOf(window);
+            if (name != "Progman" && name != "WorkerW")
+            {
+                return TRUE;
+            }
+            ++into->topLevels;
+            HWND view = FindWindowExW(window, nullptr, L"SHELLDLL_DefView", nullptr);
+            HWND list = (view != nullptr) ? FindWindowExW(view, nullptr, L"SysListView32", nullptr) : nullptr;
+            RECT rect{};
+            GetWindowRect(window, &rect);
+            into->lines.push_back(
+                std::format("  {} hwnd=0x{:X} owner={} visible={} rect=({},{})-({},{}) DefView=0x{:X} visible={} ListView=0x{:X}",
+                            name,
+                            reinterpret_cast<std::uintptr_t>(window),
+                            ownerOf(window),
+                            IsWindowVisible(window) != FALSE,
+                            rect.left,
+                            rect.top,
+                            rect.right,
+                            rect.bottom,
+                            reinterpret_cast<std::uintptr_t>(view),
+                            (view != nullptr) && IsWindowVisible(view) != FALSE,
+                            reinterpret_cast<std::uintptr_t>(list)));
+            return TRUE;
+        },
+        reinterpret_cast<LPARAM>(&found));
+    log(std::format("desktop windows (Progman/WorkerW): {}", found.topLevels));
+    for (const std::string& line : found.lines)
+    {
+        log(line);
+    }
+}
+
+/// Whether named event @p name exists and is signalled (the shell's ready events, set once the desktop is up).
+[[nodiscard]] std::string eventState(const wchar_t* name)
+{
+    const UniqueHandle event(OpenEventW(SYNCHRONIZE, FALSE, name));
+    if (!event)
+    {
+        return std::format("(not opened: {})", GetLastError());
+    }
+    return (WaitForSingleObject(event.get(), 0) == WAIT_OBJECT_0) ? "signalled" : "not signalled";
+}
+
+/// The OS build, the display, the desktop-hiding policies and the shell's ready events.
+void logDesktopContext()
+{
+    const wchar_t* version = L"SOFTWARE\\Microsoft\\Windows NT\\CurrentVersion";
+    log(std::format("OS: ProductName={} EditionID={} InstallationType={} DisplayVersion={} CurrentBuild={} UBR={}",
+                    registryString(HKEY_LOCAL_MACHINE, version, L"ProductName"),
+                    registryString(HKEY_LOCAL_MACHINE, version, L"EditionID"),
+                    registryString(HKEY_LOCAL_MACHINE, version, L"InstallationType"),
+                    registryString(HKEY_LOCAL_MACHINE, version, L"DisplayVersion"),
+                    registryString(HKEY_LOCAL_MACHINE, version, L"CurrentBuild"),
+                    hklmDword(version, L"UBR")));
+    log(std::format("display: monitors={} screen={}x{} virtual={}x{} remoteSession={}",
+                    GetSystemMetrics(SM_CMONITORS),
+                    GetSystemMetrics(SM_CXSCREEN),
+                    GetSystemMetrics(SM_CYSCREEN),
+                    GetSystemMetrics(SM_CXVIRTUALSCREEN),
+                    GetSystemMetrics(SM_CYVIRTUALSCREEN),
+                    GetSystemMetrics(SM_REMOTESESSION)));
+    const wchar_t* explorerPolicies = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
+    const wchar_t* advanced = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
+    auto hkcuDword = [](const wchar_t* key, const wchar_t* value)
+    {
+        DWORD data = 0;
+        DWORD size = sizeof(data);
+        const LSTATUS status = RegGetValueW(HKEY_CURRENT_USER, key, value, RRF_RT_REG_DWORD, nullptr, &data, &size);
+        return (status == ERROR_SUCCESS) ? std::to_string(data) : std::format("(not read: {})", status);
+    };
+    log(std::format("policies: HKLM NoDesktop={} HKCU NoDesktop={} HKCU Advanced HideIcons={} HKLM NoActiveDesktop={}",
+                    hklmDword(explorerPolicies, L"NoDesktop"),
+                    hkcuDword(explorerPolicies, L"NoDesktop"),
+                    hkcuDword(advanced, L"HideIcons"),
+                    hklmDword(explorerPolicies, L"NoActiveDesktop")));
+    log(std::format("shell events: ShellDesktopSwitchEvent={} ShellReadyEvent={} Local\\ShellReadyEvent={}",
+                    eventState(L"ShellDesktopSwitchEvent"),
+                    eventState(L"ShellReadyEvent"),
+                    eventState(L"Local\\ShellReadyEvent")));
+    logDesktopView();
+}
+
 /// The PID of the server behind COM proxy @p object: its standard OBJREF's IPID carries the server's PID in Data2
 /// (16 bits: 0xFFFF means the PID is larger). Also reports the OXID, so two proxies can be told apart.
 [[nodiscard]] std::string serverOf(IUnknown* object)
@@ -517,6 +621,7 @@ TEST_F(CiRealSystemShellDiagnosticsTest, LogsWhoServesShellWindowsAndWhoOwnsTheD
     logWindow("Progman", FindWindowW(L"Progman", nullptr));
     logWindow("Shell_TrayWnd", FindWindowW(L"Shell_TrayWnd", nullptr));
     logExplorers("before CoCreateInstance");
+    logDesktopContext();
 
     const HRESULT init = CoInitializeEx(nullptr, COINIT_APARTMENTTHREADED);
     log(std::format("CoInitializeEx(STA) = {}", hex(init)));
