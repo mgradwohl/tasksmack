@@ -458,7 +458,7 @@ class FrameClock
 
     /// The frame starting at @p nowSeconds: its deltaTime (capped at @p maxDeltaSeconds) and real
     /// interval since the previous one, which this becomes.
-    [[nodiscard]] constexpr auto tick(double nowSeconds, float maxDeltaSeconds) -> FrameTick
+    [[nodiscard]] constexpr auto tick(double nowSeconds, float maxDeltaSeconds) noexcept -> FrameTick
     {
         const FrameTick frame{
             .deltaSeconds = frameDeltaSeconds(m_LastSeconds, nowSeconds, maxDeltaSeconds),

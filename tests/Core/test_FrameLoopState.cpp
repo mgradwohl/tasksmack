@@ -1,14 +1,10 @@
 /// @file test_FrameLoopState.cpp
-/// @brief Application::run()'s loop, each phase on its own (#3791): the drain,
-/// the bookkeeping after it (the graces, the vsync transition, the trace's
-/// transitions, a close, the P3 skip, the hidden state), the move/resize frame
-/// and the resize present hold (#882), the iteration's wait (a hidden window's,
-/// a held present's, a paced frame's, the idle wait), each cut short for a
-/// failed GPU context replacement's retry (#3484), the regular frame and the
-/// end of the iteration; then a whole iteration, and the host's own parts (the
-/// frame clock, the idle wait's timer, the idle-wait record). A fake
-/// IFrameLoopHost stands in for the clock, SDL, the window and the layers, so
-/// no window opens.
+/// @brief Application::run()'s loop, each phase on its own (#3791): the drain, the bookkeeping after it (the graces,
+/// the vsync transition, the trace's transitions, a close, the P3 skip, the hidden state), the move/resize frame and
+/// the resize present hold (#882), the iteration's wait (a hidden window's, a held present's, a paced frame's, the idle
+/// wait), each cut short for a failed GPU context replacement's retry (#3484), the regular frame and the end of the
+/// iteration; then a whole iteration, and the host's own parts (the frame clock, the idle wait's timer, the idle-wait
+/// record). A fake IFrameLoopHost stands in for the clock, SDL, the window and the layers, so no window opens.
 
 #include "Core/AnimationRequest.h"
 #include "Core/FrameLoopState.h"
@@ -38,16 +34,14 @@ using Core::WindowVisibility::HiddenState;
 
 constexpr double START = 100.0;
 constexpr double DISPLAY_HZ = 60.0;
-// Exactly representable, so the hold's remaining milliseconds are exact: 62.5
-// ms interval, 15.625 ms since the last frame, 46.875 ms left (rounded up to
-// 47).
+// Exactly representable, so the hold's remaining milliseconds are exact: 62.5 ms interval, 15.625 ms since the last
+// frame, 46.875 ms left (rounded up to 47).
 constexpr double MIN_INTERVAL = 0.0625;
 constexpr double SINCE_LAST_FRAME = 0.015625;
 constexpr int HOLD_MS = 47;
 
-/// The clock, SDL, the window and the layers, as the loop sees them. Every call
-/// with an effect is logged in order; an event wait that times out and a paced
-/// delay move the clock on by their length.
+/// The clock, SDL, the window and the layers, as the loop sees them. Every call with an effect is logged in order; an
+/// event wait that times out and a paced delay move the clock on by their length.
 class FakeLoopHost final : public Core::IFrameLoopHost
 {
   public:
@@ -57,16 +51,13 @@ class FakeLoopHost final : public Core::IFrameLoopHost
     std::vector<int> waitTimeoutsMs;
     /// The next event wait's outcome; any but TimedOut leaves a key-down event.
     IdleWaitOutcome waitOutcome = IdleWaitOutcome::TimedOut;
-    /// What boundWaitMs() caps a wait at: the next retry of a failed context
-    /// replacement (#3484).
+    /// What boundWaitMs() caps a wait at: the next retry of a failed context replacement (#3484).
     int recoveryBoundMs = std::numeric_limits<int>::max();
-    /// False while drawing is suspended after a GPU reset (#3484): renderFrame()
-    /// draws nothing.
+    /// False while drawing is suspended after a GPU reset (#3484): renderFrame() draws nothing.
     bool drawing = true;
     /// The frame start time each renderFrame() saw on the clock.
     std::vector<double> renderTimes;
-    /// Whether each renderFrame() was handed timings to fill: only a traced frame
-    /// is.
+    /// Whether each renderFrame() was handed timings to fill: only a traced frame is.
     std::vector<bool> renderTimed;
     std::vector<IdleWaitOutcome> idleWaits;
 
@@ -85,8 +76,7 @@ class FakeLoopHost final : public Core::IFrameLoopHost
     bool geometryChanged = false;
     bool vsync = true;
     bool vsyncOffForInteraction = false;
-    /// What a close the window asked for does: nothing pending, or pending and
-    /// accepted.
+    /// What a close the window asked for does: nothing pending, or pending and accepted.
     bool windowCloseAccepted = false;
     bool minimized = false;
     HiddenState hiddenState = HiddenState::Shown;
@@ -135,8 +125,7 @@ class FakeLoopHost final : public Core::IFrameLoopHost
     [[nodiscard]] int boundWaitMs(const int waitMs, const double nowSeconds) override
     {
         calls.emplace_back("bound");
-        // The recovery's retry is due relative to the time of the wait: the clock's
-        // reading now.
+        // The recovery's retry is due relative to the time of the wait: the clock's reading now.
         EXPECT_DOUBLE_EQ(nowSeconds, clock) << "boundWaitMs() is given the clock's time";
         return std::min(waitMs, recoveryBoundMs);
     }
@@ -270,6 +259,7 @@ class FakeLoopHost final : public Core::IFrameLoopHost
 
     bool closeOnWindowRequest() override
     {
+        calls.emplace_back("closeOnWindowRequest");
         return windowCloseAccepted;
     }
 
@@ -695,8 +685,7 @@ SDL_Event pixelSizeEvent(const int width, const int height)
 
 TEST(FrameLoopStateTest, TheDrainDispatchesTheEventThatWokeTheWaitFirst)
 {
-    // #1409: SDL_WaitEventTimeout() took the waking event off the queue; it is
-    // handled before the rest.
+    // #1409: SDL_WaitEventTimeout() took the waking event off the queue; it is handled before the rest.
     FakeLoopHost host;
     host.queue = {eventOf(SDL_EVENT_MOUSE_MOTION)};
     FrameLoopState loop = makeLoop();
@@ -739,8 +728,7 @@ TEST(FrameLoopStateTest, ANewSizeIsRaisedAndStartsTheMoveResizeGrace)
     EXPECT_DOUBLE_EQ(loop.lastSizeChangeTime, START) << "the resize present bound runs from a new size (#882)";
     EXPECT_DOUBLE_EQ(host.graceUntil, START + FrameLoopState::INTERACTION_REDRAW_GRACE_SECONDS);
 
-    // The same size again (SDL's RESIZED and PIXEL_SIZE_CHANGED carry one size
-    // twice): raised, but not a new size.
+    // The same size again (SDL's RESIZED and PIXEL_SIZE_CHANGED carry one size twice): raised, but not a new size.
     host.clock = START + 1.0;
     host.queue = {pixelSizeEvent(1024, 768)};
     static_cast<void>(loop.drain(host, false));
@@ -829,8 +817,7 @@ TEST(FrameLoopStateTest, TheWindowsOwnEventsGoToTheLayersThenToTheirHandling)
 
 TEST(FrameLoopStateTest, TheDrainStopsAtItsBudget)
 {
-    // P0 (#1410): 5 ms an event, so the second event takes the drain past its 8
-    // ms budget.
+    // P0 (#1410): 5 ms an event, so the second event takes the drain past its 8 ms budget.
     FakeLoopHost host;
     host.drainStep = std::chrono::milliseconds(5);
     for (int i = 0; i < 5; ++i)
@@ -856,15 +843,14 @@ TEST(FrameLoopStateTest, AnInteractionTurnsVsyncOffAndItsEndTurnsItBackOn)
     const auto started = loop.afterDrain(host, {.resizeEventCount = 1, .needsResizeRedraw = true}, false);
     EXPECT_TRUE(started.isInteracting);
     EXPECT_FALSE(started.tracingInteraction) << "not traced";
-    EXPECT_EQ(host.calls, calls({"vsyncOff", "pollGraphicsRecovery", "pollHiddenState"}));
+    EXPECT_EQ(host.calls, calls({"vsyncOff", "closeOnWindowRequest", "pollGraphicsRecovery", "pollHiddenState"}));
 
-    // The previous iteration interacted (endIteration()); the grace is over, so
-    // this one doesn't.
+    // The previous iteration interacted (endIteration()); the grace is over, so this one doesn't.
     loop.wasInteracting = true;
     host.calls.clear();
     const auto ended = loop.afterDrain(host, {}, false);
     EXPECT_FALSE(ended.isInteracting);
-    EXPECT_EQ(host.calls, calls({"vsyncOn", "pollGraphicsRecovery", "pollHiddenState"}));
+    EXPECT_EQ(host.calls, calls({"vsyncOn", "closeOnWindowRequest", "pollGraphicsRecovery", "pollHiddenState"}));
 }
 
 TEST(FrameLoopStateTest, VsyncStaysAsItIsWhenTheAppAskedForNone)
@@ -873,7 +859,7 @@ TEST(FrameLoopStateTest, VsyncStaysAsItIsWhenTheAppAskedForNone)
     host.vsync = false;
     FrameLoopState loop = makeLoop();
     static_cast<void>(loop.afterDrain(host, {.resizeEventCount = 1, .needsResizeRedraw = true}, false));
-    EXPECT_EQ(host.calls, calls({"pollGraphicsRecovery", "pollHiddenState"}));
+    EXPECT_EQ(host.calls, calls({"closeOnWindowRequest", "pollGraphicsRecovery", "pollHiddenState"}));
 }
 
 TEST(FrameLoopStateTest, TheGracesComeFromTheDrain)
@@ -901,7 +887,20 @@ TEST(FrameLoopStateTest, AnAcceptedWindowCloseEndsTheIterationAfterItsBatchIsRec
     EXPECT_TRUE(state.stopped);
     EXPECT_EQ(loop.resizeTraceStats.eventBatches, 1U) << "the final drain counts in the shutdown summary";
     EXPECT_EQ(loop.resizeTraceStats.drainedEvents, 3U);
-    EXPECT_TRUE(host.calls.empty()) << "no recovery poll, no hidden state";
+    EXPECT_EQ(host.calls, calls({"closeOnWindowRequest"})) << "no recovery poll, no hidden state";
+}
+
+TEST(FrameLoopStateTest, TheWindowCloseIsCheckedAfterTheVsyncTransition)
+{
+    // The close comes after the vsync transition and the trace's batch, as it did in run(): an interaction that starts in
+    // the drain that closes still turns vsync off first.
+    FakeLoopHost host;
+    host.windowCloseAccepted = true;
+    FrameLoopState loop = makeLoop();
+    const auto state = loop.afterDrain(host, {.resizeEventCount = 1, .needsResizeRedraw = true}, false);
+
+    EXPECT_TRUE(state.stopped);
+    EXPECT_EQ(host.calls, calls({"vsyncOff", "closeOnWindowRequest"}));
 }
 
 TEST(FrameLoopStateTest, ASlowDrainSkipsTheRenderButNotWhileMinimized)
@@ -937,8 +936,7 @@ TEST(FrameLoopStateTest, AHiddenWindowDrawsNoFramesOnceTheFirstIsDrawnAndPausesT
         EXPECT_EQ(loop.afterDrain(host, {}, false).hiddenWait.timeoutMs, FrameLoopState::CLOAKED_POLL_INTERVAL_MS);
     }
     {
-        // Before the first frame a hidden window still draws, so the loaded
-        // settings are published (#2731).
+        // Before the first frame a hidden window still draws, so the loaded settings are published (#2731).
         FakeLoopHost host;
         host.hiddenState = HiddenState::Hidden;
         FrameLoopState loop = makeLoop();
@@ -973,8 +971,7 @@ TEST(FrameLoopStateTest, TheTraceStartsAFreshSummaryWhenAnInteractionStartsAndEn
 
 // ---- The end of the iteration ----
 
-/// Clears Core::AnimationRequest's process-wide requests, before a test and
-/// after it.
+/// Clears Core::AnimationRequest's process-wide requests, before a test and after it.
 void clearAnimationRequests()
 {
     static_cast<void>(Core::AnimationRequest::consume());
@@ -990,8 +987,7 @@ TEST(FrameLoopStateTest, ADrawnFrameTakesWhatItsContentAskedOfTheNextOne)
     Core::AnimationRequest::request(45.0);
     Core::AnimationRequest::requestFrameWithin(0.5);
 
-    // Nothing drawn (a skipped render, or drawing suspended, #3484): the previous
-    // answer stands.
+    // Nothing drawn (a skipped render, or drawing suspended, #3484): the previous answer stands.
     loop.endIteration(host, {.drewFrame = false});
     EXPECT_DOUBLE_EQ(loop.requestedAnimationFps, 0.0);
     EXPECT_FALSE(loop.drewFirstFrame);
@@ -1088,7 +1084,8 @@ TEST(FrameLoopStateTest, AnIdleIterationWaitsForTheFloorThenDraws)
     loop.lastFrameStart = START;
     EXPECT_TRUE(loop.iterate(host, false));
 
-    EXPECT_EQ(host.calls, calls({"pollGraphicsRecovery", "pollHiddenState", "bound", "wait", "noteIdleWait", "regularFrame"}));
+    EXPECT_EQ(host.calls,
+              calls({"closeOnWindowRequest", "pollGraphicsRecovery", "pollHiddenState", "bound", "wait", "noteIdleWait", "regularFrame"}));
     EXPECT_EQ(host.waitTimeoutsMs, std::vector<int>{FrameLoopState::STATIC_FRAME_FLOOR_MS});
     EXPECT_EQ(host.idleWaits, std::vector<IdleWaitOutcome>{IdleWaitOutcome::TimedOut});
     EXPECT_EQ(host.renderTimed, std::vector<bool>{false}) << "an untraced frame is handed no timings";
@@ -1097,22 +1094,21 @@ TEST(FrameLoopStateTest, AnIdleIterationWaitsForTheFloorThenDraws)
 
 TEST(FrameLoopStateTest, AWakeDefersTheFrameToTheNextIterationWhichDispatchesTheEventFirst)
 {
-    // #1409: the frame after a wake shows the state after the input, not before
-    // it.
+    // #1409: the frame after a wake shows the state after the input, not before it.
     clearAnimationRequests();
     FakeLoopHost host;
     host.waitOutcome = IdleWaitOutcome::Woke;
     FrameLoopState loop = makeLoop();
     loop.lastFrameStart = START;
     EXPECT_TRUE(loop.iterate(host, false));
-    EXPECT_EQ(host.calls, calls({"pollGraphicsRecovery", "pollHiddenState", "bound", "wait", "noteIdleWait"}));
+    EXPECT_EQ(host.calls, calls({"closeOnWindowRequest", "pollGraphicsRecovery", "pollHiddenState", "bound", "wait", "noteIdleWait"}));
     EXPECT_EQ(host.idleWaits, std::vector<IdleWaitOutcome>{IdleWaitOutcome::Woke});
 
     // The key that woke it is drained, and its frame paced as an input frame.
     host.calls.clear();
     EXPECT_TRUE(loop.iterate(host, false));
     EXPECT_EQ(host.dispatched, std::vector<std::uint32_t>{static_cast<std::uint32_t>(SDL_EVENT_KEY_DOWN)});
-    EXPECT_EQ(host.calls, calls({"pollGraphicsRecovery", "pollHiddenState", "delay", "regularFrame"}));
+    EXPECT_EQ(host.calls, calls({"closeOnWindowRequest", "pollGraphicsRecovery", "pollHiddenState", "delay", "regularFrame"}));
     clearAnimationRequests();
 }
 
@@ -1122,15 +1118,14 @@ TEST(FrameLoopStateTest, AnAcceptedWindowCloseEndsTheLoopWithoutAFrame)
     host.windowCloseAccepted = true;
     FrameLoopState loop = makeLoop();
     EXPECT_FALSE(loop.iterate(host, false));
-    EXPECT_TRUE(host.calls.empty());
+    EXPECT_EQ(host.calls, calls({"closeOnWindowRequest"}));
 }
 
 // ---- The host's own parts ----
 
 TEST(FrameLoopStateHostTest, TheFrameClockCapsTheDeltaTimeButNotTheInterval)
 {
-    // Application::LoopHost: deltaTime for the layers, the real interval for
-    // lastFrameIntervalSeconds() (#1152).
+    // Application::LoopHost: deltaTime for the layers, the real interval for lastFrameIntervalSeconds() (#1152).
     constexpr float MAX_DELTA = 1.0F;
     Core::FramePacing::FrameClock clock(10.0);
     const auto first = clock.tick(10.25, MAX_DELTA);
@@ -1162,8 +1157,7 @@ struct FakeIdleWaitTimer
 
 TEST(FrameLoopStateHostTest, TheIdleWaitsTimerIsArmedForItsTimeoutAndDisarmedAfter)
 {
-    // #3712: on Windows the wait's timeout ends on time with IdleWaitTimer, armed
-    // for just that wait.
+    // #3712: on Windows the wait's timeout ends on time with IdleWaitTimer, armed for just that wait.
     for (const bool woke : {false, true})
     {
         std::vector<std::string> log;

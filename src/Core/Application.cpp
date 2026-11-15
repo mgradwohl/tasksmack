@@ -189,7 +189,7 @@ void ensureXdgRuntimeDir()
 // not a full guarantee: layers pair raw ImGui::Begin()/End() calls (not RAII), so an exception
 // thrown between them still leaves ImGui's window stack unbalanced for the rest of this frame;
 // the assertion ImGui uses to detect that is compiled out in NDEBUG (Release) builds but active
-// in Debug. Shared by renderFrame(), raiseEvent(), and the SDL event passthrough loop in run()
+// in Debug. Shared by renderFrame(), raiseEvent(), and the SDL event passthrough (LoopHost::dispatchToLayers())
 // so every per-frame/per-event layer callback degrades the same way instead of only some of
 // them (#778). Returns whether the call completed, for the one caller that must know: a layer
 // failing to rebuild after a GPU reset fails the context replacement (#3484).
