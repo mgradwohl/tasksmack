@@ -11,6 +11,7 @@
 #include "PosixGuards.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
+#include "RootTools.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
 
@@ -76,38 +77,7 @@ using LinuxProcessDetail::sendThroughPidfd;
 using LinuxProcessDetail::verifyIdentity;
 using Posix::FdGuard;
 
-/// Whether @p path is a regular file this process may execute.
-[[nodiscard]] bool isExecutableFile(const std::string& path)
-{
-    struct stat info{};
-    return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && ::access(path.c_str(), X_OK) == 0;
-}
-
-/// As isExecutableFile(), for a tool TaskSmack runs as root (#3605): also one only root could have put where it
-/// resolves to (SyscallTrace::onlyRootCouldPlace()).
-[[nodiscard]] bool isRootTrustedExecutable(const std::string& path)
-{
-    if (!isExecutableFile(path))
-    {
-        return false;
-    }
-    std::error_code ec;
-    const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
-    if (ec)
-    {
-        return false;
-    }
-    return SyscallTrace::onlyRootCouldPlace(resolved.native(),
-                                            [](const std::string& entry) -> std::optional<SyscallTrace::PathOwnership>
-                                            {
-                                                struct stat info{};
-                                                if (::lstat(entry.c_str(), &info) != 0)
-                                                {
-                                                    return std::nullopt;
-                                                }
-                                                return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
-                                            });
-}
+using RootTools::isExecutableFile;
 
 /// The value of environment variable @p name, or empty when unset.
 [[nodiscard]] std::string_view environmentValue(const char* name)
@@ -485,11 +455,10 @@ SyscallTrace::Tools LinuxProcessActions::discoverSyscallTraceTools()
 {
     // As root, these run as root: only from the system's own directories, and only files root put there (#3605).
     const bool root = ::geteuid() == 0;
-    const std::string_view pathEnv = root ? SyscallTrace::ROOT_TOOL_PATH : environmentValue("PATH");
-    bool (*const usable)(const std::string&) = root ? &isRootTrustedExecutable : &isExecutableFile;
-    const auto find = [pathEnv, usable](std::string_view name)
+    const std::string_view pathEnv = environmentValue("PATH");
+    const auto find = [root, pathEnv](std::string_view name)
     {
-        return SyscallTrace::findExecutable(name, pathEnv, usable);
+        return RootTools::find(name, root, pathEnv);
     };
     SyscallTrace::Tools tools;
     tools.tracerPath = find("strace").value_or(std::string{});
