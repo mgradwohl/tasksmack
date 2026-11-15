@@ -32,6 +32,8 @@ on:
       - Manual Build
       - Release
       - Copilot Setup Steps
+      # Saves nothing (#3825: setup-llvm with expect-release only restores), but the hook counts any setup-llvm call.
+      - LLVM Cache Warm
     types: [completed]
     branches: [main]
   workflow_dispatch:

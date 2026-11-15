@@ -18,6 +18,7 @@
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "Core/Application.h"
 #include "Domain/PriorityConfig.h"
+#include "Mocks/FakeHttpsClient.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IHttpsClient.h"
@@ -66,29 +67,8 @@
 namespace App::ProcessActionsBlockRenderTestDetail
 {
 
-/// Look up on VirusTotal's client in these tests (#3094): every request answered with one reply, and counted.
-class FakeLookupClient final : public Platform::IHttpsClient
-{
-  public:
-    explicit FakeLookupClient(Platform::HttpsResponse reply) : m_Reply(std::move(reply))
-    {}
-
-    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& /*request*/,
-                                                                          const std::stop_token& /*stop*/) override
-    {
-        m_Requests.fetch_add(1);
-        return m_Reply;
-    }
-
-    [[nodiscard]] int requestCount() const noexcept
-    {
-        return m_Requests.load();
-    }
-
-  private:
-    Platform::HttpsResponse m_Reply;
-    std::atomic<int> m_Requests{0};
-};
+/// Look up on VirusTotal's client in these tests (#3094): the shared fake (#3849).
+using FakeLookupClient = TestMocks::FakeHttpsClient;
 
 } // namespace App::ProcessActionsBlockRenderTestDetail
 
@@ -1756,7 +1736,7 @@ TEST_F(ProcessActionsBlockRenderTest, LookUpOnVirusTotalFromTheCardHashesAndShow
     h.actionsView.waitForActionForTesting();
     (void) runFrame(body);
     EXPECT_EQ(h.mock.imageSha256Count(), 1);
-    EXPECT_EQ(client->requestCount(), 1);
+    EXPECT_EQ(client->requestCount(), 1U);
     EXPECT_TRUE(text.contains("2 of 62 engines flag")) << text;
 
     // Without a key the button goes.

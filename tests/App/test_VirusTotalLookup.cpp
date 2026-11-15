@@ -2,6 +2,7 @@
 /// @brief Look up on VirusTotal's worker half (#3094): hash, ask with the key, read; with a fake client and actions.
 
 #include "App/Panels/VirusTotalLookup.h"
+#include "Mocks/FakeHttpsClient.h"
 #include "Mocks/MockProbes.h"
 
 #include <gtest/gtest.h>
@@ -18,32 +19,7 @@
 namespace App::VirusTotalLookupTest
 {
 
-/// Answers every request with one reply and keeps what was asked.
-class FakeHttpsClient final : public Platform::IHttpsClient
-{
-  public:
-    explicit FakeHttpsClient(std::expected<Platform::HttpsResponse, std::string> reply) : m_Reply(std::move(reply))
-    {}
-
-    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& request,
-                                                                          const std::stop_token& /*stop*/) override
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_Requests.push_back(request);
-        return m_Reply;
-    }
-
-    [[nodiscard]] std::vector<Platform::HttpsRequest> requests() const
-    {
-        const std::scoped_lock lock(m_Mutex);
-        return m_Requests;
-    }
-
-  private:
-    mutable std::mutex m_Mutex;
-    std::expected<Platform::HttpsResponse, std::string> m_Reply;
-    std::vector<Platform::HttpsRequest> m_Requests;
-};
+using TestMocks::FakeHttpsClient;
 
 namespace
 {

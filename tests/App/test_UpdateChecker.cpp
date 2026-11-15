@@ -9,6 +9,7 @@
 #include "App/UpdateChecker.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
+#include "Mocks/FakeHttpsClient.h"
 #include "Platform/IHttpsClient.h"
 
 #include <gtest/gtest.h>
@@ -28,38 +29,7 @@ namespace App
 namespace
 {
 
-/// Answers each get() with the reply it was given, and records the requests (on the worker's thread).
-class FakeHttpsClient final : public Platform::IHttpsClient
-{
-  public:
-    explicit FakeHttpsClient(std::expected<Platform::HttpsResponse, std::string> reply) : m_Reply(std::move(reply))
-    {}
-
-    [[nodiscard]] std::expected<Platform::HttpsResponse, std::string> get(const Platform::HttpsRequest& request,
-                                                                          const std::stop_token& /*stop*/) override
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_Requests.push_back(request);
-        return m_Reply;
-    }
-
-    [[nodiscard]] std::vector<Platform::HttpsRequest> requests() const
-    {
-        const std::scoped_lock lock(m_Mutex);
-        return m_Requests;
-    }
-
-    void setReply(std::expected<Platform::HttpsResponse, std::string> reply)
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_Reply = std::move(reply);
-    }
-
-  private:
-    mutable std::mutex m_Mutex;
-    std::expected<Platform::HttpsResponse, std::string> m_Reply;
-    std::vector<Platform::HttpsRequest> m_Requests;
-};
+using TestMocks::FakeHttpsClient;
 
 using namespace std::chrono_literals;
 using Domain::UpdateCheck::Persisted;
