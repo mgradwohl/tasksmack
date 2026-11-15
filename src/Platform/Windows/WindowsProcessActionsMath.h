@@ -808,10 +808,11 @@ class EfficiencyModePriorities
         }
     }
 
-    /// @p priorityClass is what @p target's off restores when nothing is remembered for it (#3327, #3776): the class an
-    /// off's request to the helper carries, for an on this helper never saw. A class this side remembers, from an on it
-    /// ran itself, is kept: a value from the wire never replaces it. 0 (unreadable) remembers nothing.
-    void assignIfNone(const ProcessTarget& target, uint32_t priorityClass)
+    /// @p priorityClass is what @p target's off restores, whatever was remembered before (#3327): the class an off's
+    /// request to the helper carries, TaskSmack's, which knows of every on since. Unlike remember(), Idle replaces a
+    /// class too: TaskSmack's on found the process at Idle, so a class this helper kept from an earlier on is stale.
+    /// 0 (unreadable) remembers nothing.
+    void assign(const ProcessTarget& target, uint32_t priorityClass)
     {
         if (priorityClass == 0)
         {
@@ -819,12 +820,8 @@ class EfficiencyModePriorities
         }
         const Key key{target.pid, target.startTimeTicks};
         const std::scoped_lock lock(m_Mutex);
-        if (m_Classes.contains(key))
-        {
-            return;
-        }
         makeRoomFor(key);
-        m_Classes.emplace(key, priorityClass);
+        m_Classes.insert_or_assign(key, priorityClass);
         m_RealtimeRetries.erase(key);
     }
 

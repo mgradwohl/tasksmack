@@ -923,10 +923,17 @@ void WindowsProcessActions::rememberEfficiencyPriorityClass(const ProcessTarget&
 void WindowsProcessActions::setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
 {
     // Never Realtime from a request (#3776): an approved off would set it without Realtime's own warning and confirm.
-    // TaskSmack's Realtime retry asks for it as a priority change instead (efficiencyNiceToRestore()).
-    if (isPriorityClass(priorityClass) && priorityClass != REALTIME_PRIORITY_CLASS)
+    // The off restores the class this side remembers, or else Normal. TaskSmack's Realtime retry asks for it as a
+    // priority change instead (efficiencyNiceToRestore()). Any other class, High included, replaces what is remembered
+    // (#3590): TaskSmack has seen every on since.
+    if (priorityClass == REALTIME_PRIORITY_CLASS)
     {
-        m_EfficiencyPriorities->assignIfNone(target, priorityClass);
+        spdlog::info("Efficiency mode off for PID {}: the request's Realtime class to restore is ignored", target.pid);
+        return;
+    }
+    if (isPriorityClass(priorityClass))
+    {
+        m_EfficiencyPriorities->assign(target, priorityClass);
     }
 }
 
