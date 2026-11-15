@@ -5,6 +5,7 @@
 
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessAffinitySections.h"
+#include "Mocks/MockProbes.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 
@@ -46,6 +47,31 @@ TEST(ProcessAffinityDialogTest, TicksTheCurrentAffinityAndAppliesTheBoxes)
     // An affinity that couldn't be read ticks every box.
     dialog.open({.pid = 43, .startTimeTicks = 8}, "other", Platform::CpuAffinity{}, 3);
     EXPECT_EQ(dialog.choice(), Platform::CpuAffinity::fromMask(0b111U));
+}
+
+// #3886: Apply is put together once for the row menu and Process Details' card: the line meanwhile, one setAffinity()
+// on the dialog's process, affinityResultMessage() as the result line, and the same CPUs as the administrator retry.
+TEST(ProcessAffinityDialogTest, ApplySetsTheCpusOnTheDialogsProcessAndCanBeRetried)
+{
+    TestMocks::MockProcessActions actions;
+    ProcessAffinityDialog dialog;
+    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", Platform::CpuAffinity::fromMask(0b0001U), 4);
+    const Platform::CpuAffinity cpus = Platform::CpuAffinity::fromMask(0b0110U);
+    Detail::DialogApply apply = affinityApply(&actions, dialog, cpus);
+    EXPECT_EQ(apply.pending, "Setting the CPU affinity of PID 42...");
+    EXPECT_EQ(actions.setAffinityCount(), 0) << "nothing runs until the worker calls it";
+
+    const Platform::ProcessActionResult result = apply.work();
+    EXPECT_EQ(actions.setAffinityCount(), 1);
+    EXPECT_EQ(actions.lastAffinity(), cpus);
+    EXPECT_EQ(actions.lastTarget().pid, 42);
+    EXPECT_EQ(actions.lastTarget().startTimeTicks, 7U);
+    EXPECT_EQ(apply.format(result).text, affinityResultMessage("server", 42, cpus, result).text);
+
+    ASSERT_TRUE(apply.retry.has_value());
+    EXPECT_EQ(apply.retry->kind, Platform::AuthorizedAction::Kind::SetAffinity);
+    EXPECT_EQ(apply.retry->target.pid, 42);
+    EXPECT_EQ(apply.retry->cpus, cpus);
 }
 
 TEST(ProcessAffinityDialogTest, TheResultLineSaysHowThePlatformAppliedTheChoice)

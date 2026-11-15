@@ -1343,7 +1343,10 @@ pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
-`check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+`check-cflite-paths` pre-commit hook fails if they differ (#2533). A target's sources pull in more than that filter
+watches, so every PR's Linux debug job also builds every target with `.clusterfuzzlite/build.sh` and runs each on one
+empty input ("Fuzz targets build (Linux)", #3837): a change anywhere that breaks a fuzzer's build or start fails the PR,
+not main. Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
 A release candidate's campaign gives each target 600 seconds instead (#2783):
 `gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's
@@ -3089,6 +3092,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
+- **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 
 ### Code Quality & Hygiene
@@ -3402,9 +3406,10 @@ since pkexec needs a running polkitd. It installs this run's `.deb` with `pkexec
 must know `app.tasksmack.TaskSmack.administrator`, with `exec.path` `/usr/bin/TaskSmack` and `allow_gui`, and the
 installed launcher's `Exec` must be `pkexec /usr/bin/TaskSmack`. A CI-only polkit rule then lets the runner's user
 through without a password, and the job runs the launcher's own command under Xvfb. TaskSmack must open its
-window as root with 13 effective capabilities (#3621), quit on SIGTERM, and save the settings to the runner user's
-`~/.config/tasksmack`, owned by them, while root's stays untouched: the user comes from `PKEXEC_UID`, which CI's
-sudo-based "Root launch (Linux)" doesn't reach. The password dialog stays a manual check.
+window as root with its capabilities narrowed (#3621: some kept, fewer than root holds), quit on SIGTERM, and save
+the settings to the runner user's `~/.config/tasksmack`, owned by them, while root's stays untouched: the user comes
+from `PKEXEC_UID`, which CI's sudo-based "Root launch (Linux)" doesn't reach. The password dialog stays a manual
+check.
 
 `validate-windows-upgrade` checks the Windows installer's upgrade over the last published release (#3757), on
 both architectures. `fetch-previous-windows-release` (Linux, where cosign runs) picks the published release
