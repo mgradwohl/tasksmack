@@ -1,11 +1,13 @@
 name: Heavy Checks
 
 on:
-  # On main or a release/* branch only when a merge touches code the benchmarks measure
-  # (benchmarks/*.cpp include Domain, UI, Platform -- e.g. NetlinkSocketStats, LinuxProcessProbe --
-  # and App/Panels/ProcessDetailsHistory) or this workflow (#1406); a top-level paths filter is
-  # fine here because Heavy Checks is not a required check. Everything else on main is covered by
-  # the nightly run below.
+  # On main or a release/* branch when a merge touches code the benchmarks measure (benchmarks/*.cpp include
+  # Domain, UI, Platform -- e.g. NetlinkSocketStats, LinuxProcessProbe -- and App/Panels/ProcessDetailsHistory)
+  # or this workflow (#1406), and, for the coverage jobs, any other product or test code (#3834: App, Core,
+  # main.cpp and tests used to wait for the nightly run, so a merge that dropped the Linux 95% floor failed main
+  # only the next morning). push-scope below says which: on a push, benchmark-regression runs only when the
+  # merge touched a benchmark path. A top-level paths filter is fine here because Heavy Checks is not a
+  # required check. Everything else on main is covered by the nightly run below.
   push:
     branches: [main, 'release/**']
     paths:
@@ -13,6 +15,11 @@ on:
       - 'src/UI/**'
       - 'src/Platform/**'
       - 'src/App/Panels/ProcessDetailsHistory.*'
+      # Coverage only (#3834); push-scope keeps the benchmarks to the paths above and below.
+      - 'src/App/**'
+      - 'src/Core/**'
+      - 'src/main.cpp'
+      - 'tests/**'
       - 'benchmarks/**'
       - 'perf-data/linux-ci-baseline.json'
       - 'perf-data/linux-ci-thresholds.json'
@@ -67,6 +74,62 @@ env:
 permissions: {}
 
 jobs:
+  # Whether a push touched what the benchmarks measure (#3834): the push paths above widened for the coverage
+  # jobs, and benchmark-regression (with its second runner) runs on a push only when this says so. Every other
+  # event answers true, so the nightly run and dispatches are unchanged. The list is the push filter's benchmark
+  # half; tests/tools/test_workflow_run_steps.py keeps the two in step.
+  push-scope:
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      benchmarks: ${{ steps.scope.outputs.benchmarks }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        if: github.event_name == 'push'
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+
+      - name: Decide what this push runs
+        id: scope
+        env:
+          EVENT: ${{ github.event_name }}
+          BEFORE: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          if [[ "$EVENT" != push ]]; then
+            echo "benchmarks=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          # A new branch, a force-push or a before commit this clone can't reach: run the benchmarks, as before.
+          usable=true
+          if [[ -z "$BEFORE" || "$BEFORE" =~ ^0+$ ]]; then
+            usable=false
+          elif ! git cat-file -e "${BEFORE}^{commit}" 2>/dev/null; then
+            git fetch --no-tags --depth=1 origin "$BEFORE" 2>/dev/null || usable=false
+          fi
+          if [[ "$usable" != true ]]; then
+            echo "benchmarks=true" >> "$GITHUB_OUTPUT"
+            echo "No usable before commit: the benchmarks run."
+            exit 0
+          fi
+          benchmarks=false
+          while IFS= read -r path; do
+            case "$path" in
+              src/Domain/*|src/UI/*|src/Platform/*|src/App/Panels/ProcessDetailsHistory.*|benchmarks/*|\
+              perf-data/linux-ci-baseline.json|perf-data/linux-ci-thresholds.json|tools/bench.sh|\
+              tools/check-benchmark-regression.py|tools/bench-across-launches.py|tools/bench-manifest.py|\
+              tools/merge-benchmark-baselines.py|.github/workflows/heavy-checks.yml)
+                echo "Benchmarked path changed: $path"
+                benchmarks=true
+                break ;;
+            esac
+          done < <(git diff --name-only "$BEFORE" "$SHA")
+          echo "benchmarks=$benchmarks" >> "$GITHUB_OUTPUT"
+          [[ "$benchmarks" == true ]] || echo "No benchmarked path changed: coverage only."
+
   coverage:
     if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
     runs-on: ubuntu-26.04
@@ -567,7 +630,10 @@ jobs:
           exit 1
 
   benchmark-regression:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'coverage'
+    needs: push-scope
+    if: >-
+      (github.event_name != 'workflow_dispatch' || inputs.scope != 'coverage') &&
+      needs.push-scope.outputs.benchmarks == 'true'
     # On ubuntu-26.04 with the rest of CI (#3395): perf-data/linux-ci-baseline.json was re-captured there. Its
     # baseline is tied to the runner image, so an image move re-captures it (CONTRIBUTING.md, "Refreshing
     # perf-data/linux-ci-baseline.json").
