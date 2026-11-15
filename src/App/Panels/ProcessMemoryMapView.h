@@ -13,8 +13,8 @@
 // to update() from its per-frame update path, never from render(). update() starts a read only while the
 // section was drawn open on the last frame, once when it opens or the selection changes and then every
 // Domain::Sampling::PROCESS_MEMORY_MAP_REFRESH_MS, on a worker thread (one at a time), because a read
-// walks the whole address space. render() only draws what the last read returned, summed up and
-// formatted once per read (Domain/ProcessMemoryMap.h).
+// walks the whole address space. That worker also formats, sums up and sorts the read (prepare(), #3801): the UI
+// thread only moves the prepared rows in, and render() only draws them (Domain/ProcessMemoryMap.h).
 //
 // Everything but render() is defined here, free of ImGui, so the cadence, the statuses, the totals, the
 // sort and the filter are tested against a mock reader without an ImGui context; render() is run headless
@@ -135,6 +135,71 @@ class ProcessMemoryMapView
         std::string swap;
     };
 
+    /// A read made ready to draw on its worker (#3801): its status and, for Ok, its regions formatted and sorted in
+    /// the order the view had when the read started, and its totals. Up to the reader's cap of regions, six
+    /// strings each, a summarize() and a stable sort: off the UI thread, which only moves it in.
+    struct Prepared
+    {
+        Platform::MemoryMapReadStatus status = Platform::MemoryMapReadStatus::Ok;
+        std::string detail;
+        bool truncated = false;
+        bool hasResident = false;
+        std::vector<Row> rows;
+        std::vector<TotalsRow> totals;
+        Detail::MemoryMapColumn sortColumn = Detail::MemoryMapColumn::Address; ///< The order rows are in
+        bool sortAscending = true;
+    };
+
+    /// Makes @p result ready to draw (#3801), with the protection written in words (@p protectionWords) or in
+    /// letters, and the rows sorted by @p column (@p ascending). Pure: the read's worker runs it.
+    [[nodiscard]] static Prepared
+    prepare(const Platform::MemoryMapReadResult& result, bool protectionWords, Detail::MemoryMapColumn column, bool ascending)
+    {
+        Prepared prepared{
+            .status = result.status,
+            .detail = result.detail,
+            .truncated = result.truncated,
+            .hasResident = false,
+            .rows = {},
+            .totals = {},
+            .sortColumn = column,
+            .sortAscending = ascending,
+        };
+        if (result.status != Platform::MemoryMapReadStatus::Ok)
+        {
+            return prepared;
+        }
+        prepared.rows.reserve(result.mappings.size());
+        for (const Platform::MemoryMapping& mapping : result.mappings)
+        {
+            std::string path = mapping.path;
+            if (mapping.deleted)
+            {
+                path += " (deleted)";
+            }
+            prepared.rows.push_back({
+                .mapping = mapping,
+                .address = Domain::Modules::formatAddress(mapping.start),
+                .size = UI::Format::formatBytes(static_cast<double>(mapping.sizeBytes())),
+                .kind = std::string(Domain::MemoryMap::kindLabel(mapping.kind)),
+                .protection = Detail::memoryMapProtectionCell(mapping, protectionWords),
+                .resident = Detail::memoryMapBytesCell(mapping.residentBytes),
+                .path = std::move(path),
+            });
+        }
+        prepared.hasResident =
+            std::ranges::any_of(result.mappings, [](const Platform::MemoryMapping& m) { return m.residentBytes.has_value(); });
+        const Domain::MemoryMap::Summary summary = Domain::MemoryMap::summarize(result.mappings);
+        prepared.totals.reserve(summary.byKind.size() + 1);
+        for (const Domain::MemoryMap::KindTotals& kind : summary.byKind)
+        {
+            prepared.totals.push_back(totalsRow(std::string(Domain::MemoryMap::kindLabel(kind.kind)), kind.totals));
+        }
+        prepared.totals.push_back(totalsRow("Total", summary.all));
+        sortRowsBy(prepared.rows, column, ascending);
+        return prepared;
+    }
+
     /// Draws the section: a collapsing "Memory map (N)" header and, while it is open, the totals, the filter
     /// box and the regions table, or the last read's status line. Draws nothing when @p hasMemoryMap is false
     /// (synthetic runs).
@@ -150,11 +215,13 @@ class ProcessMemoryMapView
         // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
         if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
         {
-            if (auto failed = m_Read.start(target,
-                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
-                                           { return reader->readAuthorized(t, stopToken); }))
+            if (auto failed = m_Read.start(
+                    target,
+                    [reader, column = m_SortColumn, ascending = m_SortAscending](const Platform::ProcessTarget& t,
+                                                                                 const std::stop_token& stopToken)
+                    { return prepare(reader->readAuthorized(t, stopToken), Detail::MEMORY_MAP_PROTECTION_WORDS, column, ascending); }))
             {
-                applyResult(*failed);
+                applyPrepared(std::move(*failed));
             }
             return true;
         }
@@ -162,9 +229,12 @@ class ProcessMemoryMapView
         {
             return false;
         }
-        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readMemoryMap(t); }))
+        if (auto failed =
+                m_Read.start(target,
+                             [reader, column = m_SortColumn, ascending = m_SortAscending](const Platform::ProcessTarget& t)
+                             { return prepare(reader->readMemoryMap(t), Detail::MEMORY_MAP_PROTECTION_WORDS, column, ascending); }))
         {
-            applyResult(*failed);
+            applyPrepared(std::move(*failed));
         }
         return true;
     }
@@ -212,7 +282,8 @@ class ProcessMemoryMapView
     }
 
     /// Takes in a read: its status and, for Ok, its totals and its regions formatted and sorted by the
-    /// current order. The PROTECTION column follows the platform (Detail::MEMORY_MAP_PROTECTION_WORDS).
+    /// current order. The PROTECTION column follows the platform (Detail::MEMORY_MAP_PROTECTION_WORDS). Tests; the
+    /// view's own reads are prepared on their worker (prepare(), #3801).
     void applyResult(const Platform::MemoryMapReadResult& result)
     {
         applyResult(result, Detail::MEMORY_MAP_PROTECTION_WORDS);
@@ -221,45 +292,24 @@ class ProcessMemoryMapView
     /// applyResult(), with the protection written in words (@p protectionWords) or in letters (tests: both).
     void applyResult(const Platform::MemoryMapReadResult& result, bool protectionWords)
     {
+        applyPrepared(prepare(result, protectionWords, m_SortColumn, m_SortAscending));
+    }
+
+    /// Takes in a prepared read by moving it in. Sorted again only when the order changed since the read started.
+    void applyPrepared(Prepared prepared)
+    {
         m_HasRead = true;
-        m_Status = result.status;
-        m_Detail = result.detail;
-        m_Truncated = result.truncated;
-        m_Rows.clear();
-        m_HasResident = false;
-        m_Totals.clear();
-        if (result.status != Platform::MemoryMapReadStatus::Ok)
+        m_Status = prepared.status;
+        m_Detail = std::move(prepared.detail);
+        m_Truncated = prepared.truncated;
+        m_HasResident = prepared.hasResident;
+        m_Rows = std::move(prepared.rows);
+        m_Totals = std::move(prepared.totals);
+        if (prepared.sortColumn != m_SortColumn || prepared.sortAscending != m_SortAscending)
         {
             sortRows();
-            return;
         }
-        m_Rows.reserve(result.mappings.size());
-        for (const Platform::MemoryMapping& mapping : result.mappings)
-        {
-            std::string path = mapping.path;
-            if (mapping.deleted)
-            {
-                path += " (deleted)";
-            }
-            m_Rows.push_back({
-                .mapping = mapping,
-                .address = Domain::Modules::formatAddress(mapping.start),
-                .size = UI::Format::formatBytes(static_cast<double>(mapping.sizeBytes())),
-                .kind = std::string(Domain::MemoryMap::kindLabel(mapping.kind)),
-                .protection = Detail::memoryMapProtectionCell(mapping, protectionWords),
-                .resident = Detail::memoryMapBytesCell(mapping.residentBytes),
-                .path = std::move(path),
-            });
-        }
-        m_HasResident = std::ranges::any_of(result.mappings, [](const Platform::MemoryMapping& m) { return m.residentBytes.has_value(); });
-        const Domain::MemoryMap::Summary summary = Domain::MemoryMap::summarize(result.mappings);
-        m_Totals.reserve(summary.byKind.size() + 1);
-        for (const Domain::MemoryMap::KindTotals& kind : summary.byKind)
-        {
-            m_Totals.push_back(totalsRow(std::string(Domain::MemoryMap::kindLabel(kind.kind)), kind.totals));
-        }
-        m_Totals.push_back(totalsRow("Total", summary.all));
-        sortRows();
+        m_FilterDirty = true;
     }
 
     void markDrawnOpen() noexcept
@@ -343,13 +393,22 @@ class ProcessMemoryMapView
     {
         if (auto result = m_Read.takeFinished(target, wait))
         {
-            applyResult(*result);
+            applyPrepared(std::move(*result));
         }
     }
 
-    [[nodiscard]] static Platform::MemoryMapReadResult failedRead(std::string detail)
+    [[nodiscard]] static Prepared failedRead(std::string detail)
     {
-        return {.status = Platform::MemoryMapReadStatus::Failed, .mappings = {}, .detail = std::move(detail), .truncated = false};
+        return {
+            .status = Platform::MemoryMapReadStatus::Failed,
+            .detail = std::move(detail),
+            .truncated = false,
+            .hasResident = false,
+            .rows = {},
+            .totals = {},
+            .sortColumn = Detail::MemoryMapColumn::Address,
+            .sortAscending = true,
+        };
     }
 
     [[nodiscard]] static TotalsRow totalsRow(std::string label, const Domain::MemoryMap::Totals& totals)
@@ -388,11 +447,9 @@ class ProcessMemoryMapView
         return a.mapping.start <=> b.mapping.start;
     }
 
-    void sortRows()
+    static void sortRowsBy(std::vector<Row>& rows, Detail::MemoryMapColumn column, bool ascending)
     {
-        const Detail::MemoryMapColumn column = m_SortColumn;
-        const bool ascending = m_SortAscending;
-        std::ranges::stable_sort(m_Rows,
+        std::ranges::stable_sort(rows,
                                  [column, ascending](const Row& a, const Row& b)
                                  {
                                      if (const auto primary = compareOn(column, a, b); primary != 0)
@@ -401,6 +458,11 @@ class ProcessMemoryMapView
                                      }
                                      return compareOn(Detail::MemoryMapColumn::Address, a, b) < 0;
                                  });
+    }
+
+    void sortRows()
+    {
+        sortRowsBy(m_Rows, m_SortColumn, m_SortAscending);
         m_FilterDirty = true;
     }
 
@@ -411,7 +473,7 @@ class ProcessMemoryMapView
     Platform::MemoryMapReadStatus m_Status = Platform::MemoryMapReadStatus::Ok;
     std::string m_Detail;
     bool m_Truncated = false;   // the read kept only the first regions (past the reader's cap)
-    bool m_HasResident = false; ///< Set by applyResult() once, so the table doesn't scan every region each frame (#3800).
+    bool m_HasResident = false; ///< Set once per read, so the table doesn't scan every region each frame (#3800).
     std::vector<Row> m_Rows;
     std::vector<TotalsRow> m_Totals;
     Detail::MemoryMapColumn m_SortColumn = Detail::MemoryMapColumn::Address;
@@ -425,7 +487,7 @@ class ProcessMemoryMapView
 
     // The read in flight, its cadence and the "Authenticate to read" request (#2309). Destroying the view
     // waits for at most one read.
-    Detail::LazyBackgroundRead<Platform::MemoryMapReadResult> m_Read{
+    Detail::LazyBackgroundRead<Prepared> m_Read{
         Domain::Sampling::PROCESS_MEMORY_MAP_REFRESH_MS, Platform::MEMORY_MAP_READ_THREAD_NAME, &failedRead};
 };
 
