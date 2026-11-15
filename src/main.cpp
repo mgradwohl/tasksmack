@@ -65,10 +65,12 @@
 #include <algorithm>
 #include <chrono>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio> // NOLINT(misc-include-cleaner) - FILE* is used only in the _WIN32 console-attach branch below
 #include <cstdlib>
 #include <exception>
 #include <filesystem>
+#include <format>
 #include <iostream>
 #include <locale>
 #include <memory>
@@ -103,6 +105,33 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 #endif
     return summary;
 }
+
+/// @p duration in seconds, for the hand-off's log lines (#3781).
+[[nodiscard]] auto inSeconds(std::chrono::milliseconds duration) -> double
+{
+    return std::chrono::duration<double>(duration).count();
+}
+
+#ifdef _WIN32
+/// How the elevated copy's wait for the Standard one ended, for the log.
+[[nodiscard]] constexpr auto describeHandoffWait(Platform::HandoffWait wait) -> const char*
+{
+    switch (wait)
+    {
+    case Platform::HandoffWait::Exited:
+        return "which closed";
+    case Platform::HandoffWait::NotRunning:
+        return "which had already closed";
+    case Platform::HandoffWait::NotThatProcess:
+        return "but that PID is another process's, so it wasn't waited for";
+    case Platform::HandoffWait::Unopenable:
+        return "which this account may not open, so the instance lock was the hand-off";
+    case Platform::HandoffWait::TimedOut:
+        return "which was still running after the wait";
+    }
+    return "";
+}
+#endif
 
 auto runApp(const App::LaunchOptions& launch) -> int
 {
@@ -157,9 +186,34 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // The handed-over folder as checked, held open until runApp() returns (#3787): the one owner of the hold.
     // ConfigDirOverride keeps only a weak reference, so a save after this is released fails closed.
     std::shared_ptr<Platform::IHandedOverFolder> handedOverFolder;
+    std::chrono::milliseconds handoffWaited{0};
     if (handoffSession)
     {
-        handoffWait = Platform::waitForHandoff(*launch.handoffPid, launch.handoffStartTicks);
+        // No window opens until the hand-off ends (#3781), so it says how it goes while it goes: to the debugger and the
+        // console. tasksmack-debug.log can't be opened yet (opening it truncates it, and the Standard copy may still be
+        // writing its close there); it gets the outcome once it opens, below.
+        spdlog::set_default_logger(std::make_shared<spdlog::logger>("TaskSmack",
+                                                                    spdlog::sinks_init_list{
+                                                                        std::make_shared<spdlog::sinks::msvc_sink_mt>(),
+                                                                        std::make_shared<spdlog::sinks::stdout_color_sink_mt>(),
+                                                                    }));
+        const std::uint32_t standardPid = *launch.handoffPid;
+        spdlog::info("Restarted as administrator: waiting up to {:.0f} s for the Standard TaskSmack (PID {}) to close",
+                     inSeconds(Platform::HANDOFF_PATIENCE),
+                     standardPid);
+        const auto waitStarted = std::chrono::steady_clock::now();
+        handoffWait = Platform::waitForHandoff(
+            standardPid,
+            launch.handoffStartTicks,
+            [standardPid](std::chrono::milliseconds waited)
+            {
+                spdlog::info("Still waiting for the Standard TaskSmack (PID {}) to close: {:.1f} s so far", standardPid, inSeconds(waited));
+            });
+        handoffWaited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - waitStarted);
+        spdlog::info("The wait for the Standard TaskSmack (PID {}) ended after {:.1f} s, {}",
+                     standardPid,
+                     inSeconds(handoffWaited),
+                     describeHandoffWait(*handoffWait));
         if (launch.configDir.has_value())
         {
             const std::filesystem::path handedOver = Core::utf8ToPath(*launch.configDir);
@@ -180,6 +234,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
 #else
     constexpr bool handoffSession = false;
+    constexpr std::chrono::milliseconds handoffWaited{0};
 #endif
 #ifdef __linux__
     // Run as root for a user (sudo, pkexec, #3580), the config directory is that user's, the less-privileged side's, as
@@ -201,20 +256,52 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // second launch must not erase the running instance's log. Its warning goes to the default
     // (console) logger.
     // An elevated restart tries it again while the Standard copy it replaces closes (#2728): that copy holds it
-    // until it has saved its settings, so the settings below are read only after its last save.
+    // until it has saved its settings, so the settings below are read only after its last save. It gets what the
+    // wait above left of the hand-off's patience (#3781), and says while it tries that it is still waiting.
     const std::filesystem::path instanceLockPath = App::instanceLockPath(userConfig.configPath().parent_path());
-    const std::chrono::milliseconds lockPatience = handoffSession ? Platform::HANDOFF_LOCK_PATIENCE : std::chrono::milliseconds{0};
+    const std::chrono::milliseconds lockPatience =
+        handoffSession ? Platform::handoffLockPatience(handoffWaited) : std::chrono::milliseconds{0};
+    const App::LockWaitProgress lockProgress{
+        .report = [](std::chrono::milliseconds tried)
+        { spdlog::info("Still waiting for the Standard TaskSmack to let go of the instance lock: {:.1f} s so far", inSeconds(tried)); },
+        .every = handoffSession ? Platform::HANDOFF_PROGRESS_EVERY : std::chrono::milliseconds{0},
+    };
+    if (handoffSession)
+    {
+        spdlog::info("Taking the instance lock, trying for up to {:.1f} s while the Standard TaskSmack lets go of it",
+                     inSeconds(lockPatience));
+    }
+    const auto lockStarted = std::chrono::steady_clock::now();
 #ifdef _WIN32
     // A handed-over folder's lock is opened only through the folder held (#3774), never by its path.
     const std::unique_ptr<App::InstanceLock> instanceLock =
-        handedOverFolder != nullptr ? App::acquireInstanceLock(*handedOverFolder, instanceLockPath.filename(), lockPatience)
-                                    : App::acquireInstanceLock(instanceLockPath, lockPatience);
+        handedOverFolder != nullptr
+            ? App::acquireInstanceLock(*handedOverFolder, instanceLockPath.filename(), lockPatience, App::LOCK_RETRY_EVERY, lockProgress)
+            : App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
 #else
-    const std::unique_ptr<App::InstanceLock> instanceLock = App::acquireInstanceLock(instanceLockPath, lockPatience);
+    const std::unique_ptr<App::InstanceLock> instanceLock =
+        App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
 #endif
+    const auto lockWaited = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - lockStarted);
+    if (handoffSession)
+    {
+        spdlog::info("The instance lock's tries ended after {:.1f} s: {}",
+                     inSeconds(lockWaited),
+                     instanceLock->status() == App::InstanceLock::Status::HeldByAnotherInstance ? "still held" : "done");
+    }
     if (const std::optional<int> lockExitCode = App::exitCodeForLockStatus(instanceLock->status()); lockExitCode.has_value())
     {
         spdlog::warn("TaskSmack is already running with the settings in {}; exiting", Core::pathToUtf8(instanceLockPath.parent_path()));
+        if (handoffSession)
+        {
+            // The Standard copy this one replaces didn't close in time (#3781): say so, not just that one runs.
+            const std::string message = std::format("TaskSmack couldn't restart as administrator: another TaskSmack, most likely the "
+                                                    "Standard one it replaces, still held your settings after {:.0f} seconds.\n\nClose "
+                                                    "it, then choose Restart as administrator again.",
+                                                    inSeconds(Platform::HANDOFF_PATIENCE));
+            SDL_ShowSimpleMessageBox(SDL_MESSAGEBOX_INFORMATION, "TaskSmack", message.c_str(), nullptr);
+            return *lockExitCode;
+        }
 #ifdef _WIN32
         // Ctrl+Shift+Esc with TaskSmack in place of Task Manager (#3072): the running one comes to the
         // front, as Task Manager's own second start does, rather than a message box saying it runs.
@@ -299,24 +386,11 @@ auto runApp(const App::LaunchOptions& launch) -> int
 #ifdef _WIN32
     if (handoffWait.has_value())
     {
-        constexpr auto describe = [](Platform::HandoffWait wait)
-        {
-            switch (wait)
-            {
-            case Platform::HandoffWait::Exited:
-                return "which closed";
-            case Platform::HandoffWait::NotRunning:
-                return "which had already closed";
-            case Platform::HandoffWait::NotThatProcess:
-                return "but that PID is another process's, so it wasn't waited for";
-            case Platform::HandoffWait::Unopenable:
-                return "which this account may not open, so the instance lock was the hand-off";
-            case Platform::HandoffWait::TimedOut:
-                return "which was still running after the wait";
-            }
-            return "";
-        };
-        spdlog::info("Restarted as administrator for TaskSmack PID {}, {}", launch.handoffPid.value_or(0), describe(*handoffWait));
+        spdlog::info("Restarted as administrator for TaskSmack PID {}, {}, after {:.1f} s; the instance lock after {:.1f} s more",
+                     launch.handoffPid.value_or(0),
+                     describeHandoffWait(*handoffWait),
+                     inSeconds(handoffWaited),
+                     inSeconds(lockWaited));
     }
     if (!handoffDirRefused.empty())
     {

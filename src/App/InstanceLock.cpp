@@ -2,6 +2,7 @@
 
 #include <chrono>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <string>
 #include <system_error>
@@ -204,37 +205,50 @@ namespace
 {
 
 /// Takes a lock with @p take; while another process holds it, tries again every @p retryEvery until @p patience
-/// has passed.
+/// has passed, telling @p progress how long it has tried about every progress.every (#3781).
 template<typename Take>
 [[nodiscard]] std::unique_ptr<InstanceLock>
-retryLock(const Take& take, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery)
+retryLock(const Take& take, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery, const LockWaitProgress& progress)
 {
-    const auto deadline = std::chrono::steady_clock::now() + patience;
+    const auto started = std::chrono::steady_clock::now();
+    const auto deadline = started + patience;
+    const bool reports = progress.report && progress.every > std::chrono::milliseconds{0};
+    auto nextReport = started + progress.every;
     auto lock = take();
-    while (lock->status() == InstanceLock::Status::HeldByAnotherInstance && std::chrono::steady_clock::now() < deadline)
+    auto now = std::chrono::steady_clock::now();
+    while (lock->status() == InstanceLock::Status::HeldByAnotherInstance && now < deadline)
     {
         std::this_thread::sleep_for(retryEvery);
         lock.reset(); // this one's file handle first, so the next try opens it afresh
         lock = take();
+        now = std::chrono::steady_clock::now();
+        if (reports && now >= nextReport && now < deadline && lock->status() == InstanceLock::Status::HeldByAnotherInstance)
+        {
+            progress.report(std::chrono::duration_cast<std::chrono::milliseconds>(now - started));
+            nextReport = now + progress.every;
+        }
     }
     return lock;
 }
 
 } // namespace
 
-std::unique_ptr<InstanceLock>
-acquireInstanceLock(const std::filesystem::path& lockPath, std::chrono::milliseconds patience, std::chrono::milliseconds retryEvery)
+std::unique_ptr<InstanceLock> acquireInstanceLock(const std::filesystem::path& lockPath,
+                                                  std::chrono::milliseconds patience,
+                                                  std::chrono::milliseconds retryEvery,
+                                                  const LockWaitProgress& progress)
 {
-    return retryLock([&lockPath] { return std::make_unique<InstanceLock>(lockPath); }, patience, retryEvery);
+    return retryLock([&lockPath] { return std::make_unique<InstanceLock>(lockPath); }, patience, retryEvery, progress);
 }
 
 #ifdef _WIN32
 std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFolder& folder,
                                                   const std::filesystem::path& name,
                                                   std::chrono::milliseconds patience,
-                                                  std::chrono::milliseconds retryEvery)
+                                                  std::chrono::milliseconds retryEvery,
+                                                  const LockWaitProgress& progress)
 {
-    return retryLock([&folder, &name] { return std::make_unique<InstanceLock>(folder, name); }, patience, retryEvery);
+    return retryLock([&folder, &name] { return std::make_unique<InstanceLock>(folder, name); }, patience, retryEvery, progress);
 }
 #endif
 } // namespace App

@@ -10,9 +10,11 @@
 // closes, saving its settings and window as any close does. The elevated one (main.cpp):
 //   - waits for that process to exit, when it may open it and its creation time matches (a reused PID is not
 //     waited for); another account's elevation often may not open it at all;
-//   - so the single-instance lock is the hand-off itself: the elevated copy tries it again for up to
-//     HANDOFF_LOCK_PATIENCE before it gives up, and reads config.toml only once it holds it, after the Standard
+//   - so the single-instance lock is the hand-off itself: the elevated copy tries it again for what is left of
+//     HANDOFF_PATIENCE before it gives up, and reads config.toml only once it holds it, after the Standard
 //     copy's last save;
+//   - the wait and the lock's tries share HANDOFF_PATIENCE, and both log how long they have waited every
+//     HANDOFF_PROGRESS_EVERY (#3781): no window opens until they end;
 //   - takes the handed-over directory only once it passes Platform::checkHandedOverConfigDir().
 //
 // The trust boundary (#2728 decision 4): with an over-the-shoulder prompt, or Administrator Protection, the
@@ -30,9 +32,11 @@
 //
 // Null on Linux, where an Administrator session is started as one (#3580), and in an elevated TaskSmack.
 
+#include <algorithm>
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <string>
 #include <string_view>
 namespace Platform
@@ -44,8 +48,24 @@ inline constexpr std::string_view HANDOFF_ARGUMENT = "--handoff";
 /// Followed by the launching user's config directory, which the elevated copy uses for everything kept there.
 inline constexpr std::string_view CONFIG_DIR_ARGUMENT = "--config-dir";
 
-/// How long an elevated restart keeps trying the single-instance lock the Standard copy holds while it closes.
-inline constexpr std::chrono::milliseconds HANDOFF_LOCK_PATIENCE{30'000};
+/// The longest an elevated restart waits for the Standard copy it replaces (#3781): its wait for that process and its
+/// tries of the single-instance lock that copy holds while it closes, together. That copy saves its settings and exits
+/// within a second or two; one that hangs must not leave the user without a window for long. Once this has passed the
+/// elevated copy says TaskSmack is already running, and the Standard copy's settings are still its own.
+inline constexpr std::chrono::milliseconds HANDOFF_PATIENCE{20'000};
+
+/// How often the elevated copy logs that it is still waiting for the Standard one (#3781).
+inline constexpr std::chrono::milliseconds HANDOFF_PROGRESS_EVERY{3'000};
+
+/// What is left of HANDOFF_PATIENCE for the instance lock once the wait for the Standard copy took @p waited: none
+/// left is one try of the lock.
+[[nodiscard]] constexpr std::chrono::milliseconds handoffLockPatience(std::chrono::milliseconds waited) noexcept
+{
+    return std::max(HANDOFF_PATIENCE - waited, std::chrono::milliseconds{0});
+}
+
+/// Told, every HANDOFF_PROGRESS_EVERY of the hand-off wait, how long it has waited so far.
+using HandoffProgress = std::function<void(std::chrono::milliseconds waited)>;
 
 /// How the elevated copy's wait for the Standard one ended.
 enum class HandoffWait : std::uint8_t

@@ -9,7 +9,7 @@
 //   - Started only with the new process's handle back, so this copy closes only once Windows has started the
 //     elevated one.
 //   - The parameters carry this process's creation time too, so the elevated copy's wait (waitForHandoff(),
-//     bounded by HANDOFF_WAIT_MS) is for this process and no other that took its PID.
+//     bounded by HANDOFF_PATIENCE) is for this process and no other that took its PID.
 //   - The elevated copy takes the handed-over directory only once checkConfigDir() passes (the trust boundary,
 //     Platform/IElevatedRestart.h).
 //
@@ -42,9 +42,11 @@
 namespace Platform::Windows::ElevatedRestart
 {
 
-/// The longest the elevated copy waits for the Standard one to close before it starts anyway: the Standard
-/// one saves its settings and exits within a second or two; one that hangs must not stop Administrator.
-inline constexpr DWORD HANDOFF_WAIT_MS = 15'000;
+/// The longest the elevated copy waits for the Standard one to close: the whole hand-off's HANDOFF_PATIENCE, whose
+/// rest the instance lock then gets (handoffLockPatience()).
+inline constexpr DWORD HANDOFF_WAIT_MS = static_cast<DWORD>(HANDOFF_PATIENCE.count());
+/// How often that wait reports how long it has waited (#3781).
+inline constexpr DWORD HANDOFF_PROGRESS_EVERY_MS = static_cast<DWORD>(HANDOFF_PROGRESS_EVERY.count());
 
 /// The calls restart() makes: the system's, or a test's fakes.
 struct Functions
@@ -85,9 +87,15 @@ struct WaitFunctions
 
 /// Waits up to @p timeoutMs for process @p pid, the Standard TaskSmack that restarted this one, to exit, once its
 /// creation time is @p startTicks. Only ERROR_INVALID_PARAMETER (no such PID) is NotRunning; a process this account
-/// may not open (another account's elevation) is Unopenable, which the instance lock then covers (main.cpp).
-[[nodiscard]] HandoffWait
-waitForHandoff(DWORD pid, std::uint64_t startTicks, DWORD timeoutMs = HANDOFF_WAIT_MS, const WaitFunctions& functions = {});
+/// may not open (another account's elevation) is Unopenable, which the instance lock then covers (main.cpp). It waits
+/// in slices of @p progressEveryMs, telling @p onProgress, when set, how long it has waited after each one it is still
+/// running at (#3781).
+[[nodiscard]] HandoffWait waitForHandoff(DWORD pid,
+                                         std::uint64_t startTicks,
+                                         DWORD timeoutMs = HANDOFF_WAIT_MS,
+                                         const WaitFunctions& functions = {},
+                                         const HandoffProgress& onProgress = {},
+                                         DWORD progressEveryMs = HANDOFF_PROGRESS_EVERY_MS);
 
 /// The file's hard-link count, opened without following a link; nullopt when it can't be read.
 [[nodiscard]] std::optional<DWORD> linkCountOf(const std::wstring& path);
