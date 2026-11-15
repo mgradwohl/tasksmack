@@ -8,26 +8,28 @@
 // Capabilities are per thread: the drop runs first thing in runApp(), before any other thread starts, and every
 // thread made later inherits the narrowed sets.
 
+#include "Platform/Linux/CapabilityBits.h"
+
 #include <array>
 #include <cstdint>
 
 namespace Platform::RootCapabilities
 {
 
-/// capabilities(7) bit numbers, spelled out so this builds against kernel headers older than CAP_PERFMON/CAP_BPF.
-inline constexpr unsigned CHOWN = 0;           ///< fchown of the invoking user's settings to that user (#3592)
-inline constexpr unsigned DAC_OVERRIDE = 1;    ///< the user's own files, display and delegated cgroups
-inline constexpr unsigned DAC_READ_SEARCH = 2; ///< other users' /proc files
-inline constexpr unsigned FOWNER = 3;          ///< the ACL and mode set on the user's settings after the chown
-inline constexpr unsigned KILL = 5;            ///< End task and signals
-inline constexpr unsigned SETGID = 6;          ///< links, folders and Run new task as the invoking user (#2461)
-inline constexpr unsigned SETUID = 7;          ///< the same
-inline constexpr unsigned SYS_PTRACE = 19;     ///< other users' /proc, strace and gcore, Close connection
-inline constexpr unsigned SYS_NICE = 23;       ///< priority, affinity, real-time policies, the Realtime I/O class
-inline constexpr unsigned SYS_RESOURCE = 24;   ///< limits, and libbpf's memlock raise
-inline constexpr unsigned SYSLOG = 34;         ///< kernel module load addresses
-inline constexpr unsigned PERFMON = 38;        ///< loading the eBPF UDP counter (#3366)
-inline constexpr unsigned BPF = 39;            ///< the same
+/// The capabilities(7) bit numbers, from CapabilityBits.h (#3770), with what each is kept for.
+inline constexpr unsigned CHOWN = CapabilityBits::CHOWN;               ///< fchown of the invoking user's settings to that user (#3592)
+inline constexpr unsigned DAC_OVERRIDE = CapabilityBits::DAC_OVERRIDE; ///< the user's own files, display and delegated cgroups
+inline constexpr unsigned DAC_READ_SEARCH = CapabilityBits::DAC_READ_SEARCH; ///< other users' /proc files
+inline constexpr unsigned FOWNER = CapabilityBits::FOWNER;             ///< the ACL and mode set on the user's settings after the chown
+inline constexpr unsigned KILL = CapabilityBits::KILL;                 ///< End task and signals
+inline constexpr unsigned SETGID = CapabilityBits::SETGID;             ///< links, folders and Run new task as the invoking user (#2461)
+inline constexpr unsigned SETUID = CapabilityBits::SETUID;             ///< the same
+inline constexpr unsigned SYS_PTRACE = CapabilityBits::SYS_PTRACE;     ///< other users' /proc, strace and gcore, Close connection
+inline constexpr unsigned SYS_NICE = CapabilityBits::SYS_NICE;         ///< priority, affinity, real-time policies, the Realtime I/O class
+inline constexpr unsigned SYS_RESOURCE = CapabilityBits::SYS_RESOURCE; ///< limits, and libbpf's memlock raise
+inline constexpr unsigned SYSLOG = CapabilityBits::SYSLOG;             ///< kernel module load addresses
+inline constexpr unsigned PERFMON = CapabilityBits::PERFMON;           ///< loading the eBPF UDP counter (#3366)
+inline constexpr unsigned BPF = CapabilityBits::BPF;                   ///< the same
 
 /// What an Administrator session keeps. CAP_SYS_ADMIN isn't among them (maintainer, 2026-11-11): kernels before 5.8,
 /// which need it in place of CAP_BPF and CAP_PERFMON, don't count UDP per process as root.

@@ -74,7 +74,6 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
-#include "Domain/UpdateCheck.h"
 #include "Domain/UsersModel.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
@@ -91,7 +90,6 @@
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
-#include "version.h"
 
 // clang-format off
 #include <imgui.h>
@@ -2073,7 +2071,8 @@ void ProcessesPanel::renderContent()
             // Not the recent commands of a handed-over config folder in an elevated session (#2728).
             m_RunTaskDialog.open(
                 RunTaskHistory::offered(UserConfig::get().settings().recentCommands, Core::ConfigDirOverride::handedOver()),
-                m_ActionCapabilities.canRunProgramAsAdministrator);
+                m_ActionCapabilities.canRunProgramAsAdministrator,
+                !processCapabilities().hasReducedPrivileges);
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
@@ -3761,12 +3760,7 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     }
     ImGui::SetItemTooltip("Searches the web for \"%s process\". Only the name is sent, never its path or command line.", proc.name.c_str());
     // Look up on VirusTotal (#3094): only with a key in Settings and a platform that can hash the image.
-    if (const VirusTotalLookup::Context lookup{
-            .client = m_LookupClient,
-            .apiKey = UserConfig::get().settings().virusTotalApiKey,
-            .userAgent = {},
-        };
-        VirusTotalLookup::offered(m_ActionCapabilities, lookup))
+    if (VirusTotalLookup::offered(m_ActionCapabilities, m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey)))
     {
         if (ImGui::MenuItem(ICON_FA_SHIELD_HALVED " Look up on VirusTotal###LookUpVirusTotal", nullptr, false, actionsIdle))
         {
@@ -4260,11 +4254,7 @@ void ProcessesPanel::lookUpRowOnVirusTotal(const Domain::ProcessSnapshot& proc)
 {
     // This row's identity: a reused PID's image is never hashed (#973).
     const Platform::ProcessTarget target{.pid = proc.pid, .startTimeTicks = proc.startTimeTicks};
-    VirusTotalLookup::Context lookup{
-        .client = m_LookupClient,
-        .apiKey = UserConfig::get().settings().virusTotalApiKey,
-        .userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL),
-    };
+    VirusTotalLookup::Context lookup = m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey);
     runRowAction(
         std::format("Looking up {} on VirusTotal...", proc.name),
         [actions = m_ProcessActions.get(), lookup = std::move(lookup), target, name = proc.name](const std::stop_token& stop)

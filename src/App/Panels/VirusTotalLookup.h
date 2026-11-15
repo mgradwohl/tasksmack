@@ -9,8 +9,10 @@
 #include "Domain/VirusTotal.h"
 #include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
+#include "version.h"
 
 #include <chrono>
+#include <cstddef>
 #include <expected>
 #include <format>
 #include <memory>
@@ -34,6 +36,42 @@ struct Context
     std::shared_ptr<Platform::IHttpsClient> client;
     std::string apiKey;
     std::string userAgent;
+};
+
+/// The Context for the key Settings has now, kept between frames (#3802): the User-Agent is built once and the
+/// Context is rebuilt only when the key or the client changes, so a frame that asks costs a string compare.
+class ContextCache
+{
+  public:
+    [[nodiscard]] const Context& get(const std::shared_ptr<Platform::IHttpsClient>& client, const std::string& apiKey)
+    {
+        if (!m_Built)
+        {
+            m_Context.userAgent = Domain::UpdateCheck::userAgent(tasksmack::Version::FULL);
+            m_Built = true;
+        }
+        if (m_Context.client != client)
+        {
+            m_Context.client = client;
+        }
+        if (m_Context.apiKey != apiKey)
+        {
+            m_Context.apiKey = apiKey;
+            ++m_Refreshes;
+        }
+        return m_Context;
+    }
+
+    /// How many times the key changed (tests).
+    [[nodiscard]] std::size_t refreshes() const noexcept
+    {
+        return m_Refreshes;
+    }
+
+  private:
+    Context m_Context;
+    bool m_Built = false;
+    std::size_t m_Refreshes = 0;
 };
 
 /// Whether the lookup can be offered: the platform can hash images, there's a client, and the key is one.

@@ -109,6 +109,48 @@ class MergeGtestResultsTest(unittest.TestCase):
         self.assertEqual({"FormatTest", "ctest"}, {suite.get("name") for suite in root})
         self.assertEqual(2, len(root.find("testsuite[@name='ctest']").findall("testcase")))
 
+    def later(self, name: str, text: str) -> Path:
+        path = self.root / name
+        path.write_text(text, encoding="utf-8")
+        return path
+
+    def merged_later(self, *later: Path) -> dict[str, ET.Element]:
+        ctest = self.ctest(ctest_entry("CiRealSystemTest"))
+        root = merge_gtest_results.merge([ctest], self.gtest_dir, list(later))
+        return {s.get("name"): s for s in root.iter("testsuite")}
+
+    def test_a_later_result_replaces_the_skip_of_its_case_once(self) -> None:
+        """#3840: the real-system step ran what ctest skipped; the case counts once, by its real result."""
+        self.report("CiRealSystemTest", gtest_report("CiRealSystemTest", {"A": "skip", "B": "skip", "C": "ok"}))
+        later = self.later("real.xml", gtest_report("CiRealSystemTest", {"A": "ok", "B": "fail"}))
+        suite = self.merged_later(later)["CiRealSystemTest"]
+        self.assertEqual(["C", "A", "B"], [c.get("name") for c in suite.findall("testcase")])
+        self.assertEqual(("3", "1", "0"), (suite.get("tests"), suite.get("failures"), suite.get("skipped")))
+
+    def test_a_later_skip_never_replaces_a_result_and_a_result_is_never_replaced(self) -> None:
+        self.report("CiRealSystemTest", gtest_report("CiRealSystemTest", {"A": "ok", "B": "fail", "C": "skip"}))
+        later = self.later("real.xml", gtest_report("CiRealSystemTest", {"A": "skip", "B": "ok", "C": "skip"}))
+        suite = self.merged_later(later)["CiRealSystemTest"]
+        self.assertEqual(("3", "1", "1"), (suite.get("tests"), suite.get("failures"), suite.get("skipped")))
+
+    def test_a_later_case_no_earlier_report_has_is_added_with_its_suite(self) -> None:
+        self.report("CiRealSystemTest", gtest_report("CiRealSystemTest", {"A": "skip"}))
+        later = self.later("real.xml", gtest_report("CiRealSystemTest", {"Z": "ok"}))
+        suite = self.merged_later(later)["CiRealSystemTest"]
+        self.assertEqual({"A", "Z"}, {c.get("name") for c in suite.findall("testcase")})
+        other = self.later("root.xml", gtest_report("Other/RootTest", {"R": "ok"}))
+        self.assertIn("Other/RootTest", self.merged_later(other))
+
+    def test_main_takes_later_reports_and_skips_one_that_does_not_exist(self) -> None:
+        self.report("CiRealSystemTest", gtest_report("CiRealSystemTest", {"A": "skip", "B": "skip"}))
+        ctest = self.ctest(ctest_entry("CiRealSystemTest"))
+        real = self.later("real.xml", gtest_report("CiRealSystemTest", {"A": "ok"}))
+        output = self.root / "merged.xml"
+        argv = ["x", "--later", str(real), "--later", str(self.root / "absent.xml"), str(ctest), str(self.gtest_dir), str(output)]
+        self.assertEqual(0, merge_gtest_results.main(argv))
+        root = ET.parse(output).getroot()
+        self.assertEqual(("2", "1"), (root.get("tests"), root.get("skipped")))
+
     def test_c_identifier_matches_cmake(self) -> None:
         self.assertEqual("Each_Suite_shard1of2", merge_gtest_results.c_identifier("Each/Suite/shard1of2"))
         self.assertEqual("Suite_Case", merge_gtest_results.c_identifier("Suite.Case"))

@@ -2004,5 +2004,9 @@ if __name__ == "__main__":
             return not any(GROUPS[group](test) for group in skip)
 
         result = unittest.TextTestRunner(verbosity=1).run(_filtered(loaded, keep))
+        # A split that runs nothing (a renamed class, a group that no longer matches) fails rather than passing (#3841).
+        if result.testsRun == 0:
+            print(f"no test ran for {sys.argv[1:] or 'the groups asked for'}: --only-/--skip- matched nothing", file=sys.stderr)
+            sys.exit(1)
         sys.exit(0 if result.wasSuccessful() else 1)
     unittest.main()

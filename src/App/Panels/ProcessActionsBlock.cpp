@@ -213,9 +213,13 @@ void render(const Context& context, const ProcessDetailsLayout::TopRowLayout& la
                    [&]
                    {
                        // The header is the control's label: the current I/O priority on hover.
-                       const std::string current =
-                           context.priorityView->ioPriorityView().currentText(context.currentNice, context.currentSchedPolicy);
-                       ImGui::SetItemTooltip("%s", current.c_str());
+                       // Built only while hovered: the text is an allocation, and the card draws every frame (#3806).
+                       if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+                       {
+                           const std::string current =
+                               context.priorityView->ioPriorityView().currentText(context.currentNice, context.currentSchedPolicy);
+                           ImGui::SetTooltip("%s", current.c_str());
+                       }
                        context.priorityView->renderIoPriority(
                            context.actions, context.capabilities, context.currentNice, context.target, context.currentSchedPolicy);
                    });

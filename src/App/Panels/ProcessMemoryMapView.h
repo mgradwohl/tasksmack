@@ -205,6 +205,7 @@ class ProcessMemoryMapView
         m_Detail.clear();
         m_Truncated = false;
         m_Rows.clear();
+        m_HasResident = false;
         m_Totals.clear();
         m_FilteredRows.clear();
         m_FilterDirty = true;
@@ -225,6 +226,7 @@ class ProcessMemoryMapView
         m_Detail = result.detail;
         m_Truncated = result.truncated;
         m_Rows.clear();
+        m_HasResident = false;
         m_Totals.clear();
         if (result.status != Platform::MemoryMapReadStatus::Ok)
         {
@@ -249,6 +251,7 @@ class ProcessMemoryMapView
                 .path = std::move(path),
             });
         }
+        m_HasResident = std::ranges::any_of(result.mappings, [](const Platform::MemoryMapping& m) { return m.residentBytes.has_value(); });
         const Domain::MemoryMap::Summary summary = Domain::MemoryMap::summarize(result.mappings);
         m_Totals.reserve(summary.byKind.size() + 1);
         for (const Domain::MemoryMap::KindTotals& kind : summary.byKind)
@@ -303,7 +306,7 @@ class ProcessMemoryMapView
     /// Whether any region's resident size was measured: the RESIDENT column is left out when none was (Windows).
     [[nodiscard]] bool hasResident() const noexcept
     {
-        return std::ranges::any_of(m_Rows, [](const Row& row) { return row.mapping.residentBytes.has_value(); });
+        return m_HasResident;
     }
 
     [[nodiscard]] bool hasRead() const noexcept
@@ -407,7 +410,8 @@ class ProcessMemoryMapView
     bool m_HasRead = false; // a read was taken in since the selection changed
     Platform::MemoryMapReadStatus m_Status = Platform::MemoryMapReadStatus::Ok;
     std::string m_Detail;
-    bool m_Truncated = false; // the read kept only the first regions (past the reader's cap)
+    bool m_Truncated = false;   // the read kept only the first regions (past the reader's cap)
+    bool m_HasResident = false; ///< Set by applyResult() once, so the table doesn't scan every region each frame (#3800).
     std::vector<Row> m_Rows;
     std::vector<TotalsRow> m_Totals;
     Detail::MemoryMapColumn m_SortColumn = Detail::MemoryMapColumn::Address;

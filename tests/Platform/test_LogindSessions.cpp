@@ -357,5 +357,19 @@ TEST(UserSessionsTest, AnUnsupportedRunListsAndDoesNothing)
     EXPECT_EQ(result.message, "Not supported on this platform");
 }
 
+// #3890: TaskSmack (Administrator), started by pkexec or sudo, has no XDG_SESSION_ID, so its own session comes from
+// logind; a set variable still wins, and an empty one counts as unset.
+TEST(LinuxUserSessionsTest, TheCurrentSessionComesFromLogindWhenTheVariableIsGone)
+{
+    const auto logind = []() -> std::string
+    {
+        return "c7";
+    };
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom("2", +logind), "2");
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom(nullptr, +logind), "c7");
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom("", +logind), "c7");
+    EXPECT_EQ(LinuxUserSessions::currentSessionIdFrom(nullptr, nullptr), "");
+}
+
 } // namespace
 } // namespace Platform

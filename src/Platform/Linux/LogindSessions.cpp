@@ -12,6 +12,7 @@
 #include "Platform/Linux/SdBusCall.h"
 
 #include <cstdint>
+#include <cstdlib>
 #include <memory>
 #include <utility>
 #include <vector>
@@ -19,6 +20,7 @@
 // See SdBusCall.h: where sd_bus_message is declared depends on the libsystemd version.
 #include <systemd/sd-bus-protocol.h> // NOLINT(misc-include-cleaner) - see above
 #include <systemd/sd-bus.h>
+#include <systemd/sd-login.h>
 
 #endif
 
@@ -163,11 +165,28 @@ LoginSessionsRead readLoginSessions(std::string_view currentSessionId)
     return read;
 }
 
+std::string sessionOfThisProcess()
+{
+    char* session = nullptr;
+    if (sd_pid_get_session(0, &session) < 0 || session == nullptr)
+    {
+        return {};
+    }
+    std::string id(session);
+    std::free(session); // NOLINT(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory) - sd_pid_get_session() mallocs it
+    return id;
+}
+
 #else
 
 LoginSessionsRead readLoginSessions(std::string_view /*currentSessionId*/)
 {
     return {.ok = false, .error = "This build has no systemd support (it was built without libsystemd)", .sessions = {}};
+}
+
+std::string sessionOfThisProcess()
+{
+    return {};
 }
 
 #endif
