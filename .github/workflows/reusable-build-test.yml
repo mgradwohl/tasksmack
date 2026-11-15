@@ -514,8 +514,6 @@ jobs:
           # shell's ShellWindows list has no desktop window there, so the unelevated open can't reach Explorer's
           # IShellDispatch2. They skip there until it's fixed. Applies on ARM64 only, so x64 still fails on that skip.
           $arm64Skips = @{
-            'CiRealSystemFileLocationTest.ExplorerShowsTheExecutablesFolder' = 'Open file location fails on ARM64: Explorer''s ShellWindows has no desktop window (FindWindowSW(SWC_DESKTOP) answers S_FALSE) though GetShellWindow() is set: #3979'
-            'CiRealSystemFileLocationTest.ExplorerShowsAFolderWithSpacesAndNonAsciiInItsName' = 'Open file location fails on ARM64: Explorer''s ShellWindows has no desktop window (FindWindowSW(SWC_DESKTOP) answers S_FALSE) though GetShellWindow() is set: #3979'
           }
           if ($env:RUNNER_ARCH -eq 'ARM64') {
             foreach ($name in $arm64Skips.Keys) {

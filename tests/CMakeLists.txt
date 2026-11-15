@@ -891,6 +891,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     # CI real-system tests (#3489): Realtime, Run new task, Compressed memory, Open file location and the helper's
     # session end for real, on a disposable runner only (tests/Support/CiRealSystem.h's guard skips them elsewhere)
     Platform/test_CiRealSystemWindows.cpp
+    Platform/test_CiRealSystemShellDiagnostics.cpp  # a diagnostic that logs who serves ShellWindows and owns the desktop (#3979)
     Platform/test_CiRealSystemHelper.cpp
     # Phase 2 (#3490): the real HKLM IFEO key, Run value and StartupApproved values; Not responding and its wait
     # chain, the UDP trace's ETW session, SeDebugPrivilege, the critical-process guard, and the elevated-only skips
