@@ -510,9 +510,12 @@ jobs:
             'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet'
           )
           # Skips only the ARM64 leg expects: test name = the reason it can't run there, which the test's own skip message
-          # repeats. None today: the two Open file location cases run on ARM64 again (#3979), so their failure reports why
-          # Windows' shell refused. Applies on ARM64 only, so x64 still fails on such a skip.
+          # repeats. Today the two Open file location cases, which fail on ARM64 (#3979, found by #3823's ARM64 run): the
+          # shell's ShellWindows list has no desktop window there, so the unelevated open can't reach Explorer's
+          # IShellDispatch2. They skip there until it's fixed. Applies on ARM64 only, so x64 still fails on that skip.
           $arm64Skips = @{
+            'CiRealSystemFileLocationTest.ExplorerShowsTheExecutablesFolder' = 'Open file location fails on ARM64: Explorer''s ShellWindows has no desktop window (FindWindowSW(SWC_DESKTOP) answers S_FALSE) though GetShellWindow() is set: #3979'
+            'CiRealSystemFileLocationTest.ExplorerShowsAFolderWithSpacesAndNonAsciiInItsName' = 'Open file location fails on ARM64: Explorer''s ShellWindows has no desktop window (FindWindowSW(SWC_DESKTOP) answers S_FALSE) though GetShellWindow() is set: #3979'
           }
           if ($env:RUNNER_ARCH -eq 'ARM64') {
             foreach ($name in $arm64Skips.Keys) {
