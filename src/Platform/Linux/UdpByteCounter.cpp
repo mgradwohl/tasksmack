@@ -211,8 +211,8 @@ bool udpProgramWanted(std::string_view section, const UdpAttachAttempt& attempt)
 // Links are destroyed before the object closes: they're declared after it.
 // Only the links and the totals map's own descriptor outlive load(): the object, its programs' descriptors and its
 // other maps are closed once the programs attach (the links keep them attached, and the kernel keeps what they
-// use). in_udpv6_send holds kernel socket addresses, so a helper that still held it could read kernel pointers
-// through the map reads its sandbox allows (#3554).
+// use). in_udpv6_send holds kernel socket addresses, so it isn't kept open past load(), where a later bug could read
+// kernel pointers through it (#3554).
 struct UdpByteCounter::State
 {
     std::vector<LinkPtr> links;
@@ -342,7 +342,7 @@ std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() co
             {
                 return counts; // the last key
             }
-            // Before about 6.5, with kernel.unprivileged_bpf_disabled set, a helper that dropped root may not read
+            // Before about 6.5, with kernel.unprivileged_bpf_disabled set, a process without CAP_BPF may not read
             // its own map (maintainer, 2026-11-07: report it; TCP still counts).
             return std::unexpected(std::format("the kernel refused reading the UDP byte counter: {}", errnoText(-error)));
         }

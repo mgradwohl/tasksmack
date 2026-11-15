@@ -2,7 +2,7 @@
 
 // A UDP collector's per-process counters as socket-traffic samples (#3366): each process's UDP bytes become one
 // synthetic, cumulative "connection", which Domain::SocketTrafficAccumulator folds in like a TCP socket's. Linux's
-// process probe adds them from the helper's eBPF counter. Windows' does the same from ETW with its own copy in
+// process probe adds them from the eBPF counter it loads as root (#3580). Windows' does the same from ETW with its own copy in
 // Windows/WindowsEtwNetMath.h (EtwNet::appendUdpSamples), whose key this one matches.
 
 #include "Platform/IUdpTrafficCollector.h"

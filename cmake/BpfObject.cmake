@@ -1,4 +1,4 @@
-# The helper's eBPF UDP byte counter (#3366): src/Platform/Linux/bpf/udp_bytes.bpf.c compiled with clang's BPF
+# The eBPF UDP byte counter TaskSmack loads when it runs as root (#3366, #3580): src/Platform/Linux/bpf/udp_bytes.bpf.c compiled with clang's BPF
 # target, then embedded as a byte array in generated/UdpBytesBpfObject.h, which UdpByteCounter.cpp opens with
 # bpf_object__open_mem. Nothing extra is installed, and no bpftool is needed. The program reads no kernel
 # structure, so it builds against libbpf's headers and the uapi ones, with no vmlinux.h (maintainer, 2026-11-07).
@@ -9,7 +9,7 @@ endif()
 if(CMAKE_C_COMPILER_ID STREQUAL "Clang")
     set(TASKSMACK_BPF_CLANG "${CMAKE_C_COMPILER}")
 else()
-    find_program(TASKSMACK_BPF_CLANG NAMES clang-23 clang-22 clang REQUIRED)
+    find_program(TASKSMACK_BPF_CLANG NAMES clang-${TASKSMACK_LLVM_VERSION} clang HINTS "/usr/lib/llvm-${TASKSMACK_LLVM_VERSION}/bin" REQUIRED)
 endif()
 
 if(CMAKE_SYSTEM_PROCESSOR MATCHES "^(x86_64|AMD64|amd64)$")

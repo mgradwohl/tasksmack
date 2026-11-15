@@ -1697,7 +1697,7 @@ void LinuxProcessProbe::appendUdpTraffic(SocketTrafficReading& reading) const
             return;
         }
     }
-    std::vector<UdpProcessTraffic> traffic = udp->sample(); // a broker call: not under the lock
+    std::vector<UdpProcessTraffic> traffic = udp->sample(); // a map walk: not under the lock
     UdpTraffic::appendSamples(reading.sockets, traffic);
     const std::scoped_lock lock(m_UdpCollectorMutex);
     m_UdpReadingTimeNs = reading.sampleTimeNs;
