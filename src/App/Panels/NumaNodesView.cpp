@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include <cfloat>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -34,13 +35,15 @@ bool render(const Domain::SystemSnapshot& snap)
         return false;
     }
     const auto& theme = UI::Theme::get();
-    const bool totalsKnown = snap.numaNodeTotalsKnown;
-    const std::vector<NumaNodesText::Column> columns = NumaNodesText::columns(totalsKnown);
+    // Built when the nodes change, not every frame (#3808). UI thread only, as this card is.
+    static NumaNodesText::TableCache cache;
+    const NumaNodesText::Table& table = cache.get(snap);
+    const std::span<const NumaNodesText::Column> columns = table.columns;
 
     // A card as tall as its table, as the Interface Status card is (#1587).
     if (UI::Widgets::beginCompactCard("##NumaNodesCard", ImVec2(-FLT_MIN, 0.0F), ImGuiChildFlags_AutoResizeY))
     {
-        (void) UI::Widgets::sectionHeader(ICON_FA_SITEMAP, NumaNodesText::heading(snap));
+        (void) UI::Widgets::sectionHeader(ICON_FA_SITEMAP, table.heading);
         ImGui::Spacing();
         constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg | ImGuiTableFlags_SizingStretchProp;
         if (ImGui::BeginTable("##NumaNodesTable", static_cast<int>(columns.size()), TABLE_FLAGS))
@@ -60,10 +63,10 @@ bool render(const Domain::SystemSnapshot& snap)
                     ImGui::EndTooltip();
                 }
             }
-            for (const Domain::NumaNodeSnapshot& node : snap.numaNodes)
+            for (const std::vector<NumaNodesText::Cell>& cells : table.rows)
             {
                 ImGui::TableNextRow();
-                for (const NumaNodesText::Cell& cell : NumaNodesText::row(node, totalsKnown))
+                for (const NumaNodesText::Cell& cell : cells)
                 {
                     ImGui::TableNextColumn();
                     ImGui::PushStyleColor(ImGuiCol_Text, cell.available ? theme.scheme().textPrimary : theme.scheme().textMuted);
