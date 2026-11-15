@@ -444,6 +444,20 @@ jobs:
             exit 1
           }
           Write-Host "$ran of $(@($cases).Count) CiRealSystem tests ran"
+          # A skip is expected only for the three child halves, which run inside their parent test's child process and
+          # skip when started on their own, and for the Memory Compression test, which skips on an image that leaves
+          # memory compression off (#3838). Any other skip is a test that quietly stopped running: fail and name it.
+          $expectedSkips = @(
+            'CiRealSystemRealtimeTest.ChildSetsRealtimeAsAStandardUser',
+            'CiRealSystemFolderPickerChildTest.ShowsTheDialogUntilItIsAnswered',
+            'CiRealSystemSystemMenuChildTest.ShowsTheMenuUntilItIsAnswered',
+            'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet'
+          )
+          $unexpected = @($cases | Where-Object { $_.Result -ne 'COMPLETED' -and $expectedSkips -notcontains $_.Test })
+          if ($unexpected.Count -gt 0) {
+            Write-Host "::error title=Real-system tests::$($unexpected.Count) CiRealSystem test(s) skipped that aren't expected to: $(($unexpected | ForEach-Object { $_.Test }) -join ', ')"
+            exit 1
+          }
           # The runner's state after them (#3490): each test removes what it made in a scope guard, and the later
           # steps share the runner, so anything left is an error.
           $left = @()
