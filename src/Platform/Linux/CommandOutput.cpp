@@ -4,11 +4,15 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
+#include <filesystem>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -33,6 +37,51 @@ namespace
 
 /// How often a child that has closed its output is checked for having exited, until the deadline.
 constexpr std::chrono::milliseconds EXIT_POLL_STEP{5};
+
+/// Whether a test asked for the listed closes even where posix_spawn_file_actions_addclosefrom_np() is there.
+[[nodiscard]] std::atomic<bool>& listedClosesForTesting() noexcept
+{
+    static std::atomic<bool> on{false};
+    return on;
+}
+
+/// Every descriptor above STDERR_FILENO this process has open now, from /proc/self/fd: what the child would inherit
+/// of those opened without O_CLOEXEC (#3762: libbpf's or sd-bus's, as root ones only root could open). Empty when
+/// /proc can't be read. A descriptor another thread opens after the listing isn't in it, and one it closes since is
+/// harmless: glibc's posix_spawn ignores a close of a descriptor that is no longer open.
+[[nodiscard]] std::vector<int> openDescriptorsAboveStderr()
+{
+    std::vector<int> fds;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator entry("/proc/self/fd", ec), end; !ec && entry != end; entry.increment(ec))
+    {
+        const std::string name = entry->path().filename().string();
+        int fd = -1;
+        const auto [last, error] = std::from_chars(name.data(), name.data() + name.size(), fd);
+        if (error == std::errc{} && last == name.data() + name.size() && fd > STDERR_FILENO)
+        {
+            fds.push_back(fd); // the listing's own descriptor too, which is closed by then: harmless, as above
+        }
+    }
+    return fds;
+}
+
+/// Closes in the child every descriptor of TaskSmack's above stderr: with posix_spawn_file_actions_addclosefrom_np()
+/// where glibc has it (2.34 and later), else one close per descriptor /proc/self/fd lists (#3762).
+void addCloseEverythingAboveStderr(posix_spawn_file_actions_t* actions)
+{
+#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
+    if (!listedClosesForTesting().load(std::memory_order_relaxed))
+    {
+        ::posix_spawn_file_actions_addclosefrom_np(actions, STDERR_FILENO + 1);
+        return;
+    }
+#endif
+    for (const int fd : openDescriptorsAboveStderr())
+    {
+        ::posix_spawn_file_actions_addclose(actions, fd);
+    }
+}
 
 /// posix_spawn's file actions, destroyed on every path once initialised (an allocation below may throw).
 class SpawnFileActions
@@ -209,9 +258,7 @@ CommandOutput runForOutput(const std::vector<std::string>& argv,
     ::posix_spawn_file_actions_addopen(actions.get(), STDIN_FILENO, "/dev/null", O_RDONLY, 0);
     ::posix_spawn_file_actions_adddup2(actions.get(), writeEnd.get(), STDOUT_FILENO);
     ::posix_spawn_file_actions_addopen(actions.get(), STDERR_FILENO, "/dev/null", O_WRONLY, 0);
-#if defined(__GLIBC__) && (__GLIBC__ > 2 || (__GLIBC__ == 2 && __GLIBC_MINOR__ >= 34))
-    ::posix_spawn_file_actions_addclosefrom_np(actions.get(), STDERR_FILENO + 1); // nothing else of TaskSmack's
-#endif
+    addCloseEverythingAboveStderr(actions.get()); // nothing else of TaskSmack's
     // An empty signal mask and default dispositions, whatever this thread blocks or ignores.
     sigset_t signals{}; // NOLINT(misc-include-cleaner) - sigset_t is provided by <signal.h>
     sigemptyset(&signals);
@@ -301,5 +348,15 @@ CommandOutput runForOutput(const std::vector<std::string>& argv,
     }
     return result; // a child still running here (timed out, or an error) is killed and reaped by ChildGuard
 }
+
+namespace Detail
+{
+
+void useListedClosesForTesting(bool on) noexcept
+{
+    listedClosesForTesting().store(on, std::memory_order_relaxed);
+}
+
+} // namespace Detail
 
 } // namespace Platform

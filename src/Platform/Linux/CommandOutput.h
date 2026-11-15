@@ -34,4 +34,13 @@ struct CommandOutput
                                          std::size_t maxBytes,
                                          const std::vector<std::string>* environment = nullptr);
 
+namespace Detail
+{
+
+/// Tests only (#3762): close the child's inherited descriptors one by one, from /proc/self/fd, as a glibc older than
+/// 2.34 has to, even where posix_spawn_file_actions_addclosefrom_np() is there. Off by default.
+void useListedClosesForTesting(bool on) noexcept;
+
+} // namespace Detail
+
 } // namespace Platform
