@@ -96,9 +96,15 @@ struct WindowsProcessFunctions
     /// QueryFullProcessImageNameW(), on the verified handle: the executable Open file location shows (#3426).
     BOOL(WINAPI* queryFullProcessImageName)(HANDLE process, DWORD flags, LPWSTR path, PDWORD size) = nullptr;
     /// GetExitCodeProcess(), on the verified handle once its executable has been hashed (#3646): a process that
-    /// exited while its file was read is refused, since the file at its path may no longer be its image. The real
+    /// exited while its file was read is refused, since its image may no longer be the file that was read. The real
     /// call unless a table says otherwise, as the fakes hand out a real handle (this test process).
     BOOL(WINAPI* getExitCodeProcess)(HANDLE process, LPDWORD exitCode) = &::GetExitCodeProcess;
+    /// GetMappedFileNameW() (K32GetMappedFileNameW), on the verified handle, at the image's entry point (#3861): the
+    /// NT name (\Device\HarddiskVolumeN\...) the file the process runs has now, which follows a rename where
+    /// QueryFullProcessImageNameW's creation-time name doesn't. Null, or a null ntQueryInformationProcess (which
+    /// finds the entry point and the image's size, ProcessImageInformation): no Look up on VirusTotal
+    /// (canHashImage false).
+    DWORD(WINAPI* getMappedFileName)(HANDLE process, LPVOID address, LPWSTR name, DWORD size) = nullptr;
     /// Explorer asked to show that executable selected (#3426). Null queryFullProcessImageName, or no
     /// selectInFolder and no startProcess here: no Open file location (canOpenFileLocation false), as in
     /// TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps it the user's own).
@@ -240,11 +246,15 @@ class WindowsProcessActions : public IProcessActions
     /// elevated helper. A process whose path can't be read (System, a protected process) is an error
     /// saying so; the System process (PID 4) is refused before anything is opened: it has no file.
     [[nodiscard]] ProcessActionResult openFileLocation(const ProcessTarget& target) override;
-    /// Look up on VirusTotal (#3646, Windows' half of #3094): the SHA-256 of the executable QueryFullProcessImageNameW
-    /// names, read with Platform::Sha256::hashFile() through the same identity check as every action, as 64
-    /// lowercase hex digits. The System process (PID 4) is refused before anything is opened, and PID 0 is invalid;
-    /// a process that exits while its file is read is refused. As TaskSmack's user, never the elevated helper
-    /// (BrokeredProcessActions keeps it in-process), so TaskSmackHelper.exe answers with IProcessActions' refusal.
+    /// Look up on VirusTotal (#3646, Windows' half of #3094): the SHA-256 of the file the process's image was mapped
+    /// from (#3861), through the same identity check as every action, as 64 lowercase hex digits. Not the file at
+    /// QueryFullProcessImageNameW's path: a running image can be renamed and another file put at its old name. The
+    /// file is the one GetMappedFileNameW names at the image's entry point, opened without FILE_SHARE_DELETE so it
+    /// can't be renamed while it is held, then checked: its own name must still be the image's and its size the
+    /// image's (ProcessImageInformation), or it is refused as renamed or replaced. It is hashed through that handle.
+    /// The System process (PID 4) is refused before anything is opened, and PID 0 is invalid; a process that exits
+    /// while its file is read is refused. As TaskSmack's user, never the elevated helper (BrokeredProcessActions
+    /// keeps it in-process), so TaskSmackHelper.exe answers with IProcessActions' refusal.
     [[nodiscard]] std::expected<std::string, std::string> imageSha256(const ProcessTarget& target, const std::stop_token& stop) override;
     /// Run new task (#3427): the command line opened with ShellExecuteExW (Windows::runShellProgram()), so a
     /// document, a folder or a web address works too; as administrator through the runas verb's UAC prompt,

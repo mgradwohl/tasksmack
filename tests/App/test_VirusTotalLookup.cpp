@@ -4,13 +4,14 @@
 #include "App/Panels/VirusTotalLookup.h"
 #include "Mocks/FakeHttpsClient.h"
 #include "Mocks/MockProbes.h"
+#include "Platform/IHttpsClient.h"
+#include "Platform/IProcessActions.h"
 
 #include <gtest/gtest.h>
 
 #include <expected>
 #include <format>
 #include <memory>
-#include <mutex>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -24,8 +25,10 @@ using TestMocks::FakeHttpsClient;
 namespace
 {
 
+// NOLINTBEGIN(bugprone-throwing-static-initialization) - test constants; an allocation failure here fails the run
 const std::string KEY(64, 'a');
 const std::string SHA = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+// NOLINTEND(bugprone-throwing-static-initialization)
 const Platform::ProcessTarget TARGET{.pid = 42, .startTimeTicks = 7};
 
 [[nodiscard]] std::string report(int malicious, int suspicious)
@@ -79,6 +82,22 @@ TEST(VirusTotalLookupTest, AFlaggedFileReadsAsAWarning)
     EXPECT_TRUE(flagged.errorMessage.starts_with("VirusTotal: 3 of 63 engines flag odd.exe (2 malicious, 1 suspicious)"));
     EXPECT_EQ(VirusTotalLookup::format(flagged).text, flagged.errorMessage);
     EXPECT_FALSE(VirusTotalLookup::format(flagged).ok);
+}
+
+// #3874: counts that would add up past 64 bits, wrapping to "no engine flags", are a failure line, never clean.
+TEST(VirusTotalLookupTest, AReplyWithHugeCountsIsAFailureNotAClean)
+{
+    TestMocks::MockProcessActions actions;
+    actions.setImageSha256Result(SHA);
+    const auto client = std::make_shared<FakeHttpsClient>(Platform::HttpsResponse{
+        .body =
+            R"({"data":{"attributes":{"last_analysis_stats":{"malicious":18446744073709551615,"suspicious":1,"undetected":60,"harmless":0}}}})",
+        .status = 200,
+    });
+    const Platform::ProcessActionResult result =
+        VirusTotalLookup::lookUp(actions, {.client = client, .apiKey = KEY, .userAgent = "UA"}, TARGET, "evil.exe", {});
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Couldn't look up evil.exe on VirusTotal: its reply couldn't be read");
 }
 
 TEST(VirusTotalLookupTest, NothingIsSentWhenTheHashOrKeyIsMissing)
