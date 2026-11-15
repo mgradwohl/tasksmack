@@ -79,8 +79,9 @@ class IProcessEnvironmentReader
     /// (Platform::checkProcessIdentity()): a PID alone cannot confirm whose environment it would be.
     [[nodiscard]] virtual EnvironmentReadResult readEnvironment(const ProcessTarget& target) = 0;
 
-    /// Whether readAuthorized() can read as an administrator, after a password prompt (Linux: the
-    /// pkexec-started helper, #2309). The UI then offers "Authenticate to read" on PermissionDenied.
+    /// Whether readAuthorized() can read as an administrator, after a password prompt (Windows only:
+    /// TaskSmackHelper.exe, #2309; Linux runs as Administrator instead, #3580). The UI then offers "Authenticate to read" on
+    /// PermissionDenied.
     [[nodiscard]] virtual bool canReadAuthorized() const
     {
         return false;

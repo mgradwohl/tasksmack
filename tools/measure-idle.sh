@@ -5,7 +5,8 @@
 #   ./tools/measure-idle.sh [--preset <preset>] [--skip-build] [--warmup <seconds>]
 #                           [--duration <seconds>] [--label <name>] [--setup-cmd <command>]
 #                           [--synthetic <spec>] [--window <WxH>[,maximized]] [--repeat <N>]
-#                           [--phases <spec>] [--memory-poll-seconds <n>] [--memory-csv <path>]
+#                           [--phases <spec>] [--phase-settle <seconds>] [--memory-poll-seconds <n>]
+#                           [--memory-csv <path>]
 #                           [--json <path>] [--fail-above <pct>]
 #
 # Each repetition launches TaskSmack with TASKSMACK_TRACE_RESIZE_PERF=1, waits for its main loop
@@ -99,6 +100,11 @@
 #                         ignores them (WSLg's does), or there is no X11 window to ask about (a
 #                         native Wayland window, or no xdotool/wmctrl), that phase is skipped and
 #                         the JSON says why. The first phase cannot be skipped.
+#   --phase-settle <seconds>
+#                         After a minimized or restored phase's window change, wait this long before
+#                         sampling it, so the redraws right after the change stay out of its figures, as
+#                         measure-idle.ps1 -PhaseSettle does. Default: 10. A restored phase whose minimized
+#                         phase was skipped is skipped too: the window was never minimized.
 #   --memory-poll-seconds <n>
 #                         How often memory is read during a phase. Default: 5.
 #   --memory-csv <path>   Also write the memory series here, one row per reading: seconds since the
@@ -196,6 +202,7 @@ REPEAT=1
 JSON_PATH=""
 FAIL_ABOVE=""
 PHASE_SPEC=""
+PHASE_SETTLE_SECONDS=10
 DURATION_GIVEN=0
 MEMORY_POLL_SECONDS=5
 MEMORY_CSV=""
@@ -209,6 +216,7 @@ while [[ $# -gt 0 ]]; do
         --phases)     [[ $# -ge 2 ]] || die "$1 requires a value"; PHASE_SPEC="$2";       shift 2 ;;
         --memory-poll-seconds) [[ $# -ge 2 ]] || die "$1 requires a value"; MEMORY_POLL_SECONDS="$2"; shift 2 ;;
         --memory-csv) [[ $# -ge 2 ]] || die "$1 requires a value"; MEMORY_CSV="$2";       shift 2 ;;
+        --phase-settle) [[ $# -ge 2 ]] || die "$1 requires a value"; PHASE_SETTLE_SECONDS="$2"; shift 2 ;;
         --label)      [[ $# -ge 2 ]] || die "$1 requires a value"; LABEL="$2";            shift 2 ;;
         --setup-cmd)  [[ $# -ge 2 ]] || die "$1 requires a value"; SETUP_CMD="$2";        shift 2 ;;
         --synthetic)  [[ $# -ge 2 ]] || die "$1 requires a value"; SYNTHETIC="$2";        shift 2 ;;
@@ -249,6 +257,9 @@ PYTHON="$(find_python)" || die "Python 3.14+ is required (the project .venv or p
 IDLE_SAMPLE="${SCRIPT_DIR}/idle-sample.py"
 [[ "${MEMORY_POLL_SECONDS}" =~ ^[0-9]+$ ]] || die "--memory-poll-seconds must be a whole number of seconds"
 MEMORY_POLL_SECONDS=$((10#${MEMORY_POLL_SECONDS}))
+[[ "${PHASE_SETTLE_SECONDS}" =~ ^[0-9]+$ ]] || die "--phase-settle must be a whole number of seconds"
+PHASE_SETTLE_SECONDS=$((10#${PHASE_SETTLE_SECONDS}))
+[[ "${PHASE_SETTLE_SECONDS}" -le 600 ]] || die "--phase-settle must be at most 600 seconds"
 [[ "${MEMORY_POLL_SECONDS}" -ge 1 ]] || die "--memory-poll-seconds must be at least 1"
 # The phases, as "<kind> <seconds>" lines. The first one's length is the --duration the per-repetition
 # figures, table and aggregates describe.
@@ -550,12 +561,30 @@ finish_phase_sampler() {
 # the window manager won't take is skipped with a note. $1 = repetition, $2 = phase number, $3 = the
 # launch time.
 run_later_phase() {
-    local i=$(($2 - 1)) note start_line
+    local i=$(($2 - 1)) note start_line s
     local kind="${PHASE_KINDS[i]}" secs="${PHASE_SECONDS[i]}"
-    if [[ "${kind}" != visible ]] && ! note="$(set_window_state "${kind}")"; then
+    # A restored phase after a minimized one that was skipped would be one more visible phase under the wrong name
+    # (#3910): the window was never minimized.
+    if [[ "${kind}" == restored && "${LAST_MINIMIZE_SKIPPED}" -eq 1 ]]; then
+        note="the minimized phase before it was skipped"
         echo "WARNING: skipping the ${kind} phase: ${note}." >&2
         "${PYTHON}" "${IDLE_SAMPLE}" skipped "${kind}" "${secs}" "${note}" > "${WORK_DIR}/phase-$1-$2.json"
         return 0
+    fi
+    if [[ "${kind}" != visible ]] && ! note="$(set_window_state "${kind}")"; then
+        echo "WARNING: skipping the ${kind} phase: ${note}." >&2
+        "${PYTHON}" "${IDLE_SAMPLE}" skipped "${kind}" "${secs}" "${note}" > "${WORK_DIR}/phase-$1-$2.json"
+        [[ "${kind}" == minimized ]] && LAST_MINIMIZE_SKIPPED=1
+        return 0
+    fi
+    [[ "${kind}" == minimized ]] && LAST_MINIMIZE_SKIPPED=0
+    # The redraws right after the window changes stay out of the phase (#3910), as measure-idle.ps1 -PhaseSettle.
+    if [[ "${kind}" != visible && "${PHASE_SETTLE_SECONDS}" -gt 0 ]]; then
+        echo "Letting the ${kind} window settle for ${PHASE_SETTLE_SECONDS}s..."
+        for ((s = 0; s < PHASE_SETTLE_SECONDS; s++)); do
+            check_alive "while the ${kind} window settled"
+            sleep 1
+        done
     fi
     check_alive "before the ${kind} phase"
     echo "Sampling the ${kind} phase (${2}/${#PHASE_KINDS[@]}) for ${secs}s..."
@@ -787,6 +816,7 @@ else
 fi
 
 for ((REP = 1; REP <= REPEAT; REP++)); do
+    LAST_MINIMIZE_SKIPPED=0 # each repetition's window starts visible
     run_once "${REP}"
 done
 

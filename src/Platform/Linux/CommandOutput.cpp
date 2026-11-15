@@ -164,20 +164,33 @@ class ChildGuard
 
 } // namespace
 
-CommandOutput runForOutput(const std::vector<std::string>& argv, std::chrono::milliseconds timeout, std::size_t maxBytes)
+CommandOutput runForOutput(const std::vector<std::string>& argv,
+                           std::chrono::milliseconds timeout,
+                           std::size_t maxBytes,
+                           const std::vector<std::string>* environment)
 {
     CommandOutput result;
     if (argv.empty())
     {
         return result;
     }
-    std::vector<char*> args; // made first: the one allocation before the spawn
+    std::vector<char*> args; // made first, with env below: the allocations before the spawn
     args.reserve(argv.size() + 1);
     for (const std::string& arg : argv)
     {
         args.push_back(const_cast<char*>(arg.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
     }
     args.push_back(nullptr);
+    std::vector<char*> env; // the given environment, when there is one; made before the spawn too
+    if (environment != nullptr)
+    {
+        env.reserve(environment->size() + 1);
+        for (const std::string& entry : *environment)
+        {
+            env.push_back(const_cast<char*>(entry.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
+        }
+        env.push_back(nullptr);
+    }
 
     std::array<int, 2> pipeFds{-1, -1};
     if (::pipe2(pipeFds.data(), O_CLOEXEC) != 0)
@@ -208,7 +221,8 @@ CommandOutput runForOutput(const std::vector<std::string>& argv, std::chrono::mi
     ::posix_spawnattr_setflags(attributes.get(), POSIX_SPAWN_SETSIGMASK | POSIX_SPAWN_SETSIGDEF);
 
     pid_t spawnedChild = -1; // NOLINT(misc-include-cleaner) - from <sys/types.h>, which clang-tidy 23 doesn't map
-    const int spawned = ::posix_spawnp(&spawnedChild, argv.front().c_str(), actions.get(), attributes.get(), args.data(), environ);
+    const int spawned = ::posix_spawnp(
+        &spawnedChild, argv.front().c_str(), actions.get(), attributes.get(), args.data(), environment != nullptr ? env.data() : environ);
     {
         const Posix::FdGuard closing(std::move(writeEnd)); // only the child writes: end of file once it is gone
     }

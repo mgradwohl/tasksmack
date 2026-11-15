@@ -1,5 +1,5 @@
-# Writes a binary file into a C++ header as a constexpr byte array (cmake -P script). Used for the helper's
-# eBPF object (#3366), which is a build output, so the embedding runs at build time, not configure time.
+# Writes a binary file into a C++ header as a constexpr byte array (cmake -P script). Used for the eBPF UDP
+# counter's object (#3366), which TaskSmack loads as root, which is a build output, so the embedding runs at build time, not configure time.
 #
 #   cmake -DINPUT=<file> -DOUTPUT=<header> -DNAME=<UPPER_SNAKE_NAME> -P EmbedBinary.cmake
 foreach(var INPUT OUTPUT NAME)

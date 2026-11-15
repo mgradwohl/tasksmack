@@ -771,6 +771,9 @@ bool Window::recreateGLContext()
     // SDL_GL_CreateContext() made the replacement current.
     SDL_GL_DestroyContext(m_GLContext);
     m_GLContext = replacement;
+    // What the destroyed context reported is no longer true of anything (#3796): until the replacement is
+    // current and loaded, graphicsResetStatus() makes no GL call. Set again below once it is.
+    m_ReportsGraphicsReset = false;
     // The swap interval belongs to the context: the restore's setVSync() sets it on the new one (#3511).
     forgetSwapInterval();
     if (!SDL_GL_MakeCurrent(m_Handle, m_GLContext))

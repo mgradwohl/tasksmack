@@ -1,7 +1,7 @@
 #pragma once
 
 // The Windows transport of the privileged broker (#2311; #2181): BrokerProtocol frames over a named
-// pipe, the twin of the Linux socketpair (Linux/BrokerSocket.h). The elevated helper is the server. It
+// pipe (Linux has no helper since #3580). The elevated helper is the server. It
 // makes the pipe under the random name TaskSmack started it with:
 //   - as the first and only instance (FILE_FLAG_FIRST_PIPE_INSTANCE, one instance), so a name somebody
 //     already holds fails rather than being shared, and nobody can add a second instance to it;

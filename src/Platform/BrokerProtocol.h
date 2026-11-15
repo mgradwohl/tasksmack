@@ -1040,7 +1040,7 @@ namespace Detail
 }
 
 /// A SessionAction payload (#3076): the action, refused unless it is SignOut or Disconnect (Lock is
-/// Linux's, which polkit authorizes, never the helper), the session's ID, then the confirmed sign-in's user,
+/// never the helper's: the session user locks their own session), the session's ID, then the confirmed sign-in's user,
 /// domain and sign-in time (the helper, not the decoder, refuses a missing one).
 [[nodiscard]] inline SessionActionRequest decodeSessionActionRequest(Reader& reader)
 {
