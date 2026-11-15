@@ -198,6 +198,11 @@ struct LoginSessionsRead
 /// session TaskSmack runs in. Unprivileged.
 [[nodiscard]] LoginSessionsRead readLoginSessions(std::string_view currentSessionId);
 
+/// The logind session this process is in, from its cgroup (sd_pid_get_session), or empty when it is in none or the
+/// build has no libsystemd (#3890). A TaskSmack started by pkexec or sudo stays in the invoking user's session scope
+/// though its environment has lost XDG_SESSION_ID.
+[[nodiscard]] std::string sessionOfThisProcess();
+
 /// What sessionAction() says to a Disconnect: Linux offers Lock in its place (#3076).
 inline constexpr std::string_view DISCONNECT_UNSUPPORTED = "Linux has no Disconnect; Lock takes its place";
 

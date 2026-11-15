@@ -19,9 +19,21 @@ namespace Platform
 class LinuxUserSessions final : public IUserSessions
 {
   public:
-    /// The session TaskSmack runs in is the one pam_systemd named in XDG_SESSION_ID, read once here.
+    /// The session TaskSmack runs in, found once here: currentSessionIdFrom() of XDG_SESSION_ID and logind.
     LinuxUserSessions() : m_CurrentSessionId(currentSessionId())
     {}
+
+    /// The session TaskSmack runs in: the one pam_systemd named in XDG_SESSION_ID (@p environmentId, null when unset),
+    /// else the one logind places this process in (@p logindSession, #3890): pkexec and sudo drop the variable, but
+    /// TaskSmack (Administrator) still runs in the invoking user's session.
+    [[nodiscard]] static std::string currentSessionIdFrom(const char* environmentId, std::string (*logindSession)())
+    {
+        if (environmentId != nullptr && *environmentId != '\0')
+        {
+            return environmentId;
+        }
+        return logindSession != nullptr ? logindSession() : std::string{};
+    }
 
     [[nodiscard]] bool hasSessions() const override
     {
@@ -54,8 +66,7 @@ class LinuxUserSessions final : public IUserSessions
     [[nodiscard]] static std::string currentSessionId()
     {
         // NOLINTNEXTLINE(concurrency-mt-unsafe) - read once, at construction on the composition root's thread
-        const char* const id = std::getenv("XDG_SESSION_ID");
-        return id != nullptr ? std::string(id) : std::string{};
+        return currentSessionIdFrom(std::getenv("XDG_SESSION_ID"), &SystemdBus::sessionOfThisProcess);
     }
 
     std::string m_CurrentSessionId;

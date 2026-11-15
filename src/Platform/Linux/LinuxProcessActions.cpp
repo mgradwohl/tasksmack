@@ -571,7 +571,15 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
     {
         return std::unexpected(std::string("It has no executable file (a kernel thread)"));
     }
-    std::expected<Sha256::Digest, std::string> digest = Sha256::hashFile(image, stop);
+    // Another user's image is told by the open's errno (#3857), not by hashFile()'s message, which is strerror's text
+    // in the session's language: a German one never matched "Permission denied". A process that exits meanwhile is
+    // caught by the poll below either way.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int probe = ::open(image.c_str(), O_RDONLY | O_CLOEXEC);
+    const int probeError = errno;
+    const FdGuard probeGuard(probe);
+    const bool refused = probe < 0 && (probeError == EACCES || probeError == EPERM);
+    std::expected<Sha256::Digest, std::string> digest = refused ? std::unexpected(std::string("refused")) : Sha256::hashFile(image, stop);
     int exited = syscalls().pollPidfd(pidfd.get());
     while (exited < 0 && errno == EINTR)
     {
@@ -583,8 +591,7 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
     }
     if (!digest.has_value())
     {
-        // hashFile() names the open's errno in words; errno itself is the poll's by now.
-        if (digest.error().starts_with("couldn't open") && digest.error().contains("ermission denied"))
+        if (refused)
         {
             return std::unexpected(std::string("Its executable can't be read: it belongs to another user"));
         }
