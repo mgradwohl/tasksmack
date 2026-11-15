@@ -31,6 +31,25 @@
 namespace App
 {
 
+namespace
+{
+
+/// The one same-row rule for the Actions card's buttons (#3813): the next item goes on the row after the
+/// last one when it fits there at @p width, and otherwise starts a row of its own.
+void placeAfterPrevious(float width)
+{
+    // Decided before SameLine(): SameLine() then NewLine() would leave the row's extent at the
+    // SameLine() position, an item spacing past the last button, and widen the block's content.
+    const float rowEnd = ImGui::GetItemRectMax().x;
+    const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
+    if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
+    {
+        ImGui::SameLine();
+    }
+}
+
+} // namespace
+
 void ProcessActionsView::render(Platform::IProcessActions* actions,
                                 const Platform::ProcessActionCapabilities& capabilities,
                                 const std::string& processName,
@@ -83,15 +102,10 @@ void ProcessActionsView::renderVirusTotalButton(Platform::IProcessActions* actio
         return;
     }
     // As the other buttons: on the row at its own width when it fits, else on a row of its own.
-    const float width = ImGui::CalcTextSize(VirusTotalLookup::MENU_LABEL).x + (2.0F * ImGui::GetStyle().FramePadding.x);
+    const float width = virusTotalButtonWidth(true);
     if (afterButtons)
     {
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(width);
     }
     const bool disabled = target.pid <= 0 || m_ActionRun.busy();
     ImGui::BeginDisabled(disabled);
@@ -125,12 +139,7 @@ void ProcessActionsView::renderAnalyzeWaitChainButton(Platform::IProcessActions*
     const float width = analyzeWaitChainButtonWidth(capabilities);
     if (afterButtons)
     {
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(width);
     }
     const bool disabled = target.pid <= 0;
     ImGui::BeginDisabled(disabled);
@@ -161,12 +170,7 @@ void ProcessActionsView::renderEfficiencyModeToggle(Platform::IProcessActions* a
     // As the trace, affinity and dump buttons: on the row when it fits, else on a row of its own.
     if (afterButtons)
     {
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + efficiencyModeToggleWidth(capabilities) <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(efficiencyModeToggleWidth(capabilities));
     }
     const bool disabled = toggle.state == Detail::EfficiencyModeToggleState::Disabled;
     bool checked = on;
@@ -195,12 +199,7 @@ void ProcessActionsView::renderCreateDumpButton(Platform::IProcessActions* actio
     const float width = createDumpButtonWidth(capabilities);
     if (afterButtons)
     {
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(width);
     }
     const bool disabled = target.pid <= 0 || m_DumpView.active();
     ImGui::BeginDisabled(disabled);
@@ -230,12 +229,7 @@ void ProcessActionsView::renderSetAffinityButton(const Platform::IProcessActions
     const float width = setAffinityButtonWidth(capabilities);
     if (afterButtons)
     {
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(width);
     }
     const bool noTarget = target.pid <= 0;
     ImGui::BeginDisabled(noTarget || m_ActionRun.busy());
@@ -293,12 +287,7 @@ void ProcessActionsView::renderSetSchedPolicyButton(const Platform::ProcessActio
     const float width = setSchedPolicyButtonWidth(capabilities);
     if (afterButtons)
     {
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(width);
     }
     const bool noTarget = target.pid <= 0;
     ImGui::BeginDisabled(noTarget || m_ActionRun.busy());
@@ -352,14 +341,7 @@ void ProcessActionsView::renderSyscallTraceButton(Platform::IProcessActions* act
     const float width = syscallTraceButtonWidth(capabilities);
     if (afterButtons)
     {
-        // Decided before SameLine(): SameLine() then NewLine() would leave the row's extent at the
-        // SameLine() position, an item spacing past the last button, and widen the block's content.
-        const float rowEnd = ImGui::GetItemRectMax().x;
-        const float regionEnd = ImGui::GetCursorScreenPos().x + ImGui::GetContentRegionAvail().x;
-        if (rowEnd + ImGui::GetStyle().ItemSpacing.x + width <= regionEnd)
-        {
-            ImGui::SameLine();
-        }
+        placeAfterPrevious(width);
     }
     const bool disabled = button.state == Detail::SyscallTraceButtonState::Disabled || m_ActionRun.busy();
     ImGui::BeginDisabled(disabled);
@@ -518,7 +500,17 @@ float ProcessActionsView::efficiencyModeToggleWidth(const Platform::ProcessActio
            ImGui::CalcTextSize(Detail::EFFICIENCY_MODE_LABEL, nullptr, /*hide_text_after_double_hash=*/true).x;
 }
 
-float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities)
+float ProcessActionsView::virusTotalButtonWidth(bool offered)
+{
+    if (!offered)
+    {
+        return 0.0F;
+    }
+    return ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(VirusTotalLookup::MENU_LABEL).x,
+                                                          ImGui::GetStyle().FramePadding.x);
+}
+
+float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities, bool virusTotalOffered)
 {
     std::size_t count = 0;
     for (const Detail::ActionButtonSpec& button : Detail::ACTION_BUTTONS)
@@ -527,8 +519,8 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
     }
     const float actionRow =
         ProcessDetailsLayout::computeActionButtonRowWidth(actionButtonWidth(capabilities), count, ImGui::GetStyle().ItemSpacing.x);
-    // The trace, affinity, scheduling policy and dump buttons and the Efficiency mode checkbox each take a row of their own
-    // when they don't fit after the others.
+    // The trace, affinity, scheduling policy, dump, wait chain and VirusTotal buttons and the Efficiency mode checkbox
+    // each take a row of their own when they don't fit after the others (placeAfterPrevious()).
     return ProcessDetailsLayout::computeActionButtonsWidth(actionRow,
                                                            std::max({
                                                                syscallTraceButtonWidth(capabilities),
@@ -537,6 +529,7 @@ float ProcessActionsView::buttonsRowWidth(const Platform::ProcessActionCapabilit
                                                                createDumpButtonWidth(capabilities),
                                                                analyzeWaitChainButtonWidth(capabilities),
                                                                efficiencyModeToggleWidth(capabilities),
+                                                               virusTotalButtonWidth(virusTotalOffered),
                                                            }));
 }
 
@@ -564,11 +557,7 @@ bool ProcessActionsView::renderButtons(const Platform::ProcessActionCapabilities
         }
         if (!first)
         {
-            ImGui::SameLine();
-            if (ImGui::GetContentRegionAvail().x < buttonSize.x)
-            {
-                ImGui::NewLine();
-            }
+            placeAfterPrevious(buttonSize.x);
         }
         first = false;
 

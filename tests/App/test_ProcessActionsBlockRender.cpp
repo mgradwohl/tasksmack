@@ -133,10 +133,12 @@ constexpr float INFO_ROW = 776.0F; // Identity and Runtime at their 384px cap, 8
 }
 
 /// The layout ProcessDetailsPanel picks for @p capabilities in @p paneWidth beside a @p infoRowWidth row.
-[[nodiscard]] ProcessDetailsLayout::TopRowLayout
-layoutFor(const Platform::ProcessActionCapabilities& capabilities, float paneWidth, float infoRowWidth = INFO_ROW)
+[[nodiscard]] ProcessDetailsLayout::TopRowLayout layoutFor(const Platform::ProcessActionCapabilities& capabilities,
+                                                           float paneWidth,
+                                                           float infoRowWidth = INFO_ROW,
+                                                           bool virusTotalOffered = false)
 {
-    const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(capabilities);
+    const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(capabilities, virusTotalOffered);
     return ProcessDetailsLayout::chooseTopRowLayout(
         paneWidth, infoRowWidth, ImGui::GetStyle().ItemSpacing.x, widths.actionsCard(), widths.priorityCard());
 }
@@ -206,7 +208,7 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
         ProcessDetailsLayout::TopRowLayout layout;
         const auto body = [&]
         {
-            layout = layoutFor(capabilities, paneWidth, infoRowWidth);
+            layout = layoutFor(capabilities, paneWidth, infoRowWidth, h.actionsView.virusTotalOffered(capabilities));
             ProcessActionsBlock::render(h.context(capabilities), layout);
         };
         for (int frame = 0; frame < 3; ++frame)
@@ -232,18 +234,18 @@ TEST_F(ProcessActionsBlockRenderTest, TheButtonsAreAsWideAsTheirLabelsNotAShareO
     (void) runFrame(
         [&]
         {
-            buttons = ProcessActionsBlock::measure(NO_PRIORITY).buttons;
+            buttons = ProcessActionsBlock::measure(NO_PRIORITY, false).buttons;
             const float widest = std::max(ImGui::CalcTextSize(Detail::ACTION_BUTTONS.at(0).label).x,
                                           ImGui::CalcTextSize(Detail::ACTION_BUTTONS.at(1).label).x);
             expected = ProcessDetailsLayout::computeActionButtonRowWidth(
                 ProcessDetailsLayout::computeActionButtonWidth(widest, ImGui::GetStyle().FramePadding.x),
                 2,
                 ImGui::GetStyle().ItemSpacing.x);
-            withoutPriority = ProcessActionsBlock::measure(NO_PRIORITY).priority;
-            withoutPriorityCard = ProcessActionsBlock::measure(NO_PRIORITY).priorityCard();
+            withoutPriority = ProcessActionsBlock::measure(NO_PRIORITY, false).priority;
+            withoutPriorityCard = ProcessActionsBlock::measure(NO_PRIORITY, false).priorityCard();
             Platform::ProcessActionCapabilities ioOnly = NO_PRIORITY;
             ioOnly.canSetIoPriority = true;
-            withIoPriorityOnly = ProcessActionsBlock::measure(ioOnly).priority;
+            withIoPriorityOnly = ProcessActionsBlock::measure(ioOnly, false).priority;
         });
     EXPECT_FLOAT_EQ(buttons, expected);
     EXPECT_FLOAT_EQ(withoutPriority, 0.0F);
@@ -297,7 +299,7 @@ TEST_F(ProcessActionsBlockRenderTest, OnWindowsThePriorityCardDrawsTheClassSlide
     (void) runFrame(
         [&]
         {
-            priorityWidth = ProcessActionsBlock::measure(WINDOWS_ACTIONS).priority;
+            priorityWidth = ProcessActionsBlock::measure(WINDOWS_ACTIONS, false).priority;
             sliderMinWidth = Detail::discretePrioritySliderMinWidth(Detail::WINDOWS_PRIORITY_SLIDER);
         });
     EXPECT_GE(priorityWidth, sliderMinWidth);
@@ -831,7 +833,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAnd
         [&]
         {
             toggleWidth = ProcessActionsView::efficiencyModeToggleWidth(CAPS);
-            buttons = ProcessActionsBlock::measure(CAPS).buttons;
+            buttons = ProcessActionsBlock::measure(CAPS, false).buttons;
             withoutToggle = ProcessActionsView::efficiencyModeToggleWidth(ALL_ACTIONS);
         });
     EXPECT_GT(toggleWidth, 0.0F);
@@ -1379,14 +1381,14 @@ TEST_F(ProcessActionsBlockRenderTest, MeasureCountsTheTraceButtonWhereItIsShown)
     (void) runFrame(
         [&]
         {
-            rowOnly = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Unsupported)).buttons;
+            rowOnly = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Unsupported), false).buttons;
             traceWidth = ProcessActionsView::syscallTraceButtonWidth(withTrace(Platform::SyscallTraceAvailability::Available));
-            available = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Available)).buttons;
-            greyedOut = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::NoTracer)).buttons;
+            available = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::Available), false).buttons;
+            greyedOut = ProcessActionsBlock::measure(withTrace(Platform::SyscallTraceAvailability::NoTracer), false).buttons;
             // A platform whose only button is the trace one: the Actions card is as wide as that button.
             Platform::ProcessActionCapabilities traceOnly;
             traceOnly.syscallTrace = Platform::SyscallTraceAvailability::Available;
-            traceOnlyButtons = ProcessActionsBlock::measure(traceOnly).buttons;
+            traceOnlyButtons = ProcessActionsBlock::measure(traceOnly, false).buttons;
         });
     EXPECT_GT(traceWidth, 0.0F);
     EXPECT_FLOAT_EQ(ProcessActionsView::syscallTraceButtonWidth(withTrace(Platform::SyscallTraceAvailability::Unsupported)), 0.0F);
@@ -1647,10 +1649,10 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     (void) runFrame(
         [&]
         {
-            withoutDump = ProcessActionsBlock::measure(caps).buttons;
+            withoutDump = ProcessActionsBlock::measure(caps, false).buttons;
             Platform::ProcessActionCapabilities dumpCaps = caps;
             dumpCaps.canCreateDump = true;
-            withDump = ProcessActionsBlock::measure(dumpCaps).buttons;
+            withDump = ProcessActionsBlock::measure(dumpCaps, false).buttons;
             dumpButton = ProcessActionsView::createDumpButtonWidth(dumpCaps);
         });
     EXPECT_FLOAT_EQ(ProcessActionsView::createDumpButtonWidth(caps), 0.0F);
@@ -1745,6 +1747,52 @@ TEST_F(ProcessActionsBlockRenderTest, LookUpOnVirusTotalFromTheCardHashesAndShow
     EXPECT_FALSE(text.contains(VirusTotalLookup::MENU_LABEL)) << text;
 }
 
+// #3813: the card is measured for Look up on VirusTotal where it's offered, as for the other buttons after the
+// row, so the button never runs out of the card; where it isn't offered it adds nothing.
+TEST_F(ProcessActionsBlockRenderTest, MeasureCountsTheVirusTotalButtonWhereItIsOffered)
+{
+    Platform::ProcessActionCapabilities caps = NO_PRIORITY;
+    caps.canHashImage = true;
+    float rowOnly = 0.0F;
+    float withVirusTotal = 0.0F;
+    float button = 0.0F;
+    float buttonOnly = 0.0F;
+    (void) runFrame(
+        [&]
+        {
+            rowOnly = ProcessActionsBlock::measure(caps, false).buttons;
+            withVirusTotal = ProcessActionsBlock::measure(caps, true).buttons;
+            button = ProcessActionsView::virusTotalButtonWidth(true);
+            // A platform whose only button is the lookup: the Actions card is as wide as that button.
+            buttonOnly = ProcessActionsBlock::measure(Platform::ProcessActionCapabilities{.canHashImage = true}, true).buttons;
+        });
+    EXPECT_FLOAT_EQ(ProcessActionsView::virusTotalButtonWidth(false), 0.0F);
+    EXPECT_GT(button, 0.0F);
+    EXPECT_FLOAT_EQ(withVirusTotal, std::max(rowOnly, button));
+    EXPECT_FLOAT_EQ(buttonOnly, button);
+
+    // Offered only with a client and a key, which setVirusTotal() gives the view.
+    Harness h;
+    EXPECT_FALSE(h.actionsView.virusTotalOffered(caps));
+    h.actionsView.setVirusTotal({
+        .client = std::make_shared<ProcessActionsBlockRenderTestDetail::FakeLookupClient>(Platform::HttpsResponse{}),
+        .apiKey = std::string(64, 'a'),
+        .userAgent = "UA",
+    });
+    EXPECT_TRUE(h.actionsView.virusTotalOffered(caps));
+
+    // Laid out as ProcessDetailsPanel does it, wide or narrow, the button fits the card.
+    for (const float paneWidth : {1900.0F, 1000.0F, 300.0F})
+    {
+        SCOPED_TRACE(paneWidth);
+        const auto layout = renderBlock(h, caps, paneWidth, INFO_ROW);
+        const ImGuiWindow* card = actionsWindow();
+        ASSERT_NE(card, nullptr);
+        EXPECT_FLOAT_EQ(card->ScrollMax.x, 0.0F);
+        EXPECT_LE(card->ContentSize.x, layout.actionsWidth - (2.0F * ImGui::GetStyle().WindowPadding.x) + 1.0F);
+    }
+}
+
 // #3084: Analyze wait chain... where the platform can read one, at its own width; pressing it opens the wait
 // chain dialog for the process shown, which reads its chains on its worker and shows them.
 TEST_F(ProcessActionsBlockRenderTest, AnalyzeWaitChainFromTheCardOpensTheDialogForTheProcess)
@@ -1769,10 +1817,10 @@ TEST_F(ProcessActionsBlockRenderTest, AnalyzeWaitChainFromTheCardOpensTheDialogF
     (void) runFrame(
         [&]
         {
-            without = ProcessActionsBlock::measure(caps).buttons;
+            without = ProcessActionsBlock::measure(caps, false).buttons;
             Platform::ProcessActionCapabilities waitCaps = caps;
             waitCaps.canAnalyzeWaitChain = true;
-            with = ProcessActionsBlock::measure(waitCaps).buttons;
+            with = ProcessActionsBlock::measure(waitCaps, false).buttons;
             button = ProcessActionsView::analyzeWaitChainButtonWidth(waitCaps);
         });
     EXPECT_FLOAT_EQ(ProcessActionsView::analyzeWaitChainButtonWidth(caps), 0.0F);

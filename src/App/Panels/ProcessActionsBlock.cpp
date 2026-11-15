@@ -134,10 +134,10 @@ const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsew
     return sliderApplying ? "Waiting for the priority change being applied to finish" : priorityHeldElsewhere;
 }
 
-Widths measure(const Platform::ProcessActionCapabilities& capabilities)
+Widths measure(const Platform::ProcessActionCapabilities& capabilities, bool virusTotalOffered)
 {
     return Widths{
-        .buttons = ProcessActionsView::buttonsRowWidth(capabilities),
+        .buttons = ProcessActionsView::buttonsRowWidth(capabilities, virusTotalOffered),
         .priority = priorityRowsWidth(capabilities),
         .padding = ImGui::GetStyle().WindowPadding.x * 2.0F,
     };
