@@ -4041,6 +4041,47 @@ TEST_F(ProcessesPanelUserGroupsTest, ASessionsMenuSignsOutAfterAskingAndTheHeade
     feed.stop();
 }
 
+// #3803: an action started under Group: User that finishes after the grouping changed still runs out its result line
+// and asks for a fresh read, so Group: User doesn't come back to a stale line.
+TEST_F(ProcessesPanelUserGroupsTest, AnActionThatFinishesAfterTheGroupingChangesLeavesNoStaleLine)
+{
+    auto fake = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice")});
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.start();
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const auto panel = userSessionsPanel(feed);
+    renderUntilLoaded(*panel);
+    ASSERT_TRUE(renderUntil(*panel, "alice").contains("alice"));
+    ASSERT_NE(feed.actions(), nullptr);
+
+    // alice's header: her one session's Lock, which runs at once; then the table is grouped another way.
+    static_cast<void>(rightClickRow(*panel, 0));
+    ASSERT_NE(topPopup(), nullptr) << "the header's menu didn't open";
+    pressPopupItem(*panel, ICON_FA_LOCK "  Lock");
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::None;
+    const int readsBefore = fake->m_Reads.load();
+
+    // Long frames, so the line's few seconds pass in a few of them, while the worker finishes.
+    ImGui::GetIO().DeltaTime = 1.0F;
+    const auto giveUp = std::chrono::steady_clock::now() + std::chrono::seconds(5);
+    while ((feed.actions()->busy() || !feed.actions()->result().empty()) && std::chrono::steady_clock::now() < giveUp)
+    {
+        static_cast<void>(renderAndCapture(*panel));
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+    }
+    ImGui::GetIO().DeltaTime = 1.0F / 60.0F;
+    EXPECT_EQ(fake->calls(), (std::vector<std::string>{"lock 2"}));
+    EXPECT_FALSE(feed.actions()->busy());
+    EXPECT_TRUE(feed.actions()->result().empty()) << "the line ran out while not grouped by User";
+
+    UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
+    const std::string text = renderUntil(*panel, "alice");
+    EXPECT_FALSE(text.contains("Locked alice's session")) << "a stale line: " << text;
+    EXPECT_GE(fake->m_Reads.load(), readsBefore);
+    panel->onDetach();
+    feed.stop();
+}
+
 // #3377 (Windows): the menu offers Disconnect... where Linux has Lock, greyed for a session already
 // disconnected; on another, it opens its own confirm.
 TEST_F(ProcessesPanelUserGroupsTest, WindowsSessionMenusOfferDisconnectInLocksPlace)
