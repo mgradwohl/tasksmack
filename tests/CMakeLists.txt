@@ -521,6 +521,7 @@ set(COMMON_TEST_SOURCES
     Core/test_WindowEvents.cpp
     Core/test_WindowGeometry.cpp
     Core/test_WindowVisibility.cpp
+    Core/test_FrameLoopState.cpp # run()'s loop phases, each on its own (#3791)
     Core/test_FrameWake.cpp # the publication wake and a static frame's wait (#3156)
     Core/test_IdleWaitTimer.cpp # the idle wait's high-resolution wake on Windows (#3712)
     Domain/test_History.cpp
@@ -1091,6 +1092,7 @@ add_executable(TaskSmackTests
     ${INTEGRATION_TEST_SOURCES}
     # Source files under test
     ${CMAKE_SOURCE_DIR}/src/Core/Application.cpp
+    ${CMAKE_SOURCE_DIR}/src/Core/FrameLoopState.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/ConfigDirOverride.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/LocaleSetup.cpp
     ${CMAKE_SOURCE_DIR}/src/Core/PathService.cpp

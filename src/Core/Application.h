@@ -143,6 +143,9 @@ class Application
     // publication wakes taken (m_PublicationWakesTaken; #3156).
     friend struct ApplicationTestAccessor;
 
+    /// What run()'s loop phases (FrameLoopState, #3791) call out to; defined in Application.cpp.
+    class LoopHost;
+
     /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
     /// layer handled the event, which vetoes the close (contract in WindowEvents.h).
     [[nodiscard]] bool closeRequestAccepted();
