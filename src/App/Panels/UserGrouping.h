@@ -15,6 +15,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IUserSessions.h"
 
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <string>
@@ -79,6 +80,13 @@ inline constexpr std::string_view NO_MATCHING_PROCESSES = "No processes match th
 /// A Group: User header's Status cell at @p nowUsec (#3377): its one session's sessionStatus(), "2 sessions",
 /// or empty for an account with none.
 [[nodiscard]] std::string groupStatus(const ProcessGrouping::Group& group, std::uint64_t nowUsec);
+
+/// Now, as the sessions' idle times are told from (#3816): CLOCK_REALTIME, in microseconds since the epoch.
+[[nodiscard]] inline std::uint64_t nowUsec()
+{
+    return static_cast<std::uint64_t>(
+        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
+}
 
 /// A group header's tooltip (#3377): "Expand" or "Collapse" (@p collapsed), and for a Group: User account
 /// with sessions that its Σ totals are of the processes TaskSmack can see, or for Not readable, why each

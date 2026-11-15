@@ -19,8 +19,6 @@
 
 #include <imgui.h>
 
-#include <chrono>
-#include <cstdint>
 #include <string>
 
 namespace App
@@ -30,13 +28,6 @@ namespace
 {
 
 constexpr const char* SESSION_MENU_POPUP_ID = "##UserSessionMenu";
-
-/// Now, as the sessions' idle times are told from (CLOCK_REALTIME µs).
-[[nodiscard]] std::uint64_t nowUsec()
-{
-    return static_cast<std::uint64_t>(
-        std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-}
 
 /// Whether the table shows @p column this frame: a hidden one is drawn into nowhere.
 [[nodiscard]] bool tableShows(ProcessColumn column)
@@ -115,7 +106,7 @@ void ProcessesPanel::renderSessionRow(const Platform::UserSession& session)
 {
     ImGui::TableNextRow();
     const auto& scheme = UI::Theme::get().scheme();
-    const std::string status = UserGrouping::sessionStatus(session, nowUsec());
+    const std::string status = UserGrouping::sessionStatus(session, UserGrouping::nowUsec());
     const bool statusColumnShown = tableShows(ProcessColumn::Status);
     int colIdx = 0;
     for (const ProcessColumn col : allProcessColumns())

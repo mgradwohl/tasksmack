@@ -4159,9 +4159,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         if (col == ProcessColumn::Status && !group.sessions.empty())
         {
             // Its one session's status, or how many it has (#3377).
-            const auto now = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-            UI::Widgets::cellText(UserGrouping::groupStatus(group, now));
+            UI::Widgets::cellText(UserGrouping::groupStatus(group, UserGrouping::nowUsec()));
             continue;
         }
         const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
