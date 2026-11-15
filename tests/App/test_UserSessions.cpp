@@ -235,6 +235,25 @@ TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
     EXPECT_STREQ(sessionActionWords(SessionAction::SignOut).title, "Sign out");
 }
 
+// #3804: with PC\alice and CORP\alice signed in, both confirmations name the account as DOMAIN\user.
+TEST(SessionActionTest, ConfirmationsNameTheAccountWithItsDomain)
+{
+    UserSession pc = session("2", "alice", 0);
+    pc.domain = "PC";
+    UserSession corp = session("3", "alice", 0);
+    corp.domain = "CORP";
+    EXPECT_TRUE(UserGrouping::signOutQuestion(pc).starts_with("Sign out PC\\alice from ")) << UserGrouping::signOutQuestion(pc);
+    EXPECT_TRUE(UserGrouping::signOutQuestion(corp).starts_with("Sign out CORP\\alice from "));
+    EXPECT_TRUE(UserGrouping::disconnectQuestion(pc).starts_with("Disconnect PC\\alice from "));
+    EXPECT_TRUE(UserGrouping::disconnectQuestion(corp).starts_with("Disconnect CORP\\alice from "));
+    corp.current = true;
+    EXPECT_TRUE(UserGrouping::disconnectQuestion(corp).starts_with("Disconnect CORP\\alice from "));
+
+    // No domain (Linux): the short name, as before.
+    const UserSession plain = session("4", "alice", 0);
+    EXPECT_TRUE(UserGrouping::signOutQuestion(plain).starts_with("Sign out alice from "));
+}
+
 /// Waits up to five seconds for @p done.
 template<typename Done> [[nodiscard]] bool waitFor(Done done)
 {

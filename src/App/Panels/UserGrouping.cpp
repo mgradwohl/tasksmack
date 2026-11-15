@@ -2,6 +2,7 @@
 
 #include "App/Panels/ProcessGroupTotals.h"
 #include "App/ProcessColumnConfig.h"
+#include "Domain/AccountName.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
@@ -393,10 +394,22 @@ std::string sessionTooltip(const Platform::UserSession& session)
     return text;
 }
 
+/// Names the account in a confirmation as DOMAIN\user whenever its domain is known (Windows), so PC\alice and
+/// CORP\alice are never confused in a destructive prompt (#3804). The headers qualify only a shared name, but
+/// one session can't tell whether its name is shared, so this always qualifies; Linux has no domain.
+namespace
+{
+std::string questionAccount(const Platform::UserSession& session)
+{
+    return Domain::AccountName::qualified(session.domain, session.user);
+}
+} // namespace
+
 std::string signOutQuestion(const Platform::UserSession& session)
 {
-    std::string question = std::format(
-        "Sign out {} from {}?\n\nEvery program in the session ends, and unsaved work is lost.", session.user, sessionPlace(session));
+    std::string question = std::format("Sign out {} from {}?\n\nEvery program in the session ends, and unsaved work is lost.",
+                                       questionAccount(session),
+                                       sessionPlace(session));
     if (session.current)
     {
         question += " This is the session TaskSmack runs in, so TaskSmack closes too.";
@@ -411,18 +424,18 @@ std::string disconnectQuestion(const Platform::UserSession& session)
         // Inside Remote Desktop, Disconnect closes the connection rather than locking a screen.
         return std::format("Disconnect {} from {}?\n\nThis is the session TaskSmack runs in: the Remote Desktop connection closes. "
                            "Its programs, TaskSmack too, keep running until you reconnect.",
-                           session.user,
+                           questionAccount(session),
                            sessionPlace(session));
     }
     if (session.current)
     {
         return std::format("Disconnect {} from {}?\n\nThis is the session TaskSmack runs in: this screen locks. Its programs, "
                            "TaskSmack too, keep running until you sign back in.",
-                           session.user,
+                           questionAccount(session),
                            sessionPlace(session));
     }
     return std::format("Disconnect {} from {}?\n\nTheir programs keep running, and they sign back in to return to them.",
-                       session.user,
+                       questionAccount(session),
                        sessionPlace(session));
 }
 
