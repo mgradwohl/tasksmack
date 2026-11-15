@@ -6,7 +6,6 @@
 /// dismissal hand on nothing.
 
 #include "App/Panels/ProcessSchedPolicyDialog.h"
-#include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/SchedPolicy.h"
 
@@ -450,31 +449,6 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, CancelEscapeAndADismissalHandOnNothin
     EXPECT_FALSE(dialog.isPending());
     EXPECT_FALSE(frame(dialog).has_value());
     EXPECT_FALSE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
-}
-
-// #3886: Apply is put together once for the row menu and Process Details' card: the line meanwhile, one
-// setSchedPolicy() on the dialog's process with the dialog's real-time threads choice, schedPolicyResultMessage() as
-// the line, and no administrator retry, since no helper sets a policy (#3580).
-TEST(ProcessSchedPolicyDialogTest, ApplySetsThePolicyOnTheDialogsProcessWithNoRetry)
-{
-    TestMocks::MockProcessActions actions;
-    ProcessSchedPolicyDialog dialog;
-    dialog.open({.pid = 42, .startTimeTicks = 7}, "server", SchedPolicy::Normal);
-    dialog.choose(SchedPolicy::Idle);
-    const std::optional<SchedPolicySetting> setting = dialog.setting();
-    ASSERT_TRUE(setting.has_value());
-    Detail::DialogApply apply = schedPolicyApply(&actions, dialog, *setting);
-    EXPECT_EQ(apply.pending, "Setting the scheduling policy of PID 42...");
-    EXPECT_EQ(actions.setSchedPolicyCount(), 0) << "nothing runs until the worker calls it";
-
-    const Platform::ProcessActionResult result = apply.work();
-    EXPECT_EQ(actions.setSchedPolicyCount(), 1);
-    EXPECT_EQ(actions.lastSchedPolicy(), SchedPolicy::Idle);
-    EXPECT_EQ(actions.lastRealtimeThreads(), dialog.realtimeThreads());
-    EXPECT_EQ(actions.lastTarget().pid, 42);
-    EXPECT_EQ(actions.lastTarget().startTimeTicks, 7U);
-    EXPECT_EQ(apply.format(result).text, schedPolicyResultMessage("server", 42, *setting, result).text);
-    EXPECT_FALSE(apply.retry.has_value());
 }
 
 } // namespace

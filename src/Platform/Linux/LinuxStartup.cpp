@@ -7,6 +7,7 @@
 #include "Platform/Linux/CommandOutput.h"
 #include "Platform/Linux/CronTab.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/ReplaceFile.h"
 #include "Platform/Linux/RootTools.h"
 #include "Platform/Linux/SystemdBus.h"
 #include "Platform/Linux/SystemdUnitFile.h"
@@ -199,33 +200,11 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
     return desktops.empty() ? std::string("This desktop doesn't start it (NotShowIn)") : "Starts only in " + desktops;
 }
 
-/// Writes @p text to @p path through a temporary file renamed over it, so a failure leaves the old file.
+/// Writes @p text to @p path through a staging file renamed over it, so a failure leaves the old file, and nothing
+/// planted beside it is followed (ReplaceFile, #3771). A replaced file keeps its permissions.
 [[nodiscard]] bool writeFile(const std::filesystem::path& path, const std::string& text)
 {
-    std::filesystem::path temporary = path;
-    temporary += std::format(".tasksmack-{}.tmp", ::getpid());
-    {
-        std::ofstream file(temporary, std::ios::binary | std::ios::trunc);
-        if (!file || !file.write(text.data(), static_cast<std::streamsize>(text.size())) || !file.flush())
-        {
-            std::error_code ignored;
-            std::filesystem::remove(temporary, ignored);
-            return false;
-        }
-    }
-    std::error_code ec;
-    // A replaced file keeps its permissions; a new one gets the umask's, as any file the user makes.
-    if (const std::filesystem::file_status old = std::filesystem::status(path, ec); !ec && std::filesystem::is_regular_file(old))
-    {
-        std::filesystem::permissions(temporary, old.permissions(), ec);
-    }
-    std::filesystem::rename(temporary, path, ec);
-    if (ec)
-    {
-        std::filesystem::remove(temporary, ec);
-        return false;
-    }
-    return true;
+    return ReplaceFile::replace(path, text).empty();
 }
 
 /// Why a systemd user unit enabled for every user (/etc/systemd/user) can't be switched here, and how an

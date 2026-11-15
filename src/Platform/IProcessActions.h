@@ -297,6 +297,7 @@ struct AuthorizedAction
         SetEfficiencyMode, ///< efficiencyMode (#3071)
         CloseConnection,   ///< socketInode (#3066)
         ThreadAction,      ///< tid and threadAction (#3069)
+        SetSchedPolicy,    ///< schedPolicy (#3086)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
@@ -314,7 +315,9 @@ struct AuthorizedAction
     std::int32_t level = 4;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     CpuAffinity cpus{};
-    // No SetSchedPolicy (#3886): the policy is Linux's, and Linux has no helper to redo a refused one (#3580).
+    SchedPolicy schedPolicy = SchedPolicy::Normal;           ///< SetSchedPolicy: Normal, Batch, Idle, FIFO or round robin
+    RealtimeThreads realtimeThreads = RealtimeThreads::Keep; ///< SetSchedPolicy: whether the dialog warned
+    std::int32_t rtPriority = 0;                             ///< SetSchedPolicy: 1 to 99 for FIFO and round robin, else 0 (#3219)
 };
 
 /// Run new task (#3065): a program to start, as Task Manager's File > Run new task.

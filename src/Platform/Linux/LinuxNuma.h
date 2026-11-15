@@ -219,6 +219,28 @@ struct MeminfoLine
     return parseNodeMeminfo(std::string_view(text.data(), text.size()));
 }
 
+/// Every node under @p nodeRoot, ascending by id, with its CPUs and memory. A node whose meminfo can't be
+/// read is left out; one whose cpulist can't be read keeps empty CPUs.
+[[nodiscard]] inline std::vector<NumaNode> readNodes(const std::filesystem::path& nodeRoot)
+{
+    std::vector<NumaNode> nodes;
+    for (const int id : listNodeIds(nodeRoot))
+    {
+        const auto memory = readNodeMemory(nodeRoot, id);
+        if (!memory.has_value())
+        {
+            continue;
+        }
+        nodes.push_back(NumaNode{
+            .id = id,
+            .cpus = readNodeCpus(nodeRoot, id).value_or(CpuAffinity{}),
+            .memTotalBytes = memory->totalBytes,
+            .memFreeBytes = memory->freeBytes,
+        });
+    }
+    return nodes;
+}
+
 #endif
 
 } // namespace Platform::LinuxNuma
