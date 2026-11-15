@@ -317,7 +317,10 @@ set(TASKSMACK_SOURCES
 # Platform-specific sources
 set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessProbe.cpp
+    src/Platform/Linux/LinuxProcessProbePower.cpp # its package power (RAPL), split out (#3772)
+    src/Platform/Linux/LinuxProcessProbeSockets.cpp # its socket traffic, split out (#3772)
     src/Platform/Linux/LinuxProcessControl.cpp
+    src/Platform/Linux/LinuxProcessControlEfficiency.cpp # its Efficiency mode, split out (#3772)
     src/Platform/Linux/LinuxProcessActions.cpp
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
