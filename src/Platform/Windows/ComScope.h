@@ -43,6 +43,12 @@ class ComScope
         return SUCCEEDED(m_Result) || m_Result == RPC_E_CHANGED_MODE;
     }
 
+    /// CoInitializeEx's answer, for a caller's error message when COM isn't usable().
+    [[nodiscard]] HRESULT result() const noexcept
+    {
+        return m_Result;
+    }
+
   private:
     HRESULT m_Result;
 };
