@@ -19,7 +19,6 @@
 
 #include "Core/EnvUtils.h"
 #include "Platform/AsciiTrim.h"
-#include "Platform/IHandedOverFolder.h"
 
 #include <cctype>
 #include <expected>
@@ -29,6 +28,11 @@
 #include <string>
 #include <string_view>
 #include <vector>
+
+namespace Platform
+{
+class IHandedOverFolder; // Platform/IHandedOverFolder.h: Core holds only a weak reference to one
+} // namespace Platform
 
 namespace Core::ConfigDirOverride
 {
@@ -90,7 +94,8 @@ struct HandedOverFile
 
 /// The plain files in folder @p folder of the held handed-over folder whose names end in @p extension, each listed
 /// and read through it (#3774), relative to the folder held: the user themes, for the UI, which uses no Platform
-/// type. nullopt when no handed-over folder is held; an error when the folder can't be listed. A file that can't be
+/// type. nullopt only when nothing was handed over (read by path then, if at all); an error when the folder can't be
+/// listed, or a hand-off's folder is no longer held. A file that can't be
 /// read (a link, a hard link) is skipped, and logged.
 [[nodiscard]] std::optional<std::expected<std::vector<HandedOverFile>, std::string>>
 readHandedOverFiles(const std::filesystem::path& folder, std::string_view extension);

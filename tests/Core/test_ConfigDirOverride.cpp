@@ -3,6 +3,7 @@
 
 #include "Core/ConfigDirOverride.h"
 #include "Mocks/HandedOverTestFolder.h"
+#include "Platform/IHandedOverFolder.h"
 
 #include <SDL3/SDL_stdinc.h>
 #include <gtest/gtest.h>
@@ -137,6 +138,25 @@ TEST(ConfigDirOverrideTest, TheHeldFolderIsOnlyEverTheOwnersToKeep)
     EXPECT_FALSE(handedOver());
     EXPECT_EQ(handedOverFolder(), nullptr);
     EXPECT_FALSE(handedOverFolderReleased());
+}
+
+// #3774: a handed-over folder named with a trailing separator is the same folder as without one, to ConfigDirOverride
+// and to the held folder alike, so UserConfig's comparison of the two doesn't refuse every save.
+TEST(ConfigDirOverrideTest, AHandedOverFolderIsKeptWithoutATrailingSeparator)
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "handed-over";
+    std::filesystem::path withSeparator = dir;
+    withSeparator += std::filesystem::path::preferred_separator;
+    EXPECT_EQ(Platform::handedOverFolderPath(withSeparator), Platform::handedOverFolderPath(dir));
+    EXPECT_TRUE(Platform::handedOverFolderPath(withSeparator).has_filename());
+    EXPECT_EQ(Platform::handedOverFolderPath(dir.root_path()), dir.root_path()) << "a root keeps its separator";
+
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = active();
+    adoptHandedOver(withSeparator);
+    EXPECT_EQ(active().value_or(std::filesystem::path{}), Platform::handedOverFolderPath(dir));
+    EXPECT_EQ(active().value_or(std::filesystem::path{}) / "config.toml", Platform::handedOverFolderPath(dir) / "config.toml");
+    setActiveForTesting(previous);
 }
 
 /// In a death test's own child: TASKSMACK_CONFIG_DIR set to @p envDir, then a hand-off of @p handedDir, before

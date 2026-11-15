@@ -14,10 +14,26 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace Platform
 {
+
+/// @p dir as a handed-over folder's path is kept everywhere (ConfigDirOverride, the held folder): absolute, lexically
+/// normal, with no trailing separator, so "C:\Users\pat\cfg\" and "C:\Users\pat\cfg" are the same folder to every
+/// comparison of them.
+[[nodiscard]] inline std::filesystem::path handedOverFolderPath(const std::filesystem::path& dir)
+{
+    std::error_code ec;
+    const std::filesystem::path absolute = std::filesystem::absolute(dir, ec);
+    std::filesystem::path path = (ec ? dir : absolute).lexically_normal();
+    if (!path.has_filename() && path.has_relative_path())
+    {
+        path = path.parent_path(); // "C:\a\cfg\" -> "C:\a\cfg"; a root ("C:\") stays as it is
+    }
+    return path;
+}
 
 class IHandedOverFolder
 {

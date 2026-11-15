@@ -292,7 +292,8 @@ std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverCo
     {
         return std::unexpected(std::move(pinned.error()));
     }
-    return std::make_shared<Windows::PinnedFolder>(dir, std::move(*pinned));
+    // Kept in the form ConfigDirOverride keeps it (no trailing separator), so the two compare equal.
+    return std::make_shared<Windows::PinnedFolder>(handedOverFolderPath(dir), std::move(*pinned));
 }
 
 bool enableDebugPrivilege()

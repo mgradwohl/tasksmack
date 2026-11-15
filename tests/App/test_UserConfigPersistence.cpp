@@ -2614,6 +2614,32 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+// #3759: the save by path's own refusal of a link, as a session run as root for a user (which holds no folder) saves.
+TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
+{
+    const auto& link = m_ConfigPath;
+    const auto target = m_TempDir / "elsewhere.toml";
+    writeFile(target, "[theme]\nid = \"arctic-fire\"\n");
+    std::error_code linkError;
+    std::filesystem::create_symlink(target, link, linkError);
+    if (linkError)
+    {
+        GTEST_SKIP() << "can't make a symlink here (Windows needs Developer Mode or the privilege): " << linkError.message();
+    }
+
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    EXPECT_TRUE(std::filesystem::is_symlink(link));
+    EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
+}
+
 // #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as
 // the staging file is named) can't leave the write going on with nothing held.
 TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWrite)
@@ -2752,6 +2778,33 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderSwappedForALinkIsNotSavedInto
 
     EXPECT_EQ(parsed(real / "config.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "nothing saved through the link";
     std::filesystem::remove(m_TempDir, ec); // the link; TearDown finds nothing left to remove
+    std::filesystem::rename(real, m_TempDir, ec);
+}
+
+// #3759: the same, run as root for a user, which holds no folder: the save by path refuses the swapped folder itself.
+TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderSwappedForALinkIsNotSavedInto)
+{
+    writeFile(m_ConfigPath, "[theme]\nid = \"arctic-fire\"\n");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    config.load();
+
+    std::filesystem::path real = m_TempDir;
+    real += "-real";
+    std::error_code ec;
+    std::filesystem::rename(m_TempDir, real, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    std::filesystem::create_directory_symlink(real, m_TempDir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    config.settings().themeId = "mocha";
+    config.save();
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    EXPECT_EQ(parsed(real / "config.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "nothing saved through the link";
+    std::filesystem::remove(m_TempDir, ec);
     std::filesystem::rename(real, m_TempDir, ec);
 }
 #endif

@@ -939,12 +939,17 @@ void UserConfig::load()
     // Held, it is read only through the folder held, relative to its handle (#3774).
     if (const std::shared_ptr<const Platform::IHandedOverFolder>& folder = held; folder != nullptr)
     {
-        const auto text = folder->readFile(m_ConfigPath.filename());
-        if (!text.has_value() || m_ConfigPath.parent_path() != folder->path())
+        if (m_ConfigPath.parent_path() != folder->path())
         {
-            spdlog::error("Not reading {}: {}; using defaults",
+            spdlog::error("Not reading {}: it isn't in the handed-over folder {}; using defaults",
                           Core::pathToUtf8(m_ConfigPath),
-                          text.has_value() ? std::string("it isn't in the handed-over folder") : text.error());
+                          Core::pathToUtf8(folder->path()));
+            return;
+        }
+        const auto text = folder->readFile(m_ConfigPath.filename());
+        if (!text.has_value())
+        {
+            spdlog::error("Not reading {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), text.error());
             return;
         }
         if (!text->has_value())

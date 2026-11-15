@@ -146,12 +146,9 @@ void UILayer::onAttach()
         // directory from throwing out of onAttach.
         const auto userThemesDir = Core::Application::get().paths().userConfigDir() / "themes";
         std::error_code ec;
-        if (Core::ConfigDirOverride::handedOverFolderReleased())
-        {
-            spdlog::warn("Skipping user themes in {}: the handed-over folder isn't held open as it was checked",
-                         Core::pathToUtf8(userThemesDir));
-        }
-        else if (auto handedOver = Core::ConfigDirOverride::readHandedOverFiles("themes", ".toml"); handedOver.has_value())
+        // A hand-off session never falls through to the path below: readHandedOverFiles() answers for it, an error
+        // once its folder is no longer held.
+        if (auto handedOver = Core::ConfigDirOverride::readHandedOverFiles("themes", ".toml"); handedOver.has_value())
         {
             // A handed-over config folder's themes (#3774): listed and read through the folder held, never by path.
             if (!handedOver->has_value())

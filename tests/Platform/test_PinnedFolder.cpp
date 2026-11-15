@@ -9,6 +9,8 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -32,6 +34,7 @@
 #endif
 #include <windows.h>
 #include <winternl.h>
+#include <winioctl.h> // FSCTL_SET_REPARSE_POINT, for the mount points these tests make
 // clang-format on
 
 namespace Platform::Windows
@@ -238,7 +241,7 @@ class HeldScratchFolder
 };
 
 /// @p scratch held with every real call, as checkConfigDir() holds a folder.
-[[nodiscard]] PinnedFolder holdReally(const HeldScratchFolder& scratch)
+[[nodiscard]] PinnedFolder holdReally(const HeldScratchFolder& scratch, PinnedFolderFunctions functions = {})
 {
     UniqueHandle held(CreateFileW(scratch.path().c_str(),
                                   FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -248,7 +251,91 @@ class HeldScratchFolder
                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                   nullptr));
     EXPECT_TRUE(held) << GetLastError();
-    return {scratch.path(), std::move(held)};
+    return {scratch.path(), std::move(held), functions};
+}
+
+/// The names of the entries directly in @p folder, sorted.
+[[nodiscard]] std::vector<std::wstring> entriesOf(const std::filesystem::path& folder)
+{
+    std::vector<std::wstring> names;
+    std::error_code ec;
+    for (std::filesystem::directory_iterator it(folder, ec), end; !ec && it != end; it.increment(ec))
+    {
+        names.push_back(it->path().filename().native());
+    }
+    std::ranges::sort(names);
+    return names;
+}
+
+/// A mount point's reparse data (ntifs.h's REPARSE_DATA_BUFFER, MountPointReparseBuffer), which user-mode headers
+/// don't declare.
+struct MountPointReparseData
+{
+    DWORD ReparseTag;
+    WORD ReparseDataLength;
+    WORD Reserved;
+    WORD SubstituteNameOffset;
+    WORD SubstituteNameLength;
+    WORD PrintNameOffset;
+    WORD PrintNameLength;
+    std::array<wchar_t, MAX_PATH * 2> PathBuffer;
+};
+
+/// Turns the empty folder @p link into a mount point (a junction) to folder @p target, as any user may with a
+/// folder of their own: no privilege, FSCTL_SET_REPARSE_POINT on a handle opened for writing. Why not, when it can't.
+[[nodiscard]] std::optional<std::string> makeMountPoint(const std::filesystem::path& link, const std::filesystem::path& target)
+{
+    const UniqueHandle folder(CreateFileW(link.c_str(),
+                                          GENERIC_WRITE,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                          nullptr,
+                                          OPEN_EXISTING,
+                                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                          nullptr));
+    if (!folder)
+    {
+        return std::format("can't open {} to write: error {}", link.string(), GetLastError());
+    }
+    const std::wstring substitute = LR"(\??\)" + target.native();
+    MountPointReparseData data{};
+    if (substitute.size() + 2 > data.PathBuffer.size())
+    {
+        return std::string("the target's path is too long");
+    }
+    data.ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    data.SubstituteNameOffset = 0;
+    data.SubstituteNameLength = static_cast<WORD>(substitute.size() * sizeof(wchar_t));
+    data.PrintNameOffset = static_cast<WORD>(data.SubstituteNameLength + sizeof(wchar_t));
+    data.PrintNameLength = 0;
+    std::ranges::copy(substitute, data.PathBuffer.begin());
+    // The four name fields, the substitute name and its terminator, and an empty print name with its terminator.
+    data.ReparseDataLength = static_cast<WORD>((4 * sizeof(WORD)) + data.SubstituteNameLength + (2 * sizeof(wchar_t)));
+    const auto size = static_cast<DWORD>(offsetof(MountPointReparseData, SubstituteNameOffset) + data.ReparseDataLength);
+    DWORD returned = 0;
+    if (DeviceIoControl(folder.get(), FSCTL_SET_REPARSE_POINT, &data, size, nullptr, 0, &returned, nullptr) == FALSE)
+    {
+        return std::format("FSCTL_SET_REPARSE_POINT failed: error {}", GetLastError());
+    }
+    return std::nullopt;
+}
+
+/// Undoes makeMountPoint(): @p link is an empty folder again, so removing it removes nothing behind it.
+void removeMountPoint(const std::filesystem::path& link)
+{
+    const UniqueHandle folder(CreateFileW(link.c_str(),
+                                          GENERIC_WRITE,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                          nullptr,
+                                          OPEN_EXISTING,
+                                          FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                          nullptr));
+    REPARSE_GUID_DATA_BUFFER header{};
+    header.ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    DWORD returned = 0;
+    EXPECT_NE(DeviceIoControl(
+                  folder.get(), FSCTL_DELETE_REPARSE_POINT, &header, REPARSE_GUID_DATA_BUFFER_HEADER_SIZE, nullptr, 0, &returned, nullptr),
+              FALSE)
+        << "the mount point at " << link.string() << " is left: error " << GetLastError();
 }
 
 [[nodiscard]] std::string contentsOf(const std::filesystem::path& file)
@@ -327,6 +414,159 @@ TEST(PinnedFolderTest, AStagingNameAlreadyThereIsNeverOverwritten)
     const auto replaced = folder.replaceFile(L"config.toml", "x = 2\n");
     ASSERT_TRUE(replaced.has_value()) << replaced.error();
     EXPECT_EQ(contentsOf(scratch.path() / L".tasksmack-config.00000001.tmp"), "someone else's");
+    EXPECT_EQ(contentsOf(scratch.path() / L"config.toml"), "x = 2\n");
+}
+
+/// A folder of this test's own beside the held one, for a mount point to name; removed at the end.
+class TargetFolder
+{
+  public:
+    TargetFolder()
+        : m_Path(std::filesystem::temp_directory_path() / std::format(L"TaskSmack.PinnedFolderTest.{}.target", GetCurrentProcessId()))
+    {
+        std::error_code error;
+        std::filesystem::remove_all(m_Path, error);
+        std::filesystem::create_directories(m_Path, error);
+        EXPECT_FALSE(error) << error.message();
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: what escapes it ends the run, as a failed test should
+    ~TargetFolder()
+    {
+        std::error_code error;
+        std::filesystem::remove_all(m_Path, error);
+    }
+    TargetFolder(const TargetFolder&) = delete;
+    TargetFolder& operator=(const TargetFolder&) = delete;
+    TargetFolder(TargetFolder&&) = delete;
+    TargetFolder& operator=(TargetFolder&&) = delete;
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return m_Path;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+// A junction planted inside the held folder (its themes folder, say) is opened itself, never followed, and refused.
+TEST(PinnedFolderTest, TheRealCallsRefuseAJunctionPlantedInTheFolder)
+{
+    const TargetFolder target;
+    std::ofstream(target.path() / L"elsewhere.toml", std::ios::binary) << "[meta]\nname = \"Elsewhere\"\n";
+    const HeldScratchFolder scratch;
+    std::filesystem::create_directory(scratch.path() / L"themes");
+    if (const auto why = makeMountPoint(scratch.path() / L"themes", target.path()); why.has_value())
+    {
+        GTEST_SKIP() << "can't make a mount point here: " << *why;
+    }
+    {
+        const PinnedFolder folder = holdReally(scratch);
+        const auto read = folder.readFile(std::filesystem::path(L"themes") / L"elsewhere.toml");
+        ASSERT_FALSE(read.has_value()) << "read through the junction";
+        EXPECT_TRUE(read.error().contains("is a link, junction or mount point")) << read.error();
+        const auto listed = folder.listFiles(L"themes");
+        ASSERT_FALSE(listed.has_value()) << "listed through the junction";
+        EXPECT_FALSE(folder.createFolder(L"themes").has_value()) << "the junction isn't taken for the folder";
+    }
+    removeMountPoint(scratch.path() / L"themes");
+    EXPECT_EQ(entriesOf(target.path()), std::vector<std::wstring>{L"elsewhere.toml"}) << "nothing made behind the junction";
+}
+
+// The held folder itself turned into a mount point after the pin: nothing more is opened or created in it, and nothing
+// lands where the mount point leads.
+TEST(PinnedFolderTest, TheRealCallsRefuseTheHeldFolderOnceItIsAMountPoint)
+{
+    const TargetFolder target;
+    const HeldScratchFolder scratch;
+    {
+        const PinnedFolder folder = holdReally(scratch);
+        if (const auto why = makeMountPoint(scratch.path(), target.path()); why.has_value())
+        {
+            GTEST_SKIP() << "can't make a mount point here: " << *why;
+        }
+        const auto lock = folder.openLockFile(L"tasksmack.lock");
+        ASSERT_FALSE(lock.has_value()) << "opened in a folder that became a mount point";
+        EXPECT_TRUE(lock.error().contains("has become a reparse point since it was checked")) << lock.error();
+        EXPECT_FALSE(folder.replaceFile(L"config.toml", "x = 1\n").has_value());
+        EXPECT_FALSE(folder.createFolder(L"themes").has_value());
+        EXPECT_FALSE(folder.readFile(L"config.toml").has_value());
+        removeMountPoint(scratch.path());
+    }
+    EXPECT_TRUE(entriesOf(target.path()).empty()) << "nothing made where the mount point led";
+    EXPECT_TRUE(entriesOf(scratch.path()).empty()) << "nothing made in the folder either";
+}
+
+NTSTATUS NTAPI failingRename(HANDLE /*file*/, PIO_STATUS_BLOCK /*status*/, PVOID /*information*/, ULONG /*length*/, ULONG /*what*/)
+{
+    return static_cast<NTSTATUS>(0xC0000022L); // STATUS_ACCESS_DENIED
+}
+
+// A rename that fails leaves the old config.toml whole, and its staging file removed.
+TEST(PinnedFolderTest, AFailedRenameLeavesTheOldFileAndNoStagingFile)
+{
+    const HeldScratchFolder scratch;
+    std::ofstream(scratch.path() / L"config.toml", std::ios::binary) << "x = 1\n";
+    PinnedFolderFunctions functions;
+    functions.ntSetInformationFile = &failingRename;
+    const PinnedFolder folder = holdReally(scratch, functions);
+    const auto replaced = folder.replaceFile(L"config.toml", "x = 2\n");
+    ASSERT_FALSE(replaced.has_value());
+    EXPECT_TRUE(replaced.error().contains("couldn't replace")) << replaced.error();
+    EXPECT_EQ(contentsOf(scratch.path() / L"config.toml"), "x = 1\n");
+    EXPECT_EQ(entriesOf(scratch.path()), std::vector<std::wstring>{L"config.toml"}) << "no staging file left";
+}
+
+/// GetFinalPathNameByHandleW, but a staging file's path is said to be elsewhere: the create's checks refuse it.
+DWORD WINAPI stagingElsewhere(HANDLE handle, LPWSTR buffer, DWORD size, DWORD flags)
+{
+    const DWORD length = GetFinalPathNameByHandleW(handle, buffer, size, flags);
+    if (length == 0 || length >= size || !std::wstring_view(buffer, length).contains(L".tasksmack-config."))
+    {
+        return length;
+    }
+    constexpr std::wstring_view ELSEWHERE = LR"(\\?\C:\Elsewhere\.tasksmack-config.tmp)";
+    if (size <= ELSEWHERE.size())
+    {
+        return static_cast<DWORD>(ELSEWHERE.size() + 1);
+    }
+    std::ranges::copy(ELSEWHERE, buffer);
+    std::span(buffer, size)[ELSEWHERE.size()] = L'\0';
+    return static_cast<DWORD>(ELSEWHERE.size());
+}
+
+// A staging file the create's own checks refuse is removed again: nothing it made is left behind.
+TEST(PinnedFolderTest, ARefusedStagingFileLeavesNothingBehind)
+{
+    const HeldScratchFolder scratch;
+    std::ofstream(scratch.path() / L"config.toml", std::ios::binary) << "x = 1\n";
+    PinnedFolderFunctions functions;
+    functions.getFinalPath = &stagingElsewhere;
+    const PinnedFolder folder = holdReally(scratch, functions);
+    const auto replaced = folder.replaceFile(L"config.toml", "x = 2\n");
+    ASSERT_FALSE(replaced.has_value());
+    EXPECT_TRUE(replaced.error().contains("opened outside the folder held")) << replaced.error();
+    EXPECT_EQ(contentsOf(scratch.path() / L"config.toml"), "x = 1\n");
+    EXPECT_EQ(entriesOf(scratch.path()), std::vector<std::wstring>{L"config.toml"}) << "no staging file left";
+}
+
+// A config.toml held open by another program (an indexer, antivirus) that lets it be deleted is still replaced:
+// POSIX rename semantics.
+TEST(PinnedFolderTest, AConfigHeldOpenWithShareDeleteIsStillReplaced)
+{
+    const HeldScratchFolder scratch;
+    std::ofstream(scratch.path() / L"config.toml", std::ios::binary) << "x = 1\n";
+    const PinnedFolder folder = holdReally(scratch);
+    const UniqueHandle reader(CreateFileW((scratch.path() / L"config.toml").c_str(),
+                                          GENERIC_READ,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                          nullptr,
+                                          OPEN_EXISTING,
+                                          FILE_ATTRIBUTE_NORMAL,
+                                          nullptr));
+    ASSERT_TRUE(reader) << GetLastError();
+    const auto replaced = folder.replaceFile(L"config.toml", "x = 2\n");
+    ASSERT_TRUE(replaced.has_value()) << replaced.error();
     EXPECT_EQ(contentsOf(scratch.path() / L"config.toml"), "x = 2\n");
 }
 

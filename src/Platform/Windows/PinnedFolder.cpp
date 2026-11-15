@@ -30,8 +30,16 @@ constexpr auto STATUS_NAME_NOT_FOUND = static_cast<NTSTATUS>(0xC0000034L);
 constexpr auto STATUS_PATH_NOT_FOUND = static_cast<NTSTATUS>(0xC000003AL);
 constexpr auto STATUS_NO_ENTRY_POINT = static_cast<NTSTATUS>(0xC000007AL);
 
-/// FileRenameInformation, which winternl.h's FILE_INFORMATION_CLASS doesn't name.
+/// FileRenameInformation and FileRenameInformationEx, which winternl.h's FILE_INFORMATION_CLASS doesn't name.
 constexpr ULONG FILE_RENAME_INFORMATION_CLASS = 10;
+constexpr ULONG FILE_RENAME_INFORMATION_EX_CLASS = 65;
+/// FILE_RENAME_INFORMATION_EX's flags (ntifs.h): replace the target, and with POSIX semantics, even one held open.
+constexpr DWORD FILE_RENAME_FLAGS_REPLACE_IF_EXISTS = 0x00000001;
+constexpr DWORD FILE_RENAME_FLAGS_POSIX_SEMANTICS = 0x00000002;
+/// What a volume or Windows without FileRenameInformationEx answers it.
+constexpr auto STATUS_BAD_INFO_CLASS = static_cast<NTSTATUS>(0xC0000003L);
+constexpr auto STATUS_BAD_PARAMETER = static_cast<NTSTATUS>(0xC000000DL);
+constexpr auto STATUS_UNSUPPORTED = static_cast<NTSTATUS>(0xC00000BBL);
 
 /// The most of a file read from the folder: config.toml and a theme are a few kilobytes.
 constexpr std::size_t MAX_READ_BYTES = std::size_t{16} * 1024 * 1024;
@@ -157,9 +165,13 @@ std::expected<void, std::string> PinnedFolder::stillHeld() const
     {
         return std::unexpected(std::format("{} can't be read through the handle held on it", utf8(m_Path)));
     }
-    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 || (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
     {
         return std::unexpected(std::format("{} has become a reparse point since it was checked", utf8(m_Path)));
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
+    {
+        return std::unexpected(std::format("{} is no longer a folder as it was when it was checked", utf8(m_Path)));
     }
     const std::optional<std::wstring> now = finalPathOf(m_Handle.get(), m_Functions.getFinalPath);
     if (!now.has_value() || !samePath(*now, m_FinalPath))
@@ -206,6 +218,33 @@ PinnedFolder::openIn(HANDLE parent, const std::wstring& parentPath, const std::w
         return std::unexpected(std::format("couldn't open {}: {}", WinString::wideToUtf8(expected), ntStatusText(result)));
     }
     UniqueHandle file(opened);
+    // A file this open created and may delete (replaceFile()'s staging file) is removed if a check below refuses it:
+    // nothing it made is left behind. Disarmed once every check has passed.
+    class RemoveIfRefused
+    {
+      public:
+        explicit RemoveIfRefused(HANDLE created) noexcept : m_Created(created)
+        {}
+        RemoveIfRefused(const RemoveIfRefused&) = delete;
+        RemoveIfRefused& operator=(const RemoveIfRefused&) = delete;
+        RemoveIfRefused(RemoveIfRefused&&) = delete;
+        RemoveIfRefused& operator=(RemoveIfRefused&&) = delete;
+        ~RemoveIfRefused()
+        {
+            if (m_Created != nullptr)
+            {
+                deleteOnClose(m_Created);
+            }
+        }
+        void disarm() noexcept
+        {
+            m_Created = nullptr;
+        }
+
+      private:
+        HANDLE m_Created;
+    };
+    RemoveIfRefused removeIfRefused(how.disposition == FILE_CREATE && (how.access & DELETE) != 0 ? file.get() : nullptr);
     BY_HANDLE_FILE_INFORMATION info{};
     if (m_Functions.getFileInformation(file.get(), &info) == FALSE)
     {
@@ -226,6 +265,7 @@ PinnedFolder::openIn(HANDLE parent, const std::wstring& parentPath, const std::w
                                            WinString::wideToUtf8(expected),
                                            actual.has_value() ? WinString::wideToUtf8(*actual) : std::string("(its path can't be read)")));
     }
+    removeIfRefused.disarm();
     return file;
 }
 
@@ -391,6 +431,32 @@ std::expected<void, std::string> PinnedFolder::replaceFile(const std::filesystem
             return std::unexpected(std::move(created.error()));
         }
     }
+    // Removed on every way out but a rename that published it: a failed write or rename, a refusal, an exception.
+    class StagingGuard
+    {
+      public:
+        explicit StagingGuard(HANDLE file) noexcept : m_File(file)
+        {}
+        StagingGuard(const StagingGuard&) = delete;
+        StagingGuard& operator=(const StagingGuard&) = delete;
+        StagingGuard(StagingGuard&&) = delete;
+        StagingGuard& operator=(StagingGuard&&) = delete;
+        ~StagingGuard()
+        {
+            if (m_File != nullptr)
+            {
+                deleteOnClose(m_File); // deleted when the handle closes, just after this
+            }
+        }
+        void published() noexcept
+        {
+            m_File = nullptr;
+        }
+
+      private:
+        HANDLE m_File;
+    };
+    StagingGuard guard(staging.get()); // declared after staging, so it runs before staging closes
     std::string_view rest = contents;
     while (!rest.empty())
     {
@@ -398,32 +464,43 @@ std::expected<void, std::string> PinnedFolder::replaceFile(const std::filesystem
         DWORD written = 0;
         if (WriteFile(staging.get(), rest.data(), size, &written, nullptr) == FALSE || written == 0)
         {
-            const std::string why = lastErrorText();
-            deleteOnClose(staging.get());
-            return std::unexpected(std::format("couldn't write {}: {}", utf8(m_Path / stagingName), why));
+            return std::unexpected(std::format("couldn't write {}: {}", utf8(m_Path / stagingName), lastErrorText()));
         }
         rest.remove_prefix(written);
     }
     // Renamed over @p name in the held folder: RootDirectory is the held handle, so the name is looked up there.
     const std::wstring& target = components->front();
     const std::size_t nameBytes = target.size() * sizeof(wchar_t);
-    // FILE_RENAME_INFORMATION, which FILE_RENAME_INFO mirrors, handed to NtSetInformationFile itself: kernel32's
-    // SetFileInformationByHandle refuses a relative name with a RootDirectory (ERROR_INVALID_PARAMETER).
+    // FILE_RENAME_INFORMATION_EX, whose layout FILE_RENAME_INFO mirrors (Flags in place of ReplaceIfExists), handed
+    // to NtSetInformationFile itself: kernel32's SetFileInformationByHandle refuses a relative name with a
+    // RootDirectory (ERROR_INVALID_PARAMETER). POSIX semantics, so a config.toml an indexer or antivirus holds open
+    // (with FILE_SHARE_DELETE) is still replaced; FileRenameInformation, replace only, where the volume has no Ex.
     std::vector<std::byte> buffer(sizeof(FILE_RENAME_INFO) + nameBytes);
     auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(
-        buffer.data());             // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - a variable-length Win32 struct
-    rename->ReplaceIfExists = TRUE; // NOLINT(cppcoreguidelines-pro-type-union-access) - FILE_RENAME_INFO's own union
+        buffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - a variable-length Win32 struct
+    // The flags are the struct's first ULONG (ReplaceIfExists, padded, in the older SDK layout this builds with).
+    const auto setFlags = [&buffer](DWORD flags)
+    {
+        std::memcpy(buffer.data(), &flags, sizeof(flags));
+    };
+    setFlags(FILE_RENAME_FLAGS_REPLACE_IF_EXISTS | FILE_RENAME_FLAGS_POSIX_SEMANTICS);
     rename->RootDirectory = m_Handle.get();
     rename->FileNameLength = static_cast<DWORD>(nameBytes);
     std::memcpy(static_cast<void*>(rename->FileName), target.c_str(), nameBytes + sizeof(wchar_t));
     IO_STATUS_BLOCK renameStatus{};
-    if (const NTSTATUS renamed = m_Functions.ntSetInformationFile(
-            staging.get(), &renameStatus, rename, static_cast<ULONG>(buffer.size()), FILE_RENAME_INFORMATION_CLASS);
-        renamed < 0)
+    NTSTATUS renamed = m_Functions.ntSetInformationFile(
+        staging.get(), &renameStatus, rename, static_cast<ULONG>(buffer.size()), FILE_RENAME_INFORMATION_EX_CLASS);
+    if (renamed == STATUS_BAD_INFO_CLASS || renamed == STATUS_UNSUPPORTED || renamed == STATUS_BAD_PARAMETER)
     {
-        deleteOnClose(staging.get());
+        setFlags(FILE_RENAME_FLAGS_REPLACE_IF_EXISTS); // ReplaceIfExists = TRUE
+        renamed = m_Functions.ntSetInformationFile(
+            staging.get(), &renameStatus, rename, static_cast<ULONG>(buffer.size()), FILE_RENAME_INFORMATION_CLASS);
+    }
+    if (renamed < 0)
+    {
         return std::unexpected(std::format("couldn't replace {}: {}", utf8(m_Path / name), ntStatusText(renamed)));
     }
+    guard.published();
     const std::wstring expected = m_FinalPath + L'\\' + target;
     if (const auto actual = finalPathOf(staging.get(), m_Functions.getFinalPath); !actual.has_value() || !samePath(*actual, expected))
     {
