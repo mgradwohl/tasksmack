@@ -128,11 +128,15 @@ std::wstring explorerSelectArguments(std::wstring_view path)
     return arguments;
 }
 
-ProcessActionResult withheldFileLocation(const std::string& utf8Path)
+ProcessActionResult withheldFileLocation(const std::string& utf8Path, std::string_view reason)
 {
+    // The reason (#3979) is the step that failed and its error, so the user, a bug report and a test log can all say
+    // why the shell refused, not only that it did.
+    const std::string because = reason.empty() ? std::string{} : std::format(" ({})", reason);
     ProcessActionResult result = ProcessActionResult::error(
-        std::format("Not opened, so that Explorer doesn't run as administrator: Windows' shell couldn't open it as you. "
+        std::format("Not opened, so that Explorer doesn't run as administrator: Windows' shell couldn't open it as you{}. "
                     "Open it yourself: {}",
+                    because,
                     utf8Path));
     result.withheldPath = utf8Path;
     return result;
@@ -157,13 +161,15 @@ ProcessActionResult revealInExplorer(const FileLocationFunctions& fns, const std
         const std::wstring explorer = (fns.explorerPath != nullptr) ? fns.explorerPath() : std::wstring{};
         if (fns.selectUnelevated == nullptr || explorer.empty())
         {
-            spdlog::warn("TaskSmack runs as administrator, and has no way to show {} as the signed-in user", utf8Path);
-            return withheldFileLocation(utf8Path);
+            const std::string_view reason =
+                (fns.selectUnelevated == nullptr) ? "there is no unelevated shell to ask" : "explorer.exe's path couldn't be read";
+            spdlog::warn("TaskSmack runs as administrator, and has no way to show {} as the signed-in user: {}", utf8Path, reason);
+            return withheldFileLocation(utf8Path, reason);
         }
         if (const std::string failed = fns.selectUnelevated(explorer, explorerSelectArguments(path)); !failed.empty())
         {
             spdlog::warn("TaskSmack runs as administrator, and Explorer couldn't show {} as the signed-in user: {}", utf8Path, failed);
-            return withheldFileLocation(utf8Path);
+            return withheldFileLocation(utf8Path, failed);
         }
         spdlog::info("Asked Explorer to show {}, unelevated", utf8Path);
         return ProcessActionResult::ok();

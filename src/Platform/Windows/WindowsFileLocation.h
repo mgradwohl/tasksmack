@@ -61,12 +61,14 @@ struct FileLocationFunctions
 [[nodiscard]] std::wstring explorerSelectArguments(std::wstring_view path);
 
 /// The result line for a file an elevated TaskSmack didn't show (#3669), naming @p utf8Path; withheldPath is set.
-[[nodiscard]] ProcessActionResult withheldFileLocation(const std::string& utf8Path);
+/// @p reason, when given, is why the signed-in user's shell couldn't show it (#3979): the step that failed and its
+/// HRESULT or Win32 error, as UnelevatedShell::run() reports it. The line carries it in parentheses.
+[[nodiscard]] ProcessActionResult withheldFileLocation(const std::string& utf8Path, std::string_view reason = {});
 
 /// Shows @p path selected in Explorer through @p fns: SHOpenFolderAndSelectItems, then explorer.exe
 /// /select if that fails. ok() once either has been asked; an error saying what failed otherwise.
 /// Elevated (fns.isElevated()), only through the signed-in user's Explorer (fns.selectUnelevated), and
-/// withheldFileLocation() when that fails or there is none: never an elevated Explorer (#3669).
+/// withheldFileLocation() when that fails or there is none, with the reason: never an elevated Explorer (#3669).
 [[nodiscard]] ProcessActionResult revealInExplorer(const FileLocationFunctions& fns, const std::wstring& path);
 
 // NOLINTEND(misc-include-cleaner)

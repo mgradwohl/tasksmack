@@ -79,7 +79,7 @@ class Bstr
     const ComScope com;
     if (!com.usable())
     {
-        return std::unexpected(std::string("COM couldn't be used on this thread"));
+        return std::unexpected(std::format("COM couldn't be used on this thread ({})", failure("CoInitializeEx", com.result())));
     }
 
     // Explorer's window list: a local server, Explorer itself. None when Explorer isn't the shell or isn't running.

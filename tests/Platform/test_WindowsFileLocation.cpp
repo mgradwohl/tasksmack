@@ -6,6 +6,7 @@
 /// process fakes hand out this test process opened for query only, as test_WindowsProcessActionsSeams does.
 
 #include "Platform/IProcessActions.h"
+#include "Platform/Windows/ComScope.h"
 #include "Platform/Windows/WindowsFileLocation.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 
@@ -23,6 +24,7 @@
 
 #include <algorithm>
 #include <string>
+#include <thread>
 #include <vector>
 
 namespace Platform
@@ -357,6 +359,59 @@ TEST_F(WindowsFileLocationTest, ElevatedWithNoWayAsTheUserItWithholdsAndNamesThe
     EXPECT_EQ(FakeShell::selected.size(), 1U);
     EXPECT_TRUE(FakeShell::unelevated.empty());
     EXPECT_EQ(Windows::explorerSelectArguments(L"C:\\a b\\c.exe"), L"/select,\"C:\\a b\\c.exe\"");
+}
+
+// #3979: the withheld result says why the signed-in user's shell refused (the step and its HRESULT, as
+// UnelevatedShell::run() reports it), so a user, a bug report and the CI real-system test's log can all see it.
+TEST_F(WindowsFileLocationTest, ElevatedTheWithheldResultCarriesTheShellsReason)
+{
+    FakeShell::reset();
+    FakeShell::elevated = true;
+    FakeShell::unelevatedFailure = "QueryInterface(IShellDispatch2) failed (0x80004002)";
+    ProcessActionResult result = Windows::revealInExplorer(FakeShell::functions(), L"C:\\Tools\\app.exe");
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.withheldPath, "C:\\Tools\\app.exe");
+    EXPECT_EQ(result.errorMessage,
+              "Not opened, so that Explorer doesn't run as administrator: Windows' shell couldn't open it as you "
+              "(QueryInterface(IShellDispatch2) failed (0x80004002)). Open it yourself: C:\\Tools\\app.exe");
+
+    // No unelevated shell, or no explorer.exe path: each says which.
+    FakeShell::reset();
+    FakeShell::elevated = true;
+    Windows::FileLocationFunctions none = FakeShell::functions();
+    none.selectUnelevated = nullptr;
+    result = Windows::revealInExplorer(none, L"C:\\Tools\\app.exe");
+    EXPECT_TRUE(result.errorMessage.contains("(there is no unelevated shell to ask)")) << result.errorMessage;
+    FakeShell::noExplorer = true;
+    result = Windows::revealInExplorer(FakeShell::functions(), L"C:\\Tools\\app.exe");
+    EXPECT_TRUE(result.errorMessage.contains("(explorer.exe's path couldn't be read)")) << result.errorMessage;
+}
+
+TEST(WindowsFileLocationWithheld, WithNoReasonTheLineIsUnchanged)
+{
+    const ProcessActionResult result = Windows::withheldFileLocation("C:\\Tools\\app.exe");
+    EXPECT_EQ(result.errorMessage,
+              "Not opened, so that Explorer doesn't run as administrator: Windows' shell couldn't open it as you. "
+              "Open it yourself: C:\\Tools\\app.exe");
+    EXPECT_EQ(result.withheldPath, "C:\\Tools\\app.exe");
+}
+
+// ComScope::result() is CoInitializeEx's answer, which UnelevatedShell names when COM isn't usable (#3979).
+TEST(ComScopeResult, IsCoInitializeExsAnswer)
+{
+    std::thread(
+        []
+        {
+            const ComScope first;
+            EXPECT_EQ(first.result(), S_OK);
+            EXPECT_TRUE(first.usable());
+            const ComScope second; // the same apartment again
+            EXPECT_EQ(second.result(), S_FALSE);
+            const ComScope other(static_cast<DWORD>(COINIT_MULTITHREADED));
+            EXPECT_EQ(other.result(), RPC_E_CHANGED_MODE);
+            EXPECT_TRUE(other.usable()); // the thread's own apartment still serves it
+        })
+        .join();
 }
 
 } // namespace
