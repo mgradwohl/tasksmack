@@ -931,7 +931,9 @@ add_library(TaskSmackApp OBJECT
     ${TASKSMACK_HEADERS}
 )
 tasksmack_configure_app_target(TaskSmackApp)
-tasksmack_apply_privileged_hardening(TaskSmackApp) # runs as root in an Administrator session (#3605)
+# It runs as root in an Administrator session (#3605), and elevated after Restart as administrator (#3897): CFG's
+# checks go into the app's objects here, its table and the image flags into TaskSmack.exe below.
+tasksmack_apply_privileged_hardening(TaskSmackApp)
 
 # Precompiled headers, for the app's sources; main.cpp, alone in TaskSmack, is not worth one.
 if(TASKSMACK_ENABLE_PCH)
@@ -1071,32 +1073,12 @@ if(WIN32)
         wtsapi32 # the sessions a Disconnect or Sign out names, and the call itself (WindowsUserSessions, #3076)
     )
     target_link_libraries(TaskSmackHelper PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
-    # Exploit mitigations for the one image that runs elevated (#2557): Control Flow Guard (the compiler's
-    # checks on indirect calls, and the linker's table of their valid targets) and CET shadow-stack
-    # compatibility, so Windows checks returns against a hardware shadow stack where the CPU has one.
-    # Not under a sanitizer, whose runtime isn't built for CFG; TASKSMACK_HELPER_HARDENED tells the tests
-    # what to expect.
-    string(TOUPPER "${CMAKE_BUILD_TYPE}" _helper_config)
-    if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_helper_config}}" MATCHES "-fsanitize")
-        set(TASKSMACK_HELPER_HARDENED OFF)
-        message(STATUS "TaskSmackHelper: CFG and CETCOMPAT off under a sanitizer")
-    else()
-        set(TASKSMACK_HELPER_HARDENED ON)
-        # clang-cl's /guard:cf; the plain driver has no spelling of its own for an MSVC target (-mguard is
-        # MinGW's). A module flag, so ThinLTO's link-time code generation keeps it.
-        target_compile_options(TaskSmackHelper PRIVATE "SHELL:-Xclang -cfguard")
-        target_link_options(TaskSmackHelper PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT")
-    endif()
-    unset(_helper_config)
+    # Exploit mitigations for an image that runs elevated (#2557): Control Flow Guard, CET shadow-stack
+    # compatibility and System32-only imports, the same as TaskSmack.exe's (cmake/CompilerOptions.cmake).
+    tasksmack_apply_privileged_hardening(TaskSmackHelper)
     # The app's manifest: asInvoker (so only the launcher's "runas" elevates it, and Windows' installer
-    # detection never does), long paths and the UTF-8 code page. And every DLL its imports load comes
-    # from System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32), never the helper's own folder, which a
-    # portable TaskSmack may have unpacked somewhere its user can write; HelperMain.cpp sets the same
-    # for anything loaded later.
-    target_link_options(TaskSmackHelper PRIVATE
-        "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
-        "LINKER:/DEPENDENTLOADFLAG:0x800"
-    )
+    # detection never does), long paths and the UTF-8 code page.
+    target_link_options(TaskSmackHelper PRIVATE "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}")
     # Beside TaskSmack.exe, where TaskSmack starts it from, the tests find it, and release packaging
     # (and its Authenticode signing, #2302) picks it up.
     get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

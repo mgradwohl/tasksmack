@@ -40,7 +40,9 @@ answers a fixed set of requests.
   OpenSSF Scorecard.
 - **Fuzzing:** ClusterFuzzLite fuzzes the parsers and the Windows helper's request protocol.
 - **Hardening:** release builds use `-fstack-protector-strong` everywhere, plus `_FORTIFY_SOURCE=2` and PIE on
-  Linux. The Windows helper links with Control Flow Guard and CET shadow-stack compatibility. On Linux there is
+  Linux. On Windows, TaskSmack.exe and the helper, the two images that can run elevated, link with Control Flow
+  Guard and CET shadow-stack compatibility, and load the DLLs they import from System32 only. Elevated, they
+  look for a DLL loaded by name in System32 only, never in their own folder. On Linux there is
   no separate helper (#3580): TaskSmack is either started as root for its whole session or runs as you, and
   never elevates after it starts. Debug
   builds use `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.

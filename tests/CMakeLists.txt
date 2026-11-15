@@ -1436,8 +1436,9 @@ if(TARGET TaskSmackHelper)
     target_compile_definitions(TaskSmackTests PRIVATE
         TASKSMACK_WINDOWS_HELPER_PATH="$<TARGET_FILE:TaskSmackHelper>"
         TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH="$<TARGET_FILE:TaskSmackHelperTestParent>"
-        # Whether the helper is built with CFG and CETCOMPAT, which the tests then check it has (#2557)
-        $<$<BOOL:${TASKSMACK_HELPER_HARDENED}>:TASKSMACK_WINDOWS_HELPER_HARDENED>
+        # Whether the helper and TaskSmack.exe are built with CFG and CETCOMPAT, which the tests then check they
+        # have (#2557, #3897; tasksmack_apply_privileged_hardening)
+        $<$<BOOL:${TASKSMACK_WINDOWS_HARDENED}>:TASKSMACK_WINDOWS_HARDENED>
     )
 
     # The CI real-system tests' copy of the helper (#3489, test_CiRealSystemHelper.cpp): the same sources,
