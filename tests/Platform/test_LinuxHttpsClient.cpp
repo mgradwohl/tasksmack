@@ -236,7 +236,7 @@ TEST(LinuxHttpsClientTest, RedirectsAreFollowedToTheReplyThatIsntOne)
                                          replyStep(200, std::nullopt, "{}")},
                               .urls = {},
                               .lefts = {}};
-    const auto result = LinuxHttpsDetail::followRedirects("https://api.example.com/latest", inAMinute(), 1024, transfer.function());
+    const auto result = LinuxHttpsDetail::followRedirects("https://api.example.com/latest", inAMinute(), 1024, false, transfer.function());
     ASSERT_TRUE(result.has_value()) << result.error();
     EXPECT_EQ(result->status, 200);
     EXPECT_EQ(result->body, "{}");
@@ -253,12 +253,12 @@ TEST(LinuxHttpsClientTest, RedirectsAreFollowedToTheReplyThatIsntOne)
 TEST(LinuxHttpsClientTest, AThreeHundredWithoutALocationOrAnErrorStatusIsTheReply)
 {
     ScriptedTransfer notModified{.script = {replyStep(304, std::nullopt, "")}, .urls = {}, .lefts = {}};
-    const auto unchanged = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, notModified.function());
+    const auto unchanged = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, false, notModified.function());
     ASSERT_TRUE(unchanged.has_value());
     EXPECT_EQ(unchanged->status, 304);
 
     ScriptedTransfer forbidden{.script = {replyStep(403, "https://api.example.com/other", "rate limited")}, .urls = {}, .lefts = {}};
-    const auto refused = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, forbidden.function());
+    const auto refused = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, false, forbidden.function());
     ASSERT_TRUE(refused.has_value());
     EXPECT_EQ(refused->status, 403) << "a location on a non-3xx reply isn't followed";
     EXPECT_EQ(forbidden.urls.size(), 1U);
@@ -271,16 +271,41 @@ TEST(LinuxHttpsClientTest, TooManyRedirectsOrARefusedOneEndsTheRequest)
     {
         loop.script.push_back(replyStep(302, "https://api.example.com/again"));
     }
-    const auto looped = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, loop.function());
+    const auto looped = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, false, loop.function());
     ASSERT_FALSE(looped.has_value());
     EXPECT_EQ(looped.error(), std::format("More than {} redirects", LinuxHttpsDetail::MAX_REDIRECTS));
     EXPECT_EQ(loop.urls.size(), static_cast<std::size_t>(LinuxHttpsDetail::MAX_REDIRECTS) + 1U);
 
     ScriptedTransfer downgrade{.script = {replyStep(301, "http://api.example.com/")}, .urls = {}, .lefts = {}};
-    const auto plain = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, downgrade.function());
+    const auto plain = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, false, downgrade.function());
     ASSERT_FALSE(plain.has_value());
     EXPECT_EQ(plain.error(), "A redirect to anything but https isn't followed");
     EXPECT_EQ(downgrade.urls.size(), 1U) << "the refused one isn't requested";
+}
+
+// #3761: the request's extra headers (VirusTotal's x-apikey) are on the handle, so a redirect would carry them to
+// whatever host it names. A request that carries any follows no redirect, to another host or its own.
+TEST(LinuxHttpsClientTest, ARequestCarryingExtraHeadersFollowsNoRedirect)
+{
+    for (const char* location : {"https://evil.example/steal", "https://api.example.com/v2/latest"})
+    {
+        ScriptedTransfer transfer{.script = {replyStep(302, location)}, .urls = {}, .lefts = {}};
+        const auto result =
+            LinuxHttpsDetail::followRedirects("https://api.example.com/latest", inAMinute(), 1024, true, transfer.function());
+        ASSERT_FALSE(result.has_value()) << location;
+        EXPECT_EQ(result.error(), HEADERS_REDIRECT_REFUSAL);
+        EXPECT_EQ(transfer.urls, (std::vector<std::string>{"https://api.example.com/latest"})) << "the redirect isn't requested";
+    }
+
+    // A reply that isn't a redirect is the reply, headers or not.
+    ScriptedTransfer plain{.script = {replyStep(200, std::nullopt, "{}")}, .urls = {}, .lefts = {}};
+    const auto ok = LinuxHttpsDetail::followRedirects("https://api.example.com/latest", inAMinute(), 1024, true, plain.function());
+    ASSERT_TRUE(ok.has_value()) << ok.error();
+    EXPECT_EQ(ok->body, "{}");
+    ScriptedTransfer notModified{.script = {replyStep(304, std::nullopt, "")}, .urls = {}, .lefts = {}};
+    const auto unchanged = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 1024, true, notModified.function());
+    ASSERT_TRUE(unchanged.has_value()) << unchanged.error();
+    EXPECT_EQ(unchanged->status, 304);
 }
 
 TEST(LinuxHttpsClientTest, ATooLongBodyAStopOrAFailedTransferEndsTheRequestWithWhy)
@@ -288,14 +313,14 @@ TEST(LinuxHttpsClientTest, ATooLongBodyAStopOrAFailedTransferEndsTheRequestWithW
     ScriptedTransfer tooLong{.script = {Step{.end = Step::End::TooLong, .failure = {}, .status = 0, .location = std::nullopt, .body = {}}},
                              .urls = {},
                              .lefts = {}};
-    const auto big = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, tooLong.function());
+    const auto big = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, false, tooLong.function());
     ASSERT_FALSE(big.has_value());
     EXPECT_EQ(big.error(), "The reply was longer than 4096 bytes");
 
     ScriptedTransfer stopped{.script = {Step{.end = Step::End::Stopped, .failure = {}, .status = 0, .location = std::nullopt, .body = {}}},
                              .urls = {},
                              .lefts = {}};
-    const auto halted = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, stopped.function());
+    const auto halted = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, false, stopped.function());
     ASSERT_FALSE(halted.has_value());
     EXPECT_EQ(halted.error(), "Stopped");
 
@@ -307,7 +332,7 @@ TEST(LinuxHttpsClientTest, ATooLongBodyAStopOrAFailedTransferEndsTheRequestWithW
                                             .body = {}}},
                             .urls = {},
                             .lefts = {}};
-    const auto broken = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, failed.function());
+    const auto broken = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, false, failed.function());
     ASSERT_FALSE(broken.has_value());
     EXPECT_EQ(broken.error(), "libcurl: Couldn't resolve host name") << "a redirect's failure is the request's";
 }
@@ -316,7 +341,7 @@ TEST(LinuxHttpsClientTest, NoTransferStartsOnceTheDeadlineHasPassed)
 {
     ScriptedTransfer transfer{.script = {}, .urls = {}, .lefts = {}};
     const auto late = LinuxHttpsDetail::followRedirects(
-        "https://api.example.com/", std::chrono::steady_clock::now() - std::chrono::milliseconds(1), 1024, transfer.function());
+        "https://api.example.com/", std::chrono::steady_clock::now() - std::chrono::milliseconds(1), 1024, false, transfer.function());
     ASSERT_FALSE(late.has_value());
     EXPECT_EQ(late.error(), "libcurl: Timeout was reached");
     EXPECT_TRUE(transfer.urls.empty());

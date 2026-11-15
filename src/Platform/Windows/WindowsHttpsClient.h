@@ -13,8 +13,9 @@
 // or the request is refused before anything is opened; a header's value is never logged or put in an error.
 // Otherwise nothing of TaskSmack's goes with it:
 // cookies and automatic authentication are off (WINHTTP_DISABLE_COOKIES, WINHTTP_DISABLE_AUTHENTICATION),
-// and WinHTTP's default redirect policy never follows HTTPS to HTTP. The whole request gets the request's
-// timeout. A stop wakes the worker, which closes the request handle itself: WinHTTP lets an asynchronous
+// and WinHTTP's default redirect policy never follows HTTPS to HTTP. A request carrying extra headers follows no
+// redirect at all (WINHTTP_DISABLE_REDIRECTS, #3761): WinHTTP would send them on to the redirect's host. The whole
+// request gets the request's timeout. A stop wakes the worker, which closes the request handle itself: WinHTTP lets an asynchronous
 // request be ended by closing its handle, but never a synchronous call's (#3333), so nothing closes a handle
 // another thread is using.
 //

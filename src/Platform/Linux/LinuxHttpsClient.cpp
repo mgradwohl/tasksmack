@@ -130,8 +130,11 @@ bool appendCapped(std::string& body, std::string_view chunk, std::size_t maxByte
     return true;
 }
 
-std::expected<HttpsResponse, std::string>
-followRedirects(std::string url, std::chrono::steady_clock::time_point deadline, std::size_t maxBodyBytes, const TransferFunction& transfer)
+std::expected<HttpsResponse, std::string> followRedirects(std::string url,
+                                                          std::chrono::steady_clock::time_point deadline,
+                                                          std::size_t maxBodyBytes,
+                                                          bool carriesHeaders,
+                                                          const TransferFunction& transfer)
 {
     int redirects = 0;
     for (;;)
@@ -157,6 +160,12 @@ followRedirects(std::string url, std::chrono::steady_clock::time_point deadline,
         if (step.status < 300 || step.status > 399 || !step.location.has_value())
         {
             return HttpsResponse{.body = std::move(step.body), .status = step.status};
+        }
+        // The request's extra headers (VirusTotal's x-apikey) are on the handle, so they would go wherever the
+        // redirect points: such a request follows none (#3761), the rule WindowsHttpsClient keeps too.
+        if (carriesHeaders)
+        {
+            return std::unexpected(std::string(HEADERS_REDIRECT_REFUSAL));
         }
         if (++redirects > MAX_REDIRECTS)
         {
@@ -415,7 +424,7 @@ std::expected<HttpsResponse, std::string> LinuxHttpsClient::get(const HttpsReque
             .body = std::move(transfer.body),
         };
     };
-    return LinuxHttpsDetail::followRedirects(std::move(url), deadline, request.maxBodyBytes, transferOne);
+    return LinuxHttpsDetail::followRedirects(std::move(url), deadline, request.maxBodyBytes, !request.headers.empty(), transferOne);
 }
 
 #else

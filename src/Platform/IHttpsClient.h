@@ -13,6 +13,7 @@
 #include <expected>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -29,9 +30,14 @@ struct HttpsRequest
     std::chrono::milliseconds timeout; ///< The most each step (name lookup, connect, send, receive) may take
     std::size_t maxBodyBytes = 0;      ///< A longer body is a failure, and no more of it is read
     /// More headers, name then value (#3094: VirusTotal's x-apikey). A name must be a header token and a value may
-    /// hold no CR, LF or NUL, or the request isn't sent. Values are never logged.
+    /// hold no CR, LF or NUL, or the request isn't sent. Values are never logged. A request that carries any follows
+    /// no redirect (#3761): a redirect reply ends it with HEADERS_REDIRECT_REFUSAL, so the headers never reach
+    /// another host.
     std::vector<std::pair<std::string, std::string>> headers;
 };
+
+/// Why a request carrying extra headers ended at a redirect (#3761), on every platform.
+inline constexpr std::string_view HEADERS_REDIRECT_REFUSAL = "A redirect isn't followed for a request carrying extra headers";
 
 /// What came back.
 struct HttpsResponse

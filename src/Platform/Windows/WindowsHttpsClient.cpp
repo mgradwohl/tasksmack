@@ -445,8 +445,14 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
         return lastError("WinHttpSetStatusCallback");
     }
 
-    // Nothing of the user's goes with the request: no cookies, no Windows credentials.
+    // Nothing of the user's goes with the request: no cookies, no Windows credentials. A request carrying extra
+    // headers follows no redirect either (#3761): WinHTTP sends the headers it was given to wherever a redirect
+    // points, another host included, so VirusTotal's x-apikey would go with one.
     DWORD disabled = WINHTTP_DISABLE_COOKIES | WINHTTP_DISABLE_AUTHENTICATION;
+    if (!request.headers.empty())
+    {
+        disabled |= WINHTTP_DISABLE_REDIRECTS;
+    }
     if (m_Fns.setOption(handle.get(), WINHTTP_OPTION_DISABLE_FEATURE, &disabled, sizeof(disabled)) == FALSE)
     {
         return lastError("WinHttpSetOption");
@@ -507,6 +513,22 @@ std::expected<HttpsResponse, std::string> WindowsHttpsClient::get(const HttpsReq
                            WINHTTP_NO_HEADER_INDEX) == FALSE)
     {
         return lastError("WinHttpQueryHeaders");
+    }
+    // With redirects off, a redirect is the reply itself: a 3xx naming a Location, refused as Linux's client
+    // refuses it. A 3xx with none (304) is a reply like any other; a lookup that fails otherwise refuses too.
+    if (!request.headers.empty() && status >= 300 && status <= 399)
+    {
+        DWORD locationSize = 0;
+        if (m_Fns.queryHeaders(handle.get(),
+                               WINHTTP_QUERY_LOCATION,
+                               WINHTTP_HEADER_NAME_BY_INDEX,
+                               WINHTTP_NO_OUTPUT_BUFFER,
+                               &locationSize,
+                               WINHTTP_NO_HEADER_INDEX) == TRUE ||
+            ::GetLastError() != ERROR_WINHTTP_HEADER_NOT_FOUND)
+        {
+            return std::unexpected(std::string(HEADERS_REDIRECT_REFUSAL));
+        }
     }
 
     HttpsResponse response;
