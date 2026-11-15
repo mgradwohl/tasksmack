@@ -83,20 +83,20 @@ struct ApplicationTestAccessor
     /// Idle waits run() has done so far (#1446).
     [[nodiscard]] static std::uint64_t idleWaitCount(const Application& app)
     {
-        return app.m_IdleWaitCount;
+        return app.m_IdleWaits.count;
     }
 
     /// Whether the last idle wait ended on an event rather than its timeout (#1446).
     [[nodiscard]] static bool lastIdleWaitWoke(const Application& app)
     {
-        return app.m_LastIdleWaitWoke;
+        return app.m_IdleWaits.lastWoke;
     }
 
     /// Whether the last idle wait timed out, but the poll after it found an event already queued
     /// (#1450).
     [[nodiscard]] static bool lastIdleWaitPolledEvent(const Application& app)
     {
-        return app.m_LastIdleWaitPolledEvent;
+        return app.m_IdleWaits.lastPolledEvent;
     }
 
     /// Publication wakes run()'s drain has taken (#3156).
