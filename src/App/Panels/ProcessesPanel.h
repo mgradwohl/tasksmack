@@ -360,6 +360,12 @@ class ProcessesPanel : public Panel
         return m_TreeViewEnabled;
     }
 
+    /// How many group header names have been formatted (#3807): once per groups rebuild, not once per frame.
+    [[nodiscard]] std::size_t groupHeaderTextBuildsForTesting() const noexcept
+    {
+        return m_GroupHeaderTextBuilds;
+    }
+
     /// The filter box's text, for the UI scenarios driving it through the whole shell (#2711).
     [[nodiscard]] const std::string& searchTextForTesting() const noexcept
     {
@@ -765,6 +771,22 @@ class ProcessesPanel : public Panel
     std::unordered_set<std::string> m_CollapsedGroups; // by group key; "" is Ungrouped
     std::uint64_t m_GroupCollapseGeneration = 0;
     std::optional<GroupsKey> m_GroupsBuiltFor;
+    /// A group header's and its sessions' text, built once per groups rebuild rather than every frame (#3807): the
+    /// header's name and its totals per column, and the time-dependent statuses (idle minutes) once a minute. Parallel
+    /// to m_Groups, and cleared with it, since GroupsKey covers everything else they read.
+    struct GroupRowTexts
+    {
+        std::string headerName;
+        std::array<std::optional<std::string>, static_cast<std::size_t>(ProcessColumn::Count)> totals{};
+        std::uint64_t statusMinute = UINT64_MAX; ///< The minute headerStatus and sessionStatus were built in
+        std::string headerStatus;
+        std::vector<std::string> sessionStatus;
+        std::vector<std::string> sessionName;
+    };
+    std::vector<GroupRowTexts> m_GroupRowTexts;
+    std::size_t m_GroupHeaderTextBuilds = 0; ///< How many header names were formatted (tests: once per rebuild)
+    /// m_GroupRowTexts[@p groupIndex], its statuses rebuilt when the minute has changed.
+    GroupRowTexts& groupRowTexts(std::size_t groupIndex);
     ProcessColumn m_SortColumn = ProcessColumn::CpuPercent; // the table's sort, for ordering the groups
     bool m_SortAscending = false;
     // Group: User's sessions (#3377): the feed ShellPanels shares (null on its own), its newest publication,
@@ -1029,7 +1051,7 @@ class ProcessesPanel : public Panel
     void renderGroupHeaderRow(std::size_t groupIndex);
     /// One of Group: User's sign-in sessions (#3377), under its account's header: where it is and how, its
     /// status and sign-in time, its tooltip, and its menu on a right-click. Not a process: a click selects nothing.
-    void renderSessionRow(const Platform::UserSession& session);
+    void renderSessionRow(std::size_t groupIndex, std::size_t sessionIndex);
     /// The line under an account whose processes the filter hides all of (#3377).
     static void renderNoMatchesRow();
     /// The sessions' newest publication while grouped by User, and the feed told what the table needs (#3377).

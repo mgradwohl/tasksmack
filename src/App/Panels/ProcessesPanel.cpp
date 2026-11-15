@@ -4017,6 +4017,7 @@ void ProcessesPanel::rebuildGroupsIfStale(const std::vector<Domain::ProcessSnaps
                  ? ProcessGrouping::buildGroups(
                        snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending, sessions->sessions)
                  : ProcessGrouping::buildGroups(snapshots, m_CachedSortedIndices, m_GroupBy, m_LiveRowCount, m_SortColumn, m_SortAscending);
+    m_GroupRowTexts.assign(m_Groups.size(), {}); // their text is rebuilt as each is drawn (#3807)
     const bool filtered = !m_CachedSearchTerm.empty();
     m_GroupedRows.clear();
     m_GroupedRows.reserve(m_CachedSortedIndices.size() + (m_Groups.size() * 2));
@@ -4063,7 +4064,7 @@ void ProcessesPanel::renderGroupedRows(const std::vector<Domain::ProcessSnapshot
             case GroupedRowKind::Session:
                 if (const auto& groupSessions = m_Groups[row.group].sessions; row.procIdx < groupSessions.size())
                 {
-                    renderSessionRow(groupSessions[row.procIdx]);
+                    renderSessionRow(row.group, row.procIdx);
                 }
                 break;
             case GroupedRowKind::NoMatches:
@@ -4081,10 +4082,32 @@ void ProcessesPanel::renderGroupedRows(const std::vector<Domain::ProcessSnapshot
     }
 }
 
+ProcessesPanel::GroupRowTexts& ProcessesPanel::groupRowTexts(std::size_t groupIndex)
+{
+    GroupRowTexts& texts = m_GroupRowTexts[groupIndex];
+    const ProcessGrouping::Group& group = m_Groups[groupIndex];
+    // Idle times are told in minutes: their text changes at most once a minute.
+    const std::uint64_t now = UserGrouping::nowUsec();
+    const std::uint64_t minute = now / 60'000'000U;
+    if (texts.statusMinute != minute)
+    {
+        texts.statusMinute = minute;
+        texts.headerStatus = group.sessions.empty() ? std::string{} : UserGrouping::groupStatus(group, now);
+        texts.sessionStatus.clear();
+        texts.sessionStatus.reserve(group.sessions.size());
+        for (const Platform::UserSession& session : group.sessions)
+        {
+            texts.sessionStatus.push_back(UserGrouping::sessionStatus(session, now));
+        }
+    }
+    return texts;
+}
+
 void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
 {
     const ProcessGrouping::Group& group = m_Groups[groupIndex];
     const bool collapsed = m_CollapsedGroups.contains(group.key);
+    GroupRowTexts& texts = groupRowTexts(groupIndex);
     ImGui::TableNextRow();
     ImGui::TableSetBgColor(ImGuiTableBgTarget_RowBg1, ImGui::GetColorU32(ImGuiCol_TableHeaderBg));
     int colIdx = 0;
@@ -4132,23 +4155,28 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             // A signed-in account (#3377): its icon, "(you)" for TaskSmack's own, and its process count. Not
             // readable has sessions and never a process, so no count.
+            // Built once per groups rebuild (#3807): a collapse or expand rebuilds them, so the caret is current.
+            std::string& label = texts.headerName;
             const char* const caret = collapsed ? ICON_FA_CARET_RIGHT : ICON_FA_CARET_DOWN;
-            std::string label;
-            if (group.key.empty())
+            if (label.empty())
             {
-                label = std::format("{} {} ({})", caret, ProcessGrouping::UNGROUPED_LABEL, group.members.size());
-            }
-            else if (group.notReadable)
-            {
-                label = std::format("{} {}", caret, group.label);
-            }
-            else
-            {
-                label = std::format("{} {}{} ({})",
-                                    caret,
-                                    group.sessions.empty() ? "" : ICON_FA_USER "  ",
-                                    UserGrouping::groupHeaderName(group),
-                                    group.members.size());
+                ++m_GroupHeaderTextBuilds;
+                if (group.key.empty())
+                {
+                    label = std::format("{} {} ({})", caret, ProcessGrouping::UNGROUPED_LABEL, group.members.size());
+                }
+                else if (group.notReadable)
+                {
+                    label = std::format("{} {}", caret, group.label);
+                }
+                else
+                {
+                    label = std::format("{} {}{} ({})",
+                                        caret,
+                                        group.sessions.empty() ? "" : ICON_FA_USER "  ",
+                                        UserGrouping::groupHeaderName(group),
+                                        group.members.size());
+                }
             }
             static_cast<void>(
                 UI::Widgets::cellText(label,
@@ -4158,8 +4186,14 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         }
         if (col == ProcessColumn::Status && !group.sessions.empty())
         {
-            // Its one session's status, or how many it has (#3377).
-            UI::Widgets::cellText(UserGrouping::groupStatus(group, UserGrouping::nowUsec()));
+            // Its one session's status, or how many it has (#3377), rebuilt once a minute (#3807).
+            UI::Widgets::cellText(texts.headerStatus);
+            continue;
+        }
+        std::optional<std::string>& cached = texts.totals[toIndex(col)];
+        if (cached.has_value())
+        {
+            renderRightAlignedText(*cached, ImGui::CalcTextSize(cached->c_str()).x);
             continue;
         }
         const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
@@ -4167,7 +4201,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         {
             continue;
         }
-        // Marked with Σ: a rollup must never read as one process's figure (#838).
+        // Marked with Σ: a rollup must never read as one process's figure (#838). Formatted once per groups rebuild.
         std::string text;
         switch (col)
         {
@@ -4199,6 +4233,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         }
         text.insert(0, "\xCE\xA3 "); // U+03A3
         renderRightAlignedText(text, ImGui::CalcTextSize(text.c_str()).x);
+        cached = std::move(text);
     }
 }
 
