@@ -123,7 +123,12 @@ std::optional<Verdict> readFileReport(std::string_view json)
         {
             return Member::Skip;
         }
-        if (const std::optional<std::uint64_t> value = reader.readUnsigned())
+        std::optional<std::uint64_t> value;
+        if (!reader.readUnsigned(value))
+        {
+            return Member::Malformed; // not well-formed JSON (#3795): the reply isn't read as if it were
+        }
+        if (value.has_value())
         {
             *counts[index] = *value;
             seen |= 1U << index;

@@ -534,19 +534,31 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
     void run(const std::stop_token& stop) noexcept
     {
         static_cast<void>(Platform::setCurrentThreadName(m_Options.threadName));
+        // The reason is the exception's own, as runJob() keeps a body's (#3793): a std::system_error from a wait
+        // isn't a lack of memory. failLocked() copes when even that copy can't be made.
         try
         {
             loop(stop);
         }
+        catch (const std::exception& e)
+        {
+            failRun(e.what());
+        }
         catch (...)
         {
-            {
-                const std::scoped_lock lock(m_Mutex);
-                failLocked(FAILURE_UNRECORDED);
-                endLocked();
-            }
-            PublicationWake::notify();
+            failRun(FAILURE_UNKNOWN);
         }
+    }
+
+    /// Ends the thread's run for @p reason: Failed, the queue dropped, and anyone waiting woken.
+    void failRun(std::string_view reason) noexcept
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            failLocked(reason);
+            endLocked();
+        }
+        PublicationWake::notify();
     }
 
     /// One job at a time until stopped, or until a body throws.
