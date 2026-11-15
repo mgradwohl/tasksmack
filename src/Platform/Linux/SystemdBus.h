@@ -50,18 +50,6 @@ struct BootTimestampsRead
 /// worker read for minutes.
 inline constexpr std::uint64_t CALL_TIMEOUT_USEC = 2'000'000;
 
-/// Longest an action call that may prompt for a password waits (#2402): systemd holds its answer until
-/// the user answers polkit's agent, so CALL_TIMEOUT_USEC would give up on nearly everyone typing one.
-/// A stop request still ends the wait at once.
-inline constexpr std::uint64_t INTERACTIVE_CALL_TIMEOUT_USEC = 120'000'000;
-
-/// How long an action's call may take: INTERACTIVE_CALL_TIMEOUT_USEC when it may prompt (the user's
-/// "Authenticate and retry", #2304), CALL_TIMEOUT_USEC otherwise (#2402).
-[[nodiscard]] constexpr std::uint64_t actionCallTimeoutUsec(bool allowInteractive) noexcept
-{
-    return allowInteractive ? INTERACTIVE_CALL_TIMEOUT_USEC : CALL_TIMEOUT_USEC;
-}
-
 /// Whether this build was linked with libsystemd.
 [[nodiscard]] bool built() noexcept;
 
@@ -130,25 +118,22 @@ struct UnitWait
 };
 
 /// Starts the unit @p name (Manager.StartUnit, mode "replace") and waits until it is running, it
-/// fails, @p wait runs out or @p stopToken is stopped (#2006). Unless @p allowInteractive, polkit is
-/// never let prompt: refused unprivileged, it says "Requires administrator", and the result's
-/// needsAuthorization says a prompt could allow it. @p allowInteractive is the user's "Authenticate and
-/// retry" (#2304); stopUnit() and setUnitStartType() take it the same way.
-[[nodiscard]] ServiceActionResult
-startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {}, bool allowInteractive = false);
+/// fails, @p wait runs out or @p stopToken is stopped (#2006). polkit is never let prompt, here or in stopUnit(),
+/// setUnitStartType() or sessionAction(): nothing asks for a password after TaskSmack starts (#3580, #3767), so a
+/// call refused for want of an administrator says "Requires administrator: start TaskSmack (Administrator)".
+[[nodiscard]] ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
 
 /// Stops the unit @p name and waits until it has stopped, unless a running unit would go down with it
 /// (its RequiredBy, BoundBy, ConsistsOf or RequisiteOf, #2124): then nothing is sent and the refusal
 /// names them, as on Windows (#2006).
-[[nodiscard]] ServiceActionResult
-stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {}, bool allowInteractive = false);
+[[nodiscard]] ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait = {});
 
 /// Sets the start type of @p name's unit file: Automatic enables it, Manual disables it, Disabled masks
 /// it, unmasking first when moving off Disabled; then reloads systemd, as systemctl does (#2006).
-/// Automatic (delayed) and the read-only types are refused. @p stopToken ends a wait on a password
-/// prompt (#2402); a change already made stays made.
+/// Automatic (delayed) and the read-only types are refused. @p stopToken ends a wait on systemd (#2402); a change
+/// already made stays made.
 [[nodiscard]] ServiceActionResult
-setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive = false, const std::stop_token& stopToken = {});
+setUnitStartType(std::string_view name, ServiceStartType startType, const std::stop_token& stopToken = {});
 
 /// Enables or disables the user's own systemd unit @p name (a .service or .timer), as `systemctl --user enable` /
 /// `disable` does (#3425): EnableUnitFiles or DisableUnitFiles on the user manager, then Reload. It writes only links
@@ -207,10 +192,9 @@ struct LoginSessionsRead
 inline constexpr std::string_view DISCONNECT_UNSUPPORTED = "Linux has no Disconnect; Lock takes its place";
 
 /// Locks (Manager.LockSession) or ends (Manager.TerminateSession) logind session @p id. polkit decides:
-/// one's own session needs nothing, another user's an administrator; unless @p allowInteractive no prompt is
-/// shown and that is a refusal with needsAuthorization set (#2304). @p stopToken ends a wait on the prompt.
-/// Disconnect is Windows' and refused here (DISCONNECT_UNSUPPORTED), never sent as another call.
-[[nodiscard]] ServiceActionResult
-sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken = {});
+/// one's own session needs nothing, another user's an administrator, and with no prompt that is a refusal (#3580).
+/// @p stopToken ends a wait on logind. Disconnect is Windows' and refused here (DISCONNECT_UNSUPPORTED), never sent
+/// as another call.
+[[nodiscard]] ServiceActionResult sessionAction(std::string_view id, SessionAction action, const std::stop_token& stopToken = {});
 
 } // namespace Platform::SystemdBus

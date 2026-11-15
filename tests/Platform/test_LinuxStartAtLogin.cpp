@@ -86,7 +86,10 @@ TEST(LinuxStartAtLoginTest, WriteReadAndRemoveTheEntryInItsOwnDirectory)
 
     const std::string command = Domain::StartAtLogin::runCommand("/home/a b/TaskSmack");
     ASSERT_TRUE(entry.write(command).has_value());
-    EXPECT_FALSE(std::filesystem::exists(autostart / "tasksmack.desktop.partial"));
+    for (const auto& file : std::filesystem::directory_iterator(autostart))
+    {
+        EXPECT_EQ(file.path().filename(), "tasksmack.desktop") << "no staging file left behind (#3771)";
+    }
     facts = entry.read();
     ASSERT_TRUE(facts.has_value());
     EXPECT_EQ(facts->command, std::optional<std::string>(command));

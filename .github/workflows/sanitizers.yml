@@ -48,23 +48,12 @@ jobs:
 
       - name: Setup ccache
         id: ccache
-        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-        continue-on-error: true
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        uses: ./.github/actions/setup-ccache
         with:
-          install: binary
           # The key ci.yml's PR asan-ubsan job restores.
           key: linux-asan-ubsan-llvm${{ env.LLVM_VERSION }}
           max-size: 1250M  # ASan+UBSan, about 560 MB a build (#3100); same key as ci.yml's job
           save: true
-          evict-old-files: job
-
-      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
-      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
-      - name: Build without ccache (its setup failed)
-        if: steps.ccache.outcome == 'failure'
-        shell: bash
-        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies
@@ -106,27 +95,10 @@ jobs:
 
       - name: Setup ccache
         id: ccache
-        # A failed fetch of ccache itself (a GitHub releases outage) builds without it: slower, not red.
-        continue-on-error: true
-        uses: hendrikmuhs/ccache-action@f09c25b45002a07be2955cbe52e8cee55643f89d # v1.2.24
+        uses: ./.github/actions/setup-ccache
         with:
-          # The action's pinned, SHA-256-verified ccache (4.13.6): Ubuntu's 4.9.1 lacks the
-          # --evict-older-than that evict-old-files uses, and Windows images ship 4.9.1 via Perl.
-          install: binary
           key: linux-${{ matrix.preset }}-llvm${{ env.LLVM_VERSION }}
           max-size: ${{ matrix.preset == 'tsan' && '750M' || '1250M' }}  # TSan about 445 MB, ASan+UBSan 560 MB (#3100)
-          # Pull requests restore main's cache but never save their own: a PR-ref entry is
-          # readable only by that PR and pushed main's entries out of the 10 GB quota (#1406).
-          # Main runs drop entries this build didn't touch, so the saved cache tracks the tree.
-          save: ${{ github.ref == 'refs/heads/main' }}
-          evict-old-files: job
-
-      # A failed ccache setup can leave an empty or unverified ccache on PATH: CMake mustn't find
-      # it (cmake/CompilerOptions.cmake reads TASKSMACK_NO_CCACHE), so the build runs without one.
-      - name: Build without ccache (its setup failed)
-        if: steps.ccache.outcome == 'failure'
-        shell: bash
-        run: echo "TASKSMACK_NO_CCACHE=1" >> "$GITHUB_ENV"
 
       # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
       - name: Restore FetchContent dependencies

@@ -1,6 +1,5 @@
 /// @file test_LinuxNuma.cpp
-/// @brief The Linux NUMA node parsers and readers (#3088), on text and on a fixture node root, which
-/// LinuxSystemProbe::readNuma() reads as the app does (#3859).
+/// @brief The Linux NUMA node parsers and readers (#3088), on text and on a fixture node root.
 
 #include <gtest/gtest.h>
 
@@ -8,7 +7,6 @@
 
 #include "Platform/CpuAffinity.h"
 #include "Platform/Linux/LinuxNuma.h"
-#include "Platform/Linux/LinuxSystemProbe.h"
 #include "Platform/ScopedTempDir.h"
 #include "Platform/SystemTypes.h"
 
@@ -63,23 +61,6 @@ void writeNodeRootFiles(const std::filesystem::path& root)
     std::ofstream(root / "possible") << "0-3\n";
     std::ofstream(root / "has_cpu") << "0-1\n";
     std::ofstream(root / "has_memory") << "0-1\n";
-}
-
-/// <base>/sys/devices/system/node, where LinuxSystemProbe reads the nodes of a machine whose root is @p base.
-std::filesystem::path nodeRootUnder(const std::filesystem::path& base)
-{
-    return base / "sys" / "devices" / "system" / "node";
-}
-
-/// The nodes LinuxSystemProbe::readNuma() publishes for a machine whose root is @p base (#3859): what the app runs,
-/// with its own rule for a node gone offline or an unreadable cpulist.
-std::vector<NumaNode> probeNodes(const std::filesystem::path& base)
-{
-    const std::filesystem::path proc = base / "proc";
-    std::filesystem::create_directories(proc);
-    std::ofstream(proc / "meminfo") << "MemTotal: 1000000 kB\nMemFree: 500000 kB\n";
-    LinuxSystemProbe probe(proc, proc / "no-sys-class-net", base / "no-cpu-sysfs", base);
-    return probe.read().numaNodes;
 }
 
 CpuAffinity cpus(const char* list)
@@ -215,12 +196,11 @@ TEST(LinuxNumaTest, NodeIdsComeFromNodeDirectoryNames)
 TEST(LinuxNumaTest, ReadsATwoNodeMachine)
 {
     ScopedTempDir root("ts_test_numa_two");
-    const std::filesystem::path nodeRoot = nodeRootUnder(root.path);
-    writeNodeRootFiles(nodeRoot);
-    writeNode(nodeRoot, 1, "8-15,24-31\n", meminfoText(1, 8'000'000, 3'000'000));
-    writeNode(nodeRoot, 0, "0-7,16-23\n", meminfoText(0, 16'000'000, 5'000'000));
+    writeNodeRootFiles(root.path);
+    writeNode(root.path, 1, "8-15,24-31\n", meminfoText(1, 8'000'000, 3'000'000));
+    writeNode(root.path, 0, "0-7,16-23\n", meminfoText(0, 16'000'000, 5'000'000));
 
-    const std::vector<NumaNode> nodes = probeNodes(root.path);
+    const std::vector<NumaNode> nodes = LinuxNuma::readNodes(root.path);
     ASSERT_EQ(nodes.size(), 2U);
     EXPECT_EQ(nodes[0].id, 0); // sorted by id, whatever the listing order
     EXPECT_EQ(nodes[0].cpus, cpus("0-7,16-23"));
@@ -236,12 +216,11 @@ TEST(LinuxNumaTest, ReadsATwoNodeMachine)
 TEST(LinuxNumaTest, MemorylessAndCpulessNodesAreKept)
 {
     ScopedTempDir root("ts_test_numa_odd");
-    const std::filesystem::path nodeRoot = nodeRootUnder(root.path);
-    writeNode(nodeRoot, 0, "0-3\n", meminfoText(0, 4'000'000, 1'000'000));
-    writeNode(nodeRoot, 1, "4-7\n", meminfoText(1, 0, 0));              // CPUs, no memory
-    writeNode(nodeRoot, 2, "\n", meminfoText(2, 2'000'000, 2'000'000)); // memory only (CXL, HBM)
+    writeNode(root.path, 0, "0-3\n", meminfoText(0, 4'000'000, 1'000'000));
+    writeNode(root.path, 1, "4-7\n", meminfoText(1, 0, 0));              // CPUs, no memory
+    writeNode(root.path, 2, "\n", meminfoText(2, 2'000'000, 2'000'000)); // memory only (CXL, HBM)
 
-    const std::vector<NumaNode> nodes = probeNodes(root.path);
+    const std::vector<NumaNode> nodes = LinuxNuma::readNodes(root.path);
     ASSERT_EQ(nodes.size(), 3U);
     EXPECT_EQ(nodes[1].cpus, cpus("4-7"));
     EXPECT_EQ(nodes[1].memTotalBytes, 0U);
@@ -253,19 +232,18 @@ TEST(LinuxNumaTest, MissingNodeRootOrNodeFilesAreLeftOut)
 {
     // No node root at all: a kernel without CONFIG_NUMA.
     ScopedTempDir root("ts_test_numa_missing");
-    EXPECT_TRUE(probeNodes(root.path / "no-such-dir").empty());
+    EXPECT_TRUE(LinuxNuma::readNodes(root.path / "no-such-dir").empty());
     EXPECT_TRUE(LinuxNuma::listNodeIds(root.path / "no-such-dir").empty());
     EXPECT_FALSE(LinuxNuma::readNodeMemory(root.path, 5).has_value());
     EXPECT_FALSE(LinuxNuma::readNodeCpus(root.path, 5).has_value());
 
     // A node without meminfo (gone offline mid-read) is left out; one without a readable cpulist keeps
     // its memory, with no CPUs.
-    const std::filesystem::path nodeRoot = nodeRootUnder(root.path);
-    writeNode(nodeRoot, 0, "0-1\n", meminfoText(0, 1000, 500));
-    writeNode(nodeRoot, 1, "2-3\n", std::nullopt);
-    writeNode(nodeRoot, 2, std::nullopt, meminfoText(2, 2000, 1000));
-    writeNode(nodeRoot, 3, "bogus\n", meminfoText(3, 3000, 1500));
-    const std::vector<NumaNode> nodes = probeNodes(root.path);
+    writeNode(root.path, 0, "0-1\n", meminfoText(0, 1000, 500));
+    writeNode(root.path, 1, "2-3\n", std::nullopt);
+    writeNode(root.path, 2, std::nullopt, meminfoText(2, 2000, 1000));
+    writeNode(root.path, 3, "bogus\n", meminfoText(3, 3000, 1500));
+    const std::vector<NumaNode> nodes = LinuxNuma::readNodes(root.path);
     ASSERT_EQ(nodes.size(), 3U);
     EXPECT_EQ(nodes[0].id, 0);
     EXPECT_EQ(nodes[1].id, 2);
@@ -284,8 +262,7 @@ TEST(LinuxNumaTest, TheRealNodeRootReads)
     {
         GTEST_SKIP() << "no " << real << " (kernel without CONFIG_NUMA)";
     }
-    LinuxSystemProbe probe; // the machine's own /proc and /sys
-    const std::vector<NumaNode> nodes = probe.read().numaNodes;
+    const std::vector<NumaNode> nodes = LinuxNuma::readNodes(real);
     ASSERT_FALSE(nodes.empty());
     std::uint64_t cpuCount = 0;
     for (const NumaNode& node : nodes)

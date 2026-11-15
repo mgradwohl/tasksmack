@@ -3,15 +3,24 @@
 // The words of the buttons that redo a refused action or read as an administrator (#2308, #2309), through
 // Windows' helper, TaskSmackHelper.exe (#2550). Its UAC prompt asks an administrator to approve it, as "Run as
 // administrator" does, often with no password at all, so the buttons say "as administrator". Linux has no
-// helper since #3580, so nothing there draws these buttons: one set of words, Windows' (#3810).
+// helper since #3580, so nothing there draws these buttons: its words below, and LINUX_WORDING, are what its
+// polkit helper used to offer (#3886 tracks removing them).
 
+#include "App/AccessChoice.h"
 #include "UI/IconsFontAwesome6.h"
 
 // NOLINTBEGIN(cppcoreguidelines-macro-usage) - string literals the labels and tooltips are joined from
+#ifdef _WIN32
 #define TASKSMACK_AUTHORIZE_RETRY "Retry as administrator"
 #define TASKSMACK_AUTHORIZE_READ "Read as administrator"
 #define TASKSMACK_AUTHORIZE_SEARCH "Search them as administrator too"
 #define TASKSMACK_AUTHORIZE_ASKS "Asks Windows for an administrator's approval (a UAC prompt)"
+#else
+#define TASKSMACK_AUTHORIZE_RETRY "Authenticate and retry"
+#define TASKSMACK_AUTHORIZE_READ "Authenticate to read"
+#define TASKSMACK_AUTHORIZE_SEARCH "Authenticate to search them too"
+#define TASKSMACK_AUTHORIZE_ASKS "Asks for an administrator's password"
+#endif
 // NOLINTEND(cppcoreguidelines-macro-usage)
 
 namespace App::AuthorizeWording
@@ -35,8 +44,8 @@ inline constexpr const char* SEARCH_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then s
 inline constexpr const char* PRIORITY_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then sets the priority as the administrator";
 inline constexpr const char* IO_PRIORITY_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", then sets the I/O priority as the administrator";
 
-/// The access choice's words (#2728): the startup notice's and the status-bar chip's, Windows', as the helper's are.
-/// The constants above are its retry and read words, and tests/App/test_AccessChoice.cpp holds them equal.
+/// One platform's words for the access choice (#2728), as data, so one test run checks every platform's
+/// (tests/App/test_AccessChoice.cpp); the constants above are the host's, and the test holds them equal.
 struct PlatformWording
 {
     const char* launch;        ///< The notice's Administrator option
@@ -53,6 +62,19 @@ inline constexpr PlatformWording WINDOWS_WORDING{
     .switchSession = "Restart as administrator...",
     .promptTooltip = "Windows asks for approval (UAC)",
 };
+
+inline constexpr PlatformWording LINUX_WORDING{
+    .launch = "Run with administrator access",
+    .retry = "Authenticate and retry",
+    .read = "Authenticate to read",
+    .switchSession = "Authenticate for this session...",
+    .promptTooltip = "You'll be asked for an administrator's password (polkit)",
+};
+
+[[nodiscard]] constexpr const PlatformWording& wordingFor(AccessChoice::AccessPlatform platform) noexcept
+{
+    return platform == AccessChoice::AccessPlatform::Windows ? WINDOWS_WORDING : LINUX_WORDING;
+}
 
 } // namespace App::AuthorizeWording
 

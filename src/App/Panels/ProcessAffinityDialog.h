@@ -143,9 +143,4 @@ class ProcessAffinityDialog
                                                                 const Platform::CpuAffinity& cpus,
                                                                 const Platform::ProcessActionResult& result);
 
-/// Apply on @p dialog with @p cpus (#3886): set them on the dialog's process through @p actions, which outlives the
-/// run, with affinityResultMessage() as the line; a refusal retries as an administrator where a helper can (Windows).
-[[nodiscard]] Detail::DialogApply
-affinityApply(Platform::IProcessActions* actions, const ProcessAffinityDialog& dialog, const Platform::CpuAffinity& cpus);
-
 } // namespace App

@@ -20,7 +20,6 @@
 #include <cstddef>
 #include <cstdint>
 #include <format>
-#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -364,21 +363,6 @@ Detail::ActionResultMessage affinityResultMessage(const std::string& name,
         text += result.successNote;
     }
     return {.ok = true, .text = std::move(text)};
-}
-
-Detail::DialogApply
-affinityApply(Platform::IProcessActions* actions, const ProcessAffinityDialog& dialog, const Platform::CpuAffinity& cpus)
-{
-    const Platform::ProcessTarget target = dialog.target();
-    // One copy of the CPUs, shared: std::function copies its callables, and a shared_ptr's copy can't throw.
-    const auto chosen = std::make_shared<const Platform::CpuAffinity>(cpus);
-    return {
-        .pending = std::format("Setting the CPU affinity of PID {}...", target.pid),
-        .work = [actions, target, chosen] { return actions->setAffinity(target, *chosen); },
-        .format = [name = dialog.name(), pid = target.pid, chosen](const Platform::ProcessActionResult& result)
-        { return affinityResultMessage(name, pid, *chosen, result); },
-        .retry = Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = cpus},
-    };
 }
 
 } // namespace App

@@ -59,37 +59,29 @@ constexpr const char* LOGIN1 = "org.freedesktop.login1";
 constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
 constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
 
-/// A failed call on @p bus as a ServiceActionResult, in the user's terms (SystemdActions::errorText()).
-/// Whether @p bus allowed a password prompt decides how a polkit refusal reads, and whether a retry
-/// that allows one is worth offering (#2304).
-[[nodiscard]] ServiceActionResult actionFailure(sd_bus* bus, const BusError& error, int result)
+/// A failed call as a ServiceActionResult, in the user's terms (SystemdActions::errorText()). No call lets polkit
+/// prompt (#3580, #3767), so a refusal is never one a password could finish.
+[[nodiscard]] ServiceActionResult actionFailure(const BusError& error, int result)
 {
     const sd_bus_error& raw = error.raw();
     const std::string_view name = raw.name != nullptr ? std::string_view(raw.name) : std::string_view{};
     const std::string message = (raw.message != nullptr)
                                   ? std::string(raw.message)
                                   : std::string(std::strerror(-result)); // NOLINT(concurrency-mt-unsafe) - one worker thread
-    const bool interactive = sd_bus_get_allow_interactive_authorization(bus) > 0;
-    ServiceActionResult failure = ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result), interactive));
-    const bool authorizationRequired = name == SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED;
     // Nothing is offered to finish it with a password: a Linux session that isn't Administrator never asks after it
     // starts (#3580), and the text says how to start one.
-    failure.needsAuthorization = false;
-    failure.authorizationUnavailable = authorizationRequired && interactive;
-    return failure;
+    return ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result)));
 }
 
-/// The system bus for an action, or why not. Unless @p allowInteractive, polkit may never prompt:
-/// unprivileged, the call is refused with InteractiveAuthorizationRequired, which reads as "Requires
-/// administrator" (#2006). @p allowInteractive is the user's "Authenticate and retry" (#2304), the one
-/// case where polkit's agent may ask for a password.
-[[nodiscard]] std::optional<std::string> openForAction(Bus& bus, bool allowInteractive)
+/// The system bus for an action, or why not. polkit may never prompt (#3580): unprivileged, the call is refused with
+/// InteractiveAuthorizationRequired, which reads as "Requires administrator" (#2006).
+[[nodiscard]] std::optional<std::string> openForAction(Bus& bus)
 {
     if (const int result = openSystemBus(bus); result < 0)
     {
         return std::string("The system bus couldn't be reached: ") + std::strerror(-result); // NOLINT(concurrency-mt-unsafe)
     }
-    (void) sd_bus_set_allow_interactive_authorization(bus.get(), allowInteractive ? 1 : 0);
+    (void) sd_bus_set_allow_interactive_authorization(bus.get(), 0);
     return std::nullopt;
 }
 
@@ -122,14 +114,13 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 }
 
 /// Sends @p call on an action's @p bus and waits for its answer, as sd_bus_call() does, or for
-/// @p stopToken: -ECANCELED then (#2402). A bus allowed to prompt gets actionCallTimeoutUsec()'s long
-/// bound, since systemd answers only once the user has answered polkit's agent; the wait goes in short
-/// slices so closing the panel or exiting still ends it at once, as runJob()'s own wait does.
+/// @p stopToken: -ECANCELED then (#2402). Bounded by CALL_TIMEOUT_USEC, in short slices so closing the panel or
+/// exiting still ends it at once, as runJob()'s own wait does.
 [[nodiscard]] int callAction(sd_bus* bus, sd_bus_message* call, const std::stop_token& stopToken, BusError& error, Message& reply)
 {
     PendingReply pending{.error = &error, .reply = &reply};
     sd_bus_slot* slot = nullptr;
-    const std::uint64_t timeout = actionCallTimeoutUsec(sd_bus_get_allow_interactive_authorization(bus) > 0);
+    const std::uint64_t timeout = CALL_TIMEOUT_USEC;
     if (const int result = sd_bus_call_async(bus, &slot, call, onActionReply, &pending, timeout); result < 0)
     {
         return result;
@@ -175,7 +166,7 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
             sd_bus_call_method(bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "LoadUnit", error.get(), reply.out(), "s", unit.c_str());
         result < 0)
     {
-        return actionFailure(bus, error, result);
+        return actionFailure(error, result);
     }
     const char* object = nullptr;
     if (const int result = sd_bus_message_read(reply.get(), "o", &object); result < 0 || object == nullptr)
@@ -274,7 +265,7 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
         }
         if (result < 0)
         {
-            return actionFailure(bus, error, result);
+            return actionFailure(error, result);
         }
         const char* job = nullptr;
         if (sd_bus_message_read(reply.get(), "o", &job) >= 0 && job != nullptr)
@@ -382,7 +373,7 @@ changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool with
     }
     if (result < 0)
     {
-        return actionFailure(bus, error, result);
+        return actionFailure(error, result);
     }
     if (std::string_view(method) == "EnableUnitFiles")
     {
@@ -412,17 +403,17 @@ changeUnitFile(sd_bus* bus, const char* method, std::string_view name, bool with
     }
     if (result < 0)
     {
-        return actionFailure(bus, error, result);
+        return actionFailure(error, result);
     }
     return ServiceActionResult::succeeded();
 }
 
 } // namespace
 
-ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait, bool allowInteractive)
+ServiceActionResult startUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait)
 {
     Bus bus;
-    if (const auto failed = openForAction(bus, allowInteractive))
+    if (const auto failed = openForAction(bus))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -434,10 +425,10 @@ ServiceActionResult startUnit(std::string_view name, const std::stop_token& stop
     return runJob(bus.get(), name, unitObject, "StartUnit", SystemdActions::Goal::Running, stopToken, wait);
 }
 
-ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait, bool allowInteractive)
+ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopToken, UnitWait wait)
 {
     Bus bus;
-    if (const auto failed = openForAction(bus, allowInteractive))
+    if (const auto failed = openForAction(bus))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -454,8 +445,7 @@ ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopT
     return runJob(bus.get(), name, unitObject, "StopUnit", SystemdActions::Goal::Stopped, stopToken, wait);
 }
 
-ServiceActionResult
-setUnitStartType(std::string_view name, ServiceStartType startType, bool allowInteractive, const std::stop_token& stopToken)
+ServiceActionResult setUnitStartType(std::string_view name, ServiceStartType startType, const std::stop_token& stopToken)
 {
     const std::optional<SystemdActions::StartTypeSteps> steps = SystemdActions::startTypeSteps(startType);
     if (!steps.has_value())
@@ -463,7 +453,7 @@ setUnitStartType(std::string_view name, ServiceStartType startType, bool allowIn
         return ServiceActionResult::failed("systemd services have no such startup type");
     }
     Bus bus;
-    if (const auto failed = openForAction(bus, allowInteractive))
+    if (const auto failed = openForAction(bus))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -523,14 +513,14 @@ ServiceActionResult setUserUnitEnabled(std::string_view name, bool enabled, cons
     return reloadManager(bus.get(), stopToken);
 }
 
-ServiceActionResult sessionAction(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken)
+ServiceActionResult sessionAction(std::string_view id, SessionAction action, const std::stop_token& stopToken)
 {
     if (action == SessionAction::Disconnect)
     {
         return ServiceActionResult::failed(std::string(DISCONNECT_UNSUPPORTED)); // never TerminateSession in its place
     }
     Bus bus;
-    if (const auto failed = openForAction(bus, allowInteractive))
+    if (const auto failed = openForAction(bus))
     {
         return ServiceActionResult::failed(*failed);
     }
@@ -556,31 +546,29 @@ ServiceActionResult sessionAction(std::string_view id, SessionAction action, boo
     }
     if (result < 0)
     {
-        return actionFailure(bus.get(), error, result);
+        return actionFailure(error, result);
     }
     return ServiceActionResult::succeeded();
 }
 
 #else
 
-ServiceActionResult startUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/, bool /*allowInteractive*/)
+ServiceActionResult startUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
-ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/, bool /*allowInteractive*/)
+ServiceActionResult stopUnit(std::string_view /*name*/, const std::stop_token& /*stopToken*/, UnitWait /*wait*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
-ServiceActionResult
-setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
+ServiceActionResult setUnitStartType(std::string_view /*name*/, ServiceStartType /*startType*/, const std::stop_token& /*stopToken*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }
 
-ServiceActionResult
-sessionAction(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& /*stopToken*/)
+ServiceActionResult sessionAction(std::string_view /*id*/, SessionAction /*action*/, const std::stop_token& /*stopToken*/)
 {
     return ServiceActionResult::failed("This build has no systemd support (it was built without libsystemd)");
 }

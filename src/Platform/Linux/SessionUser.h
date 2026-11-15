@@ -219,23 +219,44 @@ invokingUserSession(uid_t effectiveUid,
     return {.otherAccount = true, .account = self.has_value() && !self->name.empty() ? self->name : std::string("root")};
 }
 
-/// The home directory of the user this process was started for as root (#3580): invokingUser()'s, for this process's
-/// effective uid, environment and passwd database. An Administrator session keeps that user's settings there.
+/// This process's invoking user (invokingUser() for its effective uid, environment and passwd database), looked up
+/// once (#3773): getpwuid_r() and getgrouplist() can go over LDAP or SSSD, and every open-link action asks. Neither
+/// the uid nor SUDO_UID/PKEXEC_UID changes during a run, and the account is what it was at startup for the run's
+/// whole life, as the settings folder chosen from it is. Thread-safe (a function-local static).
+[[nodiscard]] inline const std::optional<InvokingUser>& processInvokingUser()
+{
+    static const std::optional<InvokingUser> invoking = invokingUser(::geteuid(), &processVariable, &systemAccount);
+    return invoking;
+}
+
+/// systemAccount(), with the invoking user's account answered from processInvokingUser() rather than looked up again.
+[[nodiscard]] inline std::optional<Account> processAccount(uid_t uid)
+{
+    if (const std::optional<InvokingUser>& invoking = processInvokingUser(); invoking.has_value() && invoking->uid == uid)
+    {
+        return invoking->account;
+    }
+    return systemAccount(uid);
+}
+
+/// The home directory of the user this process was started for as root (#3580): processInvokingUser()'s. An
+/// Administrator session keeps that user's settings there.
 [[nodiscard]] inline std::optional<std::string> invokingUserHome()
 {
-    std::optional<InvokingUser> invoking = invokingUser(::geteuid(), &processVariable, &systemAccount);
+    const std::optional<InvokingUser>& invoking = processInvokingUser();
     if (!invoking.has_value() || invoking->account.home.empty())
     {
         return std::nullopt;
     }
-    return std::move(invoking->account.home);
+    return invoking->account.home;
 }
 
-/// invokingUserSession() for this process: its effective uid, environment and passwd database.
+/// invokingUserSession() for this process: its effective uid and environment, and the account looked up once
+/// (processAccount(), #3773). Whether the user's runtime folder exists is asked each time.
 [[nodiscard]] inline std::optional<DetachedSpawn::RunAs> invokingUserSession()
 {
     return invokingUserSession(
-        ::geteuid(), &processVariable, &systemAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
+        ::geteuid(), &processVariable, &processAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
 }
 
 } // namespace Platform::SessionUser

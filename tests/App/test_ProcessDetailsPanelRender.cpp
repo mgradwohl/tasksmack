@@ -310,6 +310,39 @@ TEST_F(ProcessDetailsPanelRenderTest, TheTabLabelNamesThePidWhileSeveralAreSelec
     EXPECT_EQ(panel->tabLabel(), "server");
 }
 
+// #3817: every optional row at once, on both tables. Each is full then (ten rows), and an eleventh would trip
+// InfoRows::add()'s assert here rather than vanish without a trace.
+TEST_F(ProcessDetailsPanelRenderTest, TheInfoTablesHoldEveryOptionalRow)
+{
+    const auto panel = activePanel();
+    Platform::ProcessCapabilities caps;
+    caps.hasSignature = true;
+    caps.hasCpuAffinity = true;
+    panel->setProcessCapabilities(caps);
+    panel->setSelectedPid(PID, START_TICKS);
+    panel->setAppMembership({.key = "firefox", .label = "Firefox", .tooltip = "app-gnome-firefox-1.scope", .inherited = false});
+    Domain::ProcessSample sample = sampleAt(1.0, 10.0);
+    auto snapshot = std::make_shared<Domain::ProcessSnapshot>(*sample.snapshot);
+    snapshot->user = "root";
+    snapshot->realUser = "alice";
+    snapshot->publisher = "Example Corp";
+    snapshot->services = "nginx.service";
+    snapshot->schedPolicy = Platform::SchedPolicy::Batch;
+    snapshot->processType = "Background Process";
+    snapshot->container = "docker:1a2b3c4d5e6f";
+    snapshot->architecture = "x64 (emulated)";
+    sample.snapshot = std::move(snapshot);
+    const std::vector samples{sample};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    const std::string text = renderAndCapture(*panel);
+    for (const char* label :
+         {"Started by", "Publisher", "Signature", "Services", "Affinity", "Policy", "Type", "Container", "App", "Architecture"})
+    {
+        EXPECT_TRUE(text.contains(label)) << label << " in: " << text;
+    }
+}
+
 // #1395: the optional identity and runtime rows -- Publisher (Windows), Type (Windows) and Container
 // (Linux, #805) -- are shown when the process has them.
 TEST_F(ProcessDetailsPanelRenderTest, TheOptionalRowsShowWhenTheProcessHasThem)

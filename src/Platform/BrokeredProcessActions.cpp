@@ -34,9 +34,8 @@ namespace Platform
 namespace
 {
 
-/// What runAuthorized() says of an action no broker request does: a kind or signal brokerRequestFor() doesn't know
-/// (#3778).
-constexpr std::string_view NOT_THROUGH_THE_HELPER = "This action isn't available through the administrator helper";
+/// What runAuthorized() says of an action no broker request does (#3580).
+constexpr std::string_view NOT_THROUGH_THE_HELPER = "Setting a scheduling policy isn't available through the administrator helper";
 
 } // namespace
 
@@ -77,6 +76,8 @@ std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
         return Broker::IoPriorityRequest{.target = action.target, .ioClass = action.ioClass, .level = action.level};
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
+    case Kind::SetSchedPolicy:
+        return std::nullopt; // Linux's, and Linux has no helper since #3580: protocol v23 has no SetSchedPolicy
     case Kind::SendSignal:
     {
         const std::optional<Broker::Signal> signal = brokerSignalFor(action.signal);

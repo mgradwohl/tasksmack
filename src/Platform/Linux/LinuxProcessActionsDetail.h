@@ -2,7 +2,7 @@
 
 // What LinuxProcessControl (the process-control half) and
 // LinuxProcessActions (which adds the system call trace and dump files) both need (#2640). Internal to
-// those two; defined in LinuxProcessControl.cpp.
+// those two (and LinuxProcessControlEfficiency.cpp, #3772); defined in LinuxProcessControl.cpp.
 
 #include "LinuxProcessControl.h"
 #include "Platform/IProcessActions.h"
@@ -38,6 +38,12 @@ struct PidfdOpen
 {
     return syscalls.pidfdSendSignal(pidfd.get(), signal);
 }
+
+/// Start time of whatever process holds @p pid right now, or nullopt if there is none.
+[[nodiscard]] std::optional<std::uint64_t> processStartTicks(std::int32_t pid);
+
+/// Whether /proc has no entry for @p pid (ENOENT): the process has exited (#3330).
+[[nodiscard]] bool processGone(std::int32_t pid);
 
 /// Up to 4 KiB of a small /proc or /sys file, or nullopt when it can't be read.
 [[nodiscard]] std::optional<std::string> readSmallFile(const std::string& path);

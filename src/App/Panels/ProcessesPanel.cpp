@@ -4159,9 +4159,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         if (col == ProcessColumn::Status && !group.sessions.empty())
         {
             // Its one session's status, or how many it has (#3377).
-            const auto now = static_cast<std::uint64_t>(
-                std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::system_clock::now().time_since_epoch()).count());
-            UI::Widgets::cellText(UserGrouping::groupStatus(group, now));
+            UI::Widgets::cellText(UserGrouping::groupStatus(group, UserGrouping::nowUsec()));
             continue;
         }
         const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
@@ -4519,8 +4517,13 @@ void ProcessesPanel::renderAffinityDialog()
     {
         return;
     }
-    Detail::DialogApply apply = affinityApply(m_ProcessActions.get(), m_AffinityDialog, *cpus);
-    runRowAction(std::move(apply.pending), std::move(apply.work), std::move(apply.format), std::move(apply.retry));
+    const Platform::ProcessTarget target = m_AffinityDialog.target();
+    runRowAction(
+        std::format("Setting the CPU affinity of PID {}...", target.pid),
+        [actions = m_ProcessActions.get(), target, cpus = *cpus] { return actions->setAffinity(target, cpus); },
+        [name = m_AffinityDialog.name(), pid = target.pid, cpus = *cpus](const Platform::ProcessActionResult& result)
+        { return affinityResultMessage(name, pid, cpus, result); },
+        Platform::AuthorizedAction{.kind = Platform::AuthorizedAction::Kind::SetAffinity, .target = target, .cpus = *cpus});
 }
 
 void ProcessesPanel::renderSchedPolicyDialog()
@@ -4530,8 +4533,21 @@ void ProcessesPanel::renderSchedPolicyDialog()
     {
         return;
     }
-    Detail::DialogApply apply = schedPolicyApply(m_ProcessActions.get(), m_SchedPolicyDialog, *setting);
-    runRowAction(std::move(apply.pending), std::move(apply.work), std::move(apply.format), std::move(apply.retry));
+    const Platform::ProcessTarget target = m_SchedPolicyDialog.target();
+    const Platform::RealtimeThreads realtime = m_SchedPolicyDialog.realtimeThreads();
+    runRowAction(
+        std::format("Setting the scheduling policy of PID {}...", target.pid),
+        [actions = m_ProcessActions.get(), target, setting = *setting, realtime]
+        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority, realtime); },
+        [name = m_SchedPolicyDialog.name(), pid = target.pid, setting = *setting](const Platform::ProcessActionResult& result)
+        { return schedPolicyResultMessage(name, pid, setting, result); },
+        Platform::AuthorizedAction{
+            .kind = Platform::AuthorizedAction::Kind::SetSchedPolicy,
+            .target = target,
+            .schedPolicy = setting->policy,
+            .realtimeThreads = realtime,
+            .rtPriority = setting->rtPriority,
+        });
 }
 
 template<typename Work>
