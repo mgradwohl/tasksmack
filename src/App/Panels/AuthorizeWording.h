@@ -1,10 +1,10 @@
 #pragma once
 
-// The words of the buttons that redo a refused action or read as an administrator (#2308, #2309), in
-// each platform's own terms (#2550). On Linux pkexec asks for a password, and polkit's own dialog says
-// "Authentication is required", so the buttons say "Authenticate". On Windows a UAC prompt asks an
-// administrator to approve the helper, as "Run as administrator" does, often with no password at all,
-// so the buttons say "as administrator" instead.
+// The words of the buttons that redo a refused action or read as an administrator (#2308, #2309), through
+// Windows' helper, TaskSmackHelper.exe (#2550). Its UAC prompt asks an administrator to approve it, as "Run as
+// administrator" does, often with no password at all, so the buttons say "as administrator". Linux has no
+// helper since #3580, so nothing there draws these buttons: its words below, and LINUX_WORDING, are what its
+// polkit helper used to offer (#3886 tracks removing them).
 
 #include "App/AccessChoice.h"
 #include "UI/IconsFontAwesome6.h"

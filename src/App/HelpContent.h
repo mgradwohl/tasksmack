@@ -30,8 +30,8 @@ struct TabSummary
     std::string_view summary;
 };
 
-/// One line for each top-level tab, in the tab bar's order (ShellLayer's tab list). The Users tab has no line:
-/// #3698 removes it, its sessions moving to Processes' Group: User.
+/// One line for each top-level tab, in the tab bar's order (ShellLayer's tab list). There is no Users tab since
+/// #3698: the signed-in sessions are under Processes' Group: User.
 inline constexpr std::array<TabSummary, 7> TAB_OVERVIEW{
     {
         {

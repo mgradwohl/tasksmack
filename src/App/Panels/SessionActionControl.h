@@ -5,8 +5,9 @@
 // TaskSmack's own session, that TaskSmack closes too); Disconnect (Windows) asks too, saying the session's
 // programs keep running (and, for TaskSmack's own, that this screen locks). Each runs on a worker of its own,
 // since logind answers only once polkit has, and Windows' helper only once its UAC prompt is answered
-// (another user's session needs an administrator), and a refusal for want of one offers "Authenticate and
-// retry", which calls again allowing the prompt (#2304).
+// (another user's session needs an administrator). On Windows a refusal for want of one offers "Retry as
+// administrator", which calls again through the helper, allowing its prompt (#2304). Linux has no helper (#3580):
+// there a refusal offers no retry, and starting TaskSmack (Administrator) is the way to act on another session.
 //
 // The control owns only its UI state; the IUserSessions it acts through is the panel's, shared with the model,
 // and outlives it. Free of ImGui: the panel draws the confirm and the line. Tested in tests/App/test_UserSessions.cpp.
@@ -116,7 +117,8 @@ class SessionActionControl
         start(session, action, false);
     }
 
-    /// Whether the result line offers "Authenticate and retry" (#2304).
+    /// Whether the result line offers the retry, "Retry as administrator" (#2304; AuthorizeWording::RETRY_TEXT):
+    /// Windows only, where the helper can redo it.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_Retry.has_value() && !busy();
@@ -130,7 +132,7 @@ class SessionActionControl
         return m_OfferRestart && !busy();
     }
 
-    /// "Authenticate and retry" was pressed: the refused action again, allowing the password prompt.
+    /// The retry was pressed: the refused action again, through the helper, allowing its UAC prompt.
     void retryAuthorized()
     {
         if (!m_Retry.has_value() || busy())

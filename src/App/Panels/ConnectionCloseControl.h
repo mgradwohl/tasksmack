@@ -2,8 +2,9 @@
 
 // Close connection (#3066): the Connections tab's row menu item, its confirm and its result line. As
 // Process Details' actions do, the close runs on a worker of its own (ProcessActionRun, #2305), so the
-// helper's round trip or a password prompt never holds the frame, and a permission refusal offers
-// "Authenticate and retry" (#2308): the helper closes it as an administrator.
+// helper's round trip or its UAC prompt never holds the frame, and a permission refusal offers "Retry as
+// administrator" (#2308): the helper closes it as an administrator. The retry is Windows': Linux closes it in TaskSmack
+// itself (pidfd_getfd() and shutdown(), #3066), with no helper to retry a refusal (#3580).
 //
 // The control owns only its UI state; the IProcessActions it closes through stays the panel's (from the
 // composition root) and is passed in, and the panel declares it before this control, so the control (and
@@ -135,7 +136,7 @@ class ConnectionCloseControl
             }));
     }
 
-    /// Whether the result line offers "Authenticate and retry" (#2308).
+    /// Whether the result line offers "Retry as administrator" (#2308; AuthorizeWording::RETRY_TEXT).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_Retry.has_value() && !busy();
@@ -148,8 +149,8 @@ class ConnectionCloseControl
         return m_OfferRestart && !busy();
     }
 
-    /// "Authenticate and retry" was pressed: the refused close again, by the helper as an administrator,
-    /// after the password prompt (IProcessActions::runAuthorized()).
+    /// "Retry as administrator" was pressed: the refused close again, by the helper as an administrator,
+    /// after its UAC prompt (IProcessActions::runAuthorized()).
     void retryAuthorized()
     {
         if (!m_Retry.has_value() || busy())
