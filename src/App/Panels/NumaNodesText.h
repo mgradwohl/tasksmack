@@ -7,10 +7,13 @@
 #include "Domain/SystemSnapshot.h"
 #include "UI/Format.h"
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <format>
+#include <span>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -53,31 +56,32 @@ struct Column
     return std::format("NUMA nodes: {}", UI::Format::formatIntLocalized(snap.numaNodes.size()));
 }
 
-/// The table's columns. With each node's total known (Linux): Used, Free and Total. Without (Windows,
-/// which reports only what is available on each node): Available alone.
-[[nodiscard]] inline std::vector<Column> columns(bool totalsKnown)
+/// The table's columns with each node's total known (Linux): Used, Free and Total.
+inline constexpr std::array<Column, 6> COLUMNS_WITH_TOTALS{
+    Column{.name = "Node", .tooltip = "The operating system's number for the node", .weight = 0.4F}, // A number: narrow
+    Column{.name = "CPUs", .tooltip = "The node's logical processors, numbered as on this tab"},
+    Column{.name = "CPU", .tooltip = "The node's processors' average utilization"},
+    Column{.name = "Used", .tooltip = "The node's memory in use: its total less its free memory, with page cache counted as used"},
+    Column{.name = "Free", .tooltip = "The node's free memory (MemFree): page cache is not counted as free"},
+    Column{.name = "Total", .tooltip = "The node's memory"},
+};
+
+/// Without them (Windows, which reports only what is available on each node): Available alone.
+inline constexpr std::array<Column, 4> COLUMNS_AVAILABLE_ONLY{
+    Column{.name = "Node", .tooltip = "The operating system's number for the node", .weight = 0.4F},
+    Column{.name = "CPUs", .tooltip = "The node's logical processors, numbered as on this tab"},
+    Column{.name = "CPU", .tooltip = "The node's processors' average utilization"},
+    Column{
+        .name = "Available",
+        .tooltip = "The node's available memory: free, zeroed and standby (cache) pages. "
+                   "Windows doesn't report each node's total, so there is no used figure",
+    },
+};
+
+/// The table's columns (#3808: fixed arrays, not a vector built each frame).
+[[nodiscard]] constexpr std::span<const Column> columns(bool totalsKnown) noexcept
 {
-    std::vector<Column> result{
-        {.name = "Node", .tooltip = "The operating system's number for the node", .weight = 0.4F}, // A number: narrow
-        {.name = "CPUs", .tooltip = "The node's logical processors, numbered as on this tab"},
-        {.name = "CPU", .tooltip = "The node's processors' average utilization"},
-    };
-    if (totalsKnown)
-    {
-        result.push_back(
-            {.name = "Used", .tooltip = "The node's memory in use: its total less its free memory, with page cache counted as used"});
-        result.push_back({.name = "Free", .tooltip = "The node's free memory (MemFree): page cache is not counted as free"});
-        result.push_back({.name = "Total", .tooltip = "The node's memory"});
-    }
-    else
-    {
-        result.push_back({
-            .name = "Available",
-            .tooltip = "The node's available memory: free, zeroed and standby (cache) pages. "
-                       "Windows doesn't report each node's total, so there is no used figure",
-        });
-    }
-    return result;
+    return totalsKnown ? std::span<const Column>(COLUMNS_WITH_TOTALS) : std::span<const Column>(COLUMNS_AVAILABLE_ONLY);
 }
 
 /// One node's row, a cell per column() in order.
@@ -145,5 +149,64 @@ struct Column
     }
     return cells;
 }
+
+/// The card's heading, columns and every node's row, as one table to draw.
+struct Table
+{
+    std::string heading;
+    std::span<const Column> columns;
+    std::vector<std::vector<Cell>> rows;
+};
+
+/// Whether @p a and @p b would make the same row: every field the row reads, a NaN CPU reading equal to another.
+[[nodiscard]] inline bool sameRowInputs(const Domain::NumaNodeSnapshot& a, const Domain::NumaNodeSnapshot& b) noexcept
+{
+    const bool sameCpu = (std::isnan(a.cpuPercent) && std::isnan(b.cpuPercent)) || a.cpuPercent == b.cpuPercent;
+    return a.id == b.id && a.cpus == b.cpus && a.cpuCount == b.cpuCount && sameCpu && a.memTotalBytes == b.memTotalBytes &&
+           a.memFreeBytes == b.memFreeBytes && a.memUsedBytes == b.memUsedBytes;
+}
+
+/// The table, built when what it shows changes rather than every frame (#3808): keyed on the nodes (each field a
+/// row reads) and whether their totals are known, the whole input of heading(), columns() and row(). A new
+/// sample's CPU readings rebuild it, about once a second; a frame between samples draws the same strings. UI thread
+/// only, as the card is.
+class TableCache
+{
+  public:
+    [[nodiscard]] const Table& get(const Domain::SystemSnapshot& snap)
+    {
+        const bool same = m_Built && m_TotalsKnown == snap.numaNodeTotalsKnown && m_Nodes.size() == snap.numaNodes.size() &&
+                          std::equal(m_Nodes.begin(), m_Nodes.end(), snap.numaNodes.begin(), sameRowInputs);
+        if (!same)
+        {
+            m_Nodes = snap.numaNodes;
+            m_TotalsKnown = snap.numaNodeTotalsKnown;
+            m_Table.heading = heading(snap);
+            m_Table.columns = columns(m_TotalsKnown);
+            m_Table.rows.clear();
+            m_Table.rows.reserve(m_Nodes.size());
+            for (const Domain::NumaNodeSnapshot& node : m_Nodes)
+            {
+                m_Table.rows.push_back(row(node, m_TotalsKnown));
+            }
+            m_Built = true;
+            ++m_Builds;
+        }
+        return m_Table;
+    }
+
+    /// How many times get() has built the table (tests).
+    [[nodiscard]] std::size_t builds() const noexcept
+    {
+        return m_Builds;
+    }
+
+  private:
+    std::vector<Domain::NumaNodeSnapshot> m_Nodes;
+    Table m_Table;
+    std::size_t m_Builds = 0;
+    bool m_TotalsKnown = false;
+    bool m_Built = false;
+};
 
 } // namespace App::NumaNodesText
