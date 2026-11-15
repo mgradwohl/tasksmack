@@ -301,7 +301,7 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
     src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
-    src/Platform/BrokerRequestMapping.cpp    # what either OS's helper does with each request (#2517)
+    src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
     src/Platform/Sha256.cpp                  # SHA-256 of an executable, for Look up on VirusTotal (#3094)
@@ -430,10 +430,12 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/Factory.cpp
 )
 
-# Optional systemd D-Bus client (sd-bus, from libsystemd) on Linux: the System Information page's
-# Boot performance section reads systemd's boot timestamps through it (#1525). Found with pkg-config;
-# without it (or with TASKSMACK_WITH_SDBUS=OFF) the app still builds and the section says it is
-# unavailable. An INTERFACE target, so the app and the tests (which compile the same probe) both get
+# Optional systemd D-Bus client (sd-bus, from libsystemd) on Linux: everything TaskSmack reads or controls over D-Bus or
+# the journal goes through it (#1525, #3903): the Services tab's list and actions, Group: User's signed-in sessions,
+# Startup's systemd units, the crash history (systemd-coredump's journal entries), and on the System Information page
+# Boot performance, disk SMART health (UDisks2) and each adapter's DNS, Wi-Fi and DHCP details (systemd-resolved,
+# NetworkManager, systemd-networkd). Found with pkg-config; without it (or with TASKSMACK_WITH_SDBUS=OFF) the app still
+# builds and each of those says it is unavailable. An INTERFACE target, so the app and the tests (which compile the same probe) both get
 # the library and TASKSMACK_HAS_SDBUS together.
 option(TASKSMACK_WITH_SDBUS "Read systemd over D-Bus with libsystemd (sd-bus) when it is installed (Linux)" ON)
 add_library(tasksmack_sdbus INTERFACE)
@@ -445,9 +447,9 @@ if(UNIX AND NOT APPLE AND TASKSMACK_WITH_SDBUS)
     if(LIBSYSTEMD_FOUND)
         target_link_libraries(tasksmack_sdbus INTERFACE PkgConfig::LIBSYSTEMD)
         target_compile_definitions(tasksmack_sdbus INTERFACE TASKSMACK_HAS_SDBUS=1)
-        message(STATUS "libsystemd ${LIBSYSTEMD_VERSION}: systemd is read over D-Bus (Boot performance section)")
+        message(STATUS "libsystemd ${LIBSYSTEMD_VERSION}: systemd, logind, the journal and the network daemons are read over D-Bus")
     else()
-        message(STATUS "libsystemd not found (install libsystemd-dev): the Boot performance section will be unavailable")
+        message(STATUS "libsystemd not found (install libsystemd-dev): services, signed-in sessions, systemd startup units, crash history, Boot performance, SMART and adapter details will be unavailable")
     endif()
 endif()
 
@@ -462,7 +464,6 @@ if(UNIX AND NOT APPLE)
     # null unless strict mode is set, and UdpByteCounter's null checks would take a failed attach for a hook (#3549).
     pkg_check_modules(LIBBPF REQUIRED IMPORTED_TARGET libbpf>=1.0)
     target_link_libraries(tasksmack_bpf INTERFACE PkgConfig::LIBBPF)
-    target_compile_definitions(tasksmack_bpf INTERFACE TASKSMACK_HAS_LIBBPF=1)
     message(STATUS "libbpf ${LIBBPF_VERSION}: per-process UDP bytes from the eBPF counter TaskSmack loads as root (#3366, #3580)")
 endif()
 include(cmake/BpfObject.cmake) # compiles and embeds the counter's BPF program
