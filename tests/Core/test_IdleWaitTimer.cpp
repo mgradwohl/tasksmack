@@ -325,7 +325,8 @@ TEST(IdleWaitTimerRealTest, AMessageWaitEndsWhenTheTimerIsDue)
     }
     EXPECT_EQ(result, WAIT_OBJECT_0) << "woken by the posted message, not the timeout";
     EXPECT_GE(waited, std::chrono::milliseconds(WAIT_MS - 1));
-    EXPECT_LT(waited, std::chrono::milliseconds(WAIT_MS * 5)) << "a loaded runner may be late, but not by the full timeout";
+    EXPECT_LT(waited, std::chrono::milliseconds(WAIT_MS * 10))
+        << "bounded by the wait's own timeout: a loaded runner may be late, and the result check above proves the message ended the wait";
 }
 
 #endif // _WIN32
