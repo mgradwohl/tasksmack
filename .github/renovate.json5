@@ -1,15 +1,9 @@
 {
   $schema: 'https://docs.renovatebot.com/renovate-schema.json',
-  // `:enablePreCommit` is required in addition to listing 'pre-commit' in enabledManagers
-  // below -- Renovate's pre-commit manager ships with its own `enabled: false` default
-  // (unrelated to and not overridden by enabledManagers, which only controls which manager
-  // *types* are considered at all), specifically because it's community-maintained and not
-  // supported by the pre-commit maintainers themselves. Without this preset, every
-  // .pre-commit-config.yaml `rev:` pin was silently never extracted at all, despite
-  // 'pre-commit' being listed in enabledManagers below since #798 -- confirmed directly
-  // against Renovate's own pre-commit manager source (modules/manager/pre-commit/index.js's
-  // defaultConfig) and by dry-run extraction before/after adding this preset.
-  extends: ['config:recommended', ':enablePreCommit'],
+  // .pre-commit-config.yaml's hooks are pinned by commit with a `# frozen: <tag>` comment (#3824), which the custom
+  // regex manager below updates. Renovate's native pre-commit manager (#798) is off: it reads `rev:` as a version, and
+  // a frozen commit isn't one.
+  extends: ['config:recommended'],
 
   // Dependabot already covers GitHub Actions (.github/workflows/*) and Python packages
   // (requirements.txt), both weekly on Mondays (see .github/dependabot.yml). This config is
@@ -17,11 +11,11 @@
   // FetchContent (SHA-pinned in cmake/Dependencies.cmake, tests/CMakeLists.txt,
   // benchmarks/CMakeLists.txt) and the build/dev toolchain (LLVM, Python, CMake, Ninja, ccache,
   // pre-commit's own hook tools) pinned for CI/local dev setup -- see #89 and #798.
-  // enabledManagers is restricted to custom.regex plus Renovate's native pre-commit manager
-  // (for .pre-commit-config.yaml's `rev:` pins) so this bot never also tries to manage
+  // enabledManagers is restricted to custom.regex (which also updates .pre-commit-config.yaml's
+  // frozen `rev:` pins, #3824) so this bot never also tries to manage
   // npm/pip/github-actions and produce duplicate or conflicting PRs against what Dependabot
   // already does.
-  enabledManagers: ['custom.regex', 'pre-commit'],
+  enabledManagers: ['custom.regex'],
 
   dependencyDashboard: true,
   labels: ['dependencies', 'ci'],
@@ -38,6 +32,27 @@
   rangeStrategy: 'pin',
 
   customManagers: [
+    // ── release.yml's validation containers (#3908) and the dev container's base (#3828) ──
+    // ubuntu:<version>@sha256:<digest>: the digest is refreshed by PR when Ubuntu republishes the tag; the
+    // version itself is left alone (the release gate tests that Ubuntu release on purpose).
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.github/workflows/release\\.yml$/', '/^\\.devcontainer/Dockerfile$/'],
+      matchStrings: ['(?:image:|FROM) (?<depName>ubuntu):(?<currentValue>[0-9]+\\.[0-9]+)@(?<currentDigest>sha256:[0-9a-f]{64})'],
+      datasourceTemplate: 'docker',
+      versioningTemplate: 'docker',
+    },
+    // ── .pre-commit-config.yaml's hooks, by commit (#3824) ──────────────
+    // `rev: <sha> # frozen: <tag>`, as `pre-commit autoupdate --freeze` writes it: the commit runs, so a retagged
+    // upstream can't change what the required check runs; the tag says which release it is. Renovate moves both
+    // to a newer tag's commit together.
+    {
+      customType: 'regex',
+      managerFilePatterns: ['/^\\.pre-commit-config\\.yaml$/'],
+      matchStrings: ['repo: https://github\\.com/(?<depName>[^\\s]+)\\s+rev: (?<currentDigest>[0-9a-f]{40}) # frozen: (?<currentValue>\\S+)'],
+      datasourceTemplate: 'github-tags',
+      versioningTemplate: 'loose',
+    },
     // ── cmake/Dependencies.cmake ──────────────────────────────────────────
     {
       customType: 'regex',
@@ -549,6 +564,15 @@
   // github-actions[bot]; Renovate ignores that author, so it still rebases those branches.
   gitIgnoredAuthors: ['41898282+github-actions[bot]@users.noreply.github.com'],
   packageRules: [
+    // release.yml's validation containers (#3908): only their digests are refreshed. Each tests one Ubuntu release on
+    // purpose (24.04's package, 26.04's upgrade), so moving 24.04 up is a decision for a person, not a Renovate PR.
+    {
+      matchManagers: ['custom.regex'],
+      matchDatasources: ['docker'],
+      matchDepNames: ['ubuntu'],
+      matchUpdateTypes: ['major', 'minor', 'patch'],
+      enabled: false,
+    },
     {
       // The docs site's minor and patch CDN bumps in one PR (#3661): each rewrites docs/cdn-integrity.json, so separate
       // PRs conflicted with each other once one merged.
@@ -629,8 +653,8 @@
       dependencyDashboardApproval: true,
     },
     {
-      // mirrors-clang-format (enabled via the native `pre-commit` manager, Tier 1 -- see
-      // enabledManagers above) is otherwise completely ungated, unlike every other
+      // mirrors-clang-format (its frozen pin in .pre-commit-config.yaml, updated by the custom
+      // regex manager, #3824) is otherwise completely ungated, unlike every other
       // LLVM-coupled pin in this file. Both local and .github/workflows/pre-commit.yml's CI
       // job run the same .pre-commit-config.yaml, so an unattended major bump here would move
       // both together -- the risk isn't a CI-vs-local formatting mismatch, it's that

@@ -1,7 +1,8 @@
 /// @file test_CommandOutput.cpp
 /// @brief A short command's output (#3425, for `crontab -l`): what it prints and its exit status, a program that
 /// isn't there, one that outlives the timeout (killed), a timeout already spent (#3374), one that closes its output and keeps running
-/// (killed at the timeout too), output past the byte limit, and an allocation failing part way (the child is still killed and reaped).
+/// (killed at the timeout too), output past the byte limit, an allocation failing part way (the child is still killed and reaped), and
+/// no descriptor of TaskSmack's reaching the child, by either way of closing them (#3762).
 
 #include "Domain/AllocationFailureHook.h"
 #include "Platform/Linux/CommandOutput.h"
@@ -16,7 +17,9 @@
 #include <string>
 #include <vector>
 
+#include <fcntl.h>
 #include <sys/wait.h>
+#include <unistd.h>
 
 namespace Platform
 {
@@ -40,6 +43,29 @@ TEST(CommandOutputTest, KeepsWhatItPrintsAndItsExitStatus)
 }
 
 // #3760: given an environment, the program gets that one and nothing of TaskSmack's own.
+// #3762: a descriptor TaskSmack opened without O_CLOEXEC (as libbpf or sd-bus may) never reaches the child: closed by
+// posix_spawn_file_actions_addclosefrom_np() where glibc has it, and one by one from /proc/self/fd where it doesn't.
+TEST(CommandOutputTest, TheChildInheritsNoDescriptorOfTaskSmacks)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic by definition
+    const int opened = ::open("/dev/null", O_RDONLY); // no O_CLOEXEC, on purpose
+    ASSERT_GE(opened, 0);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic by definition
+    const int leaked = ::fcntl(opened, F_DUPFD, 200); // a number the child's own descriptors won't reach
+    ::close(opened);
+    ASSERT_GE(leaked, 200);
+    const std::string probe = "test -e /proc/self/fd/" + std::to_string(leaked) + " && echo inherited || echo closed";
+    for (const bool listed : {false, true})
+    {
+        Detail::useListedClosesForTesting(listed);
+        const CommandOutput run = runForOutput({"sh", "-c", probe}, 5s, 1024);
+        Detail::useListedClosesForTesting(false);
+        EXPECT_TRUE(run.started) << "listed=" << listed;
+        EXPECT_EQ(run.output, "closed\n") << "listed=" << listed;
+    }
+    ::close(leaked);
+}
+
 TEST(CommandOutputTest, AGivenEnvironmentReplacesTaskSmacksOwn)
 {
     ASSERT_EQ(::setenv("TASKSMACK_TEST_3760", "inherited", 1), 0);

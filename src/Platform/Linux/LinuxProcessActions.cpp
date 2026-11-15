@@ -263,8 +263,24 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
         args.push_back(const_cast<char*>(arg.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
     }
     args.push_back(nullptr);
+    // As root (#3855), gcore (a script that runs which, dirname and gdb by name) gets TaskSmack's environment with PATH
+    // set to the system's tool directories, so none of a helper it runs comes from the invoking user's PATH.
+    const bool root = ::geteuid() == 0;
+    const std::vector<std::string> rootEnvironment = root ? RootTools::withRootPath(environ) : std::vector<std::string>{};
+    std::vector<char*> envPointers;
+    if (root)
+    {
+        envPointers.reserve(rootEnvironment.size() + 1);
+        for (const std::string& entry : rootEnvironment)
+        {
+            envPointers.push_back(
+                const_cast<char*>(entry.c_str())); // NOLINT(cppcoreguidelines-pro-type-const-cast) - posix_spawn's char* const[]
+        }
+        envPointers.push_back(nullptr);
+    }
     pid_t child = -1; // NOLINT(misc-include-cleaner) - from <sys/types.h>, which clang-tidy 23 doesn't map
-    const int spawned = ::posix_spawn(&child, argv.front().c_str(), &actions, &attributes, args.data(), environ);
+    const int spawned =
+        ::posix_spawn(&child, argv.front().c_str(), &actions, &attributes, args.data(), root ? envPointers.data() : environ);
     ::posix_spawn_file_actions_destroy(&actions);
     ::posix_spawnattr_destroy(&attributes);
     {

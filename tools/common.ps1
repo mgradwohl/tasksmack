@@ -57,7 +57,8 @@ function Get-LlvmToolMajorVersion {
 }
 
 # The LLVM major version CI pins: the mirrors-clang-format `rev:` in .pre-commit-config.yaml, which
-# moves with the LLVM_VERSION the CI workflows install. $null if it can't be read.
+# moves with the LLVM_VERSION the CI workflows install. $null if it can't be read. The rev is a commit with its tag
+# in a `# frozen: v23.1.5` comment (#3824), read first; a plain `rev: v23.1.5` too.
 # Counterpart of pinned_llvm_major in common.sh.
 function Get-PinnedLlvmMajor {
     [CmdletBinding()]
@@ -69,7 +70,7 @@ function Get-PinnedLlvmMajor {
         return $null
     }
     $text = Get-Content -LiteralPath $config -Raw -Encoding utf8
-    if ($text -match 'mirrors-clang-format\s*\r?\n\s*rev:\s*v?(\d+)') {
+    if ($text -match 'mirrors-clang-format\s*\r?\n\s*rev:\s*(?:[0-9a-f]{40}\s*#\s*frozen:\s*)?v?(\d+)\.') {
         return [int]$Matches[1]
     }
     return $null

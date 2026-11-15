@@ -1468,6 +1468,21 @@ class HeavyChecksCoverageFloorTests(unittest.TestCase):
         self.assertIn("exit 1", step.run)
 
 
+class Arm64LabelerTests(unittest.TestCase):
+    """#3820: the PR labeler adds `ci:arm64` by path, and arm64.yml runs a PR only on that label."""
+
+    def test_labeler_maps_build_system_paths_to_the_arm64_label(self):
+        text = (WORKFLOWS.parent / "labeler.yml").read_text(encoding="utf-8")
+        self.assertIn('"ci:arm64":', text)
+        block = text.split('"ci:arm64":', 1)[1].split("\n\"", 1)[0]
+        for glob in (".github/actions/**", "cmake/**", "CMakeLists.txt", "CMakePresets.json", "vcpkg*.json"):
+            self.assertIn(f'"{glob}"', block)
+
+    def test_arm64_jobs_run_a_pull_request_only_with_the_label(self):
+        text = (WORKFLOWS / "arm64.yml").read_text(encoding="utf-8")
+        self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:arm64')", text)
+
+
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
     whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
@@ -2018,5 +2033,9 @@ if __name__ == "__main__":
             return not any(GROUPS[group](test) for group in skip)
 
         result = unittest.TextTestRunner(verbosity=1).run(_filtered(loaded, keep))
+        # A split that runs nothing (a renamed class, a group that no longer matches) fails rather than passing (#3841).
+        if result.testsRun == 0:
+            print(f"no test ran for {sys.argv[1:] or 'the groups asked for'}: --only-/--skip- matched nothing", file=sys.stderr)
+            sys.exit(1)
         sys.exit(0 if result.wasSuccessful() else 1)
     unittest.main()

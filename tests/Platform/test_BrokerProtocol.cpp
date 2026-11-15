@@ -23,6 +23,7 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <iterator>
 #include <optional>
@@ -30,6 +31,9 @@
 #include <span>
 #include <stop_token>
 #include <string>
+#include <string_view>
+#include <type_traits>
+#include <utility>
 #include <variant>
 #include <vector>
 
@@ -861,6 +865,40 @@ TEST(BrokerProtocolTest, TheWriterCountsWhatItHasWritten)
     EXPECT_EQ(writer.frame(MessageKind::Error, 1).size(), 4U + HEADER_BYTES + writer.size());
 }
 
+/// The kind of message each Request and Response alternative encodes as (#3894): the codec's own list, so a message
+/// type added to either variant is in it without anyone listing it by hand.
+template<typename Variant, std::size_t... Index>
+void addKinds(std::set<MessageKind>& kinds, std::index_sequence<Index...> /*indices*/, bool request)
+{
+    const auto add = [&kinds, request](const Variant& message)
+    {
+        std::vector<std::uint8_t> bytes;
+        if constexpr (std::is_same_v<Variant, Request>)
+        {
+            bytes = encodeRequest(1, message);
+        }
+        else
+        {
+            bytes = encodeResponse(1, message);
+        }
+        const auto frame = Detail::readFrame(bytes);
+        if (frame.has_value())
+        {
+            kinds.insert(frame->kind);
+        }
+        static_cast<void>(request);
+    };
+    (add(Variant{std::in_place_index<Index>}), ...);
+}
+
+[[nodiscard]] std::set<MessageKind> codecKinds()
+{
+    std::set<MessageKind> kinds;
+    addKinds<Request>(kinds, std::make_index_sequence<std::variant_size_v<Request>>{}, true);
+    addKinds<Response>(kinds, std::make_index_sequence<std::variant_size_v<Response>>{}, false);
+    return kinds;
+}
+
 // #2643: fuzz_broker_protocol's seed corpus has a seed for every message kind, and each one still
 // decodes. libFuzzer rarely builds a well-formed nested list reply from nothing, so a kind without a
 // seed is barely fuzzed; a protocol change that breaks a seed, or a new kind, fails here instead.
@@ -876,36 +914,44 @@ TEST(BrokerProtocolTest, TheFuzzCorpusHasADecodableSeedForEveryMessageKind)
         EXPECT_TRUE(decodeRequest(bytes).has_value() || decodeResponse(bytes).has_value()) << entry.path().filename() << " doesn't decode";
         seeded.insert(frame->kind);
     }
-    for (const MessageKind kind : {MessageKind::Hello,
-                                   MessageKind::HelloReply,
-                                   MessageKind::Signal,
-                                   MessageKind::SetPriority,
-                                   MessageKind::SetIoPriority,
-                                   MessageKind::SetAffinity,
-                                   MessageKind::SetEfficiencyMode,
-                                   MessageKind::CloseConnection,
-                                   MessageKind::TaskManagerReplacement,
-                                   MessageKind::SessionAction,
-                                   MessageKind::ThreadAction,
-                                   MessageKind::ReadEnvironment,
-                                   MessageKind::ReadModules,
-                                   MessageKind::ReadOpenFiles,
-                                   MessageKind::ReadConnections,
-                                   MessageKind::ReadThreads,
-                                   MessageKind::ActionResult,
-                                   MessageKind::EnvironmentResult,
-                                   MessageKind::ModulesResult,
-                                   MessageKind::OpenFilesResult,
-                                   MessageKind::ConnectionsResult,
-                                   MessageKind::ServiceActionResult,
-                                   MessageKind::ThreadsResult,
-                                   MessageKind::ReadOpenFilesBatch, // v24 (#3578)
-                                   MessageKind::OpenFilesBatchResult,
-                                   MessageKind::ReadMemoryMap, // v25 (#3665)
-                                   MessageKind::MemoryMapResult,
-                                   MessageKind::Error})
+    // Every kind the codec can write (#3894), not a hand-kept list: a new message type that gets no seed fails here.
+    // One kind per alternative of either variant, so an encoder that stops writing a frame can't empty the list.
+    ASSERT_EQ(codecKinds().size(), std::variant_size_v<Request> + std::variant_size_v<Response>);
+    for (const MessageKind kind : codecKinds())
     {
         EXPECT_TRUE(seeded.contains(kind)) << "no seed for kind " << static_cast<int>(kind);
+    }
+}
+
+// #3894: the fuzz dictionary names the protocol version as it is now, and has a kind_* token for every kind the codec
+// writes, each as the little-endian u16 the header carries. A version bump or a new kind that misses it fails here.
+TEST(BrokerProtocolTest, TheFuzzDictionaryHasTheVersionAndEveryKind)
+{
+    const std::filesystem::path dictionary =
+        std::filesystem::path(TASKSMACK_BROKER_FUZZ_CORPUS_DIR).parent_path().parent_path() / "fuzz_broker_protocol.dict";
+    std::ifstream file(dictionary);
+    ASSERT_TRUE(file.is_open()) << dictionary;
+    const auto token = [](std::uint16_t value)
+    {
+        return std::format("\"\\x{:02x}\\x{:02x}\"", value & 0xFFU, (static_cast<unsigned>(value) >> 8U) & 0xFFU);
+    };
+    std::string version;
+    std::set<std::string> kindTokens;
+    for (std::string line; std::getline(file, line);)
+    {
+        if (line.starts_with("version="))
+        {
+            version = line.substr(std::string_view("version=").size());
+        }
+        else if (line.starts_with("kind_"))
+        {
+            kindTokens.insert(line.substr(line.find('=') + 1));
+        }
+    }
+    EXPECT_EQ(version, token(PROTOCOL_VERSION)) << "the dictionary's version token is stale";
+    for (const MessageKind kind : codecKinds())
+    {
+        EXPECT_TRUE(kindTokens.contains(token(static_cast<std::uint16_t>(kind)))) << "no kind_* token for kind " << static_cast<int>(kind);
     }
 }
 

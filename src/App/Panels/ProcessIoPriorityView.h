@@ -735,22 +735,23 @@ class ProcessIoPriorityView
                m_CurrentTarget.startTimeTicks == liveTarget.startTimeTicks;
     }
 
-    Platform::IoPriority m_Edit;
-    bool m_Changed = false;
+    // Largest alignment first, the flags together, so the view has no padding to speak of (clang-analyzer's padding
+    // check): the edit, the current value and their targets, the messages, the retry and the read.
+    std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     Platform::ProcessTarget m_EditTarget = NO_TARGET;
-    std::string m_Error;
-
-    std::optional<Platform::IoPriority> m_Current;
     Platform::ProcessTarget m_CurrentTarget = NO_TARGET;
+    std::string m_Error;
     std::string m_ReadError;
-    bool m_ApplyWhenReadDenied = false; // allowApplyWhenReadDenied()'s
-    std::uint64_t m_Generation = 0;     // Bumped by a selection change: a running apply's result is then dropped
     std::optional<Retry> m_Retry;
-    bool m_OfferRestart = false; // offersRestartAsAdministrator(): the last apply was refused, with no helper (#3669)
     // The current value's read and its cadence. Destroying the view waits for at most one read, which
     // touches only the panel's actions.
     Detail::LazyBackgroundRead<Platform::IoPriorityReadResult> m_Read{
         Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS, Platform::IO_PRIORITY_READ_THREAD_NAME, &failedRead};
+    Platform::IoPriority m_Edit;
+    std::optional<Platform::IoPriority> m_Current;
+    bool m_Changed = false;
+    bool m_ApplyWhenReadDenied = false; // allowApplyWhenReadDenied()'s
+    bool m_OfferRestart = false;        // offersRestartAsAdministrator(): the last apply was refused, with no helper (#3669)
     // Last, so it is destroyed (waiting for a running apply) before the state its finish writes.
     ProcessActionRun m_ApplyRun;
 };

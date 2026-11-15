@@ -47,9 +47,8 @@ namespace Platform
 [[nodiscard]] std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions,
                                                                     std::shared_ptr<IPrivilegedBroker> broker);
 
-/// The broker request that does @p action; nullopt for one no request does: SetSchedPolicy, Linux's, whose
-/// request protocol v23 dropped with the Linux helper (#3580), and a kind or signal this doesn't know (#3778),
-/// which is refused rather than sent as another action.
+/// The broker request that does @p action; nullopt for a kind or signal this doesn't know (#3778), which is refused
+/// rather than sent as another action.
 [[nodiscard]] std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action);
 
 /// The Signal request's value for @p signal (#3063); nullopt for a signal this doesn't know (#3778).

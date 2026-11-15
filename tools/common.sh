@@ -3,6 +3,13 @@
 # Source this file in other scripts: source "$(dirname "$0")/common.sh"
 set -euo pipefail
 
+# The tests that act on the machine only as root (#3836): CI's PR root step (.github/workflows/reusable-build-test.yml)
+# and tools/coverage.sh's root pass both run exactly these, under sudo. Each suite skips when not root. A root suite
+# added later goes here, once.
+root_test_filter() {
+    printf '%s\n' 'DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*'
+}
+
 # Check if a command exists and provide installation instructions if missing
 # Usage: check_command "cmake" "apt install cmake"
 # Returns: 0 if command exists, 1 if not found
@@ -126,13 +133,17 @@ find_python() {
 }
 
 # Print the LLVM major version CI pins: the mirrors-clang-format `rev:` in .pre-commit-config.yaml,
-# which moves with the LLVM_VERSION the CI workflows install. Prints nothing if it can't be read.
+# which moves with the LLVM_VERSION the CI workflows install. Prints nothing if it can't be read. The rev is a
+# commit with its tag in a `# frozen: v23.1.5` comment (#3824), which is read first; a plain `rev: v23.1.5` too.
 pinned_llvm_major() {
-    local common_dir config
+    local common_dir config line
     common_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     config="${common_dir}/../.pre-commit-config.yaml"
     [[ -f "$config" ]] || return 0
-    grep -A1 'mirrors-clang-format' "$config" | grep -oE 'rev: *v?[0-9]+' | grep -oE '[0-9]+' | head -1 || true
+    line="$(grep -A1 'mirrors-clang-format' "$config" | grep 'rev:' | head -1 || true)"
+    if [[ "$line" =~ frozen:\ *v?([0-9]+)\. ]] || [[ "$line" =~ rev:\ *v?([0-9]+)\. ]]; then
+        printf '%s\n' "${BASH_REMATCH[1]}"
+    fi
 }
 
 # Warn when an LLVM tool's major version differs from the one CI pins (pinned_llvm_major).

@@ -147,5 +147,40 @@ TEST(NumaNodesTextTest, CpuDetailsHasANumaRowOnlyWithMoreThanOneNode)
     EXPECT_EQ(numa->value, "2");
 }
 
+// #3808: the card's table is built when what it shows changes, not every frame: the same nodes (a not-yet-sampled
+// NaN CPU reading included) draw the same strings, and a new reading or another node set rebuilds it.
+TEST(NumaNodesTextTest, TheTableIsBuiltOncePerChangeNotPerFrame)
+{
+    Domain::SystemSnapshot snap;
+    snap.numaNodeTotalsKnown = true;
+    snap.numaNodes = {node(0, 0, 7), node(1, 8, 15)};
+    snap.numaNodes[1].cpuPercent = std::numeric_limits<double>::quiet_NaN();
+    NumaNodesText::TableCache cache;
+
+    const NumaNodesText::Table& first = cache.get(snap);
+    EXPECT_EQ(first.heading, NumaNodesText::heading(snap));
+    EXPECT_EQ(first.columns.size(), NumaNodesText::columns(true).size());
+    ASSERT_EQ(first.rows.size(), 2U);
+    EXPECT_EQ(first.rows[0], NumaNodesText::row(snap.numaNodes[0], true));
+    for (int frame = 0; frame < 10; ++frame)
+    {
+        static_cast<void>(cache.get(snap));
+    }
+    EXPECT_EQ(cache.builds(), 1U) << "the same nodes, a NaN reading included, every frame";
+
+    snap.numaNodes[0].cpuPercent = 50.0; // the next sample
+    EXPECT_EQ(cache.get(snap).rows[0], NumaNodesText::row(snap.numaNodes[0], true));
+    EXPECT_EQ(cache.builds(), 2U);
+
+    snap.numaNodeTotalsKnown = false; // as Windows reports them
+    EXPECT_EQ(cache.get(snap).columns.size(), NumaNodesText::columns(false).size());
+    EXPECT_EQ(cache.builds(), 3U);
+
+    snap.numaNodes.push_back(node(2, 16, 23));
+    EXPECT_EQ(cache.get(snap).rows.size(), 3U);
+    EXPECT_EQ(cache.get(snap).heading, NumaNodesText::heading(snap));
+    EXPECT_EQ(cache.builds(), 4U);
+}
+
 } // namespace
 } // namespace App

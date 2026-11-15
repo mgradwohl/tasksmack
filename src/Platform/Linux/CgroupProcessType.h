@@ -49,11 +49,31 @@ namespace Detail
     return fromV1;
 }
 
-/// Whether @p unit is a desktop app's scope: "app-gnome-firefox-1234.scope", "app-flatpak-org.gimp.GIMP-5678.scope"
-/// (the desktop or launcher starts each app in one, xdg's convention), or a snap app's "snap.firefox.firefox-<id>.scope".
+/// Whether @p unit is a desktop app's: a scope, "app-gnome-firefox-1234.scope", "app-flatpak-org.gimp.GIMP-5678.scope"
+/// (the desktop or launcher starts each app in one, xdg's convention), or a snap app's "snap.firefox.firefox-<id>.scope";
+/// or an app launched as a service instance, "app-org.kde.konsole@<uuid>.service", as KDE's launcher and newer ones
+/// start them (#3856, as Group: App's appFromUnit() reads them). An autostarted program's instance is "autostart"
+/// (xdg-autostart-generator's "app-<id>@autostart.service"), and a service with no instance is a background one.
 [[nodiscard]] constexpr bool isAppScope(std::string_view unit) noexcept
 {
-    return unit.ends_with(".scope") && (unit.starts_with("app-") || unit.starts_with("snap."));
+    if (unit.ends_with(".scope"))
+    {
+        return unit.starts_with("app-") || unit.starts_with("snap.");
+    }
+    constexpr std::string_view SERVICE = ".service";
+    if (!unit.starts_with("app-") || !unit.ends_with(SERVICE))
+    {
+        return false;
+    }
+    std::string_view name = unit;
+    name.remove_suffix(SERVICE.size());
+    const std::size_t at = name.find('@');
+    if (at == std::string_view::npos || at + 1 >= name.size())
+    {
+        return false;
+    }
+    const std::string_view instance(name.data() + at + 1, name.size() - at - 1); // no substr: it may throw
+    return instance != "autostart";
 }
 
 /// Whether @p path's first component is exactly @p unit: "/system.slice" and "/system.slice/x.service" are, but

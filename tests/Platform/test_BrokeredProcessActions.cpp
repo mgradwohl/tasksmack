@@ -180,9 +180,6 @@ TEST(BrokeredProcessActionsTest, EachActionMapsToItsRequest)
               (Broker::Request{Broker::PriorityRequest{.target = TARGET, .nice = -10}}));
     EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SetAffinity, .target = TARGET, .cpus = cpus})),
               (Broker::Request{Broker::AffinityRequest{.target = TARGET, .cpus = cpus}}));
-    // #3580: protocol v23 has no SetSchedPolicy, Linux's, whose helper is gone: no request does it.
-    EXPECT_FALSE(
-        brokerRequestFor({.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Idle}).has_value());
 }
 
 // #3580: the Realtime I/O class and real-time scheduling are the in-process actions' own: a running helper adds
@@ -267,6 +264,7 @@ TEST(BrokeredProcessActionsTest, AnUnknownKindOrSignalIsNoRequestNeverATerminate
         const ProcessActionResult result = f.actions->runAuthorized(action, std::stop_token{});
         EXPECT_FALSE(result.success);
         EXPECT_FALSE(result.permissionDenied);
+        EXPECT_EQ(result.errorMessage, "This action isn't available through the administrator helper");
     }
     EXPECT_EQ(f.broker->connectCount(), 0) << "no prompt for a request the helper can't be sent";
     EXPECT_TRUE(f.broker->requests().empty());
@@ -746,7 +744,7 @@ TEST(BrokeredProcessActionsTest, RunAuthorizedTurnsEfficiencyModeOnThroughTheHel
 }
 
 // #3580: a scheduling policy is Linux's, and no helper sets one since protocol v23: setSchedPolicy() is the in-process
-// actions', a permission refusal included, and runAuthorized() refuses it without a prompt.
+// actions', a permission refusal included, and no AuthorizedAction asks for one (#3886).
 TEST(BrokeredProcessActionsTest, ASchedulingPolicyNeverReachesTheHelper)
 {
     const Fixture f(/*connected=*/true);
@@ -758,15 +756,6 @@ TEST(BrokeredProcessActionsTest, ASchedulingPolicyNeverReachesTheHelper)
     EXPECT_EQ(f.inner->lastRtPriority(), 20);
     EXPECT_EQ(f.inner->lastRealtimeThreads(), Platform::RealtimeThreads::Change);
     EXPECT_TRUE(f.broker->requests().empty());
-
-    const Fixture fresh(/*connected=*/false);
-    const ProcessActionResult authorized = fresh.actions->runAuthorized(
-        {.kind = AuthorizedAction::Kind::SetSchedPolicy, .target = TARGET, .schedPolicy = SchedPolicy::Normal}, std::stop_token{});
-    EXPECT_FALSE(authorized.success);
-    EXPECT_EQ(authorized.errorMessage, "Setting a scheduling policy isn't available through the administrator helper");
-    EXPECT_EQ(fresh.broker->connectCount(), 0) << "no prompt for what the helper can't do";
-    EXPECT_TRUE(fresh.broker->requests().empty());
-    EXPECT_EQ(fresh.inner->setSchedPolicyCount(), 0);
 
     // The capability is the inner actions', passed through.
     f.inner->setCapabilities({.canSetSchedPolicy = true});

@@ -47,11 +47,21 @@ namespace Platform
 /// CAP_SYS_NICE. A Realtime request is told the first, since that check comes first in the kernel;
 /// anything else the second. Both name the least privilege that suffices, CAP_SYS_NICE, rather than
 /// running the whole app as root.
-[[nodiscard]] inline std::string ioPriorityErrorMessage(int err, IoPriorityClass ioClass, std::int32_t pid)
+///
+/// @p realtimeAllowed: this process holds CAP_SYS_NICE or CAP_SYS_ADMIN (canSetRealtimeIoPriority()), so the slider
+/// offered Realtime. A Realtime refusal then isn't a missing CAP_SYS_NICE: an older kernel's ioprio_check_cap()
+/// accepts only CAP_SYS_ADMIN for it, which an Administrator session doesn't keep (RootCapabilities::KEPT, #3763).
+[[nodiscard]] inline std::string ioPriorityErrorMessage(int err, IoPriorityClass ioClass, std::int32_t pid, bool realtimeAllowed = false)
 {
     switch (err)
     {
     case EPERM:
+        if (ioClass == IoPriorityClass::Realtime && realtimeAllowed)
+        {
+            return std::format("Permission denied: this kernel lets only CAP_SYS_ADMIN set the Realtime I/O class, which "
+                               "TaskSmack doesn't keep, for process {}. Best effort at level 0 is the highest it can set.",
+                               pid);
+        }
         if (ioClass == IoPriorityClass::Realtime)
         {
             return std::format("Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root) to set it for process {}.", pid);

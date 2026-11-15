@@ -11,6 +11,7 @@
 
 #include <cstdint>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -448,6 +449,18 @@ struct ActionResultMessage
     {
         return text.empty();
     }
+};
+
+/// What a dialog's Apply runs (#3886): the line shown meanwhile, the platform call, the result line, and the action
+/// a refusal may retry as an administrator (none when no helper can). The row menu (ProcessesPanel::runRowAction())
+/// and Process Details' Actions card (ProcessActionsView::runAction()) each run it on their own worker, so the call
+/// is put together once (affinityApply(), schedPolicyApply()).
+struct DialogApply
+{
+    std::string pending;
+    std::function<Platform::ProcessActionResult()> work;
+    std::function<ActionResultMessage(const Platform::ProcessActionResult&)> format;
+    std::optional<Platform::AuthorizedAction> retry;
 };
 
 /// "Suspend sent to PID 321" / "Could not suspend PID 321: Operation not permitted", as a pure

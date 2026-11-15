@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for find_python in tools/common.sh (#2411).
+"""Tests for find_python (#2411), list_format_files and coverage_ignore_regex (#3528, #3911) in tools/common.sh.
 
 A checkout shared between Windows and WSL can hold the Windows venv setup-dev.ps1 creates
 (.venv/Scripts/python.exe, no .venv/bin/python). Only a Windows bash (Git Bash/MSYS2, Cygwin) may
@@ -10,6 +10,7 @@ bash. Needs bash; registered in CTest only where bash is available.
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -111,6 +112,102 @@ class FindPythonTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected)
+
+
+class CheckoutPathTests(unittest.TestCase):
+    """#3911: the Linux twins of #3528's fixes, as tools/test-format-sources.ps1 checks the Windows ones. A checkout
+    under folders named build and tests, with a dot, spaces and parentheses in its name, reached through a link."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.root = base / "build" / "tests" / "task.smack (x86)"
+        for rel in ("src/a.cpp", "src/build/gen.h", "tests/t.cpp", "benchmarks/b.cpp", "build/debug/out.h"):
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        self.link = base / "link"
+        try:
+            self.link.symlink_to(self.root, target_is_directory=True)
+        except OSError:
+            self.link = None
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def call(self, function: str, root: str) -> str:
+        script = 'source "$1"; "$2" "$3"'
+        result = subprocess.run(
+            [BASH, "-c", script, "test", posix(COMMON_SH), function, root], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_list_format_files_finds_the_sources_whatever_the_checkout_is_under(self):
+        root = posix(self.root)
+        listed = sorted(name for name in self.call("list_format_files", root).split("\0") if name)
+        self.assertEqual(listed, sorted(f"{root}/{rel}" for rel in ("src/a.cpp", "tests/t.cpp", "benchmarks/b.cpp")))
+
+    def test_coverage_ignore_regex_is_anchored_at_the_checkout_and_its_physical_path(self):
+        if os.name == "nt":
+            # Only tools/coverage.sh calls it, which runs on Linux; Git Bash's pwd -P spells the physical path
+            # /c/..., not Python's C:/..., so the two forms this test compares don't meet there.
+            self.skipTest("coverage_ignore_regex serves tools/coverage.sh, which is Linux-only")
+        if self.link is None:
+            self.skipTest("can't make a directory link here")
+        given = posix(self.link)
+        physical = posix(self.root.resolve())
+        regex = re.compile(self.call("coverage_ignore_regex", given))
+        for root in (given, physical):
+            with self.subTest(root=root):
+                for rel in ("tests/X.cpp", "build/Y.h", "benchmarks/B.cpp"):
+                    self.assertTrue(regex.search(f"{root}/{rel}"), rel)
+                for rel in ("src/build/G.h", "src/a.cpp", "src/tests/T.h"):
+                    self.assertFalse(regex.search(f"{root}/{rel}"), rel)
+        self.assertTrue(regex.search("/anywhere/_deps/sdl/Z.h"))
+        self.assertTrue(regex.search(f"{given}/.cache/fetchcontent/x.h"))
+
+
+class RootTestFilterTests(unittest.TestCase):
+    """#3836: CI's PR root step and tools/coverage.sh's root pass run the same root tests, from one list."""
+
+    SUITES = (
+        "DetachedSpawnTest.AsRoot*",
+        "*/UdpByteCounterRootTest.*",
+        "UdpTrafficCollectorRootTest.*",
+        "SessionUserRootTest.*",
+        "RootCapabilitiesRootTest.*",
+        "LinuxProcessActionsRootTest.*",
+    )
+
+    def test_the_filter_names_every_root_suite(self):
+        result = subprocess.run(
+            [BASH, "-c", 'source "$1"; root_test_filter', "test", posix(COMMON_SH)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip().split(":"), list(self.SUITES))
+
+    def test_ci_and_coverage_take_it_rather_than_a_copy(self):
+        repo = REPO_ROOT
+        for path in (repo / "tools" / "coverage.sh", repo / ".github" / "workflows" / "reusable-build-test.yml"):
+            with self.subTest(path=path.name):
+                text = path.read_text(encoding="utf-8")
+                self.assertIn("root_test_filter", text)
+                self.assertNotIn("RootCapabilitiesRootTest.*:", text, "a hand-kept copy of the filter")
+
+
+class PinnedLlvmMajorTests(unittest.TestCase):
+    """#3824: the hooks are pinned by commit, with the tag in a `# frozen:` comment; the LLVM major still reads."""
+
+    def test_the_major_comes_from_the_frozen_clang_format_tag(self):
+        config = (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        match = re.search(r"mirrors-clang-format\s+rev: [0-9a-f]{40} # frozen: v(\d+)\.", config)
+        self.assertIsNotNone(match, "mirrors-clang-format is pinned by commit, with its tag frozen beside it")
+        result = subprocess.run(
+            [BASH, "-c", 'source "$1"; pinned_llvm_major', "test", posix(COMMON_SH)], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), match.group(1))
 
 
 if __name__ == "__main__":

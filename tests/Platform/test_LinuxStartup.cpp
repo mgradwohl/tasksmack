@@ -160,6 +160,31 @@ class LinuxStartupTest : public ::testing::Test
                               .system = {m_Root.path / "etc/xdg/autostart", m_Root.path / "usr/etc/autostart"}};
 };
 
+// #3769: an autostart entry's program is read as cron's jobs are (CronTab::program()): past `env -i` and its own
+// PATH= it's looked up on that PATH, not on $PATH; past `env -u PATH` on execvp's default.
+TEST_F(LinuxStartupTest, AnEntrysProgramIsLookedUpOnThePathItsLineSets)
+{
+    const std::filesystem::path bin = m_Root.path / "opt/tool/bin";
+    writeText(bin / "tool", "#!/bin/sh\n");
+    std::filesystem::permissions(bin / "tool", std::filesystem::perms::owner_all);
+    writeText(m_Dirs.user / "own-path.desktop", "[Desktop Entry]\nExec=env -i PATH=" + bin.string() + " tool --flag\n");
+    writeText(m_Dirs.user / "unset-path.desktop", "[Desktop Entry]\nExec=env -u PATH sh -c true\n");
+    writeText(m_Dirs.user / "quoted.desktop", "[Desktop Entry]\nExec=LANG=C \"" + (bin / "tool").string() + "\" %U\n");
+
+    LinuxStartupProbe probe(m_Dirs, "GNOME", "/nonexistent");
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    const StartupEntry* ownPath = find(entries, "own-path.desktop");
+    ASSERT_NE(ownPath, nullptr);
+    EXPECT_EQ(ownPath->executablePath, (bin / "tool").string());
+    EXPECT_EQ(ownPath->target, StartupTargetState::Present);
+    const StartupEntry* unsetPath = find(entries, "unset-path.desktop");
+    ASSERT_NE(unsetPath, nullptr);
+    EXPECT_EQ(unsetPath->executablePath.front(), '/') << unsetPath->executablePath << ": sh found on /bin:/usr/bin, not $PATH";
+    const StartupEntry* quoted = find(entries, "quoted.desktop");
+    ASSERT_NE(quoted, nullptr);
+    EXPECT_EQ(quoted->executablePath, (bin / "tool").string()) << "past the VAR=value, the quoted path as written";
+}
+
 TEST_F(LinuxStartupTest, ListsEachFileNameOnceTheUsersWinning)
 {
     writeText(m_Dirs.system[0] / "shared.desktop", "[Desktop Entry]\nType=Application\nName=System copy\nExec=/bin/sh\n");

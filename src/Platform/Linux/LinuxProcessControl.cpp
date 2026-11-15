@@ -1072,8 +1072,13 @@ ProcessActionResult LinuxProcessControl::setIoPriority(const ProcessTarget& targ
     {
         return threadListError(target, result.error(), IO_WORDING);
     }
-    return reportThreadChange(
-        m_Syscalls, *result, pidfd, target, IO_WORDING, setting, ioPriorityErrorMessage(result->firstError, ioClass, target.pid));
+    return reportThreadChange(m_Syscalls,
+                              *result,
+                              pidfd,
+                              target,
+                              IO_WORDING,
+                              setting,
+                              ioPriorityErrorMessage(result->firstError, ioClass, target.pid, m_CanSetRealtimeIoPriority));
 }
 
 namespace
