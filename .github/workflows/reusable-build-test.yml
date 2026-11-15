@@ -323,10 +323,14 @@ jobs:
           set -o pipefail
           # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
+          # The same suites as tools/coverage.sh's root pass (#3836), and as many passes as the filter lists: a root
+          # test added later is counted, never a hand-kept number.
+          filter='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*'
+          listed="$(build/debug/tests/TaskSmackTests --gtest_filter="$filter" --gtest_list_tests | grep -c '^  ')"
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
-            build/debug/tests/TaskSmackTests --gtest_filter='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*' 2>&1 | tee root-test.log
-          if grep -q '\[  SKIPPED \]' root-test.log || ! grep -q '\[  PASSED  \] 8 tests' root-test.log; then
-            echo "::error title=Root tests::DetachedSpawnTest.AsRoot*, UdpByteCounterRootTest, RootCapabilitiesRootTest and LinuxProcessActionsRootTest didn't all run and pass as root"
+            build/debug/tests/TaskSmackTests --gtest_filter="$filter" 2>&1 | tee root-test.log
+          if [[ "$listed" -eq 0 ]] || grep -q '\[  SKIPPED \]' root-test.log || ! grep -q "\[  PASSED  \] $listed tests" root-test.log; then
+            echo "::error title=Root tests::the $listed root tests ($filter) didn't all run and pass as root"
             exit 1
           fi
 
