@@ -45,8 +45,8 @@ enum class Grant : std::uint8_t
 };
 
 /// Whether @p request is a read (of a process, or System Information's): every request kind that isn't
-/// the Hello or an action. A new request kind must be sorted into one or the other here, which a
-/// static_assert on the kinds' count enforces (#2550).
+/// the Hello or an action, by its Broker::RequestKind trait (BrokerSessionRules.h). A new request kind with no trait
+/// fails to compile (#2550, #3783).
 [[nodiscard]] bool isRead(const Broker::Request& request) noexcept;
 
 /// Whether @p request is an action Windows does: end, kill, suspend, resume (#2582), a priority, an

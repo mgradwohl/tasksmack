@@ -703,6 +703,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
+    Platform/test_BrokerSessionRules.cpp  # each request kind's category trait (#3783)
     Platform/test_BrokeredProcessActions.cpp
     Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
