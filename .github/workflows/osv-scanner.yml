@@ -45,6 +45,10 @@ on:
     branches: [ main, 'release/**' ]
   pull_request:
     branches: [ main, 'release/**' ]
+  # "OSV Scan Required" is a required check, so a merge queue's merge group runs it too (#3818). The
+  # merge group gets the full scan, like a push: detect-relevant-changes' diff is for pull requests only.
+  merge_group:
+    types: [checks_requested]
   schedule:
     # Run weekly on Sundays at 06:00 UTC (offset from CodeQL at 10:00 UTC)
     - cron: '0 6 * * 0'
@@ -58,7 +62,7 @@ permissions: {}
 
 jobs:
   # Determine whether this PR touches anything that could change what the scan below would
-  # find. push/schedule/workflow_dispatch always run the full scan (relevant=true
+  # find. push/merge_group/schedule/workflow_dispatch always run the full scan (relevant=true
   # unconditionally) -- only pull_request gets the narrower, diff-based check.
   detect-relevant-changes:
     runs-on: ubuntu-26.04

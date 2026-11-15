@@ -109,7 +109,7 @@ jobs:
       # On a PR, check only the translation units the change can affect (#1406): changed src/ .cpp
       # files plus every .cpp that includes a changed src/ header, or everything when the tidy
       # config, tidy scripts, CMake files or a workflow changed (tools/tidy-changed-files.py).
-      # The nightly schedule and manual runs analyze every file.
+      # The nightly schedule, manual runs and a merge queue's merge group (#3818) analyze every file.
       - name: Select files for clang-tidy
         id: select
         if: inputs.clang_tidy
@@ -729,9 +729,12 @@ jobs:
         run: python -I -X utf8 tools/tidy-findings.py clang-tidy-windows-output.txt --title 'clang-tidy findings (Windows)' --cache-key "$CACHE_KEY" --cache-fresh "$CACHE_FRESH" >> "$GITHUB_STEP_SUMMARY"
 
       # Clean results are valid whether or not other files failed, so save after a failure too.
-      # Never from a pull request (#1554).
+      # Never from a pull request (#1554) or a merge group (#3818): an entry saved on a PR's or a
+      # queue entry's ref is readable only by that ref, and a merge group's ref is gone once it merges.
       - name: Save clang-tidy results
-        if: always() && steps.tidy-cache.outcome == 'success' && github.event_name != 'pull_request'
+        if: >-
+          always() && steps.tidy-cache.outcome == 'success' &&
+          github.event_name != 'pull_request' && github.event_name != 'merge_group'
         uses: ./.github/actions/tidy-result-cache
         with:
           mode: save

@@ -7,10 +7,17 @@ name: Dependency Review
 on:
   pull_request:
     branches: [main, 'release/**']
+  # "Dependency Review" is a required check, so a merge queue's merge group runs it too (#3818). The
+  # action (v5) reads the base and head from the event: merge_group.base_sha and merge_group.head_sha,
+  # what the merge group adds on top of its base branch.
+  merge_group:
+    types: [checks_requested]
 
-# A new push to a PR cancels that PR's superseded review.
+# A new push to a PR cancels that PR's superseded review. A merge group has no pull request number, so
+# it is keyed on its own ref (refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>, one per queue entry):
+# with the number alone every queue run shared one group and cancelled the one before it (#3818).
 concurrency:
-  group: dependency-review-${{ github.event.pull_request.number }}
+  group: dependency-review-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 permissions: {}

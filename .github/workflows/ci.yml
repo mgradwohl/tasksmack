@@ -5,6 +5,12 @@ on:
     branches: [main, 'release/**']
   pull_request:
     branches: [main, 'release/**']
+  # A merge queue's merge group (#3818): the PR's changes on top of the base branch and every PR queued
+  # ahead of it. "CI Success" and "Static Analysis (Windows)" are required checks, so they must report
+  # here or the queue waits on them forever. A merge group always gets every job (detect-docs-only's safe
+  # values), since its whole point is the combined tree no PR run built.
+  merge_group:
+    types: [checks_requested]
   schedule:
     # Nightly at 06:00 UTC, Monday to Saturday: the full clang-tidy runs (PRs only check what they
     # touch; files unchanged since a clean run are skipped, #1785), Linux and Windows release
@@ -20,7 +26,8 @@ on:
 # Pushes to main or a release/* branch get one group per commit and are never cancelled, so
 # back-to-back merges each get a complete run and a regression is blamed on the commit that caused
 # it (#1187). A run on any other ref (a PR, a manual run off another branch) still cancels the run
-# it supersedes.
+# it supersedes. A merge group's ref, refs/heads/gh-readonly-queue/<base>/pr-<N>-<sha>, names one
+# queue entry, so queue runs never share a group or cancel each other (#3818).
 concurrency:
   group: ci-${{ (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/')) && github.sha || github.ref }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/') }}
@@ -41,10 +48,10 @@ permissions: {}
 
 jobs:
   # Classifies a pull request's changes with tools/ci-change-classifier.py, whose header documents
-  # each output and every file it lets skip the C++ jobs (#3104). A push, the schedule and a manual
-  # run always get every output's safe value (the full suite). The outputs are never left unset: a
-  # failed or unexpected classification gives the safe values too, so the worst a classifier fault
-  # can do is run jobs it didn't need to, and a failed job still fails CI Success.
+  # each output and every file it lets skip the C++ jobs (#3104). A push, a merge group (#3818), the
+  # schedule and a manual run always get every output's safe value (the full suite). The outputs are
+  # never left unset: a failed or unexpected classification gives the safe values too, so the worst a
+  # classifier fault can do is run jobs it didn't need to, and a failed job still fails CI Success.
   detect-docs-only:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
@@ -332,7 +339,7 @@ jobs:
   # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
   # only reports its result, under the name the "Main Builds" ruleset requires. Same event rules
   # as before: skipped on push to main or a release/* branch, for docs-only and automation-only
-  # changes and when every change is Linux-only.
+  # changes and when every change is Linux-only. A merge group runs it, on every file (#3818).
   # always(): a failed or cancelled build-windows-debug must fail this check, not skip it (a
   # skipped required check counts as passing).
   static-analysis-windows:
@@ -539,16 +546,16 @@ jobs:
           path: iwyu-output.txt
           retention-days: 5
 
-  # Blocking ASan+UBSan run on PRs (#1406). It used to be advisory (`|| true` plus
-  # continue-on-error), so a PR could merge with a sanitizer finding and only the push-to-main run
-  # in sanitizers.yml failed -- after the fact, where nothing gated on it (#1541). It is now one of
-  # CI Success's needs, and sanitizers.yml no longer repeats it on every push (nightly in
-  # heavy-checks.yml and on manual dispatch instead).
+  # Blocking ASan+UBSan run on PRs (#1406) and on merge groups (#3818), which gate the same way. It
+  # used to be advisory (`|| true` plus continue-on-error), so a PR could merge with a sanitizer
+  # finding and only the push-to-main run in sanitizers.yml failed -- after the fact, where nothing
+  # gated on it (#1541). It is now one of CI Success's needs, and sanitizers.yml no longer repeats it
+  # on every push (nightly in heavy-checks.yml and on manual dispatch instead).
   asan-ubsan:
     name: ASan+UBSan
     needs: [detect-docs-only]
     if: >-
-      github.event_name == 'pull_request' &&
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
       needs.detect-docs-only.outputs.docs_only != 'true' &&
       needs.detect-docs-only.outputs.automation_only != 'true'
     runs-on: ubuntu-26.04
@@ -827,9 +834,9 @@ jobs:
             fi
           fi
 
-          # ASan+UBSan runs on pull requests only (push/schedule/dispatch get it from sanitizers.yml
-          # and heavy-checks.yml), and is skipped for docs-only and automation-only PRs.
-          if [[ "$EVENT_NAME" == 'pull_request' ]]; then
+          # ASan+UBSan runs on pull requests and merge groups only (push/schedule/dispatch get it from
+          # sanitizers.yml and heavy-checks.yml), and is skipped for docs-only and automation-only PRs.
+          if [[ "$EVENT_NAME" == 'pull_request' || "$EVENT_NAME" == 'merge_group' ]]; then
             if [[ "$ASAN_UBSAN_RESULT" != 'success' &&
                   ! ("$ASAN_UBSAN_RESULT" == 'skipped' && "$no_cpp_change" == 'true') ]]; then
               echo "❌ ASan+UBSan did not succeed or have an intentional skip: $ASAN_UBSAN_RESULT"

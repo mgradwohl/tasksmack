@@ -5,6 +5,10 @@ name: "Copilot Setup Steps"
 on:
     workflow_dispatch:
     push:
+        # A merge queue pushes a gh-readonly-queue/<base>/pr-<N>-<sha> branch for every queue entry
+        # (#3818); those aren't branches to validate, and a run there would only save caches nothing reads.
+        branches-ignore:
+            - 'gh-readonly-queue/**'
         paths:
             - .github/workflows/copilot-setup-steps.yml
     pull_request:
