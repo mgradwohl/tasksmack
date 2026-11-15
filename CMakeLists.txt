@@ -781,7 +781,7 @@ if(WIN32)
     configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_RC_OUT} @ONLY)
     # The same for TaskSmackHelper.exe (#2557), so its UAC prompt and Explorer name TaskSmack's helper,
     # not just a file name.
-    set(TASKSMACK_HELPER_RC_OUT ${CMAKE_BINARY_DIR}/tasksmack-helper.rc)
+    set(TASKSMACK_HELPER_RC_OUT ${CMAKE_BINARY_DIR}/TaskSmackHelper.rc)
     set(TASKSMACK_RC_FILE_DESCRIPTION "TaskSmack administrator helper")
     set(TASKSMACK_RC_INTERNAL_NAME "TaskSmackHelper")
     configure_file(${TASKSMACK_RC_IN} ${TASKSMACK_HELPER_RC_OUT} @ONLY)
