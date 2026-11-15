@@ -303,6 +303,7 @@ set(TASKSMACK_SOURCES
     src/Platform/CurrentProcess.cpp
     src/Platform/ThreadName.cpp
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
+    src/Platform/BrokerProtocol.cpp          # the privileged-broker protocol's encoders and decoders (#2306, #3786)
     src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
     src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
     src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
@@ -1023,6 +1024,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/BrokerHelper.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/BrokerProtocol.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsDebugPrivilege.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp
