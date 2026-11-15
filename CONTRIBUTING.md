@@ -1343,10 +1343,7 @@ pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
 refresh the baseline build (`cflite_build.yml`). The two lists are kept by hand, since a `paths:` filter
 can't be shared between workflows; when a new target adds a parser, add its paths to both, and the
-`check-cflite-paths` pre-commit hook fails if they differ (#2533). A target's sources pull in more than that filter
-watches, so every PR's Linux debug job also builds every target with `.clusterfuzzlite/build.sh` and runs each on one
-empty input ("Fuzz targets build (Linux)", #3837): a change anywhere that breaks a fuzzer's build or start fails the PR,
-not main. Separate weekly jobs perform a longer batch run and prune the resulting corpus.
+`check-cflite-paths` pre-commit hook fails if they differ (#2533). Separate weekly jobs perform a longer batch run and prune the resulting corpus.
 The weekly batch run (`cflite_batch.yml`) shares 900 seconds across every target, under a minute each.
 A release candidate's campaign gives each target 600 seconds instead (#2783):
 `gh workflow run cflite_batch.yml --ref <candidate branch> -f campaign=release`, then quote the run's
@@ -3406,10 +3403,9 @@ since pkexec needs a running polkitd. It installs this run's `.deb` with `pkexec
 must know `app.tasksmack.TaskSmack.administrator`, with `exec.path` `/usr/bin/TaskSmack` and `allow_gui`, and the
 installed launcher's `Exec` must be `pkexec /usr/bin/TaskSmack`. A CI-only polkit rule then lets the runner's user
 through without a password, and the job runs the launcher's own command under Xvfb. TaskSmack must open its
-window as root with its capabilities narrowed (#3621: some kept, fewer than root holds), quit on SIGTERM, and save
-the settings to the runner user's `~/.config/tasksmack`, owned by them, while root's stays untouched: the user comes
-from `PKEXEC_UID`, which CI's sudo-based "Root launch (Linux)" doesn't reach. The password dialog stays a manual
-check.
+window as root with 13 effective capabilities (#3621), quit on SIGTERM, and save the settings to the runner user's
+`~/.config/tasksmack`, owned by them, while root's stays untouched: the user comes from `PKEXEC_UID`, which CI's
+sudo-based "Root launch (Linux)" doesn't reach. The password dialog stays a manual check.
 
 `validate-windows-upgrade` checks the Windows installer's upgrade over the last published release (#3757), on
 both architectures. `fetch-previous-windows-release` (Linux, where cosign runs) picks the published release

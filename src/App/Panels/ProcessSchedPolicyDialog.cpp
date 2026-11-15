@@ -383,19 +383,4 @@ Detail::ActionResultMessage schedPolicyResultMessage(const std::string& name,
     return {.ok = true, .text = std::move(text)};
 }
 
-Detail::DialogApply
-schedPolicyApply(Platform::IProcessActions* actions, const ProcessSchedPolicyDialog& dialog, const SchedPolicySetting& setting)
-{
-    const Platform::ProcessTarget target = dialog.target();
-    const Platform::RealtimeThreads realtime = dialog.realtimeThreads();
-    return {
-        .pending = std::format("Setting the scheduling policy of PID {}...", target.pid),
-        .work = [actions, target, setting, realtime]
-        { return actions->setSchedPolicy(target, setting.policy, setting.rtPriority, realtime); },
-        .format = [name = dialog.name(), pid = target.pid, setting](const Platform::ProcessActionResult& result)
-        { return schedPolicyResultMessage(name, pid, setting, result); },
-        .retry = std::nullopt,
-    };
-}
-
 } // namespace App

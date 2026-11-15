@@ -2,6 +2,7 @@
 
 #include "Domain/StartAtLogin.h"
 #include "Platform/IStartAtLogin.h"
+#include "ReplaceFile.h"
 #include "XdgAutostart.h"
 
 #include <cstdlib>
@@ -307,26 +308,12 @@ std::expected<void, std::string> LinuxStartAtLogin::write(std::string_view comma
     {
         return std::unexpected("The autostart folder " + m_Directory.string() + " couldn't be made: " + error.message());
     }
-    // Written beside the entry and renamed over it, so a desktop reading it at sign-in never sees half a file.
+    // Written beside the entry and renamed over it, so a desktop reading it at sign-in never sees half a file, and
+    // through an unpredictable O_EXCL staging file, so nothing planted beside it is followed (#3771).
     const std::filesystem::path path = entryPath();
-    std::filesystem::path partial = path;
-    partial += ".partial";
+    if (const std::string failed = ReplaceFile::replace(path, StartAtLoginEntry::entryText(*exec)); !failed.empty())
     {
-        std::ofstream file(partial, std::ios::binary | std::ios::trunc);
-        file << StartAtLoginEntry::entryText(*exec);
-        file.close();
-        if (!file)
-        {
-            std::filesystem::remove(partial, error);
-            return std::unexpected("The autostart entry " + path.string() + " couldn't be written");
-        }
-    }
-    std::filesystem::rename(partial, path, error);
-    if (error)
-    {
-        std::error_code ignored;
-        std::filesystem::remove(partial, ignored);
-        return std::unexpected("The autostart entry " + path.string() + " couldn't be written: " + error.message());
+        return std::unexpected("The autostart entry " + path.string() + " couldn't be written: " + failed);
     }
     return {};
 }

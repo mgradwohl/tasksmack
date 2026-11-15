@@ -329,6 +329,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessThreadsReader.cpp # Process Details Threads (#3069)
     src/Platform/Linux/LinuxProcessMemoryMapReader.cpp # a process's memory map from smaps (#3089)
     src/Platform/Linux/LinuxStartup.cpp # the Startup tab: XDG autostart entries (#2541)
+    src/Platform/Linux/ReplaceFile.cpp # a file replaced whole: O_EXCL staging, fsync, rename (#3771)
     src/Platform/Linux/CommandOutput.cpp # a short command's output, for crontab -l (#3425)
     src/Platform/Linux/LinuxHttpsClient.cpp # the update check's HTTPS client: libcurl (#3238)
     src/Platform/Linux/LinuxStartAtLogin.cpp # start at sign-in: an XDG autostart entry (#3254)

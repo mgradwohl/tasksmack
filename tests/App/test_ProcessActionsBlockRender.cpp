@@ -602,8 +602,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
     static_cast<void>(runFrame(body));
     EXPECT_TRUE(text.contains("Scheduling policy of victim (PID 1001) set to Batch")) << text;
 
-    // Refused for want of permission: no retry, though the platform could ask for authorization (#3886): the policy
-    // is Linux's, and no helper redoes it (#3580).
+    // Refused for want of permission: Authenticate and retry sends the same policy as an administrator.
     h.mock.setSchedPolicyResult(Platform::ProcessActionResult::denied("Permission denied"));
     pressButton();
     pressInModal("Idle", false);
@@ -616,9 +615,13 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
     }
     EXPECT_EQ(h.mock.setSchedPolicyCount(), 2);
     static_cast<void>(runFrame(body));
-    EXPECT_TRUE(text.contains("Permission denied")) << text;
-    EXPECT_FALSE(h.actionsView.offersAuthenticateAndRetry());
-    EXPECT_EQ(h.mock.runAuthorizedCount(), 0);
+    ASSERT_TRUE(h.actionsView.offersAuthenticateAndRetry());
+    h.actionsView.retryAuthorizedForTesting();
+    h.actionsView.waitForActionForTesting();
+    EXPECT_EQ(h.mock.runAuthorizedCount(), 1);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::Idle);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().target.pid, TARGET.pid);
 
     // Opened again, then the selection moves on: closed, nothing applied.
     pressButton();
@@ -630,7 +633,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
 
 // #3219: a process already on FIFO opens the card's dialog on FIFO at its own priority; choosing RR and Apply asks
 // to confirm, naming the process, and Set sets RR at that priority through the action worker; refused for want of
-// permission, no retry is offered (#3886).
+// permission, Authenticate and retry sends the same policy and priority.
 TEST_F(ProcessActionsBlockRenderTest, RoundRobinFromTheCardIsSetAfterTheConfirm)
 {
     Harness h;
@@ -687,8 +690,12 @@ TEST_F(ProcessActionsBlockRenderTest, RoundRobinFromTheCardIsSetAfterTheConfirm)
     EXPECT_EQ(h.mock.lastSchedPolicy(), Platform::SchedPolicy::RoundRobin);
     EXPECT_EQ(h.mock.lastRtPriority(), 40);
     static_cast<void>(runFrame(body));
-    EXPECT_FALSE(h.actionsView.offersAuthenticateAndRetry());
-    EXPECT_EQ(h.mock.runAuthorizedCount(), 0);
+    ASSERT_TRUE(h.actionsView.offersAuthenticateAndRetry());
+    h.actionsView.retryAuthorizedForTesting();
+    h.actionsView.waitForActionForTesting();
+    EXPECT_EQ(h.mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetSchedPolicy);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().schedPolicy, Platform::SchedPolicy::RoundRobin);
+    EXPECT_EQ(h.mock.lastAuthorizedAction().rtPriority, 40);
 }
 
 // #3086: no Set scheduling policy... where the platform can't set one (Windows).
