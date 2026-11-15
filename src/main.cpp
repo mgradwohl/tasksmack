@@ -37,6 +37,7 @@
 #ifdef _WIN32
 #include "Platform/Factory.h"
 #include "Platform/IHandedOverFolder.h"
+#include "Platform/Windows/DllSearchPolicy.h"
 #include "Platform/Windows/WinString.h"
 #endif
 #ifdef __linux__
@@ -757,14 +758,15 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
     // First, before anything loads a DLL by name (#3897). The imports already come from System32 only
     // (/DEPENDENTLOADFLAG, cmake/CompilerOptions.cmake); this covers what SDL, the GL loaders and the probes load
     // later, and what those DLLs import, and drops the current directory and PATH from every search.
-    // Elevated through UAC (Restart as administrator), System32 only, as the helper (HelperMain.cpp): the folder
-    // TaskSmack runs from may be one its unelevated user can write, and a DLL planted there (dwmapi.dll, which SDL
-    // loads by name) would run with the administrator's token. Otherwise its own folder as well: the same user gains
-    // nothing by planting there, and it is where a software OpenGL is found on a PC with no GPU driver (Mesa's
-    // opengl32.dll, which CI's display tests and the release smoke check put beside TaskSmack.exe). A hosted runner,
-    // elevated with UAC off, isn't elevated through UAC: it has no less-privileged side.
-    SetDefaultDllDirectories(Platform::elevatedThroughUac() ? LOAD_LIBRARY_SEARCH_SYSTEM32
-                                                            : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // Elevated through UAC (a full token) or started by Restart as administrator (--handoff, whatever account
+    // approved it), System32 only, as the helper (HelperMain.cpp): the folder TaskSmack runs from may be one its
+    // less-privileged user can write, and a DLL planted there (dwmapi.dll, which SDL loads by name) would run with
+    // the administrator's token. Otherwise its own folder as well: it is where a software OpenGL is found on a PC
+    // with no GPU driver (Mesa's opengl32.dll, which CI's display tests and the release smoke check put beside
+    // TaskSmack.exe, on runners whose tests run elevated with a Default token). DllSearchPolicy.h has each case.
+    SetDefaultDllDirectories(Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()
+                                 ? LOAD_LIBRARY_SEARCH_SYSTEM32
+                                 : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
     return runAppGuarded(App::parseLaunchOptions(commandLineArguments()));
 }
 // LCOV_EXCL_STOP

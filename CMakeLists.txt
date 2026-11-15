@@ -384,6 +384,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/BrokerHelper.cpp # TaskSmackHelper.exe's session: parent checks, pipe, serve (#2517)
     src/Platform/Windows/HelperLauncher.cpp # starts TaskSmackHelper.exe elevated: ShellExecuteExW("runas") (#2549)
     src/Platform/Windows/ElevatedRestart.cpp # Restart as administrator: TaskSmack.exe again with "runas" (#2728)
+    src/Platform/Windows/DllSearchPolicy.cpp # where WinMain lets a DLL loaded by name come from (#3897)
     src/Platform/Windows/PinnedFolder.cpp # the handed-over config folder, opened only relative to its held handle (#3774)
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
@@ -661,6 +662,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsElevation.h
         src/Platform/Windows/ElevatedRestart.h
+        src/Platform/Windows/DllSearchPolicy.h
         src/Platform/Windows/PinnedFolder.h
         src/Platform/Windows/BrokerPipe.h
         src/Platform/Windows/BrokerPipeServer.h

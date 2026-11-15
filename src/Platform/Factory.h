@@ -167,8 +167,10 @@ namespace Platform
 #ifdef _WIN32
 /// Whether TaskSmack runs elevated through UAC (TokenElevationTypeFull, #3920): its environment may then be the
 /// less-privileged side's (a same-user elevation reads the user's own HKCU\Environment), so main.cpp ignores the
-/// TASKSMACK_CONFIG_DIR test hook. False unelevated, and with UAC off, where every process of the account already
-/// runs with its full token and there is no less-privileged side (a hosted CI runner, whose tests set the hook).
+/// TASKSMACK_CONFIG_DIR test hook. False unelevated, and for a token of type TokenElevationTypeDefault, which has no
+/// linked less-privileged token: a hosted CI runner, whose tests run elevated with one and set the hook. The built-in
+/// Administrator's token is Default too, an over-the-shoulder Restart as administrator to it included, so a check
+/// that must cover that restart also looks for --handoff (DllSearchPolicy.h, #3897).
 [[nodiscard]] bool elevatedThroughUac();
 
 /// The elevated copy's wait for the Standard TaskSmack that restarted it (#2728), process @p pid created at
