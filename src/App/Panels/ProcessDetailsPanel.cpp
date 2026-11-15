@@ -65,6 +65,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -814,7 +815,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         std::string_view tooltip{}; // NOLINT(readability-redundant-member-init)
     };
     // At most ten rows a table (Started by, Publisher, Signature, Services, Affinity, Policy, Type, Container, App
-    // and Architecture are optional; App is Windows' and Policy and Container Linux's), held in place.
+    // and Architecture are optional; App is Windows' and Policy and Container Linux's), held in place. Both tables can
+    // already be full, so a row added to either needs a larger array: add() asserts rather than drop it unseen
+    // (#3817; TheInfoTablesHoldEveryOptionalRow fills both).
     struct InfoRows
     {
         std::array<InfoRow, 10> rows{};
@@ -822,6 +825,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 
         void add(InfoRow row) noexcept
         {
+            assert(count < rows.size() && "an info table has more rows than its array holds: make it larger");
             if (count < rows.size())
             {
                 rows[count++] = row;
