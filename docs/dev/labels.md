@@ -81,8 +81,9 @@ order.
   bumps a version pinned by a custom regex (CMake FetchContent and toolchain pins) or a pre-commit hook.
 - **`ci:arm64`:** runs the ARM64 build and test jobs (`arm64.yml`). The PR labeler adds it for a change to
   `.github/actions`, CMake, `CMakePresets.json` or arch-specific sources (`.github/labeler.yml`, #3820); add it
-  by hand for anything else. The labeler can't start the run by adding the label, so it begins with the PR's
-  next push. ARM64 is not a required check.
+  by hand for anything else. The labeler can't start the run by adding the label, so `arm64.yml` also reads
+  those globs itself (`tools/arm64-paths.py`) and runs a PR whose changes match them on its first push (#3930).
+  ARM64 is not a required check.
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
 - **`winget-health.yml`:** opens, rewrites and closes one issue, "WinGet: TaskSmack.TaskSmack <version> isn't
   published", labelled `release` and `agent:Windows` and found by that title among the open `release` issues

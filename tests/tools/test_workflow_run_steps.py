@@ -1482,6 +1482,86 @@ class Arm64LabelerTests(unittest.TestCase):
         text = (WORKFLOWS / "arm64.yml").read_text(encoding="utf-8")
         self.assertIn("contains(github.event.pull_request.labels.*.name, 'ci:arm64')", text)
 
+    # #3930: the labeler's token starts no workflow, so arm64.yml's detect job reads the same globs itself.
+    DECIDE = "Decide whether ARM64 runs"
+
+    def test_both_build_jobs_wait_for_the_detect_job_and_run_on_its_output(self):
+        text = (WORKFLOWS / "arm64.yml").read_text(encoding="utf-8")
+        for job in ("build-linux-arm64", "build-windows-arm64"):
+            with self.subTest(job=job):
+                block = text.split(f"\n  {job}:\n", 1)[1].split("\n  build-", 1)[0]
+                self.assertIn("    needs: detect\n", block)
+                self.assertIn("    if: needs.detect.outputs.run == 'true'\n", block)
+
+    def test_detect_reads_the_labelers_file_through_the_tool(self):
+        step = find_step(WORKFLOWS / "arm64.yml", self.DECIDE, job="detect")
+        self.assertIn(
+            "python3 -I tools/arm64-paths.py --labeler .github/labeler.yml --base 'HEAD^1' --head HEAD", step.run
+        )
+        checkout = find_step(WORKFLOWS / "arm64.yml", "Check out the pull request's merge commit", job="detect")
+        self.assertTrue(checkout.uses.startswith("actions/checkout@"), checkout.uses)
+
+    def decide(
+        self, event: str, action: str = "", label: str = "", has_label: bool = False, tool: str = "echo true"
+    ) -> tuple[subprocess.CompletedProcess, str]:
+        """The detect step under bash, with a stub python3 that runs `tool` and a GITHUB_OUTPUT file."""
+        with tempfile.TemporaryDirectory() as tmp:
+            directory = Path(tmp)
+            (directory / "bin").mkdir()
+            stub = directory / "bin" / "python3"
+            stub.write_text(f"#!/usr/bin/env bash\n{tool}\n", encoding="utf-8", newline="\n")
+            stub.chmod(stub.stat().st_mode | stat.S_IEXEC)
+            output = directory / "github_output"
+            summary = directory / "github_summary"
+            output.write_text("", encoding="utf-8")
+            summary.write_text("", encoding="utf-8")
+            step = find_step(WORKFLOWS / "arm64.yml", self.DECIDE, job="detect")
+            result = run_bash(
+                step.run,
+                directory,
+                {
+                    "PATH": f"{posix(directory / 'bin')}{os.pathsep}{os.environ['PATH']}",
+                    "EVENT_NAME": event,
+                    "EVENT_ACTION": action,
+                    "LABEL_NAME": label,
+                    "HAS_LABEL": "true" if has_label else "false",
+                    "GITHUB_OUTPUT": posix(output),
+                    "GITHUB_STEP_SUMMARY": posix(summary),
+                },
+            )
+            return result, output.read_text(encoding="utf-8").strip()
+
+    def test_a_push_the_schedule_and_a_dispatch_always_run(self):
+        for event in ("push", "schedule", "workflow_dispatch"):
+            with self.subTest(event=event):
+                result, out = self.decide(event, tool="echo false")
+                self.assertEqual((result.returncode, out), (0, "run=true"), result.stderr)
+
+    def test_a_pull_request_with_the_label_runs_without_looking_at_paths(self):
+        result, out = self.decide("pull_request", "synchronize", has_label=True, tool="echo false")
+        self.assertEqual((result.returncode, out), (0, "run=true"), result.stderr)
+
+    def test_a_pull_request_without_the_label_runs_when_the_paths_match(self):
+        result, out = self.decide("pull_request", "synchronize", tool="echo true")
+        self.assertEqual((result.returncode, out), (0, "run=true"), result.stderr)
+
+    def test_a_pull_request_without_the_label_or_matching_paths_does_not_run(self):
+        result, out = self.decide("pull_request", "opened", tool="echo false")
+        self.assertEqual((result.returncode, out), (0, "run=false"), result.stderr)
+
+    def test_adding_another_label_runs_nothing(self):
+        result, out = self.decide("pull_request", "labeled", label="documentation", has_label=True, tool="echo true")
+        self.assertEqual((result.returncode, out), (0, "run=false"), result.stderr)
+
+    def test_adding_the_arm64_label_runs(self):
+        result, out = self.decide("pull_request", "labeled", label="ci:arm64", has_label=True, tool="echo false")
+        self.assertEqual((result.returncode, out), (0, "run=true"), result.stderr)
+
+    def test_a_failed_path_check_runs_arm64(self):
+        result, out = self.decide("pull_request", "synchronize", tool="exit 2")
+        self.assertEqual((result.returncode, out), (0, "run=true"), result.stderr)
+        self.assertIn("::warning", result.stdout)
+
 
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
