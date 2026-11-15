@@ -18,7 +18,7 @@
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessSchedPolicyDialog.h"
 #include "App/Panels/ProcessWaitChainDialog.h"
-#include "App/Panels/RestartAsAdministratorButton.h"
+#include "App/Panels/RefusalOffer.h"
 #include "App/Panels/VirusTotalLookup.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/CurrentProcess.h"
@@ -435,18 +435,23 @@ class ProcessActionsView
     /// change for the process runs (holdPriorityChanges(), #3429, #3467): the two would race.
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
-        if (!m_Retry.has_value() || m_ActionRun.busy())
-        {
-            return false;
-        }
-        return m_PriorityHoldReason == nullptr || !Detail::changesPriority(m_Retry->action.kind);
+        return refusalOffer() == RefusalOfferKind::Retry;
     }
 
     /// Whether the result line offers "Restart as administrator..." (#3658): the action was refused for want of
     /// permission, and there is no helper to retry it, but TaskSmack can restart elevated.
     [[nodiscard]] bool offersRestartAsAdministrator() const noexcept
     {
-        return m_OfferRestart && !m_ActionRun.busy();
+        return refusalOffer() == RefusalOfferKind::Restart;
+    }
+
+    /// What the result line offers beside it now (drawRefusalOffer()): nothing while an action runs, and no
+    /// "Authenticate and retry" for a priority change held for another (offersAuthenticateAndRetry()).
+    [[nodiscard]] RefusalOfferKind refusalOffer() const noexcept
+    {
+        const Retry* retry = m_Offer.retry();
+        const bool retryHeld = retry != nullptr && m_PriorityHoldReason != nullptr && Detail::changesPriority(retry->action.kind);
+        return m_Offer.shown(m_ActionRun.busy(), retryHeld);
     }
 
     /// Why this view's priority changes for the shown process wait, or null when they needn't (#3429,
@@ -575,15 +580,9 @@ class ProcessActionsView
     /// Advances the result line's timeout by @p deltaSeconds, clearing the line once it runs out.
     void tick(float deltaSeconds) noexcept
     {
-        if (m_ResultSecondsLeft > 0.0F)
+        if (m_Offer.tick(deltaSeconds))
         {
-            m_ResultSecondsLeft -= deltaSeconds;
-            if (m_ResultSecondsLeft <= 0.0F)
-            {
-                m_LastResult = {};
-                m_Retry.reset();
-                m_OfferRestart = false;
-            }
+            m_LastResult = {};
         }
     }
 
@@ -599,9 +598,8 @@ class ProcessActionsView
         m_SchedPolicyDialog.dismiss();
         m_DumpView.onSelectionChanged(); // its confirm only: a dump already running goes on
         m_LastResult = {};
-        m_Retry.reset(); // never offer to retry an action on a process no longer shown
-        m_OfferRestart = false;
-        ++m_Generation; // an action still running reports to nobody: its process is no longer shown (#2389)
+        m_Offer.clear(); // never offer to retry an action on a process no longer shown
+        ++m_Generation;  // an action still running reports to nobody: its process is no longer shown (#2389)
     }
 
     /// Whether a confirm is requested, open, or holds a captured action and target.
@@ -838,18 +836,14 @@ class ProcessActionsView
                     return; // the selection changed while it ran: not this process's result to show (#2389)
                 }
                 showResult(format(result));
-                const bool helperCanRedo = actions->actionCapabilities().canAuthorizeInteractively;
-                if (result.permissionDenied && retry.has_value() && helperCanRedo)
+                // Authenticate and retry through the helper, or with none, Restart as administrator... (#3658).
+                std::optional<Retry> redo;
+                if (retry.has_value())
                 {
-                    m_Retry = Retry{.action = *retry, .actions = actions, .format = format};
-                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
+                    redo = Retry{.action = *retry, .actions = actions, .format = format};
                 }
-                // No helper to redo it (#3658): Restart as administrator... instead, where TaskSmack can restart.
-                else if (RestartAsAdministrator::offersRestart(result.permissionDenied, helperCanRedo, RestartAsAdministrator::offered()))
-                {
-                    m_OfferRestart = true;
-                    m_ResultSecondsLeft = Detail::AUTHORIZE_RESULT_SECONDS;
-                }
+                static_cast<void>(
+                    m_Offer.offer(result.permissionDenied, std::move(redo), actions->actionCapabilities().canAuthorizeInteractively));
             }));
     }
 
@@ -857,12 +851,16 @@ class ProcessActionsView
     /// administrator, after the password prompt (IProcessActions::runAuthorized(), #2308).
     void retryAuthorized()
     {
-        if (!m_Retry.has_value() || !offersAuthenticateAndRetry())
+        if (!offersAuthenticateAndRetry())
         {
             return;
         }
-        Retry retry = std::move(*m_Retry);
-        m_Retry.reset();
+        std::optional<Retry> taken = m_Offer.takeRetry();
+        if (!taken.has_value())
+        {
+            return;
+        }
+        Retry retry = std::move(*taken);
         const std::optional<Platform::ProcessTarget> priorityTarget =
             Detail::changesPriority(retry.action.kind) ? std::optional<Platform::ProcessTarget>{retry.action.target} : std::nullopt;
         runAction(
@@ -889,9 +887,7 @@ class ProcessActionsView
     void showResult(Detail::ActionResultMessage message) noexcept
     {
         m_LastResult = std::move(message);
-        m_ResultSecondsLeft = Detail::ACTION_RESULT_SECONDS;
-        m_Retry.reset();
-        m_OfferRestart = false;
+        m_Offer.showLine(Detail::ACTION_RESULT_SECONDS); // the last action's offer goes with its line
     }
 
     void renderResultFeedback();
@@ -962,11 +958,6 @@ class ProcessActionsView
                                     bool on,
                                     bool afterButtons);
 
-    bool m_ShowConfirmDialog = false;
-    bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
-    Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
-    ConfirmTarget m_ConfirmTarget;
-    Detail::ActionResultMessage m_LastResult;
     /// A permission refusal "Authenticate and retry" would redo (#2308): the action, the actions it was
     /// refused through (the panel's, which outlive this view), and its result line's wording.
     struct Retry
@@ -975,8 +966,13 @@ class ProcessActionsView
         Platform::IProcessActions* actions = nullptr;
         ResultFormat format;
     };
-    std::optional<Retry> m_Retry;
-    bool m_OfferRestart = false;       ///< offersRestartAsAdministrator(): the last result was refused, with no helper (#3658)
+    // First: among the most-aligned members, and one that can go anywhere, so nothing pads before it (the padding check).
+    RefusalOffer<Retry> m_Offer; ///< The result line's countdown, and its Retry or Restart as administrator (#2308, #3658)
+    bool m_ShowConfirmDialog = false;
+    bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
+    Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
+    ConfirmTarget m_ConfirmTarget;
+    Detail::ActionResultMessage m_LastResult;
     std::uint64_t m_Generation = 0;    // bumped by onSelectionChanged() (#2389)
     std::uint64_t m_RunGeneration = 0; // m_Generation when the running action started
     // The process the running action sets the priority of: Set Realtime priority (#3429, #3467). None for any other.
@@ -995,7 +991,6 @@ class ProcessActionsView
     // Held by pointer: the dialog's End process finish refers to the dialog itself, so it never moves, while
     // this view stays movable as the panel that holds it is.
     std::unique_ptr<ProcessWaitChainDialog> m_WaitChainDialog = std::make_unique<ProcessWaitChainDialog>();
-    float m_ResultSecondsLeft = 0.0F;
     // The confirmed action, trace launch or affinity change in flight (#2305). Its worker calls the
     // panel's IProcessActions until it finishes: last, so it is destroyed (and waited for) first, and the
     // panel declares this view after its actions.

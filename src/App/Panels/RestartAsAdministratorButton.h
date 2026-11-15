@@ -10,6 +10,8 @@
 // Offered only once main.cpp says so (setOffered()): TaskSmack can restart itself elevated (Windows, not
 // elevated, not a synthetic run) and has no helper. Linux never offers it: nothing restarts a Linux session
 // (#3580), so starting TaskSmack (Administrator) is the way there. Everything here runs on the UI thread.
+// A refusal that could also offer "Retry as administrator" decides between the two, and draws them, through
+// RefusalOffer.h (#3812).
 
 #include "App/Panels/AuthorizeWording.h"
 #include "Core/ApplicationEvents.h"

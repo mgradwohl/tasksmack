@@ -761,6 +761,7 @@ set(COMMON_TEST_SOURCES
     App/test_BackgroundOpen.cpp # links, files and folders opened on a worker (#3155)
     App/test_PlatformOpenRouting.cpp # an elevated TaskSmack opens through the user's shell, never elevated (#3658)
     App/test_RestartAsAdministratorButton.cpp # a refusal with no helper offers Restart as administrator... (#3658)
+    App/test_RefusalOffer.cpp # one rule and one draw for Retry or Restart as administrator (#3812)
     App/test_UdpTraceSwitch.cpp # the UDP event trace started and stopped on a worker (#3155)
     App/test_UdpCountingStatus.cpp  # Count UDP traffic per process's status for Settings (#3366)
     App/test_CoalescingWriter.cpp

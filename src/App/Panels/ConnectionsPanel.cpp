@@ -2,12 +2,11 @@
 
 #include "App/Panel.h"
 #include "App/PanelPlatforms.h"
-#include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ConnectionCloseControl.h"
 #include "App/Panels/ConnectionsView.h"
 #include "App/Panels/ProcessActionConfirm.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
-#include "App/Panels/RestartAsAdministratorButton.h"
+#include "App/Panels/RefusalOffer.h"
 #include "App/Panels/SamplingGate.h"
 #include "App/SyntheticScenario.h"
 #include "Core/Application.h"
@@ -187,21 +186,9 @@ void ConnectionsPanel::renderCloseResultLine()
     {
         m_Sampler->requestRefresh(); // the closed connection goes from the table without waiting a sample
     }
-    // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
-    if (m_CloseControl.offersAuthenticateAndRetry())
-    {
-        ImGui::SameLine();
-        if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
-        {
-            m_CloseControl.retryAuthorized();
-        }
-        ImGui::SetItemTooltip("%s", AuthorizeWording::RETRY_TOOLTIP);
-    }
-    else if (m_CloseControl.offersRestartAsAdministrator())
-    {
-        ImGui::SameLine();
-        static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
-    }
+    // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3669).
+    static_cast<void>(drawRefusalOffer(
+        m_CloseControl.refusalOffer(), [this] { m_CloseControl.retryAuthorized(); }, RefusalOfferButton{.sameLine = true}));
 }
 
 void ConnectionsPanel::renderCloseConfirm()

@@ -4,7 +4,7 @@
 #include "Platform/IProcessActions.h"
 #include "ProcessDetailsLayout.h"
 #include "ProcessDetailsPanel_PriorityHelpers.h"
-#include "RestartAsAdministratorButton.h"
+#include "RefusalOffer.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -382,19 +382,9 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
         const auto& theme = UI::Theme::get();
         ImGui::Spacing();
         ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_Error.c_str());
-        // A permission refusal an administrator could redo (#2308): the lock and the words, never colour alone.
-        if (offersAuthenticateAndRetry())
-        {
-            if (ImGui::SmallButton(AuthorizeWording::RETRY_LABEL))
-            {
-                retryAuthorized();
-            }
-            ImGui::SetItemTooltip("%s", AuthorizeWording::PRIORITY_TOOLTIP);
-        }
-        else if (offersRestartAsAdministrator())
-        {
-            static_cast<void>(RestartAsAdministrator::drawButton()); // no helper here: the restart instead (#3669)
-        }
+        // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3669).
+        static_cast<void>(drawRefusalOffer(
+            refusalOffer(), [this] { retryAuthorized(); }, RefusalOfferButton{.retryTooltip = AuthorizeWording::PRIORITY_TOOLTIP}));
     }
 }
 
