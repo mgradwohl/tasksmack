@@ -1961,6 +1961,49 @@ TEST_F(WindowsProcessProbeSeamTest, ThePublisherComesFromTheSignatureWorkerNotTh
     EXPECT_EQ(find(probe.enumerate()).publisher, "Publisher of C:\\fake\\app.exe");
 }
 
+// #3862: once the signature worker has ended (here a check throws what isn't a std::exception, which fails it),
+// its answers read no publisher. The sample reads it instead, for the process whose check failed and for a new
+// process started after, rather than leave the Publisher column blank for the rest of the session. The worker
+// stays ended and says so: the signature reads Unknown, with the reason.
+TEST_F(WindowsProcessProbeSeamTest, ANewProcessStillGetsAPublisherAfterTheSignatureWorkerHasEnded)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.signature = fakeSignatureFunctions();
+    functions.signature->verifyEmbeddedSignature = [](const std::string& /*path*/, void* /*file*/) -> WindowsSignature::TrustCheck
+    {
+        // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what ends the worker
+        throw 42;
+    };
+    functions.signature->readPublisher = [](const std::string& path)
+    {
+        return "Publisher of " + path;
+    };
+    WindowsProcessProbe probe(functions);
+
+    const ProcessCounters failed = sampleUntilSigned(probe);
+    EXPECT_EQ(failed.signature.get().signature, ImageSignature::Unknown);
+    EXPECT_TRUE(failed.signature.get().note.contains("stopped")) << failed.signature.get().note;
+    EXPECT_EQ(failed.publisher, "Publisher of C:\\fake\\app.exe") << "read on the sample once the worker ended";
+
+    constexpr DWORD NEW_PID = PID + 1;
+    fake().processes.push_back(FakeProcess{.pid = NEW_PID, .name = L"app.exe", .threadIds = {}});
+    ProcessCounters started;
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+    while (std::chrono::steady_clock::now() < deadline && started.signature.get().signature == ImageSignature::NotChecked)
+    {
+        const std::vector<ProcessCounters> processes = probe.enumerate();
+        if (const auto it = std::ranges::find(processes, static_cast<std::int32_t>(NEW_PID), &ProcessCounters::pid); it != processes.end())
+        {
+            started = *it;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    EXPECT_EQ(started.signature.get().signature, ImageSignature::Unknown) << "the worker stays ended, and says so";
+    EXPECT_EQ(started.publisher, "Publisher of C:\\fake\\app.exe") << "a process started after the end still gets one";
+    fake().now += std::chrono::hours(1); // Past every TTL: kept with the process
+    EXPECT_EQ(find(probe.enumerate()).publisher, "Publisher of C:\\fake\\app.exe");
+}
+
 TEST_F(WindowsProcessProbeSeamTest, AnUnreadableImagePathIsNeverSentForASignatureCheck)
 {
     fake().failImagePath = true;
