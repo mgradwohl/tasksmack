@@ -456,11 +456,16 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     // As root and as TaskSmack itself (#3855), its environment with PATH set to the system's tool directories: a script
     // it runs (xdg-open, a terminal's) finds its helpers there, never in a directory of the invoking user's PATH.
     std::vector<std::string> rootEnvironment;
-    if (runAs == nullptr && ::geteuid() == 0)
+    const std::vector<std::string>* environment = nullptr;
+    if (runAs != nullptr)
+    {
+        environment = &runAs->environment;
+    }
+    else if (::geteuid() == 0)
     {
         rootEnvironment = RootTools::withRootPath(environ);
+        environment = &rootEnvironment;
     }
-    const std::vector<std::string>* environment = runAs != nullptr ? &runAs->environment : (::geteuid() == 0 ? &rootEnvironment : nullptr);
     std::vector<char*> envPointers;
     if (environment != nullptr)
     {
