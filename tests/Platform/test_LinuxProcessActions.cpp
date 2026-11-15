@@ -914,8 +914,9 @@ TEST(LinuxProcessActionsTest, SignallingAnotherUsersProcessSaysPermissionDenied)
     LinuxProcessActions actions;
     const ProcessActionResult result = actions.resume(*rootProcess);
     EXPECT_FALSE(result.success);
-    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user");
-    EXPECT_TRUE(result.permissionDenied); // what an administrator could do: BrokeredProcessActions retries it (#2308)
+    // #3768: no helper redoes it since #3580, so the message says what can (this test skips as root, below).
+    EXPECT_EQ(result.errorMessage, "Permission denied - process belongs to another user (TaskSmack (Administrator) can do this)");
+    EXPECT_TRUE(result.permissionDenied); // what an administrator could do
 }
 
 // #2447: as root the kernel accepts a signal to init or a kernel thread and drops it, so TaskSmack would
@@ -1840,7 +1841,10 @@ TEST_F(LinuxProcessActionsFaultTest, ASignalTheKernelRefusesSaysWhy)
     plan().sendErrno = ESRCH;
     EXPECT_EQ(m_Actions.terminate(ownTarget()).errorMessage, "Process not found - may have already exited");
     plan().sendErrno = EPERM;
-    EXPECT_EQ(m_Actions.kill(ownTarget()).errorMessage, "Permission denied - process belongs to another user");
+    const std::string refused = m_Actions.kill(ownTarget()).errorMessage;
+    EXPECT_TRUE(refused.starts_with("Permission denied - process belongs to another user")) << refused;
+    // #3768: not run as root, it says what can do it, no helper since #3580; as root (the CI root pass) it says nothing more.
+    EXPECT_EQ(refused.ends_with(" (TaskSmack (Administrator) can do this)"), ::geteuid() != 0) << refused;
     plan().sendErrno = EINVAL;
     const SleepingChild other; // not this process, which is never suspended (#2641)
     ASSERT_TRUE(other.started());

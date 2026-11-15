@@ -677,8 +677,8 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.scope = system ? StartupScope::Machine : StartupScope::User;
         entry.enabled = found.enabled; // linked into a .wants directory: that is what "enabled" is
         // The user's own: switched through the user manager, as systemctl --user does (#3425). One enabled for every
-        // user is an administrator's to change, and stays read-only here: systemd has no D-Bus call for it, and the
-        // helper writes no files (maintainer, 2026-11-06). The reason says how.
+        // user is an administrator's to change, and stays read-only here: systemd has no D-Bus call for it, and TaskSmack
+        // doesn't write the system's unit files (maintainer, 2026-11-06). The reason says how.
         if (found.owner == Owner::AllUsers)
         {
             entry.notSwitchableReason = allUsersUnitReason(name);

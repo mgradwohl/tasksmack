@@ -1,5 +1,6 @@
 #pragma once
 
+#include "Platform/Linux/CapabilityBits.h"
 #include "Platform/Linux/ProcStatusSecurityParser.h"
 #include "Platform/ProcessTypes.h"
 
@@ -28,13 +29,13 @@ template<typename GetGroups> [[nodiscard]] std::vector<gid_t> supplementaryGroup
     return groups;
 }
 
-/// capability.h bit numbers of the capabilities that open other users' /proc entries.
-inline constexpr unsigned CAP_DAC_OVERRIDE_BIT = 1;    // a superset of CAP_DAC_READ_SEARCH for these reads
-inline constexpr unsigned CAP_DAC_READ_SEARCH_BIT = 2; // list another user's /proc/[pid]/fd, open its io
-inline constexpr unsigned CAP_KILL_BIT = 5;            // signal another user's process
-inline constexpr unsigned CAP_SYS_PTRACE_BIT = 19;     // ptrace read access: /proc/[pid]/io, /proc/[pid]/fd/* links
-inline constexpr unsigned CAP_SYS_ADMIN_BIT = 21;      // also lets ioprio_set() use the Realtime class
-inline constexpr unsigned CAP_SYS_NICE_BIT = 23;       // ioprio_set(IOPRIO_CLASS_RT), raising priority
+/// The bit numbers (CapabilityBits.h, #3770) of the capabilities that open other users' /proc entries.
+inline constexpr unsigned CAP_DAC_OVERRIDE_BIT = CapabilityBits::DAC_OVERRIDE;       // a superset of CAP_DAC_READ_SEARCH for these reads
+inline constexpr unsigned CAP_DAC_READ_SEARCH_BIT = CapabilityBits::DAC_READ_SEARCH; // list another user's /proc/[pid]/fd, open its io
+inline constexpr unsigned CAP_KILL_BIT = CapabilityBits::KILL;                       // signal another user's process
+inline constexpr unsigned CAP_SYS_PTRACE_BIT = CapabilityBits::SYS_PTRACE; // ptrace read access: /proc/[pid]/io, /proc/[pid]/fd/* links
+inline constexpr unsigned CAP_SYS_ADMIN_BIT = CapabilityBits::SYS_ADMIN;   // also lets ioprio_set() use the Realtime class
+inline constexpr unsigned CAP_SYS_NICE_BIT = CapabilityBits::SYS_NICE;     // ioprio_set(IOPRIO_CLASS_RT), raising priority
 
 /// The effective capability set from /proc/[pid]/status ("CapEff:\t000001ffffffffff"), or nullopt
 /// when the line is missing or its value isn't hex. Deliberately free of platform APIs so it is

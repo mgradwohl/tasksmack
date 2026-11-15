@@ -119,25 +119,11 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     [[nodiscard]] std::expected<Platform::Broker::Response, std::string> callIfIdle(const Platform::Broker::Request& request,
                                                                                     std::chrono::milliseconds /*timeout*/) override
     {
-        std::function<void()> after;
         {
             const std::scoped_lock lock(m_Mutex);
             ++m_IdleCallCount;
-            after = m_AfterIdleCall;
         }
-        auto response = call(request, std::stop_token{});
-        if (after)
-        {
-            after(); // between the reply and what the caller does with it, as another worker could act there
-        }
-        return response;
-    }
-
-    /// Runs after each callIfIdle() has its response and before it returns, with no lock held (#3366).
-    void setAfterIdleCall(std::function<void()> after)
-    {
-        const std::scoped_lock lock(m_Mutex);
-        m_AfterIdleCall = std::move(after);
+        return call(request, std::stop_token{});
     }
 
     /// How many of the calls were callIfIdle().
@@ -187,7 +173,6 @@ class FakeBroker final : public Platform::IPrivilegedBroker
     Answer m_Answer;
     std::vector<Platform::Broker::Request> m_Requests;
     std::string m_ConnectFailure;
-    std::function<void()> m_AfterIdleCall;
     std::function<void()> m_OnConnect;
     int m_ConnectCount = 0;
     int m_IdleCallCount = 0;
