@@ -402,6 +402,10 @@ add_test(NAME ComposeReleaseNotesScript
 add_test(NAME CheckCflitePathsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cflite_paths.py)
 
+# tools/arm64-paths.py decides from the labeler's `ci:arm64` globs whether a change runs ARM64 CI (#3930).
+add_test(NAME Arm64PathsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_arm64_paths.py)
+
 # tools/check-dll-loads.py keeps src/ from loading a DLL by bare name (#2530).
 add_test(NAME CheckDllLoadsScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_dll_loads.py)
