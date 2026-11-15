@@ -89,7 +89,7 @@ order.
   (`Reverts #N`) clears that one merge instead. The maintainer approved the label on 2026-11-15.
 - **`ci-red-main`:** `main-health.yml` opens, rewrites and closes this tracking issue. Don't add it by hand.
 - **`winget-health.yml`:** opens, rewrites and closes one issue, "WinGet: TaskSmack.TaskSmack <version> isn't
-  published", labelled `release` and `agent:Windows` and found by that title among the open `release` issues
+  published", labelled `bug`, `release` and `agent:Windows` and found by that title among the open `release` issues
   (#3486). It never uses `ci-red-main`: a WinGet moderation delay isn't a red main.
 - **`merging`:** the cross-lane merge lock. A PR in its final merge stage carries it, and the other lane waits up to
   30 minutes. The backport action doesn't copy it.

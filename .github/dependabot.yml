@@ -10,7 +10,12 @@ version: 2
 updates:
   # GitHub Actions
   - package-ecosystem: "github-actions"
-    directory: "/"
+    # "/" covers .github/workflows; the composite actions under .github/actions each pin actions/cache,
+    # actions/setup-python and the like, and Dependabot reads only the directories listed here (#3904).
+    # Renovate can't cover them: its enabledManagers excludes github-actions.
+    directories:
+      - "/"
+      - "/.github/actions/*"
     schedule:
       interval: "weekly"
       day: "monday"
