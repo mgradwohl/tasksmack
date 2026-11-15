@@ -11,6 +11,8 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
+#include <fstream>
 #include <initializer_list>
 #include <iterator>
 #include <optional>
@@ -798,6 +800,21 @@ TEST(SmbiosParserTest, MemoryTypeAndFormFactorNames)
     EXPECT_TRUE(isPlaceholderString("To Be Filled By O.E.M."));
     EXPECT_FALSE(isPlaceholderString("Kingston"));
     EXPECT_FALSE(isPlaceholderString(""));
+}
+
+// #3848: fuzz_smbios's seed corpus is a well-formed table: the RawSMBIOSData blob decodes, with the BIOS and system
+// strings its structures carry, so the fuzzer starts from the parser's deeper states instead of from nothing.
+TEST(SmbiosFuzzCorpusTest, TheSeedBlobDecodesItsBiosAndSystem)
+{
+    std::ifstream file(std::filesystem::path(TASKSMACK_SMBIOS_FUZZ_CORPUS_DIR) / "raw_smbios_data", std::ios::binary);
+    ASSERT_TRUE(file.is_open());
+    const std::vector<std::uint8_t> blob{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+    FirmwareInfo info;
+    ASSERT_TRUE(decodeFirmware(blob, info));
+    EXPECT_EQ(info.biosVendor, "TaskSmack Firmware");
+    EXPECT_EQ(info.biosVersion, "1.17.0");
+    EXPECT_EQ(info.systemManufacturer, "TaskSmack");
+    EXPECT_EQ(info.systemModel, "Fuzz Box");
 }
 
 } // namespace
