@@ -819,6 +819,41 @@ TEST_F(SignatureWorkerTest, ACheckThatThrowsSomethingElseFailsTheWorkerWhichAnsw
     EXPECT_TRUE(worker.waitUntilIdle(0ms)) << "nothing is left queued or in progress";
 }
 
+// #3862: an answer made because the worker ended read no publisher, so find() leaves the caller's alone, and
+// ended() says the worker has ended, so the caller reads it itself. A path checked before the end keeps the one
+// read with its check.
+TEST_F(SignatureWorkerTest, AnAnswerMadeAfterTheWorkerEndedReadsNoPublisherAndEndedSaysSo)
+{
+    for (const char* path : {"a", "b", "c"})
+    {
+        setStamp(path, 1);
+    }
+    SignatureFunctions functions = fakeFunctions();
+    functions.readPublisher = [](const std::string& path)
+    {
+        return "Publisher of " + path;
+    };
+    SignatureWorker worker(functions, {});
+    worker.request("a");
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_FALSE(worker.ended());
+
+    fakes().throwNonException = true;
+    worker.request("b"); // its check throws 42: the worker fails
+    ASSERT_TRUE(waitUntil([&worker] { return worker.ended(); })) << "the end is seen";
+    std::string publisher = "untouched";
+    ASSERT_TRUE(worker.find("b", &publisher).has_value());
+    EXPECT_EQ(publisher, "untouched") << "the end answer read none";
+
+    worker.request("c"); // a new process after the end: answered at once, with no publisher
+    ASSERT_TRUE(worker.find("c", &publisher).has_value());
+    EXPECT_EQ(publisher, "untouched");
+    EXPECT_TRUE(worker.ended()) << "it stays ended";
+
+    ASSERT_TRUE(worker.find("a", &publisher).has_value());
+    EXPECT_EQ(publisher, "Publisher of a") << "checked before the end: read with its check";
+}
+
 TEST_F(SignatureWorkerTest, APathWhoseEndAnswerCouldNotBeMadeIsAnsweredByTheNextLookup)
 {
     // #3479 review: once the worker has failed, a path asked for is answered at once with the end note. When
