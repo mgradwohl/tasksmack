@@ -8,11 +8,13 @@
 // - Each key is queued at most once at a time, however many callers ask for it.
 // - Bounded: at most maxQueued keys wait at once (a key turned away is asked again by a later find()), and at
 //   most maxEntries are kept; when full, the answers already taken are forgotten (asked again if needed).
-// - A lookup that throws a std::exception keeps no answer: find() answers nullopt, as if it waited, and the key
-//   is asked again once emptyRetry has passed (#3794). One that answers empty (Value{}) is kept, and asked again
-//   after emptyRetry too: an answer missing for a passing reason (the shell not ready at sign-in) appears
-//   later. Either is asked at most once an emptyRetry, however often find() is called. Anything else that
-//   escapes ends the Worker Failed rather than std::terminate; every key then answers Value{}, at once, for good.
+// - A lookup that throws a std::exception keeps no answer: find() answers nullopt, as if it waited. One that
+//   answers empty (Value{}) is kept and answered. Either is asked again (#3794), at most maxRetries times:
+//   firstRetry after the first answer, then laterRetry after each retry's. An answer missing for a passing
+//   reason (the shell not ready at sign-in) appears then; after the last retry the answer is kept for good
+//   (none for a lookup that threw), since most keys simply have none and asking forever would be churn.
+//   A retry is asked once however often find() is called. Anything else that escapes ends the Worker Failed
+//   rather than std::terminate; every key then answers Value{}, at once, for good.
 // - The thread is a Domain::Worker, started with the first key. beginDrain/endDrain run on it around each
 //   pass over the queue (Windows: COM in the multithreaded apartment for the shell calls). The destructor
 //   stops and joins it after the lookup in progress; the rest of the queue is dropped.
@@ -55,8 +57,11 @@ template<typename Value> class KeyedLookup
         std::size_t maxEntries = 512;
         void (*beginDrain)() = nullptr; ///< On the worker's thread before each pass over the queue. Nullable.
         void (*endDrain)() = nullptr;   ///< And after it. Nullable.
-        /// How long a key whose lookup threw or answered empty waits before it is asked again (#3794)
-        std::chrono::milliseconds emptyRetry = std::chrono::seconds(Sampling::KEYED_LOOKUP_EMPTY_RETRY_SECONDS);
+        /// How many times a key whose lookup threw or answered empty is asked again (#3794), and after how long:
+        /// firstRetry after its first answer, laterRetry after each retry's.
+        int maxRetries = Sampling::KEYED_LOOKUP_EMPTY_RETRIES;
+        std::chrono::milliseconds firstRetry = std::chrono::seconds(Sampling::KEYED_LOOKUP_FIRST_RETRY_SECONDS);
+        std::chrono::milliseconds laterRetry = std::chrono::seconds(Sampling::KEYED_LOOKUP_LATER_RETRY_SECONDS);
         std::chrono::steady_clock::time_point (*now)() = nullptr; ///< The clock (tests); null: steady_clock
     };
 
@@ -84,19 +89,18 @@ template<typename Value> class KeyedLookup
 
     /// The answer for @p key once looked up; nullopt while it waits, with @p key queued for the worker if it
     /// isn't already (or not, when maxQueued keys wait: a later find() asks again), and while a lookup that
-    /// threw waits for its retry. An empty or failed answer is queued again once emptyRetry has passed. Never
-    /// runs the lookup.
+    /// threw waits for its retry. An empty or failed answer due a retry is queued again. Never runs the lookup.
     [[nodiscard]] std::optional<Value> find(const std::string& key)
     {
         const std::scoped_lock lock(m_Mutex);
         if (const auto found = m_Entries.find(key); found != m_Entries.end())
         {
-            const Entry& entry = found->second;
-            if (!entry.retryAt.has_value() || now() < *entry.retryAt)
+            Entry& entry = found->second;
+            if (!entry.retryAt.has_value() || now() < *entry.retryAt || m_Queue.size() >= m_Options.maxQueued)
             {
-                return entry.answer; // nullopt: queued, being looked up, or failed and not yet due
+                return entry.answer; // nullopt: queued, being looked up, or failed and not yet due (or no room)
             }
-            m_Entries.erase(found); // Due again: asked for below, as a key not yet seen
+            return retryLocked(key, entry);
         }
         if (m_Failed)
         {
@@ -168,8 +172,9 @@ template<typename Value> class KeyedLookup
     struct Entry
     {
         std::optional<Value> answer; ///< nullopt: queued, being looked up, or its lookup threw
-        /// Set for a lookup that threw or answered empty: find() asks again from then (#3794)
+        /// Set for a lookup that threw or answered empty with retries left: find() asks again from then (#3794)
         std::optional<std::chrono::steady_clock::time_point> retryAt;
+        int retries = 0; ///< How many times it has been asked again
 
         /// Queued or being looked up: kept when a full table forgets answers.
         [[nodiscard]] bool inFlight() const noexcept
@@ -195,6 +200,28 @@ template<typename Value> class KeyedLookup
         {
             return false;
         }
+    }
+
+    /// find() for a key due a retry (under m_Mutex): queued again in place, so it keeps its count of retries.
+    std::optional<Value> retryLocked(const std::string& key, Entry& entry)
+    {
+        m_Queue.push_back(key);
+        const int retries = entry.retries + 1;
+        Entry previous = std::exchange(entry, Entry{.answer = std::nullopt, .retryAt = std::nullopt, .retries = retries});
+        const SubmitResult result = m_Worker.submit(Drain{});
+        if (result == SubmitResult::Refused)
+        {
+            // As for a new key: no drain queued, so take it back; still due, a later find() asks again.
+            m_Queue.pop_back();
+            entry = std::move(previous);
+            return entry.answer;
+        }
+        if (result == SubmitResult::Closed)
+        {
+            failAllLocked(); // The worker has ended: every key answers none
+            return Value{};
+        }
+        return std::nullopt;
     }
 
     /// Ends every wait (under m_Mutex): each key still waiting answers none, as does every key asked after.
@@ -270,18 +297,24 @@ template<typename Value> class KeyedLookup
             }
             catch (const std::exception&)
             {
-                value.reset(); // A lookup that failed keeps no answer: asked again after emptyRetry
+                value.reset(); // A lookup that failed keeps no answer while it has a retry left
             }
-            std::optional<std::chrono::steady_clock::time_point> retryAt;
-            if (!value.has_value() || isEmpty(*value))
-            {
-                retryAt = now() + m_Options.emptyRetry;
-            }
+            const bool empty = !value.has_value() || isEmpty(*value);
+            const std::chrono::steady_clock::time_point answeredAt = now();
             const std::scoped_lock lock(m_Mutex);
             if (const auto found = m_Entries.find(key); found != m_Entries.end())
             {
-                found->second.answer = std::move(value);
-                found->second.retryAt = retryAt;
+                Entry& entry = found->second;
+                entry.retryAt.reset();
+                if (empty && entry.retries < m_Options.maxRetries)
+                {
+                    entry.retryAt = answeredAt + ((entry.retries == 0) ? m_Options.firstRetry : m_Options.laterRetry);
+                }
+                else if (!value.has_value())
+                {
+                    value = Value{}; // Out of retries: a lookup that failed names nothing, for good
+                }
+                entry.answer = std::move(value);
             }
             m_LookingUp = false;
             if (m_Queue.empty())
