@@ -323,9 +323,9 @@ jobs:
           set -o pipefail
           # Named, not -E: this runner's sudo refuses to preserve the whole environment and ignores -E. The
           # real-system guard reads these three (tests/Support/CiRealSystem.h).
-          # The same suites as tools/coverage.sh's root pass (#3836), and as many passes as the filter lists: a root
-          # test added later is counted, never a hand-kept number.
-          filter='DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*'
+          # The same suites as tools/coverage.sh's root pass, from one list (root_test_filter, tools/common.sh; #3836),
+          # and as many passes as the filter lists: a root test added later is counted, never a hand-kept number.
+          filter="$(bash -c 'source tools/common.sh && root_test_filter')"
           listed="$(build/debug/tests/TaskSmackTests --gtest_filter="$filter" --gtest_list_tests | grep -c '^  ')"
           sudo --preserve-env=TASKSMACK_CI_REAL_SYSTEM,GITHUB_ACTIONS,RUNNER_ENVIRONMENT \
             build/debug/tests/TaskSmackTests --gtest_filter="$filter" \
@@ -367,8 +367,12 @@ jobs:
             failed=1
           fi
           # An Administrator session keeps only the capabilities it uses (#3621), and saved the settings above with them.
-          if ! grep -q "Administrator session: kept 13 of root's capabilities" root-launch.log; then
-            echo "::error title=Root launch::TaskSmack as root didn't narrow its capabilities (#3621): no 'kept 13' line in its log"
+          # Narrowed (#3621): some kept, and fewer than root holds. A bound, not a number, so a change to the set the
+          # session keeps (RootCapabilities) doesn't need this step edited too (#3836).
+          kept="$(sed -n "s/.*Administrator session: kept \([0-9]*\) of root's capabilities.*/\1/p" root-launch.log | head -n 1)"
+          full="$(sudo python3 -c 'import re; print(bin(int(re.search(r"CapBnd:\s*(\w+)", open("/proc/self/status").read()).group(1), 16)).count("1"))')"
+          if [[ -z "$kept" ]] || (( kept < 1 || kept >= full )); then
+            echo "::error title=Root launch::TaskSmack as root didn't narrow its capabilities (#3621): kept '${kept:-none}' of root's $full"
             failed=1
           fi
           if sudo test -e /root/.config/tasksmack; then

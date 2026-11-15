@@ -3,6 +3,13 @@
 # Source this file in other scripts: source "$(dirname "$0")/common.sh"
 set -euo pipefail
 
+# The tests that act on the machine only as root (#3836): CI's PR root step (.github/workflows/reusable-build-test.yml)
+# and tools/coverage.sh's root pass both run exactly these, under sudo. Each suite skips when not root. A root suite
+# added later goes here, once.
+root_test_filter() {
+    printf '%s\n' 'DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*'
+}
+
 # Check if a command exists and provide installation instructions if missing
 # Usage: check_command "cmake" "apt install cmake"
 # Returns: 0 if command exists, 1 if not found
