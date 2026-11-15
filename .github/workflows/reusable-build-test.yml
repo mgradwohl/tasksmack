@@ -292,6 +292,36 @@ jobs:
           TASKSMACK_ALLOCATION_HOOK_LOG: ${{ github.workspace }}/build/${{ inputs.build_type }}/allocation-hook.log
         run: xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" ctest --preset ${{ inputs.build_type }} -j "$(nproc)" --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
+      # Xvfb runs no window manager, so the tests that need one skip in the step above (#3845): a window minimized
+      # before its first frame (minimize needs a manager to iconify it) and a native maximize through EWMH (#1339).
+      # Here they run under openbox, a small EWMH window manager, on their own display; a skip fails the step, so a
+      # test that stops reaching the manager can't pass quietly. WindowTest.SetAndGetPositionRoundTrip still skips:
+      # openbox places a decorated window by its frame, not at the client position asked for.
+      - name: Window-manager tests (Linux)
+        if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
+        run: |
+          set -o pipefail
+          sudo apt-get update -q
+          sudo apt-get install -y --no-install-recommends openbox
+          xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" bash -c '
+            set -o pipefail
+            openbox & manager=$!
+            sleep 2
+            status=0
+            build/debug/tests/TaskSmackTests \
+              --gtest_filter="WindowTest.ANativelyDecoratedWindowMaximizesAndRestoresThroughSDL" \
+              2>&1 | tee wm-tests.log || status=$?
+            build/debug/tests/TaskSmackAppTests \
+              --gtest_filter="UiLayersOnDisplayTest.AWindowMinimizedBeforeItsFirstFrameGetsTheDisplayScaleBackOnRestore" \
+              2>&1 | tee -a wm-tests.log || status=$?
+            kill "$manager"
+            exit "$status"'
+          ran="$(grep -c '^\[       OK \]' wm-tests.log || true)"
+          if grep -q '\[  SKIPPED \]' wm-tests.log || [[ "$ran" -ne 2 ]]; then
+            echo "::error title=Window-manager tests::under openbox, $ran of the 2 window-manager tests passed; a skip means the manager didn't act"
+            exit 1
+          fi
+
       # The tests that need root, run as root (#3058, #3580): the runner's passwordless sudo is the only root CI has.
       # A skip fails the step as well, so a root run that quietly skips can't pass. DetachedSpawnTest.AsRoot*
       # (#3298, #3491): a RunAs's supplementary groups need root to set. UdpByteCounterRootTest (#3366) loads the
