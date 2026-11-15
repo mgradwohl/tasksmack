@@ -1,6 +1,7 @@
 #include "DetachedSpawn.h"
 
 #include "PosixGuards.h"
+#include "RootTools.h"
 
 #include <spdlog/spdlog.h>
 
@@ -452,11 +453,19 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
         argPointers.push_back(const_cast<char*>(arg.c_str()));
     }
     argPointers.push_back(nullptr);
-    std::vector<char*> envPointers;
-    if (runAs != nullptr)
+    // As root and as TaskSmack itself (#3855), its environment with PATH set to the system's tool directories: a script
+    // it runs (xdg-open, a terminal's) finds its helpers there, never in a directory of the invoking user's PATH.
+    std::vector<std::string> rootEnvironment;
+    if (runAs == nullptr && ::geteuid() == 0)
     {
-        envPointers.reserve(runAs->environment.size() + 1);
-        for (const std::string& entry : runAs->environment)
+        rootEnvironment = RootTools::withRootPath(environ);
+    }
+    const std::vector<std::string>* environment = runAs != nullptr ? &runAs->environment : (::geteuid() == 0 ? &rootEnvironment : nullptr);
+    std::vector<char*> envPointers;
+    if (environment != nullptr)
+    {
+        envPointers.reserve(environment->size() + 1);
+        for (const std::string& entry : *environment)
         {
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) - execve's envp type predates const
             envPointers.push_back(const_cast<char*>(entry.c_str()));
@@ -502,7 +511,7 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     const ChildPlan plan{
         .path = argPointers.front(),
         .argv = argPointers.data(),
-        .envp = runAs != nullptr ? envPointers.data() : environ,
+        .envp = environment != nullptr ? envPointers.data() : environ,
         .devNull = devNull.get(),
         .reportFd = reportWrite.get(),
         .useCloseRange = hooks.useCloseRange,
