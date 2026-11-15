@@ -4613,7 +4613,14 @@ class HiddenShellDriverLayer : public Core::Layer
     void onHiddenUpdate() override
     {
         const int wake = ++m_Observed.hiddenUpdates;
-        if (wake > MAX_HIDDEN_UPDATES)
+        if (wake == 1)
+        {
+            m_HiddenAtMs = SDL_GetTicks();
+        }
+        // Bounded by time, not wakes (#4026): every sampler's publication wakes the hidden loop, so wakes come many
+        // a second at the test's 100 ms interval. The wake cap is only a backstop.
+        const Uint64 hiddenForMs = SDL_GetTicks() - m_HiddenAtMs;
+        if (hiddenForMs > HIDDEN_TIMEOUT_MS || wake > MAX_HIDDEN_UPDATES)
         {
             m_Observed.timedOut = true;
             Core::Application::get().stop();
@@ -4631,8 +4638,9 @@ class HiddenShellDriverLayer : public Core::Layer
             m_Observed.versionWhenHidden = version;
             return;
         }
-        // Hidden for a whole wait at least, and two more generations taken in (or long enough to have).
-        if (version < m_Observed.versionWhenHidden + 2 && wake < SHOW_AFTER_WAKES)
+        // Two more generations taken in while hidden, or long enough to have (#4026: 10 wakes could pass before one
+        // pass of the process sampler on a loaded runner, so the fallback is a time, not a count of wakes).
+        if (version < m_Observed.versionWhenHidden + 2 && hiddenForMs < SHOW_AFTER_MS)
         {
             return;
         }
@@ -4691,8 +4699,9 @@ class HiddenShellDriverLayer : public Core::Layer
     static constexpr int WATCH_WAIT_FRAMES = 600;
     static constexpr int HIDE_WAIT_FRAMES = 60;
     static constexpr int MAX_FRAMES = 2000;
-    static constexpr int SHOW_AFTER_WAKES = 10;
-    static constexpr int MAX_HIDDEN_UPDATES = 40; // about 40 s of hidden waits
+    static constexpr Uint64 SHOW_AFTER_MS = 5000;      // the show, if two generations haven't come by then (#4026)
+    static constexpr Uint64 HIDDEN_TIMEOUT_MS = 20000; // the run, hidden that long, has failed
+    static constexpr int MAX_HIDDEN_UPDATES = 5000;    // a backstop only: wakes come many a second
     // How long after the loop's wake the show is sent: well inside the next hidden wait.
     static constexpr std::chrono::milliseconds SEND_DELAY{100};
 
@@ -4700,6 +4709,7 @@ class HiddenShellDriverLayer : public Core::Layer
     const App::ShellLayer& m_Shell;
     std::thread m_Shower; // sends the show while the loop waits
     std::atomic<Uint64> m_ShowSentAt{0};
+    Uint64 m_HiddenAtMs = 0; // SDL_GetTicks() at the first hidden wake
     int m_Deadline = 0;
     Phase m_Phase = Phase::Settle;
 };
