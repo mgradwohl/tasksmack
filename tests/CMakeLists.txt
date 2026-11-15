@@ -490,6 +490,7 @@ set(COMMON_TEST_SOURCES
     Core/test_EnvUtils.cpp
     Core/test_FramebufferCapture.cpp
     Core/test_GraphicsReset.cpp
+    Core/test_LibcxxHardening.cpp # the app's libc++ checks in the tests too (#3900)
     Core/test_LocaleSetup.cpp
     Core/test_ApplicationEvents.cpp
     Core/test_Event.cpp
@@ -1490,6 +1491,7 @@ endif()
 
 tasksmack_apply_default_warnings(TaskSmackTests)
 tasksmack_apply_text_encoding(TaskSmackTests)
+tasksmack_apply_libcxx_hardening(TaskSmackTests) # libc++'s checks, as the app ships with them (#3900)
 
 # Precompiled headers for tests (speeds up compilation)
 if(TASKSMACK_ENABLE_PCH)
@@ -1555,6 +1557,7 @@ target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_D
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)
+tasksmack_apply_libcxx_hardening(TaskSmackThemeTests) # libc++'s checks, as the app ships with them (#3900)
 tasksmack_gtest_add_suites(TaskSmackThemeTests DISCOVERY_TIMEOUT ${TASKSMACK_GTEST_DISCOVERY_TIMEOUT} PROPERTIES TIMEOUT 300)
 
 # Tests that need the whole app (#1395): a real Core::Application with the real UI::Theme, UILayer and
@@ -1567,6 +1570,7 @@ add_executable(TaskSmackAppTests
     $<TARGET_OBJECTS:TaskSmackApp>
 )
 tasksmack_configure_app_target(TaskSmackAppTests)
+tasksmack_apply_libcxx_hardening(TaskSmackAppTests) # libc++'s checks, as the app ships with them (#3900)
 target_include_directories(TaskSmackAppTests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR})  # Core/HeadlessVideoDriverTestUtils.h
 target_link_libraries(TaskSmackAppTests PRIVATE gtest)
 target_compile_definitions(TaskSmackAppTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"

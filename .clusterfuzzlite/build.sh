@@ -13,7 +13,8 @@ export FUZZ_DEPS_DIR="${FUZZ_DEPS_DIR:-${WORK:-$PWD/build}/fuzz-deps}"
 # ClusterFuzzLite supplies compiler and linker flags as argument lists.
 # -finput-charset/-fexec-charset=UTF-8: the sources are compiled as UTF-8, as in the CMake build
 # (tasksmack_apply_text_encoding, #1648). UTF-8 is clang's only charset, so this states it rather
-# than changing it.
+# than changing it. _LIBCPP_HARDENING_MODE_FAST: libc++'s bounds and precondition checks, as the app ships with
+# them (#3900), so a check that would trap in TaskSmack crashes the fuzzer first.
 # shellcheck disable=SC2086
 build_fuzzer() {
     local name="$1"
@@ -28,6 +29,7 @@ build_fuzzer() {
         -isystem "$FUZZ_DEPS_DIR/imgui" \
         -isystem "$FUZZ_DEPS_DIR/implot" \
         -DSPDLOG_USE_STD_FORMAT \
+        -D_LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST \
         "tests/fuzz/$name.cpp" "$@" \
         $LIB_FUZZING_ENGINE \
         -o "$OUT/$name"
