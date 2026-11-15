@@ -206,7 +206,8 @@ class WindowsProcessActions : public IProcessActions
     [[nodiscard]] std::optional<std::uint32_t> efficiencyPriorityClassToRestore(const ProcessTarget& target) const override;
     /// Remembers @p priorityClass for @p target's off (#3327), as an on here does; one of Windows' six classes only.
     void rememberEfficiencyPriorityClass(const ProcessTarget& target, std::uint32_t priorityClass) override;
-    /// @p priorityClass, from an off's request, replaces the class remembered for @p target, Idle included (#3327).
+    /// @p priorityClass, from an off's request, is what @p target's off restores when this side remembers no class for it
+    /// (#3327, #3776): never one this side remembers, and never Realtime.
     void setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass) override;
     /// Forgets the class remembered for @p target (#3327).
     void forgetEfficiencyPriorityClass(const ProcessTarget& target) override;

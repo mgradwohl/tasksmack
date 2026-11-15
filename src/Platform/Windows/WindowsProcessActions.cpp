@@ -922,9 +922,11 @@ void WindowsProcessActions::rememberEfficiencyPriorityClass(const ProcessTarget&
 
 void WindowsProcessActions::setEfficiencyPriorityClassToRestore(const ProcessTarget& target, std::uint32_t priorityClass)
 {
-    if (isPriorityClass(priorityClass))
+    // Never Realtime from a request (#3776): an approved off would set it without Realtime's own warning and confirm.
+    // TaskSmack's Realtime retry asks for it as a priority change instead (efficiencyNiceToRestore()).
+    if (isPriorityClass(priorityClass) && priorityClass != REALTIME_PRIORITY_CLASS)
     {
-        m_EfficiencyPriorities->assign(target, priorityClass);
+        m_EfficiencyPriorities->assignIfNone(target, priorityClass);
     }
 }
 

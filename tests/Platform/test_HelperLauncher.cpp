@@ -789,9 +789,8 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     EXPECT_EQ(own.result.status, ModulesReadStatus::Ok) << own.result.detail;
     EXPECT_FALSE(broker.readsOtherUsers());
 
-    // Every read the helper refuses this way carries the explanation: the process reads that have
-    // words, and the ErrorReply of a read it refuses outright (threads, #3069), through callIfIdle() as
-    // through call().
+    // Every read the helper refuses this way carries the explanation, threads' too (#3777), through
+    // callIfIdle() as through call().
     const auto files = broker.call(Broker::OpenFilesRequest{.target = THEIRS}, {});
     ASSERT_TRUE(files.has_value()) << files.error();
     ASSERT_TRUE(std::holds_alternative<Broker::OpenFilesReply>(*files));
@@ -809,8 +808,9 @@ TEST(HelperLauncherTest, AHelperApprovedForAnotherAccountTakesReadAsAdministrato
     EXPECT_EQ(std::get<Broker::MemoryMapReply>(*map).result.detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
     const auto threads = broker.callIfIdle(Broker::ThreadsRequest{.target = THEIRS}, WAIT);
     ASSERT_TRUE(threads.has_value()) << threads.error();
-    ASSERT_TRUE(std::holds_alternative<Broker::ErrorReply>(*threads));
-    EXPECT_EQ(std::get<Broker::ErrorReply>(*threads).message, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
+    ASSERT_TRUE(std::holds_alternative<Broker::ThreadsReply>(*threads));
+    EXPECT_EQ(std::get<Broker::ThreadsReply>(*threads).result.status, ThreadsReadStatus::Failed);
+    EXPECT_EQ(std::get<Broker::ThreadsReply>(*threads).result.detail, HelperLauncher::OTHER_USERS_READS_UNAVAILABLE);
     EXPECT_FALSE(broker.readsOtherUsers());
 
     // The lesson is this broker's: another TaskSmack's starts afresh.
@@ -934,7 +934,7 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
         EXPECT_TRUE(broker.readsOtherUsers()) << "answer " << answer.index();
     }
 
-    // The helper's refusal of a read it answers with an ErrorReply (threads), through callIfIdle(): learned, and reworded.
+    // The helper's refusal of a read kind it refuses outright, with an ErrorReply, through callIfIdle(): learned, and reworded.
     inner.setAnswer([](const Broker::Request&)
                     { return Broker::Response{Broker::ErrorReply{.message = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED)}}; });
     const auto refused = broker.callIfIdle(Broker::ThreadsRequest{.target = THEIRS}, WAIT);

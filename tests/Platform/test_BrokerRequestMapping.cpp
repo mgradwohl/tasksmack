@@ -134,9 +134,9 @@ TEST(BrokerRequestMappingTest, EfficiencyModeReachesItsAction)
     EXPECT_EQ(refused.errorMessage, "Process 4242 is a critical system process");
 }
 
-// #3327 (v22): an off carrying the class TaskSmack remembers sets it first, replacing the helper's, so the helper's
-// off restores it though it never saw the on; one carrying 0 (unknown) sets nothing. An on's reply carries the class it
-// replaced.
+// #3327 (v22): an off carrying the class TaskSmack remembers offers it to the actions first, so the helper's off
+// restores it though it never saw the on (the actions keep their own and refuse Realtime, #3776); one carrying 0
+// (unknown) offers nothing. An on's reply carries the class it replaced.
 TEST(BrokerRequestMappingTest, AnEfficiencyOffRemembersTheClassItCarriesFirstAndAnOnRepliesWithTheClassItReplaced)
 {
     TestMocks::MockProcessActions actions;

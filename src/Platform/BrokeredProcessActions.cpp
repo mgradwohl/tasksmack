@@ -39,7 +39,7 @@ constexpr std::string_view NOT_THROUGH_THE_HELPER = "Setting a scheduling policy
 
 } // namespace
 
-Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
+std::optional<Broker::Signal> brokerSignalFor(ProcessSignal signal) noexcept
 {
     switch (signal)
     {
@@ -54,7 +54,7 @@ Broker::Signal brokerSignalFor(ProcessSignal signal) noexcept
     case ProcessSignal::User2:
         return Broker::Signal::User2;
     }
-    return Broker::Signal::Hangup; // unreachable: every signal is above
+    return std::nullopt; // a signal not above (#3778): no request, never one that sends another signal
 }
 
 std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
@@ -79,7 +79,14 @@ std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetSchedPolicy:
         return std::nullopt; // Linux's, and Linux has no helper since #3580: protocol v23 has no SetSchedPolicy
     case Kind::SendSignal:
-        return Broker::SignalRequest{.target = action.target, .signal = brokerSignalFor(action.signal)};
+    {
+        const std::optional<Broker::Signal> signal = brokerSignalFor(action.signal);
+        if (!signal.has_value())
+        {
+            return std::nullopt;
+        }
+        return Broker::SignalRequest{.target = action.target, .signal = *signal};
+    }
     case Kind::SetEfficiencyMode:
         return Broker::EfficiencyModeRequest{.target = action.target, .on = action.efficiencyMode};
     case Kind::CloseConnection:
@@ -96,7 +103,8 @@ std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
             .action = action.threadAction,
         };
     }
-    return Broker::SignalRequest{.target = action.target, .signal = Broker::Signal::Terminate}; // unreachable: every kind is above
+    // A kind not above (#3778): no request, so the helper is never asked to end a process it wasn't asked to.
+    return std::nullopt;
 }
 
 std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions, std::shared_ptr<IPrivilegedBroker> broker)
