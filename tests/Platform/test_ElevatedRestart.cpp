@@ -13,6 +13,8 @@
 
 #include <algorithm>
 #include <array>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
@@ -24,6 +26,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -224,13 +227,21 @@ struct FakeWait
     DWORD timeout = 0;
     DWORD openError = ERROR_SUCCESS; ///< ERROR_SUCCESS: open this test's own process
     DWORD answer = WAIT_OBJECT_0;
-    bool synchronizeOnly = false; ///< Open it without the right to read its start time
+    bool synchronizeOnly = false;  ///< Open it without the right to read its start time
+    std::size_t timeoutsFirst = 0; ///< WAIT_TIMEOUT for this many waits, then answer
 };
 
 [[nodiscard]] FakeWait& fakeWait()
 {
     static FakeWait fake;
     return fake;
+}
+
+/// Every fake wait's timeout, in order, since a test last cleared it.
+[[nodiscard]] std::vector<DWORD>& fakeTimeouts()
+{
+    static std::vector<DWORD> timeouts;
+    return timeouts;
 }
 
 HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
@@ -248,7 +259,8 @@ HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
 DWORD WINAPI fakeWaitForSingleObject(HANDLE /*handle*/, DWORD timeout)
 {
     fakeWait().timeout = timeout;
-    return fakeWait().answer;
+    fakeTimeouts().push_back(timeout);
+    return fakeTimeouts().size() <= fakeWait().timeoutsFirst ? DWORD{WAIT_TIMEOUT} : fakeWait().answer;
 }
 
 const WaitFunctions WAIT_FAKES{.openProcess = &fakeOpenProcess, .waitForSingleObject = &fakeWaitForSingleObject};
@@ -265,7 +277,7 @@ TEST(ElevatedRestartTest, TheElevatedCopyWaitsForTheStandardOneBounded)
     EXPECT_EQ(waitForHandoff(4242, ownTicks(), HANDOFF_WAIT_MS, WAIT_FAKES), HandoffWait::Exited);
     EXPECT_EQ(fakeWait().openedPid, 4242U);
     EXPECT_EQ(fakeWait().access, static_cast<DWORD>(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION)) << "only to check and wait on it";
-    EXPECT_EQ(fakeWait().timeout, HANDOFF_WAIT_MS) << "never INFINITE";
+    EXPECT_EQ(fakeWait().timeout, HANDOFF_PROGRESS_EVERY_MS) << "never INFINITE: a slice, so it can say it still waits";
 
     fakeWait() = FakeWait{.answer = WAIT_TIMEOUT};
     EXPECT_EQ(waitForHandoff(4242, ownTicks(), 5, WAIT_FAKES), HandoffWait::TimedOut);
@@ -275,6 +287,59 @@ TEST(ElevatedRestartTest, TheElevatedCopyWaitsForTheStandardOneBounded)
 
     fakeWait() = FakeWait{.answer = WAIT_ABANDONED};
     EXPECT_EQ(waitForHandoff(4242, ownTicks(), 5, WAIT_FAKES), HandoffWait::Unopenable) << "any other answer: the lock decides";
+}
+
+// #3781: the whole hand-off shares HANDOFF_PATIENCE, the process wait and the lock's tries, so the user isn't left with no
+// window for the 45 s the two used to add up to.
+TEST(ElevatedRestartTest, TheWaitAndTheLockShareOnePatience)
+{
+    EXPECT_EQ(HANDOFF_PATIENCE, std::chrono::seconds{20});
+    EXPECT_EQ(HANDOFF_WAIT_MS, 20'000U) << "the process wait may take it all";
+    EXPECT_EQ(handoffLockPatience(std::chrono::milliseconds{0}), HANDOFF_PATIENCE) << "an Unopenable process: the lock gets it all";
+    EXPECT_EQ(handoffLockPatience(std::chrono::milliseconds{1'500}), std::chrono::milliseconds{18'500});
+    EXPECT_EQ(handoffLockPatience(HANDOFF_PATIENCE), std::chrono::milliseconds{0}) << "timed out: one try of the lock";
+    EXPECT_EQ(handoffLockPatience(HANDOFF_PATIENCE + std::chrono::milliseconds{250}), std::chrono::milliseconds{0}) << "never negative";
+}
+
+// #3781: the wait goes in slices and says after each one how long it has waited, then ends at its timeout exactly.
+TEST(ElevatedRestartTest, TheWaitSaysHowLongItHasWaited)
+{
+    std::vector<std::chrono::milliseconds> said;
+    const HandoffProgress record = [&said](std::chrono::milliseconds waited)
+    {
+        said.push_back(waited);
+    };
+
+    fakeWait() = FakeWait{.timeoutsFirst = 100};
+    fakeTimeouts().clear();
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 10'000, WAIT_FAKES, record, 3'000), HandoffWait::TimedOut);
+    EXPECT_EQ(fakeTimeouts(), (std::vector<DWORD>{3'000, 3'000, 3'000, 1'000})) << "no longer than the timeout in all";
+    EXPECT_EQ(said,
+              (std::vector<std::chrono::milliseconds>{
+                  std::chrono::milliseconds{3'000}, std::chrono::milliseconds{6'000}, std::chrono::milliseconds{9'000}}))
+        << "said while still waiting, not at the end";
+
+    said.clear();
+    fakeWait() = FakeWait{.timeoutsFirst = 2};
+    fakeTimeouts().clear();
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 10'000, WAIT_FAKES, record, 3'000), HandoffWait::Exited);
+    EXPECT_EQ(fakeTimeouts().size(), 3U) << "it closed during the third slice";
+    EXPECT_EQ(said.size(), 2U);
+
+    said.clear();
+    fakeWait() = FakeWait{};
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 10'000, WAIT_FAKES, record, 3'000), HandoffWait::Exited);
+    EXPECT_TRUE(said.empty()) << "nothing to say when it closed at once";
+
+    fakeWait() = FakeWait{.timeoutsFirst = 100};
+    fakeTimeouts().clear();
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 10'000, WAIT_FAKES, {}, 0), HandoffWait::TimedOut);
+    EXPECT_EQ(fakeTimeouts(), (std::vector<DWORD>{10'000})) << "no slices: one wait for the timeout";
+
+    fakeWait() = FakeWait{.timeoutsFirst = 100};
+    fakeTimeouts().clear();
+    EXPECT_EQ(waitForHandoff(4242, ownTicks(), 0, WAIT_FAKES, record, 3'000), HandoffWait::TimedOut);
+    EXPECT_EQ(fakeTimeouts(), (std::vector<DWORD>{0})) << "no time: one look";
 }
 
 // #3676: a process whose start time can't be read can't be told from one that took the PID, so it isn't waited for.

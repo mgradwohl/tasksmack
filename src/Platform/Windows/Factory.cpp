@@ -294,9 +294,10 @@ bool elevatedThroughUac()
     return type == TokenElevationTypeFull;
 }
 
-HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks)
+HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks, const HandoffProgress& onProgress)
 {
-    return Windows::ElevatedRestart::waitForHandoff(static_cast<DWORD>(pid), startTicks);
+    return Windows::ElevatedRestart::waitForHandoff(
+        static_cast<DWORD>(pid), startTicks, Windows::ElevatedRestart::HANDOFF_WAIT_MS, {}, onProgress);
 }
 
 std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir)

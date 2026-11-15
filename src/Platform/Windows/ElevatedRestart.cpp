@@ -7,6 +7,7 @@
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -223,7 +224,12 @@ AdministratorPrompt promptFor(TOKEN_ELEVATION_TYPE elevationType) noexcept
     return elevationType == TokenElevationTypeLimited ? AdministratorPrompt::Consent : AdministratorPrompt::Credentials;
 }
 
-HandoffWait waitForHandoff(DWORD pid, std::uint64_t startTicks, DWORD timeoutMs, const WaitFunctions& functions)
+HandoffWait waitForHandoff(DWORD pid,
+                           std::uint64_t startTicks,
+                           DWORD timeoutMs,
+                           const WaitFunctions& functions,
+                           const HandoffProgress& onProgress,
+                           DWORD progressEveryMs)
 {
     auto* const opened = functions.openProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
     const DWORD openError = GetLastError();
@@ -238,14 +244,30 @@ HandoffWait waitForHandoff(DWORD pid, std::uint64_t startTicks, DWORD timeoutMs,
     {
         return HandoffWait::NotThatProcess; // the PID was reused, or isn't the one that restarted this copy
     }
-    switch (functions.waitForSingleObject(process.get(), timeoutMs))
+    // In slices, so the wait can say it is still waiting (#3781); never INFINITE, and never longer than timeoutMs.
+    const DWORD slice = progressEveryMs == 0 ? timeoutMs : progressEveryMs;
+    DWORD waited = 0;
+    while (true)
     {
-    case WAIT_OBJECT_0:
-        return HandoffWait::Exited;
-    case WAIT_TIMEOUT:
-        return HandoffWait::TimedOut;
-    default:
-        return HandoffWait::Unopenable; // a handle that can't be waited on: the lock decides
+        const DWORD thisSlice = std::min(slice, timeoutMs - waited);
+        switch (functions.waitForSingleObject(process.get(), thisSlice))
+        {
+        case WAIT_OBJECT_0:
+            return HandoffWait::Exited;
+        case WAIT_TIMEOUT:
+            break;
+        default:
+            return HandoffWait::Unopenable; // a handle that can't be waited on: the lock decides
+        }
+        waited += thisSlice;
+        if (waited >= timeoutMs)
+        {
+            return HandoffWait::TimedOut;
+        }
+        if (onProgress)
+        {
+            onProgress(std::chrono::milliseconds{waited});
+        }
     }
 }
 

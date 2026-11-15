@@ -174,9 +174,9 @@ namespace Platform
 /// The elevated copy's wait for the Standard TaskSmack that restarted it (#2728), process @p pid created at
 /// @p startTicks, to exit: bounded, so a Standard copy that hangs doesn't stop it, and skipped for a PID another
 /// process has taken. Another account's elevation often may not open the process (Unopenable); the instance
-/// lock, tried again for HANDOFF_LOCK_PATIENCE, is the hand-off then (main.cpp). Called once, by main.cpp,
-/// before anything else.
-HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks);
+/// lock, tried again for the rest of HANDOFF_PATIENCE, is the hand-off then (main.cpp). @p onProgress, when set, is
+/// told every HANDOFF_PROGRESS_EVERY how long it has waited (#3781). Called once, by main.cpp, before anything else.
+HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks, const HandoffProgress& onProgress = {});
 
 /// Whether the config directory an elevated restart was handed (--config-dir, #2728) may be used: a real folder
 /// in a user's profile, with no junction or link on its path, owned by no administrator or system account, its

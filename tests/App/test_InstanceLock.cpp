@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -13,6 +14,7 @@
 #include <string>
 #include <system_error>
 #include <thread>
+#include <vector>
 
 #ifndef _WIN32
 #include <sys/stat.h>
@@ -300,6 +302,44 @@ TEST_F(InstanceLockTest, ALockThatCantBeTakenIsntTriedAgain)
     EXPECT_EQ(lock->status(), InstanceLock::Status::Unavailable);
     EXPECT_FALSE(lock->error().empty());
     EXPECT_LT(std::chrono::steady_clock::now() - started, std::chrono::seconds{5}) << "tried again for its patience";
+}
+
+// #3781: while another process holds the lock, a patient try says how long it has tried, so an elevated restart's wait
+// for the Standard copy isn't silent.
+TEST_F(InstanceLockTest, APatientTrySaysHowLongItHasTried)
+{
+    const std::filesystem::path path = instanceLockPath(m_Dir);
+    const InstanceLock holder(path);
+    ASSERT_EQ(holder.status(), InstanceLock::Status::Acquired);
+    std::vector<std::chrono::milliseconds> said;
+    const LockWaitProgress progress{
+        .report = [&said](std::chrono::milliseconds tried) { said.push_back(tried); },
+        .every = std::chrono::milliseconds{50},
+    };
+    const std::unique_ptr<InstanceLock> lock =
+        acquireInstanceLock(path, std::chrono::milliseconds{400}, std::chrono::milliseconds{10}, progress);
+    EXPECT_EQ(lock->status(), InstanceLock::Status::HeldByAnotherInstance);
+    ASSERT_FALSE(said.empty()) << "said nothing in 400 ms of tries";
+    EXPECT_GE(said.front(), std::chrono::milliseconds{50}) << "not before the first interval";
+    for (std::size_t i = 1; i < said.size(); ++i)
+    {
+        EXPECT_GE(said[i] - said[i - 1], std::chrono::milliseconds{50}) << "about every interval, no more often";
+    }
+    EXPECT_LT(said.back(), std::chrono::milliseconds{400}) << "only while still trying";
+}
+
+TEST_F(InstanceLockTest, ATryThatNeedsNoPatienceSaysNothing)
+{
+    const std::filesystem::path path = instanceLockPath(m_Dir);
+    int said = 0;
+    const LockWaitProgress progress{.report = [&said](std::chrono::milliseconds) { ++said; }, .every = std::chrono::milliseconds{1}};
+    const std::unique_ptr<InstanceLock> lock = acquireInstanceLock(path, std::chrono::seconds{10}, std::chrono::milliseconds{10}, progress);
+    EXPECT_EQ(lock->status(), InstanceLock::Status::Acquired);
+    EXPECT_EQ(said, 0) << "a free lock is taken at once";
+
+    const std::unique_ptr<InstanceLock> held = acquireInstanceLock(path, std::chrono::milliseconds{0}, LOCK_RETRY_EVERY, progress);
+    EXPECT_EQ(held->status(), InstanceLock::Status::HeldByAnotherInstance);
+    EXPECT_EQ(said, 0) << "no patience: one try, nothing to say";
 }
 } // namespace
 } // namespace App

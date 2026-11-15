@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -119,20 +120,34 @@ inline constexpr int ALREADY_RUNNING_EXIT_CODE = 75;
     return std::nullopt;
 }
 
+/// How often a patient acquireInstanceLock() tries the lock again, unless told otherwise.
+inline constexpr std::chrono::milliseconds LOCK_RETRY_EVERY{100};
+
+/// How a patient acquireInstanceLock() says it is still waiting (#3781): while another process holds the lock, @p report
+/// is told how long it has tried, about every @p every. Either unset: nothing is reported.
+struct LockWaitProgress
+{
+    std::function<void(std::chrono::milliseconds tried)> report;
+    std::chrono::milliseconds every{0};
+};
+
 /// Takes the lock on @p lockPath; while another process holds it, tries again every @p retryEvery until
 /// @p patience has passed, then returns the last try. An elevated restart (#2728) waits so for the Standard copy,
 /// which holds the lock until it has saved its settings and closed: the lock itself is the hand-off, as the
-/// elevated copy may not be able to open that process to wait on it. Zero @p patience: one try, as before.
+/// elevated copy may not be able to open that process to wait on it. Zero @p patience: one try, as before. @p progress
+/// says, while it tries, that it is still waiting.
 [[nodiscard]] std::unique_ptr<InstanceLock> acquireInstanceLock(const std::filesystem::path& lockPath,
                                                                 std::chrono::milliseconds patience,
-                                                                std::chrono::milliseconds retryEvery = std::chrono::milliseconds{100});
+                                                                std::chrono::milliseconds retryEvery = LOCK_RETRY_EVERY,
+                                                                const LockWaitProgress& progress = {});
 
 #ifdef _WIN32
 /// acquireInstanceLock() on file @p name in a handed-over config folder, opened only through the folder held (#3774).
 [[nodiscard]] std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFolder& folder,
                                                                 const std::filesystem::path& name,
                                                                 std::chrono::milliseconds patience,
-                                                                std::chrono::milliseconds retryEvery = std::chrono::milliseconds{100});
+                                                                std::chrono::milliseconds retryEvery = LOCK_RETRY_EVERY,
+                                                                const LockWaitProgress& progress = {});
 #endif
 
 } // namespace App
