@@ -357,6 +357,11 @@ add_test(NAME MergeBenchmarkBaselinesScript
 add_test(NAME BenchAcrossLaunchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_across_launches.py)
 
+# tools/check-no-reverts.py, the revert guard (#3986, after #3972): a change whose diff undoes a recent merge is
+# found, on scratch git repositories.
+add_test(NAME CheckNoRevertsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_no_reverts.py)
+
 # tools/tidy-changed-files.py picks the PR clang-tidy jobs' translation units (#1406, #1626). The tests
 # build throwaway git repositories (about 10 s idle). On a loaded Windows machine each git process is
 # far slower and the run neared 180 s (#1797); 600 s keeps it clear of that and of the CI --timeout.

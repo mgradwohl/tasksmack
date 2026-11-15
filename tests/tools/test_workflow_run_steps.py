@@ -2798,6 +2798,69 @@ def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
     return out
 
 
+@unittest.skipUnless(shutil.which("git"), "git not available")
+class CiRevertGuardTests(unittest.TestCase):
+    """#3986: ci.yml's advisory revert guard runs on every pull request and merge group, docs-only ones too, and its
+    step warns, passes and writes the summary for a change that reverts a recent merge; the description is data."""
+
+    WORKFLOW = WORKFLOWS / "ci.yml"
+    JOB = "revert-guard"
+    STEP = "Check for reverts of recent merges"
+
+    def test_the_job_runs_on_every_pull_request_and_merge_group(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split(f"\n  {self.JOB}:\n", 1)[1].split("\n  # ", 1)[0]
+        self.assertIn("    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'\n", job)
+        self.assertNotIn("needs:", job, "no detect job that could skip it on a docs-only change")
+        on = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertNotIn("paths", on, "no paths filter: a required check must report on every change")
+        self.assertIn("merge_group:", on)
+        step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+        self.assertIn("--advisory", step.run, "advisory until the maintainer requires it (#3986)")
+        self.assertNotIn("${{", step.run, "the labels and description reach it through the environment")
+
+    def test_the_step_warns_on_a_stale_revert_and_never_runs_the_description(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            repo = root / "repo"
+            (repo / "tools").mkdir(parents=True)
+            shutil.copy(REPO / "tools" / "check-no-reverts.py", repo / "tools" / "check-no-reverts.py")
+            env = {**os.environ, "GIT_AUTHOR_NAME": "T", "GIT_AUTHOR_EMAIL": "t@example.invalid",
+                   "GIT_COMMITTER_NAME": "T", "GIT_COMMITTER_EMAIL": "t@example.invalid",
+                   "GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_SYSTEM": os.devnull}
+
+            def git(*args):
+                return subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, check=True,
+                                      env=env).stdout.strip()
+
+            lines = "".join(f"    int value_{i} = compute_the_recent_thing({i});\n" for i in range(8))
+            git("init", "-q", "-b", "main")
+            (repo / "a.cpp").write_text("// start\n", encoding="utf-8")
+            git("add", "-A")
+            git("commit", "-q", "-m", "start")
+            (repo / "a.cpp").write_text("// start\n" + lines, encoding="utf-8")
+            git("commit", "-q", "-am", "feat: recent lines (#901)")
+            base = git("rev-parse", "HEAD")
+            git("switch", "-q", "-c", "stale")
+            (repo / "a.cpp").write_text("// start\n", encoding="utf-8")
+            git("commit", "-q", "-am", "fix: over a stale tree (#902)")
+            head = git("rev-parse", "HEAD")
+            summary = root / "summary.md"
+            summary.write_text("", encoding="utf-8")
+            marker = root / "pwned"
+            step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+            script = f'set -e\npython() {{ "{posix(Path(sys.executable))}" "$@"; }}\ncd "{posix(repo)}"\n' + step.run
+            result = run_bash(script, root, {
+                "BASE_SHA": base, "HEAD_SHA": head, "PR_LABELS": "bug", "RUNNER_TEMP": posix(root),
+                "GITHUB_STEP_SUMMARY": posix(summary), "PYTHONUTF8": "1",
+                "PR_BODY": f'Fixes #902 $(touch "{posix(marker)}") `touch "{posix(marker)}"`',
+            })
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("::warning title=Revert guard::This change removes 8 line(s)", result.stdout)
+            self.assertIn("feat: recent lines (#901)", summary.read_text(encoding="utf-8"))
+            self.assertFalse(marker.exists(), "the description was run as a command")
+
+
 if __name__ == "__main__":
     # With no --only-/--skip- flag every case runs, as before.
     only = [arg[len("--only-"):] for arg in sys.argv[1:] if arg.startswith("--only-") and arg[len("--only-"):] in GROUPS]
