@@ -2102,6 +2102,27 @@ class WingetRehearsalTests(unittest.TestCase):
         step = find_step(WORKFLOWS / "release.yml", "Check whether TaskSmack.TaskSmack is in winget-pkgs", job="rehearse-winget")
         self.assertEqual(step.run.rstrip().splitlines()[-1].strip(), "exit 0")
 
+    @unittest.skipUnless(PWSH, "needs pwsh")
+    def test_every_step_script_parses_as_powershell(self):
+        # A backtick before a `u` (as in "`update`" inside a double-quoted string) is a Unicode escape and a parse
+        # error: the first dry run failed on one.
+        for name in step_names(WORKFLOWS / "release.yml", "rehearse-winget"):
+            run = find_step(WORKFLOWS / "release.yml", name, job="rehearse-winget").run
+            if not run:
+                continue
+            with tempfile.TemporaryDirectory() as tmp:
+                path = Path(tmp) / "step.ps1"
+                path.write_text(run + "\n", encoding="utf-8")
+                parse = (
+                    "$e = $null; [System.Management.Automation.Language.Parser]::ParseFile("
+                    f"'{path}', [ref]$null, [ref]$e) | Out-Null; $e | ForEach-Object {{ $_.Message }}; exit $e.Count"
+                )
+                result = subprocess.run(
+                    [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", parse],
+                    capture_output=True, text=True, encoding="utf-8", check=False, timeout=60,
+                )
+                self.assertEqual(result.returncode, 0, f"{name}: {result.stdout}{result.stderr}")
+
     def test_the_rehearsal_runs_on_a_dry_run_only(self):
         condition = "".join(self.job("rehearse-winget")).split("if: >-")[1].split("runs-on:")[0]
         self.assertIn("github.event_name == 'workflow_dispatch'", condition)

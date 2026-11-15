@@ -3605,7 +3605,7 @@ jobs:
           $status = if ($out.Count -gt 0 -and $out[0] -match '^HTTP/\S+ (\d{3})') { [int]$Matches[1] } else { 0 }
           if ($status -eq 200) { 'present=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append; exit 0 }
           if ($status -ne 404) { Write-Error "GET the winget-pkgs folder returned $status ($($out -join ' ')); re-run the job."; exit 1 }
-          $msg = "$env:WINGET_PACKAGE_ID isn't in microsoft/winget-pkgs yet, so wingetcreate's `update` can't be rehearsed; only the template manifests were checked."
+          $msg = "$env:WINGET_PACKAGE_ID isn't in microsoft/winget-pkgs yet, so wingetcreate's update can't be rehearsed; only the template manifests were checked."
           Write-Host "::notice title=WinGet::$msg"
           "- WinGet rehearsal: $msg" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
           'present=false' | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
