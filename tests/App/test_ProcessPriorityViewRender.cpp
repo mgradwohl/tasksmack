@@ -680,7 +680,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheClassNamesShowAtEveryDisplayScaleInTheM
         Detail::DiscretePick pick;
         const auto body = [&]
         {
-            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_PRIORITY);
+            const ProcessActionsBlock::Widths widths = ProcessActionsBlock::measure(WINDOWS_PRIORITY, false);
             (void) ProcessOverviewCard::render("ClassCard",
                                                ICON_FA_GAUGE_HIGH,
                                                "Priority",

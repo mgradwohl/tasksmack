@@ -1044,7 +1044,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     ProcessDetailsLayout::TopRowLayout controlsLayout{};
     if (hasControls)
     {
-        const ProcessActionsBlock::Widths controlWidths = ProcessActionsBlock::measure(m_ActionCapabilities);
+        const ProcessActionsBlock::Widths controlWidths =
+            ProcessActionsBlock::measure(m_ActionCapabilities, m_Views->m_ActionsView.virusTotalOffered(m_ActionCapabilities));
         controlsLayout = ProcessDetailsLayout::chooseTopRowLayout(
             contentWidth, leftWidth + spacing + rightWidth, spacing, controlWidths.actionsCard(), controlWidths.priorityCard());
     }

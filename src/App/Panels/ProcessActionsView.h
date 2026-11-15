@@ -467,10 +467,21 @@ class ProcessActionsView
     }
 
     /// Width the buttons renderControls() draws for @p capabilities need, at the current font (needs
-    /// an ImGui frame): the process-control row, or the trace button alone when that is wider -- the
-    /// trace button starts a row of its own whenever it does not fit after them, so the block never
-    /// needs both on one line. 0 when the platform has none of the buttons.
-    [[nodiscard]] static float buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities);
+    /// an ImGui frame): the process-control row, or the widest button after it when that is wider --
+    /// each of those starts a row of its own whenever it does not fit after the others, so the block
+    /// never needs two on one line. @p virusTotalOffered counts Look up on VirusTotal
+    /// (virusTotalOffered(), #3813). 0 when the platform has none of the buttons.
+    [[nodiscard]] static float buttonsRowWidth(const Platform::ProcessActionCapabilities& capabilities, bool virusTotalOffered);
+
+    /// Whether renderControls() draws Look up on VirusTotal for @p capabilities, with setVirusTotal()'s
+    /// client and key (VirusTotalLookup::offered()).
+    [[nodiscard]] bool virusTotalOffered(const Platform::ProcessActionCapabilities& capabilities) const noexcept
+    {
+        return VirusTotalLookup::offered(capabilities, m_VirusTotal);
+    }
+
+    /// Width of the Look up on VirusTotal button at the current font, or 0 where it is not @p offered (#3813).
+    [[nodiscard]] static float virusTotalButtonWidth(bool offered);
 
     /// Width of the trace button for @p capabilities at the current font (needs an ImGui frame), or 0
     /// where it is hidden (Detail::SyscallTraceButtonState::Hidden).

@@ -72,8 +72,9 @@ struct Widths
 /// Context::priorityHeldElsewhere). For ProcessActionsView::holdPriorityChanges().
 [[nodiscard]] const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsewhere) noexcept;
 
-/// Measures the widths chooseTopRowLayout() lays the cards out from.
-[[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities);
+/// Measures the widths chooseTopRowLayout() lays the cards out from; @p virusTotalOffered counts the
+/// Look up on VirusTotal button (ProcessActionsView::virusTotalOffered(), #3813).
+[[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities, bool virusTotalOffered);
 
 /// What render() draws with: the views, and the process they act on this frame.
 struct Context
