@@ -708,11 +708,8 @@ set(COMMON_TEST_SOURCES
     Platform/test_AsciiCase.cpp
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
-    Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokerSessionRules.cpp  # each request kind's category trait (#3783)
-    Platform/test_BrokeredProcessActions.cpp
     Platform/test_BrokeredReader.cpp  # each read kind's BrokeredReader traits (#3782)
-    Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
     Platform/test_ThreadName.cpp
     Platform/test_CurrentProcess.cpp
@@ -876,6 +873,10 @@ set(WINDOWS_MATH_TEST_SOURCES
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES
+    # The broker's client and request mapping, Windows only since Linux has no helper (#3580, #3784)
+    Platform/test_BrokerRequestMapping.cpp  # what the helper does with each request (#2517)
+    Platform/test_BrokeredProcessActions.cpp
+    Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_ProcessProbeContract.cpp
     Platform/test_SystemProbeContract.cpp
     Platform/test_ProcessActionsContract.cpp
@@ -1267,9 +1268,6 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerProtocol.cpp
-    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
-    ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUserSessions.cpp
-    ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/TaskManagerReplacementService.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/CurrentProcess.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/PublicIpLookup.cpp
