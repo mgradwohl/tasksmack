@@ -803,8 +803,8 @@ BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::Request
     return [handler = std::move(handler), ownedByUser = std::move(ownedByUser)](const Broker::Request& request) -> Broker::Response
     {
         // The Hello and actions pass. Each per-process read below needs its target to be the user's,
-        // and any other read is refused: fails closed (BrokerPipeServer::isRead() asserts every request
-        // kind is sorted into a read or not).
+        // and any other read is refused: fails closed (every request kind has a Broker::RequestKind trait
+        // that says whether it is a read, #3783).
         if (!BrokerPipeServer::isRead(request))
         {
             return handler(request);

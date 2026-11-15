@@ -40,40 +40,22 @@ namespace
 
 bool isActionWindowsDoes(const Broker::Request& request) noexcept
 {
-    // Every signal: Terminate, Kill, and since #2582 Suspend and Resume (NtSuspendProcess, NtResumeProcess);
-    // Efficiency mode (#3071); Replace Task Manager (#3072), which isn't a process action but is one the
-    // user chose, so it is the one action of an over-the-shoulder session too. Group: User's Disconnect and
-    // Sign out of another user's session (#3076), and one thread suspended, resumed or ended (#3069), are
-    // actions the user chose and confirmed as well. An I/O priority hint (#3362): High needs an administrator.
-    // Close connection (#3358): SetTcpEntry needs an administrator for any connection.
-    return std::holds_alternative<Broker::SignalRequest>(request) || std::holds_alternative<Broker::PriorityRequest>(request) ||
-           std::holds_alternative<Broker::IoPriorityRequest>(request) || std::holds_alternative<Broker::AffinityRequest>(request) ||
-           std::holds_alternative<Broker::EfficiencyModeRequest>(request) ||
-           std::holds_alternative<Broker::TaskManagerReplacementRequest>(request) ||
-           std::holds_alternative<Broker::SessionActionRequest>(request) || std::holds_alternative<Broker::ThreadActionRequest>(request) ||
-           std::holds_alternative<Broker::CloseConnectionRequest>(request);
+    // Every action kind (Broker::RequestKind) is one Windows does: protocol v23 dropped the kinds only Linux's
+    // helper served (#3580).
+    return Broker::isRequestOf(request, Broker::RequestCategory::Action);
 }
 
 bool isRead(const Broker::Request& request) noexcept
 {
-    // Every kind is sorted into the Hello, an action or a read. One added to Broker::Request must be
-    // sorted here too, or a one-action session (#2550) and the over-the-shoulder read filter
-    // (BrokerHelper::readsOnlyOwnProcesses) might let it through: revisit both, then this count.
-    // TaskManagerReplacementRequest (#3072), SessionActionRequest (#3076), ThreadActionRequest (#3069) and
-    // CloseConnectionRequest (#3358) are actions (isActionWindowsDoes()). Protocol v23 dropped the kinds only
-    // Linux's helper served (#3580). OpenFilesBatchRequest (#3578) is a read: Find handles' open files.
-    // MemoryMapRequest (#3665) is a read: Process Details' memory map.
-    static_assert(std::variant_size_v<Broker::Request> == 17, "sort the new request kind into an action or a read");
-    return std::holds_alternative<Broker::EnvironmentRequest>(request) || std::holds_alternative<Broker::ModulesRequest>(request) ||
-           std::holds_alternative<Broker::OpenFilesRequest>(request) || std::holds_alternative<Broker::ConnectionsRequest>(request) ||
-           std::holds_alternative<Broker::ThreadsRequest>(request) ||        // Process Details' threads (#3069)
-           std::holds_alternative<Broker::OpenFilesBatchRequest>(request) || // Find handles' administrator pass (#3578)
-           std::holds_alternative<Broker::MemoryMapRequest>(request);        // Process Details' memory map (#3665)
+    // Every kind is sorted into the Hello, an action or a read by its Broker::RequestKind trait, which
+    // BrokerSessionRules.h's static_assert requires of every alternative (#2550, #3783).
+    return Broker::isRequestOf(request, Broker::RequestCategory::Read);
 }
 
 bool putsOffTheWindowsIdleExit(const Broker::Request& request) noexcept
 {
-    return Broker::putsOffTheIdleExit(request) && (std::holds_alternative<Broker::Hello>(request) || isActionWindowsDoes(request));
+    return Broker::putsOffTheIdleExit(request) &&
+           (Broker::isRequestOf(request, Broker::RequestCategory::Hello) || isActionWindowsDoes(request));
 }
 
 SessionEnd serve(HANDLE pipe,
