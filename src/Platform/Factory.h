@@ -46,7 +46,8 @@ namespace Platform
 [[nodiscard]] std::unique_ptr<IProcessProbe> makeProcessProbe();
 
 /// Creates the opt-in per-process UDP byte collector (#1492), stopped: Windows' ETW session on
-/// Microsoft-Windows-Kernel-Network (WindowsEtwNetCollector). Null on Linux, which has no such source.
+/// Microsoft-Windows-Kernel-Network (WindowsEtwNetCollector); on Linux, an eBPF UDP counter (LinuxUdpTrafficCollector,
+/// #3366) when TaskSmack runs as root (#3580), and null otherwise, since sock_diag has no UDP byte counters.
 /// Shared: App starts and stops it, and the process probe reads it (IProcessProbe::setUdpTrafficCollector()).
 [[nodiscard]] std::shared_ptr<IUdpTrafficCollector> makeUdpTrafficCollector();
 
@@ -57,9 +58,8 @@ namespace Platform
 /// (#2550), where it is beside TaskSmack.exe in an install only an administrator can change and
 /// TaskSmack isn't already elevated; null otherwise. Linux has no helper (#3580): it runs TaskSmack as
 /// Administrator (root) instead. Not started here: the first
-/// IProcessActions::runAuthorized() starts it, after the password or consent prompt. @p ownerWindow is
-/// the native window that prompt belongs to (an HWND on Windows, so the UAC prompt comes up in front of
-/// TaskSmack), or null; polkit's agent places its own. App makes one and shares it between every
+/// IProcessActions::runAuthorized() starts it, after the UAC prompt. @p ownerWindow is the native window
+/// that prompt belongs to (an HWND, so it comes up in front of TaskSmack), or null. App makes one and shares it between every
 /// IProcessActions it composes (BrokeredProcessActions).
 [[nodiscard]] std::shared_ptr<IPrivilegedBroker> makePrivilegedBroker(void* ownerWindow);
 
@@ -67,8 +67,8 @@ namespace Platform
 /// entries' PNG icons on Linux.
 [[nodiscard]] std::unique_ptr<IProcessIconSource> makeProcessIconSource();
 
-/// Creates the platform-appropriate IProcessEnvironmentReader implementation (#179). Windows returns
-/// an UnsupportedProcessEnvironmentReader (hasEnvironment() false).
+/// Creates the platform-appropriate IProcessEnvironmentReader implementation (#179): /proc/<pid>/environ on
+/// Linux, the process's PEB on Windows (WindowsProcessEnvironmentReader).
 [[nodiscard]] std::unique_ptr<IProcessEnvironmentReader> makeProcessEnvironmentReader();
 
 /// Creates the platform-appropriate IProcessConnectionsReader implementation (#799; Windows #1489).
@@ -77,16 +77,16 @@ namespace Platform
 /// Creates the platform-appropriate IProcessModulesReader implementation (#802).
 [[nodiscard]] std::unique_ptr<IProcessModulesReader> makeProcessModulesReader();
 
-/// Creates the platform-appropriate IProcessThreadsReader implementation (#3069; Windows: unsupported
-/// until its lane adds one).
+/// Creates the platform-appropriate IProcessThreadsReader implementation (#3069): /proc/<pid>/task on Linux,
+/// SystemProcessInformation's threads on Windows (WindowsProcessThreadsReader).
 [[nodiscard]] std::unique_ptr<IProcessThreadsReader> makeProcessThreadsReader();
 
 /// Creates the platform-appropriate IProcessMemoryMapReader implementation (#3089): smaps on Linux,
 /// VirtualQueryEx with GetMappedFileNameW on Windows.
 [[nodiscard]] std::unique_ptr<IProcessMemoryMapReader> makeProcessMemoryMapReader();
 
-/// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066; Windows: unsupported
-/// until its lane adds one).
+/// Creates the platform-appropriate ISystemConnectionsReader implementation (#3066): netlink INET_DIAG on Linux, the
+/// owner-PID TCP and UDP tables on Windows (WindowsSystemConnectionsReader, #3356).
 [[nodiscard]] std::unique_ptr<ISystemConnectionsReader> makeSystemConnectionsReader();
 
 /// Creates the platform-appropriate IUserSessions implementation (#3076): logind's sessions on Linux, the
@@ -141,13 +141,14 @@ namespace Platform
 [[nodiscard]] std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker);
 
 /// Creates the HTTPS client the opt-in update check sends its one request with (#3093): WinHTTP on
-/// Windows (WindowsHttpsClient). Null on Linux, which has no HTTPS client yet: the check isn't offered
-/// there, and nothing is sent. Making it opens nothing; each request opens and closes its own session.
+/// Windows (WindowsHttpsClient), libcurl on Linux (LinuxHttpsClient, #3238). Null where libcurl is missing or
+/// can't serve a worker thread (LinuxHttpsClient::usable()): the check isn't offered then, and nothing is sent.
+/// Making it opens nothing; each request opens and closes its own session.
 [[nodiscard]] std::shared_ptr<IHttpsClient> makeHttpsClient();
 
 /// Creates the sign-in entry Settings' "Start TaskSmack when I sign in" reads and writes (#3093, part 2):
-/// the HKCU Run key's TaskSmack value on Windows (WindowsStartAtLogin). Null on Linux until its XDG
-/// autostart entry is written (agent:WSL's part): the row is hidden there. Making it reads nothing.
+/// the HKCU Run key's TaskSmack value on Windows (WindowsStartAtLogin); on Linux, the per-user XDG autostart
+/// entry ~/.config/autostart/tasksmack.desktop (LinuxStartAtLogin, #3254). Making it reads nothing.
 [[nodiscard]] std::shared_ptr<IStartAtLogin> makeStartAtLogin();
 
 /// Restart as administrator (#2728): TaskSmack started again elevated, through the UAC prompt, owned by

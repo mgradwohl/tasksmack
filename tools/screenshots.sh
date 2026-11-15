@@ -221,7 +221,7 @@ done
 # --hostname namespace doesn't change: review the user shot for names before committing it.
 SHOT_TOML=$'[process_table]\ngroup_by = \'unit\'' run_shot "processes-grouped-unit-$DARK" "$DARK" TASKSMACK_TAB=Processes
 SHOT_TOML=$'[process_table]\ngroup_by = \'app\'' run_shot "processes-grouped-app-$DARK" "$DARK" TASKSMACK_TAB=Processes
-SHOT_TOML=$'[process_table]\ngroup_by = \'user\'' run_shot "processes-grouped-user-${LIGHT:-$DARK}" "${LIGHT:-$DARK}" TASKSMACK_TAB=Processes
+SHOT_TOML=$'[process_table]\ngroup_by = \'user\'' run_shot "processes-grouped-user-$DARK" "$DARK" TASKSMACK_TAB=Processes
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 for sub in cores gpu network; do
     run_shot "$sub-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_MACHINE_TAB="$sub"

@@ -3,7 +3,7 @@
 // One thread's Suspend, Resume and End (#3069, Windows): Process Details' Threads table's row menu items, their
 // confirm and the result line, as Close connection's (ConnectionCloseControl.h). The action runs on a worker
 // of its own (ProcessActionRun, #2305), so the helper's round trip or a UAC prompt never holds the frame, and a
-// permission refusal offers "Authenticate and retry" (#2308): the helper acts as an administrator.
+// permission refusal offers "Retry as administrator" (#2308): the helper acts as an administrator.
 //
 // The control owns only its UI state; the IProcessActions it acts through stays the panel's (from the
 // composition root) and is passed in, and the panel declares it before the view holding this control, so the
@@ -206,7 +206,7 @@ class ThreadActionControl
             }));
     }
 
-    /// Whether the result line offers "Authenticate and retry" (#2308).
+    /// Whether the result line offers "Retry as administrator" (#2308; AuthorizeWording::RETRY_TEXT).
     [[nodiscard]] bool offersAuthenticateAndRetry() const noexcept
     {
         return m_Retry.has_value() && !busy();
@@ -219,7 +219,7 @@ class ThreadActionControl
         return m_OfferRestart && !busy();
     }
 
-    /// "Authenticate and retry" was pressed: the refused action again, by the helper as an administrator,
+    /// "Retry as administrator" was pressed: the refused action again, by the helper as an administrator,
     /// after the UAC prompt (IProcessActions::runAuthorized()).
     void retryAuthorized()
     {
@@ -261,7 +261,7 @@ class ThreadActionControl
     /// A different process was selected: the last result and its retry are dropped. A confirm still up is left
     /// for ProcessThreadsView::renderConfirmation() to close, as its process is no longer the one shown (ImGui
     /// keeps a modal open until it is closed). An action already running finishes, and says so, but a refusal it
-    /// meets offers no Authenticate and retry.
+    /// meets offers no Retry as administrator.
     void onSelectionChanged()
     {
         ++m_Generation; // an action still running finishes, but offers no retry (it was for the previous process)

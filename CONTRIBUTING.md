@@ -910,15 +910,15 @@ column off, since command lines name the machine's users and paths), the startup
 section that pick the view, and `TASKSMACK_SCREENSHOT`, which writes the frame in-app and quits. The
 matrix is Overview in six themes (`windows-dark`, `ubuntu-light`, `dracula`, `nord-light`, `gruvbox`,
 `monochrome-light`), Processes and System Information in the first dark and the first light theme,
-the Processes table grouped by service, by app and by user (`processes-grouped-unit`, `processes-grouped-app`,
-`processes-grouped-user`, #3068, #3377; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
+the Processes table grouped by service, by app and by user, in the first dark theme (`processes-grouped-unit`,
+`processes-grouped-app`, `processes-grouped-user`, #3068, #3377; on Windows the unit shot shows the Services column, which is what has TaskSmack read the
 service list Unit groups by, and only the Linux set takes `processes-grouped-app` so far), the machine tab's CPU Cores, GPU and Network and I/O sub-tabs (`cores`, `gpu`, `network`, selected by
 `TASKSMACK_MACHINE_TAB`, #2869), Process Details (overview, GPU, network, and the Overview with its
 Modules, Open files and Connections sections expanded by a one-step `TASKSMACK_DEMO` script:
 `details-modules`, `details-openfiles`, `details-connections`, and in the Linux set Environment and
 Security too: `details-environment`, `details-security`; Windows reads both sections as well, but
 `screenshots.ps1` doesn't take them yet) for one process,
-Services, Startup, Users (Windows only so far), Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
+Services, Startup, Settings (`TASKSMACK_OPEN=settings`), About and Help, named `<view>-<theme>.webp`,
 plus three animated WebPs at 12 fps built from frame sequences:
 `overview-live.webp` (8 s of the Overview), `walk-live.webp` (10 s: `TASKSMACK_DEMO` opens the
 Processes table, selects the process and brings up its Process Details' Network tab) and

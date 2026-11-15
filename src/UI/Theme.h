@@ -340,7 +340,7 @@ class Theme
     }
 
     /// The Interface scale setting (#3376): a percentage in [INTERFACE_SCALE_MIN_PERCENT,
-    /// INTERFACE_SCALE_MAX_PERCENT] (DpiScale.h) that replaces the display's measured scale, or 0 for Auto. UILayer
+    /// INTERFACE_SCALE_MAX_PERCENT] (InterfaceScale.h) that replaces the display's measured scale, or 0 for Auto. UILayer
     /// notices a change at the next frame boundary and rebuilds the fonts and style at effectiveDisplayScale().
     void setInterfaceScalePercent(int percent) noexcept
     {
