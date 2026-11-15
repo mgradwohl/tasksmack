@@ -30,8 +30,9 @@ struct Calls
     std::mutex mutex;
     std::map<std::string, int> byKey;
     std::thread::id thread;
-    bool gateOpen = true; ///< Closed: a lookup waits until it opens
-    int entered = 0;      ///< Lookups begun, gate or not
+    bool gateOpen = true;    ///< Closed: a lookup waits until it opens
+    bool emptyNamed = false; ///< Whether "empty" has a name yet; until then it answers ""
+    int entered = 0;         ///< Lookups begun, gate or not
     std::condition_variable gateChanged;
 };
 
@@ -40,6 +41,25 @@ Calls& calls()
     static Calls state;
     return state;
 }
+
+/// The lookups' clock in the retry tests, moved by hand; read on the worker's thread.
+std::atomic<std::chrono::steady_clock::rep>& fakeTicks()
+{
+    static std::atomic<std::chrono::steady_clock::rep> ticks{0};
+    return ticks;
+}
+
+std::chrono::steady_clock::time_point fakeNow()
+{
+    return std::chrono::steady_clock::time_point(std::chrono::steady_clock::duration(fakeTicks().load()));
+}
+
+void advanceClock(std::chrono::steady_clock::duration by)
+{
+    fakeTicks() += by.count();
+}
+
+constexpr std::chrono::milliseconds RETRY{30'000};
 
 std::atomic<int>& drainsBegun()
 {
@@ -75,6 +95,10 @@ std::string lookUp(const std::string& key)
     {
         throw std::runtime_error("lookup failed");
     }
+    if (key == "empty" && !calls().emptyNamed)
+    {
+        return {};
+    }
     return "name of " + key;
 }
 
@@ -97,6 +121,8 @@ class KeyedLookupTest : public ::testing::Test
         calls().thread = {};
         calls().gateOpen = true;
         calls().entered = 0;
+        calls().emptyNamed = false;
+        fakeTicks() = 0;
         drainsBegun() = 0;
         drainsEnded() = 0;
     }
@@ -150,13 +176,82 @@ TEST_F(KeyedLookupTest, AKeyIsLookedUpOnceHoweverOftenItIsAskedFor)
     EXPECT_EQ(lookupsOf("App.1"), 1);
 }
 
-TEST_F(KeyedLookupTest, ALookupThatThrowsAnswersNone)
+// #3794: a lookup that threw keeps no answer. find() answers nullopt, as while it waits, and the key is asked
+// again once the retry interval has passed: once, however often it is asked for meanwhile.
+TEST_F(KeyedLookupTest, ALookupThatThrowsKeepsNoAnswerAndIsAskedAgainAfterTheRetry)
 {
-    KeyedLookup<std::string> lookup({.threadName = THREAD_NAME}, &lookUp);
+    KeyedLookup<std::string> lookup({.threadName = THREAD_NAME, .emptyRetry = RETRY, .now = &fakeNow}, &lookUp);
     (void) lookup.find("throws");
     ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
-    EXPECT_EQ(lookup.find("throws"), std::optional<std::string>(std::string{}));
-    EXPECT_EQ(lookupsOf("throws"), 1) << "the answer is kept, not asked again";
+    for (int i = 0; i < 5; ++i)
+    {
+        EXPECT_EQ(lookup.find("throws"), std::nullopt) << "no answer kept";
+    }
+    advanceClock(RETRY - std::chrono::milliseconds(1));
+    EXPECT_EQ(lookup.find("throws"), std::nullopt);
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_EQ(lookupsOf("throws"), 1) << "not asked again before the retry";
+
+    advanceClock(std::chrono::milliseconds(1));
+    for (int i = 0; i < 5; ++i)
+    {
+        EXPECT_EQ(lookup.find("throws"), std::nullopt);
+    }
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_EQ(lookupsOf("throws"), 2) << "asked once more, not once a find()";
+}
+
+// #3794: an empty answer (the shell's Apps folder not ready at sign-in) is kept and answered, but asked for again
+// once a retry interval: a name that appears later is found. Once named, it's kept for good.
+TEST_F(KeyedLookupTest, AnEmptyAnswerIsAskedAgainOnceARetryUntilItHasOne)
+{
+    KeyedLookup<std::string> lookup({.threadName = THREAD_NAME, .emptyRetry = RETRY, .now = &fakeNow}, &lookUp);
+    EXPECT_FALSE(lookup.find("empty").has_value());
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    for (int i = 0; i < 5; ++i)
+    {
+        EXPECT_EQ(lookup.find("empty"), std::optional<std::string>(std::string{}));
+    }
+    advanceClock(RETRY / 2);
+    EXPECT_EQ(lookup.find("empty"), std::optional<std::string>(std::string{}));
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_EQ(lookupsOf("empty"), 1) << "not asked again before the retry";
+
+    advanceClock(RETRY);
+    {
+        const std::scoped_lock lock(calls().mutex);
+        calls().emptyNamed = true; // The shell has it now
+    }
+    setGate(false);
+    for (int i = 0; i < 5; ++i)
+    {
+        EXPECT_FALSE(lookup.find("empty").has_value()) << "queued again, once";
+    }
+    setGate(true);
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_EQ(lookup.find("empty"), std::optional<std::string>("name of empty"));
+    EXPECT_EQ(lookupsOf("empty"), 2);
+
+    advanceClock(RETRY * 10);
+    EXPECT_EQ(lookup.find("empty"), std::optional<std::string>("name of empty"));
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_EQ(lookupsOf("empty"), 2) << "a name is kept, not asked again";
+}
+
+// A full table forgets an empty or failed answer too, but never a key still waiting.
+TEST_F(KeyedLookupTest, AFullTableForgetsAnEmptyOrFailedAnswer)
+{
+    KeyedLookup<std::string> lookup({.threadName = THREAD_NAME, .maxEntries = 2, .emptyRetry = RETRY, .now = &fakeNow}, &lookUp);
+    for (const std::string key : {"empty", "throws"})
+    {
+        (void) lookup.find(key);
+        ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    }
+    EXPECT_EQ(lookup.size(), 2U);
+    EXPECT_FALSE(lookup.find("A").has_value()) << "room made";
+    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_EQ(lookup.find("A"), std::optional<std::string>("name of A"));
+    EXPECT_LE(lookup.size(), 2U);
 }
 
 TEST_F(KeyedLookupTest, AFullQueueTurnsAKeyAwayAndALaterFindAsksAgain)

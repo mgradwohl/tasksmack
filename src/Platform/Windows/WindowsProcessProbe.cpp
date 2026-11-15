@@ -1622,11 +1622,13 @@ void WindowsProcessProbe::updateAppIdentity(DetailCacheEntry& cache, ProcessCoun
         else if (m_AskAppNames)
         {
             // Looked up on the app-name worker, once per ID however many processes share it; taken on a later
-            // sample (#3718). Never on this thread.
+            // sample (#3718). Never on this thread. An empty name is asked for again: the lookup tries the ID again
+            // after a while (the shell's Apps folder can be missing an app at sign-in, #3794), and answers from its
+            // table until then.
             if (std::optional<std::string> name = m_AppNameLookup->find(cache.appUserModelId))
             {
                 cache.appName = std::move(*name);
-                cache.appNameRead = true;
+                cache.appNameRead = !cache.appName.empty();
             }
         }
     }

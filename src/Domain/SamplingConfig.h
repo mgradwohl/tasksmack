@@ -91,6 +91,12 @@ inline constexpr int ACCOUNT_NAME_CACHE_TTL_SECONDS = 300;
 // change while it runs: running elevated is a new TaskSmack, with a new probe that asks everything anew.
 inline constexpr int OPEN_REFUSED_RETRY_SECONDS = 30;
 
+// How long Domain::KeyedLookup waits before it asks again for a key whose lookup threw or answered empty
+// (seconds) (#3794). The shell's Apps folder may not be ready when TaskSmack starts at sign-in, so the
+// Start menu's name for an app can be missing at first: asked again after this, it appears once the shell
+// has it. A key that never has an answer is asked once this long, never once a sample.
+inline constexpr int KEYED_LOOKUP_EMPTY_RETRY_SECONDS = 30;
+
 // The pause WindowsProcessProbe's signature worker (ts-sig-check, #3070) takes after checking each
 // process image's Authenticode signature (milliseconds). A check costs about 5-35 ms a file (a 100 MB
 // unsigned one, hashed whole for the catalog lookup, about 300 ms), and the first sample asks for every
