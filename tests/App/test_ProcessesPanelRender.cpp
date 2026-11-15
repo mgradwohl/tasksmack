@@ -4045,13 +4045,15 @@ TEST_F(ProcessesPanelUserGroupsTest, ASessionsMenuSignsOutAfterAskingAndTheHeade
 // and asks for a fresh read, so Group: User doesn't come back to a stale line.
 TEST_F(ProcessesPanelUserGroupsTest, AnActionThatFinishesAfterTheGroupingChangesLeavesNoStaleLine)
 {
-    auto fake = std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice")});
+    auto fake =
+        std::make_shared<TestMocks::FakeUserSessions>(std::vector<Platform::UserSession>{signIn("2", "alice"), signIn("5", "carol")});
     UserSessionsFeed feed([fake] { return fake; });
     feed.start();
     UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
     const auto panel = userSessionsPanel(feed);
     renderUntilLoaded(*panel);
-    ASSERT_TRUE(renderUntil(*panel, "alice").contains("alice"));
+    // carol has no process, so her header is there only once the sessions are read: alice's header has its menu then.
+    ASSERT_TRUE(renderUntil(*panel, "carol (0)").contains("carol (0)"));
     ASSERT_NE(feed.actions(), nullptr);
 
     // alice's header: her one session's Lock, which runs at once; then the table is grouped another way.
@@ -4075,7 +4077,7 @@ TEST_F(ProcessesPanelUserGroupsTest, AnActionThatFinishesAfterTheGroupingChanges
     EXPECT_TRUE(feed.actions()->result().empty()) << "the line ran out while not grouped by User";
 
     UserConfig::get().settings().processGroupBy = ProcessGrouping::GroupBy::User;
-    const std::string text = renderUntil(*panel, "alice");
+    const std::string text = renderUntil(*panel, "carol (0)");
     EXPECT_FALSE(text.contains("Locked alice's session")) << "a stale line: " << text;
     EXPECT_GE(fake->m_Reads.load(), readsBefore);
     panel->onDetach();
