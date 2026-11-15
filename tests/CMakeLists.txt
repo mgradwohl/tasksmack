@@ -711,6 +711,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_BrokerRequestMapping.cpp  # what either helper does with each request (#2517)
     Platform/test_BrokerSessionRules.cpp  # each request kind's category trait (#3783)
     Platform/test_BrokeredProcessActions.cpp
+    Platform/test_BrokeredReader.cpp  # each read kind's BrokeredReader traits (#3782)
     Platform/test_BrokeredUserSessions.cpp  # another user's Windows session through the helper (#3076)
     Platform/test_TaskManagerReplacement.cpp  # Replace Task Manager's paths, state machine and service (#3072)
     Platform/test_ThreadName.cpp

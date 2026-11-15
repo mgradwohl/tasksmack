@@ -18,6 +18,7 @@
 // the one broker, and only where the helper is installed and TaskSmack isn't already an administrator.
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/BrokeredReader.h"
 #include "Platform/CpuAffinity.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
@@ -37,6 +38,7 @@
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -116,56 +118,177 @@ class BrokeredProcessActions final : public IProcessActions
     std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
-/// Process Details' environment read that an administrator can finish (#2309), as
-/// BrokeredProcessActions does for the actions: read in-process first; a PermissionDenied read goes
-/// through the helper at once while it runs, and otherwise is returned for the UI to offer
-/// "Authenticate to read" (readAuthorized()). The helper reads with its capabilities, with the same identity check.
+// Process Details' reads that an administrator can finish (#2309, #3782), as BrokeredProcessActions does for the
+// actions: each decorator below forwards its interface's overrides to one BrokeredReader (BrokeredReader.h).
+
+/// Process Details' environment read that an administrator can finish (#2309).
 class BrokeredEnvironmentReader final : public IProcessEnvironmentReader
 {
   public:
-    BrokeredEnvironmentReader(std::unique_ptr<IProcessEnvironmentReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+    BrokeredEnvironmentReader(std::unique_ptr<IProcessEnvironmentReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+        : m_Reader(std::move(inner), std::move(broker))
+    {}
 
-    [[nodiscard]] bool hasEnvironment() const override;
-    [[nodiscard]] EnvironmentReadResult readEnvironment(const ProcessTarget& target) override;
-    [[nodiscard]] bool canReadAuthorized() const override;
-    [[nodiscard]] EnvironmentReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+    [[nodiscard]] bool hasEnvironment() const override
+    {
+        return m_Reader.has();
+    }
+    [[nodiscard]] EnvironmentReadResult readEnvironment(const ProcessTarget& target) override
+    {
+        return m_Reader.read(target);
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Reader.canReadAuthorized();
+    }
+    [[nodiscard]] EnvironmentReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
+    {
+        return m_Reader.readAuthorized(target, stopToken);
+    }
 
   private:
-    /// The read through the helper; a failure to ask it is a Failed read.
-    [[nodiscard]] EnvironmentReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
-
-    std::unique_ptr<IProcessEnvironmentReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
+    BrokeredReader<EnvironmentReadTraits> m_Reader;
 };
 
-/// Process Details' modules list that an administrator can finish (#2309), as BrokeredEnvironmentReader.
+/// Process Details' modules list that an administrator can finish (#2309).
 class BrokeredModulesReader final : public IProcessModulesReader
 {
   public:
-    BrokeredModulesReader(std::unique_ptr<IProcessModulesReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+    BrokeredModulesReader(std::unique_ptr<IProcessModulesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+        : m_Reader(std::move(inner), std::move(broker))
+    {}
 
-    [[nodiscard]] bool hasModules() const override;
-    [[nodiscard]] ModulesReadResult readModules(const ProcessTarget& target) override;
-    [[nodiscard]] bool canReadAuthorized() const override;
-    [[nodiscard]] ModulesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
+    [[nodiscard]] bool hasModules() const override
+    {
+        return m_Reader.has();
+    }
+    [[nodiscard]] ModulesReadResult readModules(const ProcessTarget& target) override
+    {
+        return m_Reader.read(target);
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Reader.canReadAuthorized();
+    }
+    [[nodiscard]] ModulesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
+    {
+        return m_Reader.readAuthorized(target, stopToken);
+    }
 
   private:
-    [[nodiscard]] ModulesReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
-
-    std::unique_ptr<IProcessModulesReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
+    BrokeredReader<ModulesReadTraits> m_Reader;
 };
 
-/// Process Details' open files list that an administrator can finish (#2309), as BrokeredEnvironmentReader.
+/// Process Details' connections list that an administrator can finish (#2309).
+class BrokeredConnectionsReader final : public IProcessConnectionsReader
+{
+  public:
+    BrokeredConnectionsReader(std::unique_ptr<IProcessConnectionsReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+        : m_Reader(std::move(inner), std::move(broker))
+    {}
+
+    [[nodiscard]] bool hasConnections() const override
+    {
+        return m_Reader.has();
+    }
+    [[nodiscard]] ConnectionsReadResult readConnections(const ProcessTarget& target) override
+    {
+        return m_Reader.read(target);
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Reader.canReadAuthorized();
+    }
+    [[nodiscard]] ConnectionsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
+    {
+        return m_Reader.readAuthorized(target, stopToken);
+    }
+
+  private:
+    BrokeredReader<ConnectionsReadTraits> m_Reader;
+};
+
+/// Process Details' threads list that an administrator can finish (#3069).
+class BrokeredThreadsReader final : public IProcessThreadsReader
+{
+  public:
+    BrokeredThreadsReader(std::unique_ptr<IProcessThreadsReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+        : m_Reader(std::move(inner), std::move(broker))
+    {}
+
+    [[nodiscard]] bool hasThreads() const override
+    {
+        return m_Reader.has();
+    }
+    [[nodiscard]] ThreadsReadResult readThreads(const ProcessTarget& target) override
+    {
+        return m_Reader.read(target);
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Reader.canReadAuthorized();
+    }
+    [[nodiscard]] ThreadsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
+    {
+        return m_Reader.readAuthorized(target, stopToken);
+    }
+
+  private:
+    BrokeredReader<ThreadsReadTraits> m_Reader;
+};
+
+/// Process Details' memory map that an administrator can finish (#3665): a read the OS refuses (an elevated or
+/// another user's process) goes through a running helper, and "Authenticate to read" starts one.
+class BrokeredMemoryMapReader final : public IProcessMemoryMapReader
+{
+  public:
+    BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+        : m_Reader(std::move(inner), std::move(broker))
+    {}
+
+    [[nodiscard]] bool hasMemoryMap() const override
+    {
+        return m_Reader.has();
+    }
+    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override
+    {
+        return m_Reader.read(target);
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Reader.canReadAuthorized();
+    }
+    [[nodiscard]] MemoryMapReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
+    {
+        return m_Reader.readAuthorized(target, stopToken);
+    }
+
+  private:
+    BrokeredReader<MemoryMapReadTraits> m_Reader;
+};
+
+/// Process Details' open files list that an administrator can finish (#2309), as the others, with Find handles'
+/// batch on top (#3578).
 class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
 {
   public:
-    BrokeredOpenFilesReader(std::unique_ptr<IProcessOpenFilesReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
+    BrokeredOpenFilesReader(std::unique_ptr<IProcessOpenFilesReader> inner, std::shared_ptr<IPrivilegedBroker> broker)
+        : m_Reader(std::move(inner), std::move(broker))
+    {}
 
-    [[nodiscard]] bool hasOpenFiles() const override;
-    [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& target) override;
+    [[nodiscard]] bool hasOpenFiles() const override
+    {
+        return m_Reader.has();
+    }
+    [[nodiscard]] OpenFilesReadResult readOpenFiles(const ProcessTarget& target) override
+    {
+        return m_Reader.read(target);
+    }
+    [[nodiscard]] bool canReadAuthorized() const override
+    {
+        return m_Reader.canReadAuthorized();
+    }
     [[nodiscard]] std::size_t handlesScanned() const noexcept override;
-    [[nodiscard]] bool canReadAuthorized() const override;
     [[nodiscard]] OpenFilesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
     /// The inner reader's batch (#3357): its own reads come from one walk. The helper's come from one request when
     /// the batch names them (expectAuthorizedReads(), #3578), and otherwise each read for itself.
@@ -187,75 +310,17 @@ class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
         std::optional<OpenFilesReadResult> result; ///< Until its read takes it
     };
 
-    [[nodiscard]] OpenFilesReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
     /// @p target's result from the batch's request, sending it if need be; nullopt when the batch has none for it
     /// (it isn't expected, or the helper doesn't read batches), and the caller asks for it alone.
     [[nodiscard]] std::optional<OpenFilesReadResult> fromBatch(const ProcessTarget& target, const std::stop_token& stopToken);
     /// Sends one OpenFilesBatchRequest for m_Expected's unanswered targets from @p from on, and keeps what comes back.
     void askBatch(std::size_t from, const std::stop_token& stopToken);
 
-    std::unique_ptr<IProcessOpenFilesReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
+    BrokeredReader<OpenFilesReadTraits> m_Reader;
     bool m_InBatch = false;
     bool m_BatchUnanswered = false; ///< The helper didn't answer a batch request with its reply: one at a time
     std::vector<Expected> m_Expected;
     std::size_t m_NextExpected = 0; ///< Where the next read's lookup starts: reads come in the expected order
-};
-
-/// Process Details' connections list that an administrator can finish (#2309), as BrokeredEnvironmentReader.
-class BrokeredConnectionsReader final : public IProcessConnectionsReader
-{
-  public:
-    BrokeredConnectionsReader(std::unique_ptr<IProcessConnectionsReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
-
-    [[nodiscard]] bool hasConnections() const override;
-    [[nodiscard]] ConnectionsReadResult readConnections(const ProcessTarget& target) override;
-    [[nodiscard]] bool canReadAuthorized() const override;
-    [[nodiscard]] ConnectionsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
-
-  private:
-    [[nodiscard]] ConnectionsReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
-
-    std::unique_ptr<IProcessConnectionsReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
-};
-
-/// Process Details' threads list that an administrator can finish (#3069), as BrokeredConnectionsReader.
-class BrokeredThreadsReader final : public IProcessThreadsReader
-{
-  public:
-    BrokeredThreadsReader(std::unique_ptr<IProcessThreadsReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
-
-    [[nodiscard]] bool hasThreads() const override;
-    [[nodiscard]] ThreadsReadResult readThreads(const ProcessTarget& target) override;
-    [[nodiscard]] bool canReadAuthorized() const override;
-    [[nodiscard]] ThreadsReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
-
-  private:
-    [[nodiscard]] ThreadsReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
-
-    std::unique_ptr<IProcessThreadsReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
-};
-
-/// Process Details' memory map that an administrator can finish (#3665), as BrokeredThreadsReader: a read the OS
-/// refuses (an elevated or another user's process) goes through a running helper, and "Authenticate to read"
-/// starts one. The helper reads the region list only, with the same identity check (PID and start time).
-class BrokeredMemoryMapReader final : public IProcessMemoryMapReader
-{
-  public:
-    BrokeredMemoryMapReader(std::unique_ptr<IProcessMemoryMapReader> inner, std::shared_ptr<IPrivilegedBroker> broker);
-
-    [[nodiscard]] bool hasMemoryMap() const override;
-    [[nodiscard]] MemoryMapReadResult readMemoryMap(const ProcessTarget& target) override;
-    [[nodiscard]] bool canReadAuthorized() const override;
-    [[nodiscard]] MemoryMapReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;
-
-  private:
-    [[nodiscard]] MemoryMapReadResult viaBroker(const ProcessTarget& target, const std::stop_token& stopToken);
-
-    std::unique_ptr<IProcessMemoryMapReader> m_Inner;
-    std::shared_ptr<IPrivilegedBroker> m_Broker;
 };
 
 /// @p reader decorated with @p broker, or @p reader as it is when there is no broker.
