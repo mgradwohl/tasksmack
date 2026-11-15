@@ -1107,6 +1107,7 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
     if (functions.signature.has_value())
     {
         m_Signatures = std::make_unique<WindowsSignature::SignatureWorker>(*functions.signature, functions.signatureWorker);
+        m_ReadPublisher = functions.signature->readPublisher;
     }
 
     // The app-name worker (#3718); its thread starts with the first name asked for.
@@ -1590,6 +1591,19 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
         }
         // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
         cache.signature = m_Signatures->find(cache.image.path, &cache.image.publisher);
+        if (cache.signature.has_value() && cache.image.publisher.empty() && m_ReadPublisher != nullptr && m_Signatures->ended())
+        {
+            // The worker has ended (it says why in the answer and the log), so its answer read no publisher: read
+            // it here, once per process, as before #3703, rather than leave the column blank for good (#3862).
+            try
+            {
+                cache.image.publisher = m_ReadPublisher(cache.image.path);
+            }
+            catch (const std::exception& e)
+            {
+                spdlog::debug("WindowsProcessProbe: the publisher of {} couldn't be read: {}", cache.image.path, e.what());
+            }
+        }
     }
     if (cache.signature.has_value())
     {
