@@ -156,6 +156,45 @@ TEST(ProcessMemoryMapViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     EXPECT_EQ(reader.readCount(), 3);
 }
 
+// #3801: a read is formatted, summed and sorted on its worker, in the order the view had when it started: prepare()
+// gives every row its text and the totals, and the UI only moves them in. A sort chosen while the read was out is
+// applied when it arrives.
+TEST(ProcessMemoryMapViewTest, AReadIsPreparedOnItsWorkerInTheOrderAtItsStart)
+{
+    const ProcessMemoryMapView::Prepared prepared = ProcessMemoryMapView::prepare(windowsMap(), true, Detail::MemoryMapColumn::Size, false);
+    ASSERT_EQ(prepared.rows.size(), 6U);
+    EXPECT_EQ(prepared.status, MemoryMapReadStatus::Ok);
+    EXPECT_FALSE(prepared.hasResident);
+    for (std::size_t i = 1; i < prepared.rows.size(); ++i)
+    {
+        EXPECT_GE(prepared.rows[i - 1].mapping.sizeBytes(), prepared.rows[i].mapping.sizeBytes()) << "largest first";
+        EXPECT_FALSE(prepared.rows[i].address.empty());
+        EXPECT_FALSE(prepared.rows[i].size.empty());
+    }
+    ASSERT_FALSE(prepared.totals.empty());
+    EXPECT_EQ(prepared.totals.back().label, "Total");
+    EXPECT_TRUE(ProcessMemoryMapView::prepare(
+                    MemoryMapReadResult{.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false},
+                    true,
+                    Detail::MemoryMapColumn::Address,
+                    true)
+                    .rows.empty());
+
+    // Started by address; the size column clicked before it arrived: taken in sorted by size.
+    ProcessMemoryMapView view;
+    TestMocks::MockProcessMemoryMapReader reader;
+    reader.setResult(windowsMap());
+    view.markDrawnOpen();
+    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    view.setSort(Detail::MemoryMapColumn::Size, true);
+    view.finishPendingRead(TARGET);
+    ASSERT_EQ(view.rows().size(), 6U);
+    for (std::size_t i = 1; i < view.rows().size(); ++i)
+    {
+        EXPECT_LE(view.rows()[i - 1].mapping.sizeBytes(), view.rows()[i].mapping.sizeBytes()) << "smallest first";
+    }
+}
+
 TEST(ProcessMemoryMapViewTest, DropsAReadForAPreviousSelection)
 {
     ProcessMemoryMapView view;
