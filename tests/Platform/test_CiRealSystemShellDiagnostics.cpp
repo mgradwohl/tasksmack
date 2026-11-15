@@ -46,7 +46,7 @@
 #pragma comment(lib, "uuid.lib")
 #pragma comment(lib, "advapi32.lib")
 
-// NOLINTBEGIN(misc-include-cleaner,cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-type-union-access) - a Win32/COM diagnostic
+// NOLINTBEGIN(misc-include-cleaner,cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-type-union-access,performance-no-int-to-ptr,bugprone-invalid-enum-default-initialization) - a Win32/COM diagnostic
 namespace
 {
 
@@ -111,7 +111,7 @@ void log(const std::string& line)
 [[nodiscard]] std::string registryString(HKEY hive, const wchar_t* key, const wchar_t* value)
 {
     std::array<wchar_t, 1024> data{};
-    DWORD size = static_cast<DWORD>(data.size() * sizeof(wchar_t));
+    auto size = static_cast<DWORD>(data.size() * sizeof(wchar_t));
     const LSTATUS status = RegGetValueW(hive, key, value, RRF_RT_REG_SZ | RRF_RT_REG_EXPAND_SZ | RRF_NOEXPAND, nullptr, data.data(), &size);
     return (status == ERROR_SUCCESS) ? ("\"" + narrow(data.data()) + "\"") : std::format("(not read: {})", status);
 }
@@ -119,6 +119,21 @@ void log(const std::string& line)
 [[nodiscard]] std::string hkcrString(const wchar_t* key, const wchar_t* value)
 {
     return registryString(HKEY_CLASSES_ROOT, key, value);
+}
+
+[[nodiscard]] const char* elevationTypeName(TOKEN_ELEVATION_TYPE type)
+{
+    switch (type)
+    {
+    case TokenElevationTypeDefault:
+        return "Default";
+    case TokenElevationTypeFull:
+        return "Full";
+    case TokenElevationTypeLimited:
+        return "Limited";
+    default:
+        return "?";
+    }
 }
 
 /// What one token says: user, elevation type, elevated, integrity RID, logon session (AuthenticationId), linked token.
@@ -133,9 +148,9 @@ void log(const std::string& line)
         const auto* tokenUser = reinterpret_cast<const TOKEN_USER*>(user.data());
         std::array<wchar_t, 256> name{};
         std::array<wchar_t, 256> domain{};
-        DWORD nameSize = static_cast<DWORD>(name.size());
-        DWORD domainSize = static_cast<DWORD>(domain.size());
-        SID_NAME_USE use{};
+        auto nameSize = static_cast<DWORD>(name.size());
+        auto domainSize = static_cast<DWORD>(domain.size());
+        SID_NAME_USE use = SidTypeUnknown;
         if (LookupAccountSidW(nullptr, tokenUser->User.Sid, name.data(), &nameSize, domain.data(), &domainSize, &use) != FALSE)
         {
             out += std::format("user={}\\{}", narrow(domain.data()), narrow(name.data()));
@@ -145,13 +160,10 @@ void log(const std::string& line)
             out += std::format("user=(lookup failed {})", GetLastError());
         }
     }
-    TOKEN_ELEVATION_TYPE type{};
+    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
     if (GetTokenInformation(token, TokenElevationType, &type, sizeof(type), &size) != FALSE)
     {
-        const char* typeName = (type == TokenElevationTypeDefault) ? "Default"
-                             : (type == TokenElevationTypeFull)    ? "Full"
-                             : (type == TokenElevationTypeLimited) ? "Limited"
-                                                                   : "?";
+        const char* typeName = elevationTypeName(type);
         out += std::format(" elevationType={}", typeName);
     }
     TOKEN_ELEVATION elevation{};
@@ -200,7 +212,7 @@ void log(const std::string& line)
     using NtQuery = LONG(NTAPI*)(HANDLE, ULONG, PVOID, ULONG, PULONG);
     HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     // NOLINTNEXTLINE(clang-diagnostic-cast-function-type-strict) - GetProcAddress's FARPROC to the real signature
-    const auto query = reinterpret_cast<NtQuery>(reinterpret_cast<void*>(GetProcAddress(ntdll, "NtQueryInformationProcess")));
+    const auto query = reinterpret_cast<NtQuery>(GetProcAddress(ntdll, "NtQueryInformationProcess"));
     if (query == nullptr)
     {
         return "(no NtQueryInformationProcess)";
@@ -258,7 +270,7 @@ void log(const std::string& line)
         return out + std::format(" (OpenProcess failed {})", GetLastError());
     }
     std::array<wchar_t, 1024> image{};
-    DWORD imageSize = static_cast<DWORD>(image.size());
+    auto imageSize = static_cast<DWORD>(image.size());
     if (QueryFullProcessImageNameW(process.get(), 0, image.data(), &imageSize) != FALSE)
     {
         out += " image=" + narrow(std::wstring_view(image.data(), imageSize));
@@ -315,7 +327,7 @@ struct ProcessEntry
     {
         if (CompareStringOrdinal(entry.szExeFile, -1, L"explorer.exe", -1, TRUE) == CSTR_EQUAL)
         {
-            found.push_back({entry.th32ProcessID, entry.th32ParentProcessID});
+            found.push_back({.pid = entry.th32ProcessID, .parent = entry.th32ParentProcessID});
         }
     }
     return found;
@@ -434,7 +446,7 @@ void logDesktopContext()
                     GetSystemMetrics(SM_REMOTESESSION)));
     const wchar_t* explorerPolicies = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Policies\\Explorer";
     const wchar_t* advanced = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Explorer\\Advanced";
-    auto hkcuDword = [](const wchar_t* key, const wchar_t* value)
+    const auto hkcuDword = [](const wchar_t* key, const wchar_t* value)
     {
         DWORD data = 0;
         DWORD size = sizeof(data);
@@ -501,7 +513,7 @@ void logDesktopContext()
             GlobalUnlock(memory);
         }
     }
-    LARGE_INTEGER start{};
+    const LARGE_INTEGER start{};
     stream->Seek(start, STREAM_SEEK_SET, nullptr);
     CoReleaseMarshalData(stream.get());
     return out.empty() ? std::string("(no OBJREF read)") : out;
@@ -517,7 +529,7 @@ void logFindDesktop(IShellWindows* windows, int options, std::string_view label)
     long window = 0;
     ComPtr<IDispatch> dispatch;
     const HRESULT hr = windows->FindWindowSW(&location, &root, SWC_DESKTOP, &window, options, dispatch.releaseAndGetAddressOf());
-    const auto hwnd = reinterpret_cast<HWND>(static_cast<std::intptr_t>(window));
+    auto* const hwnd = reinterpret_cast<HWND>(static_cast<std::intptr_t>(window));
     log(std::format("FindWindowSW(SWC_DESKTOP, {}) = {} hwnd=0x{:X} owner={} dispatch={}",
                     label,
                     hex(hr),
@@ -550,7 +562,7 @@ void logShellWindows(IShellWindows* windows)
         {
             browser->get_HWND(&window);
         }
-        const auto hwnd = reinterpret_cast<HWND>(window);
+        auto* const hwnd = reinterpret_cast<HWND>(window);
         log(std::format("  item {}: Item={} hwnd=0x{:X} owner={}", i, hex(itemHr), static_cast<std::uintptr_t>(window), ownerOf(hwnd)));
     }
 }
@@ -638,4 +650,4 @@ TEST_F(CiRealSystemShellDiagnosticsTest, LogsWhoServesShellWindowsAndWhoOwnsTheD
 }
 
 } // namespace
-// NOLINTEND(misc-include-cleaner,cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-type-union-access)
+// NOLINTEND(misc-include-cleaner,cppcoreguidelines-pro-type-reinterpret-cast,cppcoreguidelines-pro-type-union-access,performance-no-int-to-ptr,bugprone-invalid-enum-default-initialization)
