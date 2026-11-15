@@ -1,6 +1,6 @@
 /// @file test_AccessChoice.cpp
-/// @brief Standard or Administrator (#2728): each platform's wording, and the access table the Standard note
-/// expands.
+/// @brief Standard or Administrator (#2728): the wording, Windows' (#3810: Linux has no helper to word), and the access
+/// table the Standard note expands.
 
 #include "App/AccessChoice.h"
 #include "App/AccessTable.h"
@@ -21,21 +21,18 @@ namespace
 
 constexpr std::array<AccessPlatform, 2> PLATFORMS{AccessPlatform::Windows, AccessPlatform::Linux};
 
-TEST(AccessChoiceTest, EachPlatformSaysItInItsOwnWords)
+TEST(AccessChoiceTest, TheChoiceIsWordedAsWindowsAsksForIt)
 {
-    using AuthorizeWording::wordingFor;
-    EXPECT_STREQ(wordingFor(AccessPlatform::Windows).launch, "Run as administrator");
-    EXPECT_STREQ(wordingFor(AccessPlatform::Windows).switchSession, "Restart as administrator...");
-    EXPECT_TRUE(std::string_view{wordingFor(AccessPlatform::Windows).promptTooltip}.contains("UAC"));
-    EXPECT_STREQ(wordingFor(AccessPlatform::Linux).launch, "Run with administrator access");
-    EXPECT_STREQ(wordingFor(AccessPlatform::Linux).switchSession, "Authenticate for this session...");
-    EXPECT_TRUE(std::string_view{wordingFor(AccessPlatform::Linux).promptTooltip}.contains("polkit"));
+    using AuthorizeWording::WINDOWS_WORDING;
+    EXPECT_STREQ(WINDOWS_WORDING.launch, "Run as administrator");
+    EXPECT_STREQ(WINDOWS_WORDING.switchSession, "Restart as administrator...");
+    EXPECT_TRUE(std::string_view{WINDOWS_WORDING.promptTooltip}.contains("UAC"));
 }
 
-TEST(AccessChoiceTest, TheHostsButtonWordsAreItsRowOfTheTable)
+TEST(AccessChoiceTest, TheButtonWordsAreTheChoicesWords)
 {
-    EXPECT_STREQ(AuthorizeWording::RETRY_TEXT, AuthorizeWording::wordingFor(HOST).retry);
-    EXPECT_STREQ(AuthorizeWording::READ_TEXT, AuthorizeWording::wordingFor(HOST).read);
+    EXPECT_STREQ(AuthorizeWording::RETRY_TEXT, AuthorizeWording::WINDOWS_WORDING.retry);
+    EXPECT_STREQ(AuthorizeWording::READ_TEXT, AuthorizeWording::WINDOWS_WORDING.read);
 }
 
 TEST(AccessTableTest, EveryLinuxMissingPrivilegeHasARow)
