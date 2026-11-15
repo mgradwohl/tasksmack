@@ -56,10 +56,12 @@ class LinuxUserSessions final : public IUserSessions
         return action != SessionAction::Disconnect && SystemdBus::built();
     }
 
+    /// @p allowInteractive is Windows' (its helper's UAC prompt): nothing prompts here after TaskSmack starts (#3580,
+    /// #3767), so it is ignored.
     [[nodiscard]] ServiceActionResult
-    act(std::string_view id, SessionAction action, bool allowInteractive, const std::stop_token& stopToken) override
+    act(std::string_view id, SessionAction action, bool /*allowInteractive*/, const std::stop_token& stopToken) override
     {
-        return SystemdBus::sessionAction(id, action, allowInteractive, stopToken);
+        return SystemdBus::sessionAction(id, action, stopToken);
     }
 
   private:
