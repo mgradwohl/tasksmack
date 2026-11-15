@@ -1584,6 +1584,19 @@ class RealSystemOnArm64Tests(unittest.TestCase):
         # They join the allowlist before the check that uses it, never after.
         self.assertLess(run.index("$expectedSkips += $name"), run.index("$unexpected = "))
 
+    def test_the_memory_compression_test_may_skip_on_x64_only(self):
+        # #3839: windows-2025 (Server) leaves memory compression off; windows-11-arm (client) runs the test, so a
+        # skip there must fail rather than pass as expected.
+        run = find_step(self.WORKFLOW, self.STEP).run
+        name = "'CiRealSystemMemoryCompressionTest.TheProbeReadsTheCompressionStoresWorkingSet'"
+        every_leg = run[run.index("$expectedSkips = @(") : run.index(")", run.index("$expectedSkips = @("))]
+        self.assertNotIn(name, every_leg)
+        x64 = run[run.index("$x64Skips = @{") : run.index("}", run.index("$x64Skips = @{"))]
+        self.assertIn(name + " = '", x64)
+        self.assertIn("if ($env:RUNNER_ARCH -ne 'ARM64')", run)
+        self.assertIn("$x64Skips[$name]", run)
+        self.assertLess(run.index("$x64Skips = @{"), run.index("$unexpected = "))
+
 
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
