@@ -4,6 +4,7 @@
 // ProcessIconCache.cpp, which instantiates the cache that ships (NoIconCacheFaults) once, and by a test that
 // instantiates it with a fault policy of its own; nothing else includes it.
 
+#include "Domain/DrainTrigger.h"
 #include "Domain/LruMap.h"
 #include "Domain/ProcessIconCache.h"
 #include "Domain/PublicationWake.h"
@@ -50,17 +51,10 @@ BasicProcessIconCache<Faults>::BasicProcessIconCache(std::unique_ptr<Platform::I
       // first drain, so a cache made with startWorker false, or without a source, never has one. load()
       // contains what a source throws; anything else the Worker does (#3343): it ends Failed, and the rows
       // keep the generic icon.
-      m_Worker(
-          {
-              .threadName = Platform::ICON_READ_THREAD_NAME,
-              .capacity = 1,
-              .admission = Admission::MergeByKey,
-              .sameKey = [](const Drain& /*queued*/, const Drain& /*incoming*/) noexcept { return true; },
-          },
-          [this](Drain& /*job*/, const std::stop_token& stop, LoadWorker::JobContext& /*context*/) { drain(stop); })
+      m_Drain(Platform::ICON_READ_THREAD_NAME, [this](const std::stop_token& stop) { drain(stop); })
 {}
 
-// The worker, the last member, is stopped first: a load running finishes, the queue is left unrun, and the
+// The drain trigger, the last member, is stopped first: a load running finishes, the queue is left unrun, and the
 // thread is joined while the maps it files into are alive.
 template<typename Faults> BasicProcessIconCache<Faults>::~BasicProcessIconCache() = default;
 
@@ -127,7 +121,7 @@ template<typename Faults> void BasicProcessIconCache<Faults>::wakeWorker()
     }
     // Queued, or Merged into the drain already queued; Refused (no memory to queue one) takes the queued
     // loads back; Closed is a worker that has ended.
-    const SubmitResult result = m_Faults.refuseDrain() ? SubmitResult::Refused : m_Worker.submit(Drain{});
+    const SubmitResult result = m_Faults.refuseDrain() ? SubmitResult::Refused : m_Drain.wake();
     if (result == SubmitResult::Refused)
     {
         // No drain queued (no memory to queue one), and the one running, if any, may have found the queue
@@ -151,12 +145,12 @@ template<typename Faults> void BasicProcessIconCache<Faults>::wakeWorker()
 template<typename Faults> void BasicProcessIconCache<Faults>::reportWorkerFailure()
 {
     // Two atomic loads on every lookup until it has reported; one after.
-    if (!m_Config.startWorker || m_WorkerFailureReported.load(std::memory_order_relaxed) || m_Worker.state() != WorkerState::Failed)
+    if (!m_Config.startWorker || m_WorkerFailureReported.load(std::memory_order_relaxed) || !m_Drain.failed())
     {
         return;
     }
     // The reason first: if copying it throws, nothing is marked, and the next lookup reports it.
-    const std::string reason = m_Worker.failure();
+    const std::string reason = m_Drain.failure();
     if (m_WorkerFailureReported.exchange(true, std::memory_order_relaxed))
     {
         return;

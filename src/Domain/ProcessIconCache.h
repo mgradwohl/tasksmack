@@ -35,8 +35,8 @@
 // definitions are in ProcessIconCacheImpl.h, instantiated for NoIconCacheFaults once, in ProcessIconCache.cpp;
 // a test includes that header to instantiate the cache with its own policy.
 
+#include "Domain/DrainTrigger.h"
 #include "Domain/LruMap.h"
-#include "Domain/Worker.h"
 #include "Platform/IProcessIconSource.h"
 
 #include <array>
@@ -223,14 +223,6 @@ template<typename Faults = NoIconCacheFaults> class BasicProcessIconCache
     bool m_FoldCase = false;
     bool m_KeyByName = false; // the source's findsIconsByName() (#2462)
 
-    /// One drain of the load queue, as the worker's job; it carries nothing.
-    struct Drain
-    {};
-    /// The worker publishes nothing: a load files its icon in the maps above.
-    struct Drained
-    {};
-    using LoadWorker = Worker<Drain, Drained>;
-
     mutable std::mutex m_Mutex;
     LruMap<std::uint64_t, ProcessEntry> m_Processes;
     LruMap<std::uint64_t, ProcessEntry> m_Files;
@@ -241,7 +233,7 @@ template<typename Faults = NoIconCacheFaults> class BasicProcessIconCache
     std::uint64_t m_Loads = 0;
     std::atomic<bool> m_WorkerFailureReported{false}; // reportWorkerFailure() has logged that the worker failed
 
-    LoadWorker m_Worker; // Last: stopped and joined before the state above is destroyed
+    DrainTrigger m_Drain; // Last: stopped and joined before the state above is destroyed (#3790)
 };
 
 /// The cache that ships: no faults. Its members are instantiated once, in ProcessIconCache.cpp.

@@ -15,7 +15,7 @@
 //   (none for a lookup that threw), since most keys simply have none and asking forever would be churn.
 //   A retry is asked once however often find() is called. Anything else that escapes ends the Worker Failed
 //   rather than std::terminate; every key then answers Value{}, at once, for good.
-// - The thread is a Domain::Worker, started with the first key. beginDrain/endDrain run on it around each
+// - The thread is a Domain::DrainTrigger (#3790), started with the first key. beginDrain/endDrain run on it around each
 //   pass over the queue (Windows: COM in the multithreaded apartment for the shell calls). The destructor
 //   stops and joins it after the lookup in progress; the rest of the queue is dropped.
 //
@@ -24,6 +24,7 @@
 // Locks: m_Mutex is taken before the Worker's own (find() submits under it). A drain takes m_Mutex on the
 // worker's thread with no Worker lock held, and never calls the lookup under it.
 
+#include "Domain/DrainTrigger.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/Worker.h"
 
@@ -66,19 +67,10 @@ template<typename Value> class KeyedLookup
     };
 
     KeyedLookup(Options options, Lookup lookup)
-        : m_Options(options),
-          m_Lookup(std::move(lookup)),
-          m_Worker(
-              {
-                  .threadName = options.threadName,
-                  .capacity = 1,
-                  .admission = Admission::MergeByKey,
-                  .sameKey = [](const Drain& /*queued*/, const Drain& /*incoming*/) noexcept { return true; },
-              },
-              [this](Drain& /*job*/, const std::stop_token& stop, LookupWorker::JobContext& /*context*/) { drain(stop); })
+        : m_Options(options), m_Lookup(std::move(lookup)), m_Drain(options.threadName, [this](const std::stop_token& stop) { drain(stop); })
     {}
 
-    /// Stops the worker and joins it (a lookup in progress finishes first): m_Worker, the last member, goes
+    /// Stops the worker and joins it (a lookup in progress finishes first): m_Drain, the last member, goes
     /// first, while the table it files into is alive.
     ~KeyedLookup() = default;
 
@@ -128,7 +120,7 @@ template<typename Value> class KeyedLookup
             m_Queue.pop_back();
             throw;
         }
-        const SubmitResult result = m_Worker.submit(Drain{});
+        const SubmitResult result = m_Drain.wake();
         if (result == SubmitResult::Refused)
         {
             // No drain queued (no memory), and the one running may have found the queue empty: take the key
@@ -160,14 +152,6 @@ template<typename Value> class KeyedLookup
     }
 
   private:
-    /// One drain of m_Queue, as the Worker's job; it carries nothing.
-    struct Drain
-    {};
-    /// The Worker publishes nothing: a lookup files its answer in m_Entries.
-    struct Drained
-    {};
-    using LookupWorker = Worker<Drain, Drained>;
-
     /// A key's place in the table.
     struct Entry
     {
@@ -208,7 +192,7 @@ template<typename Value> class KeyedLookup
         m_Queue.push_back(key);
         const int retries = entry.retries + 1;
         Entry previous = std::exchange(entry, Entry{.answer = std::nullopt, .retryAt = std::nullopt, .retries = retries});
-        const SubmitResult result = m_Worker.submit(Drain{});
+        const SubmitResult result = m_Drain.wake();
         if (result == SubmitResult::Refused)
         {
             // As for a new key: no drain queued, so take it back; still due, a later find() asks again.
@@ -333,7 +317,7 @@ template<typename Value> class KeyedLookup
     std::unordered_map<std::string, Entry> m_Entries;
     bool m_LookingUp = false;
     bool m_Failed = false;
-    LookupWorker m_Worker; // Last: stopped and joined first, while the rest is alive
+    DrainTrigger m_Drain; // Last: stopped and joined first, while the rest is alive (#3790)
 };
 
 } // namespace Domain
