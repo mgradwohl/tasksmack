@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Event.h"
+#include "FramePacing.h"
 #include "GraphicsReset.h"
 #include "Layer.h"
 #include "PathService.h"
@@ -139,12 +140,15 @@ class Application
     // noexcept and only consumed internally by run()'s idle-sleep gate). Same pattern as
     // NVMLGPUProbeTestAccessor in Platform/Windows/NVMLGPUProbe.h. Production code never
     // touches this -- only test_Application.cpp uses it. It also reads the idle-wait seam
-    // (m_IdleWaitCount, m_LastIdleWaitWoke, m_LastIdleWaitPolledEvent; #1446, #1450) and the
-    // publication wakes taken (m_PublicationWakesTaken; #3156).
+    // (m_IdleWaits; #1446, #1450) and the publication wakes taken (m_PublicationWakesTaken; #3156).
     friend struct ApplicationTestAccessor;
 
     /// What run()'s loop phases (FrameLoopState, #3791) call out to; defined in Application.cpp.
     class LoopHost;
+
+    /// Reads the display's refresh rate into m_DisplayRefreshHz, logging a real change (#1126): when
+    /// run() starts, and on a display change.
+    void refreshDisplayRate();
 
     /// Raise a WindowCloseEvent for a close request and report whether to close: true unless a
     /// layer handled the event, which vetoes the close (contract in WindowEvents.h).
@@ -175,13 +179,11 @@ class Application
     /// Read-only test seam (#1446), read through ApplicationTestAccessor: how many idle waits run()
     /// has done, whether the last one was woken by an event, and whether it timed out but the poll
     /// after it found an event already queued (#1450; both false for a plain timeout). Written only
-    /// where the idle wait returns, on the loop thread; nothing in the app reads them.
-    std::uint64_t m_IdleWaitCount = 0;
+    /// where the idle wait returns, on the loop thread; nothing in the app reads it.
+    FramePacing::IdleWaitRecord m_IdleWaits;
     /// Read-only test seam (#3156): how many publication wakes (Domain::PublicationWake) run()'s drain
     /// has taken off the queue. Written on the loop thread only.
     std::uint64_t m_PublicationWakesTaken = 0;
-    bool m_LastIdleWaitWoke = false;
-    bool m_LastIdleWaitPolledEvent = false;
     /// Turns the per-frame GPU reset checks into one context replacement per reset (#3484).
     GraphicsResetMonitor m_GraphicsReset;
     /// The resets already logged as reported, so a driver that reports one for several frames logs it once.

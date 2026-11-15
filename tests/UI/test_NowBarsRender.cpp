@@ -416,7 +416,7 @@ TEST_F(NowBarsRenderTest, AChartWithAntiAliasingOffClearsItsLinesFlagsOnlyWhileI
 // (Core::FramePacing::computeAnimationRate). These draw what an idle Overview draws and check that
 // nothing asks for more than that, while a real change still does.
 
-/// The idle path's frame rate (Application.cpp's IDLE_FRAME_RATE: one frame every 50 ms).
+/// The idle path's frame rate (Core::FrameLoopState::IDLE_FRAME_RATE: one frame every 50 ms).
 constexpr double IDLE_FPS = 20.0;
 constexpr double MAX_FPS = 60.0;
 constexpr float IDLE_FRAME_SECONDS = 0.05F;

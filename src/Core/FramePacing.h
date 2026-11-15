@@ -14,6 +14,7 @@
 #include <cstdint>
 #include <limits>
 #include <type_traits>
+#include <utility>
 
 namespace Core::FramePacing
 {
@@ -155,7 +156,7 @@ computeVsyncTransition(bool wasInteracting, bool isInteracting, bool vsyncReques
 
 /// P3 bound (#1410): after this many skipped renders in a row, computeSkipRenderThisFrame() renders
 /// the next frame however long its drain took. Each skip already means a drain of at least
-/// DRAIN_SKIP_RENDER_MS (16 ms, Application.cpp), so two in a row is 32+ ms without a frame; forcing
+/// DRAIN_SKIP_RENDER_MS (16 ms, FrameLoopState), so two in a row is 32+ ms without a frame; forcing
 /// the third keeps the longest gap near the 50 ms idle period under a sustained slow drain, instead of
 /// freezing the display for as long as the drain stays slow. One skip absorbs an isolated stall, which
 /// is what P3 is for; two lets a stall that straddles a frame boundary pass as well.
@@ -440,6 +441,37 @@ struct ResizePresentInput
     return std::max(0.0, currentSeconds - previousSeconds);
 }
 
+/// One frame's two durations from FrameClock::tick(): the capped deltaTime layers animate by, and the
+/// real interval an FPS readout shows (Application::lastFrameIntervalSeconds(), #1152).
+struct FrameTick
+{
+    float deltaSeconds = 0.0F;
+    double intervalSeconds = 0.0;
+};
+
+/// The loop's frame clock (#3791): the start of the previous frame, and each new frame's FrameTick.
+class FrameClock
+{
+  public:
+    explicit constexpr FrameClock(double startSeconds) noexcept : m_LastSeconds(startSeconds)
+    {}
+
+    /// The frame starting at @p nowSeconds: its deltaTime (capped at @p maxDeltaSeconds) and real
+    /// interval since the previous one, which this becomes.
+    [[nodiscard]] constexpr auto tick(double nowSeconds, float maxDeltaSeconds) noexcept -> FrameTick
+    {
+        const FrameTick frame{
+            .deltaSeconds = frameDeltaSeconds(m_LastSeconds, nowSeconds, maxDeltaSeconds),
+            .intervalSeconds = frameIntervalSeconds(m_LastSeconds, nowSeconds),
+        };
+        m_LastSeconds = nowSeconds;
+        return frame;
+    }
+
+  private:
+    double m_LastSeconds;
+};
+
 /// What the last frame left for the idle path to decide on: computeIdlePeriodMs()'s state.
 struct IdleFrameState
 {
@@ -573,5 +605,32 @@ template<typename Event, typename Wait, typename Poll>
     }
     return poll(event) ? IdleWaitOutcome::PolledAfterTimeout : IdleWaitOutcome::TimedOut;
 }
+
+/// waitForIdleEvent() with @p timer armed for @p timeoutMs before it and disarmed after: on Windows,
+/// IdleWaitTimer ends the wait on time (#3712).
+template<typename Timer, typename Event, typename Wait, typename Poll>
+[[nodiscard]] auto waitForIdleEventOnTime(Timer& timer, int timeoutMs, Event& event, Wait wait, Poll poll) -> IdleWaitOutcome
+{
+    timer.arm(timeoutMs);
+    const IdleWaitOutcome outcome = waitForIdleEvent(event, std::move(wait), std::move(poll));
+    timer.disarm();
+    return outcome;
+}
+
+/// What the loop's idle waits did: Application's read-only test seam (#1446, #1450), written where
+/// each idle wait returns.
+struct IdleWaitRecord
+{
+    std::uint64_t count = 0;      ///< idle waits done
+    bool lastWoke = false;        ///< the last one ended on an event, not its timeout
+    bool lastPolledEvent = false; ///< the last one timed out, but the poll after it found an event (#1450)
+
+    constexpr void record(IdleWaitOutcome outcome) noexcept
+    {
+        ++count;
+        lastWoke = outcome == IdleWaitOutcome::Woke;
+        lastPolledEvent = outcome == IdleWaitOutcome::PolledAfterTimeout;
+    }
+};
 
 } // namespace Core::FramePacing

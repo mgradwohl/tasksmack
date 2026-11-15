@@ -1377,7 +1377,7 @@ class WindowDragDriverLayer : public Core::Layer
     /// @p loseFocusAfterFirstPress: send the window a focus loss right after the first drag's press,
     /// as another window taking the focus would (#2221). The pointer stays where it pressed until the
     /// focus loss has been handled, and only then moves to where the drag goes (#2901): the frame's
-    /// event drain stops at Application's DRAIN_BUDGET_MS, so under load the press and the focus loss
+    /// event drain stops at FrameLoopState::DRAIN_BUDGET_MS, so under load the press and the focus loss
     /// can land in different frames, and a drag step between them, with the pointer already moved,
     /// would move the window before the drag was lost and no press would ever be made again.
     WindowDragDriverLayer(WindowDragObserved& observed, App::TitleBarLayer& titleBar, bool loseFocusAfterFirstPress = false)

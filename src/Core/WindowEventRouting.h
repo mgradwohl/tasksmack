@@ -98,7 +98,7 @@ enum class Action : std::uint8_t
 }
 
 /// Whether an SDL event is user input the UI reacts to: a mouse wheel, a mouse button, a key, or text
-/// input (#843). run() keeps the full frame rate for a short grace after one (Application.cpp's
+/// input (#843). run() keeps the full frame rate for a short grace after one (FrameLoopState's
 /// INPUT_REDRAW_GRACE_SECONDS): Dear ImGui finishes reacting to input over the next frame or two -- a
 /// popup, combo list or tooltip is laid out hidden on its first frame and drawn on the next, a clicked
 /// tab shows its content a frame later, hover and tooltip delays tick per frame -- and those frames
