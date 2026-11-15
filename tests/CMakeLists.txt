@@ -1368,6 +1368,7 @@ endif()
 # test_BrokerProtocol.cpp checks fuzz_broker_protocol's seeds: one per message kind, each decoding (#2643).
 target_compile_definitions(TaskSmackTests PRIVATE
     TASKSMACK_BROKER_FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/fuzz_broker_protocol"
+    TASKSMACK_SMBIOS_FUZZ_CORPUS_DIR="${CMAKE_SOURCE_DIR}/tests/fuzz/corpus/fuzz_smbios" # test_SmbiosParser.cpp (#3848)
 )
 
 # test_BrokerHelper.cpp runs TaskSmackHelper.exe directly, unelevated, as this user (#2517). The helper

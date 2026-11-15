@@ -42,9 +42,11 @@ seed_corpus() {
 }
 
 build_fuzzer fuzz_proc_parsing
+seed_corpus fuzz_proc_parsing tests/fuzz/corpus/fuzz_proc_parsing/* # #3848: /proc numbers and lines
 
 # The SMBIOS table parser (#1513): header-only.
 build_fuzzer fuzz_smbios
+seed_corpus fuzz_smbios tests/fuzz/corpus/fuzz_smbios/* # #3848: a table, its RawSMBIOSData blob and an SMBIOS 3 entry point
 
 # The /proc/[pid]/maps module parser (#802): header-only, seeded with a real-looking maps file.
 build_fuzzer fuzz_proc_maps

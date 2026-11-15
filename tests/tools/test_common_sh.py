@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for find_python in tools/common.sh (#2411).
+"""Tests for find_python (#2411), list_format_files and coverage_ignore_regex (#3528, #3911) in tools/common.sh.
 
 A checkout shared between Windows and WSL can hold the Windows venv setup-dev.ps1 creates
 (.venv/Scripts/python.exe, no .venv/bin/python). Only a Windows bash (Git Bash/MSYS2, Cygwin) may
@@ -10,6 +10,7 @@ bash. Needs bash; registered in CTest only where bash is available.
 """
 
 import os
+import re
 import shutil
 import stat
 import subprocess
@@ -111,6 +112,60 @@ class FindPythonTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stdout, expected)
+
+
+class CheckoutPathTests(unittest.TestCase):
+    """#3911: the Linux twins of #3528's fixes, as tools/test-format-sources.ps1 checks the Windows ones. A checkout
+    under folders named build and tests, with a dot, spaces and parentheses in its name, reached through a link."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        base = Path(self._tmp.name)
+        self.root = base / "build" / "tests" / "task.smack (x86)"
+        for rel in ("src/a.cpp", "src/build/gen.h", "tests/t.cpp", "benchmarks/b.cpp", "build/debug/out.h"):
+            path = self.root / rel
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text("", encoding="utf-8")
+        self.link = base / "link"
+        try:
+            self.link.symlink_to(self.root, target_is_directory=True)
+        except OSError:
+            self.link = None
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def call(self, function: str, root: str) -> str:
+        script = 'source "$1"; "$2" "$3"'
+        result = subprocess.run(
+            [BASH, "-c", script, "test", posix(COMMON_SH), function, root], capture_output=True, text=True, check=False
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def test_list_format_files_finds_the_sources_whatever_the_checkout_is_under(self):
+        root = posix(self.root)
+        listed = sorted(name for name in self.call("list_format_files", root).split("\0") if name)
+        self.assertEqual(listed, sorted(f"{root}/{rel}" for rel in ("src/a.cpp", "tests/t.cpp", "benchmarks/b.cpp")))
+
+    def test_coverage_ignore_regex_is_anchored_at_the_checkout_and_its_physical_path(self):
+        if os.name == "nt":
+            # Only tools/coverage.sh calls it, which runs on Linux; Git Bash's pwd -P spells the physical path
+            # /c/..., not Python's C:/..., so the two forms this test compares don't meet there.
+            self.skipTest("coverage_ignore_regex serves tools/coverage.sh, which is Linux-only")
+        if self.link is None:
+            self.skipTest("can't make a directory link here")
+        given = posix(self.link)
+        physical = posix(self.root.resolve())
+        regex = re.compile(self.call("coverage_ignore_regex", given))
+        for root in (given, physical):
+            with self.subTest(root=root):
+                for rel in ("tests/X.cpp", "build/Y.h", "benchmarks/B.cpp"):
+                    self.assertTrue(regex.search(f"{root}/{rel}"), rel)
+                for rel in ("src/build/G.h", "src/a.cpp", "src/tests/T.h"):
+                    self.assertFalse(regex.search(f"{root}/{rel}"), rel)
+        self.assertTrue(regex.search("/anywhere/_deps/sdl/Z.h"))
+        self.assertTrue(regex.search(f"{given}/.cache/fetchcontent/x.h"))
 
 
 if __name__ == "__main__":
