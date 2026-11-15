@@ -149,6 +149,10 @@ class CheckoutPathTests(unittest.TestCase):
         self.assertEqual(listed, sorted(f"{root}/{rel}" for rel in ("src/a.cpp", "tests/t.cpp", "benchmarks/b.cpp")))
 
     def test_coverage_ignore_regex_is_anchored_at_the_checkout_and_its_physical_path(self):
+        if os.name == "nt":
+            # Only tools/coverage.sh calls it, which runs on Linux; Git Bash's pwd -P spells the physical path
+            # /c/..., not Python's C:/..., so the two forms this test compares don't meet there.
+            self.skipTest("coverage_ignore_regex serves tools/coverage.sh, which is Linux-only")
         if self.link is None:
             self.skipTest("can't make a directory link here")
         given = posix(self.link)
