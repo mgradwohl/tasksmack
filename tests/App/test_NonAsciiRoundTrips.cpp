@@ -479,7 +479,7 @@ TEST(NonAsciiOpenTest, OpenerConvertsUtf8TargetsWithoutTheCodePage)
 
 #ifdef _WIN32
 // #2040: a target with no UTF-16 form fails before ShellExecuteW, so nothing is launched. These are
-// the only openWithSystemHandler() calls a Windows test makes; a real launch would open a browser or
+// the only open() calls a Windows test makes; a real launch would open a browser or
 // Explorer (#2039).
 TEST(NonAsciiOpenTest, OpenerRefusesATargetThatIsNotUtf8WithoutLaunchingAnything)
 {
@@ -488,7 +488,7 @@ TEST(NonAsciiOpenTest, OpenerRefusesATargetThatIsNotUtf8WithoutLaunchingAnything
     for (const std::string_view target : {INVALID_UTF8, std::string_view{"https://example.com/\xED\xA0\x80"}})
     {
         ASSERT_TRUE(App::PlatformOpen::nativeTargetFromUtf8(target).empty());
-        EXPECT_FALSE(App::PlatformOpen::openWithSystemHandler(target));
+        EXPECT_EQ(App::PlatformOpen::open(target), App::PlatformOpen::OpenResult::Failed);
     }
 }
 
@@ -496,7 +496,7 @@ TEST(NonAsciiOpenTest, OpenerRefusesAnEmptyTarget)
 {
     // Converts to nothing, as a target that isn't UTF-8 does: refused, and nothing is launched.
     ASSERT_TRUE(App::PlatformOpen::nativeTargetFromUtf8(std::string_view{}).empty());
-    EXPECT_FALSE(App::PlatformOpen::openWithSystemHandler(std::string_view{}));
+    EXPECT_EQ(App::PlatformOpen::open(std::string_view{}), App::PlatformOpen::OpenResult::Failed);
 }
 #endif
 
