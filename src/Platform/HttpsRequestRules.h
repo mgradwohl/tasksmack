@@ -19,7 +19,7 @@ namespace Platform
 /// - a path holding '#', a space, CR, LF or NUL, which would start a fragment or break the request line;
 /// - a User-Agent or Accept holding CR, LF or NUL (header injection);
 /// - an extra header whose name isn't an RFC 9110 token, or whose value holds CR, LF or NUL.
-/// The messages never quote a header's value: it may be a secret (VirusTotal's x-apikey).
+/// The messages never quote a header's value, which may be a secret such as VirusTotal's API key.
 [[nodiscard]] inline std::optional<std::string> requestRefusal(const HttpsRequest& request)
 {
     if (request.host.empty() || request.path.empty() || request.userAgent.empty())
