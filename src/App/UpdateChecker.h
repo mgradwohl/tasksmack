@@ -20,6 +20,7 @@
 #include "Platform/IHttpsClient.h"
 
 #include <chrono>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -81,6 +82,13 @@ class UpdateChecker
     /// "TaskSmack v0.10.0 is available", "Couldn't check: ..."; empty before the first.
     [[nodiscard]] std::string summary() const;
 
+    /// Bumped each time a check's outcome is taken in (#3882): with checking(), all summary() is built from, so a
+    /// caller rebuilds the summary only when one of them moved, not every frame.
+    [[nodiscard]] std::uint64_t outcomeGeneration() const noexcept
+    {
+        return m_OutcomeGeneration;
+    }
+
     /// Tests: waits for a check still running; the next update() takes it in.
     void waitForCheck() noexcept
     {
@@ -96,6 +104,7 @@ class UpdateChecker
     std::string m_CurrentText;
     Clock m_Clock;
     std::optional<Domain::UpdateCheck::Outcome> m_LastOutcome; ///< This session's last check, taken in
+    std::uint64_t m_OutcomeGeneration = 0;                     ///< Bumped by each takeIn()
     bool m_CheckNowRequested = false;
     // Last: destroyed first, stopping and waiting for a request still running, whose job owns all it uses.
     BackgroundTask<Domain::UpdateCheck::Outcome> m_Worker;

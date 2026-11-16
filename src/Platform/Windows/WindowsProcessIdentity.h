@@ -3,7 +3,7 @@
 // The one place Windows opens a process by PID and confirms it is the process a ProcessTarget names
 // (#2149). Every action (WindowsProcessActions) and every Process Details reader (modules, open
 // files, connections, security) goes through openProcessVerified(), so a change to how identity is
-// checked is made once.
+// checked is made once. processImagePath() is the one read of a process's executable path (#3863).
 
 #include "Platform/IProcessActions.h"
 #include "WindowsHandles.h"
@@ -20,6 +20,7 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
 #include <string>
 #include <system_error>
 
@@ -82,6 +83,19 @@ struct ProcessIdentityFunctions
 /// A failed GetExitCodeProcess, or a real exit code of 259 (STILL_ACTIVE), reads as running.
 [[nodiscard]] std::expected<InjectableHandle, IdentityFailure>
 openProcessVerified(const ProcessIdentityFunctions& fns, const ProcessTarget& target, DWORD access);
+
+/// QueryFullProcessImageNameW, or a test's stand-in.
+using QueryFullProcessImageNameFn = BOOL(WINAPI*)(HANDLE process, DWORD flags, LPWSTR path, PDWORD size);
+
+/// The one read of a process's executable path (#3863): @p process's image, as a Win32 path, through
+/// @p query. A MAX_PATH buffer first, then the longest path's, since QueryFullProcessImageNameW fails
+/// with ERROR_INSUFFICIENT_BUFFER, not the size needed, when its buffer is too small (#2770); any other
+/// failure is final. nullopt when it fails, with GetLastError() saying why.
+///
+/// This is the name the process was created from, which a rename can move away from the file the
+/// process runs: a reader that must bind to the image itself opens it as WindowsImageFile.h does.
+[[nodiscard]] std::optional<std::wstring> processImagePath(HANDLE process,
+                                                           QueryFullProcessImageNameFn query = &::QueryFullProcessImageNameW);
 
 /// A Process Details reader's status and detail for a refused identity check. `Status` is one of the
 /// readers' *ReadStatus enums, which share these names.

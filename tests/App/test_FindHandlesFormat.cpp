@@ -23,11 +23,13 @@ using Domain::HandleSearch::HandleMatch;
 
 HandleMatch match(std::int32_t pid, std::string process, HandleKind kind, std::string path)
 {
-    return HandleMatch{.target = {.pid = pid, .startTimeTicks = 1000U + static_cast<std::uint64_t>(pid)},
-                       .process = std::move(process),
-                       .kind = kind,
-                       .path = std::move(path),
-                       .deleted = false};
+    return HandleMatch{
+        .target = {.pid = pid, .startTimeTicks = 1000U + static_cast<std::uint64_t>(pid)},
+        .process = std::move(process),
+        .kind = kind,
+        .path = std::move(path),
+        .deleted = false,
+    };
 }
 
 /// Four matches whose order differs on every column.
@@ -43,7 +45,7 @@ std::vector<HandleMatch> matches()
 
 TEST(FindHandlesOrderTest, EachColumnSortsBothWays)
 {
-    const std::vector<HandleMatch> list = matches();
+    const Domain::HandleSearch::MatchList list(matches());
     using App::FindHandlesColumn;
     // Process names fold ASCII case: Bash, cron, nginx, Zsh (case-sensitive would put Zsh before cron).
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Process, true), (std::vector<std::size_t>{1, 3, 0, 2}));
@@ -63,15 +65,78 @@ TEST(FindHandlesOrderTest, TiesGoByPidThenPathAndPathsStayAToZEitherWay)
 {
     // Three matches of one process kind: the column ties, so PID decides, and within one PID the path, A-Z
     // whichever way the column sorts.
-    const std::vector<HandleMatch> list = {
+    const Domain::HandleSearch::MatchList list(std::vector<HandleMatch>{
         match(20, "app", HandleKind::File, "/b"), // 0
         match(10, "app", HandleKind::File, "/z"), // 1
         match(20, "app", HandleKind::File, "/a"), // 2
-    };
+    });
     using App::FindHandlesColumn;
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Kind, true), (std::vector<std::size_t>{1, 2, 0}));
     EXPECT_EQ(App::orderFindHandlesMatches(list, FindHandlesColumn::Kind, false), (std::vector<std::size_t>{2, 0, 1}));
     EXPECT_TRUE(App::orderFindHandlesMatches({}, FindHandlesColumn::Process, true).empty());
+}
+
+// #3888: the dialog folds each generation's new matches into the order it has. Extending the order chunk by chunk
+// gives what ordering all the matches at once gives, for every column and direction, with matches equal on every key
+// (the same process, PID and path) left in the order found.
+TEST(FindHandlesOrderTest, ExtendingTheOrderGivesWhatOrderingThemAllGives)
+{
+    using App::FindHandlesColumn;
+    // Few distinct values, so every column ties often; case-only differences tie under the case-folding compares.
+    const std::vector<std::string> names{"bash", "Bash", "cron", "nginx"};
+    const std::vector<std::string> paths{"/a", "/A", "/b", "/lib/x.so"};
+    const std::vector<HandleKind> kinds{HandleKind::File, HandleKind::Library, HandleKind::Socket};
+    constexpr std::size_t COUNT = 90;
+    std::vector<HandleMatch> all;
+    all.reserve(COUNT);
+    for (std::size_t i = 0; i < COUNT; ++i)
+    {
+        all.push_back(match(static_cast<std::int32_t>(10 * ((i * 7) % 3)),
+                            names[(i * 5) % names.size()],
+                            kinds[i % kinds.size()],
+                            paths[(i * 3) % paths.size()]));
+    }
+    // Generations of different sizes, an empty one among them, as a search publishes them.
+    const std::vector<std::size_t> steps{1, 6, 0, 17, 2, 31, 33};
+    for (const FindHandlesColumn column :
+         {FindHandlesColumn::Process, FindHandlesColumn::Pid, FindHandlesColumn::Kind, FindHandlesColumn::Path})
+    {
+        for (const bool ascending : {true, false})
+        {
+            SCOPED_TRACE(std::to_string(static_cast<int>(column)) + (ascending ? " ascending" : " descending"));
+            Domain::HandleSearch::MatchList list;
+            std::vector<std::size_t> order;
+            std::size_t next = 0;
+            for (const std::size_t step : steps)
+            {
+                for (std::size_t i = 0; i < step; ++i)
+                {
+                    list.append(all[next++]);
+                }
+                list.seal();
+                App::extendFindHandlesOrder(order, list, column, ascending);
+                const std::vector<std::size_t> full = App::orderFindHandlesMatches(list, column, ascending);
+                ASSERT_EQ(order, full) << "after " << list.size() << " matches";
+            }
+            ASSERT_EQ(list.size(), all.size());
+            // Ties stable: matches equal on every key stay in the order found.
+            for (std::size_t i = 1; i < order.size(); ++i)
+            {
+                const HandleMatch& a = list[order[i - 1]];
+                const HandleMatch& b = list[order[i]];
+                if (a.process == b.process && a.target.pid == b.target.pid && a.path == b.path && a.kind == b.kind)
+                {
+                    EXPECT_LT(order[i - 1], order[i]) << "equal matches keep the order found";
+                }
+            }
+        }
+    }
+
+    // An order that isn't of these matches' first ones (longer than the list) is dropped, and all are ordered.
+    const Domain::HandleSearch::MatchList list(matches());
+    std::vector<std::size_t> stale(10, 0);
+    App::extendFindHandlesOrder(stale, list, FindHandlesColumn::Pid, true);
+    EXPECT_EQ(stale, (std::vector<std::size_t>{1, 2, 0, 3}));
 }
 
 TEST(FindHandlesStatusTest, EveryPartOfTheStatusLine)
@@ -81,7 +146,7 @@ TEST(FindHandlesStatusTest, EveryPartOfTheStatusLine)
     Domain::HandleSearch::SearchPublication done = Domain::HandleSearch::startFor("libssl", 12, 1);
     done.searched = 12;
     done.done = true;
-    done.matches = matches();
+    done.matches = Domain::HandleSearch::MatchList(matches());
     done.truncated = true;
     done.denied.resize(3);
     done.failed = 2;

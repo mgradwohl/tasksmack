@@ -37,6 +37,7 @@
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WindowsProcessIdentity.h"
 #include "WinString.h"
 #include "WindowsDebugPrivilege.h"
 #include "WindowsDiskProbe.h"
@@ -267,31 +268,13 @@ std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* ownerWindow)
     }
     // What the prompt will ask for, from the token's elevation type: approval for a split-token administrator,
     // an administrator's name and password for a standard user (or when the type can't be read).
-    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
-    if (Windows::UniqueHandle token; OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
-    {
-        DWORD size = 0;
-        if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
-        {
-            type = TokenElevationTypeDefault;
-        }
-    }
-    return std::make_shared<Windows::ElevatedRestart::WindowsElevatedRestart>(static_cast<HWND>(ownerWindow),
-                                                                              Windows::ElevatedRestart::promptFor(type));
+    return std::make_shared<Windows::ElevatedRestart::WindowsElevatedRestart>(
+        static_cast<HWND>(ownerWindow), Windows::ElevatedRestart::promptFor(Windows::currentElevationType()));
 }
 
 bool elevatedThroughUac()
 {
-    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
-    if (Windows::UniqueHandle token; OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
-    {
-        DWORD size = 0;
-        if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
-        {
-            type = TokenElevationTypeDefault;
-        }
-    }
-    return type == TokenElevationTypeFull;
+    return Windows::currentElevationType() == TokenElevationTypeFull;
 }
 
 HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks, const HandoffProgress& onProgress)
@@ -408,7 +391,7 @@ struct RunningWindowSearch
     {
         return false;
     }
-    const auto image = Windows::BrokerHelper::imageOf(process.get());
+    const auto image = Windows::processImagePath(process.get());
     return image.has_value() && TaskManagerReplacement::isTaskSmackProgram(WinString::wideToUtf8(*image));
 }
 

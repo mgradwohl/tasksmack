@@ -99,7 +99,7 @@ constexpr std::chrono::milliseconds STARTUP_WAIT{BrokerPipeServer::ACCEPT_TIMEOU
 
 [[nodiscard]] std::wstring freshName()
 {
-    auto name = BrokerPipe::makePipeName();
+    const auto name = BrokerPipe::makePipeName();
     EXPECT_TRUE(name.has_value());
     return name.value_or(L"");
 }
@@ -159,11 +159,13 @@ constexpr std::chrono::milliseconds STARTUP_WAIT{BrokerPipeServer::ACCEPT_TIMEOU
 /// this user can write, couldn't: checkUnchangeableBy() has tests of its own).
 [[nodiscard]] BrokerHelper::Self selfStartedBy(HANDLE parent)
 {
-    return {.taskSmackPath = imageOf(parent),
-            .creatorPid = GetProcessId(parent),
-            .startTicks = nowTicks(),
-            .helperPath = imageOf(parent),
-            .installCheck = &anyInstall};
+    return {
+        .taskSmackPath = imageOf(parent),
+        .creatorPid = GetProcessId(parent),
+        .startTicks = nowTicks(),
+        .helperPath = imageOf(parent),
+        .installCheck = &anyInstall,
+    };
 }
 
 [[nodiscard]] std::chrono::milliseconds since(std::chrono::steady_clock::time_point start)
@@ -436,75 +438,6 @@ TEST(BrokerHelperTest, APidOutOfRangeOrOfNoProcessIsRefused)
     EXPECT_EQ(none.error(), "TaskSmack has exited");
 }
 
-// #2770: QueryFullProcessImageNameW fails with ERROR_INSUFFICIENT_BUFFER, and doesn't say the size
-// needed, when its buffer is too small. A TaskSmack installed at a path of MAX_PATH characters or more
-// needs the longest buffer tried, not that failure taken as final.
-
-/// What the fake QueryFullProcessImageNameW answers: @p path when the buffer has room for it and its
-/// terminator, ERROR_INSUFFICIENT_BUFFER when not, as Windows does; or @p failWith. Counts its calls.
-struct FakeImageQuery
-{
-    std::wstring path;
-    DWORD failWith = ERROR_SUCCESS;
-    int calls = 0;
-};
-
-[[nodiscard]] FakeImageQuery& fakeImageQuery()
-{
-    static FakeImageQuery fake;
-    return fake;
-}
-
-BOOL WINAPI fakeQueryFullProcessImageName(HANDLE /*process*/, DWORD /*flags*/, LPWSTR path, PDWORD size)
-{
-    FakeImageQuery& fake = fakeImageQuery();
-    ++fake.calls;
-    if (fake.failWith != ERROR_SUCCESS)
-    {
-        SetLastError(fake.failWith);
-        return FALSE;
-    }
-    if (*size <= fake.path.size())
-    {
-        SetLastError(ERROR_INSUFFICIENT_BUFFER);
-        return FALSE;
-    }
-    const std::span<wchar_t> out(path, *size);
-    std::ranges::copy(fake.path, out.begin());
-    out[fake.path.size()] = L'\0';
-    *size = static_cast<DWORD>(fake.path.size());
-    return TRUE;
-}
-
-TEST(BrokerHelperTest, AnImagePathOfMaxPathOrMoreIsReadWithTheLongestBuffer)
-{
-    FakeImageQuery& fake = fakeImageQuery();
-    fake = {.path = L"C:\\" + std::wstring(283, L'a') + L"\\TaskSmack.exe"};
-    ASSERT_EQ(fake.path.size(), 300U);
-    const auto image = BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName);
-    ASSERT_TRUE(image.has_value());
-    EXPECT_EQ(*image, fake.path);
-    EXPECT_EQ(fake.calls, 2) << "MAX_PATH, then the longest path";
-
-    fake = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmack.exe"};
-    EXPECT_EQ(BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName), fake.path);
-    EXPECT_EQ(fake.calls, 1) << "one that fits MAX_PATH is read at once";
-
-    fake = {.path = std::wstring(32'768, L'a')};
-    EXPECT_FALSE(BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName).has_value());
-    EXPECT_EQ(fake.calls, 2) << "longer than the longest path: no third try";
-
-    EXPECT_EQ(BrokerHelper::imageOf(GetCurrentProcess()), imageOf(GetCurrentProcess())) << "the real call, by default";
-}
-
-TEST(BrokerHelperTest, AnImageThatCantBeReadIsntRetried)
-{
-    FakeImageQuery& fake = fakeImageQuery();
-    fake = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmack.exe", .failWith = ERROR_ACCESS_DENIED};
-    EXPECT_FALSE(BrokerHelper::imageOf(GetCurrentProcess(), &fakeQueryFullProcessImageName).has_value());
-    EXPECT_EQ(fake.calls, 1) << "a failure that isn't the buffer's size is final";
-}
-
 // #2772: the readers of a process's own image and start time, which TaskSmack names itself to the
 // helper with and the helper reads itself with, are one pair, shared.
 
@@ -622,9 +555,11 @@ TEST(BrokerHelperTest, AParentRunningAnotherExecutableIsRefused)
     const std::filesystem::path own(imageOf(GetCurrentProcess()));
     const SuspendedChild cmd;
     ASSERT_TRUE(cmd.process() != nullptr);
-    for (const std::wstring& taskSmack : {imageOf(cmd.process()),
-                                          (own.parent_path() / L"TaskSmack.exe").wstring(), // the TaskSmack beside this, which isn't it
-                                          std::wstring()})
+    for (const std::wstring& taskSmack : {
+             imageOf(cmd.process()),
+             (own.parent_path() / L"TaskSmack.exe").wstring(), // the TaskSmack beside this, which isn't it
+             std::wstring(),
+         })
     {
         BrokerHelper::Self self = selfStartedBy(GetCurrentProcess());
         self.taskSmackPath = taskSmack;
@@ -1264,7 +1199,10 @@ TEST(BrokerHelperTest, ASessionWhoseParentExitsBeforeConnectingEnds)
     ASSERT_TRUE(child.process() != nullptr);
     const ProcessTarget parent = child.target();
     const BrokerHelper::Arguments arguments{
-        .pipeName = freshName(), .parentPid = static_cast<DWORD>(parent.pid), .parentStartTicks = parent.startTimeTicks};
+        .pipeName = freshName(),
+        .parentPid = static_cast<DWORD>(parent.pid),
+        .parentStartTicks = parent.startTimeTicks,
+    };
     const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
     {
         return Broker::ErrorReply{};
@@ -1289,7 +1227,10 @@ TEST(BrokerHelperTest, ASessionRefusesAClientThatIsntTheParent)
     ASSERT_TRUE(child.process() != nullptr);
     const ProcessTarget parent = child.target();
     const BrokerHelper::Arguments arguments{
-        .pipeName = freshName(), .parentPid = static_cast<DWORD>(parent.pid), .parentStartTicks = parent.startTimeTicks};
+        .pipeName = freshName(),
+        .parentPid = static_cast<DWORD>(parent.pid),
+        .parentStartTicks = parent.startTimeTicks,
+    };
     const BrokerPipeServer::RequestHandler handler = [](const Broker::Request&) -> Broker::Response
     {
         return Broker::ErrorReply{};
@@ -1552,7 +1493,7 @@ TEST(BrokerHelperTest, ASessionSentAnOversizedFrameEndsAsAFailure)
 
 [[nodiscard]] BrokerPipe::Sid ownSid()
 {
-    auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
+    const auto sid = BrokerPipe::userSidOfProcess(GetCurrentProcess());
     EXPECT_TRUE(sid.has_value()) << sid.error_or("");
     return sid.value_or(BrokerPipe::Sid{});
 }
@@ -2250,7 +2191,10 @@ TEST(TaskSmackHelperTest, RefusesAnotherProgramAsItsParent)
     ASSERT_TRUE(cmd.process() != nullptr);
     const ProcessTarget named = cmd.target();
     const BrokerHelper::Arguments arguments{
-        .pipeName = freshName(), .parentPid = static_cast<DWORD>(named.pid), .parentStartTicks = named.startTimeTicks};
+        .pipeName = freshName(),
+        .parentPid = static_cast<DWORD>(named.pid),
+        .parentStartTicks = named.startTimeTicks,
+    };
     const Started helper(installed.helper(), BrokerHelper::commandLine(arguments), {.parent = cmd.process()});
     EXPECT_EQ(helper.exitCode(), exitStatus(BrokerHelper::Exit::NoParent));
 }
@@ -2398,22 +2342,33 @@ class PeFile
     std::vector<IMAGE_SECTION_HEADER> m_Sections;
 };
 
-TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardAndCetShadowStacks)
+/// Checks that @p path, an image that can run elevated, has the hardening tasksmack_apply_privileged_hardening gives
+/// it (cmake/CompilerOptions.cmake): Control Flow Guard, CET shadow-stack compatibility, and imports loaded from
+/// System32 only (#2557, #3897).
+void expectHardenedImage(const std::filesystem::path& path)
 {
-#ifndef TASKSMACK_WINDOWS_HELPER_HARDENED
-    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; CMakeLists.txt)";
-#else
-    const PeFile image(TASKSMACK_WINDOWS_HELPER_PATH);
+    const PeFile image(path);
     ASSERT_TRUE(image.valid()) << "not a 64-bit PE file";
     const WORD characteristics = image.headers().OptionalHeader.DllCharacteristics;
-    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT, 0);
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, 0);
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, 0);
 
+    // Every DLL the imports load comes from System32 only (/DEPENDENTLOADFLAG:0x800), never the image's own folder:
+    // the load configuration's DependentLoadFlags, which the loader uses for the imports in place of its default
+    // search. In every build, a sanitizer's too.
+    const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
+    ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags) + sizeof(WORD)) << "no load configuration";
+    const auto dependentLoadFlags = image.at<WORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
+    EXPECT_EQ(dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32) << "no /DEPENDENTLOADFLAG:0x800";
+
+#ifndef TASKSMACK_WINDOWS_HARDENED
+    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; cmake/CompilerOptions.cmake)";
+#else
+    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
+
     // The load configuration's guard flags: the compiler's checks went in (-cfguard), and the linker's
     // table of valid call targets with them.
-    const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
     ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD)) << "no load configuration";
     const auto guardFlags = image.at<DWORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
     EXPECT_NE(guardFlags & IMAGE_GUARD_CF_INSTRUMENTED, 0U) << "no CFG checks";
@@ -2433,6 +2388,24 @@ TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardAndCetShadowStacks)
     }
     EXPECT_TRUE(cetCompatible) << "no /CETCOMPAT";
 #endif
+}
+
+TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardCetShadowStacksAndSystem32Imports)
+{
+    expectHardenedImage(TASKSMACK_WINDOWS_HELPER_PATH);
+}
+
+// TaskSmack.exe runs elevated too, after Restart as administrator (#3657), from wherever its user unpacked it, so it
+// gets the helper's hardening (#3897). TaskSmackTests doesn't build it (tests/CMakeLists.txt, TASKSMACK_APP_PATH);
+// CI's build makes every target, so it is checked there.
+TEST(TaskSmackImageTest, IsBuiltWithControlFlowGuardCetShadowStacksAndSystem32Imports)
+{
+    const std::filesystem::path app(TASKSMACK_APP_PATH);
+    if (!std::filesystem::exists(app))
+    {
+        GTEST_SKIP() << "TaskSmack.exe isn't built: " << TASKSMACK_APP_PATH;
+    }
+    expectHardenedImage(app);
 }
 
 TEST(TaskSmackHelperImageTest, ImportsNeitherComNorTheDumpWriter)

@@ -22,8 +22,8 @@
 #include "WinString.h"
 #include "WindowsPackageLogoMath.h"
 #include "WindowsProcessIconMath.h"
+#include "WindowsProcessIdentity.h"
 
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -54,9 +54,6 @@ constexpr std::size_t MAX_LOGO_FOLDER_ENTRIES = 4096;
     // substr() at a position within the text never throws.
     return path.size() >= PNG.size() && Platform::equalsIgnoreCase(path.substr(path.size() - PNG.size()), PNG);
 }
-
-/// QueryFullProcessImageNameW's buffer: MAX_PATH first, then the long-path limit once.
-constexpr std::array<DWORD, 2> IMAGE_PATH_BUFFER_SIZES{MAX_PATH, 32767};
 
 /// Owns one handle and releases it through the function table's call for it (CloseHandle,
 /// DestroyIcon, DeleteDC, DeleteObject), so a fake table sees every release.
@@ -150,20 +147,8 @@ std::string WindowsProcessIconSource::executablePath(std::int32_t pid)
         return {};
     }
 
-    std::size_t attempt = 0;
-    while (attempt < IMAGE_PATH_BUFFER_SIZES.size())
-    {
-        std::wstring path(IMAGE_PATH_BUFFER_SIZES[attempt], L'\0');
-        auto size = static_cast<DWORD>(path.size());
-        // On success, size is the number of characters written, without the terminator.
-        if (m_Fns.queryFullProcessImageName(process.get(), 0, path.data(), &size) != 0)
-        {
-            path.resize(size);
-            return WinString::wideToUtf8(path);
-        }
-        ++attempt;
-    }
-    return {};
+    const std::optional<std::wstring> path = Windows::processImagePath(process.get(), m_Fns.queryFullProcessImageName);
+    return path.has_value() ? WinString::wideToUtf8(*path) : std::string{};
 }
 
 std::optional<IconPixels> WindowsProcessIconSource::loadIcon(std::string_view executablePath, std::string_view /*processName*/, int sizePx)

@@ -47,6 +47,11 @@ std::shared_ptr<SessionAccountCheck> SessionAccountCheck::known(Platform::Sessio
     return std::make_shared<SessionAccountCheck>(KnownTag{}, std::move(account));
 }
 
+bool SessionAccountCheck::workerRunning() const noexcept
+{
+    return m_Worker != nullptr && m_Worker->state() == Domain::WorkerState::Running;
+}
+
 std::optional<Platform::SessionAccount> SessionAccountCheck::result() const
 {
     if (m_Worker == nullptr)
@@ -55,11 +60,21 @@ std::optional<Platform::SessionAccount> SessionAccountCheck::result() const
     }
     if (const auto published = m_Worker->latest(); published->isFinal && published->value.has_value())
     {
+        // The one read is done: end the worker's thread rather than keep it parked for as long as the check is held
+        // (#3893). close() doesn't wait; the answer stands in the publication, which outlives it. Safe from any
+        // thread, and repeated.
+        static_cast<void>(m_Worker->close());
         return published->value;
     }
     // A worker that failed, or never started, has no answer to come: the same account, as an unreadable one is.
     if (m_Worker->state() != Domain::WorkerState::Running)
     {
+        // Unless another caller took the answer and closed the worker after the publication above was loaded: read
+        // it again, now that the state says the worker is done.
+        if (const auto published = m_Worker->latest(); published->isFinal && published->value.has_value())
+        {
+            return published->value;
+        }
         return Platform::SessionAccount{};
     }
     return std::nullopt;

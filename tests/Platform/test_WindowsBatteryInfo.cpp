@@ -2,6 +2,8 @@
 /// @brief Platform::Windows::readBatteryInfo() (#1523) and WindowsPowerProbe's battery details,
 /// against fake battery device calls: a normal battery, two batteries summed (#2151),
 /// relative-capacity units, no battery, a failed IOCTL, and the device handle closed exactly once;
+/// the live status (#4030): rate, remaining Wh and voltage per sample on the cached device, summed over
+/// two batteries, unknown values, and a stale tag dropped and re-opened by the next rescan;
 /// the probe's capabilities following a battery inserted, removed or answering late (#2413); and the
 /// re-reads running on the ts-battery-read worker, so a battery device that stalls never delays a
 /// sample (#2731); and a re-read that throws, contained by that worker's Domain::Worker (#3343).
@@ -16,6 +18,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -63,10 +66,20 @@ struct FakeBattery
     ULONG secondFullCharged = 43'200;
     ULONG secondCycles = 310;
     std::wstring secondModel = L"External";
-    std::size_t openedIndex = 0; ///< Which path the open device is
+    // IOCTL_BATTERY_QUERY_STATUS (#4030): discharging at 12.5 W with 37.872 Wh left at 11.4 V; the second
+    // battery at 3 W with 20 Wh left at 12 V
+    LONG rate = -12'500;
+    ULONG capacity = 37'872;
+    ULONG voltage = 11'400;
+    LONG secondRate = -3'000;
+    ULONG secondCapacity = 20'000;
+    ULONG secondVoltage = 12'000;
+    bool failStatus = false;
     int opens = 0;
     int closes = 0;
+    int tagQueries = 0;
     int informationQueries = 0;
+    int statusQueries = 0;
     // GetSystemPowerStatus (#1395): on battery, discharging, 80% with an hour left
     bool failPowerStatus = false;
     BYTE acLineStatus = 0;
@@ -81,10 +94,26 @@ FakeBattery& fake()
     return instance;
 }
 
-HANDLE fakeDevice()
+/// The fake handle of the battery at @p index in FakeBattery::paths: one per battery, so the status of
+/// two cached devices tells them apart (#4030).
+HANDLE fakeDevice(std::size_t index)
 {
-    static int token = 0;
-    return static_cast<HANDLE>(&token);
+    static std::array<int, 4> tokens{};
+    return static_cast<HANDLE>(&tokens.at(index));
+}
+
+/// Which battery @p device is.
+std::size_t deviceIndex(HANDLE device)
+{
+    for (std::size_t index = 0; index < 4; ++index)
+    {
+        if (device == fakeDevice(index))
+        {
+            return index;
+        }
+    }
+    ADD_FAILURE() << "not a fake battery device";
+    return 0;
 }
 
 /// The calling thread's description (GetThreadDescription), or "<error>" if it can't be read.
@@ -279,18 +308,44 @@ HANDLE WINAPI fakeCreateFile(
     ++fake().opens;
     const auto opened = std::ranges::find(fake().paths, std::wstring_view(path));
     EXPECT_NE(opened, fake().paths.end());
-    fake().openedIndex = static_cast<std::size_t>(opened - fake().paths.begin());
-    return fakeDevice();
+    return fakeDevice(static_cast<std::size_t>(opened - fake().paths.begin()));
 }
 
 BOOL WINAPI fakeDeviceIoControl(
     HANDLE device, DWORD code, LPVOID in, DWORD /*inBytes*/, LPVOID out, DWORD outBytes, LPDWORD returned, LPOVERLAPPED /*overlapped*/)
 {
-    EXPECT_EQ(device, fakeDevice());
+    const bool second = deviceIndex(device) == 1;
     if (code == IOCTL_BATTERY_QUERY_TAG)
     {
+        ++fake().tagQueries;
         std::memcpy(out, &fake().tag, sizeof(ULONG));
         *returned = sizeof(ULONG);
+        return TRUE;
+    }
+    if (code == IOCTL_BATTERY_QUERY_STATUS)
+    {
+        ++fake().statusQueries;
+        BATTERY_WAIT_STATUS wait{};
+        std::memcpy(&wait, in, sizeof(wait));
+        EXPECT_EQ(wait.Timeout, 0U) << "the status now, never a wait for a change";
+        if (wait.BatteryTag != fake().tag)
+        {
+            SetLastError(ERROR_NO_SUCH_DEVICE); // What the class driver answers a stale tag
+            return FALSE;
+        }
+        if (fake().failStatus)
+        {
+            SetLastError(ERROR_GEN_FAILURE);
+            return FALSE;
+        }
+        BATTERY_STATUS status{};
+        status.PowerState = BATTERY_DISCHARGING;
+        status.Rate = second ? fake().secondRate : fake().rate;
+        status.Capacity = second ? fake().secondCapacity : fake().capacity;
+        status.Voltage = second ? fake().secondVoltage : fake().voltage;
+        EXPECT_GE(outBytes, sizeof(status));
+        std::memcpy(out, &status, sizeof(status));
+        *returned = sizeof(status);
         return TRUE;
     }
     EXPECT_EQ(code, static_cast<DWORD>(IOCTL_BATTERY_QUERY_INFORMATION));
@@ -303,7 +358,6 @@ BOOL WINAPI fakeDeviceIoControl(
         SetLastError(ERROR_GEN_FAILURE);
         return FALSE;
     }
-    const bool second = fake().openedIndex == 1;
     if (query.InformationLevel == BatteryInformation)
     {
         BATTERY_INFORMATION info{};
@@ -345,7 +399,7 @@ BOOL WINAPI fakeGetSystemPowerStatus(LPSYSTEM_POWER_STATUS status)
 
 BOOL WINAPI fakeCloseHandle(HANDLE handle)
 {
-    EXPECT_EQ(handle, fakeDevice());
+    (void) deviceIndex(handle);
     ++fake().closes;
     return TRUE;
 }
@@ -449,7 +503,10 @@ TEST_F(WindowsBatteryInfoTest, ProbeCapabilitiesFollowWhatTheBatteryReported)
     EXPECT_TRUE(normal.hasHealthPercent);
     EXPECT_TRUE(normal.hasCycleCount);
     EXPECT_TRUE(normal.hasTechnology);
-    EXPECT_FALSE(normal.hasChargeCapacity); // No live capacity from GetSystemPowerStatus
+    // The live figures, from the battery's status, are offered from the start (#4030)
+    EXPECT_TRUE(normal.hasChargeCapacity);
+    EXPECT_TRUE(normal.hasPowerRate);
+    EXPECT_TRUE(normal.hasVoltage);
 
     fake().capabilities = BATTERY_SYSTEM_BATTERY | BATTERY_CAPACITY_RELATIVE;
     fake().cycles = 0; // The driver's "no cycle counter"
@@ -458,11 +515,15 @@ TEST_F(WindowsBatteryInfoTest, ProbeCapabilitiesFollowWhatTheBatteryReported)
     EXPECT_FALSE(relative.hasHealthPercent);
     EXPECT_FALSE(relative.hasCycleCount);
     EXPECT_TRUE(relative.hasTechnology);
+    EXPECT_FALSE(relative.hasChargeCapacity) << "relative units are not Wh";
+    EXPECT_FALSE(relative.hasPowerRate) << "nor is their rate W";
+    EXPECT_TRUE(relative.hasVoltage);
 
     fake() = FakeBattery{};
     fake().failInformation = true;
     const PowerCapabilities failed = WindowsPowerProbe(fakes(), &fakeGetSystemPowerStatus).capabilities();
     EXPECT_FALSE(failed.hasDesignCapacity || failed.hasHealthPercent || failed.hasCycleCount || failed.hasTechnology);
+    EXPECT_FALSE(failed.hasChargeCapacity || failed.hasPowerRate || failed.hasVoltage) << "no device was kept open";
 }
 
 TEST_F(WindowsBatteryInfoTest, ProbeReadsTheStaticFactsOnceNotPerSample)
@@ -505,6 +566,125 @@ TEST_F(WindowsBatteryInfoTest, ProbeOnBatteryReportsTheChargeAndTheStaticFacts)
     EXPECT_EQ(counters.technology, "Li-ion");
     EXPECT_EQ(counters.manufacturer, "Contoso");
     EXPECT_EQ(counters.model, "5B10W51");
+    // The live status (#4030), in Linux's units and signs: positive watts while discharging
+    EXPECT_TRUE(caps.hasPowerRate);
+    EXPECT_TRUE(caps.hasChargeCapacity);
+    EXPECT_TRUE(caps.hasVoltage);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 12.5);
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 37.872);
+    EXPECT_EQ(counters.voltageNowMv, 11'400U);
+    EXPECT_EQ(counters.timeToEmptySec, 3'600U) << "still GetSystemPowerStatus's";
+    EXPECT_EQ(counters.timeToFullSec, 0U);
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeChargingReportsANegativeRateAndATimeToFull)
+{
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    fake().batteryLifeTime = 0xFFFFFFFF; // Windows gives no time while charging
+    fake().rate = 20'000;                // 20 W going in
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const PowerCounters counters = probe.read();
+    EXPECT_EQ(counters.state, BatteryState::Charging);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, -20.0) << "negative watts: power going in, as on Linux";
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 37.872);
+    // (47.34 - 37.872) Wh at 20 W: 0.4734 h
+    EXPECT_EQ(counters.timeToFullSec, 1'704U);
+    EXPECT_EQ(counters.timeToEmptySec, 0U);
+    EXPECT_TRUE(probe.capabilities().hasTimeEstimates) << "the time to full is one";
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeSumsTwoBatteriesStatusAndKeepsTheFirstOnesVoltage)
+{
+    fake().paths.emplace_back(LR"(\\?\acpi#pnp0c0a#2#{72631e54-78a4-11d0-bcf7-00aa00b7b32a})");
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const PowerCounters counters = probe.read();
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 15.5) << "12.5 W + 3 W";
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 57.872) << "37.872 Wh + 20 Wh";
+    EXPECT_EQ(counters.voltageNowMv, 11'400U) << "the first battery's, as Linux takes the first pack's";
+    EXPECT_EQ(fake().statusQueries, 4) << "one per battery: the seed and this sample";
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeUnknownStatusValuesAreNotOffered)
+{
+    fake().rate = static_cast<LONG>(BATTERY_UNKNOWN_RATE);
+    fake().capacity = BATTERY_UNKNOWN_CAPACITY;
+    fake().voltage = BATTERY_UNKNOWN_VOLTAGE;
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    const PowerCounters counters = probe.read();
+    const PowerCapabilities caps = probe.capabilities();
+    EXPECT_FALSE(caps.hasPowerRate);
+    EXPECT_FALSE(caps.hasChargeCapacity);
+    EXPECT_FALSE(caps.hasVoltage);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 0.0);
+    EXPECT_DOUBLE_EQ(counters.chargeNowWh, 0.0);
+    EXPECT_EQ(counters.voltageNowMv, 0U);
+    EXPECT_TRUE(caps.hasDesignCapacity) << "the static facts are unaffected";
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeSendsOnlyTheStatusQueryEachSampleOnTheCachedDevice)
+{
+    // #4030: the enumeration, the open and the tag are the rescan's; a sample sends one status IOCTL per battery
+    {
+        WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+        const int opens = fake().opens;
+        const int tags = fake().tagQueries;
+        const int statuses = fake().statusQueries;
+        ASSERT_EQ(gate().passed(), 1) << "the seed's enumeration";
+        for (int i = 0; i < 5; ++i)
+        {
+            fake().capacity = 37'000U - static_cast<ULONG>(i * 100);
+            const PowerCounters counters = probe.read();
+            EXPECT_DOUBLE_EQ(counters.chargeNowWh, (37'000.0 - (i * 100.0)) / 1000.0) << "a fresh status each sample";
+        }
+        EXPECT_EQ(fake().statusQueries, statuses + 5);
+        EXPECT_EQ(fake().opens, opens);
+        EXPECT_EQ(fake().tagQueries, tags);
+        EXPECT_EQ(gate().passed(), 1) << "no re-enumeration";
+        EXPECT_EQ(fake().closes, 0) << "the device stays open between samples";
+    }
+    EXPECT_EQ(fake().closes, fake().opens) << "and is closed with the probe";
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeDropsADeviceWhoseTagWentStaleAndTheRescanReopensIt)
+{
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    EXPECT_DOUBLE_EQ(probe.read().powerNowW, 12.5);
+    ASSERT_EQ(fake().opens, 1);
+
+    // The battery is swapped: the slot's tag changes, and the cached one answers ERROR_NO_SUCH_DEVICE
+    fake().tag = 8;
+    const int before = fake().statusQueries;
+    PowerCounters counters = probe.read();
+    EXPECT_EQ(fake().statusQueries, before + 1);
+    EXPECT_DOUBLE_EQ(counters.powerNowW, 0.0);
+    EXPECT_EQ(fake().closes, 1) << "the stale device is dropped and closed";
+    counters = probe.read();
+    EXPECT_EQ(fake().statusQueries, before + 1) << "not queried again";
+    EXPECT_TRUE(probe.capabilities().hasPowerRate) << "what the battery offers stays offered until the rescan";
+
+    // The next rescan (here a change of power source) opens and tags it again
+    fake().acLineStatus = 1;
+    fake().batteryFlag = BATTERY_FLAG_CHARGING;
+    fake().rate = 15'000;
+    counters = readUntil(probe, [](const PowerCounters& c) { return c.powerNowW < 0.0; });
+    EXPECT_DOUBLE_EQ(counters.powerNowW, -15.0);
+    EXPECT_EQ(fake().opens, 2);
+    EXPECT_GT(fake().statusQueries, before + 1);
+    EXPECT_TRUE(probe.capabilities().hasPowerRate);
+}
+
+TEST_F(WindowsBatteryInfoTest, ProbeKeepsADeviceWhoseStatusFailsOnce)
+{
+    WindowsPowerProbe probe(fakes(), &fakeGetSystemPowerStatus);
+    fake().failStatus = true; // A passing failure, not a stale tag
+    const PowerCounters failed = probe.read();
+    EXPECT_DOUBLE_EQ(failed.powerNowW, 0.0);
+    EXPECT_TRUE(probe.capabilities().hasPowerRate);
+    fake().failStatus = false;
+    EXPECT_DOUBLE_EQ(probe.read().powerNowW, 12.5) << "the same device, asked again";
+    EXPECT_EQ(fake().opens, 1);
+    EXPECT_EQ(fake().closes, 0);
 }
 
 TEST_F(WindowsBatteryInfoTest, ProbeRereadsTheStaticFactsWhenThePowerSourceChanges)

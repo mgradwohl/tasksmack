@@ -187,42 +187,28 @@ class ProcessThreadsView
         {
             applyResult(*result);
         }
-        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
-        // "Authenticate to read" was pressed (#3069): read as an administrator, now, on the worker.
-        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
-        {
-            if (auto failed = m_Read.start(target,
-                                           [reader, clock = m_Clock](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
-                                           { return stamped(reader->readAuthorized(t, stopToken), clock); }))
-            {
-                applyResult(*failed);
-            }
-            return true;
-        }
-        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasThreads())
-        {
-            return false;
-        }
-        if (auto failed = m_Read.start(
-                target, [reader, clock = m_Clock](const Platform::ProcessTarget& t) { return stamped(reader->readThreads(t), clock); }))
-        {
-            applyResult(*failed);
-        }
-        return true;
+        return m_Read.startAuthorizedOrDue(
+            reader,
+            target,
+            deltaSeconds,
+            [](const Platform::IProcessThreadsReader& r) { return r.hasThreads(); },
+            [](Platform::IProcessThreadsReader& r, const Platform::ProcessTarget& t) { return r.readThreads(t); },
+            [clock = m_Clock](Platform::ThreadsReadResult result) { return stamped(std::move(result), clock); },
+            [this](const Platform::ThreadsReadResult& failed) { applyResult(failed); });
     }
 
     /// Whether the status line offers "Authenticate to read" (#3069): the read was refused for want of
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::ThreadsReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+        return m_Read.offersAuthorizedRead(m_HasRead && m_Status == Platform::ThreadsReadStatus::PermissionDenied);
     }
 
     /// Whether the last read was refused for want of permission, with no read in flight: where no helper can
     /// read it as an administrator, the status line offers "Restart as administrator..." (#3658).
     [[nodiscard]] bool readRefusedForPermission() const noexcept
     {
-        return m_HasRead && m_Status == Platform::ThreadsReadStatus::PermissionDenied && !m_Read.inFlight();
+        return m_Read.refusedAndIdle(m_HasRead && m_Status == Platform::ThreadsReadStatus::PermissionDenied);
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.

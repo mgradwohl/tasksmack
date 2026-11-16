@@ -316,8 +316,18 @@ try {
     # Step 3: Merge profraw files
     Write-Host "==> Merging coverage data..."
     $profrawFiles = Get-ChildItem -Path $BuildDir -Filter "*.profraw" | Select-Object -ExpandProperty FullName
-    & $LlvmProfdata merge -sparse $profrawFiles -o "$BuildDir\default.profdata"
-    if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+    # A child process killed mid-exit (a test ending a suspended or hung child) can leave a truncated
+    # profile, and llvm-profdata's default failure mode then rejects the whole merge ("no profile can be
+    # merged", main's win-coverage 2026-11-16). Skip unreadable profiles, name each one, and still fail
+    # when none can be merged, so a real loss of coverage data can't pass silently.
+    & $LlvmProfdata merge -sparse -failure-mode=all $profrawFiles -o "$BuildDir\default.profdata" 2>&1 |
+        Tee-Object -Variable mergeOutput | Write-Host
+    $mergeExit = $LASTEXITCODE
+    $skipped = @($mergeOutput | Where-Object { "$_" -match '^warning: (.+\.profraw):' } | ForEach-Object { $Matches[1] })
+    if ($skipped.Count -gt 0) {
+        Write-Warning ("Skipped {0} unreadable profile(s) of {1}: {2}" -f $skipped.Count, $profrawFiles.Count, ($skipped -join ', '))
+    }
+    if ($mergeExit -ne 0) { exit $mergeExit }
 
     # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/
     # holds test-support headers the tests include, #1395). ImGui panel

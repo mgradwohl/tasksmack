@@ -16,6 +16,8 @@
 
 #include <cstdint>
 #include <expected>
+#include <optional>
+#include <string>
 
 namespace Platform::Windows
 {
@@ -74,6 +76,27 @@ openProcessVerified(const ProcessIdentityFunctions& fns, const ProcessTarget& ta
         return std::unexpected(IdentityFailure{.kind = IdentityFailureKind::Exited, .win32Error = 0});
     }
     return process;
+}
+
+std::optional<std::wstring> processImagePath(HANDLE process, QueryFullProcessImageNameFn query)
+{
+    constexpr DWORD LONGEST_PATH = 32'768; // the longest path Windows allows, with its terminator
+    for (const DWORD size : {DWORD{MAX_PATH}, LONGEST_PATH})
+    {
+        std::wstring path(size, L'\0');
+        DWORD written = size;
+        // On success, written is the number of characters written, without the terminator.
+        if (query(process, 0, path.data(), &written) != FALSE)
+        {
+            path.resize(written);
+            return path;
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        {
+            return std::nullopt;
+        }
+    }
+    return std::nullopt; // longer than the longest path: GetLastError() stays ERROR_INSUFFICIENT_BUFFER
 }
 // NOLINTEND(misc-include-cleaner)
 
