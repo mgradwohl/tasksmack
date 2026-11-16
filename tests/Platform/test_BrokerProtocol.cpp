@@ -18,6 +18,7 @@
 
 #include <gtest/gtest.h>
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -70,13 +71,18 @@ constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 0x0123456789ABCDEF
     return decoded->message;
 }
 
-// #3063: v8's signals end at User2; the next value is refused, not sent as some other signal.
+// #3784: v26's signals end at Resume. The next value, v8's Hangup (#3063), and the rest of the POSIX signals only the
+// Linux helper sent are refused, not sent as some other signal.
 TEST(BrokerProtocolTest, ASignalPastTheLastIsRefused)
 {
-    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{SignalRequest{.target = TARGET, .signal = Signal::User2}});
+    std::vector<std::uint8_t> bytes = encodeRequest(1, Request{SignalRequest{.target = TARGET, .signal = Signal::Resume}});
     ASSERT_TRUE(decodeRequest(bytes).has_value());
-    bytes.back() = static_cast<std::uint8_t>(static_cast<std::uint8_t>(Signal::User2) + 1); // the signal is the payload's last byte
-    EXPECT_FALSE(decodeRequest(bytes).has_value());
+    for (auto value = static_cast<std::uint8_t>(static_cast<std::uint8_t>(Signal::Resume) + 1U); value <= 8U;
+         ++value) // v25's Hangup to User2
+    {
+        bytes.back() = value; // the signal is the payload's last byte
+        EXPECT_FALSE(decodeRequest(bytes).has_value()) << static_cast<int>(value);
+    }
 }
 
 // #3071 (v9): Efficiency mode on and off round-trip; its flag is one byte of 0 or 1, and anything else is
@@ -121,30 +127,52 @@ TEST(BrokerProtocolTest, EfficiencyModeCarriesTheClassToRestoreAndTheReplyTheCla
     EXPECT_EQ(ActionResult::from(result).toProcessActionResult().priorityClassBefore, 0x4000U);
 }
 
-// #3066: CloseConnection carries its target and the socket's inode, the full 64 bits.
-TEST(BrokerProtocolTest, CloseConnectionRoundTrips)
-{
-    const Request request{CloseConnectionRequest{.target = TARGET, .socketInode = 0xFEDCBA9876543210ULL}};
-    EXPECT_EQ(roundTrip(request), request);
-    const std::vector<std::uint8_t> bytes = encodeRequest(3, request);
-    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
-}
-
-// #3358 (v20): on Windows, CloseConnection names the IPv4 TCP connection by its endpoints, every byte and both ports.
+// #3358 (v20): CloseConnection names the IPv4 TCP connection by its endpoints, every byte and both ports. Since v26
+// (#3784) that is all it carries: the socket inode only the Linux helper closed by is gone.
 TEST(BrokerProtocolTest, CloseConnectionCarriesTheTcpEndpoints)
 {
     const Request request{CloseConnectionRequest{
         .target = TARGET,
-        .socketInode = 0,
         .tcpConnection = {.localAddress = {10, 0, 0, 5}, .localPort = 0xFFFE, .remoteAddress = {142, 250, 80, 255}, .remotePort = 443},
     }};
     EXPECT_EQ(roundTrip(request), request);
     std::vector<std::uint8_t> bytes = encodeRequest(4, request);
-    // The target, the inode, then 4 address bytes and a 2-byte port for each end.
-    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + 8U + 8U + 12U);
+    EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::CloseConnection);
+    // The target, then 4 address bytes and a 2-byte port for each end: no inode.
+    ASSERT_EQ(bytes.size(), 4U + HEADER_BYTES + 4U + 8U + 12U);
     bytes.pop_back(); // a frame cut short of the remote port is refused
     bytes[0] = static_cast<std::uint8_t>(bytes.size() - 4U);
     EXPECT_FALSE(decodeRequest(bytes).has_value());
+}
+
+// #3784: v26 dropped CloseConnection's inode. A v25 client's frame is refused by its version, and v25's layout (an
+// 8-byte inode before the endpoints) under v26's version is refused as malformed: 8 bytes left over, never read as
+// other endpoints.
+TEST(BrokerProtocolTest, AVersion25CloseConnectionIsRefused)
+{
+    static_assert(PROTOCOL_VERSION == 26);
+    const Request request{CloseConnectionRequest{
+        .target = TARGET,
+        .tcpConnection = {.localAddress = {10, 0, 0, 5}, .localPort = 52144, .remoteAddress = {142, 250, 80, 46}, .remotePort = 443},
+    }};
+    const std::vector<std::uint8_t> current = encodeRequest(5, request);
+    ASSERT_TRUE(decodeRequest(current).has_value());
+
+    std::vector<std::uint8_t> older = current;
+    older[4] = 25; // the version, little-endian
+    older[5] = 0;
+    const auto refused = decodeRequest(older);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "A frame of another protocol version");
+
+    // v25's payload: the target (12 bytes), the inode, then the endpoints.
+    std::vector<std::uint8_t> withInode = current;
+    const std::array<std::uint8_t, 8> inode{1, 2, 3, 4, 5, 6, 7, 8};
+    withInode.insert(withInode.begin() + static_cast<std::ptrdiff_t>(4U + HEADER_BYTES + 12U), inode.begin(), inode.end());
+    withInode[0] = static_cast<std::uint8_t>(withInode.size() - 4U);
+    const auto malformed = decodeRequest(withInode);
+    ASSERT_FALSE(malformed.has_value());
+    EXPECT_EQ(malformed.error(), "A malformed message");
 }
 
 // #3069 (v14): one thread's Suspend, Resume or End carries its target, the TID and the action, byte for byte.
@@ -340,15 +368,7 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRefusesWhatIsntExactlyOne)
 TEST(BrokerProtocolTest, EveryRequestRoundTrips)
 {
     EXPECT_EQ(roundTrip(Request{Hello{}}), Request{Hello{}});
-    for (const Signal signal : {Signal::Terminate,
-                                Signal::Kill,
-                                Signal::Suspend,
-                                Signal::Resume,
-                                Signal::Hangup,
-                                Signal::Interrupt,
-                                Signal::Quit,
-                                Signal::User1,
-                                Signal::User2}) // the last five from v8 (#3063)
+    for (const Signal signal : {Signal::Terminate, Signal::Kill, Signal::Suspend, Signal::Resume})
     {
         const Request request = SignalRequest{.target = TARGET, .signal = signal};
         EXPECT_EQ(roundTrip(request), request);
@@ -1175,7 +1195,7 @@ TEST(BrokerProtocolTest, ReplyListsPastTheirCapsOrWithAStrayFamilyAreRefused)
 TEST(BrokerProtocolTest, TheNewerRequestKindsAndAnUnknownKindAreNotResponses)
 {
     for (const Request& request :
-         {Request{CloseConnectionRequest{.target = TARGET, .socketInode = 5}},
+         {Request{CloseConnectionRequest{.target = TARGET, .tcpConnection = {.localPort = 5}}},
           Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Clear, .path = {}, .replaceOther = false}},
           Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 2, .user = "u", .domain = "d", .logonUsec = 1}},
           Request{ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::End}}})

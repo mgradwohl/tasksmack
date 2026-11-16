@@ -450,6 +450,10 @@ jobs:
           # rather than skip if it goes missing, as on Linux (#2134).
           TASKSMACK_REQUIRE_DISPLAY: '1'
           GALLIUM_DRIVER: llvmpipe
+          # Each test that arms the allocation-failure hook writes its name here once. The release build
+          # compiles the hook in since #4067 (#3846); debug leaves it out (the checked STL allocates a
+          # proxy per container), so a debug run never writes the file and has no summary step.
+          TASKSMACK_ALLOCATION_HOOK_LOG: ${{ github.workspace }}/build/win-${{ inputs.build_type }}/allocation-hook.log
         run: ctest --preset win-${{ inputs.build_type }} -j $env:NUMBER_OF_PROCESSORS --schedule-random --output-on-failure --timeout 60 --output-junit test-results.xml
 
       # The CI real-system tests (#3489; tracker #3492): Realtime priority, Run new task, Compressed memory, Open
@@ -597,7 +601,7 @@ jobs:
         run: python tools/merge-gtest-results.py --later "$BUILD_DIR/real-system-results.xml" --later "$BUILD_DIR/ci-real-system-results.xml" "$BUILD_DIR/test-results.xml" "$BUILD_DIR/test-results-pwsh-script.xml" "$BUILD_DIR/gtest-results" "$BUILD_DIR/test-results-cases.xml"
 
       # Which tests ran with the allocation-failure hook armed (#3342), in the Job Summary. Linux builds
-      # compile the hook in (only sanitizer builds and Windows leave it out), so --require fails the job
+      # compile the hook in (only sanitizer builds and Windows debug leave it out), so --require fails the job
       # when no test armed it or one skipped for want of it: a hook that silently stopped running can't
       # pass as a run of skipped tests. A missing case report (the build failed) prints nothing.
       - name: Allocation-failure hook summary (Linux)
@@ -605,6 +609,16 @@ jobs:
         shell: bash
         env:
           BUILD_DIR: build/${{ inputs.build_type }}
+        run: python -I tools/allocation-hook-summary.py --require "$BUILD_DIR/allocation-hook.log" "$BUILD_DIR/test-results-cases.xml" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      # The same on Windows release (#3846, #4067): its build compiles the hook in, so --require fails the
+      # job when no test armed it or one skipped for want of it. Windows debug leaves the hook out by design
+      # and skips those cases with a reason, so it gets no summary step.
+      - name: Allocation-failure hook summary (Windows release)
+        if: always() && runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build && inputs.build_type == 'release'
+        shell: bash
+        env:
+          BUILD_DIR: build/win-${{ inputs.build_type }}
         run: python -I tools/allocation-hook-summary.py --require "$BUILD_DIR/allocation-hook.log" "$BUILD_DIR/test-results-cases.xml" | tee -a "$GITHUB_STEP_SUMMARY"
 
       - name: Upload test results (Linux)

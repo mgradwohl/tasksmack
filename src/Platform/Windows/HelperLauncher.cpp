@@ -260,18 +260,8 @@ bool readsOtherUsers(TOKEN_ELEVATION_TYPE elevationType) noexcept
 
 bool readsOtherUsers() noexcept
 {
-    UniqueHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
-    {
-        return false;
-    }
-    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
-    DWORD size = 0;
-    if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
-    {
-        return false;
-    }
-    return readsOtherUsers(type);
+    // An unreadable type reads as TokenElevationTypeDefault, which reads no one else's processes.
+    return readsOtherUsers(currentElevationType());
 }
 
 bool administratorProtection() noexcept

@@ -2,6 +2,7 @@
 
 #include "ComPtr.h"
 #include "ComScope.h"
+#include "ComTypes.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcAddress.h"
@@ -157,23 +158,22 @@ constexpr PROPERTYKEY BITLOCKER_PROTECTION_KEY{
     {
         return std::nullopt;
     }
-    PROPVARIANT value;
-    PropVariantInit(&value);
+    Windows::PropVariant value; // cleared however this returns (#3865)
     std::optional<std::uint32_t> protection;
     // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - PROPVARIANT is a tagged union; vt is checked first
-    if (SUCCEEDED(store->GetValue(BITLOCKER_PROTECTION_KEY, &value)))
+    if (SUCCEEDED(store->GetValue(BITLOCKER_PROTECTION_KEY, value.put())))
     {
-        if (value.vt == VT_I4 && value.lVal >= 0)
+        const PROPVARIANT& read = value.get();
+        if (read.vt == VT_I4 && read.lVal >= 0)
         {
-            protection = static_cast<std::uint32_t>(value.lVal);
+            protection = static_cast<std::uint32_t>(read.lVal);
         }
-        else if (value.vt == VT_UI4)
+        else if (read.vt == VT_UI4)
         {
-            protection = static_cast<std::uint32_t>(value.ulVal);
+            protection = static_cast<std::uint32_t>(read.ulVal);
         }
     }
     // NOLINTEND(cppcoreguidelines-pro-type-union-access)
-    PropVariantClear(&value);
     return protection;
 }
 

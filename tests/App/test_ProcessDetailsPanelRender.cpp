@@ -23,9 +23,14 @@
 #include "Domain/CrashHistory.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ServiceModel.h"
-#include "Mocks/FakeBroker.h"
+#ifdef _WIN32
+#include "Mocks/FakeBroker.h" // the helper's decorator is Windows only (#3784)
+#endif
+#include "Mocks/FakeClipboard.h"
 #include "Mocks/MockProbes.h"
+#ifdef _WIN32
 #include "Platform/BrokeredProcessActions.h"
+#endif
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IServiceProbe.h"
@@ -113,6 +118,7 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
     {
         m_ImGui = ImGui::CreateContext();
         m_ImPlot = ImPlot::CreateContext();
+        m_Clipboard.install(); // not the shared system clipboard (#4066)
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
@@ -166,6 +172,7 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
     }
 
   private:
+    TestMocks::FakeClipboard m_Clipboard;
     ImGuiContext* m_ImGui = nullptr;
     ImPlotContext* m_ImPlot = nullptr;
 };
@@ -1293,6 +1300,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
     EXPECT_EQ(mock->setIoPriorityCount(), 0); // Picking applies nothing
 }
 
+#ifdef _WIN32 // BrokeredProcessActions and BrokeredUserSessions are Windows only (#3784)
 // #3182: the panel asks for the actions' capabilities every frame, on the UI thread. Through the helper's
 // broker they never call connected(), which peeks at the pipe: no frame makes a call on the channel. And since
 // #3580 a running helper adds no Realtime I/O stop: that was the Linux helper's.
@@ -1325,6 +1333,7 @@ TEST_F(ProcessDetailsPanelRenderTest, EveryFramesCapabilitiesReadTheHelpersConne
     EXPECT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority) << "the helper adds no Realtime class (#3580)";
     EXPECT_EQ(broker->connectedCallCount(), 0) << "no frame looked at the helper's channel";
 }
+#endif
 
 TEST_F(ProcessDetailsPanelRenderTest, TheOverviewShowsTheExecutablesRecentCrashes)
 {

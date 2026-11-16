@@ -1374,6 +1374,30 @@ TEST_F(UserConfigSaveLoadFixture, ThemeIdRoundTrip)
     EXPECT_EQ(config.settings().themeId, "dracula");
 }
 
+// #3876: main() hands the Font size and Interface scale to UI::Theme before UILayer attaches, so the first font build
+// is at the saved values. applyFontSettings() sets both, and applyToApplication() afterwards changes neither.
+TEST_F(UserConfigSaveLoadFixture, FontSettingsReachTheThemeBeforeTheRestIsApplied)
+{
+    auto& theme = UI::Theme::get();
+    const int originalSize = theme.fontPointSize();
+    const int originalScale = theme.interfaceScalePercent();
+
+    auto& config = UserConfig::get();
+    config.settings().fontPointSize = 12;
+    config.settings().interfaceScalePercent = 175;
+    config.applyFontSettings();
+    EXPECT_EQ(theme.fontPointSize(), 12);
+    EXPECT_EQ(theme.interfaceScalePercent(), 175);
+    config.applyToApplication();
+    EXPECT_EQ(theme.fontPointSize(), 12);
+    EXPECT_EQ(theme.interfaceScalePercent(), 175);
+
+    // The Theme singleton is process-wide: put both back for the other tests in this binary.
+    config.settings().fontPointSize = originalSize;
+    config.settings().interfaceScalePercent = originalScale;
+    config.applyFontSettings();
+}
+
 TEST_F(UserConfigSaveLoadFixture, ThemeAndFontSizeRoundTripThroughTheTheme)
 {
     // #1187: applyToApplication() hands the theme id and font size to UI::Theme, and

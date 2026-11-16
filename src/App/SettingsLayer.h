@@ -11,6 +11,7 @@
 #include "Domain/StartAtLogin.h"
 #include "Platform/IStartAtLogin.h"
 
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <memory>
@@ -95,6 +96,7 @@ class SettingsLayer : public Core::Layer
     [[nodiscard]] std::filesystem::path userThemesDir() const;
 
     SettingsDialog::State m_State;
+    std::uint64_t m_UdpStatusVersion = 0;                                             // the UDP status version m_State holds (#3878)
     std::function<void(Core::Event&)> m_RaiseEvent;                                   ///< Set by the test seam only; else the Application
     std::function<PlatformOpen::OpenResult(const std::filesystem::path&)> m_OpenPath; ///< Set by the test seam only; else PlatformOpen
     std::function<std::filesystem::path()> m_UserConfigDir;                           ///< Set by the test seam only; else the Application's

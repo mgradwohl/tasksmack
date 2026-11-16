@@ -40,9 +40,16 @@ answers a fixed set of requests.
   OpenSSF Scorecard.
 - **Fuzzing:** ClusterFuzzLite fuzzes the parsers and the Windows helper's request protocol.
 - **Hardening:** release builds use `-fstack-protector-strong` everywhere, plus `_FORTIFY_SOURCE=2` and PIE on
-  Linux. The Windows helper links with Control Flow Guard and CET shadow-stack compatibility. On Linux there is
-  no separate helper (#3580): TaskSmack is either started as root for its whole session or runs as you, and
-  never elevates after it starts. Debug
+  Linux. On Windows, TaskSmack.exe and the helper, the two images that can run elevated, link with Control Flow
+  Guard and CET shadow-stack compatibility, and load the DLLs they import from System32 only. The helper looks
+  for a DLL loaded by name in System32 only. TaskSmack does too when it is elevated through UAC or started by
+  Restart as administrator, whichever account approved it; otherwise it also looks in its own folder, where a
+  software OpenGL can go on a PC with no GPU driver. One case is left: an account with no UAC split token (the
+  built-in Administrator, SYSTEM, or an administrator with UAC turned off) starting a copy itself, not through
+  Restart as administrator, from a folder another account can write to. Run TaskSmack that way only from a folder
+  just administrators can change, such as its installed one. On Linux there is no separate helper (#3580):
+  TaskSmack is either started as root for its whole session or runs as you, and never elevates after it starts.
+  Debug
   builds use `-ftrivial-auto-var-init=pattern` to expose uninitialized variables.
 - **Dependencies:** fetched with CMake FetchContent at pinned versions, and kept current by Renovate.
 - **CI:** builds and tests on every pull request and push to `main`, plus nightly checks.

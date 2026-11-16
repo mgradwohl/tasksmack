@@ -3,7 +3,6 @@
 #include "Platform/SessionAccount.h"
 #include "WinString.h"
 #include "WindowsElevation.h"
-#include "WindowsHandles.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -76,52 +75,40 @@ struct WtsFree
     return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
 
-} // namespace
-
-bool processIsElevated()
+/// Whether the token's user is @p session's, by SID (#4077); nullopt when either SID can't be read.
+[[nodiscard]] std::optional<bool> sameSid(const SessionAccountFunctions& fns, const AccountName& session)
 {
-    return isProcessElevated();
+    const std::optional<SidBytes> process = fns.processUserSid();
+    if (!process.has_value())
+    {
+        spdlog::info("Session account: couldn't read this TaskSmack's user SID; comparing account names instead");
+        return std::nullopt;
+    }
+    const std::optional<SidBytes> signedIn = fns.accountSid(session);
+    if (!signedIn.has_value())
+    {
+        spdlog::info("Session account: couldn't find the signed-in user's SID; comparing account names instead");
+        return std::nullopt;
+    }
+    return *process == *signedIn;
 }
+
+} // namespace
 
 std::optional<AccountName> readProcessUser()
 {
-    UniqueHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+    return currentUserName();
+}
+
+std::optional<SidBytes> readProcessUserSid()
+{
+    auto sid = currentUserSid();
+    if (!sid.has_value())
     {
-        spdlog::debug("Session account: OpenProcessToken failed (error {})", GetLastError());
+        spdlog::debug("Session account: reading the token's user SID failed (error {})", sid.error());
         return std::nullopt;
     }
-    DWORD size = 0;
-    static_cast<void>(GetTokenInformation(token.get(), TokenUser, nullptr, 0, &size));
-    std::vector<std::byte> buffer(size);
-    if (size == 0 || GetTokenInformation(token.get(), TokenUser, buffer.data(), size, &size) == FALSE)
-    {
-        spdlog::debug("Session account: reading TokenUser failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    // TokenUser's buffer is a TOKEN_USER.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    const auto* const user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
-    DWORD nameLength = 0;
-    DWORD domainLength = 0;
-    SID_NAME_USE use = SidTypeUnknown;
-    static_cast<void>(LookupAccountSidW(nullptr, user->User.Sid, nullptr, &nameLength, nullptr, &domainLength, &use));
-    if (nameLength == 0)
-    {
-        spdlog::debug("Session account: LookupAccountSidW failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    std::wstring name(nameLength, L'\0');
-    std::wstring domain(domainLength, L'\0');
-    if (LookupAccountSidW(nullptr, user->User.Sid, name.data(), &nameLength, domain.data(), &domainLength, &use) == FALSE)
-    {
-        spdlog::debug("Session account: LookupAccountSidW failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    // On success the lengths exclude the NUL.
-    name.resize(nameLength);
-    domain.resize(domainLength);
-    return AccountName{.domain = std::move(domain), .user = std::move(name)};
+    return std::move(*sid);
 }
 
 std::optional<AccountName> readSessionUser()
@@ -137,6 +124,46 @@ std::optional<AccountName> readSessionUser()
         return std::nullopt;
     }
     return AccountName{.domain = std::move(*domain), .user = std::move(*user)};
+}
+
+std::optional<SidBytes> lookupUserSid(const AccountName& account, LookupAccountNameFn lookupByName)
+{
+    // Qualified, so a local account and a domain account of the same user name can't be confused.
+    const std::wstring name = account.domain.empty() ? account.user : account.domain + L'\\' + account.user;
+    // A first call with no buffers asks how big the SID and the domain are; another
+    // ERROR_INSUFFICIENT_BUFFER sizes them again, a few times at most, as lookupAccountName() does.
+    DWORD sidSize = 0;
+    DWORD domainLength = 0;
+    SID_NAME_USE use = SidTypeUnknown;
+    static_cast<void>(lookupByName(nullptr, name.c_str(), nullptr, &sidSize, nullptr, &domainLength, &use));
+    constexpr int ATTEMPTS = 3;
+    for (int attempt = 0; attempt < ATTEMPTS && sidSize != 0; ++attempt)
+    {
+        SidBytes sid(sidSize);
+        std::wstring domain(domainLength, L'\0');
+        if (lookupByName(nullptr, name.c_str(), sid.data(), &sidSize, domain.data(), &domainLength, &use) != FALSE)
+        {
+            // A WTS session's user is a user account; anything else (a group of the same name) isn't it.
+            if (use != SidTypeUser || IsValidSid(sid.data()) == FALSE || GetLengthSid(sid.data()) > sid.size())
+            {
+                spdlog::debug("Session account: the signed-in user's name resolves to no user SID (type {})", static_cast<int>(use));
+                return std::nullopt;
+            }
+            sid.resize(GetLengthSid(sid.data()));
+            return sid;
+        }
+        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER)
+        {
+            break;
+        }
+    }
+    spdlog::debug("Session account: LookupAccountNameW failed (error {})", GetLastError());
+    return std::nullopt;
+}
+
+std::optional<SidBytes> readAccountSid(const AccountName& account)
+{
+    return lookupUserSid(account);
 }
 
 bool sameAccount(const AccountName& a, const AccountName& b)
@@ -162,7 +189,10 @@ SessionAccount readSessionAccount(const SessionAccountFunctions& fns)
         spdlog::info("Session account: couldn't read the session's signed-in user; treating this TaskSmack as that user");
         return {};
     }
-    if (sameAccount(*process, *session))
+    // By SID, as the helper decides its session (BrokerHelper::sessionPolicy()); by name only when a SID
+    // can't be read, which is how this was decided before #4077. The names stay for the log and the app.
+    const std::optional<bool> sameBySid = sameSid(fns, *session);
+    if (sameBySid.has_value() ? *sameBySid : sameAccount(*process, *session))
     {
         return {};
     }

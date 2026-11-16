@@ -86,8 +86,8 @@ TEST(ValueStripTextTest, TheInlineTextsReadAsTheStringsTheyReplaced)
     EXPECT_EQ(UI::Format::formatMegahertz(std::numeric_limits<double>::quiet_NaN()), "N/A");
 }
 
-// The improvement itself, where the test binary counts allocations (Linux debug and release; the
-// Windows C runtime build compiles the allocator hook out, see AllocationFailureHook.h).
+// The improvement itself, where the test binary counts allocations (Linux debug and release, Windows
+// release; the Windows debug and sanitizer builds compile the allocator hook out, see AllocationFailureHook.h).
 TEST(ValueStripTextTest, BuildingTheStripTextsAllocatesNothing)
 {
 #ifdef TASKSMACK_NO_ALLOCATOR_HOOK
@@ -99,7 +99,10 @@ TEST(ValueStripTextTest, BuildingTheStripTextsAllocatesNothing)
         // What one frame of the Memory, GPU and Process Details charts builds for their strips.
         const UI::Widgets::ValueStripEntry commit{.label = "Commit", .value = MemorySection::commitStripValue(snap), .color = {}};
         const UI::Widgets::ValueStripEntry compressed{
-            .label = "Compressed", .value = MemorySection::compressedStripValue(snap), .color = {}};
+            .label = "Compressed",
+            .value = MemorySection::compressedStripValue(snap),
+            .color = {},
+        };
         const UI::InlineText used = UI::Widgets::tooltipRowText(
             "Used", UI::Format::bytesUsedTotalPercentCompactText(snap.memoryUsedBytes, snap.memoryTotalBytes, 64.0));
         const UI::InlineText processUsed =

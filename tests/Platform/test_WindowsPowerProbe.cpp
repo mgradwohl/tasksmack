@@ -40,9 +40,10 @@ TEST(WindowsPowerProbeTest, CapabilitiesReportedCorrectly)
     // charge-percent capability implies a battery is present.
     EXPECT_FALSE(caps.hasChargePercent && !caps.hasBattery);
 
-    EXPECT_FALSE(caps.hasChargeCapacity);
-    EXPECT_FALSE(caps.hasPowerRate);
-    EXPECT_FALSE(caps.hasVoltage);
+    // The live rate, charge and voltage come from the battery's status (#4030), so only with a battery
+    EXPECT_FALSE(caps.hasChargeCapacity && !caps.hasBattery);
+    EXPECT_FALSE(caps.hasPowerRate && !caps.hasBattery);
+    EXPECT_FALSE(caps.hasVoltage && !caps.hasBattery);
     // The battery device's facts (#1523) depend on the machine's battery; health needs the design
     // capacity it is computed from (test_WindowsBatteryInfo.cpp covers each case with fakes).
     EXPECT_FALSE(caps.hasHealthPercent && !caps.hasDesignCapacity);

@@ -42,6 +42,7 @@
 
 #include "ComPtr.h"
 #include "ComScope.h"
+#include "ComTypes.h"
 #include "DXGIAdapterLocation.h"
 #include "Platform/SmbiosParser.h"
 #include "Platform/VulkanInfo.h"
@@ -666,15 +667,13 @@ constexpr PROPERTYKEY FRIENDLY_NAME_KEY{
         ComPtr<IPropertyStore> store;
         if (SUCCEEDED(device->OpenPropertyStore(STGM_READ, store.releaseAndGetAddressOf())) && store)
         {
-            PROPVARIANT name;
-            PropVariantInit(&name);
+            Windows::PropVariant name; // cleared however this scope ends, a throwing conversion included (#3865)
             // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - PROPVARIANT is a tagged union; vt is checked first
-            if (SUCCEEDED(store->GetValue(FRIENDLY_NAME_KEY, &name)) && name.vt == VT_LPWSTR && name.pwszVal != nullptr)
+            if (SUCCEEDED(store->GetValue(FRIENDLY_NAME_KEY, name.put())) && name.get().vt == VT_LPWSTR && name.get().pwszVal != nullptr)
             {
-                record.name = WinString::wideToUtf8(name.pwszVal);
+                record.name = WinString::wideToUtf8(name.get().pwszVal);
             }
             // NOLINTEND(cppcoreguidelines-pro-type-union-access)
-            PropVariantClear(&name);
         }
         endpoints.push_back(std::move(record));
     }

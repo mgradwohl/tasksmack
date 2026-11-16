@@ -2,6 +2,7 @@
 
 #include "ComPtr.h"
 #include "ComScope.h"
+#include "ComTypes.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -21,6 +22,7 @@
 // clang-format on
 
 #include <format>
+#include <new>
 #include <string>
 
 #pragma comment(lib, "ole32.lib")
@@ -39,31 +41,7 @@ namespace
     return std::format("{} failed (0x{:08X})", step, static_cast<unsigned long>(hr));
 }
 
-/// A BSTR freed at the end of its scope.
-class Bstr
-{
-  public:
-    explicit Bstr(const wchar_t* text) noexcept : m_Value(SysAllocString(text))
-    {}
-    ~Bstr()
-    {
-        SysFreeString(m_Value);
-    }
-    Bstr(const Bstr&) = delete;
-    Bstr& operator=(const Bstr&) = delete;
-    Bstr(Bstr&&) = delete;
-    Bstr& operator=(Bstr&&) = delete;
-
-    [[nodiscard]] BSTR get() const noexcept
-    {
-        return m_Value;
-    }
-
-  private:
-    BSTR m_Value;
-};
-
-/// An empty VARIANT (VT_EMPTY): ShellExecute's arguments left out.
+/// An empty VARIANT (VT_EMPTY), for FindWindowSW's in-pointers: it owns nothing, so needs no clearing.
 [[nodiscard]] VARIANT emptyVariant() noexcept
 {
     VARIANT value{};
@@ -151,36 +129,21 @@ class Bstr
     // Explorer may bring the window it starts to the front: TaskSmack has the foreground, the user's click.
     static_cast<void>(CoAllowSetForegroundWindow(shell.get(), nullptr));
 
-    const Bstr file(target.c_str());
-    if (file.get() == nullptr)
+    // The call's strings, each owned by the Bstr or Variant that holds it and freed after the call (ComTypes.h,
+    // #3865). Each allocation is checked: one that fails (every string, the verb's too) is out of memory.
+    try
     {
-        return std::unexpected(std::string("out of memory")); // LCOV_EXCL_LINE - SysAllocString failing; no test can make it
+        const Bstr file(target);
+        const Variant operation(Bstr(L"open"));
+        const Variant show(LONG{SW_SHOWNORMAL});
+        const Variant parameters = arguments.empty() ? Variant() : Variant(Bstr(arguments)); // none: VT_EMPTY
+        const Variant directory;
+        hr = shell->ShellExecute(file.get(), parameters.get(), directory.get(), operation.get(), show.get());
     }
-    const Bstr verb(L"open");
-    // VARIANT is the union COM's automation calls take: its type tag and the matching member are set together.
-    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
-    VARIANT operation = emptyVariant();
-    operation.vt = VT_BSTR;
-    operation.bstrVal = verb.get(); // owned by verb, freed after the call
-    VARIANT show = emptyVariant();
-    show.vt = VT_I4;
-    show.lVal = SW_SHOWNORMAL;
-    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
-    const Bstr parameters(arguments.c_str());
-    if (!arguments.empty() && parameters.get() == nullptr)
+    catch (const std::bad_alloc&)
     {
-        return std::unexpected(std::string("out of memory")); // LCOV_EXCL_LINE - SysAllocString failing; no test can make it
+        return std::unexpected(std::string("out of memory")); // LCOV_EXCL_LINE - SysAllocStringLen failing; no test can make it
     }
-    VARIANT argumentsVariant = emptyVariant();
-    if (!arguments.empty())
-    {
-        // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access)
-        argumentsVariant.vt = VT_BSTR;
-        argumentsVariant.bstrVal = parameters.get(); // owned by parameters, freed after the call
-        // NOLINTEND(cppcoreguidelines-pro-type-union-access)
-    }
-    const VARIANT directory = emptyVariant();
-    hr = shell->ShellExecute(file.get(), argumentsVariant, directory, operation, show);
     if (FAILED(hr))
     {
         return std::unexpected(failure("IShellDispatch2::ShellExecute", hr));

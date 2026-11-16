@@ -348,7 +348,8 @@ TEST(BackgroundTaskTest, AWorkerThatFailedPastTheWorkDoesNotHoldUpTheNextStart)
 // #3343: start() under allocation failure, at each of its allocations in turn (the stop source, the worker, the
 // job, its stop state, the thread). Each one that fails answers the Failed result at once, starts nothing and
 // leaves the task idle; the first start that allocates in full runs as usual. Skipped where the hook is
-// compiled out (Windows, sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+// compiled out (Windows debug, sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds
+// and the Windows release build run it.
 TEST(BackgroundTaskTest, AStartThatRunsOutOfMemoryIsTheFailedResultAndStartsNothing)
 {
 #ifdef TASKSMACK_NO_ALLOCATOR_HOOK

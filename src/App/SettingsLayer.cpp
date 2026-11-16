@@ -275,10 +275,14 @@ void SettingsLayer::onRender()
     }
     syncStartAtLogin();
     {
-        UdpCountingStatus udp = udpCountingStatus(); // #3366
-        m_State.udpDelivering = udp.delivering;
-        m_State.udpUnsupported = udp.unsupported;
-        m_State.udpProblem = std::move(udp.problem);
+        // #3366; copied only when the collector published a change, not every frame (#3878).
+        UdpCountingStatus udp;
+        if (udpCountingStatusIfChanged(m_UdpStatusVersion, udp))
+        {
+            m_State.udpDelivering = udp.delivering;
+            m_State.udpUnsupported = udp.unsupported;
+            m_State.udpProblem = std::move(udp.problem);
+        }
     }
     if (m_TaskManager != nullptr)
     {

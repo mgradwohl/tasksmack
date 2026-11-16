@@ -4,6 +4,9 @@
 
 #include <gtest/gtest.h>
 
+#include <cstdint>
+#include <string>
+
 namespace App
 {
 namespace
@@ -18,6 +21,36 @@ TEST(UdpCountingStatusTest, TheLastPublishedStatusIsWhatSettingsReads)
     EXPECT_FALSE(udpCountingStatus().unsupported);
     EXPECT_TRUE(udpCountingStatus().problem.empty());
     publishUdpCountingStatus({}); // as a run starts: nothing known yet
+}
+
+// #3878: Settings reads the status every frame; it must copy (and allocate) only when the collector published a change.
+TEST(UdpCountingStatusTest, AnUnchangedStatusIsNotCopiedAgain)
+{
+    const std::string problem = "Needs TaskSmack started as administrator: a long problem text";
+    publishUdpCountingStatus({.delivering = false, .unsupported = false, .problem = problem});
+    std::uint64_t seen = 0;
+    UdpCountingStatus mine;
+    ASSERT_TRUE(udpCountingStatusIfChanged(seen, mine));
+    EXPECT_EQ(mine.problem, problem);
+
+    // A marker no copy would leave alone: an unchanged status must not write into the caller's copy at all.
+    mine.problem = "marker";
+    EXPECT_FALSE(udpCountingStatusIfChanged(seen, mine));
+    EXPECT_FALSE(udpCountingStatusIfChanged(seen, mine));
+    EXPECT_EQ(mine.problem, "marker");
+
+    // Publishing what is already held is not a change.
+    publishUdpCountingStatus({.delivering = false, .unsupported = false, .problem = problem});
+    EXPECT_FALSE(udpCountingStatusIfChanged(seen, mine));
+    EXPECT_EQ(mine.problem, "marker");
+
+    // A real change is copied once, then quiet again.
+    publishUdpCountingStatus({.delivering = true, .unsupported = false, .problem = {}});
+    EXPECT_TRUE(udpCountingStatusIfChanged(seen, mine));
+    EXPECT_TRUE(mine.delivering);
+    EXPECT_TRUE(mine.problem.empty());
+    EXPECT_FALSE(udpCountingStatusIfChanged(seen, mine));
+    publishUdpCountingStatus({});
 }
 
 // #3879: Settings' line follows what the collector says, on both platforms, rather than always saying it needs
