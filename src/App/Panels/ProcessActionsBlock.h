@@ -9,7 +9,7 @@
 // This only places the views; their behaviour -- the confirm dialog, the disabled states, the result and
 // error lines, Apply -- is theirs.
 //
-// Where the cards go is ProcessDetailsLayout::chooseTopRowLayout()'s decision, from the widths
+// Where the cards go is ProcessDetailsLayout::layoutOverview()'s decision (#4029), from the widths
 // measure() reports; render() draws them there. Neither creates a probe: the IProcessActions stays
 // owned by ProcessDetailsPanel and is passed in each frame.
 
@@ -18,6 +18,7 @@
 #include "Platform/SchedPolicy.h"
 #include "ProcessDetailsLayout.h"
 
+#include <array>
 #include <cmath>
 #include <cstdint>
 #include <optional>
@@ -72,7 +73,7 @@ struct Widths
 /// Context::priorityHeldElsewhere). For ProcessActionsView::holdPriorityChanges().
 [[nodiscard]] const char* actionsHoldReason(bool sliderApplying, const char* priorityHeldElsewhere) noexcept;
 
-/// Measures the widths chooseTopRowLayout() lays the cards out from; @p virusTotalOffered counts the
+/// Measures the widths layoutOverview() lays the cards out from; @p virusTotalOffered counts the
 /// Look up on VirusTotal button (ProcessActionsView::virusTotalOffered(), #3813).
 [[nodiscard]] Widths measure(const Platform::ProcessActionCapabilities& capabilities, bool virusTotalOffered);
 
@@ -97,19 +98,24 @@ struct Context
     const char* priorityHeldElsewhere = nullptr;
 };
 
-/// Draws the cards at the cursor, each a ProcessOverviewCard (#1537) as wide as @p layout says (a
-/// card of width 0 is not drawn): Actions -- the "Actions" header, the button row and the result
-/// line -- then, to its right (layout.priorityBesideActions) or under it, a column of Priority -- the
-/// "Priority" header and the priority slider, where the platform can set priority -- and I/O priority
-/// under it -- the "I/O priority" header and the I/O slider, where it can set that (#3741). Each header
-/// is its control's label and shows the current value on hover (#1874). Every card is exactly as tall
-/// as its content, growing while a result or error line shows (#3741), and that text wraps at the
-/// card's edge rather than being clipped. The caller puts the cursor beside Runtime first
-/// (ImGui::SameLine()) when layout.besideInfo.
+/// Draws the cards where @p layout puts them (#4029), each a ProcessOverviewCard (#1537) its slot's width wide
+/// (a card of width 0 is not drawn), after ImGui::SameLine() when its slot says so: Actions -- the "Actions"
+/// header, the button row and the result line --, Priority -- the "Priority" header and the priority slider,
+/// where the platform can set priority --, and I/O priority -- the "I/O priority" header and the I/O slider,
+/// where it can set that (#3741). Each header is its control's label and shows the current value on hover
+/// (#1874). The caller has drawn Identity and Runtime from the same layout, so the cursor is after Runtime.
+///
+/// Each card is at least @p rowHeightsPx's height for it, its row's tallest (rowHeights()), so a row reads as
+/// one band; it grows past that at once while a result or error line shows, whose text wraps at the card's
+/// edge rather than being clipped. @p measuredHeightsPx gets each drawn card's own content height this frame,
+/// which the caller feeds back as next frame's natural heights; a card scrolled out of view keeps its last.
 ///
 /// The confirm dialog is not drawn here, since a card, and all in it, is skipped while scrolled out
 /// of view. The caller submits it every frame with ProcessActionsView::renderConfirmation().
-void render(const Context& context, const ProcessDetailsLayout::TopRowLayout& layout);
+void render(const Context& context,
+            const ProcessDetailsLayout::OverviewLayout& layout,
+            const std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT>& rowHeightsPx,
+            std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT>& measuredHeightsPx);
 
 } // namespace ProcessActionsBlock
 

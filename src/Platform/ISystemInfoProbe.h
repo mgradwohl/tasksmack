@@ -703,8 +703,6 @@ struct SystemInfoCapabilities
     bool wifiDetailsGated = false;
     /// readPublicIp() looks the public addresses up (#1518). False where it isn't implemented.
     bool hasPublicIp = false;
-    /// authorize() can ask for an administrator's password to read the root-only facts (#2310)
-    bool canReadAuthorized = false;
 };
 
 /// Reads the System Information page's static facts. Called from one thread at a time, which may
@@ -771,24 +769,6 @@ class ISystemInfoProbe
 
     /// The Boot performance facts (#1525); read when hasOs is true.
     [[nodiscard]] virtual BootPerformanceInfo readBootPerformance() = 0;
-
-    /// Whether authorize() can ask for an administrator's password, so that the facts readable by root
-    /// only (FirmwareInfo::identifiersNeedAdmin and smbiosVersionNeedsAdmin, MemoryModulesInfo's
-    /// tableNeedsAdmin) can be read through the privileged helper (#2310). False by default.
-    [[nodiscard]] virtual bool canReadAuthorized() const
-    {
-        return false;
-    }
-
-    /// Asks for authorization and starts the helper; true once it runs. While it runs, readFirmware()
-    /// and readMemoryModules() fill the root-only facts through it. Blocks until the prompt is answered
-    /// or @p stopToken is stopped, so call it off the UI thread. Platforms without a helper keep this
-    /// default, which does nothing.
-    virtual bool authorize(const std::stop_token& stopToken)
-    {
-        static_cast<void>(stopToken);
-        return false;
-    }
 };
 
 } // namespace Platform

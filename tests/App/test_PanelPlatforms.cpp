@@ -39,7 +39,7 @@ TEST(PanelPlatformsTest, TheCrashHistoryAndSystemInformationAskNoHelper)
     const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/true);
     Detail::setSharedPrivilegedBrokerForTesting(broker);
     const std::shared_ptr<Platform::ISystemInfoProbe> crashHistory = makeCrashHistoryProbe(nullptr);
-    const std::unique_ptr<Platform::ISystemInfoProbe> systemInfo = makeSystemInfoPanelProbe(nullptr);
+    const std::unique_ptr<Platform::ISystemInfoProbe> systemInfo = makeSystemInfoProbe(nullptr);
     Detail::setSharedPrivilegedBrokerForTesting(nullptr);
 
     EXPECT_NE(crashHistory, nullptr);

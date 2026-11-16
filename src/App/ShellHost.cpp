@@ -98,7 +98,7 @@ std::unique_ptr<IShellHost> makeApplicationShellHost()
 // and without TitleBarLayer.cpp (#1547).
 // The update check's client (#3093) is made here too, at construction: making it opens nothing.
 ShellLayer::ShellLayer()
-    : ShellLayer(makeApplicationShellHost(), makeUpdateCheckClient(Synthetic::activeScenario(), SelectOverride::testHookActive()))
+    : ShellLayer(makeApplicationShellHost(), makeHttpsClient(Synthetic::activeScenario(), SelectOverride::testHookActive()))
 {}
 
 } // namespace App

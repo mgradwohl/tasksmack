@@ -425,8 +425,6 @@ TEST(PlatformInterfaceDefaultsTest, ASystemInfoProbeWithoutALookupOrHelperReadsN
     EXPECT_FALSE(ip.read);
     EXPECT_TRUE(ip.v4.empty());
     EXPECT_TRUE(ip.v6.empty());
-    EXPECT_FALSE(probe.canReadAuthorized());
-    EXPECT_FALSE(probe.authorize(std::stop_token{}));
 }
 
 class RequiredOnlyProcessProbe : public IProcessProbe
