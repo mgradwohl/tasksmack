@@ -343,6 +343,14 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(AnalyzePerfShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/merge-profraw.sh, coverage.sh's merge step, skips an unreadable profile and names it, failing only when none
+# can be merged (#4080). A stub llvm-profdata; coverage.sh is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME MergeProfrawShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_profraw_sh.py)
+    set_tests_properties(MergeProfrawShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
+
 # tools/check-benchmark-regression.py gates CI on benchmark regressions; Python3_EXECUTABLE is
 # already required (GLAD generation, cmake/Dependencies.cmake).
 add_test(NAME BenchmarkRegressionGateScript
