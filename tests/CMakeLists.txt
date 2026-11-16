@@ -1464,20 +1464,11 @@ if(TARGET TaskSmackHelper)
     # The CI real-system tests' copy of the helper (#3489, test_CiRealSystemHelper.cpp): the same sources,
     # definitions and libraries as TaskSmackHelper.exe, but a session that ends after 3 s idle instead of five
     # minutes (TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS, HelperMain.cpp), so the idle exit is seen for real. Test
-    # code only: nothing ships it, and it has no version resource or CFG of its own.
+    # code only: nothing ships it, and it has no version resource or CFG of its own. Everything else is the
+    # helper's own setup (tasksmack_configure_windows_helper(), CMakeLists.txt, #3902).
     add_executable(TaskSmackHelperShortIdle WIN32 ${TASKSMACK_WINDOWS_HELPER_SOURCES})
-    target_compile_features(TaskSmackHelperShortIdle PRIVATE cxx_std_23)
-    tasksmack_apply_default_warnings(TaskSmackHelperShortIdle)
-    tasksmack_apply_text_encoding(TaskSmackHelperShortIdle)
-    tasksmack_apply_windows_definitions(TaskSmackHelperShortIdle)
-    target_include_directories(TaskSmackHelperShortIdle PRIVATE ${CMAKE_SOURCE_DIR}/src ${CMAKE_BINARY_DIR}/generated)
-    target_compile_definitions(TaskSmackHelperShortIdle PRIVATE ${TASKSMACK_WINDOWS_HELPER_DEFINITIONS}
-        TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS=3000)
-    target_link_libraries(TaskSmackHelperShortIdle PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
-    target_link_options(TaskSmackHelperShortIdle PRIVATE
-        "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
-        "LINKER:/DEPENDENTLOADFLAG:0x800"
-    )
+    tasksmack_configure_windows_helper(TaskSmackHelperShortIdle)
+    target_compile_definitions(TaskSmackHelperShortIdle PRIVATE TASKSMACK_HELPER_TEST_IDLE_TIMEOUT_MS=3000)
     add_dependencies(TaskSmackTests TaskSmackHelperShortIdle)
     target_compile_definitions(TaskSmackTests PRIVATE
         TASKSMACK_WINDOWS_HELPER_SHORT_IDLE_PATH="$<TARGET_FILE:TaskSmackHelperShortIdle>"
