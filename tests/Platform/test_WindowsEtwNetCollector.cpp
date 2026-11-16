@@ -456,6 +456,33 @@ TEST_F(WindowsEtwNetCollectorTest, AFailedOpenTraceStopsTheSessionItStarted)
     EXPECT_FALSE(collector.isDelivering());
 }
 
+// #3879: Settings says why it isn't counting: not administrator before anything is started, a start that failed
+// until the next start or a stop, and nothing while it runs.
+TEST_F(WindowsEtwNetCollectorTest, TheProblemSaysWhyItIsNotCounting)
+{
+    fake().elevated = false;
+    {
+        const WindowsEtwNetCollector standard(fakeFunctions());
+        EXPECT_EQ(standard.problem(), "Needs TaskSmack running as administrator") << "before the setting is turned on";
+        EXPECT_FALSE(standard.unsupported()) << "it counts from an administrator session";
+    }
+
+    fake().elevated = true;
+    fake().startStatuses = {ERROR_ACCESS_DENIED, ERROR_NO_SYSTEM_RESOURCES};
+    WindowsEtwNetCollector collector(fakeFunctions());
+    EXPECT_TRUE(collector.problem().empty()) << "not started yet";
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::Denied);
+    EXPECT_EQ(collector.problem(), "Windows refused to start the network event trace (access denied)");
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::Failed);
+    EXPECT_EQ(collector.problem(), "The network event trace couldn't start; TaskSmack's log says why");
+    collector.stop();
+    EXPECT_TRUE(collector.problem().empty()) << "turned off";
+
+    EXPECT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    EXPECT_TRUE(collector.problem().empty()) << "running";
+    EXPECT_FALSE(collector.unsupported());
+}
+
 // --- A running session ------------------------------------------------------------------------
 
 TEST_F(WindowsEtwNetCollectorTest, StartsANamedRealTimeSessionWithOnlyTheUdpEvents)

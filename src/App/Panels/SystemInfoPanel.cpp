@@ -130,7 +130,7 @@ void SystemInfoPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; the first read waits for the tab.
     // An injected factory (tests, #1395) replaces the platform's.
-    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : makeSystemInfoPanelProbe(Synthetic::activeScenario()),
+    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : makeSystemInfoProbe(Synthetic::activeScenario()),
                                                         m_CrashHistory);
 
     if (!m_Model->capabilities().hasOs)
@@ -143,7 +143,7 @@ void SystemInfoPanel::onAttach()
     {
         makeSensorProbe = [scenario = Synthetic::activeScenario()]
         {
-            return App::makeSensorProbe(scenario);
+            return App::makeSystemInfoProbe(scenario);
         };
     }
     m_Sensors = std::make_shared<Domain::SensorModel>(
@@ -238,7 +238,7 @@ void SystemInfoPanel::startRead()
         return;
     }
     // A failed read comes back as its message, copied on the worker (SystemInfoModel::tryRead()).
-    if (const auto failed = m_Pending.start([model = m_Model](const std::stop_token& stop) { return model->tryRead(stop); }))
+    if (const auto failed = m_Pending.start([model = m_Model](const std::stop_token& /*stop*/) { return model->tryRead(); }))
     {
         spdlog::warn("System Information: couldn't start a read: {}", failed->value_or(std::string()));
         return;
@@ -393,13 +393,6 @@ void SystemInfoPanel::renderContent()
     {
         // Likewise for the public addresses, which ask a resolver off the machine (#1518).
         m_Model->includePublicIp();
-        m_OptInReadDue = true;
-    }
-    if (result.authenticateRequested)
-    {
-        // The next read asks for the password first, on its own thread, then reads the root-only
-        // facts through the helper (#2310)
-        m_Model->requestAuthorization();
         m_OptInReadDue = true;
     }
     if (m_OptInReadDue && !m_Pending.busy())

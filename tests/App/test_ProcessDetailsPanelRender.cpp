@@ -13,8 +13,10 @@
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessIoPriorityView.h"
+#include "App/Panels/ProcessOverviewCard.h"
 #include "App/Panels/ProcessPriorityView.h"
 #include "App/Panels/ProcessSignatureText.h"
+#include "App/Panels/SectionCopyButton.h"
 #include "App/SelectOverride.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
@@ -290,6 +292,67 @@ TEST_F(ProcessDetailsPanelRenderTest, ASelectedProcessShowsItsOverview)
     EXPECT_TRUE(text.contains("CPU")) << text;
     EXPECT_TRUE(text.contains("Memory")) << text;
     EXPECT_GE(ImPlot::GetCurrentContext()->Plots.GetBufSize(), 2);
+}
+
+// #4034: the Identity and Runtime cards' Copy puts the card's rows on the clipboard as text, a
+// "label: value" line each under the card's title, as System Information's section Copy does.
+TEST_F(ProcessDetailsPanelRenderTest, EachInfoCardsCopyPutsItsRowsOnTheClipboard)
+{
+    const auto panel = activePanel();
+    panel->setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel->updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+
+    const auto pressCopyIn = [&](std::string_view card) -> std::string
+    {
+        ImGui::SetClipboardText("");
+        const ImGuiWindow* window = nullptr;
+        for (const ImGuiWindow* candidate : GImGui->Windows)
+        {
+            if (std::string_view(candidate->Name).contains(card))
+            {
+                window = candidate;
+            }
+        }
+        if (window == nullptr)
+        {
+            ADD_FAILURE() << "no card window named " << card;
+            return {};
+        }
+        ImGui::ActivateItemByID(ImHashStr(SectionCopyButton::LABEL, 0, window->ID));
+        static_cast<void>(renderAndCapture(*panel));
+        static_cast<void>(renderAndCapture(*panel));
+        const char* clipboard = ImGui::GetClipboardText();
+        return clipboard != nullptr ? std::string(clipboard) : std::string{};
+    };
+
+    const std::string identity = pressCopyIn("BasicInfoLeft");
+    EXPECT_TRUE(identity.starts_with("Identity\nName: server\nPID: 4242\n")) << identity;
+    EXPECT_TRUE(identity.contains("\nUser: svc\n")) << identity;
+    EXPECT_FALSE(identity.contains("Threads:")) << "Runtime's rows stay out: " << identity;
+
+    const std::string runtime = pressCopyIn("BasicInfoRight");
+    EXPECT_TRUE(runtime.starts_with("Runtime\nState: ")) << runtime;
+    EXPECT_TRUE(runtime.contains("\nThreads: ")) << runtime;
+    EXPECT_FALSE(runtime.contains("PID:")) << "Identity's rows stay out: " << runtime;
+}
+
+// #4034: a card's copied text is its title, then each row's label and value, whole (a clipped value too).
+TEST(ProcessOverviewCardTest, CardTextIsTheTitleAndALabelValueLinePerRow)
+{
+    struct Row
+    {
+        std::string_view label;
+        std::string_view value;
+    };
+    const std::array rows{Row{.label = "Name", .value = "server"},
+                          Row{.label = "Affinity", .value = "0-3, 8-11, 16-19, 24-27, 32-35, 40-43"},
+                          Row{.label = "Empty", .value = ""}};
+    EXPECT_EQ(ProcessOverviewCard::cardText("Identity", rows),
+              "Identity\nName: server\nAffinity: 0-3, 8-11, 16-19, 24-27, 32-35, 40-43\nEmpty: \n");
+    EXPECT_EQ(ProcessOverviewCard::cardText("Runtime", std::array<Row, 0>{}), "Runtime\n");
 }
 
 // #1926: the Details tab is named after the process; with several processes selected in the table,

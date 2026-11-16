@@ -2,6 +2,7 @@
 
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/RestartAsAdministratorButton.h"
+#include "App/Panels/SectionCopyButton.h"
 #include "App/Panels/SystemInfoSections.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SensorModel.h"
@@ -88,7 +89,6 @@ void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot,
     }
     if (newRead)
     {
-        state.authenticateClicked = false; // a new read: offered again if the facts are still root-only
         const std::string when = UI::Format::formatEpochDateTime(snapshot.readAtUnixSeconds);
         state.readAtText = when.empty() ? std::string{} : std::string{READ_AT_PREFIX} + when.substr(when.find(' ') + 1);
     }
@@ -227,13 +227,6 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
         note = SystemInfo::PUBLIC_IP_NOTE;
         clickedFlag = &state.publicIpClicked;
         break;
-    case SystemInfo::RowAction::AuthenticateToRead:
-        label = ICON_FA_LOCK "  Authenticate to read";
-        tooltip = "Ask for an administrator's password, then read what only root can read here through TaskSmack's helper: "
-                  "the serial numbers, UUID, SMBIOS version, memory modules and every user's crashes";
-        note = SystemInfo::AUTHENTICATE_NOTE;
-        clickedFlag = &state.authenticateClicked;
-        break;
     case SystemInfo::RowAction::RestartAsAdministrator:
         // No helper to read them (#3669): the restart, which opens the elevation notice. Never disabled by a press:
         // the notice can be closed and the button pressed again.
@@ -337,14 +330,10 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
     const SystemInfo::Section& section = state.sections[visible.section];
     ImGui::PushID(static_cast<int>(visible.section));
     (void) UI::Widgets::sectionHeader(section.icon, section.title);
-    const char* copyLabel = ICON_FA_COPY "  Copy";
-    const float copyWidth = ImGui::CalcTextSize(copyLabel).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
-    ImGui::SameLine(std::max(ImGui::GetContentRegionMax().x - copyWidth, 0.0F));
-    if (ImGui::SmallButton(copyLabel))
+    if (SectionCopyButton::render("Copy this section as plain text"))
     {
         copy(SystemInfo::sectionText(section, state.showIdentifiers), state);
     }
-    ImGui::SetItemTooltip("Copy this section as plain text");
 
     // The Sensors section (#1522) has a third column: each sensor's recent history as a sparkline.
     const auto history = [&](const SystemInfo::Row& row) -> const Domain::SensorHistory*
@@ -427,7 +416,6 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
             .refreshRequested = false,
             .wifiDetailsRequested = false,
             .publicIpRequested = false,
-            .authenticateRequested = false,
             .saveReportRequested = false,
         };
     }
@@ -439,7 +427,6 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
             .refreshRequested = false,
             .wifiDetailsRequested = false,
             .publicIpRequested = false,
-            .authenticateRequested = false,
             .saveReportRequested = false,
         };
     }
@@ -452,7 +439,6 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
 
     bool wifiDetails = false;
     bool publicIp = false;
-    bool authenticate = false;
     if (ImGui::BeginChild("##SystemInfoSections", ImVec2(0.0F, 0.0F)))
     {
         float widestLabel = 0.0F;
@@ -478,7 +464,6 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
                               scheme);
             wifiDetails = wifiDetails || clicked == SystemInfo::RowAction::ShowWifiDetails;
             publicIp = publicIp || clicked == SystemInfo::RowAction::ShowPublicIp;
-            authenticate = authenticate || clicked == SystemInfo::RowAction::AuthenticateToRead;
         }
         if (state.visible.empty())
         {
@@ -491,7 +476,6 @@ SystemInfoViewResult renderSystemInfoView(const Domain::SystemInfoSnapshot* snap
         .refreshRequested = clicks.refresh,
         .wifiDetailsRequested = wifiDetails,
         .publicIpRequested = publicIp,
-        .authenticateRequested = authenticate,
         .saveReportRequested = clicks.saveReport,
     };
 }
