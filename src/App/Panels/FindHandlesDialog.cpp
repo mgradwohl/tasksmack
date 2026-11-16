@@ -49,6 +49,7 @@ constexpr float DIALOG_WIDTH_EM = 56.0F;
 constexpr float RESULTS_HEIGHT_EM = 20.0F;
 
 using Domain::HandleSearch::HandleMatch;
+using Domain::HandleSearch::MatchList;
 using Domain::HandleSearch::SearchPublication;
 
 [[nodiscard]] std::strong_ordering compareOn(FindHandlesColumn column, const HandleMatch& a, const HandleMatch& b)
@@ -118,27 +119,53 @@ std::string findHandlesStatus(const SearchPublication& publication, bool workerR
     return status;
 }
 
-std::vector<std::size_t> orderFindHandlesMatches(const std::vector<HandleMatch>& matches, FindHandlesColumn column, bool ascending)
+std::vector<std::size_t> orderFindHandlesMatches(const MatchList& matches, FindHandlesColumn column, bool ascending)
 {
-    std::vector<std::size_t> order(matches.size());
-    std::ranges::iota(order, std::size_t{0});
-    std::ranges::stable_sort(order,
-                             [&matches, column, ascending](std::size_t ia, std::size_t ib)
-                             {
-                                 const HandleMatch& a = matches[ia];
-                                 const HandleMatch& b = matches[ib];
-                                 std::strong_ordering order = compareOn(column, a, b);
-                                 if (order == 0)
-                                 {
-                                     order = a.target.pid <=> b.target.pid;
-                                 }
-                                 if (order == 0)
-                                 {
-                                     return a.path < b.path; // ties stay A-Z whichever way the column sorts
-                                 }
-                                 return ascending ? order < 0 : order > 0;
-                             });
+    std::vector<std::size_t> order;
+    extendFindHandlesOrder(order, matches, column, ascending);
     return order;
+}
+
+void extendFindHandlesOrder(std::vector<std::size_t>& order, const MatchList& matches, FindHandlesColumn column, bool ascending)
+{
+    if (order.size() > matches.size())
+    {
+        order.clear(); // not an order of these matches' first ones: order them all
+    }
+    const std::size_t ordered = order.size();
+    if (ordered == matches.size())
+    {
+        return; // nothing new
+    }
+    // Each match once, in a flat table: a list's operator[] looks up its chunk, and the sort reads matches often.
+    std::vector<const HandleMatch*> table;
+    table.reserve(matches.size());
+    for (const HandleMatch& match : matches)
+    {
+        table.push_back(&match);
+    }
+    const auto before = [&table, column, ascending](std::size_t ia, std::size_t ib)
+    {
+        const HandleMatch& a = *table[ia];
+        const HandleMatch& b = *table[ib];
+        std::strong_ordering result = compareOn(column, a, b);
+        if (result == 0)
+        {
+            result = a.target.pid <=> b.target.pid;
+        }
+        if (result == 0)
+        {
+            return a.path < b.path; // ties stay A-Z whichever way the column sorts
+        }
+        return ascending ? result < 0 : result > 0;
+    };
+    // The new matches sorted on their own, then merged in (#3888): both steps are stable, and every new index is past
+    // every ordered one, so equal matches keep the order found, as one stable sort of them all would leave them.
+    order.resize(matches.size());
+    const auto middle = order.begin() + static_cast<std::ptrdiff_t>(ordered);
+    std::ranges::iota(middle, order.end(), ordered);
+    std::ranges::stable_sort(middle, order.end(), before);
+    std::ranges::inplace_merge(order, middle, before);
 }
 
 void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> processes,
@@ -366,7 +393,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::renderResults(const SearchPu
     ImGui::TableSetupColumn("Kind", ImGuiTableColumnFlags_None, em * 5.0F, static_cast<ImGuiID>(FindHandlesColumn::Kind));
     ImGui::TableSetupColumn("Path", ImGuiTableColumnFlags_WidthStretch, 0.0F, static_cast<ImGuiID>(FindHandlesColumn::Path));
     ImGui::TableHeadersRow();
-    bool reorder = m_OrderVersion != publication.version;
+    bool resort = false;
     if (ImGuiTableSortSpecs* specs = ImGui::TableGetSortSpecs(); specs != nullptr && specs->SpecsDirty)
     {
         if (specs->SpecsCount > 0)
@@ -375,11 +402,18 @@ std::optional<FindHandlesAction> FindHandlesDialog::renderResults(const SearchPu
             m_SortAscending = specs->Specs[0].SortDirection != ImGuiSortDirection_Descending;
         }
         specs->SpecsDirty = false;
-        reorder = true;
+        resort = true;
     }
-    if (reorder)
+    if (resort || m_OrderVersion != publication.version)
     {
-        m_Order = orderFindHandlesMatches(publication.matches, m_SortColumn, m_SortAscending);
+        // A generation of the search already ordered shares that one's matches and adds some (#3888): only the
+        // new ones are sorted and merged in. A new search, or a new column or direction, orders them all.
+        if (resort || !publication.matches.extends(m_Ordered))
+        {
+            m_Order.clear();
+        }
+        extendFindHandlesOrder(m_Order, publication.matches, m_SortColumn, m_SortAscending);
+        m_Ordered = publication.matches; // its chunks, shared: no match is copied
         m_OrderVersion = publication.version;
     }
 
