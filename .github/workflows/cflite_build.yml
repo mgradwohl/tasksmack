@@ -19,7 +19,7 @@ on:
       - 'src/Domain/UpdateCheck.*'
       - 'src/Domain/VirusTotal.*'
       - 'src/Domain/JsonReader.h'
-      - 'src/Platform/BrokerProtocol.h'
+      - 'src/Platform/BrokerProtocol.*'
       - 'src/Platform/DnsMessage.h'
       - 'src/Platform/EdidParser.h'
       - 'src/Platform/HwIdsParser.h'

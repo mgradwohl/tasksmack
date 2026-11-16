@@ -3,6 +3,7 @@
 // and WaitForSingleObject are fakes here, so no UAC prompt is ever raised, and nothing runs elevated. The folder
 // check runs on a fake disk, and its real disk calls on folders of this machine's that nothing changes (#3676).
 
+#include "Mocks/WindowsFakeShellExecute.h"
 #include "Platform/IElevatedRestart.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/ElevatedRestart.h"
@@ -44,49 +45,8 @@ namespace Platform::Windows::ElevatedRestart
 namespace
 {
 
-/// What the fake ShellExecuteExW was asked, and how it answers.
-struct FakeShell
-{
-    int calls = 0;
-    std::wstring verb;
-    std::wstring file;
-    std::wstring parameters;
-    ULONG mask = 0;
-    HWND window = nullptr;
-    DWORD failWith = ERROR_SUCCESS; ///< ERROR_SUCCESS: succeed, handing back this process
-    bool noProcess = false;         ///< succeed without a process
-};
-
-[[nodiscard]] FakeShell& fakeShell()
-{
-    static FakeShell fake;
-    return fake;
-}
-
-FakeShell& resetFakeShell(DWORD failWith = ERROR_SUCCESS)
-{
-    fakeShell() = FakeShell{};
-    fakeShell().failWith = failWith;
-    return fakeShell();
-}
-
-BOOL WINAPI fakeShellExecuteEx(SHELLEXECUTEINFOW* info)
-{
-    FakeShell& fake = fakeShell();
-    ++fake.calls;
-    fake.verb = info->lpVerb != nullptr ? info->lpVerb : L"";
-    fake.file = info->lpFile != nullptr ? info->lpFile : L"";
-    fake.parameters = info->lpParameters != nullptr ? info->lpParameters : L"";
-    fake.mask = info->fMask;
-    fake.window = info->hwnd;
-    if (fake.failWith != ERROR_SUCCESS)
-    {
-        SetLastError(fake.failWith);
-        return FALSE;
-    }
-    info->hProcess = fake.noProcess ? nullptr : OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId());
-    return TRUE;
-}
+/// What the fake ShellExecuteExW was asked, and how it answers: the shared fake (#3849).
+using FakeShell = TestMocks::FakeShellExecute;
 
 constexpr std::wstring_view IMAGE = LR"(C:\Program Files\TaskSmack\TaskSmack.exe)";
 
@@ -104,7 +64,7 @@ DWORD WINAPI failingModuleFileName(HMODULE /*module*/, LPWSTR /*buffer*/, DWORD 
     return 0;
 }
 
-const Functions FAKES{.shellExecuteEx = &fakeShellExecuteEx, .getModuleFileName = &fakeModuleFileName};
+const Functions FAKES{.shellExecuteEx = &FakeShell::shellExecuteEx, .getModuleFileName = &fakeModuleFileName};
 constexpr std::wstring_view CONFIG_DIR = LR"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)";
 const auto OWNER = reinterpret_cast<HWND>(0x1234); // NOLINT(performance-no-int-to-ptr) - a stand-in handle, never used
 
@@ -139,7 +99,7 @@ TEST(ElevatedRestartTest, AConfigDirectoryTheNewCopyWouldReadDifferentlyStartsNo
     ASSERT_FALSE(line.has_value());
     EXPECT_TRUE(line.error().contains("wouldn't read its own command line")) << line.error();
 
-    const FakeShell& shell = resetFakeShell();
+    const FakeShell& shell = FakeShell::reset();
     for (const std::filesystem::path& dir : {quoted, std::filesystem::path()})
     {
         const ElevatedRestartResult result = restart(dir, nullptr, FAKES, 1, TICKS);
@@ -151,7 +111,7 @@ TEST(ElevatedRestartTest, AConfigDirectoryTheNewCopyWouldReadDifferentlyStartsNo
 
 TEST(ElevatedRestartTest, RestartAsksRunasForThisExecutableWithTheHandOff)
 {
-    const FakeShell& shell = resetFakeShell();
+    const FakeShell& shell = FakeShell::reset();
     const ElevatedRestartResult result = restart(CONFIG_DIR, OWNER, FAKES, 4242, TICKS);
     EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Started) << result.detail;
     EXPECT_EQ(shell.calls, 1);
@@ -165,7 +125,7 @@ TEST(ElevatedRestartTest, RestartAsksRunasForThisExecutableWithTheHandOff)
 
 TEST(ElevatedRestartTest, ADeclinedPromptIsDeclinedNotAFailure)
 {
-    resetFakeShell(ERROR_CANCELLED);
+    FakeShell::reset(ERROR_CANCELLED);
     const ElevatedRestartResult result = restart(CONFIG_DIR, nullptr, FAKES, 1, TICKS);
     EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Declined);
     EXPECT_TRUE(result.detail.empty());
@@ -176,7 +136,7 @@ TEST(ElevatedRestartTest, AnotherErrorIsAFailureThatSaysWhy)
     // Whatever else stops ShellExecuteExW is a failure in Windows' own words: the notice shows them.
     for (const DWORD error : {DWORD{ERROR_ACCESS_DENIED}, DWORD{ERROR_FILE_NOT_FOUND}, DWORD{ERROR_NO_ASSOCIATION}})
     {
-        resetFakeShell(error);
+        FakeShell::reset(error);
         const ElevatedRestartResult result = restart(CONFIG_DIR, nullptr, FAKES, 1, TICKS);
         EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed) << error;
         EXPECT_EQ(result.detail, std::system_category().message(static_cast<int>(error))) << error;
@@ -185,23 +145,23 @@ TEST(ElevatedRestartTest, AnotherErrorIsAFailureThatSaysWhy)
 
 TEST(ElevatedRestartTest, NoProcessBackIsAFailureSoThisCopyDoesNotClose)
 {
-    resetFakeShell().noProcess = true;
+    FakeShell::reset().noProcess = true;
     const ElevatedRestartResult result = restart(CONFIG_DIR, nullptr, FAKES, 1, TICKS);
     EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed);
 }
 
 TEST(ElevatedRestartTest, AnUnknownOwnPathStartsNothing)
 {
-    const FakeShell& shell = resetFakeShell();
+    const FakeShell& shell = FakeShell::reset();
     const ElevatedRestartResult result =
-        restart(CONFIG_DIR, nullptr, {.shellExecuteEx = &fakeShellExecuteEx, .getModuleFileName = &failingModuleFileName}, 1, TICKS);
+        restart(CONFIG_DIR, nullptr, {.shellExecuteEx = &FakeShell::shellExecuteEx, .getModuleFileName = &failingModuleFileName}, 1, TICKS);
     EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed);
     EXPECT_EQ(shell.calls, 0);
 }
 
 TEST(ElevatedRestartTest, TheRestartObjectHandsOverThisProcessAndItsOwnStart)
 {
-    const FakeShell& shell = resetFakeShell(ERROR_CANCELLED);
+    const FakeShell& shell = FakeShell::reset(ERROR_CANCELLED);
     WindowsElevatedRestart restarter(OWNER, AdministratorPrompt::Credentials, FAKES);
     EXPECT_EQ(restarter.prompt(), AdministratorPrompt::Credentials);
     EXPECT_EQ(restarter.restart(CONFIG_DIR).outcome, ElevatedRestartResult::Outcome::Declined);

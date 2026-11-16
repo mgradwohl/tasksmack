@@ -1266,6 +1266,7 @@ add_executable(TaskSmackTests
     ${CMAKE_SOURCE_DIR}/src/Domain/SamplerTimingBoard.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/ThreadApartment.cpp # the sampler thread's COM apartment (#2731)
+    ${CMAKE_SOURCE_DIR}/src/Platform/BrokerProtocol.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredProcessActions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokeredUserSessions.cpp
     ${CMAKE_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
@@ -1414,6 +1415,7 @@ if(TARGET TaskSmackHelper)
     add_executable(TaskSmackHelperTestParent
         Platform/HelperTestParent.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/HelperLauncher.cpp
+        ${CMAKE_SOURCE_DIR}/src/Platform/BrokerProtocol.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/PipeBroker.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerHelper.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
