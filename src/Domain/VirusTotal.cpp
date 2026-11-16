@@ -17,6 +17,9 @@ namespace Domain::VirusTotal
 namespace
 {
 
+using Json::Member;
+using Json::readObject;
+
 [[nodiscard]] constexpr bool isLowerHex(char c) noexcept
 {
     return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f');
@@ -25,55 +28,6 @@ namespace
 [[nodiscard]] constexpr bool isHex(char c) noexcept
 {
     return isLowerHex(c) || (c >= 'A' && c <= 'F');
-}
-
-/// What a member callback did with the member's value.
-enum class Member : std::uint8_t
-{
-    Skip,      ///< Not wanted: readObject() skips the value
-    Read,      ///< Read whole
-    Malformed, ///< Couldn't be read: the reply fails
-};
-
-/// Reads the object at @p reader, calling @p onMember(name) for each member with the reader at its value.
-/// False when the object, or a member the callback read, isn't well formed.
-template<typename OnMember> [[nodiscard]] bool readObject(Json::Reader& reader, const OnMember& onMember)
-{
-    reader.skipSpace();
-    if (!reader.consume('{'))
-    {
-        return false;
-    }
-    reader.skipSpace();
-    if (reader.consume('}'))
-    {
-        return true;
-    }
-    for (;;)
-    {
-        reader.skipSpace();
-        const std::optional<std::string> name = reader.peek() == '"' ? reader.readString() : std::nullopt;
-        reader.skipSpace();
-        if (!name.has_value() || !reader.consume(':'))
-        {
-            return false;
-        }
-        reader.skipSpace();
-        const Member member = onMember(*name);
-        if (member == Member::Malformed || (member == Member::Skip && !reader.skipValue()))
-        {
-            return false;
-        }
-        reader.skipSpace();
-        if (reader.consume('}'))
-        {
-            return true;
-        }
-        if (!reader.consume(','))
-        {
-            return false;
-        }
-    }
 }
 
 } // namespace

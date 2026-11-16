@@ -2,6 +2,7 @@
 
 #include "App/Panels/ProcessTableLayout.h"
 #include "App/Panels/RestartAsAdministratorButton.h"
+#include "App/Panels/SectionCopyButton.h"
 #include "App/Panels/SystemInfoSections.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SensorModel.h"
@@ -329,14 +330,10 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
     const SystemInfo::Section& section = state.sections[visible.section];
     ImGui::PushID(static_cast<int>(visible.section));
     (void) UI::Widgets::sectionHeader(section.icon, section.title);
-    const char* copyLabel = ICON_FA_COPY "  Copy";
-    const float copyWidth = ImGui::CalcTextSize(copyLabel).x + (ImGui::GetStyle().FramePadding.x * 2.0F);
-    ImGui::SameLine(std::max(ImGui::GetContentRegionMax().x - copyWidth, 0.0F));
-    if (ImGui::SmallButton(copyLabel))
+    if (SectionCopyButton::render("Copy this section as plain text"))
     {
         copy(SystemInfo::sectionText(section, state.showIdentifiers), state);
     }
-    ImGui::SetItemTooltip("Copy this section as plain text");
 
     // The Sensors section (#1522) has a third column: each sensor's recent history as a sparkline.
     const auto history = [&](const SystemInfo::Row& row) -> const Domain::SensorHistory*

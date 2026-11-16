@@ -918,6 +918,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_RealSystemPathSupport.cpp  # the path comparison those tests check images with; changes nothing
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_ElevatedRestart.cpp  # Restart as administrator: ShellExecuteExW("runas") and the hand-off wait, through fakes (#2728)
+    Platform/test_DllSearchPolicy.cpp  # where TaskSmack.exe lets a DLL loaded by name come from, elevated or not (#3897)
     Platform/test_PinnedFolder.cpp  # the handed-over config folder: every open relative to its held handle, through fakes and in a temp folder (#3774)
     Platform/test_WindowsFactory.cpp  # every Windows factory product is the Windows one, with Windows' capabilities (#3676)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
@@ -1434,8 +1435,9 @@ if(TARGET TaskSmackHelper)
     target_compile_definitions(TaskSmackTests PRIVATE
         TASKSMACK_WINDOWS_HELPER_PATH="$<TARGET_FILE:TaskSmackHelper>"
         TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH="$<TARGET_FILE:TaskSmackHelperTestParent>"
-        # Whether the helper is built with CFG and CETCOMPAT, which the tests then check it has (#2557)
-        $<$<BOOL:${TASKSMACK_HELPER_HARDENED}>:TASKSMACK_WINDOWS_HELPER_HARDENED>
+        # Whether the helper and TaskSmack.exe are built with CFG and CETCOMPAT, which the tests then check they
+        # have (#2557, #3897; tasksmack_apply_privileged_hardening)
+        $<$<BOOL:${TASKSMACK_WINDOWS_HARDENED}>:TASKSMACK_WINDOWS_HARDENED>
     )
 
     # The CI real-system tests' copy of the helper (#3489, test_CiRealSystemHelper.cpp): the same sources,
@@ -1471,6 +1473,16 @@ if(WIN32)
     tasksmack_apply_windows_platform(TaskSmackCiStub)
     add_dependencies(TaskSmackTests TaskSmackCiStub)
     target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_STUB_PATH="$<TARGET_FILE:TaskSmackCiStub>")
+
+    # TaskSmackCiStubDll.dll (#3897): no exports, and a DllMain that refuses to load. test_CiRealSystemWindowsApp.cpp
+    # puts it beside a scratch TaskSmack.exe as version.dll, which TaskSmack must never load (/DEPENDENTLOADFLAG).
+    add_library(TaskSmackCiStubDll MODULE Support/CiStubDll.cpp)
+    target_compile_features(TaskSmackCiStubDll PRIVATE cxx_std_23)
+    tasksmack_apply_default_warnings(TaskSmackCiStubDll)
+    tasksmack_apply_text_encoding(TaskSmackCiStubDll)
+    tasksmack_apply_windows_definitions(TaskSmackCiStubDll)
+    add_dependencies(TaskSmackTests TaskSmackCiStubDll)
+    target_compile_definitions(TaskSmackTests PRIVATE TASKSMACK_CI_STUB_DLL_PATH="$<TARGET_FILE:TaskSmackCiStubDll>")
 
     # TaskSmackCiService.exe (#3490): the throwaway service the CI real-system service tests install, control
     # through the real WindowsServiceActions and delete. It only reports itself running until it is stopped.
