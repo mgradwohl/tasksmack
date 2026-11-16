@@ -475,6 +475,8 @@ std::optional<FindHandlesAction> FindHandlesDialog::renderResults(const SearchPu
 
 std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& processes)
 {
+    // Before every early return: a search that finishes while the dialog is closed still frees its thread (#3893).
+    retireIdleWorker();
     if (m_ShowRequested)
     {
         ImGui::OpenPopup(POPUP_ID);
@@ -517,7 +519,6 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
     }
 
     const bool workerReturned = !jobActive(); // before the load, as in searching()
-    retireIdleWorker();                       // its thread isn't kept parked until the next search (#3893)
     const std::shared_ptr<const SearchPublication> current = publication();
     const SearchPublication empty;
     const SearchPublication& shown = current != nullptr ? *current : empty;

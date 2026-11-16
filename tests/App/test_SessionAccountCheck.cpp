@@ -14,6 +14,7 @@
 #include <optional>
 #include <stdexcept>
 #include <thread>
+#include <vector>
 
 namespace App
 {
@@ -83,6 +84,53 @@ TEST(SessionAccountCheckTest, TheWorkersThreadEndsOnceTheAnswerIsTaken)
     EXPECT_EQ(check.result(), std::optional<Platform::SessionAccount>(admin())) << "the answer outlives the worker";
     EXPECT_EQ(check.wait(), admin());
     EXPECT_FALSE(SessionAccountCheck::known(admin())->workerRunning());
+}
+
+// #3893: a caller that sees the worker closed by another caller's result() still gets the answer, never the
+// same-account fallback (which the Startup tab would cache for good).
+TEST(SessionAccountCheckTest, ConcurrentCallersAllGetTheAnswerWhileOneClosesTheWorker)
+{
+    for (int round = 0; round < 200; ++round)
+    {
+        std::promise<void> release;
+        std::shared_future<void> released = release.get_future().share();
+        SessionAccountCheck check(
+            [&]
+            {
+                released.wait();
+                return admin();
+            });
+        std::atomic<int> wrong{0};
+        std::atomic<bool> go{false};
+        std::vector<std::thread> callers;
+        for (int i = 0; i < 4; ++i)
+        {
+            callers.emplace_back(
+                [&]
+                {
+                    while (!go.load())
+                    {
+                        std::this_thread::yield();
+                    }
+                    std::optional<Platform::SessionAccount> answer;
+                    while (!(answer = check.result()).has_value())
+                    {
+                        std::this_thread::yield();
+                    }
+                    if (*answer != admin())
+                    {
+                        ++wrong;
+                    }
+                });
+        }
+        go = true;
+        release.set_value();
+        for (std::thread& caller : callers)
+        {
+            caller.join();
+        }
+        EXPECT_EQ(wrong.load(), 0) << "round " << round;
+    }
 }
 
 TEST(SessionAccountCheckTest, AReadThatThrowsCountsAsTheSameAccount)
