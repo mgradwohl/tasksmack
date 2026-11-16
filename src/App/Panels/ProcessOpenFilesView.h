@@ -23,6 +23,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
 #include "ProcessEnvironmentView.h"
+#include "SectionCaches.h"
 
 #include <algorithm>
 #include <chrono>
@@ -165,8 +166,7 @@ class ProcessOpenFilesView
         m_NamesIncomplete = false;
         m_ScanProgress = 0;
         m_Rows.clear();
-        m_FilteredRows.clear();
-        m_FilterDirty = true;
+        m_Filtered.reset();
     }
 
     /// Takes in a read: its status and notes and, for Ok, its files formatted and sorted.
@@ -230,20 +230,11 @@ class ProcessOpenFilesView
     /// or the filter change.
     [[nodiscard]] std::span<const std::size_t> filteredRows()
     {
-        if (m_FilterDirty || m_FilterKey != m_Filter)
-        {
-            m_FilteredRows.clear();
-            for (std::size_t i = 0; i < m_Rows.size(); ++i)
-            {
-                if (Platform::containsIgnoreCase(m_Rows[i].path, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].type, m_Filter))
-                {
-                    m_FilteredRows.push_back(i);
-                }
-            }
-            m_FilterKey = m_Filter;
-            m_FilterDirty = false;
-        }
-        return m_FilteredRows;
+        return m_Filtered.get(
+            m_Rows.size(),
+            m_Filter,
+            [this](std::size_t i)
+            { return Platform::containsIgnoreCase(m_Rows[i].path, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].type, m_Filter); });
     }
 
     /// Whether any row has open flags: the Mode column is left out when none does (Windows).
@@ -314,7 +305,7 @@ class ProcessOpenFilesView
                                      }
                                      return a.file.descriptor < b.file.descriptor;
                                  });
-        m_FilterDirty = true;
+        m_Filtered.markDirty();
     }
 
     void renderTable();
@@ -331,11 +322,8 @@ class ProcessOpenFilesView
     Detail::OpenFilesColumn m_SortColumn = Detail::OpenFilesColumn::Descriptor;
     bool m_SortAscending = true;
     std::string m_Filter;
-    std::string m_FilterKey;
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
-    std::string m_CountLabel;            // "Open files (42)"
-    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    Detail::FilteredRows m_Filtered; // the rows the filter lets through, cached (#3887)
+    Detail::CountedHeader m_Header;  // the header with the count, formatted when it changes
 
     // The scan in flight, the request for it and the "Authenticate to read" request (#2309). Destroying
     // the view waits for at most one read.
