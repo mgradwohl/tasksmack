@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Tests for tools/check-dll-loads.py (#2530): every DLL that src/ loads must be loaded with a restricted
-search path, so a same-named DLL next to a portable TaskSmack.exe is never picked up."""
+search path, so a same-named DLL next to a portable TaskSmack.exe is never picked up; and each entry point that
+can run elevated restricts the default DLL directories first (#3897)."""
 
 import importlib.util
 import shutil
@@ -54,13 +55,122 @@ class CheckTextTest(unittest.TestCase):
         self.assertTrue(errors[0].startswith("a.cpp:4: "), errors[0])
 
 
+MAIN_CALL = (
+    "    SetDefaultDllDirectories(system32Only() ? LOAD_LIBRARY_SEARCH_SYSTEM32\n"
+    "                                            : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
+)
+HELPER_CALL = "    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
+
+
+def entry_point(function: str, body: str) -> str:
+    """A definition of @p function whose body is @p body."""
+    return f"int WINAPI {function}(HINSTANCE /*instance*/, HINSTANCE, LPSTR, int)\n{{\n{body}}}\n"
+
+
+def check_main(text: str) -> list[str]:
+    return checker.check_entry_point(text, "main.cpp", "WinMain", checker.BRANCH)
+
+
+def check_helper(text: str) -> list[str]:
+    return checker.check_entry_point(text, "HelperMain.cpp", "wWinMain", checker.EXACT)
+
+
+class CheckEntryPointTest(unittest.TestCase):
+    def test_main_with_its_system32_branch_first_passes(self) -> None:
+        body = "    // First, before anything loads a DLL.\n" + MAIN_CALL + "    return run();\n"
+        self.assertEqual(check_main(entry_point("WinMain", body)), [])
+
+    def test_trailing_return_type_passes(self) -> None:
+        text = "auto WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) -> int\n{\n" + MAIN_CALL + "}\n"
+        self.assertEqual(check_main(text), [])
+
+    def test_helper_with_exactly_system32_after_an_alias_passes(self) -> None:
+        body = "    namespace Helper = Platform::Windows::BrokerHelper;\n" + HELPER_CALL
+        self.assertEqual(check_helper(entry_point("wWinMain", body)), [])
+
+    def test_a_later_call_fails(self) -> None:
+        body = "    SDL_Init(SDL_INIT_VIDEO);\n" + MAIN_CALL
+        errors = check_main("\n" + entry_point("WinMain", body))
+        self.assertEqual(len(errors), 1, errors)
+        self.assertTrue(errors[0].startswith("main.cpp:2: "), errors[0])
+
+    def test_a_missing_or_commented_out_call_fails(self) -> None:
+        for body in ("    return run();\n", "    // SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);\n    return run();\n"):
+            with self.subTest(body=body):
+                self.assertEqual(len(check_main(entry_point("WinMain", body))), 1)
+                self.assertEqual(len(check_helper(entry_point("wWinMain", body))), 1)
+
+    def test_the_helper_must_pass_exactly_system32(self) -> None:
+        for flags in (
+            "LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32",
+            "LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR",
+            "LOAD_LIBRARY_SEARCH_APPLICATION_DIR",
+            "elevated() ? LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32",
+            "LOAD_LIBRARY_SEARCH_DEFAULT_DIRS",
+        ):
+            with self.subTest(flags=flags):
+                self.assertEqual(len(check_helper(entry_point("wWinMain", f"    SetDefaultDllDirectories({flags});\n"))), 1)
+
+    def test_main_must_keep_its_system32_only_branch(self) -> None:
+        for flags in (
+            "LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32",
+            "LOAD_LIBRARY_SEARCH_SYSTEM32",
+            "elevated() ? LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_APPLICATION_DIR : LOAD_LIBRARY_SEARCH_SYSTEM32",
+            "elevated() ? LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_LIBRARY_SEARCH_APPLICATION_DIR",
+        ):
+            with self.subTest(flags=flags):
+                self.assertEqual(len(check_main(entry_point("WinMain", f"    SetDefaultDllDirectories({flags});\n"))), 1)
+
+    def test_wide_flags_fail_in_either_branch(self) -> None:
+        for flags in (
+            "elevated() ? LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_LIBRARY_SEARCH_DEFAULT_DIRS",
+            "elevated() ? LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_LIBRARY_SEARCH_SYSTEM32 | LOAD_LIBRARY_SEARCH_USER_DIRS",
+        ):
+            with self.subTest(flags=flags):
+                self.assertEqual(len(check_main(entry_point("WinMain", f"    SetDefaultDllDirectories({flags});\n"))), 1)
+
+    def test_only_a_declaration_or_another_name_fails(self) -> None:
+        for text in ("int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int);\n", entry_point("wWinMain", MAIN_CALL)):
+            with self.subTest(text=text):
+                self.assertEqual(len(check_main(text)), 1)
+
+
 class CheckTreeTest(unittest.TestCase):
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="check-dll-loads-"))
         self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
 
+    def write_entry_points(self) -> None:
+        for relative, function, rule in checker.ENTRY_POINTS:
+            path = self.root / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(entry_point(function, MAIN_CALL if rule == checker.BRANCH else HELPER_CALL), encoding="utf-8")
+
+    def test_each_entry_point_has_its_own_rule(self) -> None:
+        # The helper's own folder is never searched; the app keeps the branch it takes elevated.
+        rules = {relative.as_posix(): rule for relative, _, rule in checker.ENTRY_POINTS}
+        self.assertEqual(rules, {"src/main.cpp": checker.BRANCH, "src/Platform/Windows/HelperMain.cpp": checker.EXACT})
+
+    def test_the_repositorys_entry_points_fail_once_mutated(self) -> None:
+        # The real files, each with the change the rules exist to refuse.
+        mutations = {
+            "src/Platform/Windows/HelperMain.cpp": (
+                "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);",
+                "SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);",
+            ),
+            "src/main.cpp": ("? LOAD_LIBRARY_SEARCH_SYSTEM32", "? LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32"),
+        }
+        for relative, function, rule in checker.ENTRY_POINTS:
+            original = (REPO / relative).read_text(encoding="utf-8")
+            self.assertEqual(checker.check_entry_point(original, relative.as_posix(), function, rule), [])
+            old, new = mutations[relative.as_posix()]
+            with self.subTest(file=relative.as_posix()):
+                self.assertEqual(original.count(old), 1, old)
+                mutated = original.replace(old, new)
+                self.assertEqual(len(checker.check_entry_point(mutated, relative.as_posix(), function, rule)), 1)
+
     def test_scans_sources_under_src(self) -> None:
-        (self.root / "src" / "Platform" / "Windows").mkdir(parents=True)
+        self.write_entry_points()
         (self.root / "src" / "Platform" / "Windows" / "Probe.h").write_text('LoadLibraryW(L"pdh.dll");\n', encoding="utf-8")
         (self.root / "src" / "notes.txt").write_text('LoadLibraryW(L"pdh.dll");\n', encoding="utf-8")
         errors = checker.check(self.root)
@@ -68,7 +178,13 @@ class CheckTreeTest(unittest.TestCase):
         self.assertTrue(errors[0].startswith("src/Platform/Windows/Probe.h:1: "), errors[0])
 
     def test_missing_src_fails(self) -> None:
-        self.assertEqual(len(checker.check(self.root)), 1)
+        self.assertEqual(checker.check(self.root), ["src: missing"])
+
+    def test_missing_entry_point_fails(self) -> None:
+        self.write_entry_points()
+        missing = checker.ENTRY_POINTS[0][0]
+        (self.root / missing).unlink()
+        self.assertEqual(checker.check(self.root), [f"{missing.as_posix()}: missing"])
 
     def test_repository_sources_pass(self) -> None:
         self.assertEqual(checker.check(REPO), [])

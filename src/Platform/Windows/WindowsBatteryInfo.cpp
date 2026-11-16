@@ -9,10 +9,12 @@
 
 #include <array>
 #include <cstddef>
+#include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 namespace Platform::Windows
@@ -95,9 +97,10 @@ std::vector<std::wstring> enumerateBatteryDevicePaths()
     return paths;
 }
 
-BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
+BatteryScan scanBatteries(const BatteryDeviceFunctions& api)
 {
-    BatteryInfo info;
+    BatteryScan scan;
+    BatteryInfo& info = scan.info;
     std::vector<BatteryCapacityReading> readings;
     for (const std::wstring& path : api.enumerateBatteries())
     {
@@ -112,7 +115,7 @@ BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
         {
             continue;
         }
-        const DeviceHandle device(opened, DeviceCloser{.close = api.closeHandle});
+        DeviceHandle device(opened, DeviceCloser{.close = api.closeHandle});
 
         ULONG wait = 0; // Don't wait for a battery to arrive
         ULONG tag = 0;
@@ -147,6 +150,12 @@ BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
             info.manufacturer = queryName(api, device.get(), tag, BatteryManufactureName);
             info.model = queryName(api, device.get(), tag, BatteryDeviceName);
         }
+        // Kept open, with its tag, for the samples' status queries until the next rescan (#4030)
+        scan.devices.push_back(BatteryDevice{
+            .handle = std::shared_ptr<void>(std::move(device)),
+            .tag = tag,
+            .capabilities = battery.Capabilities,
+        });
     }
 
     // Every battery's capacities, as the charge percent from GetSystemPowerStatus covers them all (#2151)
@@ -156,7 +165,37 @@ BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
     info.fullChargeWh = totals.fullChargeWh;
     info.healthPercent = totals.healthPercent;
     info.cycleCount = totals.cycleCount;
-    return info;
+    return scan;
+}
+
+BatteryInfo readBatteryInfo(const BatteryDeviceFunctions& api)
+{
+    return scanBatteries(api).info;
+}
+
+BatteryStatusOutcome queryBatteryStatus(const BatteryDeviceFunctions& api, const BatteryDevice& device, BatteryStatusReading& reading)
+{
+    BATTERY_WAIT_STATUS wait{};
+    wait.BatteryTag = device.tag;
+    wait.Timeout = 0; // The status now, not when it next changes
+    BATTERY_STATUS status{};
+    DWORD bytes = 0;
+    if (api.deviceIoControl(
+            device.handle.get(), IOCTL_BATTERY_QUERY_STATUS, &wait, sizeof(wait), &status, sizeof(status), &bytes, nullptr) == FALSE)
+    {
+        // A tag that no longer matches the battery in the slot -- taken out, or swapped for another -- fails
+        // with one of these; anything else is a passing failure
+        const DWORD error = GetLastError();
+        return (error == ERROR_FILE_NOT_FOUND || error == ERROR_NO_SUCH_DEVICE) ? BatteryStatusOutcome::Stale
+                                                                                : BatteryStatusOutcome::Failed;
+    }
+    reading = BatteryStatusReading{
+        .rate = static_cast<std::int32_t>(status.Rate),
+        .capacity = status.Capacity,
+        .voltage = status.Voltage,
+        .relative = (device.capabilities & BATTERY_CAPACITY_RELATIVE) != 0,
+    };
+    return BatteryStatusOutcome::Read;
 }
 
 } // namespace Platform::Windows

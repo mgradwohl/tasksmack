@@ -29,6 +29,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <initializer_list>
 #include <span>
 #include <stop_token>
@@ -131,41 +132,28 @@ class ProcessConnectionsView
     bool update(Platform::IProcessConnectionsReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
-        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
-        {
-            if (auto failed = m_Read.start(target,
-                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
-                                           { return reader->readAuthorized(t, stopToken); }))
-            {
-                applyResult(*failed);
-            }
-            return true;
-        }
-        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasConnections())
-        {
-            return false;
-        }
-        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readConnections(t); }))
-        {
-            applyResult(*failed); // no thread to run it on: shown as a failed read, retried at the next refresh
-        }
-        return true;
+        return m_Read.startAuthorizedOrDue(
+            reader,
+            target,
+            deltaSeconds,
+            [](const Platform::IProcessConnectionsReader& r) { return r.hasConnections(); },
+            [](Platform::IProcessConnectionsReader& r, const Platform::ProcessTarget& t) { return r.readConnections(t); },
+            std::identity{},
+            [this](const Platform::ConnectionsReadResult& failed) { applyResult(failed); });
     }
 
     /// Whether the status line offers "Authenticate to read" (#2309): the read was refused for want of
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+        return m_Read.offersAuthorizedRead(m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied);
     }
 
     /// Whether the last read was refused for want of permission, with no read in flight: where no helper can
     /// read it as an administrator, the status line offers "Restart as administrator..." (#3658).
     [[nodiscard]] bool readRefusedForPermission() const noexcept
     {
-        return m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied && !m_Read.inFlight();
+        return m_Read.refusedAndIdle(m_HasRead && m_Status == Platform::ConnectionsReadStatus::PermissionDenied);
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.

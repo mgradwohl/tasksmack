@@ -27,8 +27,6 @@ class LinuxServiceActions final : public IServiceActions
     [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override;
     [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override;
-    // No runAuthorized(): nothing prompts after TaskSmack starts (#3580, #3767), so IServiceActions' default, the plain
-    // call, is all it could be.
 
   private:
     bool m_Available = false;

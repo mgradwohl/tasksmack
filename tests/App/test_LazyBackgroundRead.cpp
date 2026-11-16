@@ -6,7 +6,8 @@
 /// read that throws (a std::exception or anything else) turned into the Failed result on the worker,
 /// and the "Authenticate to read" request (#2309) the sections share (#2567): taken once, withdrawn by
 /// a selection change, offered only while the reader can read as an administrator. Since #3343 each read
-/// runs on a Domain::Worker: shutdown with a read queued, and a read that cannot start.
+/// runs on a Domain::Worker: shutdown with a read queued, and a read that cannot start. And the shared
+/// update() step and refusal checks the sections call (#3887).
 
 #include "App/Panels/LazyBackgroundRead.h"
 #include "Domain/AllocationFailureHook.h"
@@ -346,6 +347,124 @@ TEST(LazyBackgroundReadTest, CanAuthorizeIsAsLastRecordedAndSurvivesReset)
     EXPECT_TRUE(read.canAuthorize());
     read.setCanAuthorize(false); // the reader changed (a null reader, or the helper went away)
     EXPECT_FALSE(read.canAuthorize());
+}
+
+// #3887: the shared update() step. A fake reader that counts which read ran.
+class CountingReader
+{
+  public:
+    bool hasIt = true;
+    bool canAuthorize = false;
+    std::atomic<int> ordinary{0};
+    std::atomic<int> authorized{0};
+
+    [[nodiscard]] bool canReadAuthorized() const noexcept
+    {
+        return canAuthorize;
+    }
+    [[nodiscard]] FakeResult readIt(const Platform::ProcessTarget& target)
+    {
+        ++ordinary;
+        return {.value = target.pid, .error = {}};
+    }
+    [[nodiscard]] FakeResult readAuthorized(const Platform::ProcessTarget& target, const std::stop_token& /*stopToken*/)
+    {
+        ++authorized;
+        return {.value = target.pid * 100, .error = {}};
+    }
+};
+
+bool startNext(Read& read, CountingReader* reader, float deltaSeconds, int* failures = nullptr)
+{
+    return read.startAuthorizedOrDue(
+        reader,
+        TARGET,
+        deltaSeconds,
+        [](const CountingReader& r) { return r.hasIt; },
+        [](CountingReader& r, const Platform::ProcessTarget& t) { return r.readIt(t); },
+        [](FakeResult result)
+        {
+            result.error = "shaped"; // runs on the worker after either read
+            return result;
+        },
+        [failures](FakeResult&& /*failed*/)
+        {
+            if (failures != nullptr)
+            {
+                ++*failures;
+            }
+        });
+}
+
+TEST(LazyBackgroundReadTest, StartAuthorizedOrDueRunsTheDueReadThroughTheShape)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    CountingReader reader;
+    EXPECT_FALSE(startNext(read, &reader, 0.0F)); // not drawn open: nothing due
+    read.markDrawnOpen();
+    EXPECT_TRUE(startNext(read, &reader, 0.0F));
+    const FakeResult result = read.takeFinished(TARGET, true).value_or(FakeResult{});
+    EXPECT_EQ(result.value, 10);
+    EXPECT_EQ(result.error, "shaped");
+    EXPECT_EQ(reader.ordinary.load(), 1);
+    EXPECT_EQ(reader.authorized.load(), 0);
+}
+
+TEST(LazyBackgroundReadTest, StartAuthorizedOrDueReadsNothingWithoutAReaderOrWhenItHasNone)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    read.markDrawnOpen();
+    EXPECT_FALSE(startNext(read, nullptr, 0.0F));
+    EXPECT_FALSE(read.canAuthorize());
+    CountingReader reader;
+    reader.hasIt = false;
+    read.markDrawnOpen();
+    EXPECT_FALSE(startNext(read, &reader, 0.0F));
+    EXPECT_EQ(reader.ordinary.load(), 0);
+}
+
+TEST(LazyBackgroundReadTest, StartAuthorizedOrDueTakesAnAuthorizeRequestInPlaceOfTheDueRead)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    CountingReader reader;
+    reader.canAuthorize = true;
+    read.requestAuthorized();
+    // Not drawn open, so nothing is due, but the press is read at once, as an administrator.
+    EXPECT_TRUE(startNext(read, &reader, 0.0F));
+    EXPECT_TRUE(read.canAuthorize());
+    const FakeResult result = read.takeFinished(TARGET, true).value_or(FakeResult{});
+    EXPECT_EQ(result.value, 1000);
+    EXPECT_EQ(result.error, "shaped");
+    EXPECT_EQ(reader.authorized.load(), 1);
+    EXPECT_EQ(reader.ordinary.load(), 0);
+    EXPECT_FALSE(startNext(read, &reader, 0.0F)); // taken once
+}
+
+TEST(LazyBackgroundReadTest, ARefusedReadOffersAuthenticateOnlyWhenTheReaderCanAndNothingIsInFlight)
+{
+    Read read(REFRESH_MS, "ts-test-read", &failed);
+    EXPECT_FALSE(read.offersAuthorizedRead(true)); // the reader can't read as an administrator
+    EXPECT_TRUE(read.refusedAndIdle(true));        // so "Restart as administrator..." instead
+    EXPECT_FALSE(read.refusedAndIdle(false));
+    read.setCanAuthorize(true);
+    EXPECT_TRUE(read.offersAuthorizedRead(true));
+    EXPECT_FALSE(read.offersAuthorizedRead(false));
+
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    read.markDrawnOpen();
+    ASSERT_TRUE(read.due(0.0F));
+    static_cast<void>(read.start(TARGET,
+                                 [released](const Platform::ProcessTarget&)
+                                 {
+                                     released.wait();
+                                     return FakeResult{};
+                                 }));
+    EXPECT_FALSE(read.offersAuthorizedRead(true)); // a read in flight
+    EXPECT_FALSE(read.refusedAndIdle(true));
+    release.set_value();
+    static_cast<void>(read.takeFinished(TARGET, true));
+    EXPECT_TRUE(read.offersAuthorizedRead(true));
 }
 
 } // namespace

@@ -314,7 +314,39 @@ function(tasksmack_apply_libcxx_hardening target)
     target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
 endfunction()
 
+# tasksmack_apply_privileged_hardening(target): the Linux profile above (#3605), and on Windows the hardening of
+# the images that can run elevated (#2557, #3897): TaskSmackHelper.exe, and TaskSmack.exe itself,
+# which Restart as administrator starts with the administrator's full token (#3657) from wherever it was unpacked:
+#   -Xclang -cfguard, /guard:cf: Control Flow Guard, the compiler's checks on indirect calls (clang-cl's /guard:cf;
+#                    the plain driver has no spelling of its own for an MSVC target, -mguard is MinGW's; a module
+#                    flag, so ThinLTO's link-time code generation keeps it) and the linker's table of their targets
+#   /CETCOMPAT: CET shadow-stack compatible, so Windows checks returns against a hardware shadow stack where the CPU
+#               has one
+#   /DEPENDENTLOADFLAG:0x800: every DLL the imports load comes from System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32),
+#                             never the image's own folder, which a portable TaskSmack may have unpacked somewhere
+#                             its user can write; main.cpp and HelperMain.cpp set the default DLL directories for
+#                             anything loaded later (tools/check-dll-loads.py checks they do)
+# CFG and CETCOMPAT are off under a sanitizer, whose runtime isn't built for CFG; TASKSMACK_WINDOWS_HARDENED tells
+# the tests (test_BrokerHelper.cpp) what to expect. One function for both images, so their flags can't drift.
+if(WIN32)
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _ts_hardening_config)
+    if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_ts_hardening_config}}" MATCHES "-fsanitize")
+        set(TASKSMACK_WINDOWS_HARDENED OFF)
+        message(STATUS "TaskSmack and TaskSmackHelper: CFG and CETCOMPAT off under a sanitizer")
+    else()
+        set(TASKSMACK_WINDOWS_HARDENED ON)
+    endif()
+    unset(_ts_hardening_config)
+endif()
 function(tasksmack_apply_privileged_hardening target)
+    if(WIN32)
+        if(TASKSMACK_WINDOWS_HARDENED)
+            target_compile_options(${target} PRIVATE "SHELL:-Xclang -cfguard")
+            target_link_options(${target} PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT")
+        endif()
+        target_link_options(${target} PRIVATE "LINKER:/DEPENDENTLOADFLAG:0x800")
+        return()
+    endif()
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
         return()
     endif()

@@ -1075,13 +1075,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ProcessDetailsLayout::rowHeights(layout, m_OverviewCardHeights);
 
     // Identity section: Who is this process?
-    (void) ProcessOverviewCard::render(
+    (void) ProcessOverviewCard::renderWithCopy(
         "BasicInfoLeft",
         ICON_FA_ID_CARD,
         "Identity",
         ImVec2(layout[OverviewCard::Identity].width, std::max(cardHeight, heights[static_cast<std::size_t>(OverviewCard::Identity)])),
         ImGuiChildFlags_None,
-        [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); });
+        [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); },
+        [&] { ImGui::SetClipboardText(ProcessOverviewCard::cardText("Identity", identityRows.view()).c_str()); });
 
     if (layout[OverviewCard::Runtime].sameLine)
     {
@@ -1089,13 +1090,14 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     }
 
     // Runtime section: What is this process doing?
-    (void) ProcessOverviewCard::render(
+    (void) ProcessOverviewCard::renderWithCopy(
         "BasicInfoRight",
         ICON_FA_CLOCK,
         "Runtime",
         ImVec2(layout[OverviewCard::Runtime].width, std::max(cardHeight, heights[static_cast<std::size_t>(OverviewCard::Runtime)])),
         ImGuiChildFlags_None,
-        [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); });
+        [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); },
+        [&] { ImGui::SetClipboardText(ProcessOverviewCard::cardText("Runtime", runtimeRows.view()).c_str()); });
 
     // The buttons, confirm dialog and result line are ProcessActionsView's, the priority and I/O
     // priority controls ProcessPriorityView's (#1179); both act through m_ProcessActions, which the

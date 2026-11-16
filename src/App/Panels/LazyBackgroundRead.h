@@ -15,10 +15,13 @@
 // It also carries the "Authenticate to read" request (#2309) the sections that can read as an
 // administrator share (#2567): render() draws the button (AuthenticateToReadButton.h) when the view
 // offers it, the press is requestAuthorized(), and the next update() takes it with
-// takeAuthorizeRequest() and starts the reader's authorized read in place of the due one:
+// takeAuthorizeRequest() and starts the reader's authorized read in place of the due one. A section
+// whose reader has canReadAuthorized() and readAuthorized() does both steps with one call (#3887):
 //
-//     m_Read.setCanAuthorize(reader != nullptr && reader->canReadAuthorized());
-//     if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight()) { ...start(readAuthorized)... }
+//     if (auto result = m_Read.takeFinished(target, false)) applyResult(*result);
+//     return m_Read.startAuthorizedOrDue(reader, target, deltaSeconds, hasX, readX, std::identity{}, apply);
+//
+// and asks offersAuthorizedRead() / refusedAndIdle() what its status line offers for a refused read.
 //
 // Free of ImGui; tested in tests/App/test_LazyBackgroundRead.cpp.
 
@@ -26,6 +29,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <functional>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -214,6 +218,61 @@ template<typename Result> class LazyBackgroundRead
                     return read(target);
                 }
             });
+    }
+
+    /// The rest of a section's update() once it has taken in a finished read (#3887): records whether
+    /// @p reader can read as an administrator, then starts its authorized read if "Authenticate to read"
+    /// was pressed, or else its ordinary read if one is due. A Failed result for a read no thread could
+    /// be started for goes to @p apply.
+    /// @param reader  The section's reader, or null (nothing is read).
+    /// @param has     bool(const Reader&): whether the reader reads this section at all.
+    /// @param read    Raw(Reader&, const Platform::ProcessTarget&): the ordinary read.
+    /// @param shape   Result(Raw): run on the worker after either read (sorting, stamping), so it
+    ///                captures by value; std::identity when Raw is Result.
+    /// @param apply   void(Result&&): takes in a Failed result.
+    /// @return Whether it started a read (or tried to).
+    template<typename Reader, typename HasFn, typename ReadFn, typename ShapeFn, typename ApplyFn>
+    bool startAuthorizedOrDue(
+        Reader* reader, const Platform::ProcessTarget& target, float deltaSeconds, HasFn has, ReadFn read, ShapeFn shape, ApplyFn apply)
+    {
+        setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
+        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
+        if (takeAuthorizeRequest() && reader != nullptr && !inFlight())
+        {
+            if (auto failed =
+                    start(target,
+                          [reader, shape = std::move(shape)](const Platform::ProcessTarget& t, const std::stop_token& stopToken) mutable
+                          { return Result(shape(reader->readAuthorized(t, stopToken))); }))
+            {
+                apply(std::move(*failed));
+            }
+            return true;
+        }
+        if (!due(deltaSeconds) || reader == nullptr || !has(*reader))
+        {
+            return false;
+        }
+        if (auto failed = start(target,
+                                [reader, read = std::move(read), shape = std::move(shape)](const Platform::ProcessTarget& t) mutable
+                                { return Result(shape(read(*reader, t))); }))
+        {
+            apply(std::move(*failed)); // no thread to run it on: shown as a failed read, retried at the next refresh
+        }
+        return true;
+    }
+
+    /// Whether a section whose last read was @p refused (for want of permission) offers "Authenticate to
+    /// read" (#2309): the reader can read as an administrator and no read is in flight.
+    [[nodiscard]] bool offersAuthorizedRead(bool refused) const noexcept
+    {
+        return refused && m_CanAuthorize && !inFlight();
+    }
+
+    /// Whether @p refused holds with no read in flight: where no helper can read as an administrator, the
+    /// section offers "Restart as administrator..." instead (#3658).
+    [[nodiscard]] bool refusedAndIdle(bool refused) const noexcept
+    {
+        return refused && !inFlight();
     }
 
   private:
