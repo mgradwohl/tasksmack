@@ -538,7 +538,10 @@ set(COMMON_TEST_SOURCES
     Domain/test_SingleLineText.cpp
     Domain/test_AccountName.cpp # a process owner's DOMAIN\user, written and matched (#3328)
     Domain/test_ProcessEnergyAttribution.cpp
-    Domain/test_ProcessModel.cpp
+    Domain/test_ProcessModel.cpp  # split by feature (#3850): the helpers are in ProcessModelTestSupport.h
+    Domain/test_ProcessModelRates.cpp
+    Domain/test_ProcessModelHistoryAndGpu.cpp
+    Domain/test_ProcessModelPassthrough.cpp
     Domain/test_ProcessRowHistory.cpp
     Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
