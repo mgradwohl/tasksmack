@@ -5,6 +5,7 @@
 // on a thread of this process where a test needs its answers (BrokerHelper::serveParent(), #2769).
 
 #include "Mocks/FakeBroker.h"
+#include "Mocks/WindowsFakeShellExecute.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
@@ -66,51 +67,8 @@ using namespace std::chrono_literals;
 
 constexpr std::chrono::milliseconds WAIT{10'000};
 
-/// What the fake ShellExecuteExW was asked, and how it answers.
-struct FakeShell
-{
-    int calls = 0;
-    std::wstring verb;
-    std::wstring file;
-    std::wstring parameters;
-    ULONG mask = 0;
-    int show = -1;
-    HWND window = nullptr;
-    DWORD failWith = ERROR_SUCCESS; ///< ERROR_SUCCESS: succeed, handing back this process
-    bool noProcess = false;         ///< succeed without a process
-};
-
-[[nodiscard]] FakeShell& fakeShell()
-{
-    static FakeShell fake;
-    return fake;
-}
-
-FakeShell& resetFakeShell(DWORD failWith = ERROR_SUCCESS)
-{
-    fakeShell() = FakeShell{};
-    fakeShell().failWith = failWith;
-    return fakeShell();
-}
-
-BOOL WINAPI fakeShellExecuteEx(SHELLEXECUTEINFOW* info)
-{
-    FakeShell& fake = fakeShell();
-    ++fake.calls;
-    fake.verb = info->lpVerb != nullptr ? info->lpVerb : L"";
-    fake.file = info->lpFile != nullptr ? info->lpFile : L"";
-    fake.parameters = info->lpParameters != nullptr ? info->lpParameters : L"";
-    fake.mask = info->fMask;
-    fake.show = info->nShow;
-    fake.window = info->hwnd;
-    if (fake.failWith != ERROR_SUCCESS)
-    {
-        SetLastError(fake.failWith);
-        return FALSE;
-    }
-    info->hProcess = fake.noProcess ? nullptr : OpenProcess(SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION, FALSE, GetCurrentProcessId());
-    return TRUE;
-}
+/// What the fake ShellExecuteExW was asked, and how it answers: the shared fake (#3849).
+using FakeShell = TestMocks::FakeShellExecute;
 
 DWORD WINAPI relativeModuleFileName(HMODULE /*module*/, LPWSTR buffer, DWORD size)
 {
@@ -129,7 +87,7 @@ DWORD WINAPI failingModuleFileName(HMODULE /*module*/, LPWSTR /*buffer*/, DWORD 
 
 [[nodiscard]] HelperLauncher::Functions fakes()
 {
-    return {.shellExecuteEx = &fakeShellExecuteEx};
+    return {.shellExecuteEx = &FakeShell::shellExecuteEx};
 }
 
 [[nodiscard]] std::wstring freshName()
@@ -177,7 +135,7 @@ DWORD WINAPI failingModuleFileName(HMODULE /*module*/, LPWSTR /*buffer*/, DWORD 
 
 TEST(HelperLauncherTest, TheHelperBesideThisExecutableIsStartedElevatedForThisProcess)
 {
-    const FakeShell& fake = resetFakeShell();
+    const FakeShell& fake = FakeShell::reset();
     const std::wstring name = freshName();
     const auto helper = HelperLauncher::launch(name, {}, fakes());
     ASSERT_TRUE(helper.has_value()) << helper.error();
@@ -213,7 +171,7 @@ TEST(HelperLauncherTest, TheHelperBesideThisExecutableIsStartedElevatedForThisPr
 // reading, the same number the helper checks the command line against.
 TEST(HelperLauncherTest, TaskSmackNamesItselfAsTheHelperReadsIt)
 {
-    const FakeShell& fake = resetFakeShell();
+    const FakeShell& fake = FakeShell::reset();
     const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
     ASSERT_TRUE(helper.has_value()) << helper.error();
 
@@ -257,7 +215,7 @@ TEST(HelperLauncherTest, ParametersTheHelperWouldReadDifferentlyAreRefused)
 
 TEST(HelperLauncherTest, ADismissedPromptIsARefusal)
 {
-    const FakeShell& fake = resetFakeShell(ERROR_CANCELLED);
+    const FakeShell& fake = FakeShell::reset(ERROR_CANCELLED);
     const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
     ASSERT_FALSE(helper.has_value());
     EXPECT_EQ(helper.error(), HelperLauncher::PROMPT_DISMISSED);
@@ -268,12 +226,12 @@ TEST(HelperLauncherTest, AMissingHelperSaysSo)
 {
     for (const DWORD error : {DWORD{ERROR_FILE_NOT_FOUND}, DWORD{ERROR_PATH_NOT_FOUND}})
     {
-        resetFakeShell(error);
+        FakeShell::reset(error);
         const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
         ASSERT_FALSE(helper.has_value());
         EXPECT_EQ(helper.error(), HelperLauncher::HELPER_MISSING);
     }
-    resetFakeShell(ERROR_ACCESS_DENIED);
+    FakeShell::reset(ERROR_ACCESS_DENIED);
     const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
     ASSERT_FALSE(helper.has_value());
     EXPECT_TRUE(helper.error().starts_with("couldn't start TaskSmackHelper.exe: ")) << helper.error();
@@ -281,7 +239,7 @@ TEST(HelperLauncherTest, AMissingHelperSaysSo)
 
 TEST(HelperLauncherTest, AStartWithoutAProcessIsAFailure)
 {
-    resetFakeShell().noProcess = true;
+    FakeShell::reset().noProcess = true;
     const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
     ASSERT_FALSE(helper.has_value());
     EXPECT_EQ(helper.error(), "the helper started without a process to check");
@@ -289,7 +247,7 @@ TEST(HelperLauncherTest, AStartWithoutAProcessIsAFailure)
 
 TEST(HelperLauncherTest, AStoppedLaunchNeverAsks)
 {
-    const FakeShell& fake = resetFakeShell();
+    const FakeShell& fake = FakeShell::reset();
     std::stop_source stop;
     stop.request_stop();
     const auto helper = HelperLauncher::launch(freshName(), stop.get_token(), fakes());
@@ -300,11 +258,11 @@ TEST(HelperLauncherTest, AStoppedLaunchNeverAsks)
 
 TEST(HelperLauncherTest, WithoutItsOwnFullPathNothingIsStarted)
 {
-    const FakeShell& fake = resetFakeShell();
+    const FakeShell& fake = FakeShell::reset();
     for (const auto getModuleFileName : {&relativeModuleFileName, &failingModuleFileName})
     {
         const auto helper =
-            HelperLauncher::launch(freshName(), {}, {.shellExecuteEx = &fakeShellExecuteEx, .getModuleFileName = getModuleFileName});
+            HelperLauncher::launch(freshName(), {}, {.shellExecuteEx = &FakeShell::shellExecuteEx, .getModuleFileName = getModuleFileName});
         EXPECT_FALSE(helper.has_value());
     }
     EXPECT_EQ(fake.calls, 0) << "never a helper found relative to the current directory";
@@ -313,7 +271,7 @@ TEST(HelperLauncherTest, WithoutItsOwnFullPathNothingIsStarted)
 // #3676: a pipe name the helper would read back differently raises no prompt for a helper that couldn't serve it.
 TEST(HelperLauncherTest, AParameterTheHelperWouldMisreadStartsNothing)
 {
-    const FakeShell& fake = resetFakeShell();
+    const FakeShell& fake = FakeShell::reset();
     const auto helper = HelperLauncher::launch(L"\\\\.\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcde f", {}, fakes());
     ASSERT_FALSE(helper.has_value());
     EXPECT_TRUE(helper.error().contains("wouldn't read its command line as meant")) << helper.error();
@@ -385,7 +343,7 @@ TEST(HelperLauncherTest, TheShellCallKeepsTheShellsErrorWhateverTheThreadsCom)
 
 TEST(HelperLauncherTest, ThePromptBelongsToTheWindowItIsGiven)
 {
-    const FakeShell& fake = resetFakeShell();
+    const FakeShell& fake = FakeShell::reset();
     // Any window will do for the fake: the desktop's is always there, and nothing is shown.
     auto* const window = GetDesktopWindow();
     ASSERT_NE(window, nullptr);
@@ -393,15 +351,15 @@ TEST(HelperLauncherTest, ThePromptBelongsToTheWindowItIsGiven)
     ASSERT_TRUE(helper.has_value()) << helper.error();
     EXPECT_EQ(fake.window, window) << "the UAC prompt comes up in front of TaskSmack";
 
-    static_cast<void>(resetFakeShell());
+    static_cast<void>(FakeShell::reset());
     const auto unowned = HelperLauncher::launch(freshName(), {}, fakes());
     ASSERT_TRUE(unowned.has_value()) << unowned.error();
-    EXPECT_EQ(fakeShell().window, nullptr);
+    EXPECT_EQ(FakeShell::instance().window, nullptr);
 }
 
 TEST(HelperLauncherTest, TheBrokersLauncherPassesItsWindowOn)
 {
-    const FakeShell& fake = resetFakeShell(ERROR_CANCELLED);
+    const FakeShell& fake = FakeShell::reset(ERROR_CANCELLED);
     auto* const window = GetDesktopWindow();
     const PipeBroker::Launcher launcher = HelperLauncher::makeLauncher(fakes(), window);
     const auto helper = launcher(freshName(), {});
@@ -525,7 +483,7 @@ TEST(HelperLauncherTest, NoHelperBesideTaskSmackIsntOffered)
 
 TEST(HelperLauncherTest, ADismissedPromptLeavesTheBrokerReadyToAskAgain)
 {
-    const FakeShell& fake = resetFakeShell(ERROR_CANCELLED);
+    const FakeShell& fake = FakeShell::reset(ERROR_CANCELLED);
     PipeBroker broker(HelperLauncher::makeLauncher(fakes()));
     const auto first = broker.connectWithin({}, WAIT);
     ASSERT_FALSE(first.has_value());

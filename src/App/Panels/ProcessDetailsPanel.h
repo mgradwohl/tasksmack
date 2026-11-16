@@ -441,8 +441,9 @@ class ProcessDetailsPanel : public Panel
     std::optional<SelectOverride::DetailsSection> m_RequestedSection;
     // Shared with the Processes table by ShellPanels (#3467), which outlives this panel; null on its own.
     PriorityChangesInFlight* m_PriorityChanges = nullptr;
-    const char* m_PriorityHeldElsewhere = nullptr;                   // This frame's holdReason() for the shown process, or null
-    std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
+    const char* m_PriorityHeldElsewhere = nullptr;                     // This frame's holdReason() for the shown process, or null
+    std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges;   // publishPriorityChanges()' buffer, reused
+    std::vector<Platform::ProcessTarget> m_PublishedIoPriorityChanges; // ... and its I/O priority one (#3884)
     // The Overview cards' own content heights, last measured (#4029): each row is as tall as its tallest.
     std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT> m_OverviewCardHeights{};
 

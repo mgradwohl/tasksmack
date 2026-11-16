@@ -27,16 +27,18 @@ namespace ProcessesPanelActions
 inline constexpr float ROW_ACTION_RESULT_SECONDS = 5.0F;
 
 /// What a batch priority change's result line adds for the @p skipped processes it left out, each with a
-/// priority change still running in Process Details (#3467): "; 1 process skipped: ...". Empty for none.
-[[nodiscard]] inline std::string batchPrioritySkippedText(std::size_t skipped)
+/// priority change still running in Process Details (#3467): "; 1 process skipped: ...". Empty for none. @p io: an
+/// I/O priority batch, which leaves out the processes with an I/O priority change running there (#3884).
+[[nodiscard]] inline std::string batchPrioritySkippedText(std::size_t skipped, bool io = false)
 {
     if (skipped == 0)
     {
         return {};
     }
-    return std::format("; {} skipped: {} priority change{} still running in Process Details",
+    return std::format("; {} skipped: {} {}priority change{} still running in Process Details",
                        ProcessBatch::processCountText(skipped),
                        skipped == 1 ? "its" : "their",
+                       io ? "I/O " : "",
                        skipped == 1 ? " is" : "s are");
 }
 

@@ -35,6 +35,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
+#include <psapi.h>   // GetMappedFileNameW (K32GetMappedFileNameW, in kernel32), for the image hash (#3861)
 // clang-format on
 
 #include <algorithm>
@@ -46,6 +47,9 @@
 #include <format>
 #include <memory>
 #include <optional>
+#ifndef TASKSMACK_NO_FILE_LOCATION
+#include <span>
+#endif
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -159,6 +163,297 @@ openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DW
         return "Its executable can't be read: access is denied";
     }
     return std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+}
+
+/// Win32 error @p error as the system words it.
+[[nodiscard]] std::string imageHashError(DWORD error)
+{
+    return std::system_category().message(static_cast<int>(error));
+}
+
+/// SECTION_IMAGE_INFORMATION, which NtQueryInformationProcess's ProcessImageInformation (class 37) fills from the
+/// image section the process was created from (#3861); winternl.h has neither. Only TransferAddress (the entry
+/// point, in the process's address space, so inside its mapped image) and ImageFileSize are read.
+struct SectionImageInformation
+{
+    void* TransferAddress = nullptr;
+    ULONG ZeroBits = 0;
+    SIZE_T MaximumStackSize = 0;
+    SIZE_T CommittedStackSize = 0;
+    ULONG SubSystemType = 0;
+    ULONG SubSystemVersion = 0;
+    ULONG OperatingSystemVersion = 0;
+    USHORT ImageCharacteristics = 0;
+    USHORT DllCharacteristics = 0;
+    USHORT Machine = 0;
+    BOOLEAN ImageContainsCode = 0;
+    UCHAR ImageFlags = 0;
+    ULONG LoaderFlags = 0;
+    ULONG ImageFileSize = 0;
+    ULONG CheckSum = 0;
+};
+static_assert(sizeof(void*) != 8 || sizeof(SectionImageInformation) == 64, "ntdll's 64-bit SECTION_IMAGE_INFORMATION");
+constexpr ULONG PROCESS_IMAGE_INFORMATION_CLASS = 37;
+constexpr DWORD IMAGE_NAME_CHARS = 32768; // the longest path Windows allows, with its terminator
+
+/// The NT name of the file mapped at @p address in @p process now (GetMappedFileNameW), or its Win32 error.
+[[nodiscard]] std::expected<std::wstring, DWORD> mappedFileName(const WindowsProcessFunctions& fns, HANDLE process, void* address)
+{
+    std::wstring name(IMAGE_NAME_CHARS, L'\0');
+    const DWORD length = fns.getMappedFileName(process, address, name.data(), IMAGE_NAME_CHARS);
+    if (length == 0)
+    {
+        return std::unexpected(GetLastError());
+    }
+    if (length >= IMAGE_NAME_CHARS - 1)
+    {
+        return std::unexpected(static_cast<DWORD>(ERROR_FILENAME_EXCED_RANGE)); // GetMappedFileNameW truncates silently
+    }
+    name.resize(length);
+    return name;
+}
+
+/// The refusal when the file at the image's name isn't the image (#3861): said so, never hashed as if it were. Only
+/// for a real mismatch (another file, another size); a check that can't be made says so instead (unconfirmed()).
+constexpr std::string_view IMAGE_REPLACED =
+    "Its executable was renamed or replaced while it was read, so the file there isn't the image it runs; it wasn't hashed";
+
+/// The refusal when the image's file can't be confirmed for a reason that isn't a mismatch (#3861): @p why.
+[[nodiscard]] std::string unconfirmed(std::string_view why)
+{
+    return std::format("Its executable couldn't be confirmed as the image it runs ({}), so it wasn't hashed", why);
+}
+
+/// Opens the NT name @p ntName (\Device\HarddiskVolumeN\..., as GetMappedFileNameW writes it) through the Win32
+/// call, by \\?\GLOBALROOT, with @p access and @p share.
+[[nodiscard]] Windows::UniqueHandle openNtName(const std::wstring& ntName, DWORD access, DWORD share)
+{
+    const std::wstring path = L"\\\\?\\GLOBALROOT" + ntName;
+    return Windows::UniqueHandle(CreateFileW(path.c_str(), access, share, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+}
+
+/// A file's identity: its volume's serial and its file ID, the 128-bit one (FileIdInfo, which ReFS needs) or, where
+/// the file system has none, the 64-bit index (GetFileInformationByHandle, as FAT and some redirectors answer).
+struct FileIdentity
+{
+    ULONGLONG volume = 0;
+    FILE_ID_128 id{};
+
+    [[nodiscard]] bool operator==(const FileIdentity& other) const noexcept
+    {
+        return volume == other.volume && std::memcmp(id.Identifier, other.id.Identifier, sizeof(id.Identifier)) == 0;
+    }
+};
+
+/// @p file's identity, or nullopt when neither call answers.
+[[nodiscard]] std::optional<FileIdentity> fileIdentity(HANDLE file)
+{
+    FILE_ID_INFO info{};
+    if (GetFileInformationByHandleEx(file, FileIdInfo, &info, sizeof(info)) != 0)
+    {
+        return FileIdentity{.volume = info.VolumeSerialNumber, .id = info.FileId};
+    }
+    BY_HANDLE_FILE_INFORMATION basic{};
+    if (GetFileInformationByHandle(file, &basic) == 0)
+    {
+        return std::nullopt;
+    }
+    FileIdentity identity{.volume = basic.dwVolumeSerialNumber, .id = {}};
+    const ULONGLONG index = (static_cast<ULONGLONG>(basic.nFileIndexHigh) << 32U) | basic.nFileIndexLow;
+    std::memcpy(identity.id.Identifier, &index, sizeof(index));
+    return identity;
+}
+
+/// Where @p process's image is mapped and its file's NT name now.
+struct ImageLocation
+{
+    void* address = nullptr;
+    std::wstring name;
+};
+
+/// Whether @p address in @p process is in an image mapping (VirtualQueryEx's MEM_IMAGE). Without the call, assumed so.
+[[nodiscard]] bool isImageAt(const WindowsProcessFunctions& fns, HANDLE process, const void* address)
+{
+    if (fns.virtualQueryEx == nullptr)
+    {
+        return true;
+    }
+    MEMORY_BASIC_INFORMATION region{};
+    return fns.virtualQueryEx(process, address, &region, sizeof(region)) != 0 && region.Type == MEM_IMAGE;
+}
+
+/// The image mapped at an allocation base in @p process whose file is still named @p ntName, scanned with
+/// VirtualQueryEx (#3861), or nullopt. The names are compared ignoring case, as NTFS does; which file it is, is
+/// checked by identity afterwards.
+[[nodiscard]] std::optional<ImageLocation> findImageNamed(const WindowsProcessFunctions& fns, HANDLE process, const std::wstring& ntName)
+{
+    MEMORY_BASIC_INFORMATION region{};
+    const std::byte* address = nullptr;
+    while (fns.virtualQueryEx(process, address, &region, sizeof(region)) != 0)
+    {
+        if (region.Type == MEM_IMAGE && region.BaseAddress == region.AllocationBase)
+        {
+            const std::expected<std::wstring, DWORD> name = mappedFileName(fns, process, region.BaseAddress);
+            if (name.has_value() &&
+                CompareStringOrdinal(
+                    name->c_str(), static_cast<int>(name->size()), ntName.c_str(), static_cast<int>(ntName.size()), TRUE) == CSTR_EQUAL)
+            {
+                return ImageLocation{.address = region.BaseAddress, .name = *name};
+            }
+        }
+        const std::byte* const next = static_cast<const std::byte*>(region.BaseAddress) + region.RegionSize;
+        if (next <= address)
+        {
+            break; // the top of the address space, or a region that doesn't advance
+        }
+        address = next;
+    }
+    return std::nullopt;
+}
+
+/// Where @p process's image is and its file's name now (#3861). At the entry point (ProcessImageInformation's
+/// TransferAddress) for most images. An image the loader mapped elsewhere (a .NET executable, one relocated from its
+/// preferred base) has nothing there: then it is the image whose file still has the name the process started with
+/// (QueryFullProcessImageNameW's native name). One both mapped elsewhere and renamed can't be found, and says so.
+[[nodiscard]] std::expected<ImageLocation, std::string> locateImage(const WindowsProcessFunctions& fns, HANDLE process, void* entryPoint)
+{
+    if (isImageAt(fns, process, entryPoint))
+    {
+        const std::expected<std::wstring, DWORD> name = mappedFileName(fns, process, entryPoint);
+        if (name.has_value())
+        {
+            return ImageLocation{.address = entryPoint, .name = *name};
+        }
+        if (name.error() == ERROR_ACCESS_DENIED)
+        {
+            // A protected process, or one whose memory map Windows won't show this user.
+            return std::unexpected(std::string("Its executable can't be read: Windows doesn't show which file a protected process runs"));
+        }
+        return std::unexpected(std::format("Its executable can't be read: {}", imageHashError(name.error())));
+    }
+    if (fns.queryFullProcessImageName == nullptr) // isImageAt() said no, so virtualQueryEx is there
+    {
+        return std::unexpected(std::string("Its executable can't be read: its image isn't at its entry point"));
+    }
+    std::wstring started(IMAGE_NAME_CHARS, L'\0');
+    DWORD size = IMAGE_NAME_CHARS;
+    if (fns.queryFullProcessImageName(process, PROCESS_NAME_NATIVE, started.data(), &size) == 0)
+    {
+        return std::unexpected(std::format("Its executable can't be read: {}", imageHashError(GetLastError())));
+    }
+    started.resize(size);
+    if (std::optional<ImageLocation> found = findImageNamed(fns, process, started))
+    {
+        return std::move(*found);
+    }
+    return std::unexpected(std::string("Its executable can't be found: its image isn't at its entry point or under the name it "
+                                       "started with, so it may have been renamed; it wasn't hashed"));
+}
+
+/// The file @p process's image was mapped from, open for reading (#3861), or why not. Not the file at
+/// QueryFullProcessImageNameW's path: that is the name at creation, and a running image can be renamed (its section
+/// shares delete) and another file put at the old name. GetMappedFileNameW at the image (locateImage()) names the
+/// image's file as it is named now. That name is opened without FILE_SHARE_DELETE, so the file held can't be renamed
+/// or deleted while it is held. Then the image's name is read again, and the file at that name must be the held one by
+/// identity (volume serial and file ID, never by name, so a mapped network drive's, a short 8.3 name's or another
+/// case's form of the same name matches), and the held file must have the image's size.
+///
+/// What this can't rule out from user mode: a process that rewrites its own file after its image section was made
+/// (Process Herpaderping: the section keeps the original pages while the file on disk holds other bytes, of any size
+/// it likes) hashes as the file, not as the pages it runs; and a process that maps another image where its own would
+/// be. The size check catches a careless swap, not a deliberate one. A check of the content against the mapped pages
+/// would need to read the process's memory.
+[[nodiscard]] std::expected<Windows::UniqueHandle, std::string>
+openImageFile(const WindowsProcessFunctions& fns, HANDLE process, std::int32_t pid)
+{
+    SectionImageInformation info{};
+    ULONG written = 0;
+    const LONG status = fns.ntQueryInformationProcess(process, PROCESS_IMAGE_INFORMATION_CLASS, &info, sizeof(info), &written);
+    if (status < 0)
+    {
+        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
+        return std::unexpected(
+            std::format("Its executable can't be read: its image can't be found (NTSTATUS 0x{:08X})", static_cast<ULONG>(status)));
+    }
+    if (info.TransferAddress == nullptr)
+    {
+        return std::unexpected(std::string("Its executable can't be read: Windows reports no image for it"));
+    }
+    const std::expected<ImageLocation, std::string> image = locateImage(fns, process, info.TransferAddress);
+    if (!image.has_value())
+    {
+        return std::unexpected(image.error());
+    }
+    Windows::UniqueHandle file = openNtName(image->name, GENERIC_READ, FILE_SHARE_READ);
+    if (!file)
+    {
+        return std::unexpected(std::format("Its executable can't be read: {}", imageHashError(GetLastError())));
+    }
+    const std::expected<std::wstring, DWORD> now = mappedFileName(fns, process, image->address);
+    if (!now.has_value())
+    {
+        DWORD exitCode = STILL_ACTIVE;
+        if (fns.getExitCodeProcess != nullptr && fns.getExitCodeProcess(process, &exitCode) != 0 && exitCode != STILL_ACTIVE)
+        {
+            return std::unexpected(std::format("Process {} has exited", pid));
+        }
+        return std::unexpected(unconfirmed(std::format("its name can't be read again: {}", imageHashError(now.error()))));
+    }
+    const std::optional<FileIdentity> held = fileIdentity(file.get());
+    if (!held.has_value())
+    {
+        return std::unexpected(unconfirmed("the file's identity can't be read"));
+    }
+    const Windows::UniqueHandle there = openNtName(*now, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
+    if (!there)
+    {
+        return std::unexpected(unconfirmed(std::format("the file under its name now can't be opened: {}", imageHashError(GetLastError()))));
+    }
+    const std::optional<FileIdentity> named = fileIdentity(there.get());
+    if (!named.has_value())
+    {
+        return std::unexpected(unconfirmed("the identity of the file under its name now can't be read"));
+    }
+    if (*held != *named)
+    {
+        return std::unexpected(std::string(IMAGE_REPLACED));
+    }
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file.get(), &size) == 0)
+    {
+        return std::unexpected(unconfirmed(std::format("its size can't be read: {}", imageHashError(GetLastError()))));
+    }
+    // ImageFileSize is 0 where Windows doesn't fill it in (it isn't documented), and then there is no size to compare.
+    if (info.ImageFileSize != 0 && std::cmp_not_equal(size.QuadPart, info.ImageFileSize))
+    {
+        return std::unexpected(std::string(IMAGE_REPLACED));
+    }
+    return file;
+}
+
+/// The SHA-256 of the open @p file, read from its start in 1 MiB chunks; "Stopped" once @p stop is requested.
+[[nodiscard]] std::expected<Sha256::Digest, std::string> hashOpenFile(HANDLE file, const std::stop_token& stop)
+{
+    constexpr DWORD CHUNK_BYTES = 1U << 20U; // a stop is seen within one chunk
+    std::vector<std::uint8_t> chunk(CHUNK_BYTES);
+    Sha256::Hasher hasher;
+    while (true)
+    {
+        if (stop.stop_requested())
+        {
+            return std::unexpected(std::string("Stopped"));
+        }
+        DWORD got = 0;
+        if (ReadFile(file, chunk.data(), CHUNK_BYTES, &got, nullptr) == 0)
+        {
+            return std::unexpected(std::format("couldn't read the file: {}", imageHashError(GetLastError())));
+        }
+        if (got == 0)
+        {
+            return hasher.finish();
+        }
+        hasher.update(std::span<const std::uint8_t>(chunk.data(), got));
+    }
 }
 #endif
 
@@ -478,6 +773,13 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .queryFullProcessImageName = &QueryFullProcessImageNameW,
         .getExitCodeProcess = &GetExitCodeProcess,
 #ifdef TASKSMACK_NO_FILE_LOCATION
+        .getMappedFileName = nullptr, // TaskSmackHelper.exe: no image hash (#3646)
+        .virtualQueryEx = nullptr,
+#else
+        .getMappedFileName = &GetMappedFileNameW,
+        .virtualQueryEx = &VirtualQueryEx,
+#endif
+#ifdef TASKSMACK_NO_FILE_LOCATION
         .fileLocation = {}, // TaskSmackHelper.exe: no shell calls in the elevated image (#3426)
 #else
         .fileLocation = Windows::realFileLocationFunctions(),
@@ -536,8 +838,8 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .dumpsFromSnapshot = HAS_DUMPS,                // PssCaptureSnapshot, else from the running process (#2001)
         .canAuthorizeInteractively = false,            // BrokeredProcessActions sets it when TaskSmackHelper.exe can be used (#2550)
         .canOpenFileLocation = hasFileLocation(m_Fns), // SHOpenFolderAndSelectItems, or explorer.exe /select (#3426)
-        // QueryFullProcessImageNameW, then the file's SHA-256, for Look up on VirusTotal (#3646)
-        .canHashImage = HAS_IMAGE_HASH && m_Fns.queryFullProcessImageName != nullptr,
+        // The file the image was mapped from (GetMappedFileNameW), then its SHA-256, for Look up on VirusTotal (#3646, #3861)
+        .canHashImage = HAS_IMAGE_HASH && m_Fns.getMappedFileName != nullptr && m_Fns.ntQueryInformationProcess != nullptr,
         .canRunProgram = m_Fns.runProgram.shellExecute != nullptr, // ShellExecuteExW, as Run new task (#3427)
         // The runas verb's UAC prompt, unless TaskSmack is elevated already, when every task it starts is too.
         .canRunProgramAsAdministrator = m_Fns.runProgram.shellExecute != nullptr && !m_Elevated,
@@ -1390,7 +1692,7 @@ std::expected<std::string, std::string> WindowsProcessActions::imageSha256(const
     // TaskSmackHelper.exe: BrokeredProcessActions never sends it one, and Sha256.cpp isn't built in.
     return IProcessActions::imageSha256(target, stop);
 #else
-    if (m_Fns.queryFullProcessImageName == nullptr)
+    if (m_Fns.getMappedFileName == nullptr || m_Fns.ntQueryInformationProcess == nullptr)
     {
         return IProcessActions::imageSha256(target, stop);
     }
@@ -1407,26 +1709,20 @@ std::expected<std::string, std::string> WindowsProcessActions::imageSha256(const
         spdlog::warn("Not hashing the executable of PID {}: {}", target.pid, process.result.errorMessage);
         return std::unexpected(std::move(process.result.errorMessage));
     }
-    constexpr DWORD MAX_PATH_CHARS = 32768; // the longest path Windows allows, with its terminator
-    std::wstring path(MAX_PATH_CHARS, L'\0');
-    DWORD size = MAX_PATH_CHARS;
-    if (m_Fns.queryFullProcessImageName(process.handle.get(), 0, path.data(), &size) == 0)
+    std::expected<Windows::UniqueHandle, std::string> image = openImageFile(m_Fns, process.handle.get(), target.pid);
+    if (!image.has_value())
     {
-        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
-        const DWORD error = GetLastError();
-        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
-        spdlog::warn("Not hashing the executable of PID {}: {}", target.pid, message);
-        return std::unexpected(std::move(message));
+        spdlog::warn("Not hashing the executable of PID {}: {}", target.pid, image.error());
+        return std::unexpected(std::move(image.error()));
     }
-    path.resize(size);
-    std::expected<Sha256::Digest, std::string> digest = Sha256::hashFile(std::filesystem::path(path), stop);
+    std::expected<Sha256::Digest, std::string> digest = hashOpenFile(image->get(), stop);
     if (!digest.has_value() && stop.stop_requested())
     {
         return std::unexpected(std::move(digest.error())); // "Stopped": the worker's owner is going away
     }
-    // While the process runs its image can't be written, but once it has exited the file at that path may have
-    // been replaced, so a hash read across its exit may not be its image's. (A process that exits with code 259,
-    // STILL_ACTIVE, reads as running: GetExitCodeProcess's documented ambiguity.)
+    // The file can't be renamed or written while it is held, but once the process has exited its image is gone, so
+    // a hash read across its exit is refused. (A process that exits with code 259, STILL_ACTIVE, reads as running:
+    // GetExitCodeProcess's documented ambiguity.)
     DWORD exitCode = 0;
     if (m_Fns.getExitCodeProcess == nullptr || m_Fns.getExitCodeProcess(process.handle.get(), &exitCode) == 0 || exitCode != STILL_ACTIVE)
     {
