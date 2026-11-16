@@ -1,7 +1,7 @@
 #include "DllSearchPolicy.h"
 
 #include "Platform/IElevatedRestart.h"
-#include "WindowsHandles.h"
+#include "WindowsElevation.h"
 
 #include <cstddef>
 #include <string_view>
@@ -74,17 +74,11 @@ bool system32Only(TOKEN_ELEVATION_TYPE elevation, std::wstring_view commandLine)
 
 bool system32OnlyForThisProcess() noexcept
 {
-    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
-    if (UniqueHandle token; OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) != FALSE)
-    {
-        DWORD size = 0;
-        if (GetTokenInformation(token.get(), TokenElevationType, &type, sizeof(type), &size) == FALSE)
-        {
-            type = TokenElevationTypeDefault;
-        }
-    }
+    // currentElevationType() is safe this early (#4093): it calls only advapi32's OpenProcessToken and
+    // GetTokenInformation, which TaskSmack.exe imports anyway, through a table of their addresses, so it loads no DLL
+    // by name; it logs nothing, allocates nothing and keeps no static, so it needs nothing set up first.
     const wchar_t* const commandLine = GetCommandLineW();
-    return system32Only(type, commandLine != nullptr ? std::wstring_view(commandLine) : std::wstring_view());
+    return system32Only(currentElevationType(), commandLine != nullptr ? std::wstring_view(commandLine) : std::wstring_view());
 }
 
 } // namespace Platform::Windows::DllSearchPolicy

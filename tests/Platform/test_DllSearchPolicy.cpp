@@ -4,6 +4,7 @@
 
 #include "Platform/Factory.h"
 #include "Platform/Windows/DllSearchPolicy.h"
+#include "Platform/Windows/WindowsElevation.h"
 
 #include <gtest/gtest.h>
 
@@ -69,6 +70,12 @@ TEST(DllSearchPolicyTest, ThisProcessIsSystem32OnlyExactlyWhenElevatedThroughUac
 {
     // The test runner is never started with --handoff, so only its token decides.
     EXPECT_EQ(system32OnlyForThisProcess(), Platform::elevatedThroughUac());
+}
+
+TEST(DllSearchPolicyTest, ThisProcessReadsItsTokenThroughCurrentElevationType)
+{
+    // #4093: the token is read in one place, WindowsElevation's, even this early in WinMain.
+    EXPECT_EQ(system32OnlyForThisProcess(), system32Only(currentElevationType(), GetCommandLineW()));
 }
 
 } // namespace
