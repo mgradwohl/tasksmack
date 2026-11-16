@@ -976,6 +976,7 @@ WindowsSignature::SignatureFunctions signatureFunctionsWithPublisher()
     WindowsSignature::SignatureFunctions functions = Windows::systemSignatureFunctions();
     functions.readPublisher = &readHeldImagePublisher;
     functions.openProcessImage = &Windows::openProcessImageForCheck;
+    functions.processExited = &Windows::processExitedForCheck; // an exited process is dropped unchecked (#4059)
     return functions;
 }
 

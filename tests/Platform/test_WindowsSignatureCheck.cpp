@@ -824,6 +824,16 @@ TEST(WindowsSignatureCheckRealTest, ThisProcesssImageBindsToItsOwnFileAndChecksA
     EXPECT_FALSE(refused.has_value()) << "another process's identity binds nothing";
 }
 
+// #4059, the real exit check on this test process: running, it hasn't exited; an identity that isn't this one's (its
+// PID reused since) has, so the signature worker drops it unbound.
+TEST(WindowsSignatureCheckRealTest, TheExitCheckSaysThisProcessIsRunningAndAReusedIdentityHasExited)
+{
+    EXPECT_FALSE(processExitedForCheck(thisProcess()));
+    WindowsSignature::ImageProcess reused = thisProcess();
+    reused.startTimeTicks += 1;
+    EXPECT_TRUE(processExitedForCheck(reused));
+}
+
 /// @p path opened as the signature check opens an image: for read, shared for read only.
 UniqueHandle openForRead(const std::wstring& path)
 {
@@ -1256,6 +1266,41 @@ TEST_F(CiRealSystemSignatureBindingTest, ARenamedImageIsCheckedNotTheSignedDecoy
     ASSERT_TRUE(hash.has_value()) << hash.error();
     EXPECT_EQ(*hash, Sha256::toHex(*imageHash)) << "the renamed copy's hash";
     EXPECT_NE(*hash, Sha256::toHex(*decoyHash)) << "never the decoy's";
+}
+
+// #4059: the signature worker's exit check, on a real child: this test executable started suspended, so nothing of it
+// runs, as WindowsProcessIdentity's exited-child test starts one; it changes nothing on the machine. Running, it hasn't
+// exited; ended while its handle is still held (as a build's parent holds a child it hasn't reaped), it has, though its
+// PID and start time still name it.
+TEST(WindowsSignatureCheckRealTest, TheExitCheckTellsARunningChildFromOneThatHasExited)
+{
+    std::wstring module(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(length, 0U);
+    module.resize(length);
+    // Nothing is copied into it; the child's destructor removes it if it was made.
+    SuspendedChild child(std::filesystem::temp_directory_path() / std::format(L"tasksmack-4059-{}", GetCurrentProcessId()));
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    std::wstring commandLine = L"\"" + module + L"\" --gtest_list_tests";
+    ASSERT_NE(CreateProcessW(
+                  module.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &startup, &child.info()),
+              0)
+        << GetLastError();
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernel{};
+    FILETIME user{};
+    ASSERT_NE(GetProcessTimes(child.info().hProcess, &creation, &exitTime, &kernel, &user), 0);
+    const WindowsSignature::ImageProcess process{
+        .pid = static_cast<std::int32_t>(child.info().dwProcessId),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+    EXPECT_FALSE(processExitedForCheck(process)) << "running";
+
+    ASSERT_NE(TerminateProcess(child.info().hProcess, 1), 0) << GetLastError();
+    ASSERT_EQ(WaitForSingleObject(child.info().hProcess, 10'000), WAIT_OBJECT_0);
+    EXPECT_TRUE(processExitedForCheck(process)) << "exited, its object held open by this test";
 }
 
 // #3292: the real stamp of a file on the system volume (NTFS) has its ID; writing it in place, then setting

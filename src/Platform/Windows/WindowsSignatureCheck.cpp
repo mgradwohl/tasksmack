@@ -445,6 +445,32 @@ openProcessImageForCheck(const WindowsSignature::ImageProcess& process)
     };
 }
 
+/// Whether @p process has exited, for the signature worker to drop it unchecked (#4059).
+bool processExitedForCheck(const WindowsSignature::ImageProcess& process)
+{
+    const ProcessTarget target{.pid = process.pid, .startTimeTicks = process.startTimeTicks};
+    const std::expected<InjectableHandle, IdentityFailure> opened =
+        openProcessVerified(ProcessIdentityFunctions{}, target, PROCESS_QUERY_LIMITED_INFORMATION);
+    if (opened.has_value())
+    {
+        return false;
+    }
+    switch (opened.error().kind)
+    {
+    case IdentityFailureKind::ProcessGone:
+    case IdentityFailureKind::Mismatch:
+    case IdentityFailureKind::Exited:
+        return true;
+    case IdentityFailureKind::InvalidPid:
+    case IdentityFailureKind::IdentityUnknown:
+    case IdentityFailureKind::AccessDenied:
+    case IdentityFailureKind::OpenFailed:
+    case IdentityFailureKind::TimesFailed:
+        break;
+    }
+    return false; // can't tell: the check runs, and its binding says why it can't be made
+}
+
 WindowsSignature::SignatureFunctions systemSignatureFunctions() noexcept
 {
     return {
