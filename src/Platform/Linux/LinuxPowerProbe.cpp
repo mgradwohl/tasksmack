@@ -333,7 +333,10 @@ PowerCounters LinuxPowerProbe::combinePacks(const std::vector<PackReading>& pack
 {
     PowerCounters counters;
     const PackReading& first = packs.front();
-    counters.voltageNowMv = first.counters.voltageNowMv;
+    // The first pack's that reports a voltage (#4054): a first pack without voltage_now mustn't read as 0 V while
+    // hasVoltage, which covers every pack, is on.
+    const auto voltaged = std::ranges::find_if(packs, [](const PackReading& p) { return p.counters.voltageNowMv != 0; });
+    counters.voltageNowMv = (voltaged != packs.end()) ? voltaged->counters.voltageNowMv : 0;
     counters.technology = first.counters.technology;
     counters.model = first.counters.model;
     counters.manufacturer = first.counters.manufacturer;

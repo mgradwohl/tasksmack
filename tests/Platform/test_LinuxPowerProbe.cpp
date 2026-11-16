@@ -10,12 +10,15 @@
 
 #if defined(__linux__) && __has_include(<unistd.h>)
 
+#include "BatteryReadCases.h"
 #include "Platform/Linux/LinuxPowerProbe.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/Windows/WindowsPowerProbeMath.h"
 
 #include <array>
 #include <atomic>
+#include <cmath>
+#include <cstdint>
 #include <filesystem>
 #include <fstream>
 #include <string>
@@ -1332,6 +1335,94 @@ TEST_F(LinuxPowerProbeUnitTest, Battery_MalformedPowerNow_FallsBackToZero)
     LinuxPowerProbe probe(m_SysRoot.string());
 
     EXPECT_DOUBLE_EQ(probe.read().powerNowW, 0.0);
+}
+
+// #4054: the shared battery-read table (tests/Platform/BatteryReadCases.h), written as sysfs files: energy_now and
+// energy_full in µWh, power_now in µW, voltage_now in µV, the state as `status`. A value the case's battery doesn't
+// report is left out, and its capability must be off. The Windows probe's test feeds the same cases to its IOCTL fake.
+TEST_F(LinuxPowerProbeMultiPackTest, TheSharedBatteryReadCasesReadTheSameOnLinux)
+{
+    const auto micro = [](double value)
+    {
+        return std::to_string(static_cast<std::int64_t>(std::llround(value * 1'000'000.0)));
+    };
+    for (const TestSupport::BatteryRead::Case& c : TestSupport::BatteryRead::CASES)
+    {
+        SCOPED_TRACE(std::string(c.name));
+        std::filesystem::remove_all(m_SysRoot);
+        std::filesystem::create_directories(m_SysRoot);
+        const std::string status = (c.state == BatteryState::Charging)    ? "Charging"
+                                 : (c.state == BatteryState::Full)        ? "Full"
+                                 : (c.state == BatteryState::NotCharging) ? "Not charging"
+                                                                          : "Discharging";
+        const std::string energyNow = micro(c.remainingWh);
+        const std::string energyFull = micro(c.fullWh);
+        const std::string power = micro(c.rateW);
+        const std::string voltage = std::to_string(c.voltageMv * 1000);
+        makePack("BAT0",
+                 {.status = status.c_str(),
+                  .capacity = "50",
+                  .energyNow = c.reportsCharge ? energyNow.c_str() : nullptr,
+                  .energyFull = c.reportsCharge ? energyFull.c_str() : nullptr,
+                  .voltage = c.reportsVoltage ? voltage.c_str() : nullptr,
+                  .power = c.reportsRate ? power.c_str() : nullptr});
+
+        LinuxPowerProbe probe(m_SysRoot.string());
+        const PowerCapabilities caps = probe.capabilities();
+        EXPECT_EQ(caps.hasPowerRate, c.reportsRate);
+        EXPECT_EQ(caps.hasChargeCapacity, c.reportsCharge);
+        EXPECT_EQ(caps.hasVoltage, c.reportsVoltage);
+        const PowerCounters counters = probe.read();
+        EXPECT_EQ(counters.state, c.state);
+        EXPECT_NEAR(counters.powerNowW, c.expectedPowerNowW, 1e-6);
+        EXPECT_NEAR(counters.chargeNowWh, c.expectedChargeNowWh, 1e-6);
+        EXPECT_EQ(counters.voltageNowMv, c.expectedVoltageMv);
+    }
+}
+
+// #4054: with two batteries the rate and remaining charge are summed and the voltage is the first battery's (by name),
+// whichever is listed first, and a battery charging while the other discharges nets out as the sign says.
+TEST_F(LinuxPowerProbeMultiPackTest, TwoBatteriesSumTheRateAndChargeAndTakeTheFirstVoltage)
+{
+    makePack("BAT1",
+             {.status = "Discharging",
+              .capacity = "80",
+              .energyNow = "40000000",
+              .energyFull = "50000000",
+              .voltage = "12000000",
+              .power = "7000000"});
+    makePack("BAT0",
+             {.status = "Discharging",
+              .capacity = "50",
+              .energyNow = "10000000",
+              .energyFull = "20000000",
+              .voltage = "11000000",
+              .power = "3500000"});
+    LinuxPowerProbe probe(m_SysRoot.string());
+    const PowerCounters both = probe.read();
+    EXPECT_EQ(both.state, BatteryState::Discharging);
+    EXPECT_DOUBLE_EQ(both.powerNowW, 10.5);
+    EXPECT_DOUBLE_EQ(both.chargeNowWh, 50.0);
+    EXPECT_EQ(both.voltageNowMv, 11000ULL);
+}
+
+// #4054: the voltage is the first battery's that reports one: a first battery with no voltage_now doesn't leave the
+// system's voltage at 0 while the other battery reports one (and hasVoltage is on).
+TEST_F(LinuxPowerProbeMultiPackTest, TheVoltageIsTheFirstReportingBatterys)
+{
+    makePack("BAT0", {.status = "Discharging", .capacity = "50", .energyNow = "10000000", .energyFull = "20000000", .power = "3000000"});
+    makePack("BAT1",
+             {.status = "Discharging",
+              .capacity = "80",
+              .energyNow = "40000000",
+              .energyFull = "50000000",
+              .voltage = "12000000",
+              .power = "7000000"});
+    LinuxPowerProbe probe(m_SysRoot.string());
+    EXPECT_TRUE(probe.capabilities().hasVoltage);
+    const PowerCounters both = probe.read();
+    EXPECT_EQ(both.voltageNowMv, 12000ULL);
+    EXPECT_DOUBLE_EQ(both.powerNowW, 10.0);
 }
 
 } // namespace
