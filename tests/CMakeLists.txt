@@ -1073,7 +1073,10 @@ set(THEME_REAL_TEST_SOURCES
 )
 # Tests that need the whole app, built into TaskSmackAppTests below (#1395)
 set(APP_REAL_TEST_SOURCES
-    App/test_UiLayersOnDisplay.cpp
+    App/test_UiLayersOnDisplay.cpp  # split by feature (#3850): the shared checks and fixture are in UiLayersOnDisplayFixture.h
+    App/test_UiLayersOnDisplayDrag.cpp
+    App/test_UiLayersOnDisplayResize.cpp
+    App/test_UiLayersOnDisplayShell.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
     App/test_UiScenariosOnDisplay.cpp # the #2700 sign-off's steps through the whole shell (#2711)
     App/test_AccessNoticeOnDisplay.cpp # the startup notice in a real application (#2728)
