@@ -1088,7 +1088,7 @@ void ProcessesPanel::onAttach()
     // Look up on VirusTotal's client (#3094): made here, unused until asked. An injected platform (tests) brings none.
     if (!m_MakePlatform && m_LookupClient == nullptr)
     {
-        m_LookupClient = makeLookupClient(scenario, SelectOverride::testHookActive());
+        m_LookupClient = makeHttpsClient(scenario, SelectOverride::testHookActive());
     }
     m_ProcessModel = std::make_shared<Domain::ProcessModel>(Domain::DEFERRED_PROBE);
     m_OwnPid = Platform::currentProcessId(); // A batch naming TaskSmack itself says so (#804)
