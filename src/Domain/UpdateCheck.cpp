@@ -122,41 +122,30 @@ namespace
 
 using JsonReader = Domain::Json::Reader;
 
-/// Reads one `"name": value` member of the release object at @p reader into @p fields (#3093): the four
-/// names readReleaseFields() keeps are stored when they have the expected type, and any other member,
-/// or one of the four with another type, is skipped and leaves its field unset. A repeated name keeps
-/// its last value. False when the member isn't well formed, which fails the whole reply.
-[[nodiscard]] bool readReleaseMember(JsonReader& reader, ReleaseFields& fields)
+/// Reads the value of the release object's member @p name, with @p reader at it, into @p fields (#3093;
+/// Json::readObject()'s callback since #3873): the four names readReleaseFields() keeps are stored when
+/// they have the expected type, and any other member, or one of the four with another type, is skipped
+/// and leaves its field unset. A repeated name keeps its last value. Malformed when the value isn't well
+/// formed, which fails the whole reply.
+[[nodiscard]] Domain::Json::Member readReleaseMember(JsonReader& reader, const std::string& name, ReleaseFields& fields)
 {
-    reader.skipSpace();
-    if (reader.peek() != '"')
-    {
-        return false; // a member starts with its quoted name
-    }
-    const std::optional<std::string> name = reader.readString();
-    reader.skipSpace();
-    if (!name.has_value() || !reader.consume(':'))
-    {
-        return false;
-    }
-    reader.skipSpace();
-
+    using Domain::Json::Member;
     // Which field, if any, this name fills: a string one or a boolean one.
     std::optional<std::string>* text = nullptr;
     std::optional<bool>* flag = nullptr;
-    if (*name == "tag_name")
+    if (name == "tag_name")
     {
         text = &fields.tagName;
     }
-    else if (*name == "html_url")
+    else if (name == "html_url")
     {
         text = &fields.htmlUrl;
     }
-    else if (*name == "draft")
+    else if (name == "draft")
     {
         flag = &fields.draft;
     }
-    else if (*name == "prerelease")
+    else if (name == "prerelease")
     {
         flag = &fields.prerelease;
     }
@@ -164,12 +153,12 @@ using JsonReader = Domain::Json::Reader;
     if (text != nullptr && reader.peek() == '"')
     {
         *text = reader.readString();
-        return text->has_value();
+        return text->has_value() ? Member::Read : Member::Malformed;
     }
     if (flag != nullptr && (reader.peek() == 't' || reader.peek() == 'f'))
     {
         *flag = reader.readBool();
-        return flag->has_value();
+        return flag->has_value() ? Member::Read : Member::Malformed;
     }
     // Another member, or one of these with another type: skipped, and the field left unset.
     if (text != nullptr)
@@ -180,7 +169,7 @@ using JsonReader = Domain::Json::Reader;
     {
         flag->reset();
     }
-    return reader.skipValue();
+    return Member::Skip;
 }
 
 } // namespace
@@ -287,33 +276,12 @@ std::optional<ReleaseFields> readReleaseFields(std::string_view json)
         return std::nullopt;
     }
     JsonReader reader(json);
-    reader.skipSpace();
-    if (!reader.consume('{'))
-    {
-        return std::nullopt; // not an object: GitHub's error pages and rate-limit replies are objects too
-    }
+    // Not an object (GitHub's error pages and rate-limit replies are objects too), or a malformed one: no fields.
+    // An empty object reads as no fields.
     ReleaseFields fields;
-    reader.skipSpace();
-    if (!reader.consume('}')) // an empty object reads as no fields
+    if (!Domain::Json::readObject(reader, [&](const std::string& name) { return readReleaseMember(reader, name, fields); }))
     {
-        // One member at a time, each followed by ',' or the object's closing '}'.
-        while (true)
-        {
-            if (!readReleaseMember(reader, fields))
-            {
-                return std::nullopt;
-            }
-            reader.skipSpace();
-            if (reader.consume(','))
-            {
-                continue;
-            }
-            if (reader.consume('}'))
-            {
-                break;
-            }
-            return std::nullopt; // neither separator: malformed
-        }
+        return std::nullopt;
     }
     // Nothing but whitespace may follow the object, so a truncated or concatenated reply is refused.
     reader.skipSpace();

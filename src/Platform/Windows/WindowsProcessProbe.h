@@ -461,9 +461,9 @@ class WindowsProcessProbe : public IProcessProbe
     // The image signature worker (#3070): null without SignatureFunctions. Its own thread checks; this
     // probe's sampling thread only queues and takes answers. Stopped and joined before the members above.
     std::unique_ptr<WindowsSignature::SignatureWorker> m_Signatures;
-    // The worker's publisher read (SignatureFunctions::readPublisher), made on the sample instead once the worker
-    // has ended (#3862). Nullable.
-    std::string (*m_ReadPublisher)(const std::string& path) = nullptr;
+    // The worker's calls, for its publisher read (SignatureFunctions::readPublisher, through the same binding,
+    // WindowsSignature::readImagePublisher()), made on the sample instead once the worker has ended (#3862, #4021).
+    WindowsSignature::SignatureFunctions m_SignatureFunctions{};
     std::jthread m_EnergyMeterOpener; // Last: joined first, while the meter and the mutex are alive
 };
 

@@ -20,6 +20,7 @@
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsProcessIdentity.h"
 
 #include <gtest/gtest.h>
 
@@ -167,7 +168,7 @@ TEST(HelperLauncherTest, TheHelperBesideThisExecutableIsStartedElevatedForThisPr
 }
 
 // #2772: what TaskSmack says of itself is what the helper reads of it. Its image is the one
-// BrokerHelper::imageOf() reads from its process, and its start time is BrokerHelper::startTicksOf()'s
+// processImagePath() reads from its process, and its start time is BrokerHelper::startTicksOf()'s
 // reading, the same number the helper checks the command line against.
 TEST(HelperLauncherTest, TaskSmackNamesItselfAsTheHelperReadsIt)
 {
@@ -175,7 +176,7 @@ TEST(HelperLauncherTest, TaskSmackNamesItselfAsTheHelperReadsIt)
     const auto helper = HelperLauncher::launch(freshName(), {}, fakes());
     ASSERT_TRUE(helper.has_value()) << helper.error();
 
-    const auto image = BrokerHelper::imageOf(GetCurrentProcess());
+    const auto image = processImagePath(GetCurrentProcess());
     ASSERT_TRUE(image.has_value());
     EXPECT_EQ(lowerCased(fake.file), lowerCased(BrokerHelper::besidePath(image.value_or(L""), L"TaskSmackHelper.exe")));
 
@@ -202,9 +203,11 @@ TEST(HelperLauncherTest, TheParametersAreTheHelpersCommandLineAndReadBackExactly
 TEST(HelperLauncherTest, ParametersTheHelperWouldReadDifferentlyAreRefused)
 {
     // Spaces and quotes would split or join differently; neither is ever in a name makePipeName() makes.
-    for (const std::wstring& pipeName : {std::wstring(L"\\\\.\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcde f"),
-                                         std::wstring(L"\\\\.\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcde\""),
-                                         std::wstring(L"\\\\.\\pipe\\Other")})
+    for (const std::wstring& pipeName : {
+             std::wstring(L"\\\\.\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcde f"),
+             std::wstring(L"\\\\.\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcde\""),
+             std::wstring(L"\\\\.\\pipe\\Other"),
+         })
     {
         EXPECT_FALSE(HelperLauncher::parameters({.pipeName = pipeName, .parentPid = 1, .parentStartTicks = 1}).has_value());
     }
@@ -623,7 +626,8 @@ constexpr std::string_view GONE_DETAIL = "the process has exited";
             if (modules->target == GONE)
             {
                 return Broker::ModulesReply{
-                    .result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = std::string(GONE_DETAIL)}};
+                    .result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = std::string(GONE_DETAIL)},
+                };
             }
             return Broker::ModulesReply{.result = {.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}}};
         }
@@ -884,7 +888,8 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
         Broker::ActionResult{.success = false, .errorMessage = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED), .successNote = {}},
         Broker::EnvironmentReply{.result = {.status = EnvironmentReadStatus::Failed, .variables = {}}},
         Broker::ThreadsReply{.result = {.status = ThreadsReadStatus::Failed, .threads = {}, .detail = {}}},
-        Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = "access is denied"}}};
+        Broker::ModulesReply{.result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = "access is denied"}},
+    };
     for (const Broker::Response& answer : silent) // `silent` outlives every answer given from it
     {
         inner.setAnswer([&answer](const Broker::Request&) { return answer; });
@@ -915,7 +920,8 @@ TEST(HelperLauncherTest, OnlyTheHelpersOwnRefusalTeachesTheBroker)
 [[nodiscard]] Broker::Response refusedRead()
 {
     return Broker::ModulesReply{
-        .result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED)}};
+        .result = {.status = ModulesReadStatus::Failed, .modules = {}, .detail = std::string(BrokerHelper::OTHER_USERS_READ_REFUSED)},
+    };
 }
 
 /// A modules read that succeeds.

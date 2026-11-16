@@ -5,6 +5,7 @@
 #include "WindowsHandles.h"
 #include "WindowsProcAddress.h"
 #include "WindowsProcessDumpMath.h"
+#include "WindowsProcessIdentity.h"
 #include "WindowsProcessMachine.h"
 
 #include <spdlog/spdlog.h>
@@ -160,14 +161,8 @@ BOOL CALLBACK dumpCallback(PVOID param, PMINIDUMP_CALLBACK_INPUT input, PMINIDUM
 /// The process's image file name (its full path), UTF-8; empty when it can't be read.
 [[nodiscard]] std::string imageName(HANDLE process)
 {
-    constexpr DWORD MAX_PATH_CHARS = 32768; // the longest path Windows allows, with its terminator
-    std::wstring buffer(MAX_PATH_CHARS, L'\0');
-    DWORD size = MAX_PATH_CHARS;
-    if (QueryFullProcessImageNameW(process, 0, buffer.data(), &size) == 0)
-    {
-        return {};
-    }
-    return WinString::wideToUtf8(std::wstring_view(buffer.data(), size));
+    const std::optional<std::wstring> path = processImagePath(process);
+    return path.has_value() ? WinString::wideToUtf8(*path) : std::string{};
 }
 
 /// The machine this TaskSmack is built for: x64 or ARM64 only (the build is 64-bit only, #2152).

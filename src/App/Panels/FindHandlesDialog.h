@@ -74,9 +74,18 @@ enum class FindHandlesColumn : std::uint8_t
     Path,
 };
 
-/// The order to list @p matches in: by @p column, ties by PID then path.
+/// The order to list @p matches in: by @p column, ties by PID then path, and matches equal on all three in the order
+/// found.
 [[nodiscard]] std::vector<std::size_t>
-orderFindHandlesMatches(const std::vector<Domain::HandleSearch::HandleMatch>& matches, FindHandlesColumn column, bool ascending);
+orderFindHandlesMatches(const Domain::HandleSearch::MatchList& matches, FindHandlesColumn column, bool ascending);
+
+/// Extends @p order, the order (orderFindHandlesMatches(), by the same @p column and @p ascending) of @p matches' first
+/// order.size() matches, to all of them (#3888): it sorts only the matches after those and merges them in, which
+/// gives what orderFindHandlesMatches() gives. An @p order longer than @p matches is dropped and all are ordered.
+void extendFindHandlesOrder(std::vector<std::size_t>& order,
+                            const Domain::HandleSearch::MatchList& matches,
+                            FindHandlesColumn column,
+                            bool ascending);
 
 class FindHandlesDialog
 {
@@ -176,6 +185,8 @@ class FindHandlesDialog
     std::stop_source m_SearchCancel{std::nostopstate};
     std::string m_Query;
     std::uint64_t m_OrderVersion = 0; ///< The publication m_Order was built for
+    /// That publication's matches, sharing its chunks: a later generation that extends() them adds to m_Order (#3888).
+    Domain::HandleSearch::MatchList m_Ordered;
     FindHandlesColumn m_SortColumn = FindHandlesColumn::Process;
     bool m_SortAscending = true;
     std::vector<std::size_t> m_Order;

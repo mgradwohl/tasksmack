@@ -1,5 +1,7 @@
 #include "UdpCountingStatus.h"
 
+#include <atomic>
+#include <cstdint>
 #include <mutex>
 #include <string>
 #include <string_view>
@@ -15,6 +17,8 @@ struct Published
 {
     std::mutex mutex;
     UdpCountingStatus status;
+    std::uint64_t version = 1;            // guarded by mutex; bumped when the status changes
+    std::atomic<std::uint64_t> latest{1}; // mirror of version for the lock-free unchanged check
 };
 
 [[nodiscard]] Published& published()
@@ -36,7 +40,26 @@ void publishUdpCountingStatus(UdpCountingStatus status)
 {
     Published& state = published();
     const std::scoped_lock lock(state.mutex);
+    if (state.status == status)
+    {
+        return;
+    }
     state.status = std::move(status);
+    ++state.version;
+    state.latest.store(state.version, std::memory_order_release);
+}
+
+bool udpCountingStatusIfChanged(std::uint64_t& seenVersion, UdpCountingStatus& into)
+{
+    Published& state = published();
+    if (state.latest.load(std::memory_order_acquire) == seenVersion)
+    {
+        return false;
+    }
+    const std::scoped_lock lock(state.mutex);
+    into = state.status;
+    seenVersion = state.version;
+    return true;
 }
 
 std::string UdpCountingLine::text() const

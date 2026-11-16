@@ -234,31 +234,29 @@ TEST(BrokeredProcessActionsTest, ReadsAndOtherCallsAreTheInProcessOnes)
     EXPECT_TRUE(f.broker->requests().empty());
 }
 
-TEST(BrokeredProcessActionsTest, EachSignalMapsToTheHelpersSignal)
-{
-    EXPECT_EQ(brokerSignalFor(ProcessSignal::Hangup), Broker::Signal::Hangup);
-    EXPECT_EQ(brokerSignalFor(ProcessSignal::Interrupt), Broker::Signal::Interrupt);
-    EXPECT_EQ(brokerSignalFor(ProcessSignal::Quit), Broker::Signal::Quit);
-    EXPECT_EQ(brokerSignalFor(ProcessSignal::User1), Broker::Signal::User1);
-    EXPECT_EQ(brokerSignalFor(ProcessSignal::User2), Broker::Signal::User2);
-}
-
-// #3778: a kind or a signal the mapping doesn't know (one added later, its case missed) is no request at all, never a
-// Terminate the elevated helper would carry out, and runAuthorized() refuses it before any prompt.
-TEST(BrokeredProcessActionsTest, AnUnknownKindOrSignalIsNoRequestNeverATerminate)
+// #3778: a kind the mapping doesn't know (one added later, its case missed) is no request at all, never a Terminate the
+// elevated helper would carry out, and runAuthorized() refuses it before any prompt. So is a POSIX signal and a
+// connection named only by its socket inode (#3784): what only the Linux helper did, and Linux has none (#3580).
+TEST(BrokeredProcessActionsTest, AnUnknownKindASignalOrAnInodeIsNoRequestNeverATerminate)
 {
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
     const auto unknownKind = static_cast<AuthorizedAction::Kind>(0xFF);
     // NOLINTNEXTLINE(clang-analyzer-optin.core.EnumCastOutOfRange) - the out-of-range value is the point
     const auto unknownSignal = static_cast<ProcessSignal>(0xFF);
-    EXPECT_FALSE(brokerSignalFor(unknownSignal).has_value());
     EXPECT_FALSE(brokerRequestFor({.kind = unknownKind, .target = TARGET}).has_value());
-    EXPECT_FALSE(brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal}).has_value());
+    for (const ProcessSignal signal :
+         {ProcessSignal::Hangup, ProcessSignal::Interrupt, ProcessSignal::Quit, ProcessSignal::User1, ProcessSignal::User2, unknownSignal})
+    {
+        EXPECT_FALSE(brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = signal}).has_value());
+    }
+    EXPECT_FALSE(brokerRequestFor({.kind = AuthorizedAction::Kind::CloseConnection, .target = TARGET, .socketInode = 9}).has_value());
 
     const Fixture f(/*connected=*/false);
     for (const AuthorizedAction& action : {
              AuthorizedAction{.kind = unknownKind, .target = TARGET},
+             AuthorizedAction{.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = ProcessSignal::Hangup},
              AuthorizedAction{.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = unknownSignal},
+             AuthorizedAction{.kind = AuthorizedAction::Kind::CloseConnection, .target = TARGET, .socketInode = 9},
          })
     {
         const ProcessActionResult result = f.actions->runAuthorized(action, std::stop_token{});
@@ -499,23 +497,19 @@ TEST(BrokeredProcessActionsTest, EverySignalRefusedInProcessIsRetriedAsItsOwnReq
     EXPECT_EQ(requests[3], (Broker::Request{Broker::IoPriorityRequest{.target = TARGET, .ioClass = IoPriorityClass::Idle, .level = 7}}));
 }
 
-// #3063: a signal TaskSmack may not send (another user's process) is retried through the helper as a
-// Signal request carrying that signal; one it may send never reaches the helper.
-TEST(BrokeredProcessActionsTest, AnOtherSignalRefusedInProcessIsRetriedThroughTheHelper)
+// #3784: a POSIX signal (#3063) was the Linux helper's to send. Refused in process, the refusal stands: the helper is
+// never asked, though it is running.
+TEST(BrokeredProcessActionsTest, AnOtherSignalRefusedInProcessIsNeverSentToTheHelper)
 {
     Fixture f(/*connected=*/true);
     EXPECT_TRUE(f.actions->sendSignal(TARGET, ProcessSignal::Interrupt).success);
-    EXPECT_TRUE(f.broker->requests().empty()) << "sent in process: the helper isn't asked";
 
     f.inner->setSendSignalResult(ProcessActionResult::denied("Permission denied"));
-    EXPECT_TRUE(f.actions->sendSignal(TARGET, ProcessSignal::User1).success);
+    const ProcessActionResult refused = f.actions->sendSignal(TARGET, ProcessSignal::User1);
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.permissionDenied);
     EXPECT_EQ(f.inner->sendSignalCount(), 2);
-    const std::vector<Broker::Request> requests = f.broker->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests[0], (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::User1}}));
-
-    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::SendSignal, .target = TARGET, .signal = ProcessSignal::Hangup})),
-              (Broker::Request{Broker::SignalRequest{.target = TARGET, .signal = Broker::Signal::Hangup}}));
+    EXPECT_TRUE(f.broker->requests().empty());
 }
 
 // #3071: Efficiency mode on a process TaskSmack may not change (elevated, another user's) is retried through
@@ -653,26 +647,23 @@ TEST(BrokeredProcessActionsTest, AFailedOrUnreadHelperEfficiencyChangeLeavesTheM
     EXPECT_EQ(f.inner->efficiencyLog(), (std::vector<std::string>{"remember 0x4000", "off", "on"}));
 }
 
-// #3066: closing another user's process's socket, refused in process, is retried through the helper as a
-// CloseConnection request carrying the inode; one closed in process never reaches it.
-TEST(BrokeredProcessActionsTest, CloseConnectionRefusedInProcessIsRetriedThroughTheHelper)
+// #3784: closing a socket by its inode (#3066) was the Linux helper's. Refused in process, the refusal stands: the
+// helper is never asked, though it is running.
+TEST(BrokeredProcessActionsTest, ASocketClosedByItsInodeIsNeverSentToTheHelper)
 {
     Fixture f(/*connected=*/true);
     EXPECT_TRUE(f.actions->closeConnection(TARGET, 555).success);
-    EXPECT_TRUE(f.broker->requests().empty()) << "closed in process: the helper isn't asked";
 
     f.inner->setCloseConnectionResult(ProcessActionResult::denied("Operation not permitted"));
-    EXPECT_TRUE(f.actions->closeConnection(TARGET, 556).success);
+    const ProcessActionResult refused = f.actions->closeConnection(TARGET, 556);
+    EXPECT_FALSE(refused.success);
+    EXPECT_TRUE(refused.permissionDenied);
     EXPECT_EQ(f.inner->closeConnectionCount(), 2);
-    const std::vector<Broker::Request> requests = f.broker->requests();
-    ASSERT_EQ(requests.size(), 1U);
-    EXPECT_EQ(requests[0], (Broker::Request{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 556}}));
-    EXPECT_EQ((brokerRequestFor({.kind = AuthorizedAction::Kind::CloseConnection, .target = TARGET, .socketInode = 9})),
-              (Broker::Request{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 9}}));
+    EXPECT_TRUE(f.broker->requests().empty());
 }
 
 // #3358: on Windows the connection is named by its IPv4 TCP endpoints. Refused in process (SetTcpEntry needs an
-// administrator), it is retried through the helper as a CloseConnection request carrying them, with no inode.
+// administrator), it is retried through the helper as a CloseConnection request carrying them.
 TEST(BrokeredProcessActionsTest, ATcpConnectionRefusedInProcessIsRetriedThroughTheHelperByItsEndpoints)
 {
     const TcpConnectionToClose connection{
@@ -689,7 +680,7 @@ TEST(BrokeredProcessActionsTest, ATcpConnectionRefusedInProcessIsRetriedThroughT
     EXPECT_TRUE(f.actions->closeTcpConnection(TARGET, connection).success);
     EXPECT_EQ(f.inner->closeTcpConnectionCount(), 2);
     EXPECT_EQ(f.inner->closeConnectionCount(), 0);
-    const Broker::Request expected{Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 0, .tcpConnection = connection}};
+    const Broker::Request expected{Broker::CloseConnectionRequest{.target = TARGET, .tcpConnection = connection}};
     const std::vector<Broker::Request> requests = f.broker->requests();
     ASSERT_EQ(requests.size(), 1U);
     EXPECT_EQ(requests[0], expected);

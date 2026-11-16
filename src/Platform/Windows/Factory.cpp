@@ -37,6 +37,7 @@
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WindowsProcessIdentity.h"
 #include "WinString.h"
 #include "WindowsDebugPrivilege.h"
 #include "WindowsDiskProbe.h"
@@ -408,7 +409,7 @@ struct RunningWindowSearch
     {
         return false;
     }
-    const auto image = Windows::BrokerHelper::imageOf(process.get());
+    const auto image = Windows::processImagePath(process.get());
     return image.has_value() && TaskManagerReplacement::isTaskSmackProgram(WinString::wideToUtf8(*image));
 }
 

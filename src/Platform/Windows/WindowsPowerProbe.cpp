@@ -24,6 +24,7 @@
 #include <stop_token>
 #include <string>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -44,17 +45,18 @@ WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batt
     : m_BatteryApi(batteryApi),
       m_GetSystemPowerStatus(getSystemPowerStatus),
       // At most one re-read is queued or running: requestBatteryInfoRefresh() defers a change that comes
-      // while one runs until its result is taken. The read itself -- SetupAPI's enumeration and the battery
-      // IOCTLs, which a slow ACPI call can stall -- is the worker's alone (#2731); the sampling pass never
-      // waits for it. A std::exception from it is logged and reads as no facts, as before; anything else
+      // while one runs until its result is taken. The read itself -- SetupAPI's enumeration, the opens and
+      // the tag and information IOCTLs, which a slow ACPI call can stall -- is the worker's alone (#2731);
+      // the sampling pass never waits for it, and sends only IOCTL_BATTERY_QUERY_STATUS to the devices the
+      // read left open (#4030). A std::exception from it is logged and reads as no facts, as before; anything else
       // the Worker contains (#3343): it ends Failed, and read() keeps the facts it has.
       m_BatteryInfoWorker({.threadName = BATTERY_READ_THREAD_NAME, .capacity = 1, .admission = Domain::Admission::Refuse},
                           [this](BatteryInfoReread& /*job*/, const std::stop_token& /*stop*/, BatteryInfoWorker::JobContext& context)
                           {
-                              Windows::BatteryInfo info;
+                              Windows::BatteryScan info;
                               try
                               {
-                                  info = Windows::readBatteryInfo(m_BatteryApi);
+                                  info = Windows::scanBatteries(m_BatteryApi);
                               }
                               catch (const std::exception& e)
                               {
@@ -72,19 +74,26 @@ WindowsPowerProbe::WindowsPowerProbe(const Windows::BatteryDeviceFunctions& batt
 
     // The battery device's static facts (#1523), read here once as the seed; read() has a worker read
     // them again when they may have changed (#2731)
-    m_BatteryInfo = Windows::readBatteryInfo(m_BatteryApi);
+    m_Battery = Windows::scanBatteries(m_BatteryApi);
     m_BatteryInfoReadAt = std::chrono::steady_clock::now();
     m_BatteryInfoOnAc = sps.ACLineStatus == 1;
     if (statusRead)
     {
+        if (hasBatteryFromFlag(sps.BatteryFlag))
+        {
+            // The live status too, so the capabilities offer the rate, charge and voltage from the start (#4030)
+            PowerCounters seed;
+            readBatteryStatus(seed);
+        }
         updateCapabilities(sps);
     }
     // Otherwise no battery is reported until a read() succeeds
 
-    spdlog::debug("WindowsPowerProbe: hasBattery={} batteryInfo={} relative={}",
+    spdlog::debug("WindowsPowerProbe: hasBattery={} batteryInfo={} relative={} devices={}",
                   m_Capabilities.hasBattery,
-                  m_BatteryInfo.found,
-                  m_BatteryInfo.relativeCapacity);
+                  m_Battery.info.found,
+                  m_Battery.info.relativeCapacity,
+                  m_Battery.devices.size());
 }
 
 PowerCounters WindowsPowerProbe::read()
@@ -111,6 +120,9 @@ PowerCounters WindowsPowerProbe::read()
         {
             requestBatteryInfoRefresh(counters.isOnAc);
         }
+        // The live rate, charge and voltage, on the devices the last re-read opened (#4030); before the
+        // capabilities, which follow what it gave
+        readBatteryStatus(counters);
     }
     // The capabilities follow every read, as LinuxPowerProbe's do (#2380, #2413): a battery inserted
     // or removed, or details the battery device first answered after start
@@ -120,7 +132,7 @@ PowerCounters WindowsPowerProbe::read()
         return counters;
     }
 
-    const Windows::BatteryInfo& info = m_BatteryInfo;
+    const Windows::BatteryInfo& info = m_Battery.info;
     counters.chargeDesignWh = info.designWh;
     counters.chargeFullWh = info.fullChargeWh;
     counters.healthPercent = info.healthPercent;
@@ -128,7 +140,48 @@ PowerCounters WindowsPowerProbe::read()
     counters.technology = info.technology;
     counters.manufacturer = info.manufacturer;
     counters.model = info.model;
+    // GetSystemPowerStatus gives no time to full; the rate and the remaining Wh do, as on Linux (#4030)
+    if (counters.state == BatteryState::Charging && m_Capabilities.hasChargeCapacity)
+    {
+        counters.timeToFullSec = timeToFullSeconds(counters.chargeNowWh, counters.chargeFullWh, counters.powerNowW);
+    }
     return counters;
+}
+
+void WindowsPowerProbe::readBatteryStatus(PowerCounters& counters)
+{
+    std::vector<BatteryStatusReading> readings;
+    readings.reserve(m_Battery.devices.size());
+    std::erase_if(m_Battery.devices,
+                  [&](const Windows::BatteryDevice& device)
+                  {
+                      BatteryStatusReading reading;
+                      switch (Windows::queryBatteryStatus(m_BatteryApi, device, reading))
+                      {
+                      case Windows::BatteryStatusOutcome::Read:
+                          readings.push_back(reading);
+                          return false;
+                      case Windows::BatteryStatusOutcome::Failed:
+                          return false;
+                      case Windows::BatteryStatusOutcome::Stale:
+                          // Taken out or swapped: the next re-read opens and tags what is in the slot now. The
+                          // worker's last publication still shares the handle until that re-read replaces it.
+                          spdlog::debug("WindowsPowerProbe: battery tag {} has gone stale; dropped until the next re-read", device.tag);
+                          return true;
+                      }
+                      return false;
+                  });
+    if (readings.empty())
+    {
+        return; // No status this sample: the figures read 0, and what was offered stays offered
+    }
+    const BatteryStatusTotals totals = combineBatteryStatus(readings);
+    counters.powerNowW = totals.powerNowW;
+    counters.chargeNowWh = totals.chargeNowWh;
+    counters.voltageNowMv = totals.voltageMv;
+    m_StatusGaveRate = m_StatusGaveRate || totals.hasPowerRate;
+    m_StatusGaveCapacity = m_StatusGaveCapacity || totals.hasChargeCapacity;
+    m_StatusGaveVoltage = m_StatusGaveVoltage || totals.hasVoltage;
 }
 
 PowerCapabilities WindowsPowerProbe::capabilities() const
@@ -170,7 +223,7 @@ void WindowsPowerProbe::takeFinishedBatteryInfo()
     // All or nothing: a copy that throws leaves the facts, the taken version and m_BatteryInfoRefreshing
     // as they were, so the next read() takes this publication again instead of skipping it for good.
     const auto published = m_BatteryInfoWorker.latest();
-    if (!takeNewerPublication(*published, m_BatteryInfo, m_TakenBatteryInfoVersion))
+    if (!takeNewerPublication(*published, m_Battery, m_TakenBatteryInfoVersion))
     {
         if (m_BatteryInfoWorker.state() == Domain::WorkerState::Failed)
         {
@@ -182,7 +235,14 @@ void WindowsPowerProbe::takeFinishedBatteryInfo()
         return; // Still reading
     }
     m_BatteryInfoRefreshing = false;
-    spdlog::debug("WindowsPowerProbe: battery facts re-read: found={} relative={}", m_BatteryInfo.found, m_BatteryInfo.relativeCapacity);
+    // The new devices' status decides afresh what is offered: a battery swapped for one without a rate
+    m_StatusGaveRate = false;
+    m_StatusGaveCapacity = false;
+    m_StatusGaveVoltage = false;
+    spdlog::debug("WindowsPowerProbe: battery facts re-read: found={} relative={} devices={}",
+                  m_Battery.info.found,
+                  m_Battery.info.relativeCapacity,
+                  m_Battery.devices.size());
     if (m_BatteryInfoRefreshAgain)
     {
         m_BatteryInfoRefreshAgain = false;
@@ -203,7 +263,7 @@ void WindowsPowerProbe::reportBatteryInfoWorkerFailed()
 
 void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)
 {
-    const Windows::BatteryInfo& info = m_BatteryInfo;
+    const Windows::BatteryInfo& info = m_Battery.info;
     m_Capabilities = powerCapabilitiesFrom(status.BatteryFlag,
                                            status.BatteryLifePercent,
                                            status.BatteryLifeTime,
@@ -214,6 +274,9 @@ void WindowsPowerProbe::updateCapabilities(const SYSTEM_POWER_STATUS& status)
                                                .healthPercent = info.healthPercent,
                                                .cycleCount = info.cycleCount,
                                                .hasTechnology = !info.technology.empty(),
+                                               .hasPowerRate = m_StatusGaveRate,
+                                               .hasChargeCapacity = m_StatusGaveCapacity,
+                                               .hasVoltage = m_StatusGaveVoltage,
                                            });
 }
 
