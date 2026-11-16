@@ -201,6 +201,73 @@ TEST_F(FindHandlesDialogRenderTest, StopEndsASearchBeforeItsOtherProcessesAreRea
     EXPECT_FALSE(m_Dialog->searching());
 }
 
+// #3893: no thread stays parked after a search ends, and the next search starts one again.
+TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenASearchIsDoneAndANewSearchStartsOneAgain)
+{
+    // A reader that counts its reads under a lock: the worker thread reads while this one counts. Released up front,
+    // so it never holds a read.
+    auto files = std::make_unique<HeldOpenFiles>();
+    HeldOpenFiles& mock = *files;
+    mock.release();
+    m_Dialog->setReaders(std::move(files), nullptr, {.openFiles = true, .modules = false, .authorize = false});
+    EXPECT_FALSE(m_Dialog->workerRunning()) << "no worker before a first search";
+
+    const auto framesUntilRetired = [this]
+    {
+        for (int i = 0; i < MAX_FRAMES && (m_Dialog->workerRunning() || m_Dialog->searching()); ++i)
+        {
+            static_cast<void>(frame());
+            std::this_thread::sleep_for(10ms);
+        }
+    };
+
+    search("report");
+    framesUntilRetired();
+    EXPECT_FALSE(m_Dialog->searching());
+    EXPECT_FALSE(m_Dialog->workerRunning()) << "the search is done and nothing is queued: its thread ends";
+    const int firstReads = mock.reads();
+    EXPECT_GT(firstReads, 0);
+
+    // The next search still runs, on a thread made for it.
+    search("again");
+    for (int i = 0; i < MAX_FRAMES && mock.reads() == firstReads; ++i)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_GT(mock.reads(), firstReads) << "a later search still runs";
+    framesUntilRetired();
+    EXPECT_FALSE(m_Dialog->workerRunning());
+}
+
+// #3893: a search that ends while the dialog is closed still frees its thread, without the dialog being reopened.
+TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenTheSearchFinishesWithTheDialogClosed)
+{
+    auto reader = std::make_unique<HeldOpenFiles>();
+    HeldOpenFiles& held = *reader;
+    m_Dialog->setReaders(std::move(reader), nullptr, {.openFiles = true, .modules = false, .authorize = false});
+
+    search("report");
+    ASSERT_TRUE(held.waitForRead()) << "the search never began reading";
+    ASSERT_TRUE(m_Dialog->workerRunning());
+
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
+    static_cast<void>(frame());
+    ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
+    static_cast<void>(frame());
+    static_cast<void>(frame());
+    ASSERT_EQ(ImGui::GetTopMostPopupModal(), nullptr) << "the dialog didn't close";
+    EXPECT_TRUE(m_Dialog->workerRunning()) << "the search is still reading: its thread stays";
+
+    held.release();
+    for (int i = 0; i < MAX_FRAMES && m_Dialog->workerRunning(); ++i)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_FALSE(m_Dialog->workerRunning()) << "the search finished with the dialog closed: its thread ends";
+}
+
 // A process the OS refused, with a reader that can read as an administrator: the status line counts it and offers the
 // administrator's search, which reads only that process, authorized, and lists what it held.
 TEST_F(FindHandlesDialogRenderTest, ARefusedProcessIsSearchedAgainAsAnAdministrator)

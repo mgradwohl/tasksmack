@@ -147,6 +147,10 @@ class FindHandlesDialog
     /// flight (a search that couldn't even publish its failure still ends when its job does, #3335).
     [[nodiscard]] bool searching() const noexcept;
 
+    /// Whether the search worker (and so its thread) is live: made with a search, ended once the search's job has
+    /// returned and nothing is queued (#3893), made again by the next one. For tests.
+    [[nodiscard]] bool workerRunning() const noexcept;
+
   private:
     /// One search: what the worker runs.
     struct SearchJob
@@ -163,6 +167,9 @@ class FindHandlesDialog
     /// Whether the worker has a job queued or in flight. The queue first: a job moves from it to in flight under
     /// one lock, so reading in this order never misses one between the two.
     [[nodiscard]] bool jobActive() const noexcept;
+    /// Ends the worker's thread once its job has returned with nothing queued, so none sits parked between searches
+    /// (#3893). The UI thread's: close() doesn't wait, and the worker is joined when the next search replaces it.
+    void retireIdleWorker() noexcept;
     /// Ends the search just begun as one that couldn't start, so the status line says so.
     void failToStart() noexcept;
     /// Starts a search of @p processes on the worker, reading @p sources of each (empty: both); @p start carries the query and

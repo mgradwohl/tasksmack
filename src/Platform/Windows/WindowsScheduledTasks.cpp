@@ -13,7 +13,6 @@
 #include <windows.h>
 #include <objbase.h>
 #include <oleauto.h>
-#include <sddl.h>
 #include <taskschd.h>
 // clang-format on
 
@@ -25,12 +24,10 @@
 #include "ComPtr.h"
 #include "ComTypes.h"
 #include "WinString.h"
-#include "WindowsHandles.h"
+#include "WindowsElevation.h"
 #include "WindowsScheduledTasksMath.h"
 
-#include <array>
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
@@ -50,15 +47,6 @@ namespace Math = ScheduledTaskMath;
 static_assert(Math::TRIGGER_BOOT == TASK_TRIGGER_BOOT);
 static_assert(Math::TRIGGER_LOGON == TASK_TRIGGER_LOGON);
 static_assert(static_cast<HRESULT>(Math::HRESULT_ACCESS_DENIED) == E_ACCESSDENIED);
-
-/// Frees what the security calls allocate with LocalAlloc.
-struct LocalFreer
-{
-    void operator()(void* memory) const noexcept
-    {
-        LocalFree(memory);
-    }
-};
 
 /// A string property read through @p getter; empty when the call fails.
 template<typename Interface, typename Getter> [[nodiscard]] std::string readString(Interface* object, Getter getter)
@@ -263,40 +251,18 @@ class TaskSchedulerApi final : public ScheduledTaskApi
 
     [[nodiscard]] std::vector<std::string> currentUserNames() override
     {
+        // The current token's user (WindowsElevation.h, #3864): its SID's text, then DOMAIN\user and user,
+        // named with buffers as long as the names need, so a name past 256 characters still matches.
         std::vector<std::string> names;
-        UniqueHandle token;
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+        if (const auto sid = currentUserSidText(); sid.has_value())
         {
-            return names;
+            names.push_back(WinString::wideToUtf8(*sid));
         }
-        DWORD bytes = 0;
-        static_cast<void>(GetTokenInformation(token.get(), TokenUser, nullptr, 0, &bytes));
-        if (bytes == 0)
+        if (const std::optional<AccountName> account = currentUserName(); account.has_value())
         {
-            return names;
-        }
-        std::vector<std::byte> buffer(bytes);
-        if (GetTokenInformation(token.get(), TokenUser, buffer.data(), bytes, &bytes) == FALSE)
-        {
-            return names;
-        }
-        const PSID sid = reinterpret_cast<const TOKEN_USER*>(buffer.data())->User.Sid;
-        LPWSTR sidText = nullptr;
-        if (ConvertSidToStringSidW(sid, &sidText) != FALSE)
-        {
-            const std::unique_ptr<wchar_t, LocalFreer> owned(sidText);
-            names.push_back(WinString::wideToUtf8(owned.get()));
-        }
-        std::array<wchar_t, 256> name{};
-        std::array<wchar_t, 256> domain{};
-        auto nameChars = static_cast<DWORD>(name.size());
-        auto domainChars = static_cast<DWORD>(domain.size());
-        SID_NAME_USE use = SidTypeUnknown;
-        if (LookupAccountSidW(nullptr, sid, name.data(), &nameChars, domain.data(), &domainChars, &use) != FALSE)
-        {
-            const std::string user = WinString::wideToUtf8(name.data());
-            names.push_back(WinString::wideToUtf8(domain.data()) + "\\" + user);
-            names.push_back(user);
+            std::string user = WinString::wideToUtf8(account->user);
+            names.push_back(WinString::wideToUtf8(account->domain) + "\\" + user);
+            names.push_back(std::move(user));
         }
         return names;
     }
