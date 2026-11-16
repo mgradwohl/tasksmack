@@ -2810,7 +2810,8 @@ def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
 @unittest.skipUnless(shutil.which("git"), "git not available")
 class CiRevertGuardTests(unittest.TestCase):
     """#3986: ci.yml's advisory revert guard runs on every pull request and merge group, docs-only ones too, and its
-    step warns, passes and writes the summary for a change that reverts a recent merge; the description is data."""
+    step warns, passes and writes the summary for a change that reverts a recent merge; the description is data. It
+    runs the base branch's copy of the guard, so a branch made before the guard merged is still checked (#4002)."""
 
     WORKFLOW = WORKFLOWS / "ci.yml"
     JOB = "revert-guard"
@@ -2868,6 +2869,26 @@ class CiRevertGuardTests(unittest.TestCase):
             self.assertIn("::warning title=Revert guard::This change removes 8 line(s)", result.stdout)
             self.assertIn("feat: recent lines (#901)", summary.read_text(encoding="utf-8"))
             self.assertFalse(marker.exists(), "the description was run as a command")
+
+            # A branch made before the guard merged has no tools/check-no-reverts.py of its own (#4002): the base's
+            # copy runs, so the job still checks it and doesn't exit 2.
+            git("rm", "-q", "tools/check-no-reverts.py")
+            git("commit", "-q", "-m", "fix: an old branch without the guard (#903)")
+            (repo / "tools").mkdir(exist_ok=True)
+            env_step = {"BASE_SHA": base, "HEAD_SHA": git("rev-parse", "HEAD"), "PR_LABELS": "", "RUNNER_TEMP": posix(root),
+                        "GITHUB_STEP_SUMMARY": posix(summary), "PYTHONUTF8": "1", "PR_BODY": ""}
+            result = run_bash(script, root, env_step)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("::warning title=Revert guard::This change removes 8 line(s)", result.stdout)
+
+            # A base branch without the guard (an old release branch): nothing to run, and the job passes.
+            git("switch", "-q", "--orphan", "old-release")
+            (repo / "README.md").write_text("old\n", encoding="utf-8")
+            git("add", "README.md")
+            git("commit", "-q", "-m", "an old release")
+            result = run_bash(script, root, {**env_step, "BASE_SHA": git("rev-parse", "HEAD")})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn("not run: the base branch has no tools/check-no-reverts.py", result.stdout)
 
 
 @unittest.skipUnless(shutil.which("git"), "git not available")
