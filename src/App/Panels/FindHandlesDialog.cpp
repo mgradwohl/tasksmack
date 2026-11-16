@@ -229,6 +229,21 @@ bool FindHandlesDialog::jobActive() const noexcept
     return m_Worker != nullptr && (m_Worker->queued() > 0 || m_Worker->busy());
 }
 
+bool FindHandlesDialog::workerRunning() const noexcept
+{
+    return m_Worker != nullptr && m_Worker->state() == Domain::WorkerState::Running;
+}
+
+void FindHandlesDialog::retireIdleWorker() noexcept
+{
+    // Submits come from this thread only, so a worker with nothing queued or in flight has no job coming; its last
+    // generation is published before the job returns, and latest() stays readable after close().
+    if (workerRunning() && !jobActive())
+    {
+        static_cast<void>(m_Worker->close());
+    }
+}
+
 bool FindHandlesDialog::searching() const noexcept
 {
     // The job first: it ends after its last publication, so once it has, that publication is the one read.
@@ -502,6 +517,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
     }
 
     const bool workerReturned = !jobActive(); // before the load, as in searching()
+    retireIdleWorker();                       // its thread isn't kept parked until the next search (#3893)
     const std::shared_ptr<const SearchPublication> current = publication();
     const SearchPublication empty;
     const SearchPublication& shown = current != nullptr ? *current : empty;

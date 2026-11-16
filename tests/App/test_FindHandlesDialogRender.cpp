@@ -201,6 +201,42 @@ TEST_F(FindHandlesDialogRenderTest, StopEndsASearchBeforeItsOtherProcessesAreRea
     EXPECT_FALSE(m_Dialog->searching());
 }
 
+// #3893: no thread stays parked after a search ends, and the next search starts one again.
+TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenASearchIsDoneAndANewSearchStartsOneAgain)
+{
+    auto files = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
+    TestMocks::MockProcessOpenFilesReader& mock = *files;
+    m_Dialog->setReaders(std::move(files), nullptr, {.openFiles = true, .modules = false, .authorize = false});
+    EXPECT_FALSE(m_Dialog->workerRunning()) << "no worker before a first search";
+
+    const auto framesUntilRetired = [this]
+    {
+        for (int i = 0; i < MAX_FRAMES && (m_Dialog->workerRunning() || m_Dialog->searching()); ++i)
+        {
+            static_cast<void>(frame());
+            std::this_thread::sleep_for(10ms);
+        }
+    };
+
+    search("report");
+    framesUntilRetired();
+    EXPECT_FALSE(m_Dialog->searching());
+    EXPECT_FALSE(m_Dialog->workerRunning()) << "the search is done and nothing is queued: its thread ends";
+    const int firstReads = mock.readCount();
+    EXPECT_GT(firstReads, 0);
+
+    // The next search still runs, on a thread made for it.
+    search("again");
+    for (int i = 0; i < MAX_FRAMES && mock.readCount() == firstReads; ++i)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_GT(mock.readCount(), firstReads) << "a later search still runs";
+    framesUntilRetired();
+    EXPECT_FALSE(m_Dialog->workerRunning());
+}
+
 // A process the OS refused, with a reader that can read as an administrator: the status line counts it and offers the
 // administrator's search, which reads only that process, authorized, and lists what it held.
 TEST_F(FindHandlesDialogRenderTest, ARefusedProcessIsSearchedAgainAsAnAdministrator)

@@ -63,6 +63,28 @@ TEST(SessionAccountCheckTest, TheSameAccountIsAnAnswerToo)
     EXPECT_EQ(check.result(), std::optional<Platform::SessionAccount>(Platform::SessionAccount{}));
 }
 
+// #3893: the one read is done, so no thread stays parked for as long as Settings holds the check.
+TEST(SessionAccountCheckTest, TheWorkersThreadEndsOnceTheAnswerIsTaken)
+{
+    std::promise<void> release;
+    std::shared_future<void> released = release.get_future().share();
+    SessionAccountCheck check(
+        [&]
+        {
+            released.wait();
+            return admin();
+        });
+    EXPECT_TRUE(check.workerRunning()) << "the read is still going";
+    EXPECT_EQ(check.result(), std::nullopt);
+    EXPECT_TRUE(check.workerRunning()) << "no answer yet: the worker stays";
+    release.set_value();
+    EXPECT_EQ(check.wait(), admin());
+    EXPECT_FALSE(check.workerRunning()) << "the answer is taken: the worker is closed";
+    EXPECT_EQ(check.result(), std::optional<Platform::SessionAccount>(admin())) << "the answer outlives the worker";
+    EXPECT_EQ(check.wait(), admin());
+    EXPECT_FALSE(SessionAccountCheck::known(admin())->workerRunning());
+}
+
 TEST(SessionAccountCheckTest, AReadThatThrowsCountsAsTheSameAccount)
 {
     SessionAccountCheck check([] -> Platform::SessionAccount { throw std::runtime_error("no token"); });
