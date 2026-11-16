@@ -262,6 +262,19 @@ TEST_F(WindowsFileLocationTest, OpenFileLocationShowsTheProcesssImagePathExactly
     EXPECT_EQ(FakeShell::selected.front(), FakeProcess::imagePath);
 }
 
+// #3863: the path is read through Windows::processImagePath(), so one of MAX_PATH characters or more, which
+// a MAX_PATH buffer fails with ERROR_INSUFFICIENT_BUFFER, is read whole with the longest buffer.
+TEST_F(WindowsFileLocationTest, OpenFileLocationShowsAnImagePathLongerThanMaxPathWhole)
+{
+    FakeProcess::imagePath = L"C:\\" + std::wstring(400, L'd') + L"\\app.exe";
+    WindowsProcessActions actions(FakeProcess::functions());
+    const ProcessActionResult result = actions.openFileLocation(TARGET);
+
+    EXPECT_TRUE(result.success) << result.errorMessage;
+    ASSERT_EQ(FakeShell::selected.size(), 1U);
+    EXPECT_EQ(FakeShell::selected.front(), FakeProcess::imagePath);
+}
+
 TEST_F(WindowsFileLocationTest, OpenFileLocationFallsBackToExplorerWithTheImagePathQuoted)
 {
     FakeShell::selectResult = HRESULT_FROM_WIN32(ERROR_FILE_NOT_FOUND);

@@ -46,6 +46,7 @@
 #include "WindowsImageFile.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
+#include "WindowsProcessIdentity.h"
 #include "WindowsProcessMachine.h"
 #include "WindowsProcessMachineMath.h"
 #include "WindowsSignatureCheck.h"
@@ -214,29 +215,7 @@ getProcessOwner(const TokenFunctions& fns, HANDLE hProcess, AccountNameCache* na
     {
         return {};
     }
-
-    // Start at MAX_PATH and grow up to the Windows long-path limit (32767 chars).
-    // QueryFullProcessImageNameW sets the buffer size to the number of chars written
-    // (excluding the null terminator) on success, or leaves it unchanged on failure.
-    constexpr DWORD kInitialSize = MAX_PATH;
-    constexpr DWORD kMaxLongPath = 32767;
-
-    std::wstring path(kInitialSize, L'\0');
-    for (;;)
-    {
-        auto size = static_cast<DWORD>(path.size());
-        if (fns.queryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
-        {
-            path.resize(size);
-            return path;
-        }
-        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || path.size() >= kMaxLongPath)
-        {
-            return {};
-        }
-        const DWORD newSize = std::min(static_cast<DWORD>(path.size()) * 2, kMaxLongPath);
-        path.assign(newSize, L'\0');
-    }
+    return Windows::processImagePath(hProcess, fns.queryFullProcessImageNameW).value_or(std::wstring{});
 }
 
 // The information class is passed as a ULONG, PROCESSINFOCLASS's representation, so the extended
