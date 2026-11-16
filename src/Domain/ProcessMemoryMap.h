@@ -6,8 +6,8 @@
 // never per frame. Both platforms' views use them.
 //
 // A size the platform didn't measure stays absent in a total: a total is absent only when no mapping in it
-// had that size, so Windows' rows, which carry none of Linux's smaps sizes, sum to absent ones rather than
-// to zeros a view would show as "0 B".
+// had that size, so Windows' rows, which carry no PSS or swap (and no resident, private or shared size where
+// the process granted only the limited right), sum to absent ones rather than to zeros a view would show as "0 B".
 
 #include "Platform/IProcessMemoryMap.h"
 
