@@ -588,6 +588,9 @@ auto runApp(const App::LaunchOptions& launch) -> int
         // what actually advances ImGui::GetFrameCount() -- ShellLayer::onRender() reads that count
         // to publish RenderMetrics' per-frame totals (see #875) and needs the *current* frame's
         // value, not the previous one.
+        // The saved Font size and Interface scale go to Theme first (#3876), so UILayer::onAttach() builds the fonts and
+        // style at them once, instead of at Theme's defaults and again on the first frame.
+        userConfig.applyFontSettings();
         appRef.pushLayer<UI::UILayer>();
 
         // Push title bar layer (custom window chrome) -- skipped when native OS decorations are in
