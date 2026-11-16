@@ -25,6 +25,7 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/ThreadName.h"
 #include "ProcessEnvironmentView.h"
+#include "SectionCaches.h"
 #include "UI/Format.h"
 
 #include <algorithm>
@@ -151,8 +152,7 @@ class ProcessModulesView
         m_Detail.clear();
         m_Truncated = false;
         m_Rows.clear();
-        m_FilteredRows.clear();
-        m_FilterDirty = true;
+        m_Filtered.reset();
     }
 
     /// Takes in a read: its status and, for Ok, its modules formatted and sorted by the current order.
@@ -205,20 +205,13 @@ class ProcessModulesView
     /// rows or the filter change.
     [[nodiscard]] std::span<const std::size_t> filteredRows()
     {
-        if (m_FilterDirty || m_FilterKey != m_Filter)
-        {
-            m_FilteredRows.clear();
-            for (std::size_t i = 0; i < m_Rows.size(); ++i)
-            {
-                if (Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].module.path, m_Filter))
-                {
-                    m_FilteredRows.push_back(i);
-                }
-            }
-            m_FilterKey = m_Filter;
-            m_FilterDirty = false;
-        }
-        return m_FilteredRows;
+        return m_Filtered.get(m_Rows.size(),
+                              m_Filter,
+                              [this](std::size_t i)
+                              {
+                                  return Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) ||
+                                         Platform::containsIgnoreCase(m_Rows[i].module.path, m_Filter);
+                              });
     }
 
     /// Whether any module has a version: the Version column is left out when none does (Linux).
@@ -290,7 +283,7 @@ class ProcessModulesView
                                      }
                                      return compareOn(Detail::ModulesColumn::Base, a, b) < 0;
                                  });
-        m_FilterDirty = true;
+        m_Filtered.markDirty();
     }
 
     void renderTable();
@@ -303,11 +296,8 @@ class ProcessModulesView
     Detail::ModulesColumn m_SortColumn = Detail::ModulesColumn::Name;
     bool m_SortAscending = true;
     std::string m_Filter;
-    std::string m_FilterKey; // the filter m_FilteredRows was built for
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
-    std::string m_CountLabel;            // the header with the count: "Modules (87)"
-    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    Detail::FilteredRows m_Filtered; // the rows the filter lets through, cached (#3887)
+    Detail::CountedHeader m_Header;  // the header with the count, formatted when it changes
 
     // The read in flight, its cadence and the "Authenticate to read" request (#2309). Destroying the
     // view waits for at most one read.

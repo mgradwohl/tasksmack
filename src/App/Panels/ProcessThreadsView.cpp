@@ -16,7 +16,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <format>
 #include <optional>
 #include <span>
 #include <string>
@@ -43,13 +42,8 @@ void ProcessThreadsView::render(bool hasThreads)
     }
     // The count, formatted only when it changes; the ### keeps the header's ID (and its open state).
     const bool listed = m_HasRead && m_Status == Platform::ThreadsReadStatus::Ok;
-    if (listed && m_LabelCount != m_Rows.size())
-    {
-        m_LabelCount = m_Rows.size();
-        m_CountLabel = std::format(ICON_FA_LIST "  Threads ({})###ProcessThreads", m_LabelCount);
-    }
     // Collapsed by default: nothing is read until it is opened.
-    if (!ImGui::CollapsingHeader(listed ? m_CountLabel.c_str() : ICON_FA_LIST "  Threads###ProcessThreads"))
+    if (!ImGui::CollapsingHeader(m_Header.label(listed, m_Rows.size(), ICON_FA_LIST "  Threads", "###ProcessThreads")))
     {
         return;
     }

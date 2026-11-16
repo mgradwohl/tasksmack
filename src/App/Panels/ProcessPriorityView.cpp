@@ -352,8 +352,13 @@ void ProcessPriorityView::renderIoPriority(Platform::IProcessActions* actions,
 {
     if (capabilities.canSetIoPriority)
     {
-        m_IoPriorityView.render(
-            actions, currentNice, target, capabilities.canSetRealtimeIoPriority, capabilities.ioPriorityHints, schedPolicy);
+        m_IoPriorityView.render(actions,
+                                currentNice,
+                                target,
+                                capabilities.canSetRealtimeIoPriority,
+                                capabilities.canAuthorizeInteractively,
+                                capabilities.ioPriorityHints,
+                                schedPolicy);
     }
 }
 

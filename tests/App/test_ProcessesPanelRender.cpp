@@ -370,13 +370,13 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
     panel->onDetach();
 }
 
-// #3566's review: the batch I/O priority dialog asks the actions what they can do when it opens, not the copy taken
-// when the platform was adopted. On Linux, authenticating later connects the helper, which can set the Realtime
-// class, so the slider then offers Realtime as Process Details' does.
-TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogOffersRealtimeOnceTheActionsCanSetIt)
+// #3566's review, #3889: where the actions can set the Realtime I/O class (an Administrator session, #3580), the
+// batch I/O priority dialog's slider offers Realtime as Process Details' does. It takes that from the copy read when
+// the platform was adopted, and opening it asks the actions nothing: since #3580 nothing changes after that.
+TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogOffersRealtimeWhereTheActionsCanSetIt)
 {
     TestMocks::MockProcessActions* actions = nullptr;
-    auto panel = std::make_unique<ProcessesPanel>(
+    const auto panel = std::make_unique<ProcessesPanel>(
         [&actions]
         {
             auto probe = std::make_unique<TestMocks::MockProcessProbe>();
@@ -389,7 +389,7 @@ TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogOffersRealtimeOnceTheAc
                 probe->withProcess(counters);
             }
             auto mock = std::make_unique<TestMocks::MockProcessActions>();
-            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetIoPriority = true});
+            mock->setCapabilities({.canTerminate = true, .canKill = true, .canSetIoPriority = true, .canSetRealtimeIoPriority = true});
             actions = mock.get();
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
@@ -399,9 +399,9 @@ TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogOffersRealtimeOnceTheAc
     panel->onEvent(shown);
     ASSERT_NE(actions, nullptr);
     renderUntilLoaded(*panel);
+    const int asked = actions->actionCapabilitiesCount();
+    ASSERT_GE(asked, 1) << "read when the platform was built";
 
-    // As the helper connecting does after adoption: now the actions can set Realtime.
-    actions->setCapabilities({.canTerminate = true, .canKill = true, .canSetIoPriority = true, .canSetRealtimeIoPriority = true});
     selectAll(*panel);
     ASSERT_EQ(panel->selectionCount(), 3U);
     ASSERT_TRUE(openARowMenu(*panel).has_value());
@@ -410,7 +410,8 @@ TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogOffersRealtimeOnceTheAc
     static_cast<void>(renderAndCapture(*panel));
     EXPECT_TRUE(panel->batchIoPriorityDialogForTesting().isPending());
     EXPECT_EQ(panel->batchIoPriorityDialogForTesting().count(), 3U);
-    EXPECT_TRUE(panel->batchIoPriorityDialogForTesting().realtimeSettable()) << "asked when the dialog opened";
+    EXPECT_TRUE(panel->batchIoPriorityDialogForTesting().realtimeSettable());
+    EXPECT_EQ(actions->actionCapabilitiesCount(), asked) << "opening the dialog asked the actions nothing";
     panel->onDetach();
 }
 
