@@ -316,9 +316,8 @@ struct AppMembership
     [[nodiscard]] bool operator==(const AppMembership&) const = default;
 };
 
-/// @p proc's App membership, given its group @p key from appKeys() and the generation's @p labels.
-[[nodiscard]] inline AppMembership
-appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const std::unordered_map<std::string, std::string>& labels)
+/// @p proc's App membership, given its group @p key (appKeys()) and the group's header @p label.
+[[nodiscard]] inline AppMembership appMembershipNamed(const Domain::ProcessSnapshot& proc, const std::string& key, std::string label)
 {
     if (key.empty())
     {
@@ -326,8 +325,7 @@ appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const
     }
     AppMembership membership;
     membership.key = key;
-    const auto named = labels.find(key);
-    membership.label = (named != labels.end()) ? named->second : key;
+    membership.label = std::move(label);
     membership.inherited = ownAppKey(proc) != key;
     if (membership.inherited)
     {
@@ -344,16 +342,123 @@ appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const
     return membership;
 }
 
-/// The App membership of the process at @p index in @p snapshots, from the whole generation: what
-/// appKeys() and appGroupLabels() make of it, as the table's Group: App does. Empty past the end.
+/// @p proc's App membership, given its group @p key from appKeys() and the generation's @p labels.
+[[nodiscard]] inline AppMembership
+appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const std::unordered_map<std::string, std::string>& labels)
+{
+    if (key.empty())
+    {
+        return {};
+    }
+    const auto named = labels.find(key);
+    return appMembershipNamed(proc, key, (named != labels.end()) ? named->second : key);
+}
+
+/// Whether @p proc's own app (ownAppKey()) is @p key, without building the key where it needn't.
+[[nodiscard]] inline bool ownAppKeyIs(const Domain::ProcessSnapshot& proc, std::string_view key)
+{
+    if (!proc.packageFamily.empty())
+    {
+        return proc.packageFamily == key;
+    }
+    if (!proc.appUserModelId.empty())
+    {
+        const std::string_view id = proc.appUserModelId;
+        const std::size_t bang = id.find('!');
+        return ((bang != std::string_view::npos && bang > 0) ? id.substr(0, bang) : id) == key;
+    }
+    return !proc.serviceNames.empty() && appFromUnit(proc.serviceNames[0]) == key;
+}
+
+/// The App membership of the process at @p index in @p snapshots: what appKeys() and appGroupLabels() make
+/// of it, as the table's Group: App does, but found from that one process (#3885). Its key from its own
+/// app, else by walking up its parents as appKeys() does; its label by one scan for that key. No map of
+/// the generation is built, so Process Details' App row costs a few steps up and one pass of
+/// comparisons, not two hash maps of every process's strings. Empty past the end.
 [[nodiscard]] inline AppMembership appMembershipAt(const std::vector<Domain::ProcessSnapshot>& snapshots, std::size_t index)
 {
     if (index >= snapshots.size())
     {
         return {};
     }
-    const std::vector<std::string> keys = appKeys(snapshots);
-    return appMembership(snapshots[index], keys[index], appGroupLabels(snapshots));
+    // appKeys()' parentOf(), found by a scan: the first process with the parent PID, as its byPid keeps.
+    const auto parentOf = [&snapshots](std::size_t child) -> std::optional<std::size_t>
+    {
+        const Domain::ProcessSnapshot& proc = snapshots[child];
+        if (proc.parentPid == proc.pid)
+        {
+            return std::nullopt;
+        }
+        const auto it = std::ranges::find(snapshots, proc.parentPid, &Domain::ProcessSnapshot::pid);
+        if (it == snapshots.end())
+        {
+            return std::nullopt;
+        }
+        const auto parentIndex = static_cast<std::size_t>(std::distance(snapshots.begin(), it));
+        if (parentIndex == child)
+        {
+            return std::nullopt;
+        }
+        const Domain::ProcessSnapshot& parent = *it;
+        if (parent.startTimeTicks != 0 && proc.startTimeTicks != 0 && parent.startTimeTicks > proc.startTimeTicks)
+        {
+            return std::nullopt; // Started after the child: a process that reused the parent's PID
+        }
+        return parentIndex;
+    };
+
+    // Up through the processes with no app of their own, as appKeys() walks: to one with an app, one with no
+    // parent listed, or one whose parent is already on the walk (a PID loop).
+    std::vector<std::size_t> chain;
+    std::size_t current = index;
+    std::string key = ownAppKey(snapshots[current]);
+    while (key.empty())
+    {
+        const std::optional<std::size_t> parent = parentOf(current);
+        if (!parent.has_value() || *parent == current || std::ranges::find(chain, *parent) != chain.end())
+        {
+            break;
+        }
+        chain.push_back(current);
+        current = *parent;
+        key = ownAppKey(snapshots[current]);
+    }
+    // Back down: each follows the process above it where appKeys()' rule lets it, else is in no app.
+    const bool fromPackage = ownAppIsPackage(snapshots[current]);
+    for (std::size_t step = chain.size(); step-- > 0;)
+    {
+        const std::size_t child = chain[step];
+        const std::size_t above = (step + 1 < chain.size()) ? chain[step + 1] : current;
+        if (key.empty() || (!fromPackage && snapshots[child].name != snapshots[above].name))
+        {
+            return {};
+        }
+    }
+    if (key.empty())
+    {
+        return {};
+    }
+
+    // The group's header, as appGroupLabels() names it: the first process that is the app itself with the
+    // Start menu's name, else the first that is the app.
+    const Domain::ProcessSnapshot* first = nullptr;
+    for (const Domain::ProcessSnapshot& proc : snapshots)
+    {
+        if (!ownAppKeyIs(proc, key))
+        {
+            continue;
+        }
+        if (!proc.appName.empty())
+        {
+            first = &proc;
+            break;
+        }
+        if (first == nullptr)
+        {
+            first = &proc;
+        }
+    }
+    return appMembershipNamed(snapshots[index], key, (first != nullptr) ? appGroupLabel(*first, key) : key);
 }
 
 /// The group @p proc belongs to under @p mode, or empty for none (Ungrouped). By App it is its own app
