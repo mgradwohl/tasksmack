@@ -191,17 +191,52 @@ void ProcessesPanel::renderBatchIoPriorityDialog()
         showBatchOutcome({.message = {.ok = false, .text = "Process actions unavailable"}, .anySucceeded = false});
         return;
     }
+    // A process Process Details is changing the I/O priority of is left out, and the result line says so (#3884),
+    // as the nice batch does (#3467): set now as well, the older of the two changes could land last.
+    std::vector<ProcessBatch::BatchTarget> targets;
+    std::size_t skipped = 0;
+    for (const ProcessBatch::BatchTarget& target : m_BatchIoPriorityDialog.targets())
+    {
+        if (ioPriorityHeldElsewhere(target.target))
+        {
+            ++skipped;
+        }
+        else
+        {
+            targets.push_back(target);
+        }
+    }
+    if (targets.empty())
+    {
+        showBatchOutcome({
+            .message =
+                {
+                    .ok = false,
+                    .text = std::format("I/O priority not set{}", ProcessesPanelActions::batchPrioritySkippedText(skipped, /*io=*/true)),
+                },
+            .anySucceeded = false,
+        });
+        return;
+    }
     if (m_BatchRun.busy())
     {
         return; // startIoPriority() starts nothing while another batch runs, and the menu offers none meanwhile
     }
-    std::vector<ProcessBatch::BatchTarget> targets(m_BatchIoPriorityDialog.targets().begin(), m_BatchIoPriorityDialog.targets().end());
+    std::vector<Platform::ProcessTarget> identities;
+    identities.reserve(targets.size());
+    for (const ProcessBatch::BatchTarget& target : targets)
+    {
+        identities.push_back(target.target);
+    }
     if (std::optional<ProcessBatch::BatchRunOutcome> failed =
             m_BatchRun.startIoPriority(*m_ProcessActions, std::move(targets), *priority, m_OwnPid);
         failed.has_value())
     {
         showBatchOutcome(std::move(*failed));
+        return;
     }
+    m_BatchIoPriorityTargets = std::move(identities);
+    m_BatchIoPrioritySkipped = skipped;
 }
 
 void ProcessesPanel::showBatchOutcome(ProcessBatch::BatchRunOutcome outcome)
