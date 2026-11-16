@@ -743,6 +743,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsStartAtLogin.h
         src/Platform/Windows/WindowsSessionAccount.h
         src/Platform/Windows/ComScope.h
+        src/Platform/Windows/ComTypes.h
     )
 endif()
 

@@ -925,6 +925,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the WTS sessions reader and actions through fakes, and this machine's sessions (#3076)
     Platform/test_WindowsProcessIdentity.cpp
+    Platform/test_ComTypes.cpp  # the BSTR, VARIANT and PROPVARIANT owners: ownership, move, clear on destruct and put() (#3865)
     Platform/test_WindowsProcessConnections.cpp
     Platform/test_WindowsSystemConnectionsReader.cpp  # the Connections tab's reader through fakes, and a real loopback pair in CI (#3356)
     Platform/test_WindowsTcpClose.cpp  # Close connection through a fake SetTcpEntry, and a real loopback reset in CI (#3358)
