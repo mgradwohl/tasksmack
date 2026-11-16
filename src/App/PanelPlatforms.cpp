@@ -185,25 +185,22 @@ StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* /*scena
     return {.probe = Platform::makeStartupProbe(), .actions = Platform::makeStartupActions(), .account = sessionAccountCheck()};
 }
 
-std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* /*scenario*/)
+std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoProbe(const Synthetic::Scenario* /*scenario*/)
 {
-    // No helper reads firmware files since #3580: a Linux run as root reads them itself.
+    // The platform's, in every run: no helper reads any of it since #3580 (a Linux run as root reads the firmware
+    // files itself), so the System Information tab and the sensor sampler each take one of these (#3881).
     return Platform::makeSystemInfoProbe();
 }
 
-std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive)
+std::shared_ptr<Platform::IHttpsClient> makeHttpsClient(const Synthetic::Scenario* scenario, bool testHookActive)
 {
-    // No request from a made-up machine or an unattended test run (#3093): the check isn't offered there.
+    // No request from a made-up machine or an unattended test run (#3093, #3094): the update check and Look up on
+    // VirusTotal aren't offered there.
     if (scenario != nullptr || testHookActive)
     {
         return nullptr;
     }
     return Platform::makeHttpsClient();
-}
-
-std::shared_ptr<Platform::IHttpsClient> makeLookupClient(const Synthetic::Scenario* scenario, bool testHookActive)
-{
-    return makeUpdateCheckClient(scenario, testHookActive); // the same rule: no request from a made-up machine or a test run
 }
 
 std::shared_ptr<Platform::IStartAtLogin> makeStartAtLoginEntry(const Synthetic::Scenario* scenario, bool testHookActive)
@@ -227,13 +224,6 @@ std::shared_ptr<SessionAccountCheck> sessionAccountCheck()
         shared = check;
     }
     return check;
-}
-
-std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* /*scenario*/)
-{
-    // Unbrokered: reading sensors needs no privilege, and this runs on the sensor sampler's thread (#2737),
-    // where the shared broker (UI-thread state) mustn't be touched.
-    return Platform::makeSystemInfoProbe();
 }
 
 std::shared_ptr<Platform::ISystemInfoProbe> makeCrashHistoryProbe(const Synthetic::Scenario* scenario)
