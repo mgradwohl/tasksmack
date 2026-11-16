@@ -43,6 +43,7 @@
 #include "WindowsConversions.h"
 #include "WindowsElevation.h"
 #include "WindowsHandles.h"
+#include "WindowsImageFile.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
 #include "WindowsProcessMachine.h"
@@ -487,70 +488,23 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return Domain::Numeric::narrowOr<std::int32_t>(count, std::int32_t{0});
 }
 
-/// Read the CompanyName from a PE file's version info (publisher/vendor).
-/// Enumerates all language/codepage pairs from VarFileInfo\Translation so that
-/// localised executables with non-English version resources are handled correctly.
-/// Results are cached by executable path; version resources do not change at runtime.
-/// Returns empty string if not available or on failure.
-[[nodiscard]] std::string getFilePublisher(const std::wstring& imagePath)
+/// The CompanyName in the version info of the PE file at @p imagePath (its publisher or vendor), uncached.
+/// Enumerates all language/codepage pairs from VarFileInfo\Translation so that localised executables with
+/// non-English version resources are handled correctly. Empty if not available or on failure.
+[[nodiscard]] std::string readVersionCompanyName(const std::wstring& imagePath)
 {
-    if (imagePath.empty())
-    {
-        return {};
-    }
-
-    // Cache publisher by executable path — version info is static for a given binary.
-    // Normalise to lowercase before lookup so that different-cased paths for the same
-    // binary (which QueryFullProcessImageNameW does not guarantee to be stable) share
-    // a single cache entry.
-    // Only cache lookups and inserts are serialised; the expensive version-info I/O
-    // is performed outside the lock so concurrent threads do not stall each other.
-    // Capped and cleared on overflow, matching PDHGPUProbeImpl::instanceCache in this same file
-    // family: an unbounded cache here would grow for the life of this long-running, background-
-    // resident process on a system with high churn of distinct executable paths (#775). The cap
-    // is approximate, not a hard ceiling: concurrent callers can each pass the size check before
-    // any of them clears/inserts, so the map can briefly exceed the limit by a handful of entries
-    // under contention -- acceptable for a soft memory-growth bound.
-    static constexpr std::size_t MAX_PUBLISHER_CACHE_ENTRIES = 16384;
-    static std::mutex s_cacheMutex;
-    static std::unordered_map<std::wstring, std::string> s_cache;
-    std::wstring cacheKey(imagePath);
-    std::ranges::transform(
-        cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
-    // Swapped out (not cleared) under the lock: swap is O(1), so the O(n) deallocation of up to
-    // MAX_PUBLISHER_CACHE_ENTRIES entries happens via this local's destructor after the lock is
-    // released, instead of stalling other threads' lookups for the duration of the clear.
-    std::unordered_map<std::wstring, std::string> overflowedCache;
-    {
-        std::scoped_lock const lock(s_cacheMutex);
-        if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
-        {
-            return it->second;
-        }
-        if (s_cache.size() > MAX_PUBLISHER_CACHE_ENTRIES)
-        {
-            // swap, not move-assign: guarantees s_cache is left empty (a moved-from map's state
-            // is otherwise valid-but-unspecified), so the cap reliably resets on every overflow.
-            std::swap(overflowedCache, s_cache);
-        }
-    }
-
     // GetFileVersionInfoSizeW requires a LPDWORD that receives an internal handle.
     // The handle is always set to 0 on Windows NT and later, but must be provided.
     DWORD unused = 0;
     const DWORD infoSize = GetFileVersionInfoSizeW(imagePath.c_str(), &unused);
     if (infoSize == 0)
     {
-        std::scoped_lock const lock(s_cacheMutex);
-        s_cache.try_emplace(cacheKey, std::string{});
         return {};
     }
 
     std::vector<BYTE> buffer(infoSize);
     if (GetFileVersionInfoW(imagePath.c_str(), 0, infoSize, buffer.data()) == 0)
     {
-        std::scoped_lock const lock(s_cacheMutex);
-        s_cache.try_emplace(cacheKey, std::string{});
         return {};
     }
 
@@ -602,7 +556,55 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     {
         result = queryCompanyName(L"\\StringFileInfo\\040904E4\\CompanyName");
     }
+    return result;
+}
 
+/// readVersionCompanyName() of @p imagePath, cached by executable path; version resources do not change at runtime.
+/// Returns empty string if not available or on failure.
+[[nodiscard]] std::string getFilePublisher(const std::wstring& imagePath)
+{
+    if (imagePath.empty())
+    {
+        return {};
+    }
+
+    // Cache publisher by executable path — version info is static for a given binary.
+    // Normalise to lowercase before lookup so that different-cased paths for the same
+    // binary (which QueryFullProcessImageNameW does not guarantee to be stable) share
+    // a single cache entry.
+    // Only cache lookups and inserts are serialised; the expensive version-info I/O
+    // is performed outside the lock so concurrent threads do not stall each other.
+    // Capped and cleared on overflow, matching PDHGPUProbeImpl::instanceCache in this same file
+    // family: an unbounded cache here would grow for the life of this long-running, background-
+    // resident process on a system with high churn of distinct executable paths (#775). The cap
+    // is approximate, not a hard ceiling: concurrent callers can each pass the size check before
+    // any of them clears/inserts, so the map can briefly exceed the limit by a handful of entries
+    // under contention -- acceptable for a soft memory-growth bound.
+    static constexpr std::size_t MAX_PUBLISHER_CACHE_ENTRIES = 16384;
+    static std::mutex s_cacheMutex;
+    static std::unordered_map<std::wstring, std::string> s_cache;
+    std::wstring cacheKey(imagePath);
+    std::ranges::transform(
+        cacheKey, cacheKey.begin(), [](wchar_t c) { return static_cast<wchar_t>(std::towlower(static_cast<wint_t>(c))); });
+    // Swapped out (not cleared) under the lock: swap is O(1), so the O(n) deallocation of up to
+    // MAX_PUBLISHER_CACHE_ENTRIES entries happens via this local's destructor after the lock is
+    // released, instead of stalling other threads' lookups for the duration of the clear.
+    std::unordered_map<std::wstring, std::string> overflowedCache;
+    {
+        std::scoped_lock const lock(s_cacheMutex);
+        if (const auto it = s_cache.find(cacheKey); it != s_cache.end())
+        {
+            return it->second;
+        }
+        if (s_cache.size() > MAX_PUBLISHER_CACHE_ENTRIES)
+        {
+            // swap, not move-assign: guarantees s_cache is left empty (a moved-from map's state
+            // is otherwise valid-but-unspecified), so the cap reliably resets on every overflow.
+            std::swap(overflowedCache, s_cache);
+        }
+    }
+
+    std::string result = readVersionCompanyName(imagePath);
     {
         std::scoped_lock const lock(s_cacheMutex);
         s_cache.try_emplace(cacheKey, result);
@@ -1002,17 +1004,36 @@ void enterBackgroundMode()
 namespace
 {
 
-/// The signature worker's publisher read (#3703): getFilePublisher() of a UTF-8 path, on the worker's thread.
-std::string readImagePublisher(const std::string& path)
+/// The signature worker's publisher read (#3703), on the worker's thread: the version info of the file @p file is
+/// open on, the check's own handle (#4021). By the name the file has now (GetFinalPathNameByHandleW), which can't
+/// change while the handle is held (it shares no delete, so the file can't be renamed), and only when the file under
+/// that name afterwards is the held one by identity. Uncached: the worker keeps it with the check, by file stamp.
+std::string readHeldImagePublisher(const std::string& /*path*/, void* file)
 {
-    return getFilePublisher(WinString::utf8ToWide(path));
+    const std::wstring name = Windows::heldFileName(file);
+    if (name.empty())
+    {
+        return {};
+    }
+    std::string publisher = readVersionCompanyName(name);
+    const Windows::UniqueHandle there(CreateFileW(
+        name.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    const std::optional<Windows::FileIdentity> held = Windows::fileIdentity(file);
+    const std::optional<Windows::FileIdentity> named = there ? Windows::fileIdentity(there.get()) : std::nullopt;
+    if (!held.has_value() || !named.has_value() || *held != *named)
+    {
+        return {}; // not the checked file's, so none
+    }
+    return publisher;
 }
 
-/// The system's signature calls, with the publisher read alongside each check.
+/// The system's signature calls, with each process's image bound to the file it was mapped from and the publisher
+/// read through the check's handle (#3703, #4021).
 WindowsSignature::SignatureFunctions signatureFunctionsWithPublisher()
 {
     WindowsSignature::SignatureFunctions functions = Windows::systemSignatureFunctions();
-    functions.readPublisher = &readImagePublisher;
+    functions.readPublisher = &readHeldImagePublisher;
+    functions.openProcessImage = &Windows::openProcessImageForCheck;
     return functions;
 }
 
@@ -1107,7 +1128,7 @@ WindowsProcessProbe::WindowsProcessProbe(const WindowsProcessProbeFunctions& fun
     if (functions.signature.has_value())
     {
         m_Signatures = std::make_unique<WindowsSignature::SignatureWorker>(*functions.signature, functions.signatureWorker);
-        m_ReadPublisher = functions.signature->readPublisher;
+        m_SignatureFunctions = *functions.signature;
     }
 
     // The app-name worker (#3718); its thread starts with the first name asked for.
@@ -1584,20 +1605,24 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
     }
     if (!cache.signature.has_value())
     {
+        // The process, not only its path (#4021): its check binds to the file its image was mapped from.
+        const WindowsSignature::ImageProcess process{.pid = counters.pid, .startTimeTicks = counters.startTimeTicks};
         if (!cache.signatureRequested)
         {
-            m_Signatures->request(cache.image.path);
+            m_Signatures->request(cache.image.path, process);
             cache.signatureRequested = true;
         }
         // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
-        cache.signature = m_Signatures->find(cache.image.path, &cache.image.publisher);
-        if (cache.signature.has_value() && cache.image.publisher.empty() && m_ReadPublisher != nullptr && m_Signatures->ended())
+        cache.signature = m_Signatures->find(cache.image.path, process, &cache.image.publisher);
+        if (cache.signature.has_value() && cache.image.publisher.empty() && m_SignatureFunctions.readPublisher != nullptr &&
+            m_Signatures->ended())
         {
             // The worker has ended (it says why in the answer and the log), so its answer read no publisher: read
-            // it here, once per process, as before #3703, rather than leave the column blank for good (#3862).
+            // it here, once per process, as before #3703, rather than leave the column blank for good (#3862). Through
+            // the same binding the worker's check makes (#4021), so it is the publisher of the file the process runs.
             try
             {
-                cache.image.publisher = m_ReadPublisher(cache.image.path);
+                cache.image.publisher = WindowsSignature::readImagePublisher(m_SignatureFunctions, cache.image.path, process);
             }
             catch (const std::exception& e)
             {

@@ -8,19 +8,25 @@
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
 
+#include "Platform/IProcessActions.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsImageFile.h"
 #include "WindowsImageSignature.h"
+#include "WindowsProcessIdentity.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform::Windows
@@ -369,6 +375,43 @@ std::string signatureErrorMessage(std::uint32_t code)
         }
     }
     return text;
+}
+
+/// The file the image of @p process was mapped from, bound and held for its signature check (#4021), on the signature
+/// worker's thread: the process opened through the identity check every reader makes (a reused PID is refused), then
+/// openProcessImageFile(), the binding Look up on VirusTotal hashes through (#3861), and the held file's stamp.
+std::expected<WindowsSignature::BoundImage, std::string> openProcessImageForCheck(const WindowsSignature::ImageProcess& process)
+{
+    const ProcessTarget target{.pid = process.pid, .startTimeTicks = process.startTimeTicks};
+    std::expected<InjectableHandle, IdentityFailure> opened =
+        openProcessVerified(ProcessIdentityFunctions{}, target, PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!opened.has_value())
+    {
+        return std::unexpected(
+            opened.error().kind == IdentityFailureKind::AccessDenied
+                ? std::string("the process can't be opened: access is denied")
+                : std::format("the process can't be opened to find its executable (error {})", opened.error().win32Error));
+    }
+    std::expected<UniqueHandle, std::string> file =
+        openProcessImageFile(systemImageFileFunctions(), opened->get(), process.pid, "its signature wasn't checked");
+    if (!file.has_value())
+    {
+        return std::unexpected(std::move(file.error()));
+    }
+    const std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(TrustApiFunctions{}, file->get());
+    if (!stamp.has_value())
+    {
+        return std::unexpected(std::string("its executable's stamp can't be read"));
+    }
+    const std::wstring name = heldFileName(file->get());
+    if (name.empty())
+    {
+        return std::unexpected(std::string("its executable's name can't be read"));
+    }
+    return WindowsSignature::BoundImage{
+        .image = {.file = file->release(), .stamp = *stamp},
+        .path = WinString::wideToUtf8(name),
+    };
 }
 
 WindowsSignature::SignatureFunctions systemSignatureFunctions() noexcept

@@ -11,11 +11,17 @@
 // - The publisher (the version info's CompanyName, SignatureFunctions::readPublisher) is read in the same pass
 //   and handed over with the answer (#3703): a new image's version info is file I/O, tens of milliseconds while
 //   the file is first scanned, which the process sampler then never waits on.
+// - A process's request names the process too (#4021): its check binds to the file its image was mapped from
+//   (SignatureFunctions::openProcessImage) and reads the signature and the publisher through that handle, never the
+//   file at the path, which a running process can rename its image away from and leave a signed decoy at. So its
+//   answer is the process's own, kept under its path and its identity: thirty svchost.exe processes are thirty
+//   bindings, but one WinVerifyTrust check, the rest from the cache by the bound file's stamp. A process whose file
+//   can't be bound is answered Unknown, saying why, with no publisher.
 //
 // - Cached by path and {file ID, change time, size} (SignatureCache, bounded; #3292): a second process of
 //   the same image costs a file open and stamp read, not another check, and a file replaced or changed is
 //   checked anew. A file with no ID (FAT, some network shares) isn't cached: it is checked every time.
-// - Each path is queued at most once at a time, so thirty svchost.exe processes are one check.
+// - Each key (a path, or a process's path and identity) is queued at most once at a time.
 // - The path table, and so the queue, is bounded too: when full, the answers already taken are forgotten
 //   (a path still being polled is requested again by find()). When every path in it is still queued, a new
 //   path isn't admitted (#3340): it stays "not checked yet" and find() requests it again on a later sample.
@@ -65,6 +71,7 @@
 #include <cstdint>
 #include <deque>
 #include <exception>
+#include <format>
 #include <mutex>
 #include <optional>
 #include <ranges>
@@ -143,7 +150,16 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     {
         const std::scoped_lock lock(m_Mutex);
         static_cast<void>(workerEndedLocked());
-        requestLocked(path, keyLocked(path), Asker::NewProcess);
+        requestLocked(path, keyLocked(path, std::nullopt), Asker::NewProcess, std::nullopt);
+    }
+
+    /// As request(@p path), for the image @p process runs (#4021): checked as the file its image was mapped from,
+    /// bound through SignatureFunctions::openProcessImage, and answered for this process alone.
+    void request(std::string_view path, const ImageProcess& process)
+    {
+        const std::scoped_lock lock(m_Mutex);
+        static_cast<void>(workerEndedLocked());
+        requestLocked(path, keyLocked(path, process), Asker::NewProcess, process);
     }
 
     /// The answer for @p path once checked since the last request(); nullopt while queued or checking.
@@ -153,22 +169,13 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     /// none (#3862: ended() says so).
     [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path, std::string* publisher = nullptr)
     {
-        std::string key = pathKey(path);
-        const std::scoped_lock lock(m_Mutex);
-        // Before the answer: a worker that failed with paths queued answers them here, since a path already
-        // in the table never reaches request() again (#3343).
-        static_cast<void>(workerEndedLocked());
-        const auto found = m_Paths.find(key);
-        if (found == m_Paths.end())
-        {
-            requestLocked(path, std::move(key), Asker::LaterSample);
-            return std::nullopt;
-        }
-        if (publisher != nullptr && found->second.result.has_value() && found->second.publisherRead)
-        {
-            *publisher = found->second.publisher;
-        }
-        return found->second.result;
+        return findFor(path, std::nullopt, publisher);
+    }
+
+    /// As find(@p path), for the image @p process runs (#4021): the answer request(@p path, @p process) asked for.
+    [[nodiscard]] std::optional<SignatureCheck> find(std::string_view path, const ImageProcess& process, std::string* publisher = nullptr)
+    {
+        return findFor(path, process, publisher);
     }
 
     /// Whether the worker has ended (#3862): no thread could be started, or a drain failed. It stays ended, and
@@ -218,6 +225,28 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     }
 
   private:
+    /// find() for @p path and, when given, the process @p process.
+    [[nodiscard]] std::optional<SignatureCheck>
+    findFor(std::string_view path, const std::optional<ImageProcess>& process, std::string* publisher)
+    {
+        std::string key = imageKey(path, process);
+        const std::scoped_lock lock(m_Mutex);
+        // Before the answer: a worker that failed with paths queued answers them here, since a path already
+        // in the table never reaches request() again (#3343).
+        static_cast<void>(workerEndedLocked());
+        const auto found = m_Paths.find(key);
+        if (found == m_Paths.end())
+        {
+            requestLocked(path, std::move(key), Asker::LaterSample, process);
+            return std::nullopt;
+        }
+        if (publisher != nullptr && found->second.result.has_value() && found->second.publisherRead)
+        {
+            *publisher = found->second.publisher;
+        }
+        return found->second.result;
+    }
+
     struct PathState
     {
         std::optional<SignatureCheck> result; ///< The last answer; nullopt while queued
@@ -246,18 +275,31 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     {
         std::string path;
         std::string key;
+        std::optional<ImageProcess> process; ///< The process whose image this is, bound for its check (#4021)
     };
 
-    /// pathKey() under m_Mutex: every key made under the lock goes through here, so a test's fault policy can
+    /// The table's key for @p path and, when given, @p process (#4021): a process's answer is its own, since its
+    /// image may not be the file at its path.
+    [[nodiscard]] static std::string imageKey(std::string_view path, const std::optional<ImageProcess>& process)
+    {
+        std::string key = pathKey(path);
+        if (process.has_value())
+        {
+            key += std::format("\n{}:{}", process->pid, process->startTimeTicks);
+        }
+        return key;
+    }
+
+    /// imageKey() under m_Mutex: every key made under the lock goes through here, so a test's fault policy can
     /// have it throw where an allocation can't be allowed to: the take-back after a refused drain.
-    [[nodiscard]] std::string keyLocked(std::string_view path)
+    [[nodiscard]] std::string keyLocked(std::string_view path, const std::optional<ImageProcess>& process)
     {
         m_Faults.makingKey();
-        return pathKey(path);
+        return imageKey(path, process);
     }
 
     /// request() under m_Mutex.
-    void requestLocked(std::string_view path, std::string key, Asker asker)
+    void requestLocked(std::string_view path, std::string key, Asker asker, const std::optional<ImageProcess>& process)
     {
         if (const auto found = m_Paths.find(key); found != m_Paths.end() && found->second.queued)
         {
@@ -306,7 +348,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         }
         // Transactional: what allocates (the queue entry, its copies, the table's node) comes first, and a throw
         // there leaves the queue, the table and the count as they were.
-        m_Queue.push_back(QueuedPath{.path = std::string(path), .key = key});
+        m_Queue.push_back(QueuedPath{.path = std::string(path), .key = key, .process = process});
         PathState* state = nullptr;
         try
         {
@@ -480,36 +522,26 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
                 m_Checking = true;
             }
             const std::string& key = queued.key;
-            SignatureCheck check;
+            // The check and the publisher in the same pass (#3703), through the one handle the check holds (#4021),
+            // at the worker's background priority, off the sampler. An unreadable publisher is none; it doesn't
+            // change the check's answer. A bound check is cached by the bound file's own name, a path's by the path;
+            // the stamp says which file either way.
+            ImageCheck answer;
             try
             {
-                check = checkSignature(m_Fns, &m_Cache, queued.path, key);
+                answer = checkImage(m_Fns, &m_Cache, queued.path, pathKey(queued.path), queued.process);
             }
             catch (const std::exception& e)
             {
-                check = SignatureCheck{.signature = ImageSignature::Unknown, .note = e.what(), .signer = {}};
-            }
-            // The publisher in the same pass (#3703), at the worker's background priority, off the sampler. An
-            // unreadable one is no publisher; it doesn't change the check's answer.
-            std::string publisher;
-            if (m_Fns.readPublisher != nullptr)
-            {
-                try
-                {
-                    publisher = m_Fns.readPublisher(queued.path);
-                }
-                catch (const std::exception& e)
-                {
-                    spdlog::debug("SignatureWorker: the publisher of {} couldn't be read: {}", queued.path, e.what());
-                }
+                answer = ImageCheck{.check = {.signature = ImageSignature::Unknown, .note = e.what(), .signer = {}}, .publisher = {}};
             }
             {
                 const std::scoped_lock lock(m_Mutex);
                 if (const auto found = m_Paths.find(key); found != m_Paths.end())
                 {
-                    found->second.publisher = std::move(publisher);
+                    found->second.publisher = std::move(answer.publisher);
                     found->second.publisherRead = true;
-                    found->second.result = std::move(check);
+                    found->second.result = std::move(answer.check);
                     markAnsweredLocked(found->second);
                 }
                 m_Checking = false;

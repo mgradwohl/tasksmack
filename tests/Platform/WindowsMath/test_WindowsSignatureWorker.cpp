@@ -8,7 +8,8 @@
 /// table turns a path away on without sweeping (#3418); a check that throws; and
 /// the destructor stopping a queue. On Domain::Worker (#3343): a check that throws something other than a
 /// std::exception fails the worker, which answers every path rather than terminating; a burst against a
-/// drain in progress, each path checked once; a drain refused; and shutdown while a check is in progress.
+/// drain in progress, each path checked once; a drain refused; and shutdown while a check is in progress. A process's
+/// image bound to the file it was mapped from, never the decoy at its path (#4021).
 /// Pure (no Windows header), so built everywhere.
 
 #include "Platform/ImageSignature.h"
@@ -23,6 +24,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -30,6 +32,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <vector>
 
@@ -306,7 +309,7 @@ TEST_F(SignatureWorkerTest, ThePublisherIsReadWithTheCheckOnTheWorkersThread)
     publisherThread = {};
     setStamp("C:\\app.exe", 1);
     SignatureFunctions functions = fakeFunctions();
-    functions.readPublisher = [](const std::string& path)
+    functions.readPublisher = [](const std::string& path, void* /*file*/)
     {
         publisherThread = std::this_thread::get_id();
         return "Publisher of " + path;
@@ -326,7 +329,7 @@ TEST_F(SignatureWorkerTest, AnUnreadablePublisherIsNoneAndTheCheckStillAnswers)
 {
     setStamp("C:\\app.exe", 1);
     SignatureFunctions functions = fakeFunctions();
-    functions.readPublisher = [](const std::string& /*path*/) -> std::string
+    functions.readPublisher = [](const std::string& /*path*/, void* /*file*/) -> std::string
     {
         throw std::runtime_error("no version info");
     };
@@ -829,7 +832,7 @@ TEST_F(SignatureWorkerTest, AnAnswerMadeAfterTheWorkerEndedReadsNoPublisherAndEn
         setStamp(path, 1);
     }
     SignatureFunctions functions = fakeFunctions();
-    functions.readPublisher = [](const std::string& path)
+    functions.readPublisher = [](const std::string& path, void* /*file*/)
     {
         return "Publisher of " + path;
     };
@@ -1008,6 +1011,184 @@ TEST_F(SignatureWorkerTest, TheDestructorWaitsForTheCheckInProgressAndDropsTheRe
     EXPECT_EQ(checksOf("one"), 1);
     EXPECT_EQ(checksOf("two"), 0) << "dropped";
     EXPECT_EQ(checksOf("three"), 0) << "dropped";
+}
+
+// --- A process's image bound to the file it was mapped from (#4021) ----------------------------------------------
+
+/// What the fake openProcessImage() binds each PID to: the file's name now (a stamp set with setStamp()), or, for a
+/// PID missing here, a refusal. Guarded by fakes().mutex.
+std::map<std::int32_t, std::string>& boundFiles()
+{
+    static std::map<std::int32_t, std::string> files;
+    return files;
+}
+
+/// Each process the fake openProcessImage() was asked to bind. Guarded by fakes().mutex.
+std::vector<ImageProcess>& bindings()
+{
+    static std::vector<ImageProcess> asked;
+    return asked;
+}
+
+constexpr std::string_view UNBOUND = "Its executable can't be found";
+
+SignatureFunctions bindingFunctions()
+{
+    SignatureFunctions functions = fakeFunctions();
+    functions.openProcessImage = [](const ImageProcess& process) -> std::expected<BoundImage, std::string>
+    {
+        const std::scoped_lock lock(fakes().mutex);
+        bindings().push_back(process);
+        const auto bound = boundFiles().find(process.pid);
+        if (bound == boundFiles().end())
+        {
+            return std::unexpected(std::string(UNBOUND));
+        }
+        const auto stamp = fakes().stamps.find(bound->second);
+        if (stamp == fakes().stamps.end())
+        {
+            return std::unexpected(std::string("Its executable can't be read"));
+        }
+        return BoundImage{.image = {.file = nullptr, .stamp = stamp->second}, .path = bound->second};
+    };
+    functions.readPublisher = [](const std::string& path, void* /*file*/)
+    {
+        return "Publisher of " + path;
+    };
+    return functions;
+}
+
+/// Binds @p pid to the file now named @p path.
+void bindTo(std::int32_t pid, const std::string& path)
+{
+    const std::scoped_lock lock(fakes().mutex);
+    boundFiles()[pid] = path;
+}
+
+class SignatureBindingTest : public SignatureWorkerTest
+{
+  protected:
+    void SetUp() override
+    {
+        SignatureWorkerTest::SetUp();
+        const std::scoped_lock lock(fakes().mutex);
+        boundFiles().clear();
+        bindings().clear();
+    }
+};
+
+// The issue's case: a process renamed its image and left a signed decoy at the old name. The check and the publisher
+// are the file the image was mapped from, read through the binding's handle; the decoy at the path is never opened.
+TEST_F(SignatureBindingTest, AProcessIsCheckedAsTheFileItsImageWasMappedFromNotTheFileAtItsPath)
+{
+    setStamp("C:\\app.exe", 1);     // the decoy, at the name the process started with
+    setStamp("C:\\renamed.exe", 2); // the image's file, renamed
+    bindTo(7, "C:\\renamed.exe");
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess process{.pid = 7, .startTimeTicks = 100};
+    worker.request("C:\\app.exe", process);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    std::string publisher = "untouched";
+    const std::optional<SignatureCheck> check = worker.find("C:\\app.exe", process, &publisher);
+    ASSERT_TRUE(check.has_value());
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Embedded);
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of C:\\renamed.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\renamed.exe");
+    EXPECT_EQ(checksOf("C:\\app.exe"), 0) << "the decoy is never checked";
+    const std::scoped_lock lock(fakes().mutex);
+    ASSERT_EQ(bindings().size(), 1U);
+    EXPECT_EQ(bindings().front(), process) << "bound by the process's identity";
+}
+
+// A process whose file can't be bound reads Unknown, saying why, and no publisher: never the decoy's.
+TEST_F(SignatureBindingTest, AProcessWhoseImageCantBeBoundIsUnknownWithNoPublisher)
+{
+    setStamp("C:\\app.exe", 1); // the decoy
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess process{.pid = 7, .startTimeTicks = 100};
+    worker.request("C:\\app.exe", process);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    std::string publisher = "stale";
+    const std::optional<SignatureCheck> check = worker.find("C:\\app.exe", process, &publisher);
+    ASSERT_TRUE(check.has_value());
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
+    const std::string note = check.value_or(SignatureCheck{}).note;
+    EXPECT_TRUE(note.contains("couldn't be confirmed")) << note;
+    EXPECT_TRUE(note.contains(UNBOUND)) << note;
+    EXPECT_TRUE(check.value_or(SignatureCheck{}).signer.empty());
+    EXPECT_TRUE(publisher.empty()) << "read with the answer: none, so the caller shows none";
+    EXPECT_EQ(checksOf("C:\\app.exe"), 0) << "no fallback to the path";
+}
+
+// Each process of a path has its own answer, by its own binding: one renamed away from a decoy doesn't share the
+// decoy's answer with a process that runs the decoy, nor a refused binding with either. A second process bound to
+// the same file is answered from the cache, by the file's name and stamp: one WinVerifyTrust check a file.
+TEST_F(SignatureBindingTest, EachProcessOfAPathHasItsOwnAnswerAndTheSameFileIsCheckedOnce)
+{
+    setStamp("C:\\app.exe", 1);
+    setStamp("C:\\renamed.exe", 2);
+    bindTo(7, "C:\\renamed.exe"); // renamed its image away
+    bindTo(8, "C:\\app.exe");     // started from the file now at the path
+    bindTo(9, "C:\\renamed.exe"); // another process of the renamed image
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess renamed{.pid = 7, .startTimeTicks = 100};
+    const ImageProcess runsTheFileThere{.pid = 8, .startTimeTicks = 200};
+    const ImageProcess unbound{.pid = 10, .startTimeTicks = 300};
+    const ImageProcess sameImage{.pid = 9, .startTimeTicks = 400};
+    for (const ImageProcess& process : {renamed, runsTheFileThere, unbound, sameImage})
+    {
+        worker.request("C:\\app.exe", process);
+    }
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.pathCount(), 4U) << "one answer a process";
+
+    std::string publisher;
+    EXPECT_EQ(worker.find("C:\\app.exe", renamed, &publisher).value_or(SignatureCheck{}).signer, "Signer of C:\\renamed.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\renamed.exe");
+    EXPECT_EQ(worker.find("C:\\app.exe", runsTheFileThere, &publisher).value_or(SignatureCheck{}).signer, "Signer of C:\\app.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\app.exe");
+    EXPECT_EQ(worker.find("C:\\app.exe", unbound, &publisher).value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
+    EXPECT_TRUE(publisher.empty());
+    EXPECT_EQ(worker.find("C:\\app.exe", sameImage, &publisher).value_or(SignatureCheck{}).signer, "Signer of C:\\renamed.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\renamed.exe") << "kept with the cached check";
+    EXPECT_EQ(checksOf("C:\\renamed.exe"), 1) << "the second process of the file comes from the cache";
+    EXPECT_EQ(checksOf("C:\\app.exe"), 1);
+}
+
+// The publisher the probe reads once the worker has ended (#3862) goes through the same binding: the bound file's,
+// none when it can't be bound, and the path's only with no binding to make (no openProcessImage, or no process).
+TEST_F(SignatureBindingTest, ThePublisherReadWithoutTheWorkerIsTheBoundFilesToo)
+{
+    setStamp("C:\\app.exe", 1);
+    setStamp("C:\\renamed.exe", 2);
+    bindTo(7, "C:\\renamed.exe");
+    const SignatureFunctions functions = bindingFunctions();
+    EXPECT_EQ(readImagePublisher(functions, "C:\\app.exe", ImageProcess{.pid = 7, .startTimeTicks = 1}), "Publisher of C:\\renamed.exe");
+    EXPECT_TRUE(readImagePublisher(functions, "C:\\app.exe", ImageProcess{.pid = 8, .startTimeTicks = 1}).empty()) << "unbound: none";
+    EXPECT_EQ(readImagePublisher(functions, "C:\\app.exe", std::nullopt), "Publisher of C:\\app.exe") << "no process: the path";
+
+    SignatureFunctions pathOnly = functions;
+    pathOnly.openProcessImage = nullptr;
+    EXPECT_EQ(readImagePublisher(pathOnly, "C:\\app.exe", ImageProcess{.pid = 7, .startTimeTicks = 1}), "Publisher of C:\\app.exe");
+    EXPECT_TRUE(readImagePublisher(pathOnly, "C:\\missing.exe", std::nullopt).empty()) << "can't be opened: none";
+    pathOnly.readPublisher = nullptr;
+    EXPECT_TRUE(readImagePublisher(pathOnly, "C:\\app.exe", std::nullopt).empty()) << "no publisher call";
+}
+
+// checkImage() itself: no calls is NotChecked, as checkSignature(); a binding is never tried without a process.
+TEST_F(SignatureBindingTest, CheckImageWithoutCallsOrWithoutAProcess)
+{
+    EXPECT_EQ(checkImage(SignatureFunctions{}, nullptr, "C:\\app.exe", "c:\\app.exe", ImageProcess{}).check.signature,
+              ImageSignature::NotChecked);
+    setStamp("C:\\app.exe", 1);
+    const ImageCheck byPath = checkImage(bindingFunctions(), nullptr, "C:\\app.exe", "c:\\app.exe", std::nullopt);
+    EXPECT_EQ(byPath.check.signer, "Signer of C:\\app.exe");
+    EXPECT_EQ(byPath.publisher, "Publisher of C:\\app.exe");
+    const ImageCheck missing = checkImage(bindingFunctions(), nullptr, "C:\\missing.exe", "c:\\missing.exe", std::nullopt);
+    EXPECT_EQ(missing.check.signature, ImageSignature::Unknown);
+    EXPECT_TRUE(missing.publisher.empty());
+    const std::scoped_lock lock(fakes().mutex);
+    EXPECT_TRUE(bindings().empty());
 }
 
 } // namespace

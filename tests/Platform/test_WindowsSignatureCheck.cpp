@@ -5,13 +5,16 @@
 /// context released, each failure's HRESULT, both read through the check's own handle); the file stamp through a fake
 /// GetFileInformationByHandleEx and DeviceIoControl (its USN, #3313) and the file opened shared for read
 /// only (#3292); then the real calls on a
-/// signed system binary and on an unsigned file this test writes.
+/// signed system binary and on an unsigned file this test writes; this process's image bound to its own file, and on a
+/// CI runner a renamed image checked as itself, not the signed decoy left at its old name (#4021).
 
 #include "Platform/ImageSignature.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsImageSignature.h"
 #include "Platform/Windows/WindowsSignatureCheck.h"
+#include "Support/CiRealSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -29,6 +32,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -746,6 +750,130 @@ TEST(WindowsSignatureCheckRealTest, NotepadIsSignedByMicrosoftAndAFileThisTestWr
     EXPECT_FALSE(fns.errorMessage(ERROR_ACCESS_DENIED).empty());
     EXPECT_FALSE(fns.errorMessage(0xC0000034U).empty()); // an NTSTATUS, from ntdll's messages
     EXPECT_TRUE(fns.errorMessage(0x2FFFFFFFU).empty());
+}
+
+/// This test process's identity, as the probe has it: its PID and creation time.
+WindowsSignature::ImageProcess thisProcess()
+{
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernel{};
+    FILETIME user{};
+    EXPECT_NE(GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernel, &user), 0);
+    return {
+        .pid = static_cast<std::int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+}
+
+/// The identity of the file at @p path, or nullopt when it can't be opened.
+std::optional<FileIdentity> identityOf(const std::wstring& path)
+{
+    const UniqueHandle file(CreateFileW(
+        path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    return file ? fileIdentity(file.get()) : std::nullopt;
+}
+
+// #4021, the real calls on this test process: its image binds to the file it was mapped from, held so it can't be
+// renamed or deleted, and checks as that file does by path. A process identity that isn't this one's is refused.
+TEST(WindowsSignatureCheckRealTest, ThisProcesssImageBindsToItsOwnFileAndChecksAsItDoes)
+{
+    std::wstring module(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(length, 0U);
+    module.resize(length);
+
+    std::expected<WindowsSignature::BoundImage, std::string> bound = openProcessImageForCheck(thisProcess());
+    ASSERT_TRUE(bound.has_value()) << bound.error();
+    const std::optional<FileIdentity> held = fileIdentity(bound->image.file);
+    ASSERT_TRUE(held.has_value());
+    EXPECT_EQ(held, identityOf(module)) << "the module's own file";
+    EXPECT_EQ(identityOf(WinString::utf8ToWide(bound->path)), held) << bound->path << ": its name now names it";
+    EXPECT_TRUE(bound->image.stamp.fileId.has_value());
+
+    // Held without FILE_SHARE_DELETE: the file can't be renamed while the check holds it.
+    const UniqueHandle forRename(
+        CreateFileW(module.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    EXPECT_FALSE(forRename) << "a handle that could rename it was granted";
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+    closeImage(bound->image.file);
+
+    WindowsSignature::SignatureFunctions fns = systemSignatureFunctions();
+    fns.openProcessImage = &openProcessImageForCheck;
+    const std::string path = WinString::wideToUtf8(module);
+    const WindowsSignature::ImageCheck viaBinding = WindowsSignature::checkImage(fns, nullptr, path, path, thisProcess());
+    const SignatureCheck viaPath = WindowsSignature::checkSignature(fns, nullptr, path, path);
+    EXPECT_EQ(viaBinding.check.signature, viaPath.signature) << viaBinding.check.note;
+    EXPECT_EQ(viaBinding.check.signer, viaPath.signer);
+
+    WindowsSignature::ImageProcess reused = thisProcess();
+    reused.startTimeTicks += 1;
+    const std::expected<WindowsSignature::BoundImage, std::string> refused = openProcessImageForCheck(reused);
+    EXPECT_FALSE(refused.has_value()) << "another process's identity binds nothing";
+}
+
+// #4021 on a CI runner: a process that renamed its image away and left a Microsoft-signed file at the old name. A
+// copy of this test executable is started suspended (so nothing of it runs), renamed, and notepad.exe copied to its
+// old name. The check binds to the renamed copy, never to the decoy: notepad's signer isn't claimed for it.
+class CiRealSystemSignatureBindingTest : public TestSupport::CiRealSystemTest
+{};
+
+TEST_F(CiRealSystemSignatureBindingTest, ARenamedImageIsCheckedNotTheSignedDecoyAtItsOldName)
+{
+    std::wstring module(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(length, 0U);
+    module.resize(length);
+    const std::filesystem::path folder = std::filesystem::temp_directory_path() / std::format(L"tasksmack-4021-{}", GetCurrentProcessId());
+    std::filesystem::create_directories(folder);
+    const std::filesystem::path original = folder / L"started.exe";
+    const std::filesystem::path renamed = folder / L"renamed.exe";
+    ASSERT_TRUE(std::filesystem::copy_file(module, original, std::filesystem::copy_options::overwrite_existing));
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION started{};
+    std::wstring commandLine = L"\"" + original.wstring() + L"\" --gtest_list_tests";
+    ASSERT_NE(CreateProcessW(
+                  original.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &startup, &started),
+              0)
+        << GetLastError();
+    const UniqueHandle process(started.hProcess);
+    const UniqueHandle thread(started.hThread);
+
+    std::error_code error;
+    std::filesystem::rename(original, renamed, error);
+    ASSERT_FALSE(error) << "a running image can be renamed: " << error.message();
+    const std::filesystem::path notepad = std::filesystem::path(WinString::utf8ToWide(systemBinary(L"notepad.exe")));
+    ASSERT_TRUE(std::filesystem::copy_file(notepad, original, std::filesystem::copy_options::overwrite_existing));
+
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernel{};
+    FILETIME user{};
+    ASSERT_NE(GetProcessTimes(process.get(), &creation, &exitTime, &kernel, &user), 0);
+    const WindowsSignature::ImageProcess child{
+        .pid = static_cast<std::int32_t>(started.dwProcessId),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+
+    std::expected<WindowsSignature::BoundImage, std::string> bound = openProcessImageForCheck(child);
+    ASSERT_TRUE(bound.has_value()) << bound.error();
+    EXPECT_EQ(fileIdentity(bound->image.file), identityOf(renamed.wstring())) << bound->path;
+    EXPECT_NE(fileIdentity(bound->image.file), identityOf(original.wstring())) << "not the decoy";
+    closeImage(bound->image.file);
+
+    WindowsSignature::SignatureFunctions fns = systemSignatureFunctions();
+    fns.openProcessImage = &openProcessImageForCheck;
+    const std::string startedPath = WinString::wideToUtf8(original.wstring());
+    const WindowsSignature::ImageCheck check = WindowsSignature::checkImage(fns, nullptr, startedPath, startedPath, child);
+    const SignatureCheck decoy = WindowsSignature::checkSignature(fns, nullptr, startedPath, startedPath);
+    EXPECT_NE(decoy.signer.find("Microsoft"), std::string::npos) << "the decoy is signed: " << decoy.note;
+    EXPECT_EQ(check.check.signer.find("Microsoft"), std::string::npos) << "the decoy's signer, claimed for the renamed image";
+
+    EXPECT_NE(TerminateProcess(process.get(), 1), 0);
+    WaitForSingleObject(process.get(), 10'000);
+    std::filesystem::remove_all(folder, error);
 }
 
 // #3292: the real stamp of a file on the system volume (NTFS) has its ID; writing it in place, then setting

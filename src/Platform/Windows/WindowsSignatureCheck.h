@@ -31,6 +31,7 @@
 #include "WindowsImageSignature.h"
 
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -88,6 +89,14 @@ verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path, H
 
 /// FormatMessage's text for a Win32 error or HRESULT, else ntdll's for an NTSTATUS. Empty when neither has one.
 [[nodiscard]] std::string signatureErrorMessage(std::uint32_t code);
+
+/// The file the image of @p process was mapped from, bound and held for its signature check (#4021): the process
+/// opened through the identity check every reader makes (Windows::openProcessVerified(), so a reused PID is refused),
+/// then Windows::openProcessImageFile(), the binding Look up on VirusTotal hashes through (#3861), with the held
+/// file's stamp and the name it has now. Or why it can't be bound. Close the file with closeImage(). Not in
+/// systemSignatureFunctions(): the process probe sets it (SignatureFunctions::openProcessImage).
+[[nodiscard]] std::expected<WindowsSignature::BoundImage, std::string>
+openProcessImageForCheck(const WindowsSignature::ImageProcess& process);
 
 /// The system's calls, as WindowsImageSignature.h's checkSignature() takes them (UTF-8 paths).
 [[nodiscard]] WindowsSignature::SignatureFunctions systemSignatureFunctions() noexcept;

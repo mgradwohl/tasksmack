@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <functional>
 #include <map>
@@ -1948,7 +1949,7 @@ TEST_F(WindowsProcessProbeSeamTest, ThePublisherComesFromTheSignatureWorkerNotTh
 {
     WindowsProcessProbeFunctions functions = fakeFunctions();
     functions.signature = fakeSignatureFunctions();
-    functions.signature->readPublisher = [](const std::string& path)
+    functions.signature->readPublisher = [](const std::string& path, void* /*file*/)
     {
         return "Publisher of " + path;
     };
@@ -1974,7 +1975,7 @@ TEST_F(WindowsProcessProbeSeamTest, ANewProcessStillGetsAPublisherAfterTheSignat
         // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what ends the worker
         throw 42;
     };
-    functions.signature->readPublisher = [](const std::string& path)
+    functions.signature->readPublisher = [](const std::string& path, void* /*file*/)
     {
         return "Publisher of " + path;
     };
@@ -2002,6 +2003,104 @@ TEST_F(WindowsProcessProbeSeamTest, ANewProcessStillGetsAPublisherAfterTheSignat
     EXPECT_EQ(started.publisher, "Publisher of C:\\fake\\app.exe") << "a process started after the end still gets one";
     fake().now += std::chrono::hours(1); // Past every TTL: kept with the process
     EXPECT_EQ(find(probe.enumerate()).publisher, "Publisher of C:\\fake\\app.exe");
+}
+
+// #4021: the probe asks for the process, not only its path, so the check binds to the file its image was mapped
+// from. A process that renamed its image away from a signed decoy shows its own file's signature and publisher; one
+// whose file can't be bound shows Unknown, saying why, and no publisher: never the decoy's.
+struct FakeBindings
+{
+    std::mutex mutex;
+    std::vector<WindowsSignature::ImageProcess> asked; // guarded
+    bool refuse = false;                               // guarded
+};
+
+FakeBindings& fakeBindings()
+{
+    static FakeBindings state;
+    return state;
+}
+
+WindowsSignature::SignatureFunctions bindingSignatureFunctions()
+{
+    WindowsSignature::SignatureFunctions functions = fakeSignatureFunctions();
+    functions.openProcessImage =
+        [](const WindowsSignature::ImageProcess& process) -> std::expected<WindowsSignature::BoundImage, std::string>
+    {
+        const std::scoped_lock lock(fakeBindings().mutex);
+        fakeBindings().asked.push_back(process);
+        if (fakeBindings().refuse)
+        {
+            return std::unexpected(std::string("Its executable can't be found"));
+        }
+        const WindowsSignature::FileId id{.volumeSerial = 1, .id = {2}};
+        return WindowsSignature::BoundImage{
+            .image = {.file = nullptr, .stamp = {.fileId = id, .changeTime = 1, .size = 2, .usn = 3}},
+            .path = "C:\\fake\\renamed.exe",
+        };
+    };
+    functions.verifyEmbeddedSignature = [](const std::string& path, void* /*file*/)
+    {
+        const std::scoped_lock lock(fakeSignatures().mutex);
+        ++fakeSignatures().checks;
+        fakeSignatures().lastPath = path;
+        return WindowsSignature::TrustCheck{.result = 0, .signer = "Signer of " + path};
+    };
+    functions.readPublisher = [](const std::string& path, void* /*file*/)
+    {
+        return "Publisher of " + path;
+    };
+    return functions;
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ARenamedImageShowsItsOwnFilesSignatureAndPublisherNotTheDecoysAtItsPath)
+{
+    {
+        const std::scoped_lock lock(fakeBindings().mutex);
+        fakeBindings().asked.clear();
+        fakeBindings().refuse = false;
+    }
+    {
+        const std::scoped_lock lock(fakeSignatures().mutex);
+        fakeSignatures().stampReads = 0;
+    }
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.signature = bindingSignatureFunctions();
+    WindowsProcessProbe probe(functions);
+
+    const ProcessCounters process = sampleUntilSigned(probe);
+    EXPECT_EQ(process.signature.get().signature, ImageSignature::Embedded);
+    EXPECT_EQ(process.signature.get().signer, "Signer of C:\\fake\\renamed.exe");
+    EXPECT_EQ(process.publisher, "Publisher of C:\\fake\\renamed.exe");
+    {
+        const std::scoped_lock lock(fakeSignatures().mutex);
+        EXPECT_EQ(fakeSignatures().stampReads, 0) << "the file at the path (C:\\fake\\app.exe) is never opened";
+    }
+    const std::scoped_lock lock(fakeBindings().mutex);
+    ASSERT_EQ(fakeBindings().asked.size(), 1U);
+    EXPECT_EQ(fakeBindings().asked.front().pid, static_cast<std::int32_t>(PID));
+    EXPECT_EQ(fakeBindings().asked.front().startTimeTicks, process.startTimeTicks) << "bound by the process's identity";
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AnImageThatCantBeBoundShowsUnknownAndNoPublisher)
+{
+    {
+        const std::scoped_lock lock(fakeBindings().mutex);
+        fakeBindings().asked.clear();
+        fakeBindings().refuse = true;
+    }
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.signature = bindingSignatureFunctions();
+    WindowsProcessProbe probe(functions);
+
+    const ProcessCounters process = sampleUntilSigned(probe);
+    EXPECT_EQ(process.signature.get().signature, ImageSignature::Unknown);
+    EXPECT_TRUE(process.signature.get().note.contains("couldn't be confirmed")) << process.signature.get().note;
+    EXPECT_TRUE(process.publisher.empty()) << process.publisher;
+    fake().now += std::chrono::hours(1); // Past every TTL: still none, never read from the path
+    EXPECT_TRUE(find(probe.enumerate()).publisher.empty());
+    const std::scoped_lock lock(fakeBindings().mutex);
+    fakeBindings().refuse = false;
 }
 
 TEST_F(WindowsProcessProbeSeamTest, AnUnreadableImagePathIsNeverSentForASignatureCheck)

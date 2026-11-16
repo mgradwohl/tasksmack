@@ -12,6 +12,12 @@
 // calls read the file through it. The stamp is the file's identity (volume serial and 128-bit file ID)
 // with its ChangeTime, size and change journal USN (#3313), not its path and last write time, which a
 // program running as the user can reset with SetFileTime after swapping in a same-size file.
+//
+// A process's image is checked as the file it was mapped from (#4021), never the file at its creation-time path: a
+// running image can be renamed and another, signed, file put at the old name. SignatureFunctions::openProcessImage
+// binds to that file (Windows::openProcessImageFile(), the binding Look up on VirusTotal hashes through, #3861) and
+// holds it; the signature and the publisher are both read through that handle. A process whose file can't be bound
+// is answered Unknown, saying why, with no publisher: never the answer for whatever file is at the old path.
 
 #include "Platform/AsciiCase.h"
 #include "Platform/ImageSignature.h"
@@ -21,6 +27,8 @@
 #include <cctype>
 #include <cstddef>
 #include <cstdint>
+#include <exception>
+#include <expected>
 #include <format>
 #include <limits>
 #include <mutex>
@@ -90,6 +98,23 @@ struct OpenedImage
     FileStamp stamp;
 };
 
+/// The file a process's image was mapped from, bound and held (#4021): the open file and its stamp, and the name it
+/// has now (UTF-8), which WinVerifyTrust is given beside the handle.
+struct BoundImage
+{
+    OpenedImage image;
+    std::string path;
+};
+
+/// A process by its identity, as the probe knows it: its PID and its creation time (100 ns FILETIME ticks).
+struct ImageProcess
+{
+    std::int32_t pid = 0;
+    std::uint64_t startTimeTicks = 0;
+
+    friend bool operator==(const ImageProcess&, const ImageProcess&) = default;
+};
+
 /// One WinVerifyTrust call's answer.
 struct TrustCheck
 {
@@ -115,10 +140,15 @@ struct SignatureFunctions
     /// when it is trusted; nullopt when no catalog holds it; a failure's HRESULT when the catalogs couldn't
     /// be searched.
     std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path, void* file) = nullptr;
-    /// The publisher (CompanyName) in the file's version info, empty when it names none (#3703): read by the
-    /// signature worker with each check, so the process sampler never opens a new image for it. Nullable:
-    /// no publisher is read.
-    std::string (*readPublisher)(const std::string& path) = nullptr;
+    /// The publisher (CompanyName) in the version info of the file @p file is open on (the handle openImage() or
+    /// openProcessImage() gave; @p path names it), empty when it names none (#3703): read by the signature worker
+    /// with each check, through the check's handle (#4021), so the process sampler never opens a new image for it
+    /// and the publisher is the checked file's. Nullable: no publisher is read.
+    std::string (*readPublisher)(const std::string& path, void* file) = nullptr;
+    /// The file @p process's image was mapped from, bound and held (#4021; Windows::openProcessImageFile()), with
+    /// its stamp; or why it can't be. Close the file with closeImage(). Nullable: a process's image is opened by
+    /// the path it was asked for, with openImage().
+    std::expected<BoundImage, std::string> (*openProcessImage)(const ImageProcess& process) = nullptr;
 };
 
 /// WinVerifyTrust results (HRESULTs) that the check tells apart.
@@ -225,7 +255,9 @@ class SignatureCache
     explicit SignatureCache(std::size_t maxEntries = UNBOUNDED) : m_MaxEntries(maxEntries)
     {}
 
-    [[nodiscard]] std::optional<SignatureCheck> find(const std::string& path, const FileStamp& stamp) const
+    /// The answer kept for @p path at @p stamp; with @p publisher (nullable) set to the publisher kept with it.
+    [[nodiscard]] std::optional<SignatureCheck>
+    find(const std::string& path, const FileStamp& stamp, std::string* publisher = nullptr) const
     {
         if (!stamp.fileId.has_value())
         {
@@ -237,10 +269,15 @@ class SignatureCache
         {
             return std::nullopt;
         }
+        if (publisher != nullptr)
+        {
+            *publisher = found->second.publisher;
+        }
         return found->second.check;
     }
 
-    void store(const std::string& path, const FileStamp& stamp, SignatureCheck check)
+    /// Keeps @p check, and the publisher read with it (#4021), for @p path at @p stamp.
+    void store(const std::string& path, const FileStamp& stamp, SignatureCheck check, std::string publisher = {})
     {
         if (!stamp.fileId.has_value())
         {
@@ -252,7 +289,7 @@ class SignatureCache
         {
             std::swap(overflowed, m_Entries);
         }
-        m_Entries.insert_or_assign(path, Entry{.stamp = stamp, .check = std::move(check)});
+        m_Entries.insert_or_assign(path, Entry{.stamp = stamp, .check = std::move(check), .publisher = std::move(publisher)});
     }
 
     [[nodiscard]] std::size_t size() const
@@ -266,6 +303,7 @@ class SignatureCache
     {
         FileStamp stamp;
         SignatureCheck check;
+        std::string publisher;
     };
     mutable std::mutex m_Mutex;
     std::unordered_map<std::string, Entry> m_Entries;
@@ -310,37 +348,58 @@ class ImageCloser
     void* m_File;
 };
 
-/// @p path's signature through @p fns: the embedded signature, else the catalogs, both read through the
-/// one handle openImage() gave, held until the verdict is in; from @p cache (nullable) when it already
-/// holds @p cacheKey with the same file stamp. NotChecked when the table has no signature calls; Unknown
-/// when the file can't be opened or its stamp read (it's gone, not readable, or open for writing).
-[[nodiscard]] inline SignatureCheck
-checkSignature(const SignatureFunctions& fns, SignatureCache* cache, const std::string& path, const std::string& cacheKey)
+/// A check's answer and the publisher read with it, through the same handle (#3703, #4021).
+struct ImageCheck
 {
-    if (fns.openImage == nullptr || fns.closeImage == nullptr || fns.verifyEmbeddedSignature == nullptr ||
-        fns.verifyCatalogSignature == nullptr)
+    SignatureCheck check;
+    std::string publisher;
+};
+
+/// The publisher of the file @p file is open on, through @p fns (empty without readPublisher). One that can't be read
+/// (the call throws) is none: it doesn't change the check's answer.
+[[nodiscard]] inline std::string readHeldPublisher(const SignatureFunctions& fns, const std::string& path, void* file)
+{
+    if (fns.readPublisher == nullptr)
     {
         return {};
     }
-    const std::optional<OpenedImage> image = fns.openImage(path);
-    if (!image.has_value())
+    try
     {
-        return {.signature = ImageSignature::Unknown, .note = "The image file couldn't be read", .signer = {}};
+        return fns.readPublisher(path, file);
     }
-    const ImageCloser closer(fns.closeImage, image->file);
-    const FileStamp& stamp = image->stamp;
+    catch (const std::exception&)
+    {
+        return {};
+    }
+}
+
+/// The check of @p image, held open (and closed here), as @p path: the embedded signature, else the catalogs, both
+/// read through its handle, and with @p withPublisher the publisher through the same handle; from @p cache (nullable)
+/// when it already holds @p cacheKey with the same file stamp.
+[[nodiscard]] inline ImageCheck checkHeldImage(const SignatureFunctions& fns,
+                                               SignatureCache* cache,
+                                               const std::string& path,
+                                               const std::string& cacheKey,
+                                               const OpenedImage& image,
+                                               bool withPublisher)
+{
+    const ImageCloser closer(fns.closeImage, image.file);
+    const FileStamp& stamp = image.stamp;
+    ImageCheck answer;
     if (cache != nullptr)
     {
-        if (std::optional<SignatureCheck> cached = cache->find(cacheKey, stamp); cached.has_value())
+        if (std::optional<SignatureCheck> cached = cache->find(cacheKey, stamp, &answer.publisher); cached.has_value())
         {
-            return std::move(*cached);
+            answer.check = std::move(*cached);
+            return answer;
         }
     }
-    TrustCheck embedded = fns.verifyEmbeddedSignature(path, image->file);
-    std::optional<TrustCheck> catalog = embedded.result == 0 ? std::nullopt : fns.verifyCatalogSignature(path, image->file);
+    TrustCheck embedded = fns.verifyEmbeddedSignature(path, image.file);
+    std::optional<TrustCheck> catalog = embedded.result == 0 ? std::nullopt : fns.verifyCatalogSignature(path, image.file);
     const SignatureVerdict verdict =
         classifySignature(embedded.result, catalog.has_value() ? std::optional<std::int32_t>(catalog->result) : std::nullopt);
-    SignatureCheck check{.signature = verdict.signature, .note = {}, .signer = {}};
+    SignatureCheck& check = answer.check;
+    check = SignatureCheck{.signature = verdict.signature, .note = {}, .signer = {}};
     if (verdict.signature == ImageSignature::Untrusted || verdict.signature == ImageSignature::Unknown)
     {
         check.note = describeError(fns.errorMessage, static_cast<std::uint32_t>(verdict.result)); // an HRESULT's bits
@@ -353,11 +412,119 @@ checkSignature(const SignatureFunctions& fns, SignatureCache* cache, const std::
     {
         check.signer = std::move(catalog->signer);
     }
+    answer.publisher = withPublisher ? readHeldPublisher(fns, path, image.file) : std::string{};
     if (cache != nullptr && verdict.signature != ImageSignature::Unknown)
     {
-        cache->store(cacheKey, stamp, check);
+        cache->store(cacheKey, stamp, check, answer.publisher);
     }
-    return check;
+    return answer;
+}
+
+/// Whether @p fns has every call a signature check needs.
+[[nodiscard]] inline bool canCheckSignatures(const SignatureFunctions& fns) noexcept
+{
+    return fns.openImage != nullptr && fns.closeImage != nullptr && fns.verifyEmbeddedSignature != nullptr &&
+           fns.verifyCatalogSignature != nullptr;
+}
+
+/// The note on a process's check when the file its image was mapped from can't be bound (#4021): @p why.
+[[nodiscard]] inline std::string unboundImageNote(std::string_view why)
+{
+    return std::format("The file this process runs couldn't be confirmed, so its signature and publisher weren't read: {}", why);
+}
+
+/// The signature of the image @p process runs, and its publisher (#4021): the file its image was mapped from, bound
+/// and held by openProcessImage(), checked and read through that handle, never the file at @p path (the name it
+/// started with, which another file may have taken since). The answer is cached under the bound file's own name and
+/// stamp, so a second process of the same file costs a binding and a stamp read, and a decoy at the old name keeps
+/// its own entry. Without openProcessImage, or with no @p process, @p path is opened and checked as checkSignature()
+/// does, cached under @p cacheKey. NotChecked when the table has no signature calls; Unknown, with no publisher, when
+/// the file can't be bound or opened.
+[[nodiscard]] inline ImageCheck checkImage(const SignatureFunctions& fns,
+                                           SignatureCache* cache,
+                                           const std::string& path,
+                                           const std::string& cacheKey,
+                                           const std::optional<ImageProcess>& process)
+{
+    if (!canCheckSignatures(fns))
+    {
+        return {};
+    }
+    if (process.has_value() && fns.openProcessImage != nullptr)
+    {
+        std::expected<BoundImage, std::string> bound = fns.openProcessImage(*process);
+        if (!bound.has_value())
+        {
+            return {
+                .check = {.signature = ImageSignature::Unknown, .note = unboundImageNote(bound.error()), .signer = {}},
+                .publisher = {},
+            };
+        }
+        return checkHeldImage(fns, cache, bound->path, pathKey(bound->path), bound->image, true);
+    }
+    const std::optional<OpenedImage> image = fns.openImage(path);
+    if (!image.has_value())
+    {
+        return {
+            .check = {.signature = ImageSignature::Unknown, .note = "The image file couldn't be read", .signer = {}},
+            .publisher = {},
+        };
+    }
+    return checkHeldImage(fns, cache, path, cacheKey, *image, true);
+}
+
+/// @p path's signature through @p fns: the embedded signature, else the catalogs, both read through the
+/// one handle openImage() gave, held until the verdict is in; from @p cache (nullable) when it already
+/// holds @p cacheKey with the same file stamp. NotChecked when the table has no signature calls; Unknown
+/// when the file can't be opened or its stamp read (it's gone, not readable, or open for writing). No publisher
+/// is read: the Drivers section's check.
+[[nodiscard]] inline SignatureCheck
+checkSignature(const SignatureFunctions& fns, SignatureCache* cache, const std::string& path, const std::string& cacheKey)
+{
+    if (!canCheckSignatures(fns))
+    {
+        return {};
+    }
+    const std::optional<OpenedImage> image = fns.openImage(path);
+    if (!image.has_value())
+    {
+        return {.signature = ImageSignature::Unknown, .note = "The image file couldn't be read", .signer = {}};
+    }
+    return checkHeldImage(fns, cache, path, cacheKey, *image, false).check;
+}
+
+/// The publisher of the image @p process runs, read through the handle openProcessImage() binds (#4021), or with no
+/// binding (no openProcessImage, or no @p process) through openImage()'s of @p path; empty when the file can't be
+/// opened or names none. For the probe once the signature worker has ended (#3862): the publisher it reads is still
+/// the bound file's, never the file at the old path.
+[[nodiscard]] inline std::string
+readImagePublisher(const SignatureFunctions& fns, const std::string& path, const std::optional<ImageProcess>& process)
+{
+    if (fns.readPublisher == nullptr || fns.closeImage == nullptr)
+    {
+        return {};
+    }
+    if (process.has_value() && fns.openProcessImage != nullptr)
+    {
+        std::expected<BoundImage, std::string> bound = fns.openProcessImage(*process);
+        if (!bound.has_value())
+        {
+            return {};
+        }
+        const ImageCloser closer(fns.closeImage, bound->image.file);
+        return readHeldPublisher(fns, bound->path, bound->image.file);
+    }
+    if (fns.openImage == nullptr)
+    {
+        return {};
+    }
+    const std::optional<OpenedImage> image = fns.openImage(path);
+    if (!image.has_value())
+    {
+        return {};
+    }
+    const ImageCloser closer(fns.closeImage, image->file);
+    return readHeldPublisher(fns, path, image->file);
 }
 
 } // namespace Platform::WindowsSignature

@@ -410,6 +410,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsSignatureCheck.cpp # images' signatures, embedded and catalog: drivers (#1661), processes (#3070)
+    src/Platform/Windows/WindowsImageFile.cpp # the file a process's image was mapped from, held: its hash and signature (#3861, #4021)
     src/Platform/Windows/WindowsCrashEvents.cpp
     src/Platform/Windows/WindowsBootPerformance.cpp
     src/Platform/Windows/WindowsPlatformSecurity.cpp
