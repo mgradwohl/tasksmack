@@ -835,7 +835,10 @@ set(COMMON_TEST_SOURCES
     App/test_ValueStripText.cpp # the strips' texts, held in place (#843)
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
-    App/test_ProcessesPanelRender.cpp
+    App/test_ProcessesPanelRender.cpp  # split by feature (#3850): the fixture is in ProcessesPanelRenderFixture.h
+    App/test_ProcessesPanelRenderColumns.cpp
+    App/test_ProcessesPanelRenderGroups.cpp
+    App/test_ProcessesPanelRenderActions.cpp
     App/test_FindHandlesFormat.cpp # the Find handles order and status line (#3374)
     App/test_FindHandlesDialogRender.cpp # the dialog's Stop and its administrator's search, headless (#3374)
     App/test_ServicesStartupPanelsRender.cpp
