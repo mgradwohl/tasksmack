@@ -399,6 +399,39 @@ TEST(BatteryStatusTest, TwoBatteriesAreSummedAndTheVoltageIsTheFirstOnes)
     EXPECT_EQ(out.voltageMv, 11'400U);
 }
 
+TEST(BatteryStatusTest, TheVoltageIsTheFirstReportingBatterysWhenTheFrontOneGivesNone)
+{
+    const std::array two{
+        BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = BATTERY_VOLTAGE_UNKNOWN_VALUE, .relative = false},
+        BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = 11'400, .relative = false},
+    };
+    const BatteryStatusTotals out = combineBatteryStatus(two);
+    EXPECT_TRUE(out.hasVoltage);
+    EXPECT_EQ(out.voltageMv, 11'400U);
+}
+
+TEST(BatteryStatusTest, TheFrontBatterysVoltageWinsWhenBothReport)
+{
+    const std::array two{
+        BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = 12'000, .relative = false},
+        BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = 11'400, .relative = false},
+    };
+    const BatteryStatusTotals out = combineBatteryStatus(two);
+    EXPECT_TRUE(out.hasVoltage);
+    EXPECT_EQ(out.voltageMv, 12'000U);
+}
+
+TEST(BatteryStatusTest, NoVoltageIsOfferedWhenNoBatteryReportsOne)
+{
+    const std::array two{
+        BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = BATTERY_VOLTAGE_UNKNOWN_VALUE, .relative = false},
+        BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = 0, .relative = false},
+    };
+    const BatteryStatusTotals out = combineBatteryStatus(two);
+    EXPECT_FALSE(out.hasVoltage);
+    EXPECT_EQ(out.voltageMv, 0U);
+}
+
 TEST(BatteryStatusTest, APackWithAnUnknownOrRelativeChargeLeavesNoSumButItsRateCounts)
 {
     // As Linux (#2409): a charge sum missing a pack would read as the whole battery's

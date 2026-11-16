@@ -7,7 +7,6 @@
 // (tests/Platform/WindowsMath/test_WindowsEtwNetMath.cpp).
 
 #include "Platform/IUdpTrafficCollector.h"
-#include "Platform/ProcessTypes.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -185,29 +184,8 @@ class UdpByteCounters
     std::unordered_map<std::uint32_t, Entry> m_Entries;
 };
 
-/// The socket key of a process's UDP counters. Bit 63 set: the TCP keys (estatsConnectionKey())
-/// always have it clear, so the two never collide.
-[[nodiscard]] constexpr std::uint64_t udpSocketKey(std::uint32_t pid) noexcept
-{
-    return (std::uint64_t{1} << 63U) | pid;
-}
-
-/// Add each process's UDP counters to a socket-traffic reading as one synthetic, cumulative
-/// "connection" (key udpSocketKey()). Its owner is matched by PID alone (start time 0), as the TCP
-/// rows are: the events report only the PID.
-inline void appendUdpSamples(std::vector<SocketTrafficSample>& sockets, std::span<const UdpProcessTraffic> udp)
-{
-    sockets.reserve(sockets.size() + udp.size());
-    for (const UdpProcessTraffic& process : udp)
-    {
-        sockets.push_back(SocketTrafficSample{
-            .key = udpSocketKey(process.pid),
-            .pid = static_cast<std::int32_t>(process.pid),
-            .bytesReceived = process.bytesReceived,
-            .bytesSent = process.bytesSent,
-        });
-    }
-}
+// The UDP counters become socket-traffic samples through Platform::UdpTraffic::appendSamples()
+// (UdpTrafficSamples.h), the one both platforms' probes call (#3869); its key with generation 0 is Windows'.
 
 // ==========================================================================
 // Session names and stale sessions

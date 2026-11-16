@@ -79,7 +79,8 @@ void markLessPrivilegedFolder();
 /// An elevated TaskSmack (#3920) ignores TASKSMACK_CONFIG_DIR from now on: its environment can come from the
 /// less-privileged side (a same-user elevation reads the user's own HKCU\Environment), so active() takes no directory
 /// from it and creates none. A hand-off it adopts is used as before; otherwise it keeps its own account's folder.
-/// main.cpp calls this first thing in an elevated session, before anything reads active(). Not thread-safe, as above.
+/// main.cpp calls this first thing in an elevated session (Windows), or one run as root for a user (Linux, #4090), before
+/// anything reads active(). Not thread-safe, as above.
 void ignoreTestHook();
 
 /// Whether TASKSMACK_CONFIG_DIR is set but ignored (ignoreTestHook()), for main.cpp to log once logging is up.
