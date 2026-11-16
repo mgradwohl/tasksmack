@@ -221,7 +221,8 @@ echo "==> Merging coverage data..."
 shopt -s nullglob
 profiles=("${BUILD_DIR}"/*.profraw "${BUILD_DIR}"/coverage-root/*.profraw)
 shopt -u nullglob
-$LLVM_PROFDATA merge -sparse "${profiles[@]}" -o "${BUILD_DIR}/default.profdata"
+# A profile that can't be read (a child ended before writing its header) is skipped and named, not fatal (#4080)
+"${SCRIPT_DIR}/merge-profraw.sh" "$LLVM_PROFDATA" "${BUILD_DIR}/default.profdata" "${profiles[@]}"
 
 # Files excluded from coverage: generated/third-party paths and test sources only (benchmarks/ holds
 # test-support headers the tests include, #1395). ImGui panel code
