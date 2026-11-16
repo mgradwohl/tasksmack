@@ -77,7 +77,7 @@ class ShellLayer : public Core::Layer
     /// The Processes tab's panel, for the UI scenarios that check its state after driving it (#2711).
     [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
     {
-        return m_ProcessesPanel;
+        return m_Panels.processes();
     }
 
     /// Each tab's event name and the name of the panel it shows, in tab order: the tabs take their panels by position in
@@ -187,9 +187,8 @@ class ShellLayer : public Core::Layer
     UpdateChecker m_Updates;
 
     // The panels and the window-independent wiring between them, shared with the PGO training driver (#2136). The shell
-    // reaches the Processes and System panels through ShellPanels' forwarders (#3717); these two it names directly.
+    // reaches the Processes and System panels through ShellPanels' forwarders (#3717); Process Details it names directly.
     ShellPanels m_Panels;
-    ProcessesPanel& m_ProcessesPanel = m_Panels.processes();
     ProcessDetailsPanel& m_ProcessDetailsPanel = m_Panels.processDetails();
 
     // Frame timing / FPS display

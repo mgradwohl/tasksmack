@@ -60,6 +60,7 @@ class ShellPanels
     ShellPanels& operator=(ShellPanels&&) = delete;
 
     [[nodiscard]] ProcessesPanel& processes() noexcept;
+    [[nodiscard]] const ProcessesPanel& processes() const noexcept;
     [[nodiscard]] ProcessDetailsPanel& processDetails() noexcept;
     [[nodiscard]] SystemMetricsPanel& systemMetrics() noexcept;
     [[nodiscard]] ServicesPanel& services() noexcept;
