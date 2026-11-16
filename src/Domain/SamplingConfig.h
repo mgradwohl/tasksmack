@@ -73,7 +73,8 @@ inline constexpr int NETWORK_ADAPTER_DEVICE_CACHE_TTL_SECONDS = 30;
 // manufacturer and model -- are read again from the battery device (seconds) (#1523). They barely
 // change. The read (a SetupAPI enumeration and the battery IOCTLs) can stall on a slow ACPI call, so
 // WindowsPowerProbe runs it on a one-shot worker (ts-battery-read, #2731), never in the sampling pass,
-// which reads only the live state (GetSystemPowerStatus) each pass.
+// which reads only the live state each pass: GetSystemPowerStatus, and IOCTL_BATTERY_QUERY_STATUS on
+// the battery devices the last re-read left open and tagged (#4030).
 inline constexpr int BATTERY_INFO_REFRESH_SECONDS = 300;
 
 // How long WindowsProcessProbe reuses the account name LookupAccountSidW gave for a SID (seconds)
