@@ -287,7 +287,8 @@ TEST(LazyBackgroundReadTest, AThrowingReadForAPreviousSelectionIsDroppedAndTheNe
 
 // #3343: a read that can't start (no memory for its worker) is the Failed result at once, with nothing in
 // flight, so the section shows it and the next refresh tries again. Skipped where the hook is compiled out
-// (Windows, sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+// (Windows debug, sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds and the
+// Windows release build run it.
 TEST(LazyBackgroundReadTest, AReadThatCannotStartIsTheFailedResultAndTheNextRefreshRetries)
 {
 #ifdef TASKSMACK_NO_ALLOCATOR_HOOK
@@ -387,7 +388,7 @@ bool startNext(Read& read, CountingReader* reader, float deltaSeconds, int* fail
             result.error = "shaped"; // runs on the worker after either read
             return result;
         },
-        [failures](FakeResult&& /*failed*/)
+        [failures](const FakeResult& /*failed*/)
         {
             if (failures != nullptr)
             {
@@ -451,7 +452,7 @@ TEST(LazyBackgroundReadTest, ARefusedReadOffersAuthenticateOnlyWhenTheReaderCanA
     EXPECT_FALSE(read.offersAuthorizedRead(false));
 
     std::promise<void> release;
-    std::shared_future<void> released = release.get_future().share();
+    const std::shared_future<void> released = release.get_future().share();
     read.markDrawnOpen();
     ASSERT_TRUE(read.due(0.0F));
     static_cast<void>(read.start(TARGET,
