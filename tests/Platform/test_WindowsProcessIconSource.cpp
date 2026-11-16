@@ -99,6 +99,7 @@ BOOL WINAPI fakeQueryImageName(HANDLE process, DWORD /*flags*/, LPWSTR buffer, P
     const auto needed = static_cast<DWORD>(api().imagePath.size() + 1);
     if (*size < std::max(needed, api().imagePathNeeds))
     {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER); // as Windows does, for a buffer too small
         return FALSE;
     }
     std::memcpy(buffer, api().imagePath.c_str(), needed * sizeof(wchar_t));
@@ -375,7 +376,7 @@ TEST_F(WindowsProcessIconSourceTest, RetriesALongPathWithTheLongPathBuffer)
 {
     api().imagePathNeeds = 1000;
     EXPECT_EQ(m_Source.executablePath(1234), "C:\\Program Files\\App\\app.exe");
-    EXPECT_EQ(api().pathBufferSizes, (std::vector<DWORD>{MAX_PATH, 32767}));
+    EXPECT_EQ(api().pathBufferSizes, (std::vector<DWORD>{MAX_PATH, 32768}));
     EXPECT_EQ(api().processesClosed, 1);
 }
 
