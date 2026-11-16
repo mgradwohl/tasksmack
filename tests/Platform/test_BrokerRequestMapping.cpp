@@ -78,18 +78,7 @@ TEST(BrokerRequestMappingTest, EachSignalReachesItsAction)
     EXPECT_EQ(actions.stopCount(), 1);
     EXPECT_EQ(actions.resumeCount(), 1);
     EXPECT_EQ(actions.lastTarget(), TARGET);
-
-    // The other signals (#3063) reach sendSignal() with their own ProcessSignal.
-    for (const auto [wire, signal] : {std::pair{Broker::Signal::Hangup, ProcessSignal::Hangup},
-                                      std::pair{Broker::Signal::Interrupt, ProcessSignal::Interrupt},
-                                      std::pair{Broker::Signal::Quit, ProcessSignal::Quit},
-                                      std::pair{Broker::Signal::User1, ProcessSignal::User1},
-                                      std::pair{Broker::Signal::User2, ProcessSignal::User2}})
-    {
-        EXPECT_TRUE(actionResult(BrokerServer::handleRequest(Broker::SignalRequest{.target = TARGET, .signal = wire}, actions)).success);
-        EXPECT_EQ(actions.lastSignal(), signal);
-    }
-    EXPECT_EQ(actions.sendSignalCount(), 5);
+    EXPECT_EQ(actions.sendSignalCount(), 0) << "no POSIX signal reaches the helper (v26, #3784)";
 }
 
 TEST(BrokerRequestMappingTest, PriorityIoPriorityAndAffinityReachTheirActions)
@@ -161,21 +150,9 @@ TEST(BrokerRequestMappingTest, AnEfficiencyOffRemembersTheClassItCarriesFirstAnd
     EXPECT_EQ(actions.efficiencyLog().size(), 4U);
 }
 
-// #3066: a CloseConnection request reaches closeConnection() with its target and socket inode.
-TEST(BrokerRequestMappingTest, CloseConnectionReachesItsAction)
-{
-    TestMocks::MockProcessActions actions;
-    const Broker::Response response =
-        BrokerServer::handleRequest(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 81234}, actions);
-    EXPECT_TRUE(actionResult(response).success);
-    EXPECT_EQ(actions.closeConnectionCount(), 1);
-    EXPECT_EQ(actions.lastSocketInode(), 81234U);
-    EXPECT_EQ(actions.lastTarget(), TARGET);
-    EXPECT_EQ(actions.closeTcpConnectionCount(), 0);
-}
-
-// #3358: one with no inode and IPv4 TCP endpoints (Windows) reaches closeTcpConnection() with them; one with neither
-// reaches closeConnection(), which refuses inode 0.
+// #3358: a CloseConnection request reaches closeTcpConnection() with its IPv4 TCP endpoints, and always that: the
+// inode close by socket (#3066) was the Linux helper's, and v26 (#3784) carries no inode. One with no endpoints goes
+// there too, for the actions to refuse.
 TEST(BrokerRequestMappingTest, CloseConnectionByEndpointsReachesTheTcpClose)
 {
     const Platform::TcpConnectionToClose connection{
@@ -186,8 +163,8 @@ TEST(BrokerRequestMappingTest, CloseConnectionByEndpointsReachesTheTcpClose)
     };
     TestMocks::MockProcessActions actions;
     actions.setCloseConnectionResult(Platform::ProcessActionResult::denied("Closing a connection needs administrator rights"));
-    const Broker::ActionResult refused = actionResult(BrokerServer::handleRequest(
-        Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 0, .tcpConnection = connection}, actions));
+    const Broker::ActionResult refused =
+        actionResult(BrokerServer::handleRequest(Broker::CloseConnectionRequest{.target = TARGET, .tcpConnection = connection}, actions));
     EXPECT_FALSE(refused.success);
     EXPECT_EQ(refused.errorMessage, "Closing a connection needs administrator rights");
     EXPECT_EQ(actions.closeTcpConnectionCount(), 1);
@@ -196,8 +173,9 @@ TEST(BrokerRequestMappingTest, CloseConnectionByEndpointsReachesTheTcpClose)
     EXPECT_EQ(actions.lastTarget(), TARGET);
 
     static_cast<void>(BrokerServer::handleRequest(Broker::CloseConnectionRequest{.target = TARGET}, actions));
-    EXPECT_EQ(actions.closeConnectionCount(), 1);
-    EXPECT_EQ(actions.closeTcpConnectionCount(), 1);
+    EXPECT_EQ(actions.closeConnectionCount(), 0);
+    EXPECT_EQ(actions.closeTcpConnectionCount(), 2);
+    EXPECT_EQ(actions.lastTcpConnection(), Platform::TcpConnectionToClose{});
 }
 
 // #3069: a ThreadAction request reaches actOnThread() with its target, thread and action; the actions' refusal

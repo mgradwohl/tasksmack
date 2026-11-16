@@ -90,6 +90,11 @@ ProcessesPanel& ShellPanels::processes() noexcept
     return m_Impl->m_Processes;
 }
 
+const ProcessesPanel& ShellPanels::processes() const noexcept
+{
+    return m_Impl->m_Processes;
+}
+
 ProcessDetailsPanel& ShellPanels::processDetails() noexcept
 {
     return m_Impl->m_ProcessDetails;

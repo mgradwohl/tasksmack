@@ -2,9 +2,10 @@
 
 #include "App/PanelPlatformTypes.h"
 #include "NativeWindow.h"
-#include "Platform/BrokeredProcessActions.h"
 #ifdef _WIN32
-#include "Platform/BrokeredUserSessions.h" // the signed-in sessions' helper decorator: Windows only (#3076)
+// The helper's decorators, Windows only (#3076, #3784): Linux has no helper (#3580)
+#include "Platform/BrokeredProcessActions.h"
+#include "Platform/BrokeredUserSessions.h"
 #endif
 #include "Platform/Factory.h"
 #include "Platform/IDiskProbe.h"
@@ -57,11 +58,16 @@ namespace
 template<typename Make> [[nodiscard]] auto brokered(const Synthetic::Scenario* scenario, Make make) -> decltype(make(scenario))
 {
     decltype(make(scenario)) made = make(scenario);
+#ifdef _WIN32
     if (scenario != nullptr)
     {
         return made; // a synthetic run uses no helper
     }
     return Platform::withPrivilegedBroker(std::move(made), sharedPrivilegedBroker());
+#else
+    static_cast<void>(scenario);
+    return made; // Linux has no helper (#3580), so nothing to decorate (#3784)
+#endif
 }
 
 /// @p scenario's process actions, or the platform's, which an administrator can finish (#2308).
