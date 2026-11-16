@@ -109,18 +109,8 @@ constexpr std::string_view SYSTEM_NAME = "the system";
 }
 
 [[nodiscard]] Platform::ServiceActionResult
-dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken, bool authorized)
+dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken)
 {
-    if (authorized)
-    {
-        constexpr std::array<Platform::ServiceAction, 4> ACTIONS{
-            Platform::ServiceAction::Start,
-            Platform::ServiceAction::Stop,
-            Platform::ServiceAction::Restart,
-            Platform::ServiceAction::SetStartType,
-        };
-        return actions.runAuthorized(ACTIONS.at(static_cast<std::size_t>(request.kind)), request.name, request.startType, stopToken);
-    }
     switch (request.kind)
     {
     case ServiceActionKind::Start:
@@ -338,15 +328,15 @@ void ServiceActionsView::request(ServiceActionRequest request)
     m_ShowConfirm = true;
 }
 
-void ServiceActionsView::run(ServiceActionRequest request, bool authorized)
+void ServiceActionsView::run(ServiceActionRequest request)
 {
     m_Result = {};
     m_Running = request;
     // The worker owns copies of everything it uses; it shares only its result and a new stop token's
     // state (a cancel() of an earlier action does not carry over) with this view. An action that throws
     // is a failed result, built on the worker (BackgroundTask, #1685).
-    if (auto failed = m_Worker.start([actions = m_Actions, request = std::move(request), authorized](const std::stop_token& stopToken)
-                                     { return SvcDetail::dispatch(*actions, request, stopToken, authorized); }))
+    if (auto failed = m_Worker.start([actions = m_Actions, request = std::move(request)](const std::stop_token& stopToken)
+                                     { return SvcDetail::dispatch(*actions, request, stopToken); }))
     {
         m_Result = SvcDetail::resultMessage(m_Running, *failed);
         m_ResultSecondsLeft = SvcDetail::RESULT_SECONDS;
@@ -361,26 +351,11 @@ bool ServiceActionsView::takeFinished()
         return false;
     }
     m_Result = SvcDetail::resultMessage(m_Running, *result);
-    // A refusal a password prompt could allow offers the retry; one that found nothing to show a prompt
-    // stops it being offered this session (#2304).
-    m_AuthorizationUnavailable = m_AuthorizationUnavailable || result->authorizationUnavailable;
-    m_Result.canAuthorize = result->needsAuthorization && m_Capabilities.canAuthorizeInteractively && !m_AuthorizationUnavailable;
-    // Refused for want of an administrator, with no prompt to retry it (Windows' "Requires administrator"):
-    // Restart as administrator... where TaskSmack can restart elevated (#3669).
-    m_Result.offersRestart =
-        RestartAsAdministrator::offersRestart(result->needsAdministrator, m_Result.canAuthorize, RestartAsAdministrator::offered());
-    m_ResultSecondsLeft =
-        (m_Result.canAuthorize || m_Result.offersRestart) ? SvcDetail::AUTHORIZE_RESULT_SECONDS : SvcDetail::RESULT_SECONDS;
+    // Refused for want of an administrator (Windows' "Requires administrator"): Restart as administrator...
+    // where TaskSmack can restart elevated (#3669). No platform offers a password-prompt retry (#3867).
+    m_Result.offersRestart = RestartAsAdministrator::offersRestart(result->needsAdministrator, false, RestartAsAdministrator::offered());
+    m_ResultSecondsLeft = m_Result.offersRestart ? SvcDetail::AUTHORIZE_RESULT_SECONDS : SvcDetail::RESULT_SECONDS;
     return true;
-}
-
-void ServiceActionsView::retryAuthorized()
-{
-    if (busy() || !m_Result.canAuthorize)
-    {
-        return;
-    }
-    run(m_Running, true);
 }
 
 void ServiceActionsView::tick(float deltaSeconds) noexcept
@@ -518,16 +493,7 @@ void ServiceActionsView::renderResultLine()
     {
         // The colour comes from the result's flag, never from its text.
         ImGui::TextColored(m_Result.ok ? scheme.textSuccess : scheme.textError, "%s", m_Result.text.c_str());
-        if (m_Result.canAuthorize)
-        {
-            ImGui::SameLine();
-            if (ImGui::SmallButton(ICON_FA_LOCK "  Authenticate and retry"))
-            {
-                retryAuthorized();
-            }
-            ImGui::SetItemTooltip("Shows your system's authentication prompt (polkit) and runs it again");
-        }
-        else if (m_Result.offersRestart)
+        if (m_Result.offersRestart)
         {
             ImGui::SameLine();
             static_cast<void>(RestartAsAdministrator::drawButton()); // opens the notice's Restart as administrator... (#3669)
