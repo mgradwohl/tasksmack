@@ -527,22 +527,6 @@ std::expected<UniqueHandle, std::string> openParent(DWORD pid, std::uint64_t sta
     return UniqueHandle(process->release());
 }
 
-std::optional<std::wstring> imageOf(HANDLE process, QueryFullProcessImageNameFn query)
-{
-    return readPath(
-        [process, query](wchar_t* buffer, DWORD size) -> DWORD
-        {
-            DWORD written = size;
-            if (query(process, 0, buffer, &written) != FALSE)
-            {
-                return written;
-            }
-            // A buffer too small fails with ERROR_INSUFFICIENT_BUFFER, not the size needed as
-            // GetModuleFileNameW gives it: the size tried, so readPath() tries the longest (#2770).
-            return GetLastError() == ERROR_INSUFFICIENT_BUFFER ? size : 0;
-        });
-}
-
 std::optional<std::wstring> ownImage(GetModuleFileNameFn getModuleFileName)
 {
     // A path that doesn't fit comes back truncated, with the size tried: readPath() tries the longest.
@@ -696,7 +680,7 @@ std::expected<void, std::string> checkParentIsTaskSmack(HANDLE parent, const Arg
     {
         return std::unexpected(std::string("the process named started after the helper, so didn't start it"));
     }
-    const auto image = imageOf(parent);
+    const auto image = processImagePath(parent);
     if (!image.has_value())
     {
         return std::unexpected(std::format("couldn't read the parent's executable: {}", lastErrorText(GetLastError())));

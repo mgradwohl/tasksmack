@@ -88,13 +88,6 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
 namespace
 {
 
-/// Whether this TaskSmack runs elevated: asked once, as it can't change while the process runs.
-[[nodiscard]] bool runningElevated()
-{
-    static const bool elevated = Platform::Windows::isProcessElevated();
-    return elevated;
-}
-
 // LCOV_EXCL_START - each launches the real default handler (a browser, editor or Explorer); no test may (#2039)
 /// ShellExecuteW in this process: the handler runs as TaskSmack does. @p shown names the target in the log.
 [[nodiscard]] bool shellExecuteHere(const std::wstring& target, const std::string& shown)
@@ -130,7 +123,7 @@ namespace
 /// open() for a UTF-16 target, named @p shown in the log.
 [[nodiscard]] OpenResult openWide(const std::wstring& target, const std::string& shown)
 {
-    const OpenResult result = Detail::openRouted(runningElevated(),
+    const OpenResult result = Detail::openRouted(Platform::Windows::isProcessElevated(),
                                                  {
                                                      .direct = [&target, &shown] { return shellExecuteHere(target, shown); },
                                                      .unelevated = [&target, &shown] { return shellExecuteUnelevated(target, shown); },

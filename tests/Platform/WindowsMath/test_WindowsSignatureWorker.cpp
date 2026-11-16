@@ -9,7 +9,8 @@
 /// the destructor stopping a queue. On Domain::Worker (#3343): a check that throws something other than a
 /// std::exception fails the worker, which answers every path rather than terminating; a burst against a
 /// drain in progress, each path checked once; a drain refused; and shutdown while a check is in progress. A process's
-/// image bound to the file it was mapped from, never the decoy at its path (#4021).
+/// image bound to the file it was mapped from, never the decoy at its path (#4021). A process that has exited, or that
+/// the probe no longer lists, dropped before its turn with no binding, check or pause (#4059).
 /// Pure (no Windows header), so built everywhere.
 
 #include "Platform/ImageSignature.h"
@@ -30,6 +31,7 @@
 #include <mutex>
 #include <new>
 #include <optional>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -1030,6 +1032,27 @@ std::vector<ImageProcess>& bindings()
     return asked;
 }
 
+/// The PIDs the fake processExited() says have exited (#4059). Guarded by fakes().mutex.
+std::set<std::int32_t>& exitedPids()
+{
+    static std::set<std::int32_t> pids;
+    return pids;
+}
+
+/// Each process the fake processExited() was asked about. Guarded by fakes().mutex.
+std::vector<ImageProcess>& exitChecks()
+{
+    static std::vector<ImageProcess> asked;
+    return asked;
+}
+
+/// The thread the fake processExited() was last asked on. Guarded by fakes().mutex.
+std::thread::id& exitCheckThread()
+{
+    static std::thread::id thread;
+    return thread;
+}
+
 constexpr std::string_view UNBOUND = "Its executable can't be found";
 constexpr std::int32_t PROTECTED_PID = 50; ///< A protected process (csrss.exe, say): never bound
 
@@ -1057,6 +1080,13 @@ SignatureFunctions bindingFunctions()
     {
         return "Publisher of " + path;
     };
+    functions.processExited = [](const ImageProcess& process)
+    {
+        const std::scoped_lock lock(fakes().mutex);
+        exitChecks().push_back(process);
+        exitCheckThread() = std::this_thread::get_id();
+        return exitedPids().contains(process.pid);
+    };
     return functions;
 }
 
@@ -1076,6 +1106,9 @@ class SignatureBindingTest : public SignatureWorkerTest
         const std::scoped_lock lock(fakes().mutex);
         boundFiles().clear();
         bindings().clear();
+        exitedPids().clear();
+        exitChecks().clear();
+        exitCheckThread() = {};
     }
 };
 
@@ -1226,6 +1259,115 @@ TEST_F(SignatureBindingTest, OnlyARealCheckIsPaused)
     worker.request("C:\\app.exe", ImageProcess{.pid = 8, .startTimeTicks = 1});   // checked, then the hour's pause
     ASSERT_TRUE(worker.waitUntilIdle(WAIT)) << "the failed binding didn't pause before the check";
     EXPECT_EQ(checksOf("C:\\app.exe"), 1);
+}
+
+// #4059: a build's short-lived processes queued ahead of a long-lived one have exited by their turn. Each is dropped
+// with no binding, no check and no pause (an hour here: one of them checked would hold the live one for it), and leaves
+// no answer and no cache entry; the live one, queued last, is answered. Bound to a signed file, as a zombie's could be
+// (exited, its object held open by a parent that hasn't reaped it), each would be checked and paused for if it weren't
+// dropped first.
+TEST_F(SignatureBindingTest, ExitedProcessesQueuedAheadAreDroppedAndTheLiveOneIsAnsweredWithoutWaitingForThem)
+{
+    constexpr std::int32_t FIRST_EXITED = 100;
+    constexpr std::int32_t EXITED_COUNT = 200;
+    constexpr std::int32_t LIVE_PID = 1;
+    setStamp("C:\\cl.exe", 1);
+    setStamp("C:\\app.exe", 2);
+    bindTo(LIVE_PID, "C:\\app.exe");
+    {
+        const std::scoped_lock lock(fakes().mutex);
+        for (std::int32_t pid = FIRST_EXITED; pid < FIRST_EXITED + EXITED_COUNT; ++pid)
+        {
+            boundFiles()[pid] = "C:\\cl.exe";
+            exitedPids().insert(pid);
+        }
+    }
+    WorkerOptions options;
+    options.pause = std::chrono::hours(1);
+    SignatureWorker worker(bindingFunctions(), options);
+    for (std::int32_t pid = FIRST_EXITED; pid < FIRST_EXITED + EXITED_COUNT; ++pid)
+    {
+        worker.request("C:\\cl.exe", ImageProcess{.pid = pid, .startTimeTicks = 1});
+    }
+    const ImageProcess live{.pid = LIVE_PID, .startTimeTicks = 1};
+    worker.request("C:\\app.exe", live);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT)) << "no exited process was checked and paused for";
+    EXPECT_EQ(worker.pathCount(), 1U) << "the exited ones leave no answer";
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+    EXPECT_EQ(worker.cachedFileCount(), 1U) << "nor a cache entry: only the live one's file";
+    std::string publisher;
+    const std::optional<SignatureCheck> check = worker.find("C:\\app.exe", live, &publisher);
+    ASSERT_TRUE(check.has_value());
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of C:\\app.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\app.exe");
+    EXPECT_EQ(checksOf("C:\\cl.exe"), 0);
+    const std::scoped_lock lock(fakes().mutex);
+    ASSERT_EQ(bindings().size(), 1U) << "no exited process was bound";
+    EXPECT_EQ(bindings().front(), live);
+    EXPECT_EQ(exitChecks().size(), static_cast<std::size_t>(EXITED_COUNT) + 1) << "one exit check a process";
+    EXPECT_EQ(exitCheckThread(), fakes().checkThread) << "asked on the worker's thread";
+    EXPECT_NE(exitCheckThread(), std::this_thread::get_id()) << "never the caller's";
+}
+
+// #4059: a queued process the probe stopped asking for (no request() or find() through a whole sample) has left its
+// list, and is dropped at its turn with no call at all, not even the exit check. One still asked for each sample is
+// checked as usual, however long it waited.
+TEST_F(SignatureBindingTest, AQueuedProcessTheProbeNoLongerListsIsDroppedWithoutAnExitCheck)
+{
+    setStamp("C:\\first.exe", 1);
+    setStamp("C:\\gone.exe", 2);
+    setStamp("C:\\listed.exe", 3);
+    bindTo(1, "C:\\first.exe");
+    bindTo(2, "C:\\gone.exe");
+    bindTo(3, "C:\\listed.exe");
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const MeteredChecks metered; // after the worker: goes first, so the worker never joins on a held check
+    const ImageProcess first{.pid = 1, .startTimeTicks = 1};
+    const ImageProcess gone{.pid = 2, .startTimeTicks = 1};
+    const ImageProcess listed{.pid = 3, .startTimeTicks = 1};
+    worker.beginSample();
+    worker.request("C:\\first.exe", first);
+    ASSERT_TRUE(waitForChecksEntered(1)) << "the worker holds the first check while the others wait";
+    worker.request("C:\\gone.exe", gone);
+    worker.request("C:\\listed.exe", listed);
+    worker.beginSample();
+    EXPECT_FALSE(worker.find("C:\\listed.exe", listed).has_value()) << "still listed: asked for again, still queued";
+    worker.beginSample(); // a whole sample without an ask for `gone`
+    allowChecks(10);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+    EXPECT_EQ(worker.pathCount(), 2U) << "the unlisted one leaves no answer";
+    EXPECT_EQ(worker.find("C:\\listed.exe", listed).value_or(SignatureCheck{}).signer, "Signer of C:\\listed.exe");
+    EXPECT_EQ(checksOf("C:\\gone.exe"), 0);
+    const std::scoped_lock lock(fakes().mutex);
+    EXPECT_EQ(bindings().size(), 2U) << "the unlisted one wasn't bound";
+    EXPECT_TRUE(std::ranges::none_of(bindings(), [&gone](const ImageProcess& asked) { return asked == gone; }));
+    EXPECT_TRUE(std::ranges::none_of(exitChecks(), [&gone](const ImageProcess& asked) { return asked == gone; }))
+        << "decided from the samples alone";
+}
+
+// #4059: an exited process dropped while the probe still lists it (a zombie, say) is simply requested again by the
+// next find(), and dropped again: never answered, never left queued.
+TEST_F(SignatureBindingTest, AnExitedProcessStillAskedForIsRequestedAgainAndDroppedAgain)
+{
+    setStamp("C:\\cl.exe", 1);
+    bindTo(5, "C:\\cl.exe");
+    {
+        const std::scoped_lock lock(fakes().mutex);
+        exitedPids().insert(5);
+    }
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess zombie{.pid = 5, .startTimeTicks = 1};
+    worker.request("C:\\cl.exe", zombie);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.pathCount(), 0U);
+    EXPECT_FALSE(worker.find("C:\\cl.exe", zombie).has_value()) << "requested again";
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.pathCount(), 0U);
+    EXPECT_EQ(worker.queuedPathCount(), 0U);
+    const std::scoped_lock lock(fakes().mutex);
+    EXPECT_TRUE(bindings().empty());
+    EXPECT_EQ(exitChecks().size(), 2U);
 }
 
 } // namespace

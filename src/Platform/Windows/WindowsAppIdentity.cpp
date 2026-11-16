@@ -1,6 +1,7 @@
 #include "WindowsAppIdentity.h"
 
 #include "ComPtr.h"
+#include "ComTypes.h"
 #include "WinString.h"
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows umbrella headers; symbols come from implementation sub-headers
@@ -60,25 +61,6 @@ template<typename Fn> [[nodiscard]] std::string readAppModelString(const Fn& rea
     return WinString::wideToUtf8(text);
 }
 
-/// PropVariantClear on a PROPVARIANT when the scope that read it ends, however it ends.
-class PropVariantClearer
-{
-  public:
-    explicit PropVariantClearer(PROPVARIANT* value) noexcept : m_Value(value)
-    {}
-    ~PropVariantClearer()
-    {
-        static_cast<void>(PropVariantClear(m_Value));
-    }
-    PropVariantClearer(const PropVariantClearer&) = delete;
-    PropVariantClearer& operator=(const PropVariantClearer&) = delete;
-    PropVariantClearer(PropVariantClearer&&) = delete;
-    PropVariantClearer& operator=(PropVariantClearer&&) = delete;
-
-  private:
-    PROPVARIANT* m_Value;
-};
-
 /// Frees a string the shell allocated with CoTaskMemAlloc.
 struct CoTaskMemDeleter
 {
@@ -99,14 +81,12 @@ struct CoTaskMemDeleter
     {
         return {};
     }
-    PROPVARIANT value{};
-    PropVariantInit(&value);
-    const PropVariantClearer clearer(&value); // Cleared however this returns, a throwing conversion included
+    PropVariant value; // Cleared however this returns, a throwing conversion included
     std::string id;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-union-access) - PROPVARIANT is a tagged union; vt says which
-    if (SUCCEEDED(store->GetValue(APP_USER_MODEL_ID_KEY, &value)) && value.vt == VT_LPWSTR && value.pwszVal != nullptr)
+    if (SUCCEEDED(store->GetValue(APP_USER_MODEL_ID_KEY, value.put())) && value.get().vt == VT_LPWSTR && value.get().pwszVal != nullptr)
     {
-        id = WinString::wideToUtf8(value.pwszVal); // NOLINT(cppcoreguidelines-pro-type-union-access) - checked vt above
+        id = WinString::wideToUtf8(value.get().pwszVal); // NOLINT(cppcoreguidelines-pro-type-union-access) - checked vt above
     }
     return id;
 }

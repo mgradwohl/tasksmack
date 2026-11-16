@@ -166,6 +166,40 @@ openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DW
     return std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
 }
 
+/// A verified process and the executable path read through its handle (#3863).
+struct VerifiedImagePath
+{
+    VerifiedProcess process;
+    std::wstring path;
+};
+
+/// The identity check every action makes, then the executable's path read through the handle it opened
+/// (Windows::processImagePath(), with this seam's QueryFullProcessImageNameW): so the path read is the
+/// target's, never a reused PID's. The refusal is logged as "Not @p doing of PID n: why", and returned.
+/// The path is the creation-time name: a reader that must bind to the running image opens it through
+/// Windows::openProcessImageFile() instead.
+[[nodiscard]] std::expected<VerifiedImagePath, ProcessActionResult>
+verifiedImagePath(const WindowsProcessFunctions& fns, const ProcessTarget& target, std::string_view doing)
+{
+    VerifiedProcess process =
+        openVerified(fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return fileLocationOpenFailure(error); });
+    if (!process.result.success)
+    {
+        spdlog::warn("Not {} of PID {}: {}", doing, target.pid, process.result.errorMessage);
+        return std::unexpected(std::move(process.result));
+    }
+    std::optional<std::wstring> path = Windows::processImagePath(process.handle.get(), fns.queryFullProcessImageName);
+    if (!path.has_value())
+    {
+        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
+        const DWORD error = GetLastError();
+        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+        spdlog::warn("Not {} of PID {}: {}", doing, target.pid, message);
+        return std::unexpected(ProcessActionResult::error(std::move(message)));
+    }
+    return VerifiedImagePath{.process = std::move(process), .path = std::move(*path)};
+}
+
 /// Win32 error @p error as the system words it.
 [[nodiscard]] std::string imageHashError(DWORD error)
 {
@@ -1403,27 +1437,12 @@ ProcessActionResult WindowsProcessActions::openFileLocation(const ProcessTarget&
     {
         return ProcessActionResult::error("The System process has no executable file");
     }
-    // The identity check every action makes, so the path read is the target's, never a reused PID's.
-    VerifiedProcess process =
-        openVerified(m_Fns, target, PROCESS_QUERY_LIMITED_INFORMATION, [](DWORD error) { return fileLocationOpenFailure(error); });
-    if (!process.result.success)
+    std::expected<VerifiedImagePath, ProcessActionResult> image = verifiedImagePath(m_Fns, target, "opening the file location");
+    if (!image.has_value())
     {
-        spdlog::warn("Not opening the file location of PID {}: {}", target.pid, process.result.errorMessage);
-        return std::move(process.result);
+        return std::move(image.error());
     }
-    constexpr DWORD MAX_PATH_CHARS = 32768; // the longest path Windows allows, with its terminator
-    std::wstring path(MAX_PATH_CHARS, L'\0');
-    DWORD size = MAX_PATH_CHARS;
-    if (m_Fns.queryFullProcessImageName(process.handle.get(), 0, path.data(), &size) == 0)
-    {
-        // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
-        const DWORD error = GetLastError();
-        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
-        spdlog::warn("Not opening the file location of PID {}: {}", target.pid, message);
-        return ProcessActionResult::error(std::move(message));
-    }
-    path.resize(size);
-    return Windows::revealInExplorer(m_Fns.fileLocation, path);
+    return Windows::revealInExplorer(m_Fns.fileLocation, image->path);
 #endif
 }
 

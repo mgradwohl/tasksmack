@@ -4,6 +4,7 @@
 // beside the setting, and keeps a counter known not to load from being turned on. Published by the panel on the UI
 // thread when it changes, read by Settings on the same thread; a mutex keeps a later reader on another thread safe.
 
+#include <cstdint>
 #include <string>
 #include <string_view>
 
@@ -22,8 +23,14 @@ struct UdpCountingStatus
 /// The status a collector last published; all defaults before one has.
 [[nodiscard]] UdpCountingStatus udpCountingStatus();
 
-/// Publishes @p status, replacing the last one.
+/// Publishes @p status, replacing the last one. Publishing the status already held changes nothing, and readers
+/// following by version see no change.
 void publishUdpCountingStatus(UdpCountingStatus status);
+
+/// Copies the published status into @p into only when it has changed since @p seenVersion (#3878), so the per-frame
+/// caller allocates and takes the lock only on a change. The unchanged check is a lock-free atomic read. @p seenVersion
+/// starts at 0, which no published version equals. Returns whether @p into was written.
+[[nodiscard]] bool udpCountingStatusIfChanged(std::uint64_t& seenVersion, UdpCountingStatus& into);
 
 /// The line Settings shows under Count UDP traffic per process (#3879), on both platforms: its parts, drawn one after
 /// the other with no allocation each frame. Views into string literals and the problem it was made from.

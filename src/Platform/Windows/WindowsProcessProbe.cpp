@@ -46,6 +46,7 @@
 #include "WindowsImageFile.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
+#include "WindowsProcessIdentity.h"
 #include "WindowsProcessMachine.h"
 #include "WindowsProcessMachineMath.h"
 #include "WindowsSignatureCheck.h"
@@ -214,29 +215,7 @@ getProcessOwner(const TokenFunctions& fns, HANDLE hProcess, AccountNameCache* na
     {
         return {};
     }
-
-    // Start at MAX_PATH and grow up to the Windows long-path limit (32767 chars).
-    // QueryFullProcessImageNameW sets the buffer size to the number of chars written
-    // (excluding the null terminator) on success, or leaves it unchanged on failure.
-    constexpr DWORD kInitialSize = MAX_PATH;
-    constexpr DWORD kMaxLongPath = 32767;
-
-    std::wstring path(kInitialSize, L'\0');
-    for (;;)
-    {
-        auto size = static_cast<DWORD>(path.size());
-        if (fns.queryFullProcessImageNameW(hProcess, 0, path.data(), &size) != 0)
-        {
-            path.resize(size);
-            return path;
-        }
-        if (GetLastError() != ERROR_INSUFFICIENT_BUFFER || path.size() >= kMaxLongPath)
-        {
-            return {};
-        }
-        const DWORD newSize = std::min(static_cast<DWORD>(path.size()) * 2, kMaxLongPath);
-        path.assign(newSize, L'\0');
-    }
+    return Windows::processImagePath(hProcess, fns.queryFullProcessImageNameW).value_or(std::wstring{});
 }
 
 // The information class is passed as a ULONG, PROCESSINFOCLASS's representation, so the extended
@@ -649,11 +628,11 @@ const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProces
     return (hQuery != nullptr) ? "Background Process" : "";
 }
 
-/// Whether the current process token is elevated (Windows::isProcessElevated), through this probe's
+/// Whether the current process token is elevated (Windows::readProcessElevated), through this probe's
 /// token seam. The elevation state is constant for the lifetime of the process, so callers query it once.
 [[nodiscard]] bool isCurrentProcessElevated(const TokenFunctions& fns)
 {
-    return Windows::isProcessElevated({.openProcessToken = fns.openProcessToken, .getTokenInformation = fns.getTokenInformation});
+    return Windows::readProcessElevated({.openProcessToken = fns.openProcessToken, .getTokenInformation = fns.getTokenInformation});
 }
 
 /// Every processor group with its maximum size (GetMaximumProcessorCount), as WindowsSystemProbe
@@ -976,6 +955,7 @@ WindowsSignature::SignatureFunctions signatureFunctionsWithPublisher()
     WindowsSignature::SignatureFunctions functions = Windows::systemSignatureFunctions();
     functions.readPublisher = &readHeldImagePublisher;
     functions.openProcessImage = &Windows::openProcessImageForCheck;
+    functions.processExited = &Windows::processExitedForCheck; // an exited process is dropped unchecked (#4059)
     return functions;
 }
 

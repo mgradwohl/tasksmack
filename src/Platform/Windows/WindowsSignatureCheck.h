@@ -100,6 +100,11 @@ verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path, H
 [[nodiscard]] std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure>
 openProcessImageForCheck(const WindowsSignature::ImageProcess& process);
 
+/// Whether @p process has exited (#4059): openProcessVerified() refuses it as gone, its PID reused, or exited with its
+/// object only held open. False when that can't be told (access denied, say). Not in systemSignatureFunctions(): the
+/// process probe sets it (SignatureFunctions::processExited), beside openProcessImage.
+[[nodiscard]] bool processExitedForCheck(const WindowsSignature::ImageProcess& process);
+
 /// The system's calls, as WindowsImageSignature.h's checkSignature() takes them (UTF-8 paths).
 [[nodiscard]] WindowsSignature::SignatureFunctions systemSignatureFunctions() noexcept;
 

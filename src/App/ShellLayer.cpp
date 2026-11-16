@@ -48,6 +48,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <filesystem>
 #include <memory>
 #include <optional>
@@ -963,13 +964,26 @@ void ShellLayer::updateUpdateCheck()
     }
 
     // Settings' rows and Check now follow the checker; told only when that changes.
-    UpdateStatus status{.summary = m_Updates.summary(), .offered = m_Updates.offered(), .checking = m_Updates.checking()};
+    // The summary (a std::format once a check has finished) is built only when what it is built from moved (#3882).
+    const bool offered = m_Updates.offered();
+    const bool checking = m_Updates.checking();
+    const std::uint64_t outcomeGeneration = m_Updates.outcomeGeneration();
+    if (m_RaisedUpdateStatus.has_value() && m_RaisedUpdateStatus->offered == offered && m_RaisedUpdateStatus->checking == checking &&
+        m_RaisedUpdateStatus->outcomeGeneration == outcomeGeneration)
+    {
+        return;
+    }
+    UpdateStatus status{.summary = m_Updates.summary(), .offered = offered, .checking = checking, .outcomeGeneration = outcomeGeneration};
     if (!m_RaisedUpdateStatus.has_value() || m_RaisedUpdateStatus->summary != status.summary ||
         m_RaisedUpdateStatus->offered != status.offered || m_RaisedUpdateStatus->checking != status.checking)
     {
         Core::UpdateCheckStatusEvent event(status.offered, status.checking, status.summary);
         m_RaisedUpdateStatus = std::move(status);
         m_Host->raiseEvent(event);
+    }
+    else
+    {
+        m_RaisedUpdateStatus->outcomeGeneration = outcomeGeneration; // the same line again: not raised, nor rebuilt
     }
 }
 
