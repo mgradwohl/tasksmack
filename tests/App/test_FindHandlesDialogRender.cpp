@@ -204,8 +204,11 @@ TEST_F(FindHandlesDialogRenderTest, StopEndsASearchBeforeItsOtherProcessesAreRea
 // #3893: no thread stays parked after a search ends, and the next search starts one again.
 TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenASearchIsDoneAndANewSearchStartsOneAgain)
 {
-    auto files = std::make_unique<TestMocks::MockProcessOpenFilesReader>();
-    TestMocks::MockProcessOpenFilesReader& mock = *files;
+    // A reader that counts its reads under a lock: the worker thread reads while this one counts. Released up front,
+    // so it never holds a read.
+    auto files = std::make_unique<HeldOpenFiles>();
+    HeldOpenFiles& mock = *files;
+    mock.release();
     m_Dialog->setReaders(std::move(files), nullptr, {.openFiles = true, .modules = false, .authorize = false});
     EXPECT_FALSE(m_Dialog->workerRunning()) << "no worker before a first search";
 
@@ -222,17 +225,17 @@ TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenASearchIsDoneAndANew
     framesUntilRetired();
     EXPECT_FALSE(m_Dialog->searching());
     EXPECT_FALSE(m_Dialog->workerRunning()) << "the search is done and nothing is queued: its thread ends";
-    const int firstReads = mock.readCount();
+    const int firstReads = mock.reads();
     EXPECT_GT(firstReads, 0);
 
     // The next search still runs, on a thread made for it.
     search("again");
-    for (int i = 0; i < MAX_FRAMES && mock.readCount() == firstReads; ++i)
+    for (int i = 0; i < MAX_FRAMES && mock.reads() == firstReads; ++i)
     {
         static_cast<void>(frame());
         std::this_thread::sleep_for(10ms);
     }
-    EXPECT_GT(mock.readCount(), firstReads) << "a later search still runs";
+    EXPECT_GT(mock.reads(), firstReads) << "a later search still runs";
     framesUntilRetired();
     EXPECT_FALSE(m_Dialog->workerRunning());
 }
