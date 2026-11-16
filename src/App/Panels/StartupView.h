@@ -82,6 +82,13 @@ startupImpactTooltip(const Domain::StartupEntryImpact& impact, std::uint64_t sig
                                                         std::span<const Domain::StartupEntryImpact> impacts = {},
                                                         bool showOsComponents = true);
 
+/// The count beside the filter box: "N of M startup apps", where N is the rows shown and M the entries
+/// the filter can reach (#3891). While the OS entries are hidden (@p showOsComponents false) they are
+/// left out of M and named instead: "25 of 25 startup apps (115 hidden)", so a hidden entry never reads
+/// as one the filter took out. @p osComponentCount is how many of the @p entryCount entries are OS ones.
+[[nodiscard]] std::string
+startupCountLabel(std::size_t shownCount, std::size_t entryCount, std::size_t osComponentCount, bool showOsComponents);
+
 /// What the view drew this frame.
 enum class StartupViewContent : std::uint8_t
 {
@@ -110,6 +117,7 @@ struct StartupViewState
     bool rowsAscending = true;
     bool rowsShowOsComponents = false;
     std::size_t osComponentCount = 0; ///< How many of the publication's entries are osComponent: 0 hides the checkbox.
+    std::string countLabel;           ///< startupCountLabel() for these rows, rebuilt with them.
 
     std::string unavailableHeading; ///< The empty state's heading when there is no startup list.
 
