@@ -271,8 +271,8 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
     {
         return ProcessActionResult::error(std::string(NOT_THROUGH_THE_HELPER));
     }
-    // An Efficiency mode off with no nice left to put back (someone changed it since the refusal) may need no
-    // administrator now, and only the in-process off puts back the weight and forgets the on (#3296).
+    // An Efficiency mode off with no priority for the helper to set (no Realtime retry waiting, #3606) is tried in
+    // process first: it may need no administrator now, and only the in-process off forgets what the on remembered.
     if (action.kind == AuthorizedAction::Kind::SetEfficiencyMode && !action.efficiencyMode &&
         !m_Inner->efficiencyNiceToRestore(action.target).has_value())
     {
