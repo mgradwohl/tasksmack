@@ -1231,27 +1231,28 @@ TEST_F(ProcessDetailsPanelRenderTest, EfficiencyModeAndTheProcessesTabHoldEachOt
     EXPECT_TRUE(view.offersAuthenticateAndRetry()) << "offered again once it has finished";
 }
 
-// #2407: the Realtime I/O class can become settable after the panel is built -- BrokeredProcessActions
-// reports it once the privileged helper connects -- and the I/O slider then offers its Realtime stops.
-// They used to come from a copy of the capabilities taken at construction, so they never appeared.
-TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanSetIt)
+// #2407: where the actions can set the Realtime I/O class (CAP_SYS_NICE: an Administrator session, #3580),
+// the I/O slider offers its Realtime stops. Since #3580 nothing makes it settable after construction, so the
+// panel reads it then, once (#3889): the actions say so before the panel is built.
+TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderOffersRealtimeWhereTheActionsCanSetIt)
 {
     auto actions = std::make_unique<TestMocks::MockProcessActions>();
     Platform::ProcessActionCapabilities caps;
     caps.canSetPriority = true;
     caps.canSetIoPriority = true;
     caps.canAuthorizeInteractively = true;
-    actions->setCapabilities(caps); // No Realtime yet: the helper is not connected
+    caps.canSetRealtimeIoPriority = true;
+    actions->setCapabilities(caps);
     actions->setIoPriorityReadResult(Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 0});
     TestMocks::MockProcessActions* mock = actions.get();
     ProcessDetailsPanel panel(std::move(actions));
+    ASSERT_TRUE(panel.actionCapabilities().canSetRealtimeIoPriority) << "read at construction";
     Core::ActiveTabChangedEvent shown("ProcessDetails");
     panel.onEvent(shown);
     panel.setSelectedPid(PID, START_TICKS);
     const std::vector samples{sampleAt(1.0, 10.0)};
     panel.updateWithSamples(samples, 1.0F);
     static_cast<void>(renderAndCapture(panel));
-    ASSERT_FALSE(panel.actionCapabilities().canSetRealtimeIoPriority);
 
     // The update path after the card was first drawn reads the current I/O priority on its worker
     // (#2734); taken in here, so the slider below starts from Best-effort 0.
@@ -1261,11 +1262,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
                                                       0.0F,
                                                       /*wait=*/true);
     ASSERT_EQ(mock->getIoPriorityCount(), 1);
-
-    caps.canSetRealtimeIoPriority = true; // CAP_SYS_NICE: an Administrator session (#3580)
-    mock->setCapabilities(caps);
     static_cast<void>(renderAndCapture(panel));
-    EXPECT_TRUE(panel.actionCapabilities().canSetRealtimeIoPriority);
 
     // One step toward the high end from Best-effort 0 is Realtime 7 on the slider with Realtime; the
     // slider without it holds at its start.
@@ -1300,11 +1297,36 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderGainsRealtimeOnceTheActionsCanS
     EXPECT_EQ(mock->setIoPriorityCount(), 0); // Picking applies nothing
 }
 
+// #3889: the panel asks the actions what they can do once, when it is built, and no frame asks again: since
+// #3580 nothing they report changes after construction. Drawn with the I/O priority card, whose view used to
+// ask twice a frame too.
+TEST_F(ProcessDetailsPanelRenderTest, TheActionsCapabilitiesAreReadOnceNotEveryFrame)
+{
+    auto actions = std::make_unique<TestMocks::MockProcessActions>();
+    actions->setCapabilities(
+        {.canSetPriority = true, .canSetIoPriority = true, .ioPriorityHints = true, .canAuthorizeInteractively = true});
+    actions->setIoPriorityReadResult(Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 0});
+    const TestMocks::MockProcessActions* mock = actions.get();
+    ProcessDetailsPanel panel(std::move(actions));
+    ASSERT_EQ(mock->actionCapabilitiesCount(), 1) << "read at construction";
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    for (int frame = 0; frame < 10; ++frame)
+    {
+        panel.updateWithSamples(samples, 1.0F);
+        static_cast<void>(renderAndCapture(panel));
+    }
+    EXPECT_TRUE(panel.actionCapabilities().canSetIoPriority);
+    EXPECT_EQ(mock->actionCapabilitiesCount(), 1) << "no frame asked again";
+}
+
 #ifdef _WIN32 // BrokeredProcessActions and BrokeredUserSessions are Windows only (#3784)
-// #3182: the panel asks for the actions' capabilities every frame, on the UI thread. Through the helper's
-// broker they never call connected(), which peeks at the pipe: no frame makes a call on the channel. And since
-// #3580 a running helper adds no Realtime I/O stop: that was the Linux helper's.
-TEST_F(ProcessDetailsPanelRenderTest, EveryFramesCapabilitiesReadTheHelpersConnectionWithoutAskingTheBroker)
+// #3182: the panel's capabilities, read once at construction (#3889), come through the helper's broker without
+// calling connected(), which peeks at the pipe: no frame makes a call on the channel. And since #3580 a running
+// helper adds no Realtime I/O stop: that was the Linux helper's.
+TEST_F(ProcessDetailsPanelRenderTest, TheCapabilitiesReadTheHelpersConnectionWithoutAskingTheBroker)
 {
     auto inner = std::make_unique<TestMocks::MockProcessActions>();
     inner->setCapabilities({.canSetPriority = true, .canSetIoPriority = true});
