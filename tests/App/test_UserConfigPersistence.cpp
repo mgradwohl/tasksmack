@@ -2775,6 +2775,27 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionSavesNothingThroughAUsersLinkOnThe
     EXPECT_FALSE(std::filesystem::exists(real / "tasksmack")) << "neither the folder nor the file is made through the link";
 }
 
+// #4089: the themes folder Open Themes Folder makes goes through createDirectoriesForUser(), as the config folder's save
+// does: in a session run as root for a user, never through a link of theirs; otherwise made with its missing parents.
+TEST(NewFileOwnerTest, CreateDirectoriesForUserRefusesAUsersLinkAndMakesTheRest)
+{
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / ("tasksmack-newfileowner-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "real");
+    std::filesystem::create_directory_symlink(root / "real", root / "link");
+
+    // Not root (this test's uid): a missing folder and its parents are made, and an existing one is fine.
+    EXPECT_EQ(NewFileOwner::createDirectoriesForUser(root / "real" / "tasksmack" / "themes", false, ::geteuid()), "");
+    EXPECT_TRUE(std::filesystem::is_directory(root / "real" / "tasksmack" / "themes"));
+    EXPECT_EQ(NewFileOwner::createDirectoriesForUser(root / "real" / "tasksmack" / "themes", false, ::geteuid()), "");
+
+    // The less-privileged side's folder (root for a user): nothing is made through the link, which this test's user owns.
+    const std::string refused = NewFileOwner::createDirectoriesForUser(root / "link" / "other" / "themes", true, ::geteuid());
+    EXPECT_TRUE(refused.contains("is a link of a user's")) << refused;
+    EXPECT_FALSE(std::filesystem::exists(root / "real" / "other"));
+    std::filesystem::remove_all(root);
+}
+
 // #2728, #3374: the handed-over config folder itself swapped for a link after the startup check is refused too:
 // an elevated save writes nothing into the folder the link points at.
 TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderSwappedForALinkIsNotSavedInto)

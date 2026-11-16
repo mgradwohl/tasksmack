@@ -10,6 +10,9 @@
 
 #include <filesystem>
 #include <optional>
+#include <string>
+#include <system_error>
+#include <vector>
 
 #include <fcntl.h>
 #include <sys/stat.h>
@@ -86,6 +89,50 @@ struct FileOwner
         }
     }
     return std::nullopt;
+}
+
+/// Creates @p dir and any missing ancestors the way UserConfig's save does (#4089): when @p lessPrivileged (run as root
+/// for a user, #3759) nothing is created through a link of theirs on the way, and each directory made while root is
+/// given to the owner of its nearest existing ancestor (ownerForNewFiles(), #2121), so the user's next normal run can
+/// use it. @p effectiveUid is the process's (::geteuid(), or a test's). @return Empty when @p dir exists afterwards,
+/// else why not.
+[[nodiscard]] inline std::string createDirectoriesForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_t effectiveUid)
+{
+    if (lessPrivileged)
+    {
+        if (const std::optional<std::filesystem::path> link = userOwnedLinkOnPath(dir); link.has_value())
+        {
+            return link->string() + " is a link of a user's, which TaskSmack run as root doesn't create through";
+        }
+    }
+    std::error_code ec;
+    if (std::filesystem::is_directory(dir, ec))
+    {
+        return {};
+    }
+    const std::optional<FileOwner> owner = ownerForNewFiles(dir, effectiveUid);
+    // The directories about to be made, outermost first, to hand to the user afterwards.
+    std::vector<std::filesystem::path> created;
+    for (std::filesystem::path at = dir; !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec); at = at.parent_path())
+    {
+        created.insert(created.begin(), at);
+    }
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        return ec.message();
+    }
+    if (owner.has_value())
+    {
+        for (const std::filesystem::path& made : created)
+        {
+            if (!chownCreatedDirectory(made, *owner))
+            {
+                return "can't give " + made.string() + " to its user";
+            }
+        }
+    }
+    return {};
 }
 
 } // namespace App::NewFileOwner

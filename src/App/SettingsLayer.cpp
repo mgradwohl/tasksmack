@@ -3,6 +3,9 @@
 #include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
 #include "App/InterfaceScaleChange.h"
+#ifndef _WIN32
+#include "App/NewFileOwner.h"
+#endif
 #include "App/PanelPlatforms.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
@@ -37,8 +40,13 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
+
+#ifdef _WIN32
+#include <system_error> // the themes folder's create_directories() (#4089: elsewhere NewFileOwner makes it)
+#else
+#include <unistd.h> // geteuid(): the themes folder, made as root for a user (#4089)
+#endif
 
 namespace App
 {
@@ -340,12 +348,22 @@ void SettingsLayer::onRender()
                 {
                     return; // the folder isn't held as it was checked: nothing is made in it
                 }
-                std::error_code ec;
-                std::filesystem::create_directories(dir, ec);
-                if (ec)
+#ifndef _WIN32
+                // Run as root for a user, the folder is theirs: made through no link of theirs, and given to them (#4089),
+                // as UserConfig's save makes the config folder.
+                if (const std::string why = NewFileOwner::createDirectoriesForUser(dir, Core::ConfigDirOverride::handedOver(), ::geteuid());
+                    !why.empty())
                 {
-                    spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
+                    spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), why);
                 }
+#else
+            std::error_code ec;
+            std::filesystem::create_directories(dir, ec);
+            if (ec)
+            {
+                spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
+            }
+#endif
             },
             dir); // a copy, as above
         break;
