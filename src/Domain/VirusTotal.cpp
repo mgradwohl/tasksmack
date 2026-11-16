@@ -157,6 +157,10 @@ std::optional<Verdict> readFileReport(std::string_view json)
     {
         return std::nullopt;
     }
+    if (!verdict.plausible())
+    {
+        return std::nullopt; // more engines than any report has (#3874): corrupt or hostile, never read as a verdict
+    }
     return verdict;
 }
 
@@ -188,9 +192,10 @@ std::string summary(std::string_view name, const LookupResult& result)
     {
     case Outcome::Found:
     {
-        if (!result.verdict.has_value())
+        if (!result.verdict.has_value() || !result.verdict->plausible())
         {
-            break; // Found always carries one; read as a failure if it ever doesn't
+            // Found always carries one readFileReport() accepted; read as a failure if it ever doesn't (#3874)
+            return std::format("Couldn't look up {} on VirusTotal: its reply couldn't be read", name);
         }
         const Verdict& v = *result.verdict;
         if (v.flagged() == 0)

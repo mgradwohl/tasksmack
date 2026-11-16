@@ -3,6 +3,8 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
+#include <array>
 #include <cmath>
 #include <limits>
 
@@ -239,102 +241,138 @@ TEST(ProcessDetailsLayoutTest, ConfirmSizingSurvivesDegenerateInput)
     EXPECT_FLOAT_EQ(computeConfirmButtonWidth(420.0F, 800.0F, nan), 400.0F);
 }
 
-// The Overview's top row (#1789): Identity, Runtime, then the Actions and Priority cards. The Windows
-// cards at the reference em: [Terminate] [Kill] about 200px and the five-stop class slider about 340px,
-// each padded 16.
+// The Overview's cards flow (#4029): Identity, Runtime, Actions, Priority, I/O priority, left to right, each at
+// its own width, wrapping to the next row when the next card doesn't fit. The Windows cards at the reference em:
+// Identity and Runtime at their 384px cap, [Terminate] [Kill] about 200px and the five-stop class slider about
+// 340px, each padded 16; the I/O priority card as wide as Priority.
+using ProcessDetailsLayout::OverviewCard;
+constexpr float INFO_CARD = 384.0F;
 constexpr float ACTIONS_CARD = 216.0F;
 constexpr float PRIORITY_CARD = 356.0F;
-constexpr float INFO_ROW = 776.0F; // Identity and Runtime at their 384px cap, 8px apart
 constexpr float SPACING = 8.0F;
-// The width at which all four fit: Identity + Runtime (with their gap) + gap + Actions + gap + Priority.
-constexpr float ONE_ROW_WIDTH = INFO_ROW + SPACING + ACTIONS_CARD + SPACING + PRIORITY_CARD;
+constexpr std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT> CARDS{
+    INFO_CARD, INFO_CARD, ACTIONS_CARD, PRIORITY_CARD, PRIORITY_CARD};
+// The width the first row needs for Identity, Runtime and Actions, with their gaps.
+constexpr float THREE_CARDS = INFO_CARD + SPACING + INFO_CARD + SPACING + ACTIONS_CARD;
+constexpr float ALL_CARDS = THREE_CARDS + SPACING + PRIORITY_CARD + SPACING + PRIORITY_CARD;
 
-[[nodiscard]] ProcessDetailsLayout::TopRowLayout topRowIn(float paneWidth, float actions = ACTIONS_CARD, float priority = PRIORITY_CARD)
+[[nodiscard]] ProcessDetailsLayout::OverviewLayout flowIn(float paneWidth,
+                                                          const std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT>& cards = CARDS)
 {
-    return ProcessDetailsLayout::chooseTopRowLayout(paneWidth, INFO_ROW, SPACING, actions, priority);
+    return ProcessDetailsLayout::layoutOverview(paneWidth, SPACING, cards);
 }
 
-// The issue's window: wide enough, so Actions and Priority sit to the right of Identity and Runtime,
-// Priority to the right of Actions, each at its content width -- not a share of the pane.
-TEST(ProcessDetailsLayoutTest, TopRowHoldsAllFourCardsWhenTheyFit)
+// Wide enough: every card on the first row, left to right, each at its own width, not a share of the pane.
+TEST(ProcessDetailsLayoutTest, EveryCardSharesTheFirstRowWhenTheyFit)
 {
-    const auto layout = topRowIn(2000.0F);
-    EXPECT_TRUE(layout.besideInfo);
-    EXPECT_TRUE(layout.priorityBesideActions);
-    EXPECT_FLOAT_EQ(layout.actionsWidth, ACTIONS_CARD);
-    EXPECT_FLOAT_EQ(layout.priorityWidth, PRIORITY_CARD);
-    EXPECT_FLOAT_EQ(topRowIn(4000.0F).priorityWidth, PRIORITY_CARD); // More room changes nothing
+    const auto layout = flowIn(ALL_CARDS);
+    for (const OverviewCard card :
+         {OverviewCard::Identity, OverviewCard::Runtime, OverviewCard::Actions, OverviewCard::Priority, OverviewCard::IoPriority})
+    {
+        EXPECT_TRUE(layout.onFirstRow(card)) << static_cast<int>(card);
+    }
+    EXPECT_FALSE(layout[OverviewCard::Identity].sameLine);
+    EXPECT_TRUE(layout[OverviewCard::IoPriority].sameLine);
+    EXPECT_FLOAT_EQ(layout[OverviewCard::Actions].width, ACTIONS_CARD);
+    EXPECT_FLOAT_EQ(flowIn(4000.0F)[OverviewCard::Priority].width, PRIORITY_CARD); // more room changes nothing
 }
 
-// Exactly enough room still counts as room; a pixel less wraps both cards to a row of their own, side
-// by side while the pane holds the two.
-TEST(ProcessDetailsLayoutTest, TopRowWrapsAtTheFirstPixelItWouldNotFit)
+// The issue's case (#4029): Actions fits beside Runtime, so it goes there; Priority and I/O priority wrap to the
+// next row, side by side, each card on its own -- not Actions and a Priority column moved as one.
+TEST(ProcessDetailsLayoutTest, ActionsTakesTheFirstRowWhenItFitsAndTheRestWrapSideBySide)
 {
-    EXPECT_TRUE(topRowIn(ONE_ROW_WIDTH).besideInfo);
-    const auto wrapped = topRowIn(ONE_ROW_WIDTH - 1.0F);
-    EXPECT_FALSE(wrapped.besideInfo);
-    EXPECT_TRUE(wrapped.priorityBesideActions);
-    EXPECT_FLOAT_EQ(wrapped.actionsWidth, ACTIONS_CARD);
-    EXPECT_FLOAT_EQ(wrapped.priorityWidth, PRIORITY_CARD);
+    const auto layout = flowIn(THREE_CARDS);
+    EXPECT_TRUE(layout.onFirstRow(OverviewCard::Actions));
+    EXPECT_EQ(layout[OverviewCard::Priority].row, 1U);
+    EXPECT_FALSE(layout[OverviewCard::Priority].sameLine) << "Priority starts the second row";
+    EXPECT_TRUE(layout.sameRow(OverviewCard::Priority, OverviewCard::IoPriority));
+    EXPECT_TRUE(layout[OverviewCard::IoPriority].sameLine) << "I/O priority to the right of Priority, not under it";
+
+    // A pixel less, and Actions wraps too, with Priority and I/O priority after it on that row.
+    const auto wrapped = flowIn(THREE_CARDS - 1.0F);
+    EXPECT_FALSE(wrapped.onFirstRow(OverviewCard::Actions));
+    EXPECT_TRUE(wrapped.sameRow(OverviewCard::Actions, OverviewCard::Priority));
+    EXPECT_TRUE(wrapped.sameRow(OverviewCard::Priority, OverviewCard::IoPriority));
 }
 
-// Too narrow for Actions and Priority side by side: one under the other, each held to the pane, so
-// nothing in them runs out of reach to the right.
-TEST(ProcessDetailsLayoutTest, NarrowPaneStacksTheCardsHeldToIt)
+// Each card wraps on its own: Priority can share the first row with Actions while I/O priority wraps alone.
+TEST(ProcessDetailsLayoutTest, EachCardWrapsOnItsOwn)
 {
-    const float sideBySide = ACTIONS_CARD + SPACING + PRIORITY_CARD;
-    EXPECT_TRUE(topRowIn(sideBySide).priorityBesideActions);
-    const auto stacked = topRowIn(sideBySide - 1.0F);
-    EXPECT_FALSE(stacked.besideInfo);
-    EXPECT_FALSE(stacked.priorityBesideActions);
-    EXPECT_FLOAT_EQ(stacked.actionsWidth, ACTIONS_CARD);
-    EXPECT_FLOAT_EQ(stacked.priorityWidth, PRIORITY_CARD);
-
-    const auto tiny = topRowIn(300.0F);
-    EXPECT_FALSE(tiny.priorityBesideActions);
-    EXPECT_FLOAT_EQ(tiny.actionsWidth, ACTIONS_CARD);
-    EXPECT_FLOAT_EQ(tiny.priorityWidth, 300.0F);
+    const auto layout = flowIn(THREE_CARDS + SPACING + PRIORITY_CARD);
+    EXPECT_TRUE(layout.onFirstRow(OverviewCard::Priority));
+    EXPECT_EQ(layout[OverviewCard::IoPriority].row, 1U);
+    EXPECT_FALSE(layout[OverviewCard::IoPriority].sameLine);
 }
 
-// The rule is in the widths measured at the font in force: a larger font scale widens every card, and
-// the same pane that held them on one row wraps them.
-TEST(ProcessDetailsLayoutTest, TopRowFollowsTheFontScale)
+// Narrow: one card a row, each held to the pane, so nothing in it runs out of reach to the right.
+TEST(ProcessDetailsLayoutTest, ANarrowPaneHasOneCardARowHeldToIt)
+{
+    const auto layout = flowIn(300.0F);
+    for (std::size_t i = 0; i < ProcessDetailsLayout::OVERVIEW_CARD_COUNT; ++i)
+    {
+        EXPECT_EQ(layout.slots.at(i).row, i);
+        EXPECT_FALSE(layout.slots.at(i).sameLine);
+    }
+    EXPECT_FLOAT_EQ(layout[OverviewCard::Identity].width, 300.0F);
+    EXPECT_FLOAT_EQ(layout[OverviewCard::Actions].width, ACTIONS_CARD);
+}
+
+// The rule is in the widths measured at the font in force: a larger font widens every card, and the same pane
+// that held three cards on the first row holds fewer.
+TEST(ProcessDetailsLayoutTest, TheFlowFollowsTheFontScale)
 {
     constexpr float SCALE = 1.5F;
-    EXPECT_TRUE(topRowIn(ONE_ROW_WIDTH).besideInfo);
-    const auto scaled = ProcessDetailsLayout::chooseTopRowLayout(
-        ONE_ROW_WIDTH, INFO_ROW * SCALE, SPACING * SCALE, ACTIONS_CARD * SCALE, PRIORITY_CARD * SCALE);
-    EXPECT_FALSE(scaled.besideInfo);
+    std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT> scaled{};
+    std::ranges::transform(CARDS, scaled.begin(), [](float width) { return width * SCALE; });
+    EXPECT_TRUE(flowIn(THREE_CARDS).onFirstRow(OverviewCard::Actions));
+    EXPECT_FALSE(ProcessDetailsLayout::layoutOverview(THREE_CARDS, SPACING * SCALE, scaled).onFirstRow(OverviewCard::Actions));
 }
 
-// A card the platform does not have (no priority control, or no buttons) is not drawn and takes no gap.
+// A card the platform doesn't have (no priority control, no buttons) isn't drawn and takes no gap.
 TEST(ProcessDetailsLayoutTest, AnAbsentCardTakesNoRoom)
 {
-    const float actionsOnly = INFO_ROW + SPACING + ACTIONS_CARD;
-    const auto noPriority = topRowIn(actionsOnly, ACTIONS_CARD, 0.0F);
-    EXPECT_TRUE(noPriority.besideInfo);
-    EXPECT_FLOAT_EQ(noPriority.priorityWidth, 0.0F);
-    EXPECT_FALSE(topRowIn(actionsOnly - 1.0F, ACTIONS_CARD, 0.0F).besideInfo);
-
-    const auto noButtons = topRowIn(INFO_ROW + SPACING + PRIORITY_CARD, 0.0F, PRIORITY_CARD);
-    EXPECT_TRUE(noButtons.besideInfo);
-    EXPECT_FLOAT_EQ(noButtons.actionsWidth, 0.0F);
+    const auto noActions =
+        flowIn(INFO_CARD + SPACING + INFO_CARD + SPACING + PRIORITY_CARD, {INFO_CARD, INFO_CARD, 0.0F, PRIORITY_CARD, 0.0F});
+    EXPECT_FALSE(noActions.drawn(OverviewCard::Actions));
+    EXPECT_FALSE(noActions.drawn(OverviewCard::IoPriority));
+    EXPECT_TRUE(noActions.onFirstRow(OverviewCard::Priority)) << "Priority takes Actions' place, with no gap for it";
+    EXPECT_TRUE(noActions[OverviewCard::Priority].sameLine);
 }
 
-// An unknown pane width (no frame yet) is unconstrained, like the helpers above; negative or non-finite
-// measurements count as zero rather than producing a NaN width.
-TEST(ProcessDetailsLayoutTest, TopRowSurvivesDegenerateInput)
+// An unknown pane width (no frame yet) puts every card on one row; negative or non-finite measurements count as
+// zero (the card isn't drawn) rather than producing a NaN width.
+TEST(ProcessDetailsLayoutTest, TheFlowSurvivesDegenerateInput)
 {
-    const auto unknown = topRowIn(std::numeric_limits<float>::quiet_NaN());
-    EXPECT_TRUE(unknown.besideInfo);
-    EXPECT_FLOAT_EQ(unknown.actionsWidth, ACTIONS_CARD);
-    EXPECT_TRUE(topRowIn(0.0F).besideInfo);
+    const auto unknown = flowIn(std::numeric_limits<float>::quiet_NaN());
+    EXPECT_TRUE(unknown.onFirstRow(OverviewCard::IoPriority));
+    EXPECT_FLOAT_EQ(unknown[OverviewCard::Priority].width, PRIORITY_CARD);
+    EXPECT_TRUE(flowIn(0.0F).onFirstRow(OverviewCard::IoPriority));
 
-    const auto garbage = ProcessDetailsLayout::chooseTopRowLayout(
-        1000.0F, std::numeric_limits<float>::infinity(), -5.0F, std::numeric_limits<float>::quiet_NaN(), -1.0F);
-    EXPECT_FALSE(std::isnan(garbage.actionsWidth));
-    EXPECT_FLOAT_EQ(garbage.actionsWidth, 0.0F);
-    EXPECT_FLOAT_EQ(garbage.priorityWidth, 0.0F);
+    const auto garbage = ProcessDetailsLayout::layoutOverview(
+        1000.0F, -5.0F, {std::numeric_limits<float>::infinity(), -1.0F, std::numeric_limits<float>::quiet_NaN(), 100.0F, 0.0F});
+    EXPECT_FALSE(garbage.drawn(OverviewCard::Identity));
+    EXPECT_FALSE(garbage.drawn(OverviewCard::Runtime));
+    EXPECT_FALSE(garbage.drawn(OverviewCard::Actions));
+    EXPECT_FLOAT_EQ(garbage[OverviewCard::Priority].width, 100.0F);
+    EXPECT_FALSE(garbage[OverviewCard::Priority].sameLine) << "the first card drawn starts the row";
+}
+
+// Every row is as tall as its tallest card (#4029); a card not drawn has no height, and an unmeasured one (0)
+// takes its row's.
+TEST(ProcessDetailsLayoutTest, EachRowIsAsTallAsItsTallestCard)
+{
+    const auto layout = flowIn(THREE_CARDS); // Identity, Runtime, Actions | Priority, I/O priority
+    const auto heights = ProcessDetailsLayout::rowHeights(layout, {200.0F, 200.0F, 260.0F, 180.0F, 0.0F});
+    EXPECT_FLOAT_EQ(heights.at(0), 260.0F);
+    EXPECT_FLOAT_EQ(heights.at(1), 260.0F);
+    EXPECT_FLOAT_EQ(heights.at(2), 260.0F) << "Actions, the tallest, sets the first row";
+    EXPECT_FLOAT_EQ(heights.at(3), 180.0F);
+    EXPECT_FLOAT_EQ(heights.at(4), 180.0F) << "I/O priority, not yet measured, takes its row's height";
+
+    const auto noIo = flowIn(THREE_CARDS, {INFO_CARD, INFO_CARD, ACTIONS_CARD, PRIORITY_CARD, 0.0F});
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::rowHeights(noIo, {200.0F, 200.0F, 100.0F, 180.0F, 500.0F}).at(4), 0.0F)
+        << "a card not drawn has no height, and doesn't stretch its row";
+    EXPECT_FLOAT_EQ(ProcessDetailsLayout::rowHeights(noIo, {200.0F, 200.0F, 100.0F, 180.0F, 500.0F}).at(3), 180.0F);
 }
 
 } // namespace

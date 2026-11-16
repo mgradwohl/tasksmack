@@ -5,6 +5,7 @@
 /// unloaded mid-read, an enumeration that fails, and the handle closed exactly once. Plus one read of
 /// this test process through the real calls.
 
+#include "Mocks/WindowsFakeProcessIdentity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/Windows/WindowsProcessModules.h"
@@ -58,44 +59,9 @@ FakeProcess& fake()
     return instance;
 }
 
-HANDLE fakeProcessHandle()
-{
-    static int token = 0;
-    return &token;
-}
-
-HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
-{
-    EXPECT_EQ(access, static_cast<DWORD>(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ));
-    EXPECT_EQ(pid, static_cast<DWORD>(TARGET.pid));
-    if (fake().openError != 0)
-    {
-        SetLastError(fake().openError);
-        return nullptr;
-    }
-    ++fake().opens;
-    return fakeProcessHandle();
-}
-
-BOOL WINAPI fakeCloseHandle(HANDLE handle)
-{
-    EXPECT_EQ(handle, fakeProcessHandle());
-    ++fake().closes;
-    return TRUE;
-}
-
-BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
-{
-    creation->dwLowDateTime = static_cast<DWORD>(fake().creationTicks & 0xFFFFFFFFU);
-    creation->dwHighDateTime = static_cast<DWORD>(fake().creationTicks >> 32U);
-    return TRUE;
-}
-
-BOOL WINAPI fakeGetExitCodeProcess(HANDLE /*process*/, LPDWORD code)
-{
-    *code = fake().exitCode;
-    return TRUE;
-}
+/// OpenProcess, CloseHandle, GetProcessTimes and GetExitCodeProcess: the shared identity fake (#3849).
+using Identity =
+    TestMocks::FakeProcessIdentity<FakeProcess, &fake, TARGET.pid, static_cast<DWORD>(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ)>;
 
 BOOL WINAPI fakeEnumProcessModulesEx(HANDLE /*process*/, HMODULE* modules, DWORD bytes, LPDWORD needed, DWORD filter)
 {
@@ -184,10 +150,10 @@ BOOL WINAPI fakeVerQueryValue(LPCVOID block, LPCWSTR subBlock, LPVOID* buffer, P
 
 ProcessModuleFunctions fakeApi()
 {
-    return {.openProcess = &fakeOpenProcess,
-            .closeHandle = &fakeCloseHandle,
-            .getProcessTimes = &fakeGetProcessTimes,
-            .getExitCodeProcess = &fakeGetExitCodeProcess,
+    return {.openProcess = &Identity::openProcess,
+            .closeHandle = &Identity::closeHandle,
+            .getProcessTimes = &Identity::getProcessTimes,
+            .getExitCodeProcess = &Identity::getExitCodeProcess,
             .enumProcessModulesEx = &fakeEnumProcessModulesEx,
             .getModuleFileNameEx = &fakeGetModuleFileNameEx,
             .getModuleInformation = &fakeGetModuleInformation,

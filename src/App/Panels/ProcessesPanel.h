@@ -682,17 +682,30 @@ class ProcessesPanel : public Panel
     // How many of the selection the running batch priority change left out, for a change running for
     // each of them in Process Details (#3467); its result line says so.
     std::size_t m_BatchPrioritySkipped = 0;
+    // The same two for a running batch I/O priority change (#3884): published as I/O priority claims, apart from
+    // the nice ones, since only another I/O priority change races it.
+    std::vector<Platform::ProcessTarget> m_BatchIoPriorityTargets;
+    std::size_t m_BatchIoPrioritySkipped = 0;
     // Shared with Process Details by ShellPanels (#3467), which outlives this panel; null on its own.
     PriorityChangesInFlight* m_PriorityChanges = nullptr;
-    std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges; // publishPriorityChanges()' buffer, reused
+    std::vector<Platform::ProcessTarget> m_PublishedPriorityChanges;   // publishPriorityChanges()' buffer, reused
+    std::vector<Platform::ProcessTarget> m_PublishedIoPriorityChanges; // ... and its I/O priority one (#3884)
     /// Whether Process Details has a priority change for @p target asked about or running (#3467).
     [[nodiscard]] bool priorityHeldElsewhere(const Platform::ProcessTarget& target) const noexcept
     {
         return m_PriorityChanges != nullptr && m_PriorityChanges->heldElsewhere(PriorityChangesInFlight::Panel::Processes, target);
     }
+    /// Whether Process Details has an I/O priority change for @p target running (#3884).
+    [[nodiscard]] bool ioPriorityHeldElsewhere(const Platform::ProcessTarget& target) const noexcept
+    {
+        return m_PriorityChanges != nullptr && m_PriorityChanges->heldElsewhere(PriorityChangesInFlight::Panel::Processes,
+                                                                                target,
+                                                                                PriorityChangesInFlight::Change::IoPriority);
+    }
     /// Publishes the processes a priority change here is asked about or running for (#3467): Set Realtime
     /// priority's confirm, the batch priority dialog's, and the running row action or batch, when it sets
-    /// the priority. Called from onUpdate(), after each frame's render, and empty at detach.
+    /// the priority. Its I/O priority ones apart (#3884): the batch I/O priority dialog's, and its batch while it
+    /// runs. Called from onUpdate(), after each frame's render, and empty at detach.
     void publishPriorityChanges();
     void showRowActionResult(Detail::ActionResultMessage message, bool succeeded);
     /// The toolbar's "Authenticate and retry" was pressed: the refused action again, as an

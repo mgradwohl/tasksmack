@@ -12,6 +12,7 @@
 /// mapping with the reader TaskSmackHelper.exe serves (#3610).
 
 #include "Mocks/MockProbes.h"
+#include "Mocks/WindowsFakeProcessIdentity.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/BrokerRequestMapping.h"
 #include "Platform/IProcessActions.h"
@@ -99,44 +100,9 @@ FakeProcess& fake()
     return instance;
 }
 
-HANDLE fakeProcessHandle()
-{
-    static int token = 0;
-    return &token;
-}
-
-HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD pid)
-{
-    EXPECT_EQ(access, static_cast<DWORD>(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ));
-    EXPECT_EQ(pid, static_cast<DWORD>(TARGET.pid));
-    if (fake().openError != 0)
-    {
-        SetLastError(fake().openError);
-        return nullptr;
-    }
-    ++fake().opens;
-    return fakeProcessHandle();
-}
-
-BOOL WINAPI fakeCloseHandle(HANDLE handle)
-{
-    EXPECT_EQ(handle, fakeProcessHandle());
-    ++fake().closes;
-    return TRUE;
-}
-
-BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
-{
-    creation->dwLowDateTime = static_cast<DWORD>(fake().creationTicks & 0xFFFFFFFFU);
-    creation->dwHighDateTime = static_cast<DWORD>(fake().creationTicks >> 32U);
-    return TRUE;
-}
-
-BOOL WINAPI fakeGetExitCodeProcess(HANDLE /*process*/, LPDWORD code)
-{
-    *code = fake().exitCode;
-    return TRUE;
-}
+/// OpenProcess, CloseHandle, GetProcessTimes and GetExitCodeProcess: the shared identity fake (#3849).
+using Identity =
+    TestMocks::FakeProcessIdentity<FakeProcess, &fake, TARGET.pid, static_cast<DWORD>(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ)>;
 
 /// This process's and the target's machines are what the test says (native by default).
 BOOL WINAPI fakeIsWow64Process2(HANDLE process, USHORT* machine, USHORT* native)
@@ -148,7 +114,7 @@ BOOL WINAPI fakeIsWow64Process2(HANDLE process, USHORT* machine, USHORT* native)
 
 LONG NTAPI fakeNtQueryInformationProcess(HANDLE process, ULONG informationClass, PVOID information, ULONG length, PULONG written)
 {
-    EXPECT_EQ(process, fakeProcessHandle());
+    EXPECT_EQ(process, Identity::handle());
     if (informationClass == 26U) // ProcessWow64Information: the PEB32's address
     {
         ++fake().wow64Queries;
@@ -178,7 +144,7 @@ LONG NTAPI fakeNtQueryInformationProcess(HANDLE process, ULONG informationClass,
 
 BOOL WINAPI fakeReadProcessMemory(HANDLE process, LPCVOID address, LPVOID buffer, SIZE_T size, SIZE_T* read)
 {
-    EXPECT_EQ(process, fakeProcessHandle());
+    EXPECT_EQ(process, Identity::handle());
     ++fake().reads;
     fake().bytesRequested += size;
     fake().largestRead = std::max<std::size_t>(fake().largestRead, size);
@@ -211,10 +177,10 @@ BOOL WINAPI fakeReadProcessMemory(HANDLE process, LPCVOID address, LPVOID buffer
 ProcessEnvironmentFunctions fakeApi()
 {
     return {
-        .openProcess = &fakeOpenProcess,
-        .closeHandle = &fakeCloseHandle,
-        .getProcessTimes = &fakeGetProcessTimes,
-        .getExitCodeProcess = &fakeGetExitCodeProcess,
+        .openProcess = &Identity::openProcess,
+        .closeHandle = &Identity::closeHandle,
+        .getProcessTimes = &Identity::getProcessTimes,
+        .getExitCodeProcess = &Identity::getExitCodeProcess,
         .isWow64Process2 = &fakeIsWow64Process2,
         .ntQueryInformationProcess = &fakeNtQueryInformationProcess,
         .readProcessMemory = &fakeReadProcessMemory,
