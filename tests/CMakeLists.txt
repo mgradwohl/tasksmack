@@ -870,6 +870,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsWaitChainMath.cpp # Analyze wait chain's decoding (#3084)
     Platform/WindowsMath/test_WindowsImageSignature.cpp # image signatures: wording, order, cache key, check (#3070)
     Platform/WindowsMath/test_WindowsSignatureWorker.cpp # the probe's signature worker through fakes (#3070)
+    Platform/WindowsMath/test_WindowsVersionResourceMath.cpp # the version resource walk the Publisher column reads a held file with (#4057)
 )
 list(APPEND COMMON_TEST_SOURCES ${WINDOWS_MATH_TEST_SOURCES})
 set(WINDOWS_PLATFORM_TEST_SOURCES

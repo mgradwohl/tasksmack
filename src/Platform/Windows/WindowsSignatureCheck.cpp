@@ -403,18 +403,6 @@ namespace
     return std::format("Its process can't be opened: {}", signatureErrorMessage(failure.win32Error));
 }
 
-/// Whether @p process is a protected process (or a PPL): GetProcessInformation(ProcessProtectionLevelInfo). A failed
-/// query reads as not protected, so such a process stays unconfirmed rather than checked by its path.
-[[nodiscard]] bool isProtectedProcess(HANDLE process)
-{
-    PROCESS_PROTECTION_LEVEL_INFORMATION protection{};
-    if (GetProcessInformation(process, ProcessProtectionLevelInfo, &protection, sizeof(protection)) == 0)
-    {
-        return false;
-    }
-    return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
-}
-
 } // namespace
 
 /// The file the image of @p process was mapped from, bound and held for its signature check (#4021).
@@ -429,14 +417,16 @@ openProcessImageForCheck(const WindowsSignature::ImageProcess& process)
     {
         return std::unexpected(BindFailure{.why = identityRefusal(opened.error()), .protectedProcess = false});
     }
-    // Only an image at its entry point: one found by the name it started with could be any file mapped under it.
-    std::expected<UniqueHandle, std::string> file =
-        openProcessImageFile(systemImageFileFunctions(), opened->get(), process.pid, {}, /*entryPointOnly=*/true);
+    // Only an image at its entry point binds (WindowsImageFile.h): one found by the name it started with could be any
+    // file mapped under it.
+    const ImageFileFunctions fns = systemImageFileFunctions();
+    std::expected<UniqueHandle, std::string> file = openProcessImageFile(fns, opened->get(), process.pid, {});
     if (!file.has_value())
     {
         // A protected process's memory map isn't shown to TaskSmack, so it never binds; code integrity required a
-        // protected signer to start it, so it is checked by its path instead.
-        return std::unexpected(BindFailure{.why = std::move(file.error()), .protectedProcess = isProtectedProcess(opened->get())});
+        // protected signer to start it, so it is checked by its path instead (a failed query reads as not protected,
+        // so such a process stays unconfirmed). Look up on VirusTotal never does this: it refuses a protected process.
+        return std::unexpected(BindFailure{.why = std::move(file.error()), .protectedProcess = isProtectedProcess(fns, opened->get())});
     }
     const std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(TrustApiFunctions{}, file->get());
     if (!stamp.has_value())
