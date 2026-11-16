@@ -2,7 +2,8 @@
 /// @brief What PanelPlatforms makes for a real run: the sign-in entry (#3093), the probes no helper reads
 /// through since protocol v23 (#3580), the crash history's and System Information's, and the memory map reader,
 /// which Windows' helper reads through again since v25 (#3665), and every Process Details reader the helper
-/// stands in for (#3814).
+/// stands in for (#3814). Linux has no helper since #3580 and no broker client since v26 (#3784): there the
+/// readers ask the broker nothing and offer no "Authenticate to read".
 
 #include "App/PanelPlatformTypes.h"
 #include "App/PanelPlatforms.h"
@@ -23,6 +24,18 @@ namespace App
 {
 namespace
 {
+
+// What a brokered reader's canReadAuthorized() says: the helper's readsOtherUsers on Windows, and never on Linux,
+// whose readers aren't brokered (#3784).
+bool expectedAuthorized(bool readsOtherUsers)
+{
+#ifdef _WIN32
+    return readsOtherUsers;
+#else
+    static_cast<void>(readsOtherUsers);
+    return false;
+#endif
+}
 
 // #3093 part 2: the sign-in entry is the platform's (an XDG autostart entry on Linux, #3254), and none while a
 // test hook is set, so an unattended run never writes it. Making it reads and writes nothing.
@@ -49,7 +62,8 @@ TEST(PanelPlatformsTest, TheCrashHistoryAndSystemInformationAskNoHelper)
 }
 
 // #3665 (v25): a real run's memory map reader goes through the shared broker, so a refused read offers
-// "Authenticate to read" where the helper reads other users' processes. Making it asks the broker nothing.
+// "Authenticate to read" where the helper reads other users' processes (Windows only, #3784). Making it asks the
+// broker nothing.
 TEST(PanelPlatformsTest, TheMemoryMapReaderReadsThroughTheHelper)
 {
     const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
@@ -61,7 +75,7 @@ TEST(PanelPlatformsTest, TheMemoryMapReaderReadsThroughTheHelper)
     ASSERT_NE(memoryMap, nullptr);
     if (memoryMap->hasMemoryMap())
     {
-        EXPECT_TRUE(memoryMap->canReadAuthorized());
+        EXPECT_EQ(memoryMap->canReadAuthorized(), expectedAuthorized(true));
         broker->setReadsOtherUsers(false); // a helper that runs as another account (#2769): no prompt
         EXPECT_FALSE(memoryMap->canReadAuthorized());
     }
@@ -71,7 +85,8 @@ TEST(PanelPlatformsTest, TheMemoryMapReaderReadsThroughTheHelper)
 
 // #3814: every reader Process Details has that the helper can read for goes through the shared broker on a real run
 // (brokered()), so none misses it: each offers "Authenticate to read" where the helper reads other users' processes,
-// and none where it runs as another account (#2769). Making them asks the broker nothing.
+// and none where it runs as another account (#2769). On Linux none is brokered (#3784), so none offers it. Making
+// them asks the broker nothing.
 TEST(PanelPlatformsTest, EveryProcessDetailsReaderTheHelperReadsForGoesThroughIt)
 {
     const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
@@ -93,27 +108,27 @@ TEST(PanelPlatformsTest, EveryProcessDetailsReaderTheHelperReadsForGoesThroughIt
         broker->setReadsOtherUsers(readsOtherUsers);
         if (readers.environment->hasEnvironment())
         {
-            EXPECT_EQ(readers.environment->canReadAuthorized(), readsOtherUsers);
+            EXPECT_EQ(readers.environment->canReadAuthorized(), expectedAuthorized(readsOtherUsers));
         }
         if (readers.connections->hasConnections())
         {
-            EXPECT_EQ(readers.connections->canReadAuthorized(), readsOtherUsers);
+            EXPECT_EQ(readers.connections->canReadAuthorized(), expectedAuthorized(readsOtherUsers));
         }
         if (readers.modules->hasModules())
         {
-            EXPECT_EQ(readers.modules->canReadAuthorized(), readsOtherUsers);
+            EXPECT_EQ(readers.modules->canReadAuthorized(), expectedAuthorized(readsOtherUsers));
         }
         if (readers.openFiles->hasOpenFiles())
         {
-            EXPECT_EQ(readers.openFiles->canReadAuthorized(), readsOtherUsers);
+            EXPECT_EQ(readers.openFiles->canReadAuthorized(), expectedAuthorized(readsOtherUsers));
         }
         if (readers.threads->hasThreads())
         {
-            EXPECT_EQ(readers.threads->canReadAuthorized(), readsOtherUsers);
+            EXPECT_EQ(readers.threads->canReadAuthorized(), expectedAuthorized(readsOtherUsers));
         }
         if (readers.memoryMap->hasMemoryMap())
         {
-            EXPECT_EQ(readers.memoryMap->canReadAuthorized(), readsOtherUsers);
+            EXPECT_EQ(readers.memoryMap->canReadAuthorized(), expectedAuthorized(readsOtherUsers));
         }
     }
     EXPECT_EQ(broker->connectCount(), 0);
