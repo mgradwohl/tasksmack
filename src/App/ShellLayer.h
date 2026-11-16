@@ -21,6 +21,7 @@
 #include <imgui.h>
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <optional>
@@ -280,12 +281,14 @@ class ShellLayer : public Core::Layer
     std::vector<const char*> m_TabBarMinimumLabels;
 
     // The opt-in update check (#3093) and its notice: the label it was last built for (empty: no notice),
-    // and the status Settings was last told, so it is raised only when it changes.
+    // and the status Settings was last told, so it is raised only when it changes. The summary is built only when
+    // what it is built from moved (#3882): the checker's outcome generation, offered() or checking().
     struct UpdateStatus
     {
         std::string summary;
         bool offered = false;
         bool checking = false;
+        std::uint64_t outcomeGeneration = 0;
     };
     std::string m_UpdateNoticeLabel;
     std::string m_UpdateNoticeUrl;

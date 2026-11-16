@@ -137,6 +137,26 @@ TEST_F(UpdateCheckerTest, TheFirstCheckSendsOneRequestAndRecordsANewerRelease)
     EXPECT_EQ(checker.summary(), "TaskSmack v0.10.0 is available");
 }
 
+// #3882: the outcome generation moves only when a check's outcome is taken in, so the shell rebuilds the summary
+// (a std::format) only then, or when checking() or offered() moves, not every frame.
+TEST_F(UpdateCheckerTest, TheOutcomeGenerationMovesOnlyWhenACheckEnds)
+{
+    UpdateChecker checker = makeChecker(m_Client);
+    EXPECT_EQ(checker.outcomeGeneration(), 0U);
+    m_State.enabled = true;
+    static_cast<void>(checker.update(m_State)); // starts the check
+    EXPECT_EQ(checker.outcomeGeneration(), 0U) << "a check that is running has no outcome yet";
+    checker.waitForCheck();
+    static_cast<void>(checker.update(m_State));
+    EXPECT_EQ(checker.outcomeGeneration(), 1U);
+    static_cast<void>(checker.update(m_State)); // nothing due: the daily limit
+    EXPECT_EQ(checker.outcomeGeneration(), 1U);
+
+    checker.checkNow();
+    EXPECT_TRUE(runUpdate(checker));
+    EXPECT_EQ(checker.outcomeGeneration(), 2U) << "each outcome counts, even one that says the same";
+}
+
 TEST_F(UpdateCheckerTest, AtMostOneCheckADay)
 {
     UpdateChecker checker = makeChecker(m_Client);
