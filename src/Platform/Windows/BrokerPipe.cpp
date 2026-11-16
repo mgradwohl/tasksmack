@@ -1,6 +1,7 @@
 #include "BrokerPipe.h"
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <algorithm>
@@ -212,29 +213,17 @@ bool isPipeName(std::wstring_view name) noexcept
 
 std::expected<Sid, std::string> userSidOfToken(HANDLE token)
 {
-    DWORD size = 0;
-    static_cast<void>(GetTokenInformation(token, TokenUser, nullptr, 0, &size));
-    if (size == 0)
+    // The TokenUser read every current-token caller shares (WindowsElevation.h, #3864).
+    auto sid = readTokenUserSid(token, &GetTokenInformation);
+    if (!sid.has_value())
     {
-        return std::unexpected(std::format("couldn't read the token's user: {}", lastErrorText(GetLastError())));
+        if (sid.error() == ERROR_INVALID_SID)
+        {
+            return std::unexpected(std::string("the token's user isn't a valid SID"));
+        }
+        return std::unexpected(std::format("couldn't read the token's user: {}", lastErrorText(sid.error())));
     }
-    std::vector<std::byte> buffer(size);
-    if (GetTokenInformation(token, TokenUser, buffer.data(), size, &size) == FALSE)
-    {
-        return std::unexpected(std::format("couldn't read the token's user: {}", lastErrorText(GetLastError())));
-    }
-    const auto* const user = reinterpret_cast<const TOKEN_USER*>(
-        buffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - TokenUser's buffer is a TOKEN_USER
-    if (IsValidSid(user->User.Sid) == FALSE)
-    {
-        return std::unexpected(std::string("the token's user isn't a valid SID"));
-    }
-    Sid sid(GetLengthSid(user->User.Sid));
-    if (CopySid(static_cast<DWORD>(sid.size()), sid.data(), user->User.Sid) == FALSE)
-    {
-        return std::unexpected(std::format("couldn't copy the user's SID: {}", lastErrorText(GetLastError())));
-    }
-    return sid;
+    return std::move(*sid);
 }
 
 std::expected<Sid, std::string> userSidOfProcess(HANDLE process)
