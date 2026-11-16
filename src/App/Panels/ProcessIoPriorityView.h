@@ -533,7 +533,7 @@ class ProcessIoPriorityView
     /// has. Nothing is sent while an apply still runs.
     void apply(Platform::IProcessActions* actions, const Platform::ProcessTarget& liveTarget)
     {
-        if (dropEditIfTargetMoved(liveTarget) || !canApply(liveTarget) || applying())
+        if (dropEditIfTargetMoved(liveTarget) || !canApply(liveTarget) || applying() || heldForOtherIoPriorityChange())
         {
             return;
         }
@@ -552,6 +552,7 @@ class ProcessIoPriorityView
         retry.target = target;
         retry.ioClass = priority.ioClass;
         retry.level = priority.level;
+        m_ApplyTarget = target;
         static_cast<void>(m_ApplyRun.start(
             std::format("Setting the I/O priority of PID {}...", target.pid),
             [actions, target, priority] { return actions->setIoPriority(target, priority.ioClass, priority.level); },
@@ -585,7 +586,7 @@ class ProcessIoPriorityView
     /// What the error line offers beside it now (drawRefusalOffer()): nothing while an apply runs.
     [[nodiscard]] RefusalOfferKind refusalOffer() const noexcept
     {
-        return m_Offer.shown(applying());
+        return m_Offer.shown(applying(), heldForOtherIoPriorityChange());
     }
 
     /// Whether the read line offers "Restart as administrator..." (#3669): the read of the process's
@@ -603,7 +604,7 @@ class ProcessIoPriorityView
     /// password prompt (IProcessActions::runAuthorized()), on the apply worker.
     void retryAuthorized()
     {
-        if (!offersAuthenticateAndRetry())
+        if (!offersAuthenticateAndRetry() || heldForOtherIoPriorityChange())
         {
             return;
         }
@@ -613,6 +614,7 @@ class ProcessIoPriorityView
             return;
         }
         const Retry& retry = *taken;
+        m_ApplyTarget = retry.action.target;
         static_cast<void>(m_ApplyRun.start(
             std::format("Waiting for authorization to set the I/O priority of PID {}...", retry.action.target.pid),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
@@ -637,6 +639,28 @@ class ProcessIoPriorityView
     [[nodiscard]] bool applying() const noexcept
     {
         return m_ApplyRun.busy();
+    }
+
+    /// The process the running apply (or its retry) sets the I/O priority of, while applying() (#3884): Process
+    /// Details publishes it, so the Processes table's batch I/O priority change leaves that process out.
+    [[nodiscard]] std::optional<Platform::ProcessTarget> applyingTarget() const noexcept
+    {
+        return applying() ? std::optional<Platform::ProcessTarget>{m_ApplyTarget} : std::nullopt;
+    }
+
+    /// Whether an I/O priority change for this process is asked about or running in the Processes table (#3884),
+    /// and why (@p reason, Apply's tooltip; null when there is none). Apply and "Retry as administrator" are held
+    /// until it is done, as ProcessPriorityView's are for a nice change (#3467), so the older of the two can't
+    /// land last. The caller sets it each frame, before render().
+    void holdForOtherIoPriorityChange(const char* reason) noexcept
+    {
+        m_HoldReason = reason;
+    }
+
+    /// Whether Apply is held for another I/O priority change (holdForOtherIoPriorityChange()).
+    [[nodiscard]] bool heldForOtherIoPriorityChange() const noexcept
+    {
+        return m_HoldReason != nullptr;
     }
 
     /// What the line under Apply says while applying().
@@ -742,6 +766,8 @@ class ProcessIoPriorityView
     std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
     Platform::ProcessTarget m_EditTarget = NO_TARGET;
     Platform::ProcessTarget m_CurrentTarget = NO_TARGET;
+    Platform::ProcessTarget m_ApplyTarget = NO_TARGET; // The process the running apply is for (applyingTarget(), #3884)
+    const char* m_HoldReason = nullptr;                // holdForOtherIoPriorityChange()'s: null when not held
     std::string m_Error;
     std::string m_ReadError;
     RefusalOffer<Retry> m_Offer; // The error line's Retry or Restart as administrator (#2308, #3669); never ticked: no timeout

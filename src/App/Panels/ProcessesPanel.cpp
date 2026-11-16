@@ -1352,9 +1352,11 @@ void ProcessesPanel::onDetach()
     m_RowActionRun.update(/*wait=*/true);
     // Nothing here holds Process Details' priority controls any more (#3467).
     m_BatchPriorityTargets.clear();
+    m_BatchIoPriorityTargets.clear();
     if (m_PriorityChanges != nullptr)
     {
         m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, {});
+        m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, {}, PriorityChangesInFlight::Change::IoPriority);
     }
     // The UDP event trace's session is stopped here, not left to whichever of the model and this
     // panel lets the collector go last (#1492): after a switch still running on its worker (#3155),
@@ -1463,8 +1465,15 @@ void ProcessesPanel::onUpdate(float deltaTime)
             outcome->message.ok = false;
             outcome->message.text += ProcessesPanelActions::batchPrioritySkippedText(m_BatchPrioritySkipped);
         }
+        if (m_BatchIoPrioritySkipped > 0)
+        {
+            outcome->message.ok = false;
+            outcome->message.text += ProcessesPanelActions::batchPrioritySkippedText(m_BatchIoPrioritySkipped, /*io=*/true);
+        }
         m_BatchPriorityTargets.clear();
         m_BatchPrioritySkipped = 0;
+        m_BatchIoPriorityTargets.clear();
+        m_BatchIoPrioritySkipped = 0;
         showBatchOutcome(std::move(*outcome));
     }
     // So has a single-process action (#2305): its result line replaces "Killing PID 123...".
@@ -2517,6 +2526,22 @@ void ProcessesPanel::publishPriorityChanges()
         m_PublishedPriorityChanges.insert(m_PublishedPriorityChanges.end(), m_BatchPriorityTargets.begin(), m_BatchPriorityTargets.end());
     }
     m_PriorityChanges->publish(PriorityChangesInFlight::Panel::Processes, m_PublishedPriorityChanges);
+    // The I/O priority ones (#3884): the batch I/O priority dialog is its confirmation, and its batch while it runs.
+    m_PublishedIoPriorityChanges.clear();
+    if (m_BatchIoPriorityDialog.isPending())
+    {
+        for (const ProcessBatch::BatchTarget& target : m_BatchIoPriorityDialog.targets())
+        {
+            m_PublishedIoPriorityChanges.push_back(target.target);
+        }
+    }
+    if (m_BatchRun.busy())
+    {
+        m_PublishedIoPriorityChanges.insert(
+            m_PublishedIoPriorityChanges.end(), m_BatchIoPriorityTargets.begin(), m_BatchIoPriorityTargets.end());
+    }
+    m_PriorityChanges->publish(
+        PriorityChangesInFlight::Panel::Processes, m_PublishedIoPriorityChanges, PriorityChangesInFlight::Change::IoPriority);
 }
 
 size_t ProcessesPanel::processCount() const

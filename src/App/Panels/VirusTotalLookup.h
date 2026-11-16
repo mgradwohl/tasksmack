@@ -118,7 +118,8 @@ class ContextCache
     }
     const Domain::VirusTotal::LookupResult result = Domain::VirusTotal::interpret(response->status, response->body);
     std::string line = Domain::VirusTotal::summary(name, result);
-    const bool flagged = result.verdict.has_value() && result.verdict->flagged() > 0;
+    // An implausible verdict (#3874) is never ok(): interpret() doesn't make one, but a Found carrying one is an error.
+    const bool flagged = result.verdict.has_value() && (result.verdict->flagged() > 0 || !result.verdict->plausible());
     if (result.outcome == Domain::VirusTotal::Outcome::Found || result.outcome == Domain::VirusTotal::Outcome::Unknown)
     {
         line += std::format(" ({})", Domain::VirusTotal::reportPage(*sha256));
