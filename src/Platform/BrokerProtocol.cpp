@@ -640,8 +640,9 @@ constexpr std::uint8_t RESERVED = 1U << 5U;
 constexpr std::uint8_t DELETED = 1U << 6U;
 constexpr std::uint8_t ALL_FLAGS = (1U << 7U) - 1U;
 
-/// Each size field: bit i of a mapping's presence byte says whether SIZES[i] follows. Windows' reader fills none,
-/// but the reply carries what any reader gives, so a fuller one later needs no new version.
+/// Each size field: bit i of a mapping's presence byte says whether SIZES[i] follows. Windows' reader fills the
+/// resident size and the shared/private clean/dirty split from QueryWorkingSetEx (#4031) and leaves PSS and swap
+/// empty; the reply carries whatever a reader gives, so a fuller one needs no new version.
 constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SIZES{
     &MemoryMapping::residentBytes,
     &MemoryMapping::pssBytes,
