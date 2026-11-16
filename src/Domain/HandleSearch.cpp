@@ -113,11 +113,16 @@ void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
                 std::string_view loweredQuery,
-                SearchPublication& into)
+                SearchPublication& into,
+                SearchSources asked)
 {
     ++into.searched;
     const bool filesOk = files.status == Platform::OpenFilesReadStatus::Ok;
     const bool modulesOk = modules.status == Platform::ModulesReadStatus::Ok;
+    // A source not asked for was read by the first search (#3875): an administrator's pass asks only for what was
+    // refused. Then the process was read, however this pass's read went: never exited or failed, whose matches the
+    // first search still lists.
+    const bool readBefore = !asked.openFiles || !asked.modules;
     if (filesOk)
     {
         for (const Platform::OpenFile& file : files.files)
@@ -145,7 +150,7 @@ void addProcess(const SearchProcess& process,
         .modules = modules.status == Platform::ModulesReadStatus::PermissionDenied,
     };
     const bool anyRefused = refused.openFiles || refused.modules;
-    if (filesOk || modulesOk)
+    if (filesOk || modulesOk || readBefore)
     {
         if (anyRefused)
         {
@@ -306,7 +311,7 @@ void walk(std::span<const SearchProcess> processes,
             modules =
                 authorized ? readers.modules->readAuthorized(process.target, stopToken) : readers.modules->readModules(process.target);
         }
-        addProcess(process, files, modules, loweredQuery, current);
+        addProcess(process, files, modules, loweredQuery, current, asked);
         if (++sincePublish == PUBLISH_EVERY_PROCESSES)
         {
             sincePublish = 0;

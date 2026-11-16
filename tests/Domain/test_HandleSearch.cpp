@@ -837,6 +837,60 @@ TEST(HandleSearchTest, ModulesReadFilesRefusedRetriesOnlyTheFiles)
     EXPECT_EQ(second->searched, 1U);
 }
 
+// #3875: a process whose open files the first search read, and whose modules it was refused, exits before the
+// administrator's pass. That pass's modules read says so, but the process was read: its file match stays listed, and
+// it isn't counted as exited (or failed) beside it.
+TEST(HandleSearchTest, AnAdministratorPassDoesNotCountAProcessExitedWhoseOtherSourceWasRead)
+{
+    FakeOpenFiles files;
+    files.results[1] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.db")});
+    files.results[2] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.dat")});
+    FakeModules mods; // both PIDs' modules refused
+    mods.authorizedResults[1] = modulesStatus(Platform::ModulesReadStatus::ProcessExited);
+    mods.authorizedResults[2] = modulesStatus(Platform::ModulesReadStatus::Failed);
+    const std::vector<SearchProcess> processes{process(1, "gone"), process(2, "odd")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        false,
+        startFor("data.d", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
+    const std::shared_ptr<const SearchPublication> first = slot.load();
+    ASSERT_EQ(first->denied.size(), 2U);
+
+    run(processesOf(first->denied),
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(slot),
+        stop.get_token(),
+        sourcesOf(first->denied));
+    const std::shared_ptr<const SearchPublication> second = slot.load();
+    EXPECT_TRUE(second->done);
+    EXPECT_EQ(mods.authorizedRead, (std::vector<std::int32_t>{1, 2}));
+    EXPECT_EQ(second->matches.size(), 2U) << "both open files' matches are kept";
+    EXPECT_EQ(second->exited, 0U) << "its open files were read: it didn't exit before it was read";
+    EXPECT_EQ(second->failed, 0U) << "nor did its read fail";
+    EXPECT_TRUE(second->denied.empty());
+    EXPECT_EQ(second->searched, 2U);
+
+    // With nothing read before (both sources asked), the same exit still counts.
+    SearchPublication into;
+    addProcess(process(3, "gone"), {}, modulesStatus(Platform::ModulesReadStatus::ProcessExited), "x", into, {});
+    EXPECT_EQ(into.exited, 1U);
+    // And a source left out means it was read: neither exited nor failed.
+    addProcess(process(4, "read"),
+               {},
+               modulesStatus(Platform::ModulesReadStatus::ProcessExited),
+               "x",
+               into,
+               {.openFiles = false, .modules = true});
+    EXPECT_EQ(into.exited, 1U);
+    EXPECT_EQ(into.failed, 0U);
+}
+
 // #3357: processesOf() and sourcesOf() line up with the denied list, and run() reads, for each process, the sources
 // given for it: those past the end of the list read both.
 TEST(HandleSearchTest, ProcessesOfAndSourcesOfKeepTheDeniedOrder)
