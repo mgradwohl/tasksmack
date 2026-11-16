@@ -256,7 +256,7 @@ class WindowsProcessProbe : public IProcessProbe
     /// caller, under its sampling lock. Concurrent calls stay data-race-free (atomics and the
     /// mutex), but each would extend the streak.
     /// While the opt-in UDP collector (#1492) delivers, a complete reading also carries each
-    /// process's UDP bytes as one synthetic connection (EtwNet::appendUdpSamples()).
+    /// process's UDP bytes as one synthetic connection (UdpTraffic::appendSamples(), #3869).
     [[nodiscard]] SocketTrafficReading readSocketTraffic() const override;
 
     /// The CPU packages' cumulative energy from the EMI meters (#2587), with the busy CPU ticks read
