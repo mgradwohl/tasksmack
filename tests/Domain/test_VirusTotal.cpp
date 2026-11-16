@@ -46,9 +46,11 @@ TEST(VirusTotalTest, ReadsTheLastAnalysisStatsAndSkipsTheRest)
     const std::optional<Verdict> verdict =
         readFileReport(report(R"({"malicious":2,"suspicious":1,"undetected":60,"harmless":3,"timeout":0,"type-unsupported":9})"));
     ASSERT_TRUE(verdict.has_value());
-    EXPECT_EQ(*verdict, (Verdict{.malicious = 2, .suspicious = 1, .undetected = 60, .harmless = 3}));
-    EXPECT_EQ(verdict->flagged(), 3U);
-    EXPECT_EQ(verdict->engines(), 66U) << "timeouts and unsupported types aren't in the denominator";
+    // A plain value: bugprone-unchecked-optional-access doesn't model ASSERT_TRUE's early return.
+    const Verdict read = verdict.value_or(Verdict{});
+    EXPECT_EQ(read, (Verdict{.malicious = 2, .suspicious = 1, .undetected = 60, .harmless = 3}));
+    EXPECT_EQ(read.flagged(), 3U);
+    EXPECT_EQ(read.engines(), 66U) << "timeouts and unsupported types aren't in the denominator";
 }
 
 TEST(VirusTotalTest, ARepliesWithoutTheFourCountsIsNotAReport)
@@ -84,6 +86,40 @@ TEST(VirusTotalTest, EachStatusReadsAsItsOutcomeAndLine)
     EXPECT_EQ(interpret(429, "").outcome, Outcome::RateLimited);
     EXPECT_EQ(summary("bash", interpret(500, "")), "Couldn't look up bash on VirusTotal: it answered HTTP 500");
     EXPECT_EQ(summary("bash", interpret(200, "not json")), "Couldn't look up bash on VirusTotal: its reply couldn't be read");
+}
+
+// #3874: counts that would wrap round to 0 flags, or more engines than any report has, are a failure, never clean.
+TEST(VirusTotalTest, HugeCountsAreNeverReadAsNoEngineFlags)
+{
+    constexpr std::uint64_t MAX = UINT64_MAX;
+    const Verdict wraps{.malicious = MAX, .suspicious = 1, .undetected = 0, .harmless = 0};
+    EXPECT_EQ(wraps.flagged(), MAX) << "saturates rather than wrapping to 0";
+    EXPECT_EQ(wraps.engines(), MAX);
+    EXPECT_FALSE(wraps.plausible());
+    const Verdict allHuge{.malicious = MAX, .suspicious = MAX, .undetected = MAX, .harmless = MAX};
+    EXPECT_EQ(allHuge.flagged(), MAX);
+    EXPECT_EQ(allHuge.engines(), MAX);
+    const Verdict undetectedWraps{.malicious = 0, .suspicious = 0, .undetected = MAX, .harmless = 2};
+    EXPECT_EQ(undetectedWraps.flagged(), 0U);
+    EXPECT_EQ(undetectedWraps.engines(), MAX);
+    EXPECT_FALSE(undetectedWraps.plausible());
+
+    EXPECT_TRUE((Verdict{.malicious = 0, .suspicious = 0, .undetected = MAX_ENGINES, .harmless = 0}).plausible());
+    EXPECT_FALSE((Verdict{.malicious = 1, .suspicious = 0, .undetected = MAX_ENGINES, .harmless = 0}).plausible());
+
+    // In a reply: 18446744073709551615 + 1 malicious and suspicious wrapped to "no engine flags" before.
+    const std::string hostile = report(R"({"malicious":18446744073709551615,"suspicious":1,"undetected":70,"harmless":0})");
+    EXPECT_FALSE(readFileReport(hostile).has_value());
+    const LookupResult read = interpret(200, hostile);
+    EXPECT_EQ(read.outcome, Outcome::Failed);
+    EXPECT_EQ(summary("evil.exe", read), "Couldn't look up evil.exe on VirusTotal: its reply couldn't be read");
+    // Each count in range, but more engines together than any report has.
+    EXPECT_FALSE(readFileReport(report(R"({"malicious":0,"suspicious":0,"undetected":9000,"harmless":1001})")).has_value());
+    EXPECT_TRUE(readFileReport(report(R"({"malicious":0,"suspicious":0,"undetected":9000,"harmless":1000})")).has_value());
+
+    // A Found result carrying such a verdict anyway is a failure line, not a verdict.
+    const LookupResult forged{.outcome = Outcome::Found, .verdict = wraps, .detail = {}};
+    EXPECT_EQ(summary("evil.exe", forged), "Couldn't look up evil.exe on VirusTotal: its reply couldn't be read");
 }
 
 TEST(JsonReaderTest, ReadsANonNegativeIntegerAndSkipsAnythingElse)
