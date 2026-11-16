@@ -130,7 +130,7 @@ void SystemInfoPanel::onAttach()
 {
     // The composition root's one probe creation for this panel; the first read waits for the tab.
     // An injected factory (tests, #1395) replaces the platform's.
-    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : makeSystemInfoPanelProbe(Synthetic::activeScenario()),
+    m_Model = std::make_shared<Domain::SystemInfoModel>(m_MakeProbe ? m_MakeProbe() : makeSystemInfoProbe(Synthetic::activeScenario()),
                                                         m_CrashHistory);
 
     if (!m_Model->capabilities().hasOs)
@@ -143,7 +143,7 @@ void SystemInfoPanel::onAttach()
     {
         makeSensorProbe = [scenario = Synthetic::activeScenario()]
         {
-            return App::makeSensorProbe(scenario);
+            return App::makeSystemInfoProbe(scenario);
         };
     }
     m_Sensors = std::make_shared<Domain::SensorModel>(
