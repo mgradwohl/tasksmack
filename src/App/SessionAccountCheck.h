@@ -56,6 +56,10 @@ class SessionAccountCheck
     /// Never on the UI thread.
     [[nodiscard]] Platform::SessionAccount wait();
 
+    /// Whether the read's worker still has its thread: false once the answer has been taken, for known(), and for a
+    /// read that never started (#3893). For tests.
+    [[nodiscard]] bool workerRunning() const noexcept;
+
   private:
     /// The worker's one job: the read. It carries nothing.
     struct Read

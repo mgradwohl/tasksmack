@@ -546,7 +546,10 @@ set(COMMON_TEST_SOURCES
     Domain/test_SingleLineText.cpp
     Domain/test_AccountName.cpp # a process owner's DOMAIN\user, written and matched (#3328)
     Domain/test_ProcessEnergyAttribution.cpp
-    Domain/test_ProcessModel.cpp
+    Domain/test_ProcessModel.cpp  # split by feature (#3850): the helpers are in ProcessModelTestSupport.h
+    Domain/test_ProcessModelRates.cpp
+    Domain/test_ProcessModelHistoryAndGpu.cpp
+    Domain/test_ProcessModelPassthrough.cpp
     Domain/test_ProcessRowHistory.cpp
     Domain/test_SocketTrafficAccumulator.cpp
     Domain/test_GPUModel.cpp
@@ -840,7 +843,10 @@ set(COMMON_TEST_SOURCES
     App/test_ValueStripText.cpp # the strips' texts, held in place (#843)
     App/test_SystemMetricsPanelRender.cpp
     App/test_ProcessDetailsPanelRender.cpp
-    App/test_ProcessesPanelRender.cpp
+    App/test_ProcessesPanelRender.cpp  # split by feature (#3850): the fixture is in ProcessesPanelRenderFixture.h
+    App/test_ProcessesPanelRenderColumns.cpp
+    App/test_ProcessesPanelRenderGroups.cpp
+    App/test_ProcessesPanelRenderActions.cpp
     App/test_FindHandlesFormat.cpp # the Find handles order and status line (#3374)
     App/test_FindHandlesDialogRender.cpp # the dialog's Stop and its administrator's search, headless (#3374)
     App/test_ServicesStartupPanelsRender.cpp
@@ -1075,7 +1081,10 @@ set(THEME_REAL_TEST_SOURCES
 )
 # Tests that need the whole app, built into TaskSmackAppTests below (#1395)
 set(APP_REAL_TEST_SOURCES
-    App/test_UiLayersOnDisplay.cpp
+    App/test_UiLayersOnDisplay.cpp  # split by feature (#3850): the shared checks and fixture are in UiLayersOnDisplayFixture.h
+    App/test_UiLayersOnDisplayDrag.cpp
+    App/test_UiLayersOnDisplayResize.cpp
+    App/test_UiLayersOnDisplayShell.cpp
     App/test_ScreenshotOnDisplay.cpp  # TASKSMACK_SCREENSHOT and TASKSMACK_DEMO end to end (#2827)
     App/test_UiScenariosOnDisplay.cpp # the #2700 sign-off's steps through the whole shell (#2711)
     App/test_AccessNoticeOnDisplay.cpp # the startup notice in a real application (#2728)
