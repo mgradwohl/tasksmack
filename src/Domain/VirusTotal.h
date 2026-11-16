@@ -35,6 +35,16 @@ inline constexpr std::size_t API_KEY_LENGTH = 64;
 /// The report page for @p sha256, for the "Open report" link.
 [[nodiscard]] std::string reportPage(std::string_view sha256);
 
+/// The most engines a report can count (#3874). VirusTotal runs about 75; a count, or the four counts' sum, above
+/// this is a corrupt or hostile reply, never a verdict, so a sum can't wrap round to "no engine flags it".
+inline constexpr std::uint64_t MAX_ENGINES = 10'000;
+
+/// @p a + @p b, or the largest count when that sum doesn't fit (#3874).
+[[nodiscard]] constexpr std::uint64_t saturatingSum(std::uint64_t a, std::uint64_t b) noexcept
+{
+    return b > UINT64_MAX - a ? UINT64_MAX : a + b;
+}
+
 /// last_analysis_stats: how many engines said what of the file at its last analysis.
 struct Verdict
 {
@@ -43,23 +53,30 @@ struct Verdict
     std::uint64_t undetected = 0;
     std::uint64_t harmless = 0;
 
-    /// The engines that flag it: malicious and suspicious.
+    /// The engines that flag it: malicious and suspicious. Saturating (#3874): a sum that doesn't fit is the
+    /// largest count, so a flag is never added away to 0.
     [[nodiscard]] std::uint64_t flagged() const noexcept
     {
-        return malicious + suspicious;
+        return saturatingSum(malicious, suspicious);
     }
-    /// The engines that gave a verdict, the denominator VirusTotal shows: the four above. Engines that timed out,
-    /// failed or don't handle the file type aren't counted.
+    /// The engines that gave a verdict, the denominator VirusTotal shows: the four above, saturating as flagged()
+    /// is. Engines that timed out, failed or don't handle the file type aren't counted.
     [[nodiscard]] std::uint64_t engines() const noexcept
     {
-        return malicious + suspicious + undetected + harmless;
+        return saturatingSum(saturatingSum(malicious, suspicious), saturatingSum(undetected, harmless));
+    }
+    /// Whether the counts could be a real report's: their sum at most MAX_ENGINES (#3874). summary() reads one
+    /// that isn't as a failure, never as a verdict.
+    [[nodiscard]] bool plausible() const noexcept
+    {
+        return engines() <= MAX_ENGINES;
     }
 
     friend bool operator==(const Verdict&, const Verdict&) = default;
 };
 
 /// data.attributes.last_analysis_stats from a file report, or nullopt when @p json isn't one (not an object,
-/// too long, too deep, or without those four counts).
+/// too long, too deep, without those four counts, or with counts no report has: above MAX_ENGINES together, #3874).
 [[nodiscard]] std::optional<Verdict> readFileReport(std::string_view json);
 
 /// What a lookup came to.
