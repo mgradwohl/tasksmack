@@ -38,6 +38,7 @@
 #include "UpdateChecker.h"
 #include "UserConfig.h"
 #include "WindowOverride.h"
+#include "WithheldOpenNotice.h"
 #include "version.h"
 
 #include <SDL3/SDL.h>
@@ -471,9 +472,10 @@ void ShellLayer::onEvent(Core::Event& event)
     dispatcher.dispatch<Core::OpenUpdatePageEvent>(
         [this](Core::OpenUpdatePageEvent& /*e*/)
         {
-            if (m_UpdateButton.active && !m_UpdateButton.url.empty())
+            if (m_UpdateButton.active && !m_UpdateButton.url.empty() &&
+                m_UpdateLinkOpen.start(m_OpenUpdateLink(m_UpdateButton.url), m_UpdateButton.url))
             {
-                static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateButton.url), m_UpdateButton.url));
+                m_UpdateOpenFromTitleBar = true; // withheld, it is named under the bar (#3917)
             }
             return false;
         });
@@ -746,6 +748,7 @@ void ShellLayer::onRender()
     ImGui::End();
 
     renderStatusBar();
+    renderUpdateWithheld(titleBarHeight); // after the status bar's poll(), which sets withheld()
 
     UI::RenderMetrics::get().renderOverlay(&m_ShowRenderMetrics);
 
@@ -1005,7 +1008,10 @@ void ShellLayer::renderStatusBar()
     else if (action == StatusBarView::Action::OpenUpdate && !m_UpdateNoticeUrl.empty())
     {
         // In the browser, on a worker (#3155); a second click while it opens is ignored.
-        static_cast<void>(m_UpdateLinkOpen.start(BackgroundOpen::openUtf8(m_UpdateNoticeUrl), m_UpdateNoticeUrl));
+        if (m_UpdateLinkOpen.start(m_OpenUpdateLink(m_UpdateNoticeUrl), m_UpdateNoticeUrl))
+        {
+            m_UpdateOpenFromTitleBar = false; // withheld, the notice's own tooltip names it
+        }
     }
     else if (action == StatusBarView::Action::DismissUpdate)
     {
@@ -1033,6 +1039,43 @@ void ShellLayer::renderStatusBar()
         // The startup notice again, whatever its "Don't show this again": the user asked for it.
         Core::OpenElevationNoticeEvent event(capabilities.missingPrivileges);
         m_Host->raiseEvent(event);
+    }
+}
+
+void ShellLayer::renderUpdateWithheld(float titleBarHeight)
+{
+    // The release page the title bar's update button didn't open (#3917, #3658): named under the bar's right end,
+    // where the button is, with the Copy every withheld open has, until Close or the next open. The status bar's
+    // notice can't be relied on to say it: it may be dismissed (the button stays lit) or left out of a narrow bar.
+    const std::string& withheld = m_UpdateLinkOpen.withheld();
+    if (!m_UpdateOpenFromTitleBar || withheld.empty())
+    {
+        return;
+    }
+    const ImGuiViewport* viewport = ImGui::GetMainViewport();
+    const float em = ImGui::GetFontSize();
+    const float margin = em * 0.5F;
+    ImGui::SetNextWindowPos(ImVec2(viewport->WorkPos.x + viewport->WorkSize.x - margin, viewport->WorkPos.y + titleBarHeight + margin),
+                            ImGuiCond_Always,
+                            ImVec2(1.0F, 0.0F));
+    ImGui::SetNextWindowViewport(viewport->ID);
+    const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+                                   ImGuiWindowFlags_NoCollapse | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_AlwaysAutoResize;
+    bool close = false;
+    if (ImGui::Begin(UPDATE_WITHHELD_WINDOW, nullptr, flags))
+    {
+        // Wrapped at a fixed width: an auto-sized window has no edge of its own to wrap at.
+        constexpr float WRAP_EM = 28.0F;
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + std::min(em * WRAP_EM, std::max(em, viewport->WorkSize.x - (em * 3.0F))));
+        WithheldOpenNotice::draw(withheld);
+        ImGui::PopTextWrapPos();
+        ImGui::SameLine();
+        close = ImGui::SmallButton(UPDATE_WITHHELD_CLOSE_LABEL);
+    }
+    ImGui::End();
+    if (close)
+    {
+        m_UpdateLinkOpen.clearWithheld();
     }
 }
 

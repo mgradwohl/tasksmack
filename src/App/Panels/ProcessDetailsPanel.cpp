@@ -131,7 +131,7 @@ ProcessPriorityView& ProcessDetailsPanel::priorityViewForTesting() noexcept
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
 {
     // Look up on VirusTotal's client (#3094), made with the panel; the tests' constructors bring none.
-    m_LookupClient = makeLookupClient(Synthetic::activeScenario(), SelectOverride::testHookActive());
+    m_LookupClient = makeHttpsClient(Synthetic::activeScenario(), SelectOverride::testHookActive());
 }
 
 ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)
@@ -1029,9 +1029,8 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             .tooltip = ProcessArchitectureNote::architectureNote(proc.architecture),
         });
     }
-    // Identity and Runtime are cards with their header inside (#1537), both as tall as the taller of
-    // the two, so their edges line up. The cards beside or below them are each as tall as their own
-    // content (#3741), so they never stretch these.
+    // Identity and Runtime are cards with their header inside (#1537). Their own height is the taller of the two's
+    // rows; each row of the Overview's cards is then as tall as its tallest card (#4029).
     const auto tallerRowCount = static_cast<float>(std::max(identityRows.count, runtimeRows.count));
     const float cardHeight = ProcessDetailsLayout::computeInfoCardHeight(tallerRowCount, rowHeight, ImGui::GetStyle().WindowPadding.y);
 
@@ -1052,46 +1051,57 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     const float leftWidth = blockWidthFor(identityRows.view());
     const float rightWidth = blockWidthFor(runtimeRows.view());
 
-    // Actions, Priority and I/O priority: what can be done to this process? Each card as wide as its
-    // content, Priority and I/O priority one column: on this row to the right of Runtime when the pane
-    // has room for them all, otherwise wrapped to a row below (#1789, #3741).
+    // Actions, Priority and I/O priority: what can be done to this process? The Overview's cards flow left to
+    // right in rows, each as wide as its content, and wrap to the next row when the next doesn't fit (#4029):
+    // Actions beside Runtime when there is room, then Priority, then I/O priority. Each row is as tall as its
+    // tallest card: Identity and Runtime by their rows, the others by their content as last measured.
+    using ProcessDetailsLayout::OverviewCard;
     const bool hasControls = ProcessActionsBlock::hasAnyAction(m_ActionCapabilities);
-    ProcessDetailsLayout::TopRowLayout controlsLayout{};
+    std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT> widths{leftWidth, rightWidth, 0.0F, 0.0F, 0.0F};
     if (hasControls)
     {
         const ProcessActionsBlock::Widths controlWidths =
             ProcessActionsBlock::measure(m_ActionCapabilities, m_Views->m_ActionsView.virusTotalOffered(m_ActionCapabilities));
-        controlsLayout = ProcessDetailsLayout::chooseTopRowLayout(
-            contentWidth, leftWidth + spacing + rightWidth, spacing, controlWidths.actionsCard(), controlWidths.priorityCard());
+        widths[static_cast<std::size_t>(OverviewCard::Actions)] = controlWidths.actionsCard();
+        widths[static_cast<std::size_t>(OverviewCard::Priority)] =
+            m_ActionCapabilities.canSetPriority ? controlWidths.priorityCard() : 0.0F;
+        widths[static_cast<std::size_t>(OverviewCard::IoPriority)] =
+            m_ActionCapabilities.canSetIoPriority ? controlWidths.priorityCard() : 0.0F;
     }
+    const ProcessDetailsLayout::OverviewLayout layout = ProcessDetailsLayout::layoutOverview(contentWidth, spacing, widths);
+    m_OverviewCardHeights[static_cast<std::size_t>(OverviewCard::Identity)] = cardHeight;
+    m_OverviewCardHeights[static_cast<std::size_t>(OverviewCard::Runtime)] = cardHeight;
+    const std::array<float, ProcessDetailsLayout::OVERVIEW_CARD_COUNT> heights =
+        ProcessDetailsLayout::rowHeights(layout, m_OverviewCardHeights);
 
     // Identity section: Who is this process?
-    (void) ProcessOverviewCard::render("BasicInfoLeft",
-                                       ICON_FA_ID_CARD,
-                                       "Identity",
-                                       ImVec2(leftWidth, cardHeight),
-                                       ImGuiChildFlags_None,
-                                       [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); });
+    (void) ProcessOverviewCard::render(
+        "BasicInfoLeft",
+        ICON_FA_ID_CARD,
+        "Identity",
+        ImVec2(layout[OverviewCard::Identity].width, std::max(cardHeight, heights[static_cast<std::size_t>(OverviewCard::Identity)])),
+        ImGuiChildFlags_None,
+        [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); });
 
-    ImGui::SameLine();
+    if (layout[OverviewCard::Runtime].sameLine)
+    {
+        ImGui::SameLine();
+    }
 
     // Runtime section: What is this process doing?
-    (void) ProcessOverviewCard::render("BasicInfoRight",
-                                       ICON_FA_CLOCK,
-                                       "Runtime",
-                                       ImVec2(rightWidth, cardHeight),
-                                       ImGuiChildFlags_None,
-                                       [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); });
+    (void) ProcessOverviewCard::render(
+        "BasicInfoRight",
+        ICON_FA_CLOCK,
+        "Runtime",
+        ImVec2(layout[OverviewCard::Runtime].width, std::max(cardHeight, heights[static_cast<std::size_t>(OverviewCard::Runtime)])),
+        ImGuiChildFlags_None,
+        [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); });
 
     // The buttons, confirm dialog and result line are ProcessActionsView's, the priority and I/O
     // priority controls ProcessPriorityView's (#1179); both act through m_ProcessActions, which the
     // panel owns.
     if (hasControls)
     {
-        if (controlsLayout.besideInfo)
-        {
-            ImGui::SameLine();
-        }
         const ProcessActionsBlock::Context actions{
             .actionsView = &m_Views->m_ActionsView,
             .priorityView = &m_Views->m_PriorityView,
@@ -1107,7 +1117,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
             // A priority change for this process running in the Processes table holds these controls (#3467).
             .priorityHeldElsewhere = m_PriorityHeldElsewhere,
         };
-        ProcessActionsBlock::render(actions, controlsLayout);
+        ProcessActionsBlock::render(actions, layout, heights, m_OverviewCardHeights);
     }
 }
 

@@ -7,7 +7,10 @@
 #include "WindowsHandles.h"
 #include "WindowsProcessIdentity.h"
 
+#include <algorithm>
+#include <cstddef>
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -89,6 +92,74 @@ class FileNamer
     std::unordered_map<std::uintptr_t, std::string> m_Names;
 };
 
+/// Counts the resident pages of one read's committed regions with QueryWorkingSetEx (#4031), within its
+/// limits: at most limits.pagesPerQuery pages a call, no region past limits.maxRegionBytes, and no more than
+/// limits.maxPagesPerRead pages over the read. A region it doesn't ask about, or whose query fails, keeps no
+/// sizes; a refused query (the process granted only the limited right after all) stops the rest.
+class WorkingSetCounter
+{
+  public:
+    WorkingSetCounter(const ProcessMemoryMapFunctions& api, HANDLE process, const WorkingSetLimits& limits, bool allowed)
+        : m_Api(&api), m_Process(process), m_Limits(limits), m_Remaining(limits.maxPagesPerRead), m_Allowed(allowed)
+    {
+        // A call's buffer size is a DWORD of bytes.
+        constexpr std::size_t MOST_PER_CALL = std::numeric_limits<DWORD>::max() / sizeof(PSAPI_WORKING_SET_EX_INFORMATION);
+        m_Limits.pagesPerQuery = std::clamp<std::size_t>(m_Limits.pagesPerQuery, 1, MOST_PER_CALL);
+    }
+
+    /// @p info's region's resident pages, or none when it isn't committed or isn't asked about.
+    [[nodiscard]] std::optional<WorkingSetPages> count(const MEMORY_BASIC_INFORMATION& info)
+    {
+        const auto size = static_cast<std::uint64_t>(info.RegionSize);
+        if (!m_Allowed || info.State != MEM_COMMIT || size > m_Limits.maxRegionBytes)
+        {
+            return std::nullopt;
+        }
+        const std::uint64_t pages = (size + WORKING_SET_PAGE_BYTES - 1) / WORKING_SET_PAGE_BYTES; // a region is whole pages
+        if (pages > m_Remaining)
+        {
+            return std::nullopt;
+        }
+        m_Remaining -= pages;
+        const auto base = reinterpret_cast<std::uintptr_t>(info.BaseAddress);
+        WorkingSetPages counted;
+        for (std::uint64_t done = 0; done < pages;)
+        {
+            const auto batch = static_cast<std::size_t>(std::min<std::uint64_t>(pages - done, m_Limits.pagesPerQuery));
+            m_Buffer.resize(batch);
+            for (std::size_t i = 0; i < batch; ++i)
+            {
+                const std::uintptr_t page = base + static_cast<std::uintptr_t>((done + i) * WORKING_SET_PAGE_BYTES);
+                // NOLINTNEXTLINE(performance-no-int-to-ptr) - an address in the target, never dereferenced here
+                m_Buffer[i].VirtualAddress = reinterpret_cast<PVOID>(page);
+            }
+            if (m_Api->queryWorkingSetEx(
+                    m_Process, m_Buffer.data(), static_cast<DWORD>(batch * sizeof(PSAPI_WORKING_SET_EX_INFORMATION))) == 0)
+            {
+                if (GetLastError() == ERROR_ACCESS_DENIED)
+                {
+                    m_Allowed = false;
+                }
+                return std::nullopt;
+            }
+            for (const PSAPI_WORKING_SET_EX_INFORMATION& entry : m_Buffer)
+            {
+                countPage(counted, entry.VirtualAttributes);
+            }
+            done += batch;
+        }
+        return counted;
+    }
+
+  private:
+    const ProcessMemoryMapFunctions* m_Api; // the reader's, which outlives this read
+    HANDLE m_Process;
+    WorkingSetLimits m_Limits;
+    std::uint64_t m_Remaining;
+    bool m_Allowed;
+    std::vector<PSAPI_WORKING_SET_EX_INFORMATION> m_Buffer;
+};
+
 } // namespace
 
 bool WindowsProcessMemoryMapReader::hasMemoryMap() const
@@ -108,6 +179,8 @@ MemoryMapReadResult WindowsProcessMemoryMapReader::readMemoryMap(const ProcessTa
     // refuses it (a protected one, or an elevated one from an unelevated TaskSmack) may still grant the
     // limited right, which recent Windows accepts for both; if it doesn't, the first query says so.
     auto opened = openProcessVerified(identity, target, PROCESS_QUERY_INFORMATION);
+    // QueryWorkingSetEx needs the full right, even on recent Windows: on the limited one the sizes stay absent.
+    const bool canQueryWorkingSet = opened.has_value();
     if (!opened && opened.error().kind == IdentityFailureKind::AccessDenied)
     {
         opened = openProcessVerified(identity, target, 0);
@@ -121,6 +194,7 @@ MemoryMapReadResult WindowsProcessMemoryMapReader::readMemoryMap(const ProcessTa
 
     MemoryMapReadResult result{.status = MemoryMapReadStatus::Ok, .mappings = {}, .detail = {}, .truncated = false};
     FileNamer files(m_Api, process.get());
+    WorkingSetCounter workingSet(m_Api, process.get(), m_Limits, canQueryWorkingSet);
     std::uintptr_t address = 0;
     for (;;)
     {
@@ -150,7 +224,12 @@ MemoryMapReadResult WindowsProcessMemoryMapReader::readMemoryMap(const ProcessTa
                 result.truncated = true;
                 break;
             }
-            result.mappings.push_back(toMapping(info, regionMayHaveFile(info.Type) ? files.name(info) : std::string{}));
+            MemoryMapping& mapping =
+                result.mappings.emplace_back(toMapping(info, regionMayHaveFile(info.Type) ? files.name(info) : std::string{}));
+            if (const std::optional<WorkingSetPages> pages = workingSet.count(info))
+            {
+                setWorkingSetSizes(mapping, *pages);
+            }
         }
         const auto next = reinterpret_cast<std::uintptr_t>(info.BaseAddress) + info.RegionSize;
         if (next <= address)
