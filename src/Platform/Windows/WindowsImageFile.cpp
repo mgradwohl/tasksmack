@@ -1,7 +1,9 @@
 #include "WindowsImageFile.h"
 
+#include "WinString.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
+#include "WindowsVersionResourceMath.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -12,18 +14,23 @@
 #endif
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
 #include <psapi.h>   // GetMappedFileNameW (K32GetMappedFileNameW, in kernel32)
+#include <winver.h>  // VerQueryValueW
 // clang-format on
 
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <cwchar>
 #include <expected>
 #include <format>
+#include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace Platform::Windows
 {
@@ -62,6 +69,9 @@ struct SectionImageInformation
 static_assert(sizeof(void*) != 8 || sizeof(SectionImageInformation) == 64, "ntdll's 64-bit SECTION_IMAGE_INFORMATION");
 constexpr ULONG PROCESS_IMAGE_INFORMATION_CLASS = 37;
 constexpr DWORD IMAGE_NAME_CHARS = 32768; // the longest path Windows allows, with its terminator
+
+/// The refusal for a protected process's image (#3861, #4057): never hashed or checked by its path here.
+constexpr std::string_view PROTECTED_REFUSAL = "Its executable can't be read: Windows doesn't show which file a protected process runs";
 
 /// The NT name of the file mapped at @p address in @p process now (GetMappedFileNameW), or its Win32 error.
 [[nodiscard]] std::expected<std::wstring, DWORD> mappedFileName(const ImageFileFunctions& fns, HANDLE process, void* address)
@@ -121,84 +131,87 @@ struct ImageLocation
     return fns.virtualQueryEx(process, address, &region, sizeof(region)) != 0 && region.Type == MEM_IMAGE;
 }
 
-/// The image mapped at an allocation base in @p process whose file is still named @p ntName, scanned with
-/// VirtualQueryEx (#3861), or nullopt. The names are compared ignoring case, as NTFS does; which file it is, is
-/// checked by identity afterwards.
-[[nodiscard]] std::optional<ImageLocation> findImageNamed(const ImageFileFunctions& fns, HANDLE process, const std::wstring& ntName)
+/// @p text, then "; @p notDone" when there is one.
+[[nodiscard]] std::string withNotDone(std::string text, std::string_view notDone)
 {
-    MEMORY_BASIC_INFORMATION region{};
-    const std::byte* address = nullptr;
-    while (fns.virtualQueryEx(process, address, &region, sizeof(region)) != 0)
+    if (!notDone.empty())
     {
-        if (region.Type == MEM_IMAGE && region.BaseAddress == region.AllocationBase)
-        {
-            const std::expected<std::wstring, DWORD> name = mappedFileName(fns, process, region.BaseAddress);
-            if (name.has_value() &&
-                CompareStringOrdinal(
-                    name->c_str(), static_cast<int>(name->size()), ntName.c_str(), static_cast<int>(ntName.size()), TRUE) == CSTR_EQUAL)
-            {
-                return ImageLocation{.address = region.BaseAddress, .name = *name};
-            }
-        }
-        const std::byte* const next = static_cast<const std::byte*>(region.BaseAddress) + region.RegionSize;
-        if (next <= address)
-        {
-            break; // the top of the address space, or a region that doesn't advance
-        }
-        address = next;
+        text += "; ";
+        text += notDone;
     }
-    return std::nullopt;
+    return text;
 }
 
-/// Where @p process's image is and its file's name now (#3861). At the entry point (ProcessImageInformation's
-/// TransferAddress) for most images. An image the loader mapped elsewhere (a .NET executable, one relocated from its
-/// preferred base) has nothing there: then it is the image whose file still has the name the process started with
-/// (QueryFullProcessImageNameW's native name). One both mapped elsewhere and renamed can't be found, and says so.
+/// Where @p process's image is and its file's name now (#3861): at its entry point (ProcessImageInformation's
+/// TransferAddress), and only there. An image the loader mapped elsewhere (a .NET executable, one relocated from its
+/// preferred base) is refused, never looked for by the name the process started with, which the process can put a
+/// decoy under (#4021, #4057; see WindowsImageFile.h).
 [[nodiscard]] std::expected<ImageLocation, std::string>
-locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std::string_view notDone, bool entryPointOnly)
+locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std::string_view notDone)
 {
-    if (isImageAt(fns, process, entryPoint))
+    if (!isImageAt(fns, process, entryPoint))
     {
-        const std::expected<std::wstring, DWORD> name = mappedFileName(fns, process, entryPoint);
-        if (name.has_value())
-        {
-            return ImageLocation{.address = entryPoint, .name = *name};
-        }
-        if (name.error() == ERROR_ACCESS_DENIED)
-        {
-            // A protected process, or one whose memory map Windows won't show this user.
-            return std::unexpected(std::string("Its executable can't be read: Windows doesn't show which file a protected process runs"));
-        }
-        return std::unexpected(std::format("Its executable can't be read: {}", describe(name.error())));
+        return std::unexpected(withNotDone("Its executable's image isn't where Windows says it is, so it couldn't be confirmed", notDone));
     }
-    if (entryPointOnly)
+    const std::expected<std::wstring, DWORD> name = mappedFileName(fns, process, entryPoint);
+    if (name.has_value())
     {
-        // Found by name, the image could be any file mapped under that name: a process can rename its own image away,
-        // copy a signed file to the old name, map it as a resource and pad itself to its size (#4021 review). So the
-        // signature check doesn't take it.
-        return std::unexpected(
-            std::string("Its executable couldn't be confirmed: its image isn't where Windows says it is (its entry point)"));
+        return ImageLocation{.address = entryPoint, .name = *name};
     }
-    if (fns.queryFullProcessImageName == nullptr) // isImageAt() said no, so virtualQueryEx is there
+    if (name.error() == ERROR_ACCESS_DENIED)
     {
-        return std::unexpected(std::string("Its executable can't be read: its image isn't at its entry point"));
+        // A protected process, or one whose memory map Windows won't show this user.
+        return std::unexpected(withNotDone(std::string(PROTECTED_REFUSAL), notDone));
     }
-    std::wstring started(IMAGE_NAME_CHARS, L'\0');
-    DWORD size = IMAGE_NAME_CHARS;
-    if (fns.queryFullProcessImageName(process, PROCESS_NAME_NATIVE, started.data(), &size) == 0)
-    {
-        return std::unexpected(std::format("Its executable can't be read: {}", describe(GetLastError())));
-    }
-    started.resize(size);
-    if (std::optional<ImageLocation> found = findImageNamed(fns, process, started))
-    {
-        return std::move(*found);
-    }
-    return std::unexpected(std::format("Its executable can't be found: its image isn't at its entry point or under the name it "
-                                       "started with, so it may have been renamed{}{}",
-                                       notDone.empty() ? "" : "; ",
-                                       notDone));
+    return std::unexpected(std::format("Its executable can't be read: {}", describe(name.error())));
 }
+
+// Structured exception handling (__try/__except) is a Microsoft extension, which -Wpedantic warns of: it is what catches
+// an in-page error reading a mapped file, so it is allowed here, and only here.
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wlanguage-extension-token"
+
+/// The VS_VERSIONINFO block of the mapped file @p view, copied into @p out; its length, or 0 when it has none or it
+/// doesn't fit. Never inlined, so an in-page error raised while it reads the mapping reaches copyVersionResource()'s
+/// handler through this call. Not noexcept, so nothing stands between that exception and the handler.
+[[nodiscard, clang::noinline]] std::size_t
+copyVersionResourceUnguarded(const std::byte* view, std::size_t size, BYTE* out, std::size_t room)
+{
+    const std::optional<std::span<const std::byte>> block = VersionResourceMath::findVersionResource(std::span(view, size));
+    if (!block.has_value() || block->size() > room)
+    {
+        return 0;
+    }
+    std::memcpy(out, block->data(), block->size());
+    return block->size();
+}
+
+/// copyVersionResourceUnguarded(), where an in-page error reading the mapping (a network file that went away, a read
+/// error on the disk) is no block rather than a crash. Nothing here needs unwinding, as __try requires.
+[[nodiscard]] std::size_t copyVersionResource(const std::byte* view, std::size_t size, BYTE* out, std::size_t room)
+{
+    std::size_t copied = 0;
+    __try
+    {
+        copied = copyVersionResourceUnguarded(view, size, out, room);
+    }
+    __except (GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
+    {
+        copied = 0;
+    }
+    return copied;
+}
+
+#pragma clang diagnostic pop
+
+/// Unmaps a view of a file mapping.
+struct ViewUnmapper
+{
+    void operator()(const void* view) const noexcept
+    {
+        UnmapViewOfFile(view);
+    }
+};
 
 } // namespace
 
@@ -208,9 +221,23 @@ ImageFileFunctions systemImageFileFunctions() noexcept
         .ntQueryInformationProcess = ntQueryInformationProcess(),
         .getMappedFileName = &GetMappedFileNameW,
         .virtualQueryEx = &VirtualQueryEx,
-        .queryFullProcessImageName = &QueryFullProcessImageNameW,
         .getExitCodeProcess = &GetExitCodeProcess,
+        .getProcessInformation = &GetProcessInformation,
     };
+}
+
+bool isProtectedProcess(const ImageFileFunctions& fns, HANDLE process)
+{
+    if (fns.getProcessInformation == nullptr)
+    {
+        return false;
+    }
+    PROCESS_PROTECTION_LEVEL_INFORMATION protection{};
+    if (fns.getProcessInformation(process, ProcessProtectionLevelInfo, &protection, sizeof(protection)) == 0)
+    {
+        return false;
+    }
+    return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
 }
 
 bool FileIdentity::operator==(const FileIdentity& other) const noexcept
@@ -237,7 +264,7 @@ std::optional<FileIdentity> fileIdentity(HANDLE file)
 }
 
 std::expected<UniqueHandle, std::string>
-openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t pid, std::string_view notDone, bool entryPointOnly)
+openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t pid, std::string_view notDone)
 {
     if (fns.ntQueryInformationProcess == nullptr || fns.getMappedFileName == nullptr)
     {
@@ -256,9 +283,15 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
     {
         return std::unexpected(std::string("Its executable can't be read: Windows reports no image for it"));
     }
-    const std::expected<ImageLocation, std::string> image = locateImage(fns, process, info.TransferAddress, notDone, entryPointOnly);
+    const std::expected<ImageLocation, std::string> image = locateImage(fns, process, info.TransferAddress, notDone);
     if (!image.has_value())
     {
+        // A protected process (or PPL) may not show its memory map at all (VirtualQueryEx refused, so no image at the
+        // entry point): said so, rather than that its image is elsewhere. It is never looked up by its path instead.
+        if (isProtectedProcess(fns, process))
+        {
+            return std::unexpected(withNotDone(std::string(PROTECTED_REFUSAL), notDone));
+        }
         return std::unexpected(image.error());
     }
     UniqueHandle file = openNtName(image->name, GENERIC_READ, FILE_SHARE_READ);
@@ -331,6 +364,76 @@ std::wstring heldFileName(HANDLE file)
         return L"\\\\?\\GLOBALROOT" + nt;
     }
     return {};
+}
+
+std::string versionInfoCompanyName(std::vector<BYTE>& block)
+{
+    // The pointers VerQueryValueW returns are into block, valid while it is.
+    const auto companyName = [&block](const std::wstring& subBlock) -> std::string
+    {
+        LPVOID value = nullptr;
+        UINT length = 0;
+        if (VerQueryValueW(block.data(), subBlock.c_str(), &value, &length) == 0 || value == nullptr || length == 0)
+        {
+            return {};
+        }
+        // A StringFileInfo value is a wide string, length characters with its terminator, inside block.
+        const auto* const text = static_cast<const wchar_t*>(value);
+        return WinString::wideToUtf8(std::wstring_view(text, wcsnlen(text, length)));
+    };
+
+    // Each translation is a DWORD: the language ID in its low word, the code page in its high word.
+    LPVOID translations = nullptr;
+    UINT translationBytes = 0;
+    if (VerQueryValueW(block.data(), L"\\VarFileInfo\\Translation", &translations, &translationBytes) != 0 && translations != nullptr)
+    {
+        const std::span<const DWORD> entries(static_cast<const DWORD*>(translations), translationBytes / sizeof(DWORD));
+        for (const DWORD entry : entries)
+        {
+            std::string name = companyName(std::format(L"\\StringFileInfo\\{:04X}{:04X}\\CompanyName", LOWORD(entry), HIWORD(entry)));
+            if (!name.empty())
+            {
+                return name;
+            }
+        }
+    }
+    // No translation table, or none of its tables names one: US English, Unicode then Windows-1252.
+    if (std::string name = companyName(L"\\StringFileInfo\\040904B0\\CompanyName"); !name.empty())
+    {
+        return name;
+    }
+    return companyName(L"\\StringFileInfo\\040904E4\\CompanyName");
+}
+
+std::string heldFilePublisher(HANDLE file)
+{
+    LARGE_INTEGER size{};
+    if (GetFileSizeEx(file, &size) == 0 || size.QuadPart <= 0 || std::cmp_greater(size.QuadPart, SIZE_MAX))
+    {
+        return {}; // an empty file can't be mapped, and has no version info anyway
+    }
+    // A data mapping, read-only: nothing in it is run or relocated, and it is the held file's, whatever its name is now.
+    const UniqueHandle mapping(CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr));
+    if (!mapping)
+    {
+        return {};
+    }
+    const std::unique_ptr<const void, ViewUnmapper> view(MapViewOfFile(mapping.get(), FILE_MAP_READ, 0, 0, 0));
+    if (view == nullptr)
+    {
+        return {};
+    }
+    // VerQueryValueW is given twice the block's room, as GetFileVersionInfoSizeW asks for: it may write after the block.
+    constexpr std::size_t MAX_BLOCK = 0xFFFF; // VS_VERSIONINFO's wLength is a WORD
+    std::vector<BYTE> block((2 * MAX_BLOCK) + 16, BYTE{0});
+    const std::size_t copied =
+        copyVersionResource(static_cast<const std::byte*>(view.get()), static_cast<std::size_t>(size.QuadPart), block.data(), MAX_BLOCK);
+    if (copied == 0)
+    {
+        return {};
+    }
+    block.resize((2 * copied) + 16);
+    return versionInfoCompanyName(block);
 }
 
 // NOLINTEND(misc-include-cleaner)

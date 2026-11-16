@@ -6,15 +6,20 @@
 /// GetFileInformationByHandleEx and DeviceIoControl (its USN, #3313) and the file opened shared for read
 /// only (#3292); then the real calls on a
 /// signed system binary and on an unsigned file this test writes; this process's image bound to its own file, and on a
-/// CI runner a renamed image checked as itself, not the signed decoy left at its old name (#4021).
+/// CI runner a renamed image checked as itself, not the signed decoy left at its old name (#4021), and hashed for Look
+/// up on VirusTotal as itself or not at all (#4057); the publisher read through a held file's handle (#4057).
 
 #include "Platform/ImageSignature.h"
+#include "Platform/Sha256.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsImageSignature.h"
+#include "Platform/Windows/WindowsProcessActions.h"
+#include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsSignatureCheck.h"
 #include "Support/CiRealSystem.h"
+#include "Support/PeImageBuilder.h"
 
 #include <gtest/gtest.h>
 
@@ -42,6 +47,7 @@
 #include <iterator>
 #include <new>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
@@ -816,6 +822,140 @@ TEST(WindowsSignatureCheckRealTest, ThisProcesssImageBindsToItsOwnFileAndChecksA
     EXPECT_FALSE(refused.has_value()) << "another process's identity binds nothing";
 }
 
+/// @p path opened as the signature check opens an image: for read, shared for read only.
+UniqueHandle openForRead(const std::wstring& path)
+{
+    return UniqueHandle(CreateFileW(path.c_str(), GENERIC_READ, FILE_SHARE_READ, nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr));
+}
+
+/// A file in the temp folder, this process's and this test's own, holding @p bytes; removed with the object.
+class TempFile
+{
+  public:
+    TempFile(std::wstring_view suffix, const std::vector<std::byte>& bytes)
+    {
+        const auto* const info = ::testing::UnitTest::GetInstance()->current_test_info();
+        m_Path = std::filesystem::temp_directory_path() /
+                 std::format("tasksmack-4057-{}-{}{}", GetCurrentProcessId(), info->name(), WinString::wideToUtf8(std::wstring(suffix)));
+        std::ofstream out(m_Path, std::ios::binary);
+        out.write(reinterpret_cast<const char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
+    }
+    TempFile(const TempFile&) = delete;
+    TempFile& operator=(const TempFile&) = delete;
+    TempFile(TempFile&&) = delete;
+    TempFile& operator=(TempFile&&) = delete;
+    ~TempFile()
+    {
+        std::error_code ignored;
+        std::filesystem::remove(m_Path, ignored);
+    }
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return m_Path;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+// #4057: the publisher is read out of the held file's own bytes. A file this test builds, with a version resource
+// naming a company, reads as that company through its handle; one that isn't a PE file, is empty, or is cut short
+// reads as none, and nothing is read by its name.
+TEST(WindowsHeldFilePublisherTest, AFilesPublisherIsReadThroughItsHandle)
+{
+    const TestSupport::PeImage image = TestSupport::buildPeImage(u"TaskSmack Test Co");
+    const TempFile pe(L"-pe.exe", image.bytes);
+    const UniqueHandle file = openForRead(pe.path().wstring());
+    ASSERT_TRUE(file) << GetLastError();
+    EXPECT_EQ(heldFilePublisher(file.get()), "TaskSmack Test Co");
+
+    // A PE32 file's, and the neutral language's ahead of another.
+    const TestSupport::PeImage pe32Image = TestSupport::buildPeImage(
+        {{0x0407U, TestSupport::versionInfoBlock(u"Deutsch")}, {0x0000U, TestSupport::versionInfoBlock(u"Neutral GmbH")}}, true);
+    const TempFile pe32(L"-pe32.exe", pe32Image.bytes);
+    const UniqueHandle pe32File = openForRead(pe32.path().wstring());
+    ASSERT_TRUE(pe32File);
+    EXPECT_EQ(heldFilePublisher(pe32File.get()), "Neutral GmbH");
+
+    const std::string text = "MZ but not really a program";
+    const TempFile notPe(L"-text.exe",
+                         std::vector<std::byte>(reinterpret_cast<const std::byte*>(text.data()),
+                                                reinterpret_cast<const std::byte*>(text.data()) + text.size()));
+    const UniqueHandle notPeFile = openForRead(notPe.path().wstring());
+    ASSERT_TRUE(notPeFile);
+    EXPECT_EQ(heldFilePublisher(notPeFile.get()), "");
+
+    const TempFile empty(L"-empty.exe", {});
+    const UniqueHandle emptyFile = openForRead(empty.path().wstring());
+    ASSERT_TRUE(emptyFile);
+    EXPECT_EQ(heldFilePublisher(emptyFile.get()), "") << "an empty file can't be mapped";
+
+    std::vector<std::byte> cutBytes = image.bytes;
+    cutBytes.resize(cutBytes.size() - 8);
+    const TempFile cut(L"-cut.exe", cutBytes);
+    const UniqueHandle cutFile = openForRead(cut.path().wstring());
+    ASSERT_TRUE(cutFile);
+    EXPECT_EQ(heldFilePublisher(cutFile.get()), "") << "the block runs past the end of the file";
+
+    // A block that names no company: none.
+    const TestSupport::PeImage noCompany = TestSupport::buildPeImage(u"");
+    const TempFile none(L"-none.exe", noCompany.bytes);
+    const UniqueHandle noneFile = openForRead(none.path().wstring());
+    ASSERT_TRUE(noneFile);
+    EXPECT_EQ(heldFilePublisher(noneFile.get()), "");
+
+    EXPECT_EQ(heldFilePublisher(INVALID_HANDLE_VALUE), "") << "no file";
+}
+
+// #4057: the held file's own bytes, not its name's. While the handle is held the file is renamed away (it was opened
+// sharing delete here, as a held image's file never is, so the rename can happen) and another file put at its name:
+// the publisher is still the held file's.
+TEST(WindowsHeldFilePublisherTest, TheHeldFilesPublisherIsReadNotTheFileNowAtItsName)
+{
+    const TempFile original(L"-original.exe", TestSupport::buildPeImage(u"Held Co").bytes);
+    const UniqueHandle file(CreateFileW(original.path().c_str(),
+                                        GENERIC_READ,
+                                        FILE_SHARE_READ | FILE_SHARE_DELETE,
+                                        nullptr,
+                                        OPEN_EXISTING,
+                                        FILE_ATTRIBUTE_NORMAL,
+                                        nullptr));
+    ASSERT_TRUE(file) << GetLastError();
+    std::filesystem::path moved = original.path();
+    moved += L".moved";
+    std::error_code error;
+    std::filesystem::rename(original.path(), moved, error);
+    ASSERT_FALSE(error) << error.message();
+    {
+        const std::vector<std::byte> decoy = TestSupport::buildPeImage(u"Decoy Co").bytes;
+        std::ofstream out(original.path(), std::ios::binary);
+        out.write(reinterpret_cast<const char*>(decoy.data()), static_cast<std::streamsize>(decoy.size()));
+    }
+    EXPECT_EQ(heldFilePublisher(file.get()), "Held Co");
+    std::filesystem::remove(moved, error);
+}
+
+// #4057, the real calls: the publisher read through this test process's own bound and held image matches the read
+// by its path, and so does notepad.exe's (Microsoft's) through a handle to it.
+TEST(WindowsHeldFilePublisherTest, ThisProcesssAndNotepadsPublisherReadThroughTheHandleMatchTheReadByPath)
+{
+    std::wstring module(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(length, 0U);
+    module.resize(length);
+    std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure> bound = openProcessImageForCheck(thisProcess());
+    ASSERT_TRUE(bound.has_value()) << bound.error().why;
+    const std::string viaHandle = heldFilePublisher(bound->image.file);
+    closeImage(bound->image.file);
+    EXPECT_EQ(viaHandle, WindowsProcessDetailReads::publisher(module));
+
+    const std::wstring notepad = WinString::utf8ToWide(systemBinary(L"notepad.exe"));
+    const UniqueHandle file = openForRead(notepad);
+    ASSERT_TRUE(file) << GetLastError();
+    const std::string notepadPublisher = heldFilePublisher(file.get());
+    EXPECT_EQ(notepadPublisher, WindowsProcessDetailReads::publisher(notepad));
+    EXPECT_NE(notepadPublisher.find("Microsoft"), std::string::npos) << notepadPublisher;
+}
 /// The PID and identity of a running csrss.exe, or nullopt with @p why set when none can be opened for its start time.
 /// Its path is System32's: a protected process's image name isn't always shown.
 std::optional<WindowsSignature::ImageProcess> findCsrss(std::string& why)
@@ -988,6 +1128,25 @@ TEST_F(CiRealSystemSignatureBindingTest, ARenamedImageIsCheckedNotTheSignedDecoy
     EXPECT_NE(decoy.signer.find("Microsoft"), std::string::npos) << "the decoy is signed: " << decoy.note;
     EXPECT_EQ(check.check.signature, ImageSignature::Unsigned)
         << "the renamed copy of this unsigned test executable, not the decoy: " << check.check.signer << " " << check.check.note;
+    EXPECT_EQ(check.publisher, heldFilePublisher(openForRead(renamed.wstring()).get())) << "the renamed copy's publisher";
+
+    // #4057: Look up on VirusTotal hashes the renamed copy, or refuses: never the decoy's hash.
+    const std::stop_source stop;
+    const auto decoyHash = Sha256::hashFile(original, stop.get_token());
+    const auto imageHash = Sha256::hashFile(renamed, stop.get_token());
+    ASSERT_TRUE(decoyHash.has_value()) << decoyHash.error();
+    ASSERT_TRUE(imageHash.has_value()) << imageHash.error();
+    WindowsProcessActions actions(realWindowsProcessFunctions());
+    const auto hash = actions.imageSha256({.pid = process.pid, .startTimeTicks = process.startTimeTicks}, stop.get_token());
+    if (hash.has_value())
+    {
+        EXPECT_EQ(*hash, Sha256::toHex(*imageHash)) << "the renamed copy's hash";
+    }
+    else
+    {
+        EXPECT_FALSE(hash.error().empty());
+    }
+    EXPECT_NE(hash.value_or(""), Sha256::toHex(*decoyHash)) << "never the decoy's: " << hash.error_or("");
 }
 
 // #3292: the real stamp of a file on the system volume (NTFS) has its ID; writing it in place, then setting

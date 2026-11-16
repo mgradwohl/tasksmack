@@ -12,8 +12,8 @@
 //   and handed over with the answer (#3703): a new image's version info is file I/O, tens of milliseconds while
 //   the file is first scanned, which the process sampler then never waits on.
 // - A process's request names the process too (#4021): its check binds to the file its image was mapped from
-//   (SignatureFunctions::openProcessImage), verifies the signature through that handle and reads the publisher by
-//   the held file's own name while it is held, never the file at the path, which a running process can rename its
+//   (SignatureFunctions::openProcessImage), verifies the signature through that handle and reads the publisher
+//   through it too (#4057), never the file at the path, which a running process can rename its
 //   image away from and leave a signed decoy at. So its
 //   answer is the process's own, kept under its path and its identity: thirty svchost.exe processes are thirty
 //   bindings, but one WinVerifyTrust check, the rest from the cache by the bound file's stamp. A process whose file

@@ -16,8 +16,8 @@
 // A process's image is checked as the file it was mapped from (#4021), never the file at its creation-time path: a
 // running image can be renamed and another, signed, file put at the old name. SignatureFunctions::openProcessImage
 // binds to that file (Windows::openProcessImageFile(), the binding Look up on VirusTotal hashes through, #3861) and
-// holds it; the signature is verified through that handle, and the publisher read by the held file's own name while
-// it is held (with an identity check afterwards). A process whose file can't be bound is answered Unknown, saying
+// holds it; the signature is verified through that handle, and the publisher read through it too (a data mapping of
+// the held file, never by a name, #4057). A process whose file can't be bound is answered Unknown, saying
 // why, with no publisher: never the answer for whatever file is at the old path. Except a protected process
 // (csrss.exe, lsass.exe as a PPL, ...), whose memory map Windows doesn't show, so it can never be bound: it is
 // checked by its path, as before #4021, since code integrity required a protected signer to start it.

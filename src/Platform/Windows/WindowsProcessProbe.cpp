@@ -488,9 +488,10 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
     return Domain::Numeric::narrowOr<std::int32_t>(count, std::int32_t{0});
 }
 
-/// The CompanyName in the version info of the PE file at @p imagePath (its publisher or vendor), uncached.
-/// Enumerates all language/codepage pairs from VarFileInfo\Translation so that localised executables with
-/// non-English version resources are handled correctly. Empty if not available or on failure.
+/// The CompanyName in the version info of the PE file at @p imagePath (its publisher or vendor), uncached, read by
+/// that name with GetFileVersionInfoW: for the reads that have no held file to read it through (no signature worker,
+/// or a process whose start time can't be read). Every translation in VarFileInfo\Translation is tried, so a
+/// localised executable's non-English table is read too. Empty if not available or on failure.
 [[nodiscard]] std::string readVersionCompanyName(const std::wstring& imagePath)
 {
     // GetFileVersionInfoSizeW requires a LPDWORD that receives an internal handle.
@@ -508,55 +509,7 @@ constexpr ULONG PROCESS_INFO_COMMAND_LINE = 60;
         return {};
     }
 
-    // Helper: query CompanyName using a specific translation path (e.g. \StringFileInfo\040904B0\CompanyName).
-    // The pointer returned by VerQueryValueW is into buffer, valid while buffer is alive.
-    const auto queryCompanyName = [&](const wchar_t* translationPath) -> std::string
-    {
-        LPVOID companyNamePtr = nullptr;
-        UINT companyNameLen = 0;
-        if (VerQueryValueW(buffer.data(), translationPath, &companyNamePtr, &companyNameLen) != 0 && companyNameLen > 0 &&
-            companyNamePtr != nullptr)
-        {
-            // StringFileInfo queries return wchar_t strings per the Windows API contract.
-            // LPVOID is void* so an explicit cast is required; this is safe here.
-            const auto* companyName = static_cast<const wchar_t*>(companyNamePtr);
-            return WinString::wideToUtf8(companyName);
-        }
-        return {};
-    };
-
-    std::string result;
-
-    // Enumerate actual translation pairs from VarFileInfo\Translation.
-    // Each entry is a DWORD: low WORD = language ID, high WORD = code page.
-    LPVOID translationData = nullptr;
-    UINT translationSize = 0;
-    if (VerQueryValueW(buffer.data(), L"\\VarFileInfo\\Translation", &translationData, &translationSize) != 0 &&
-        translationData != nullptr && translationSize >= sizeof(DWORD))
-    {
-        const UINT entryCount = translationSize / sizeof(DWORD);
-        // LPVOID is void* — cast to DWORD* to iterate over translation pairs; safe per MSDN.
-        const auto* entries = static_cast<const DWORD*>(translationData);
-        for (UINT i = 0; i < entryCount && result.empty(); ++i)
-        {
-            const WORD langId = LOWORD(entries[i]);
-            const WORD codePage = HIWORD(entries[i]);
-            std::array<WCHAR, 64> pathBuf{};
-            swprintf_s(pathBuf.data(), std::size(pathBuf), L"\\StringFileInfo\\%04X%04X\\CompanyName", langId, codePage);
-            result = queryCompanyName(pathBuf.data());
-        }
-    }
-
-    // Fallback: try common English translation IDs for executables without VarFileInfo\Translation.
-    if (result.empty())
-    {
-        result = queryCompanyName(L"\\StringFileInfo\\040904B0\\CompanyName");
-    }
-    if (result.empty())
-    {
-        result = queryCompanyName(L"\\StringFileInfo\\040904E4\\CompanyName");
-    }
-    return result;
+    return Windows::versionInfoCompanyName(buffer);
 }
 
 /// readVersionCompanyName() of @p imagePath, cached by executable path; version resources do not change at runtime.
@@ -1004,27 +957,16 @@ void enterBackgroundMode()
 namespace
 {
 
-/// The signature worker's publisher read (#3703), on the worker's thread: the version info of the file @p file is
-/// open on, the check's own handle (#4021). By the name the file has now (GetFinalPathNameByHandleW), which can't
-/// change while the handle is held (it shares no delete, so the file can't be renamed), and only when the file under
-/// that name afterwards is the held one by identity. Uncached: the worker keeps it with the check, by file stamp.
+/// The signature worker's publisher read (#3703), on the worker's thread (ts-sig-check), never the sampler's or the
+/// UI's: the version info of the file @p file is open on, the check's own handle (#4021), read through that handle
+/// (Windows::heldFilePublisher(), #4057), never by a name, so a drive letter flipped under the name or a .mui beside
+/// the file can't supply it. @p file is the bound image's, or for a protected process (which can't be bound) the file
+/// openImage() opened by its path, so that one's publisher is still the file at its path, as before. The probe's
+/// reads with no worker or no start time still go by path (getFilePublisher()). Uncached: the worker keeps it with
+/// the check, by file stamp.
 std::string readHeldImagePublisher(const std::string& /*path*/, void* file)
 {
-    const std::wstring name = Windows::heldFileName(file);
-    if (name.empty())
-    {
-        return {};
-    }
-    std::string publisher = readVersionCompanyName(name);
-    const Windows::UniqueHandle there(CreateFileW(
-        name.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
-    const std::optional<Windows::FileIdentity> held = Windows::fileIdentity(file);
-    const std::optional<Windows::FileIdentity> named = there ? Windows::fileIdentity(there.get()) : std::nullopt;
-    if (!held.has_value() || !named.has_value() || *held != *named)
-    {
-        return {}; // not the checked file's, so none
-    }
-    return publisher;
+    return Windows::heldFilePublisher(file);
 }
 
 /// The system's signature calls, with each process's image bound to the file it was mapped from and the publisher
