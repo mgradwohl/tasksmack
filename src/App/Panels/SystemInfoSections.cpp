@@ -371,32 +371,14 @@ Section buildOsSection(const Platform::OsInfo& os, std::uint64_t readAtUnixSecon
 namespace
 {
 
-/// The "Authenticate to read" row a section with facts readable by root only leads with (#2310):
-/// @p label and @p why it's offered.
-[[nodiscard]] Row authenticateRow(std::string_view label = "Readable by root only",
-                                  std::string_view why = "Some facts here need an administrator")
-{
-    Row ask = row(std::string(label),
-                  {},
-                  std::format("{}: \"Authenticate to read\" reads them through TaskSmack's helper ({})", why, AUTHENTICATE_NOTE));
-    ask.action = RowAction::AuthenticateToRead;
-    return ask;
-}
-
-/// The row a section with facts an administrator only can read leads with (#2310, #3669): "Authenticate to read"
-/// with @p canAuthenticate (a helper can read them), else "Restart as administrator..." with @p canRestart, else
-/// none. @p label and @p why as authenticateRow()'s.
+/// The row a section with facts an administrator only can read leads with (#3669): "Restart as administrator..."
+/// with @p canRestart, else none. @p label names the facts and @p why says why it's offered. (No helper reads them
+/// on a password any more, so no "Authenticate to read", #3866.)
 void addAdministratorRow(std::vector<Row>& rows,
-                         bool canAuthenticate,
                          bool canRestart,
                          std::string_view label = "Readable by root only",
                          std::string_view why = "Some facts here need an administrator")
 {
-    if (canAuthenticate)
-    {
-        rows.push_back(authenticateRow(label, why));
-        return;
-    }
     if (canRestart)
     {
         Row ask = row(std::string(label),
@@ -409,13 +391,13 @@ void addAdministratorRow(std::vector<Row>& rows,
 
 } // namespace
 
-Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAuthenticate, bool canRestart)
+Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canRestart)
 {
     Section section{.title = "Firmware & board", .icon = ICON_FA_MICROCHIP, .rows = {}};
     auto& rows = section.rows;
     if (firmware.identifiersNeedAdmin || firmware.smbiosVersionNeedsAdmin)
     {
-        addAdministratorRow(rows, canAuthenticate, canRestart);
+        addAdministratorRow(rows, canRestart);
     }
     const std::string_view identifierReason = firmware.identifiersNeedAdmin ? NEEDS_ADMIN : NOT_REPORTED;
     rows.push_back(row("Manufacturer", firmware.systemManufacturer));
@@ -459,13 +441,13 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canAut
     return section;
 }
 
-Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canAuthenticate, bool canRestart)
+Section buildMemorySection(const Platform::MemoryModulesInfo& memory, bool canRestart)
 {
     Section section{.title = "Memory modules", .icon = ICON_FA_MEMORY, .rows = {}};
     auto& rows = section.rows;
     if (memory.tableNeedsAdmin)
     {
-        addAdministratorRow(rows, canAuthenticate, canRestart);
+        addAdministratorRow(rows, canRestart);
     }
     // Without the SMBIOS table there are no modules or slots to list; say why once, in their place.
     const std::string_view tableReason = memory.tableNeedsAdmin ? NEEDS_ADMIN : NOT_REPORTED;
@@ -1634,7 +1616,7 @@ std::string formatCrashValue(const Platform::CrashEvent& event)
     return joinNonEmpty({module.empty() ? app + " crashed" : std::format("{} crashed in {}", app, module), exception, pid}, ", ");
 }
 
-Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthenticate, bool canRestart)
+Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canRestart)
 {
     const bool windows = crashes.family == Platform::OsFamily::Windows;
     Section section{.title = windows ? "Recent crashes & hangs" : "Recent crashes", .icon = ICON_FA_TRIANGLE_EXCLAMATION, .rows = {}};
@@ -1642,7 +1624,6 @@ Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canAuthen
     if (crashes.otherUsersHidden)
     {
         addAdministratorRow(rows,
-                            canAuthenticate,
                             canRestart,
                             "Other users' crashes",
                             "The journal shows you only your own crashes' details, and other users' core files by name");
@@ -2475,11 +2456,11 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.firmware.available)
     {
-        sections.push_back(buildFirmwareSection(snapshot.firmware, capabilities.canReadAuthorized, canRestart));
+        sections.push_back(buildFirmwareSection(snapshot.firmware, canRestart));
     }
     if (snapshot.memory.available)
     {
-        sections.push_back(buildMemorySection(snapshot.memory, capabilities.canReadAuthorized, canRestart));
+        sections.push_back(buildMemorySection(snapshot.memory, canRestart));
     }
     if (snapshot.paging.available)
     {
@@ -2530,7 +2511,7 @@ std::vector<Section> buildSystemInfoSections(const Domain::SystemInfoSnapshot& s
     }
     if (snapshot.crashes.available)
     {
-        sections.push_back(buildCrashesSection(snapshot.crashes, capabilities.canReadAuthorized, canRestart)); // the page's last section
+        sections.push_back(buildCrashesSection(snapshot.crashes, canRestart)); // the page's last section
     }
     // Further sections (#1514 and on) follow here, in the page's order.
 
