@@ -83,12 +83,6 @@ std::wstring realExplorerPath()
     return folder + L"\\explorer.exe";
 }
 
-bool realIsElevated()
-{
-    static const bool elevated = isProcessElevated(); // can't change while the process runs
-    return elevated;
-}
-
 std::string realSelectUnelevated(const std::wstring& explorer, const std::wstring& commandArguments)
 {
     const auto ran = UnelevatedShell::run(explorer, commandArguments);
@@ -108,7 +102,7 @@ FileLocationFunctions realFileLocationFunctions() noexcept
         .selectInFolder = &realSelectInFolder,
         .startProcess = &realStartProcess,
         .explorerPath = &realExplorerPath,
-        .isElevated = &realIsElevated,
+        .isElevated = &isProcessElevated, // read once, kept for the process's life
         .selectUnelevated = &realSelectUnelevated,
     };
 }

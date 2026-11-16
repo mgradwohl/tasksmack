@@ -77,11 +77,6 @@ DWORD realShellExecute(const ShellRun& run)
     return ERROR_SUCCESS;
 }
 
-bool realIsElevated()
-{
-    return isProcessElevated();
-}
-
 /// What @p error from opening @p program means, said as the Run box would.
 [[nodiscard]] std::string shellRunFailure(DWORD error, std::string_view program)
 {
@@ -110,7 +105,7 @@ bool realIsElevated()
 
 RunProgramFunctions realRunProgramFunctions() noexcept
 {
-    return {.shellExecute = &realShellExecute, .isElevated = &realIsElevated};
+    return {.shellExecute = &realShellExecute, .isElevated = &isProcessElevated};
 }
 
 const wchar_t* runVerb(bool asAdministrator, bool elevated) noexcept

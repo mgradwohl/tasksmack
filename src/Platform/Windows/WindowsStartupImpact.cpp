@@ -1,5 +1,6 @@
 #include "WindowsStartupImpact.h"
 
+#include "WindowsElevation.h"
 #include "WindowsHandles.h"
 
 // clang-format off
@@ -10,14 +11,13 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <sddl.h>
 // clang-format on
 
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <format>
-#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,43 +30,6 @@ namespace Platform::WindowsStartupImpact
 namespace
 {
 
-struct LocalFreeDeleter
-{
-    void operator()(wchar_t* text) const noexcept
-    {
-        LocalFree(text);
-    }
-};
-
-/// The current process's user SID as text ("S-1-5-21-..."); nullopt with the Win32 error when it can't be told.
-[[nodiscard]] std::optional<std::wstring> currentUserSid(std::uint32_t& error)
-{
-    Windows::UniqueHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
-    {
-        error = GetLastError();
-        return std::nullopt;
-    }
-    DWORD size = 0;
-    static_cast<void>(GetTokenInformation(token.get(), TokenUser, nullptr, 0, &size));
-    std::vector<std::byte> buffer(size);
-    if (size == 0 || GetTokenInformation(token.get(), TokenUser, buffer.data(), size, &size) == FALSE)
-    {
-        error = GetLastError();
-        return std::nullopt;
-    }
-    const auto* const user = reinterpret_cast<const TOKEN_USER*>(
-        buffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - TokenUser's buffer is a TOKEN_USER
-    LPWSTR text = nullptr;
-    if (ConvertSidToStringSidW(user->User.Sid, &text) == FALSE)
-    {
-        error = GetLastError();
-        return std::nullopt;
-    }
-    const std::unique_ptr<wchar_t, LocalFreeDeleter> owned(text);
-    return std::wstring(owned.get());
-}
-
 /// %SystemRoot%\System32\wdi\LogFiles\StartupInfo\<SID>_StartupInfo<index>.xml.
 [[nodiscard]] std::optional<std::wstring> startupInfoPath(int index, std::uint32_t& error)
 {
@@ -77,9 +40,11 @@ struct LocalFreeDeleter
         error = GetLastError();
         return std::nullopt;
     }
-    const std::optional<std::wstring> sid = currentUserSid(error);
+    // The current process's user SID as text ("S-1-5-21-...").
+    const std::expected<std::wstring, DWORD> sid = Windows::currentUserSidText();
     if (!sid.has_value())
     {
+        error = sid.error();
         return std::nullopt;
     }
     return std::format(L"{}\\wdi\\LogFiles\\StartupInfo\\{}_StartupInfo{}.xml", std::wstring_view(system.data(), length), *sid, index);
