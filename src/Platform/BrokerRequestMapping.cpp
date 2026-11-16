@@ -37,16 +37,6 @@ namespace
             return Broker::ActionResult::from(actions.stop(signal->target));
         case Broker::Signal::Resume:
             return Broker::ActionResult::from(actions.resume(signal->target));
-        case Broker::Signal::Hangup:
-            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::Hangup));
-        case Broker::Signal::Interrupt:
-            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::Interrupt));
-        case Broker::Signal::Quit:
-            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::Quit));
-        case Broker::Signal::User1:
-            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::User1));
-        case Broker::Signal::User2:
-            return Broker::ActionResult::from(actions.sendSignal(signal->target, ProcessSignal::User2));
         }
     }
     if (const auto* priority = std::get_if<Broker::PriorityRequest>(&request))
@@ -61,14 +51,10 @@ namespace
     {
         return Broker::ActionResult::from(actions.setAffinity(affinity->target, affinity->cpus));
     }
-    // By its inode (Linux, #3066), or with none, by its IPv4 TCP endpoints (Windows, #3358).
+    // By its IPv4 TCP endpoints (#3358): the actions look the connection up again and refuse one the target doesn't hold.
     if (const auto* close = std::get_if<Broker::CloseConnectionRequest>(&request))
     {
-        if (close->socketInode == 0 && close->tcpConnection != TcpConnectionToClose{})
-        {
-            return Broker::ActionResult::from(actions.closeTcpConnection(close->target, close->tcpConnection));
-        }
-        return Broker::ActionResult::from(actions.closeConnection(close->target, close->socketInode));
+        return Broker::ActionResult::from(actions.closeTcpConnection(close->target, close->tcpConnection));
     }
     // An off with the class TaskSmack remembers the on replaced (#3327): set here first, replacing any this helper
     // kept from an earlier on, so the off restores it though this helper never saw the on. The actions ignore a

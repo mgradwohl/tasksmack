@@ -124,6 +124,9 @@ constexpr ULONG CLIENT_CONTEXT_QPC = 1;
     return Windows::fileTimeTicks(creation) == owner.creationTime ? EtwNet::OwnerLiveness::Alive : EtwNet::OwnerLiveness::PidReused;
 }
 
+/// What Settings says while TaskSmack isn't running as administrator (#3879).
+constexpr std::string_view NOT_ELEVATED_PROBLEM = "Needs TaskSmack running as administrator";
+
 [[nodiscard]] UdpCollectorStartResult startFailure(ULONG status) noexcept
 {
     return status == ERROR_ACCESS_DENIED ? UdpCollectorStartResult::Denied : UdpCollectorStartResult::Failed;
@@ -157,7 +160,8 @@ struct UdpEventIdFilter
 WindowsEtwNetCollector::WindowsEtwNetCollector() : WindowsEtwNetCollector(systemFunctions())
 {}
 
-WindowsEtwNetCollector::WindowsEtwNetCollector(const Functions& functions) : m_Fns(functions)
+WindowsEtwNetCollector::WindowsEtwNetCollector(const Functions& functions)
+    : m_Fns(functions), m_Elevated(functions.isElevated != nullptr && functions.isElevated())
 {}
 
 WindowsEtwNetCollector::~WindowsEtwNetCollector()
@@ -206,6 +210,39 @@ WindowsEtwNetCollector::SessionProperties WindowsEtwNetCollector::makeProperties
 UdpCollectorStartResult WindowsEtwNetCollector::start()
 {
     const std::scoped_lock lock(m_ControlMutex);
+    const UdpCollectorStartResult result = startLocked();
+    std::string_view problem;
+    switch (result)
+    {
+    case UdpCollectorStartResult::Started:
+        break;
+    case UdpCollectorStartResult::NotElevated:
+        problem = NOT_ELEVATED_PROBLEM;
+        break;
+    case UdpCollectorStartResult::Denied:
+        problem = "Windows refused to start the network event trace (access denied)";
+        break;
+    case UdpCollectorStartResult::Failed:
+        problem = "The network event trace couldn't start; TaskSmack's log says why";
+        break;
+    }
+    const std::scoped_lock problemLock(m_ProblemMutex);
+    m_Problem = problem;
+    return result;
+}
+
+std::string WindowsEtwNetCollector::problem() const
+{
+    if (!m_Elevated)
+    {
+        return std::string(NOT_ELEVATED_PROBLEM);
+    }
+    const std::scoped_lock lock(m_ProblemMutex);
+    return m_Problem;
+}
+
+UdpCollectorStartResult WindowsEtwNetCollector::startLocked()
+{
     if (m_Running.load(std::memory_order_acquire))
     {
         return UdpCollectorStartResult::Started;
@@ -310,6 +347,8 @@ void WindowsEtwNetCollector::stop()
 {
     const std::scoped_lock lock(m_ControlMutex);
     stopLocked();
+    const std::scoped_lock problemLock(m_ProblemMutex);
+    m_Problem.clear(); // turned off: no start has failed since
 }
 
 void WindowsEtwNetCollector::stopLocked()

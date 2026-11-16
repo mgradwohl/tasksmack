@@ -1,5 +1,5 @@
 /// @file test_PlatformOpen.cpp
-/// @brief App::PlatformOpen on Linux (#1395): openWithSystemHandler() hands its target to xdg-open,
+/// @brief App::PlatformOpen on Linux (#1395): open() hands its target to xdg-open,
 /// byte for byte, from a detached grandchild. A fake xdg-open first on PATH records what it was given.
 
 #include "App/PlatformOpen.h"
@@ -94,7 +94,7 @@ class PlatformOpenTest : public ::testing::Test
 
 TEST_F(PlatformOpenTest, AUrlIsHandedToXdgOpen)
 {
-    EXPECT_TRUE(openWithSystemHandler(std::string_view{"https://github.com/mgradwohl/tasksmack/issues"}));
+    EXPECT_EQ(open(std::string_view{"https://github.com/mgradwohl/tasksmack/issues"}), OpenResult::Opened);
     EXPECT_EQ(opened(), "https://github.com/mgradwohl/tasksmack/issues");
 }
 
@@ -102,7 +102,7 @@ TEST_F(PlatformOpenTest, APathIsHandedOverByteForByte)
 {
     // Non-ASCII and a space: the path's own bytes, no conversion on the way (#1648).
     const std::filesystem::path path = m_Dir / "R\xC3\xA9sum\xC3\xA9 notes.txt";
-    EXPECT_TRUE(openWithSystemHandler(path));
+    EXPECT_EQ(open(path), OpenResult::Opened);
     EXPECT_EQ(opened(), path.string());
 }
 
@@ -133,7 +133,7 @@ TEST_F(PlatformOpenTest, NoXdgOpenIsAFailure)
     // detached grandchild.
     ASSERT_EQ(::setenv("PATH", "/nonexistent-tasksmack-path", 1), 0); // NOLINT(concurrency-mt-unsafe) - single-threaded test
     TestSupport::expectLogWarning("xdg-open isn't installed");        // the failure is logged too (#2718)
-    EXPECT_FALSE(openWithSystemHandler(std::string_view{"https://example.invalid/"}));
+    EXPECT_EQ(open(std::string_view{"https://example.invalid/"}), OpenResult::Failed);
 }
 
 // #2138: xdg-open (and the program it starts) inherits only stdin, stdout and stderr: a descriptor
@@ -149,7 +149,7 @@ TEST_F(PlatformOpenTest, XdgOpenInheritsNoneOfTaskSmacksDescriptors)
     std::filesystem::permissions(script, std::filesystem::perms::owner_all);
     const int leaky = ::open("/proc/self/stat", O_RDONLY); // NOLINT(cppcoreguidelines-pro-type-vararg) - no O_CLOEXEC, on purpose
     ASSERT_GE(leaky, 3);
-    EXPECT_TRUE(openWithSystemHandler(std::string_view{"https://example.invalid/"}));
+    EXPECT_EQ(open(std::string_view{"https://example.invalid/"}), OpenResult::Opened);
     const std::string fds = opened().value_or(std::string{});
     ::close(leaky);
     ASSERT_FALSE(fds.empty()) << "the fake xdg-open didn't run";

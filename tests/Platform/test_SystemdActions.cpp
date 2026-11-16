@@ -144,7 +144,6 @@ TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStar
     EXPECT_TRUE(caps.canRestart);
     EXPECT_TRUE(caps.canSetStartType);
     EXPECT_FALSE(caps.canDelayStart);
-    EXPECT_FALSE(caps.canAuthorizeInteractively); // nothing asks for a password after TaskSmack starts (#3580)
 
     const TestSupport::ScopedTempDir bare("ts_service_actions_bare");
     LinuxServiceActions withoutSystemd(bare.path, /*built=*/true);
@@ -153,13 +152,9 @@ TEST(LinuxServiceActionsTest, ActsOnlyWhereSystemdRunsAndNeverOffersADelayedStar
     const std::stop_source stop;
     EXPECT_EQ(withoutSystemd.start("cron.service", stop.get_token()).message, "systemd isn't running");
     EXPECT_EQ(withoutSystemd.setStartType("cron.service", ServiceStartType::Manual).message, "systemd isn't running");
-    EXPECT_FALSE(withoutSystemd.capabilities().canAuthorizeInteractively);
-    EXPECT_EQ(withoutSystemd.runAuthorized(ServiceAction::Start, "cron.service", ServiceStartType::Unknown, stop.get_token()).message,
-              "systemd isn't running");
 
     LinuxServiceActions notBuilt(root.path, /*built=*/false);
     EXPECT_FALSE(notBuilt.capabilities().canStop);
-    EXPECT_FALSE(notBuilt.capabilities().canAuthorizeInteractively);
     EXPECT_FALSE(notBuilt.stop("cron.service", stop.get_token()).ok);
 }
 
@@ -790,9 +785,9 @@ TEST_F(SystemdActionsFakeTest, AUserUnitWithNoInstallSectionCantBeEnabled)
     }
 }
 
-// #2472, #3767: LinuxServiceActions has no prompting retry: runAuthorized() is IServiceActions' plain call, each
-// step sent without the interactive flag, a restart as a stop then a start.
-TEST_F(SystemdActionsFakeTest, AnAuthorizedActionIsThePlainCallWithNoPrompt)
+// #2472, #3767, #3867: no service action asks for a password prompt: each step is sent without the interactive
+// flag, a restart as a stop then a start.
+TEST_F(SystemdActionsFakeTest, NoActionAsksForAPrompt)
 {
     m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     for (const char* method : {"StartUnit", "StopUnit"})
@@ -816,13 +811,13 @@ TEST_F(SystemdActionsFakeTest, AnAuthorizedActionIsThePlainCallWithNoPrompt)
     LinuxServiceActions actions(root.path, /*built=*/true, QUICK);
     const std::stop_source stop;
 
-    EXPECT_TRUE(actions.runAuthorized(ServiceAction::Start, "cron.service", ServiceStartType::Unknown, stop.get_token()).ok);
-    EXPECT_TRUE(actions.runAuthorized(ServiceAction::Restart, "cron.service", ServiceStartType::Unknown, stop.get_token()).ok);
-    EXPECT_TRUE(actions.runAuthorized(ServiceAction::Stop, "cron.service", ServiceStartType::Unknown, stop.get_token()).ok);
+    EXPECT_TRUE(actions.start("cron.service", stop.get_token()).ok);
+    EXPECT_TRUE(actions.restart("cron.service", stop.get_token()).ok);
+    EXPECT_TRUE(actions.stop("cron.service", stop.get_token()).ok);
     EXPECT_EQ(calls(), (std::vector<std::string>{"StartUnit", "StopUnit", "StartUnit", "StopUnit"}));
 }
 
-// #2472: TaskSmack closing between a restart's stop and its start skips the start, plain or authorized.
+// #2472: TaskSmack closing between a restart's stop and its start skips the start.
 TEST_F(SystemdActionsFakeTest, AStopRequestAfterARestartsStopSkipsItsStart)
 {
     m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
@@ -846,13 +841,7 @@ TEST_F(SystemdActionsFakeTest, AStopRequestAfterARestartsStopSkipsItsStart)
 
     const ServiceActionResult plain = actions.restart("cron.service", stop.get_token());
     EXPECT_TRUE(plain.cancelled) << plain.message;
-
-    stop = std::stop_source{};
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    const ServiceActionResult authorized =
-        actions.runAuthorized(ServiceAction::Restart, "cron.service", ServiceStartType::Unknown, stop.get_token());
-    EXPECT_TRUE(authorized.cancelled) << authorized.message;
-    EXPECT_EQ(calls(), (std::vector<std::string>{"StopUnit", "StopUnit"})) << "no start after either";
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StopUnit"})) << "no start after it";
 }
 
 TEST_F(SystemdActionsFakeTest, ALoadUnitAnswerThatIsntAnObjectPathFailsTheAction)

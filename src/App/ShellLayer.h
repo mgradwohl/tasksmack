@@ -14,12 +14,14 @@
 #include "TabLabel.h"
 #include "TitleBarButtons.h"
 #include "TitleBarGeometry.h"
+#include "UI/IconsFontAwesome6.h"
 #include "UpdateChecker.h"
 
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
 
 #include <cstddef>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <string>
@@ -75,7 +77,7 @@ class ShellLayer : public Core::Layer
     /// The Processes tab's panel, for the UI scenarios that check its state after driving it (#2711).
     [[nodiscard]] const ProcessesPanel& processesPanelForTesting() const noexcept
     {
-        return m_ProcessesPanel;
+        return m_Panels.processes();
     }
 
     /// Each tab's event name and the name of the panel it shows, in tab order: the tabs take their panels by position in
@@ -139,6 +141,18 @@ class ShellLayer : public Core::Layer
         static_cast<void>(m_UpdateLinkOpen.poll());
     }
 
+    /// What opens the release page (tests): BackgroundOpen::openUtf8() unless replaced, so a test can withhold the
+    /// open (#3917) without starting a browser.
+    using UpdateLinkOpener = std::function<BackgroundOpen::Job(std::string)>;
+    void setUpdateLinkOpenerForTesting(UpdateLinkOpener opener)
+    {
+        m_OpenUpdateLink = std::move(opener);
+    }
+
+    /// The window that names a release page the title bar's update button didn't open (#3917), and its Close.
+    static constexpr const char* UPDATE_WITHHELD_WINDOW = "##UpdateWithheld";
+    static constexpr const char* UPDATE_WITHHELD_CLOSE_LABEL = ICON_FA_XMARK " Close##UpdateWithheld";
+
     /// Whether the Render Metrics overlay is shown: by the chord, TASKSMACK_RENDER_METRICS or a metrics= step.
     [[nodiscard]] bool renderMetricsShown() const noexcept
     {
@@ -158,6 +172,7 @@ class ShellLayer : public Core::Layer
     /// The Process Details tab's program icon for this frame, and the label that makes room for it (#1800).
     void updateDetailsTabIcon();
     void renderStatusBar();
+    void renderUpdateWithheld(float titleBarHeight);
     /// The update check's frame (#3093): takes in a finished check, starts a due one, saves what changed in
     /// the background, keeps the notice's label, and tells Settings when its status changes.
     void updateUpdateCheck();
@@ -172,9 +187,8 @@ class ShellLayer : public Core::Layer
     UpdateChecker m_Updates;
 
     // The panels and the window-independent wiring between them, shared with the PGO training driver (#2136). The shell
-    // reaches the Processes and System panels through ShellPanels' forwarders (#3717); these two it names directly.
+    // reaches the Processes and System panels through ShellPanels' forwarders (#3717); Process Details it names directly.
     ShellPanels m_Panels;
-    ProcessesPanel& m_ProcessesPanel = m_Panels.processes();
     ProcessDetailsPanel& m_ProcessDetailsPanel = m_Panels.processDetails();
 
     // Frame timing / FPS display
@@ -291,6 +305,10 @@ class ShellLayer : public Core::Layer
     // The notice's link, opened on a worker (#3155), and the checker's own worker: both waited for when
     // destroyed, and both own what their jobs use.
     BackgroundOpen m_UpdateLinkOpen;
+    UpdateLinkOpener m_OpenUpdateLink = &BackgroundOpen::openUtf8;
+    // The open was the title bar's update button's (#3917): a withheld one is named under the bar, where the click
+    // was, since the status bar's notice that names it otherwise may be dismissed or left out.
+    bool m_UpdateOpenFromTitleBar = false;
 
     // Declared last so panels and cached labels outlive the non-owning registry.
     PanelTabs m_Tabs;

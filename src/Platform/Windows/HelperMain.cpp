@@ -84,7 +84,7 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
     namespace Helper = Platform::Windows::BrokerHelper;
     // Only System32 for any DLL loaded from here on, never the helper's own folder, which a portable
     // TaskSmack may have unpacked somewhere its user can write. The imports are covered by the linker's
-    // /DEPENDENTLOADFLAG (CMakeLists.txt).
+    // /DEPENDENTLOADFLAG (cmake/CompilerOptions.cmake). First, as tools/check-dll-loads.py checks.
     SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);
     // And the process mitigations (#2557), before anything else runs. One this Windows doesn't know is
     // only logged: the helper still works without it.

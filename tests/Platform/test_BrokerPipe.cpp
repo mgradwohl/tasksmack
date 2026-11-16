@@ -1241,7 +1241,7 @@ TEST(BrokerPipeServeTest, OnlyActionsWindowsDoesAndTheHelloPutOffTheIdleExit)
     // And an I/O priority hint (#3362).
     EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::IoPriorityRequest{}));
     // And Close connection (#3358), which only an administrator can do.
-    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
+    EXPECT_TRUE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::CloseConnectionRequest{.target = TARGET}));
     // A read keeps nothing alive.
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ModulesRequest{.target = TARGET}));
     EXPECT_FALSE(BrokerPipeServer::putsOffTheWindowsIdleExit(Broker::ConnectionsRequest{.target = TARGET}));
@@ -1365,8 +1365,8 @@ TEST(BrokerPipeServeTest, EveryRequestKindIsTheHelloAnActionOrARead)
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::OpenFilesRequest{.target = TARGET}));
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ConnectionsRequest{.target = TARGET}));
     EXPECT_FALSE(BrokerPipeServer::isRead(Broker::EfficiencyModeRequest{.target = TARGET, .on = true})) << "an action (#3071)";
-    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}));
-    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{.target = TARGET, .socketInode = 1}))
+    EXPECT_FALSE(BrokerPipeServer::isRead(Broker::CloseConnectionRequest{.target = TARGET}));
+    EXPECT_TRUE(BrokerPipeServer::isActionWindowsDoes(Broker::CloseConnectionRequest{.target = TARGET}))
         << "SetTcpEntry as an administrator (#3358)";
     EXPECT_TRUE(BrokerPipeServer::isRead(Broker::ThreadsRequest{.target = TARGET})) << "Process Details' threads (#3069)";
     const Broker::ThreadActionRequest threadAction{.target = TARGET, .tid = 8, .action = ThreadAction::End};
