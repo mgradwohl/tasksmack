@@ -57,13 +57,8 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
         return; // synthetic runs: no section at all
     }
     const bool listed = m_HasRead && m_Status == Platform::OpenFilesReadStatus::Ok;
-    if (listed && m_LabelCount != m_Rows.size())
-    {
-        m_LabelCount = m_Rows.size();
-        m_CountLabel = std::format(ICON_FA_FILE "  Open files ({})###ProcessOpenFiles", m_LabelCount);
-    }
     // Collapsed by default, and nothing is read on opening either: only the scan button reads.
-    if (!ImGui::CollapsingHeader(listed ? m_CountLabel.c_str() : ICON_FA_FILE "  Open files###ProcessOpenFiles"))
+    if (!ImGui::CollapsingHeader(m_Header.label(listed, m_Rows.size(), ICON_FA_FILE "  Open files", "###ProcessOpenFiles")))
     {
         return;
     }

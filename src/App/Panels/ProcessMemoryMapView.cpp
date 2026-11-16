@@ -12,7 +12,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <format>
 #include <span>
 #include <string>
 
@@ -30,13 +29,8 @@ void ProcessMemoryMapView::render(bool hasMemoryMap)
     // The count, once a read has listed the regions, formatted only when it changes; the ### keeps the
     // header's ID (and its open state) the same as the count changes.
     const bool listed = m_HasRead && m_Status == Platform::MemoryMapReadStatus::Ok;
-    if (listed && m_LabelCount != m_Rows.size())
-    {
-        m_LabelCount = m_Rows.size();
-        m_CountLabel = std::format(ICON_FA_MEMORY "  Memory map ({})###ProcessMemoryMap", m_LabelCount);
-    }
     // Collapsed by default: nothing is read until it is opened.
-    if (!ImGui::CollapsingHeader(listed ? m_CountLabel.c_str() : ICON_FA_MEMORY "  Memory map###ProcessMemoryMap"))
+    if (!ImGui::CollapsingHeader(m_Header.label(listed, m_Rows.size(), ICON_FA_MEMORY "  Memory map", "###ProcessMemoryMap")))
     {
         return;
     }

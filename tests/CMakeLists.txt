@@ -774,6 +774,7 @@ set(COMMON_TEST_SOURCES
     App/test_UdpCountingStatus.cpp  # Count UDP traffic per process's status for Settings (#3366)
     App/test_CoalescingWriter.cpp
     App/test_LazyBackgroundRead.cpp
+    App/test_SectionCaches.cpp  # the list sections' filter and header caches (#3887)
     App/test_AffinityLayoutRead.cpp # the Set affinity dialog's CPU layout, read once on a worker (#3182)
     App/test_ProcessSecurityViewRender.cpp
     App/test_ServiceActionsView.cpp
