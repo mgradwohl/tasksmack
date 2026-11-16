@@ -13,13 +13,13 @@
 namespace Platform
 {
 
-/// Why @p request is refused before anything is sent, or nullopt when it can be sent:
-/// - an empty host, path or User-Agent, or a path that doesn't start with a slash,
-/// - a host that isn't a plain DNS name of letters, digits, dots and hyphens, so nothing in it can change the URL,
-/// - a path holding a hash, a space, CR, LF or NUL, which would start a fragment or break the request line,
-/// - a User-Agent or Accept holding CR, LF or NUL, which could inject a header,
-/// - an extra header whose name isn't an RFC 9110 token, or whose value holds CR, LF or NUL.
-/// The messages never quote a header's value, which may be a secret such as VirusTotal's API key.
+/// Why @p request is refused before anything is sent, or nullopt when it can be sent. It is refused when the host, the
+/// path or the User-Agent is empty, or the path doesn't start with a slash. It is refused when the host isn't a plain
+/// DNS name of letters, digits, dots and hyphens, so that nothing in it can change the URL. It is refused when the path
+/// holds a hash, a space, CR, LF or NUL, which would start a fragment or break the request line. It is refused when
+/// the User-Agent or the Accept value holds CR, LF or NUL, which could inject a header. And it is refused when an extra
+/// header's name isn't an RFC 9110 token, or its value holds CR, LF or NUL. The messages never quote a header's value,
+/// which may be a secret such as the VirusTotal API key.
 [[nodiscard]] inline std::optional<std::string> requestRefusal(const HttpsRequest& request)
 {
     if (request.host.empty() || request.path.empty() || request.userAgent.empty())
