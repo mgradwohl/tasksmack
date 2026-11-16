@@ -5504,6 +5504,84 @@ TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogsApplySetsItOnEveryList
     panel->onDetach();
 }
 
+// #3884: Set I/O priority for N processes... leaves out a process Process Details is changing the I/O priority of,
+// sets the others, and its result line says how many it skipped and why, as the nice batch does (#3467).
+TEST_F(ProcessesPanelRenderTest, ABatchIoPriorityChangeSkipsAProcessWithAnIoChangeRunningInProcessDetails)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = ioPriorityPanel(actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    ASSERT_EQ(panel->selectionCount(), 3U);
+    const Platform::ProcessTarget server{.pid = 100, .startTimeTicks = mockStartTicks(100)};
+    const std::array details{server};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details, PriorityChangesInFlight::Change::IoPriority);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, "###SetIoPriority");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(panel->batchIoPriorityDialogForTesting().isPending());
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "1 process skipped")); // from the batch's worker (#2142)
+    EXPECT_TRUE(renderAndCapture(*panel).contains("I/O priority change is still running in Process Details"));
+    EXPECT_EQ(actions->setIoPriorityCount(), 2) << "the other two are set";
+    panel->onDetach();
+}
+
+// #3884: a CPU priority change running in Process Details doesn't hold the batch I/O priority change, which sets a
+// different thing: every listed process is set.
+TEST_F(ProcessesPanelRenderTest, ACpuPriorityChangeInProcessDetailsDoesNotHoldTheBatchIoPriorityChange)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = ioPriorityPanel(actions);
+    panel->setPriorityChanges(&changes);
+    ASSERT_NE(actions, nullptr);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    const std::array details{Platform::ProcessTarget{.pid = 100, .startTimeTicks = mockStartTicks(100)}};
+    changes.publish(PriorityChangesInFlight::Panel::ProcessDetails, details);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, "###SetIoPriority");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    pressModalFilledButton(*panel, "Apply to 3 processes");
+    ASSERT_TRUE(updateUntilBatchResult(*panel, "I/O priority set to"));
+    EXPECT_EQ(actions->setIoPriorityCount(), 3);
+    panel->onDetach();
+}
+
+// #3884: the batch I/O priority dialog is its confirmation, so its processes are published as I/O priority changes
+// from the frame it opens, holding Process Details' I/O priority Apply for them, and not its CPU priority controls.
+TEST_F(ProcessesPanelRenderTest, TheBatchIoPriorityDialogPublishesItsProcessesAsIoPriorityChanges)
+{
+    PriorityChangesInFlight changes;
+    TestMocks::MockProcessActions* actions = nullptr;
+    const auto panel = ioPriorityPanel(actions);
+    panel->setPriorityChanges(&changes);
+    renderUntilLoaded(*panel);
+    selectAll(*panel);
+    const Platform::ProcessTarget server{.pid = 100, .startTimeTicks = mockStartTicks(100)};
+    EXPECT_FALSE(
+        changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, server, PriorityChangesInFlight::Change::IoPriority));
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    pressPopupItem(*panel, "###SetIoPriority");
+    static_cast<void>(renderAndCapture(*panel));
+    static_cast<void>(renderAndCapture(*panel));
+    ASSERT_TRUE(panel->batchIoPriorityDialogForTesting().isPending());
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, server, PriorityChangesInFlight::Change::IoPriority));
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, server))
+        << "an I/O priority change holds no CPU priority control";
+    panel->onDetach();
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::ProcessDetails, server, PriorityChangesInFlight::Change::IoPriority))
+        << "released at detach";
+}
+
 // #3551, #3374: the I/O priority column shows each process's class and level as read, and a process whose I/O
 // priority couldn't be read gets the unavailable cell, not a made-up value.
 TEST_F(ProcessesPanelRenderTest, TheIoPriorityColumnShowsWhatWasReadAndMarksWhatWasnt)

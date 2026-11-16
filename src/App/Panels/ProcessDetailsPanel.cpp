@@ -459,6 +459,12 @@ void ProcessDetailsPanel::renderContent()
                                 : nullptr;
     m_Views->m_ActionsView.holdPriorityChanges(
         ProcessActionsBlock::actionsHoldReason(m_Views->m_PriorityView.applying(), m_PriorityHeldElsewhere));
+    // And an I/O priority change for it there holds the I/O priority card's Apply (#3884).
+    m_Views->m_PriorityView.ioPriorityView().holdForOtherIoPriorityChange(
+        m_PriorityChanges != nullptr ? m_PriorityChanges->holdReason(PriorityChangesInFlight::Panel::ProcessDetails,
+                                                                     selectedTarget(),
+                                                                     PriorityChangesInFlight::Change::IoPriority)
+                                     : nullptr);
     // Look up on VirusTotal (#3094): the key as Settings has it now, so a key set or cleared takes effect at once.
     m_Views->m_ActionsView.setVirusTotal(m_LookupContext.get(m_LookupClient, UserConfig::get().settings().virusTotalApiKey));
 
@@ -496,6 +502,15 @@ void ProcessDetailsPanel::publishPriorityChanges()
         m_PublishedPriorityChanges.push_back(*target);
     }
     m_PriorityChanges->publish(PriorityChangesInFlight::Panel::ProcessDetails, m_PublishedPriorityChanges);
+    // The I/O priority card's Apply, or its retry (#3884): held apart from the nice change, since only another I/O
+    // priority change races it.
+    m_PublishedIoPriorityChanges.clear();
+    if (const std::optional<Platform::ProcessTarget> target = m_Views->m_PriorityView.ioPriorityView().applyingTarget(); target.has_value())
+    {
+        m_PublishedIoPriorityChanges.push_back(*target);
+    }
+    m_PriorityChanges->publish(
+        PriorityChangesInFlight::Panel::ProcessDetails, m_PublishedIoPriorityChanges, PriorityChangesInFlight::Change::IoPriority);
 }
 
 void ProcessDetailsPanel::renderPane(bool killRequested)
