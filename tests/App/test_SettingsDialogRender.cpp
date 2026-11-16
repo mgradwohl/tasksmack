@@ -492,9 +492,8 @@ TEST_F(SettingsDialogRenderTest, TheUdpCheckboxEditsTheState)
     EXPECT_FALSE(m_State.udpEventTrace);
 }
 
-#ifndef _WIN32
-// #3366: a counter this system can't load isn't offered: off, the checkbox doesn't turn on; on (the setting stored
-// before the counter failed), it still turns off.
+// #3366, both platforms since #3879: a counter this system can't load isn't offered: off, the checkbox doesn't turn on; on (the setting
+// stored before the counter failed), it still turns off.
 TEST_F(SettingsDialogRenderTest, AnUnsupportedUdpCounterCanBeTurnedOffButNotOn)
 {
     m_State.udpUnsupported = true;
@@ -510,7 +509,6 @@ TEST_F(SettingsDialogRenderTest, AnUnsupportedUdpCounterCanBeTurnedOffButNotOn)
     (void) runFrame();
     EXPECT_FALSE(m_State.udpEventTrace) << "an enabled preference can still be turned off";
 }
-#endif
 
 TEST(SettingsDialogStateTest, TheUdpTraceIsLoadedAndResetToOff)
 {

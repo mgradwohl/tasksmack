@@ -110,6 +110,9 @@ class WindowsEtwNetCollector final : public IUdpTrafficCollector
     void stop() override;
     [[nodiscard]] bool isDelivering() const override;
     [[nodiscard]] std::vector<UdpProcessTraffic> sample() override;
+    /// Why it isn't counting, for Settings (#3879): TaskSmack isn't running as administrator (known from the start,
+    /// so it is said before the setting is turned on), or the last start() failed; empty otherwise. No I/O.
+    [[nodiscard]] std::string problem() const override;
 
     /// The consumer's per-event callback (EVENT_TRACE_LOGFILEW::EventRecordCallback). @p record's
     /// UserContext is the collector. Public so tests can feed it fabricated records.
@@ -148,6 +151,8 @@ class WindowsEtwNetCollector final : public IUdpTrafficCollector
     using ConsumerWorker = Domain::Worker<ConsumeSession, ConsumerResult>;
 
     [[nodiscard]] static SessionProperties makeProperties();
+    /// start() under m_ControlMutex.
+    [[nodiscard]] UdpCollectorStartResult startLocked();
     void stopStaleSessions();
     void stopSessionByName(const std::wstring& name) const;
     void stopLocked();
@@ -159,6 +164,9 @@ class WindowsEtwNetCollector final : public IUdpTrafficCollector
 
     Functions m_Fns;
     mutable std::mutex m_ControlMutex; // start(), stop(), the lost-events query
+    bool m_Elevated = false;           // Read once at construction: a process's elevation doesn't change (#3879)
+    mutable std::mutex m_ProblemMutex; // Its own, so Settings' read never waits on a start() in progress
+    std::string m_Problem;             // Guarded by m_ProblemMutex: why the last start() failed (#3879)
     std::wstring m_SessionName;        // Guarded by m_ControlMutex; empty when stopped
     ULONG64 m_SessionId = 0;           // Guarded by m_ControlMutex
     ULONG64 m_ConsumerHandle = 0;      // Guarded by m_ControlMutex
