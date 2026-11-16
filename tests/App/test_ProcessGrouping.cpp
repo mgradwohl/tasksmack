@@ -505,5 +505,84 @@ TEST(ProcessGroupingAppTest, AppIdsOfferGroupByApp)
     EXPECT_EQ(ProcessGrouping::effectiveGroupBy(GroupBy::App, windows), GroupBy::App);
 }
 
+// #3885: Process Details' App row is found from the one process, walking up its parents, not from maps of the
+// whole generation; it must say exactly what Group: App says for every process. A tree with packaged apps and
+// their helpers, desktop apps and their renderers, Linux units, a deep chain, a PID loop, a reused parent PID,
+// a duplicated PID and a group whose Start-menu name is on a later process than its first.
+TEST(ProcessGroupingTest, OneProcessesAppMembershipIsWhatTheWholeGenerationSays)
+{
+    std::vector<Domain::ProcessSnapshot> s{
+        windowsProc(10, 1, "explorer.exe", "", "Microsoft.Windows.Explorer"),
+        windowsProc(20, 10, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+        windowsProc(21, 20, "pwsh.exe", "", ""),
+        windowsProc(22, 21, "git.exe", "", ""),
+        windowsProc(23, 22, "ssh.exe", "", ""),
+        windowsProc(24, 20, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
+        windowsProc(30, 10, "chrome.exe", "", "Chrome"),
+        windowsProc(31, 30, "chrome.exe", "", ""),
+        windowsProc(32, 31, "chrome.exe", "", ""),
+        windowsProc(33, 31, "notepad.exe", "", ""),
+        windowsProc(40, 10, "notepad.exe", "", ""),
+        windowsProc(50, 51, "loop.exe", "", ""),
+        windowsProc(51, 50, "loop.exe", "", ""),
+        windowsProc(52, 51, "loop.exe", "", ""),
+        windowsProc(61, 60, "chrome.exe", "", ""),
+        windowsProc(60, 0, "chrome.exe", "", "Chrome"),
+        windowsProc(70, 70, "self.exe", "", ""),
+        windowsProc(80, 30, "chrome.exe", "", ""),
+        windowsProc(80, 20, "pwsh.exe", "", ""), // the same PID twice: the first is the parent its children see
+        windowsProc(81, 80, "chrome.exe", "", ""),
+        windowsProc(90, 1, "!odd", "", "!odd"),
+    };
+    s[15].startTimeTicks = s[14].startTimeTicks + 1;
+    // The loop's two processes started together, so neither edge reads as a reused parent PID: the walk must stop on
+    // the loop itself.
+    s[11].startTimeTicks = s[12].startTimeTicks;
+    s[5].appName = "Windows Terminal"; // the second of its app's processes has the Start menu's name
+    for (const auto& [name, unit] : {std::pair{"firefox", "app-gnome-firefox-4521.scope"}, std::pair{"firefox", ""}})
+    {
+        Domain::ProcessSnapshot unitProc = proc(name, unit, "", 0.0, 0);
+        unitProc.pid = static_cast<std::int32_t>(100 + s.size());
+        unitProc.parentPid = (unit[0] == '\0') ? static_cast<std::int32_t>(100 + s.size() - 1) : 1;
+        unitProc.startTimeTicks = 5000 + s.size();
+        s.push_back(std::move(unitProc));
+    }
+
+    const std::vector<std::string> keys = ProcessGrouping::appKeys(s);
+    const auto labels = ProcessGrouping::appGroupLabels(s);
+    for (std::size_t i = 0; i < s.size(); ++i)
+    {
+        EXPECT_EQ(ProcessGrouping::appMembershipAt(s, i), ProcessGrouping::appMembership(s[i], keys[i], labels))
+            << "process " << i << " (" << s[i].name << ", PID " << s[i].pid << ")";
+    }
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 3).label, "Windows Terminal") << "the Start menu's name, from a later process";
+    EXPECT_TRUE(ProcessGrouping::appMembershipAt(s, 4).inherited) << "four levels down a packaged app";
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 22).key, "firefox") << "a Linux unit's child of the same program";
+}
+
+// #3885: a selected process thousands of levels down a chain is found in one pass up, and says what the whole
+// generation says: the package at the top for every process below it, and no app below a break in the chain.
+TEST(ProcessGroupingTest, ADeepChainsAppMembershipIsWhatTheWholeGenerationSays)
+{
+    constexpr std::int32_t DEPTH = 5000;
+    std::vector<Domain::ProcessSnapshot> s;
+    s.reserve(DEPTH + 1);
+    s.push_back(windowsProc(1, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""));
+    for (std::int32_t pid = 2; pid <= DEPTH; ++pid)
+    {
+        // Listed deepest first, so no lookup finds its parent by position.
+        s.insert(s.begin(), windowsProc(pid, pid - 1, (pid == DEPTH / 2) ? "other.exe" : "pwsh.exe", "", ""));
+    }
+    const std::vector<std::string> keys = ProcessGrouping::appKeys(s);
+    const auto labels = ProcessGrouping::appGroupLabels(s);
+    for (const std::size_t i : {std::size_t{0}, std::size_t{1}, s.size() / 2, s.size() - 2, s.size() - 1})
+    {
+        EXPECT_EQ(ProcessGrouping::appMembershipAt(s, i), ProcessGrouping::appMembership(s[i], keys[i], labels)) << "process " << i;
+    }
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, s.size() - 2).key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 0).key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe")
+        << "a package's helpers follow it whatever program they run";
+}
+
 } // namespace
 } // namespace App

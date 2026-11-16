@@ -360,11 +360,13 @@ class ProcessIoPriorityView
     /// class never set shows at the Best-effort level it derives. With @p windowsHints
     /// (ProcessActionCapabilities::ioPriorityHints, #3362) it is Windows' slider instead
     /// (Detail::IO_HINT_SLIDER), with no Reset to default: Normal is every process's default. The caller checks
-    /// the capability.
+    /// the capability. @p canAuthorizeInteractively is ProcessActionCapabilities::canAuthorizeInteractively, as the
+    /// caller read it once at construction (#3889): whether the helper can make a set the read was refused for.
     void render(Platform::IProcessActions* actions,
                 std::optional<std::int32_t> currentNice,
                 const Platform::ProcessTarget& target,
                 bool realtimeSettable,
+                bool canAuthorizeInteractively,
                 bool windowsHints = false,
                 Platform::SchedPolicy schedPolicy = Platform::SchedPolicy::Unknown);
 

@@ -24,13 +24,16 @@
 #include <windows.h>
 // clang-format on
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <optional>
 #include <ostream>
+#include <span>
 #include <string>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 namespace Platform::Windows
 {
@@ -292,12 +295,14 @@ TEST(WindowsProcessIdentity, ReaderStatusForEachRefusal)
     EXPECT_EQ(statusOf(IdentityFailureKind::Exited).status, ModulesReadStatus::ProcessExited);
     EXPECT_EQ(statusOf(IdentityFailureKind::IdentityUnknown).status, ModulesReadStatus::IdentityUnknown);
     EXPECT_EQ(statusOf(IdentityFailureKind::AccessDenied, ERROR_ACCESS_DENIED).status, ModulesReadStatus::PermissionDenied);
-    for (const auto kind : {IdentityFailureKind::InvalidPid,
-                            IdentityFailureKind::ProcessGone,
-                            IdentityFailureKind::Mismatch,
-                            IdentityFailureKind::Exited,
-                            IdentityFailureKind::IdentityUnknown,
-                            IdentityFailureKind::AccessDenied})
+    for (const auto kind : {
+             IdentityFailureKind::InvalidPid,
+             IdentityFailureKind::ProcessGone,
+             IdentityFailureKind::Mismatch,
+             IdentityFailureKind::Exited,
+             IdentityFailureKind::IdentityUnknown,
+             IdentityFailureKind::AccessDenied,
+         })
     {
         EXPECT_TRUE(statusOf(kind, ERROR_ACCESS_DENIED).detail.empty());
     }
@@ -367,6 +372,92 @@ TEST(WindowsProcessIdentity, RealCallsRefuseAnExitedChildStillHeldOpen)
         openProcessVerified({}, {.pid = static_cast<std::int32_t>(info.dwProcessId), .startTimeTicks = start.value_or(0)}, 0);
     ASSERT_FALSE(exited.has_value());
     EXPECT_EQ(exited.error().kind, IdentityFailureKind::Exited);
+}
+
+// processImagePath() (#3863), the one read of a process's executable path: #2770's
+// QueryFullProcessImageNameW fails with ERROR_INSUFFICIENT_BUFFER, and doesn't say the size needed, when
+// its buffer is too small. A path of MAX_PATH characters or more needs the longest buffer tried, not that
+// failure taken as final.
+
+/// What the fake QueryFullProcessImageNameW answers: @p path when the buffer has room for it and its
+/// terminator, ERROR_INSUFFICIENT_BUFFER when not, as Windows does; or @p failWith. Keeps the buffer
+/// sizes it was offered, one per call.
+struct FakeImageQuery
+{
+    std::wstring path;
+    DWORD failWith = ERROR_SUCCESS;
+    std::vector<DWORD> sizes;
+};
+
+[[nodiscard]] FakeImageQuery& fakeImageQuery()
+{
+    static FakeImageQuery instance;
+    return instance;
+}
+
+BOOL WINAPI fakeQueryFullProcessImageName(HANDLE /*process*/, DWORD /*flags*/, LPWSTR path, PDWORD size)
+{
+    FakeImageQuery& query = fakeImageQuery();
+    query.sizes.push_back(*size);
+    if (query.failWith != ERROR_SUCCESS)
+    {
+        SetLastError(query.failWith);
+        return FALSE;
+    }
+    if (*size <= query.path.size())
+    {
+        SetLastError(ERROR_INSUFFICIENT_BUFFER);
+        return FALSE;
+    }
+    const std::span<wchar_t> out(path, *size);
+    std::ranges::copy(query.path, out.begin());
+    out[query.path.size()] = L'\0';
+    *size = static_cast<DWORD>(query.path.size());
+    return TRUE;
+}
+
+TEST(WindowsProcessImagePathTest, APathOfMaxPathOrMoreIsReadWithTheLongestBuffer)
+{
+    FakeImageQuery& query = fakeImageQuery();
+    query = {.path = L"C:\\" + std::wstring(283, L'a') + L"\\TaskSmack.exe", .failWith = ERROR_SUCCESS, .sizes = {}};
+    ASSERT_EQ(query.path.size(), 300U);
+    const std::optional<std::wstring> image = processImagePath(GetCurrentProcess(), &fakeQueryFullProcessImageName);
+    ASSERT_TRUE(image.has_value());
+    EXPECT_EQ(image.value_or(L""), query.path);
+    EXPECT_EQ(query.sizes, (std::vector<DWORD>{MAX_PATH, 32'768})) << "MAX_PATH, then the longest path";
+
+    query = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmack.exe", .failWith = ERROR_SUCCESS, .sizes = {}};
+    EXPECT_EQ(processImagePath(GetCurrentProcess(), &fakeQueryFullProcessImageName), query.path);
+    EXPECT_EQ(query.sizes.size(), 1U) << "one that fits MAX_PATH is read at once";
+}
+
+TEST(WindowsProcessImagePathTest, APathLongerThanTheLongestIsntReadAndSaysWhy)
+{
+    FakeImageQuery& query = fakeImageQuery();
+    query = {.path = std::wstring(32'768, L'a'), .failWith = ERROR_SUCCESS, .sizes = {}};
+    EXPECT_FALSE(processImagePath(GetCurrentProcess(), &fakeQueryFullProcessImageName).has_value());
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_INSUFFICIENT_BUFFER));
+    EXPECT_EQ(query.sizes.size(), 2U) << "longer than the longest path: no third try";
+}
+
+TEST(WindowsProcessImagePathTest, AnImageThatCantBeReadIsntRetriedAndKeepsItsError)
+{
+    FakeImageQuery& query = fakeImageQuery();
+    query = {.path = L"C:\\Program Files\\TaskSmack\\TaskSmack.exe", .failWith = ERROR_ACCESS_DENIED, .sizes = {}};
+    EXPECT_FALSE(processImagePath(GetCurrentProcess(), &fakeQueryFullProcessImageName).has_value());
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_ACCESS_DENIED)) << "GetLastError() says why";
+    EXPECT_EQ(query.sizes.size(), 1U) << "a failure that isn't the buffer's size is final";
+}
+
+TEST(WindowsProcessImagePathTest, TheRealCallReadsThisProcesssOwnImage)
+{
+    const std::optional<std::wstring> image = processImagePath(GetCurrentProcess());
+    ASSERT_TRUE(image.has_value()) << "error " << GetLastError();
+    std::wstring own(32'768, L'\0');
+    own.resize(GetModuleFileNameW(nullptr, own.data(), static_cast<DWORD>(own.size())));
+    ASSERT_FALSE(own.empty());
+    EXPECT_EQ(CompareStringOrdinal(image.value_or(L"").c_str(), -1, own.c_str(), -1, TRUE), CSTR_EQUAL)
+        << "the real call, by default, names this test's own executable";
 }
 
 } // namespace

@@ -13,7 +13,6 @@
 #include <windows.h>
 #include <objbase.h>
 #include <oleauto.h>
-#include <sddl.h>
 #include <taskschd.h>
 // clang-format on
 
@@ -23,20 +22,17 @@
 #pragma comment(lib, "taskschd.lib")
 
 #include "ComPtr.h"
+#include "ComTypes.h"
 #include "WinString.h"
-#include "WindowsHandles.h"
+#include "WindowsElevation.h"
 #include "WindowsScheduledTasksMath.h"
 
-#include <array>
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
 #include <expected>
 #include <memory>
-#include <new>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -51,91 +47,6 @@ namespace Math = ScheduledTaskMath;
 static_assert(Math::TRIGGER_BOOT == TASK_TRIGGER_BOOT);
 static_assert(Math::TRIGGER_LOGON == TASK_TRIGGER_LOGON);
 static_assert(static_cast<HRESULT>(Math::HRESULT_ACCESS_DENIED) == E_ACCESSDENIED);
-
-/// Owns one BSTR: freed exactly once, on destruction or when it is written again.
-class Bstr
-{
-  public:
-    Bstr() noexcept = default;
-    /// A copy of @p utf8; throws std::bad_alloc when it can't be allocated.
-    explicit Bstr(std::string_view utf8) : m_Value(SysAllocString(WinString::utf8ToWide(utf8).c_str()))
-    {
-        if (m_Value == nullptr)
-        {
-            throw std::bad_alloc();
-        }
-    }
-    ~Bstr()
-    {
-        SysFreeString(m_Value); // null is allowed
-    }
-    Bstr(const Bstr&) = delete;
-    Bstr& operator=(const Bstr&) = delete;
-    Bstr(Bstr&&) = delete;
-    Bstr& operator=(Bstr&&) = delete;
-
-    [[nodiscard]] BSTR get() const noexcept
-    {
-        return m_Value;
-    }
-    /// Frees the current string, for a call that writes a new one.
-    [[nodiscard]] BSTR* put() noexcept
-    {
-        SysFreeString(m_Value);
-        m_Value = nullptr;
-        return &m_Value;
-    }
-    [[nodiscard]] std::string utf8() const
-    {
-        return m_Value == nullptr ? std::string() : WinString::wideToUtf8(std::wstring_view(m_Value, SysStringLen(m_Value)));
-    }
-
-  private:
-    BSTR m_Value = nullptr;
-};
-
-/// Owns one VARIANT: cleared on destruction, whatever it holds.
-class Variant
-{
-  public:
-    Variant() noexcept
-    {
-        VariantInit(&m_Value);
-    }
-    /// A VT_I4 index, as the collections' get_Item takes.
-    explicit Variant(LONG index) noexcept : Variant()
-    {
-        // VARIANT is the OS's tagged union: vt says which member holds the value.
-        m_Value.vt = VT_I4;   // NOLINT(cppcoreguidelines-pro-type-union-access) - VARIANT's own tag
-        m_Value.lVal = index; // NOLINT(cppcoreguidelines-pro-type-union-access) - the member VT_I4 names
-    }
-    ~Variant()
-    {
-        VariantClear(&m_Value);
-    }
-    Variant(const Variant&) = delete;
-    Variant& operator=(const Variant&) = delete;
-    Variant(Variant&&) = delete;
-    Variant& operator=(Variant&&) = delete;
-
-    /// A bitwise copy for a by-value VARIANT parameter; this one keeps ownership (callees don't free their copy).
-    [[nodiscard]] VARIANT get() const noexcept
-    {
-        return m_Value;
-    }
-
-  private:
-    VARIANT m_Value{};
-};
-
-/// Frees what the security calls allocate with LocalAlloc.
-struct LocalFreer
-{
-    void operator()(void* memory) const noexcept
-    {
-        LocalFree(memory);
-    }
-};
 
 /// A string property read through @p getter; empty when the call fails.
 template<typename Interface, typename Getter> [[nodiscard]] std::string readString(Interface* object, Getter getter)
@@ -340,40 +251,18 @@ class TaskSchedulerApi final : public ScheduledTaskApi
 
     [[nodiscard]] std::vector<std::string> currentUserNames() override
     {
+        // The current token's user (WindowsElevation.h, #3864): its SID's text, then DOMAIN\user and user,
+        // named with buffers as long as the names need, so a name past 256 characters still matches.
         std::vector<std::string> names;
-        UniqueHandle token;
-        if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
+        if (const auto sid = currentUserSidText(); sid.has_value())
         {
-            return names;
+            names.push_back(WinString::wideToUtf8(*sid));
         }
-        DWORD bytes = 0;
-        static_cast<void>(GetTokenInformation(token.get(), TokenUser, nullptr, 0, &bytes));
-        if (bytes == 0)
+        if (const std::optional<AccountName> account = currentUserName(); account.has_value())
         {
-            return names;
-        }
-        std::vector<std::byte> buffer(bytes);
-        if (GetTokenInformation(token.get(), TokenUser, buffer.data(), bytes, &bytes) == FALSE)
-        {
-            return names;
-        }
-        const PSID sid = reinterpret_cast<const TOKEN_USER*>(buffer.data())->User.Sid;
-        LPWSTR sidText = nullptr;
-        if (ConvertSidToStringSidW(sid, &sidText) != FALSE)
-        {
-            const std::unique_ptr<wchar_t, LocalFreer> owned(sidText);
-            names.push_back(WinString::wideToUtf8(owned.get()));
-        }
-        std::array<wchar_t, 256> name{};
-        std::array<wchar_t, 256> domain{};
-        auto nameChars = static_cast<DWORD>(name.size());
-        auto domainChars = static_cast<DWORD>(domain.size());
-        SID_NAME_USE use = SidTypeUnknown;
-        if (LookupAccountSidW(nullptr, sid, name.data(), &nameChars, domain.data(), &domainChars, &use) != FALSE)
-        {
-            const std::string user = WinString::wideToUtf8(name.data());
-            names.push_back(WinString::wideToUtf8(domain.data()) + "\\" + user);
-            names.push_back(user);
+            std::string user = WinString::wideToUtf8(account->user);
+            names.push_back(WinString::wideToUtf8(account->domain) + "\\" + user);
+            names.push_back(std::move(user));
         }
         return names;
     }

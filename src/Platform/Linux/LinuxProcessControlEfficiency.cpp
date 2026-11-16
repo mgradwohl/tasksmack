@@ -441,7 +441,7 @@ std::size_t LinuxProcessControl::rememberedEfficiencyCount() const
     return m_Efficiency->byProcess.size();
 }
 
-std::optional<std::int32_t> LinuxProcessControl::efficiencyNiceToRestore(const ProcessTarget& target) const
+std::optional<std::int32_t> LinuxProcessControl::efficiencyNiceToRestoreForTesting(const ProcessTarget& target) const
 {
     std::optional<std::int32_t> remembered;
     {

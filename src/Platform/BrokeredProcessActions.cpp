@@ -41,24 +41,6 @@ constexpr std::string_view NOT_THROUGH_THE_HELPER = "This action isn't available
 
 } // namespace
 
-std::optional<Broker::Signal> brokerSignalFor(ProcessSignal signal) noexcept
-{
-    switch (signal)
-    {
-    case ProcessSignal::Hangup:
-        return Broker::Signal::Hangup;
-    case ProcessSignal::Interrupt:
-        return Broker::Signal::Interrupt;
-    case ProcessSignal::Quit:
-        return Broker::Signal::Quit;
-    case ProcessSignal::User1:
-        return Broker::Signal::User1;
-    case ProcessSignal::User2:
-        return Broker::Signal::User2;
-    }
-    return std::nullopt; // a signal not above (#3778): no request, never one that sends another signal
-}
-
 std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
 {
     using Kind = AuthorizedAction::Kind;
@@ -79,22 +61,17 @@ std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action)
     case Kind::SetAffinity:
         return Broker::AffinityRequest{.target = action.target, .cpus = action.cpus};
     case Kind::SendSignal:
-    {
-        const std::optional<Broker::Signal> signal = brokerSignalFor(action.signal);
-        if (!signal.has_value())
-        {
-            return std::nullopt;
-        }
-        return Broker::SignalRequest{.target = action.target, .signal = *signal};
-    }
+        return std::nullopt; // a POSIX signal (#3063): Windows has none, so the helper never sends one (#3784)
     case Kind::SetEfficiencyMode:
         return Broker::EfficiencyModeRequest{.target = action.target, .on = action.efficiencyMode};
     case Kind::CloseConnection:
-        return Broker::CloseConnectionRequest{
-            .target = action.target,
-            .socketInode = action.socketInode,
-            .tcpConnection = action.tcpConnection,
-        };
+        // By its IPv4 TCP endpoints (#3358). One named only by a socket inode is Linux's (#3066), which has no helper
+        // (#3784): no request.
+        if (action.tcpConnection == TcpConnectionToClose{})
+        {
+            return std::nullopt;
+        }
+        return Broker::CloseConnectionRequest{.target = action.target, .tcpConnection = action.tcpConnection};
     case Kind::ThreadAction:
         return Broker::ThreadActionRequest{
             .target = action.target,
@@ -256,8 +233,7 @@ ProcessActionResult BrokeredProcessActions::setSchedPolicy(const ProcessTarget& 
 
 ProcessActionResult BrokeredProcessActions::closeConnection(const ProcessTarget& target, std::uint64_t socketInode)
 {
-    return retried(m_Inner->closeConnection(target, socketInode),
-                   {.kind = AuthorizedAction::Kind::CloseConnection, .target = target, .socketInode = socketInode});
+    return m_Inner->closeConnection(target, socketInode); // by inode, Linux's (#3066): no helper retries it (#3784)
 }
 
 ProcessActionResult BrokeredProcessActions::closeTcpConnection(const ProcessTarget& target, const TcpConnectionToClose& connection)
@@ -295,8 +271,8 @@ ProcessActionResult BrokeredProcessActions::runAuthorized(const AuthorizedAction
     {
         return ProcessActionResult::error(std::string(NOT_THROUGH_THE_HELPER));
     }
-    // An Efficiency mode off with no nice left to put back (someone changed it since the refusal) may need no
-    // administrator now, and only the in-process off puts back the weight and forgets the on (#3296).
+    // An Efficiency mode off with no priority for the helper to set (no Realtime retry waiting, #3606) is tried in
+    // process first: it may need no administrator now, and only the in-process off forgets what the on remembered.
     if (action.kind == AuthorizedAction::Kind::SetEfficiencyMode && !action.efficiencyMode &&
         !m_Inner->efficiencyNiceToRestore(action.target).has_value())
     {

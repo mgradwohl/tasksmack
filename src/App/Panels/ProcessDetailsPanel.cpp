@@ -442,16 +442,6 @@ void ProcessDetailsPanel::renderContent()
     // every reason not to (no selection, not on show, exited, not yet sampled) has returned early.
     const bool killRequested = m_KillShortcut.take();
 
-    // What the actions can do, as of this frame: not all of it is fixed at construction. Once the
-    // privileged helper connects (an "Authenticate and retry"), BrokeredProcessActions can set the
-    // Realtime I/O class, so the I/O slider gains its Realtime stops (#2407). A struct built from what
-    // the actions know already and one atomic read of the helper's connection as its broker last saw it:
-    // no pipe or socket call here (IPrivilegedBroker::lastSeenConnected(), #3182).
-    if (m_ProcessActions)
-    {
-        m_ActionCapabilities = m_ProcessActions->actionCapabilities();
-    }
-
     // A priority change for the shown process running in the Processes table holds this panel's own (#3467).
     // Set here for the whole frame, the dialogs included, not only while the Overview's cards are drawn.
     m_PriorityHeldElsewhere = m_PriorityChanges != nullptr

@@ -23,12 +23,14 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
 #include "ProcessEnvironmentView.h"
+#include "SectionCaches.h"
 
 #include <algorithm>
 #include <chrono>
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -104,27 +106,14 @@ class ProcessOpenFilesView
     {
         takeFinishedRead(target, false);
         m_ScanProgress = (reader != nullptr && m_Read.inFlight()) ? reader->handlesScanned() : 0;
-        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
-        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
-        {
-            if (auto failed = m_Read.start(target,
-                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
-                                           { return reader->readAuthorized(t, stopToken); }))
-            {
-                applyResult(*failed);
-            }
-            return true;
-        }
-        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasOpenFiles())
-        {
-            return false;
-        }
-        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readOpenFiles(t); }))
-        {
-            applyResult(*failed);
-        }
-        return true;
+        return m_Read.startAuthorizedOrDue(
+            reader,
+            target,
+            deltaSeconds,
+            [](const Platform::IProcessOpenFilesReader& r) { return r.hasOpenFiles(); },
+            [](Platform::IProcessOpenFilesReader& r, const Platform::ProcessTarget& t) { return r.readOpenFiles(t); },
+            std::identity{},
+            [this](Platform::OpenFilesReadResult&& failed) { applyResult(std::move(failed)); });
     }
 
     /// Asks for a scan, as clicking "Scan open files" or "Rescan" does; update() starts it.
@@ -143,14 +132,14 @@ class ProcessOpenFilesView
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::OpenFilesReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+        return m_Read.offersAuthorizedRead(m_HasRead && m_Status == Platform::OpenFilesReadStatus::PermissionDenied);
     }
 
     /// Whether the last read was refused for want of permission, with no read in flight: where no helper can
     /// read it as an administrator, the status line offers "Restart as administrator..." (#3658).
     [[nodiscard]] bool readRefusedForPermission() const noexcept
     {
-        return m_HasRead && m_Status == Platform::OpenFilesReadStatus::PermissionDenied && !m_Read.inFlight();
+        return m_Read.refusedAndIdle(m_HasRead && m_Status == Platform::OpenFilesReadStatus::PermissionDenied);
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
@@ -177,8 +166,7 @@ class ProcessOpenFilesView
         m_NamesIncomplete = false;
         m_ScanProgress = 0;
         m_Rows.clear();
-        m_FilteredRows.clear();
-        m_FilterDirty = true;
+        m_Filtered.reset();
     }
 
     /// Takes in a read: its status and notes and, for Ok, its files formatted and sorted.
@@ -242,20 +230,11 @@ class ProcessOpenFilesView
     /// or the filter change.
     [[nodiscard]] std::span<const std::size_t> filteredRows()
     {
-        if (m_FilterDirty || m_FilterKey != m_Filter)
-        {
-            m_FilteredRows.clear();
-            for (std::size_t i = 0; i < m_Rows.size(); ++i)
-            {
-                if (Platform::containsIgnoreCase(m_Rows[i].path, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].type, m_Filter))
-                {
-                    m_FilteredRows.push_back(i);
-                }
-            }
-            m_FilterKey = m_Filter;
-            m_FilterDirty = false;
-        }
-        return m_FilteredRows;
+        return m_Filtered.get(
+            m_Rows.size(),
+            m_Filter,
+            [this](std::size_t i)
+            { return Platform::containsIgnoreCase(m_Rows[i].path, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].type, m_Filter); });
     }
 
     /// Whether any row has open flags: the Mode column is left out when none does (Windows).
@@ -326,7 +305,7 @@ class ProcessOpenFilesView
                                      }
                                      return a.file.descriptor < b.file.descriptor;
                                  });
-        m_FilterDirty = true;
+        m_Filtered.markDirty();
     }
 
     void renderTable();
@@ -343,11 +322,8 @@ class ProcessOpenFilesView
     Detail::OpenFilesColumn m_SortColumn = Detail::OpenFilesColumn::Descriptor;
     bool m_SortAscending = true;
     std::string m_Filter;
-    std::string m_FilterKey;
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
-    std::string m_CountLabel;            // "Open files (42)"
-    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    Detail::FilteredRows m_Filtered; // the rows the filter lets through, cached (#3887)
+    Detail::CountedHeader m_Header;  // the header with the count, formatted when it changes
 
     // The scan in flight, the request for it and the "Authenticate to read" request (#2309). Destroying
     // the view waits for at most one read.

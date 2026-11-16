@@ -29,6 +29,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/ThreadName.h"
+#include "SectionCaches.h"
 #include "UI/Format.h"
 
 #include <algorithm>
@@ -212,46 +213,29 @@ class ProcessMemoryMapView
     bool update(Platform::IProcessMemoryMapReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
-        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
-        {
-            if (auto failed = m_Read.start(
-                    target,
-                    [reader, column = m_SortColumn, ascending = m_SortAscending](const Platform::ProcessTarget& t,
-                                                                                 const std::stop_token& stopToken)
-                    { return prepare(reader->readAuthorized(t, stopToken), Detail::MEMORY_MAP_PROTECTION_WORDS, column, ascending); }))
-            {
-                applyPrepared(std::move(*failed));
-            }
-            return true;
-        }
-        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasMemoryMap())
-        {
-            return false;
-        }
-        if (auto failed =
-                m_Read.start(target,
-                             [reader, column = m_SortColumn, ascending = m_SortAscending](const Platform::ProcessTarget& t)
-                             { return prepare(reader->readMemoryMap(t), Detail::MEMORY_MAP_PROTECTION_WORDS, column, ascending); }))
-        {
-            applyPrepared(std::move(*failed));
-        }
-        return true;
+        return m_Read.startAuthorizedOrDue(
+            reader,
+            target,
+            deltaSeconds,
+            [](const Platform::IProcessMemoryMapReader& r) { return r.hasMemoryMap(); },
+            [](Platform::IProcessMemoryMapReader& r, const Platform::ProcessTarget& t) { return r.readMemoryMap(t); },
+            [column = m_SortColumn, ascending = m_SortAscending](const Platform::MemoryMapReadResult& result)
+            { return prepare(result, Detail::MEMORY_MAP_PROTECTION_WORDS, column, ascending); },
+            [this](Prepared&& failed) { applyPrepared(std::move(failed)); });
     }
 
     /// Whether the status line offers "Authenticate to read" (#2309): the read was refused for want of
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::MemoryMapReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+        return m_Read.offersAuthorizedRead(m_HasRead && m_Status == Platform::MemoryMapReadStatus::PermissionDenied);
     }
 
     /// Whether the last read was refused for want of permission, with no read in flight: where no helper can
     /// read it as an administrator, the status line offers "Restart as administrator..." (#3658).
     [[nodiscard]] bool readRefusedForPermission() const noexcept
     {
-        return m_HasRead && m_Status == Platform::MemoryMapReadStatus::PermissionDenied && !m_Read.inFlight();
+        return m_Read.refusedAndIdle(m_HasRead && m_Status == Platform::MemoryMapReadStatus::PermissionDenied);
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
@@ -278,8 +262,7 @@ class ProcessMemoryMapView
         m_Rows.clear();
         m_HasResident = false;
         m_Totals.clear();
-        m_FilteredRows.clear();
-        m_FilterDirty = true;
+        m_Filtered.reset();
     }
 
     /// Takes in a read: its status and, for Ok, its totals and its regions formatted and sorted by the
@@ -310,7 +293,7 @@ class ProcessMemoryMapView
         {
             sortRows();
         }
-        m_FilterDirty = true;
+        m_Filtered.markDirty();
     }
 
     void markDrawnOpen() noexcept
@@ -336,22 +319,15 @@ class ProcessMemoryMapView
     /// the rows or the filter change.
     [[nodiscard]] std::span<const std::size_t> filteredRows()
     {
-        if (m_FilterDirty || m_FilterKey != m_Filter)
-        {
-            m_FilteredRows.clear();
-            for (std::size_t i = 0; i < m_Rows.size(); ++i)
-            {
-                const Row& row = m_Rows[i];
-                if (Platform::containsIgnoreCase(row.kind, m_Filter) || Platform::containsIgnoreCase(row.protection, m_Filter) ||
-                    Platform::containsIgnoreCase(row.path, m_Filter))
-                {
-                    m_FilteredRows.push_back(i);
-                }
-            }
-            m_FilterKey = m_Filter;
-            m_FilterDirty = false;
-        }
-        return m_FilteredRows;
+        return m_Filtered.get(m_Rows.size(),
+                              m_Filter,
+                              [this](std::size_t i)
+                              {
+                                  const Row& row = m_Rows[i];
+                                  return Platform::containsIgnoreCase(row.kind, m_Filter) ||
+                                         Platform::containsIgnoreCase(row.protection, m_Filter) ||
+                                         Platform::containsIgnoreCase(row.path, m_Filter);
+                              });
     }
 
     /// Whether any region's resident size was measured: the RESIDENT column is left out when none was (Windows).
@@ -464,7 +440,7 @@ class ProcessMemoryMapView
     void sortRows()
     {
         sortRowsBy(m_Rows, m_SortColumn, m_SortAscending);
-        m_FilterDirty = true;
+        m_Filtered.markDirty();
     }
 
     void renderTotals();
@@ -480,11 +456,8 @@ class ProcessMemoryMapView
     Detail::MemoryMapColumn m_SortColumn = Detail::MemoryMapColumn::Address;
     bool m_SortAscending = true;
     std::string m_Filter;
-    std::string m_FilterKey; // the filter m_FilteredRows was built for
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
-    std::string m_CountLabel;            // the header with the count: "Memory map (1234)"
-    std::size_t m_LabelCount = SIZE_MAX; // the count m_CountLabel shows
+    Detail::FilteredRows m_Filtered; // the rows the filter lets through, cached (#3887)
+    Detail::CountedHeader m_Header;  // the header with the count, formatted when it changes
 
     // The read in flight, its cadence and the "Authenticate to read" request (#2309). Destroying the view
     // waits for at most one read.

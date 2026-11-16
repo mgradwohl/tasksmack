@@ -11,7 +11,6 @@
 
 #include <algorithm>
 #include <cstddef>
-#include <format>
 #include <span>
 #include <string>
 
@@ -29,13 +28,8 @@ void ProcessModulesView::render(bool hasModules)
     // The count, once a read has listed the modules, formatted only when it changes; the ### keeps
     // the header's ID (and its open state) the same as the count changes.
     const bool listed = m_HasRead && m_Status == Platform::ModulesReadStatus::Ok;
-    if (listed && m_LabelCount != m_Rows.size())
-    {
-        m_LabelCount = m_Rows.size();
-        m_CountLabel = std::format(ICON_FA_PLUG "  Modules ({})###ProcessModules", m_LabelCount);
-    }
     // Collapsed by default: nothing is read until it is opened.
-    if (!ImGui::CollapsingHeader(listed ? m_CountLabel.c_str() : ICON_FA_PLUG "  Modules###ProcessModules"))
+    if (!ImGui::CollapsingHeader(m_Header.label(listed, m_Rows.size(), ICON_FA_PLUG "  Modules", "###ProcessModules")))
     {
         return;
     }

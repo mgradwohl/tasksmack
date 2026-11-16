@@ -74,9 +74,18 @@ enum class FindHandlesColumn : std::uint8_t
     Path,
 };
 
-/// The order to list @p matches in: by @p column, ties by PID then path.
+/// The order to list @p matches in: by @p column, ties by PID then path, and matches equal on all three in the order
+/// found.
 [[nodiscard]] std::vector<std::size_t>
-orderFindHandlesMatches(const std::vector<Domain::HandleSearch::HandleMatch>& matches, FindHandlesColumn column, bool ascending);
+orderFindHandlesMatches(const Domain::HandleSearch::MatchList& matches, FindHandlesColumn column, bool ascending);
+
+/// Extends @p order, the order (orderFindHandlesMatches(), by the same @p column and @p ascending) of @p matches' first
+/// order.size() matches, to all of them (#3888): it sorts only the matches after those and merges them in, which
+/// gives what orderFindHandlesMatches() gives. An @p order longer than @p matches is dropped and all are ordered.
+void extendFindHandlesOrder(std::vector<std::size_t>& order,
+                            const Domain::HandleSearch::MatchList& matches,
+                            FindHandlesColumn column,
+                            bool ascending);
 
 class FindHandlesDialog
 {
@@ -138,6 +147,10 @@ class FindHandlesDialog
     /// flight (a search that couldn't even publish its failure still ends when its job does, #3335).
     [[nodiscard]] bool searching() const noexcept;
 
+    /// Whether the search worker (and so its thread) is live: made with a search, ended once the search's job has
+    /// returned and nothing is queued (#3893), made again by the next one. For tests.
+    [[nodiscard]] bool workerRunning() const noexcept;
+
   private:
     /// One search: what the worker runs.
     struct SearchJob
@@ -154,6 +167,9 @@ class FindHandlesDialog
     /// Whether the worker has a job queued or in flight. The queue first: a job moves from it to in flight under
     /// one lock, so reading in this order never misses one between the two.
     [[nodiscard]] bool jobActive() const noexcept;
+    /// Ends the worker's thread once its job has returned with nothing queued, so none sits parked between searches
+    /// (#3893). The UI thread's: close() doesn't wait, and the worker is joined when the next search replaces it.
+    void retireIdleWorker() noexcept;
     /// Ends the search just begun as one that couldn't start, so the status line says so.
     void failToStart() noexcept;
     /// Starts a search of @p processes on the worker, reading @p sources of each (empty: both); @p start carries the query and
@@ -176,6 +192,8 @@ class FindHandlesDialog
     std::stop_source m_SearchCancel{std::nostopstate};
     std::string m_Query;
     std::uint64_t m_OrderVersion = 0; ///< The publication m_Order was built for
+    /// That publication's matches, sharing its chunks: a later generation that extends() them adds to m_Order (#3888).
+    Domain::HandleSearch::MatchList m_Ordered;
     FindHandlesColumn m_SortColumn = FindHandlesColumn::Process;
     bool m_SortAscending = true;
     std::vector<std::size_t> m_Order;

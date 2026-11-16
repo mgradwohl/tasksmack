@@ -29,6 +29,10 @@ namespace Platform
 /// IOCTLs can stall on a slow ACPI call, which must never stretch the sampling pass that calls read().
 /// read() takes a finished re-read's result at its next pass. The capabilities are recomputed on every
 /// read(), so a battery inserted or removed after start, or details first answered late, show (#2413).
+/// The live rate, remaining Wh and voltage (#4030) change every sample, so read() sends
+/// IOCTL_BATTERY_QUERY_STATUS to each battery device the last re-read left open and tagged: one IOCTL
+/// per battery per sample, never an enumeration, open or tag query. A device whose tag has gone stale
+/// is dropped, and the next re-read opens it again.
 class WindowsPowerProbe : public IPowerProbe
 {
   public:
@@ -55,7 +59,7 @@ class WindowsPowerProbe : public IPowerProbe
     /// One re-read of the battery's static facts, as the worker's job; it carries nothing.
     struct BatteryInfoReread
     {};
-    using BatteryInfoWorker = Domain::Worker<BatteryInfoReread, Windows::BatteryInfo>;
+    using BatteryInfoWorker = Domain::Worker<BatteryInfoReread, Windows::BatteryScan>;
 
     /// Have the worker re-read the battery's static facts or, while it reads, have it read again once
     /// its result is taken: the running read may predate the change that asked for this one.
@@ -65,7 +69,9 @@ class WindowsPowerProbe : public IPowerProbe
     void takeFinishedBatteryInfo();
     /// Logs, once, why the worker has ended (WorkerState::Failed); the facts read so far are kept.
     void reportBatteryInfoWorkerFailed();
-    /// m_Capabilities from this power status and m_BatteryInfo; read() calls it every sample (#2413).
+    /// The cached devices' status into @p counters (#4030), dropping a device whose tag has gone stale.
+    void readBatteryStatus(PowerCounters& counters);
+    /// m_Capabilities from this power status and m_Battery; read() calls it every sample (#2413).
     void updateCapabilities(const SYSTEM_POWER_STATUS& status);
 
     PowerCapabilities m_Capabilities;
@@ -73,7 +79,12 @@ class WindowsPowerProbe : public IPowerProbe
     GetSystemPowerStatusFn m_GetSystemPowerStatus;
     // The thread that calls read() owns these: the facts read() reports, when the last re-read started
     // and under which power source, and whether a worker's result is still to come
-    Windows::BatteryInfo m_BatteryInfo;
+    Windows::BatteryScan m_Battery;
+    // What the devices' status has given since the last re-read was taken: offered from then on, so one
+    // sample's unknown value doesn't take the figure away (#4030)
+    bool m_StatusGaveRate = false;
+    bool m_StatusGaveCapacity = false;
+    bool m_StatusGaveVoltage = false;
     std::chrono::steady_clock::time_point m_BatteryInfoReadAt;
     bool m_BatteryInfoOnAc = false;
     bool m_BatteryInfoRefreshing = false;        ///< A re-read's result has not been taken yet

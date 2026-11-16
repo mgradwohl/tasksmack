@@ -249,6 +249,11 @@ class UserConfig
     /// Apply loaded settings to the application: theme, font size, chart anti-aliasing and smoothing
     void applyToApplication() const;
 
+    /// Hand the Font size and Interface scale settings to UI::Theme (#3876): main() calls it before UILayer attaches,
+    /// so UILayer builds the fonts and style once, at the saved size and scale, rather than at Theme's defaults to
+    /// throw them away and rebuild on the first frame. applyToApplication() does it too, which then changes nothing.
+    void applyFontSettings() const;
+
     /// Capture current application state into settings
     void captureFromApplication();
 

@@ -27,9 +27,11 @@
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/ThreadName.h"
 #include "ProcessEnvironmentMasking.h"
+#include "SectionCaches.h"
 
 #include <algorithm>
 #include <cstddef>
+#include <functional>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -120,41 +122,28 @@ class ProcessEnvironmentView
     bool update(Platform::IProcessEnvironmentReader* reader, const Platform::ProcessTarget& target, float deltaSeconds)
     {
         takeFinishedRead(target, false);
-        m_Read.setCanAuthorize((reader != nullptr) && reader->canReadAuthorized());
-        // "Authenticate to read" was pressed (#2309): read as an administrator, now, on the worker.
-        if (m_Read.takeAuthorizeRequest() && reader != nullptr && !m_Read.inFlight())
-        {
-            if (auto failed = m_Read.start(target,
-                                           [reader](const Platform::ProcessTarget& t, const std::stop_token& stopToken)
-                                           { return reader->readAuthorized(t, stopToken); }))
-            {
-                applyResult(std::move(*failed));
-            }
-            return true;
-        }
-        if (!m_Read.due(deltaSeconds) || reader == nullptr || !reader->hasEnvironment())
-        {
-            return false;
-        }
-        if (auto failed = m_Read.start(target, [reader](const Platform::ProcessTarget& t) { return reader->readEnvironment(t); }))
-        {
-            applyResult(std::move(*failed));
-        }
-        return true;
+        return m_Read.startAuthorizedOrDue(
+            reader,
+            target,
+            deltaSeconds,
+            [](const Platform::IProcessEnvironmentReader& r) { return r.hasEnvironment(); },
+            [](Platform::IProcessEnvironmentReader& r, const Platform::ProcessTarget& t) { return r.readEnvironment(t); },
+            std::identity{},
+            [this](Platform::EnvironmentReadResult&& failed) { applyResult(std::move(failed)); });
     }
 
     /// Whether the status line offers "Authenticate to read" (#2309): the read was refused for want of
     /// permission and the reader can read as an administrator.
     [[nodiscard]] bool offersAuthenticateToRead() const noexcept
     {
-        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && m_Read.canAuthorize() && !m_Read.inFlight();
+        return m_Read.offersAuthorizedRead(m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied);
     }
 
     /// Whether the last read was refused for want of permission, with no read in flight: where no helper can
     /// read it as an administrator, the status line offers "Restart as administrator..." (#3658).
     [[nodiscard]] bool readRefusedForPermission() const noexcept
     {
-        return m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied && !m_Read.inFlight();
+        return m_Read.refusedAndIdle(m_HasRead && m_Status == Platform::EnvironmentReadStatus::PermissionDenied);
     }
 
     /// "Authenticate to read" was pressed: the next update() reads as an administrator.
@@ -188,9 +177,7 @@ class ProcessEnvironmentView
         m_Rows.clear();
         m_Revealed.clear();
         m_Filter.clear();
-        m_FilterKey.clear();
-        m_FilteredRows.clear();
-        m_FilterDirty = true;
+        m_Filtered.reset();
     }
 
     /// Takes in a read: its status and, for Ok, its variables sorted by name with their mask flags.
@@ -217,7 +204,7 @@ class ProcessEnvironmentView
                 m_Rows[i].occurrence = m_Rows[i - 1].occurrence + 1;
             }
         }
-        m_FilterDirty = true;
+        m_Filtered.markDirty();
     }
 
     /// Records that render() drew the section open this frame (render() calls it; tests may too).
@@ -240,7 +227,7 @@ class ProcessEnvironmentView
         {
             m_Revealed.insert(it, RowKey{row.name, row.occurrence});
         }
-        m_FilterDirty = true; // a revealed value becomes searchable
+        m_Filtered.markDirty(); // a revealed value becomes searchable
     }
 
     /// Whether @p row's value has been revealed since the selection changed.
@@ -298,22 +285,14 @@ class ProcessEnvironmentView
     /// the filter cannot probe a secret. Cached until the rows, the filter or a reveal change.
     [[nodiscard]] std::span<const std::size_t> filteredRows()
     {
-        if (m_FilterDirty || m_FilterKey != m_Filter)
-        {
-            m_FilteredRows.clear();
-            for (std::size_t i = 0; i < m_Rows.size(); ++i)
-            {
-                const Row& row = m_Rows[i];
-                if (Platform::containsIgnoreCase(row.name, m_Filter) ||
-                    (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter)))
-                {
-                    m_FilteredRows.push_back(i);
-                }
-            }
-            m_FilterKey = m_Filter;
-            m_FilterDirty = false;
-        }
-        return m_FilteredRows;
+        return m_Filtered.get(m_Rows.size(),
+                              m_Filter,
+                              [this](std::size_t i)
+                              {
+                                  const Row& row = m_Rows[i];
+                                  return Platform::containsIgnoreCase(row.name, m_Filter) ||
+                                         (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter));
+                              });
     }
 
   private:
@@ -349,9 +328,7 @@ class ProcessEnvironmentView
     std::vector<Row> m_Rows;
     std::vector<RowKey> m_Revealed; // sorted keys of the rows whose values are shown
     std::string m_Filter;
-    std::string m_FilterKey; // m_Filter as m_FilteredRows was built for
-    std::vector<std::size_t> m_FilteredRows;
-    bool m_FilterDirty = true;
+    Detail::FilteredRows m_Filtered; // the rows the filter lets through, cached (#3887)
     // The read in flight, its cadence and the "Authenticate to read" request (#2309). Last: destroying
     // it waits for a read in flight, which writes only into its own future.
     Detail::LazyBackgroundRead<Platform::EnvironmentReadResult> m_Read{
