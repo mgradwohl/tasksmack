@@ -3,7 +3,6 @@
 #include "Platform/SessionAccount.h"
 #include "WinString.h"
 #include "WindowsElevation.h"
-#include "WindowsHandles.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -23,7 +22,6 @@
 #include <optional>
 #include <string>
 #include <utility>
-#include <vector>
 
 namespace Platform::Windows
 {
@@ -78,50 +76,9 @@ struct WtsFree
 
 } // namespace
 
-bool processIsElevated()
-{
-    return isProcessElevated();
-}
-
 std::optional<AccountName> readProcessUser()
 {
-    UniqueHandle token;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, token.put()) == FALSE)
-    {
-        spdlog::debug("Session account: OpenProcessToken failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    DWORD size = 0;
-    static_cast<void>(GetTokenInformation(token.get(), TokenUser, nullptr, 0, &size));
-    std::vector<std::byte> buffer(size);
-    if (size == 0 || GetTokenInformation(token.get(), TokenUser, buffer.data(), size, &size) == FALSE)
-    {
-        spdlog::debug("Session account: reading TokenUser failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    // TokenUser's buffer is a TOKEN_USER.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast)
-    const auto* const user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
-    DWORD nameLength = 0;
-    DWORD domainLength = 0;
-    SID_NAME_USE use = SidTypeUnknown;
-    static_cast<void>(LookupAccountSidW(nullptr, user->User.Sid, nullptr, &nameLength, nullptr, &domainLength, &use));
-    if (nameLength == 0)
-    {
-        spdlog::debug("Session account: LookupAccountSidW failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    std::wstring name(nameLength, L'\0');
-    std::wstring domain(domainLength, L'\0');
-    if (LookupAccountSidW(nullptr, user->User.Sid, name.data(), &nameLength, domain.data(), &domainLength, &use) == FALSE)
-    {
-        spdlog::debug("Session account: LookupAccountSidW failed (error {})", GetLastError());
-        return std::nullopt;
-    }
-    // On success the lengths exclude the NUL.
-    name.resize(nameLength);
-    domain.resize(domainLength);
-    return AccountName{.domain = std::move(domain), .user = std::move(name)};
+    return currentUserName();
 }
 
 std::optional<AccountName> readSessionUser()

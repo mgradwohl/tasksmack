@@ -628,11 +628,11 @@ const ProcessImage& readProcessImage(const ProcessFunctions& fns, HANDLE hProces
     return (hQuery != nullptr) ? "Background Process" : "";
 }
 
-/// Whether the current process token is elevated (Windows::isProcessElevated), through this probe's
+/// Whether the current process token is elevated (Windows::readProcessElevated), through this probe's
 /// token seam. The elevation state is constant for the lifetime of the process, so callers query it once.
 [[nodiscard]] bool isCurrentProcessElevated(const TokenFunctions& fns)
 {
-    return Windows::isProcessElevated({.openProcessToken = fns.openProcessToken, .getTokenInformation = fns.getTokenInformation});
+    return Windows::readProcessElevated({.openProcessToken = fns.openProcessToken, .getTokenInformation = fns.getTokenInformation});
 }
 
 /// Every processor group with its maximum size (GetMaximumProcessorCount), as WindowsSystemProbe
