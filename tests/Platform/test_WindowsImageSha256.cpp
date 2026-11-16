@@ -488,7 +488,6 @@ TEST_F(WindowsImageSha256Test, AnImageNotAtItsEntryPointIsntHashed)
     ASSERT_FALSE(refused.has_value());
     EXPECT_EQ(refused.error(), NOT_AT_ENTRY_POINT);
     EXPECT_EQ(FakeImage::mappedQueries, 0) << "no mapping looked up by name";
-    EXPECT_EQ(FakeImage::exitChecks, 0) << "nothing hashed";
 
     // Without VirtualQueryEx the entry point is taken as the image, and nothing is there.
     WindowsProcessFunctions fns = FakeImage::functions();
@@ -561,9 +560,18 @@ TEST_F(WindowsImageSha256Test, AProtectedProcessOrOneWithNoImageSaysSo)
     const std::stop_source stop;
 
     FakeImage::mappedError = ERROR_ACCESS_DENIED;
+    FakeImage::protectedProcess = true;
     const auto denied = actions.imageSha256(TARGET, stop.get_token());
     ASSERT_FALSE(denied.has_value());
     EXPECT_EQ(denied.error(), PROTECTED_REFUSAL);
+
+    // #4057 review: access denied from a process that isn't protected isn't called protected.
+    FakeImage::reset(m_Image);
+    FakeImage::mappedError = ERROR_ACCESS_DENIED;
+    const auto deniedUnprotected = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(deniedUnprotected.has_value());
+    EXPECT_TRUE(deniedUnprotected.error().starts_with("Its executable can't be read: ")) << deniedUnprotected.error();
+    EXPECT_FALSE(deniedUnprotected.error().contains("protected")) << deniedUnprotected.error();
 
     // #4057: a protected process whose memory map isn't shown at all (VirtualQueryEx refused) is refused as protected,
     // not as an image that isn't where Windows says, and never hashed by its path instead.
@@ -574,14 +582,24 @@ TEST_F(WindowsImageSha256Test, AProtectedProcessOrOneWithNoImageSaysSo)
     ASSERT_FALSE(hidden.has_value());
     EXPECT_EQ(hidden.error(), PROTECTED_REFUSAL);
     EXPECT_EQ(FakeImage::mappedQueries, 0);
-    EXPECT_EQ(FakeImage::exitChecks, 0) << "nothing hashed";
 
-    // The same, for a process that isn't protected: its image isn't where Windows says it is.
+    // #4057 review: the same, for a process that isn't protected, is a query that failed, worded by its error, not a
+    // claim that the image is elsewhere.
     FakeImage::reset(m_Image);
     FakeImage::memoryMapHidden = true;
     const auto unprotected = actions.imageSha256(TARGET, stop.get_token());
     ASSERT_FALSE(unprotected.has_value());
-    EXPECT_EQ(unprotected.error(), NOT_AT_ENTRY_POINT);
+    EXPECT_EQ(unprotected.error(),
+              "Its executable can't be read: " + std::system_category().message(static_cast<int>(ERROR_ACCESS_DENIED)));
+
+    // ...and for one that has exited, says so.
+    FakeImage::reset(m_Image);
+    FakeImage::memoryMapHidden = true;
+    FakeImage::protectedProcess = true;
+    FakeImage::exitCode = 0;
+    const auto exited = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(exited.has_value());
+    EXPECT_EQ(exited.error(), "Process 4242 has exited");
 
     FakeImage::reset(m_Image);
     FakeImage::noEntryPoint = true;

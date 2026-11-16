@@ -43,9 +43,9 @@
 #include <cstdint>
 #include <expected>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
-#include <vector>
 
 namespace Platform::Windows
 {
@@ -104,8 +104,9 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
 
 /// The CompanyName in the version info block @p block (VS_VERSIONINFO, as GetFileVersionInfoW or
 /// heldFilePublisher() reads it), in the first of its translations that names one, else in US English's Unicode
-/// or Windows-1252 table. Empty when it names none. @p block is read with VerQueryValueW, so it is given room.
-[[nodiscard]] std::string versionInfoCompanyName(std::vector<BYTE>& block);
+/// or Windows-1252 table. Empty when it names none. @p block is read with VerQueryValueW, so it is given room after
+/// the block (GetFileVersionInfoSizeW's). Nothing outside @p block is read, whatever length a node declares (#4057).
+[[nodiscard]] std::string versionInfoCompanyName(std::span<BYTE> block);
 
 /// The publisher (the version info's CompanyName) of the file @p file is open on (GENERIC_READ), read through that
 /// handle and never by a name (#4057): a read-only data mapping of the file, its PE resource directory walked to

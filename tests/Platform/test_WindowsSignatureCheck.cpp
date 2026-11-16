@@ -33,6 +33,7 @@
 #include <winioctl.h>
 // clang-format on
 
+#include <algorithm>
 #include <array>
 #include <chrono>
 #include <cstddef>
@@ -47,6 +48,7 @@
 #include <iterator>
 #include <new>
 #include <optional>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -907,6 +909,111 @@ TEST(WindowsHeldFilePublisherTest, AFilesPublisherIsReadThroughItsHandle)
     EXPECT_EQ(heldFilePublisher(INVALID_HANDLE_VALUE), "") << "no file";
 }
 
+/// @p bytes at the very end of a committed page whose next page is PAGE_NOACCESS, so any read past them faults.
+class GuardedBytes
+{
+  public:
+    explicit GuardedBytes(const std::vector<std::byte>& bytes)
+    {
+        SYSTEM_INFO system{};
+        GetSystemInfo(&system);
+        m_Page = system.dwPageSize;
+        m_Size = ((bytes.size() + m_Page - 1) / m_Page) * m_Page;
+        m_Base = static_cast<std::byte*>(VirtualAlloc(nullptr, m_Size + m_Page, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE));
+        if (m_Base == nullptr)
+        {
+            return;
+        }
+        DWORD old = 0;
+        VirtualProtect(m_Base + m_Size, m_Page, PAGE_NOACCESS, &old);
+        m_Data = m_Base + (m_Size - bytes.size());
+        std::memcpy(m_Data, bytes.data(), bytes.size());
+    }
+    GuardedBytes(const GuardedBytes&) = delete;
+    GuardedBytes& operator=(const GuardedBytes&) = delete;
+    GuardedBytes(GuardedBytes&&) = delete;
+    GuardedBytes& operator=(GuardedBytes&&) = delete;
+    ~GuardedBytes()
+    {
+        if (m_Base != nullptr)
+        {
+            VirtualFree(m_Base, 0, MEM_RELEASE);
+        }
+    }
+    [[nodiscard]] std::byte* data() const noexcept
+    {
+        return m_Data;
+    }
+
+  private:
+    std::byte* m_Base = nullptr;
+    std::byte* m_Data = nullptr;
+    std::size_t m_Size = 0;
+    std::size_t m_Page = 0;
+};
+
+/// The offset in @p bytes of the version node whose key is @p key: its header, 6 bytes before the key.
+std::size_t versionNodeAt(const std::vector<std::byte>& bytes, std::u16string_view key)
+{
+    std::vector<std::byte> pattern;
+    for (const char16_t c : key)
+    {
+        TestSupport::put16(pattern, pattern.size(), c);
+    }
+    TestSupport::put16(pattern, pattern.size(), 0);
+    const auto found = std::ranges::search(bytes, pattern);
+    return found.empty() ? 0 : static_cast<std::size_t>(found.begin() - bytes.begin()) - 6;
+}
+
+// #4057 review: a Translation whose node says its value is 64 KB long, in a file. The walk refuses the block, so no
+// publisher, and nothing is read past it.
+TEST(WindowsHeldFilePublisherTest, AVersionNodeThatClaimsToRunPastItsBlockReadsAsNoPublisher)
+{
+    TestSupport::PeImage image = TestSupport::buildPeImage(u"TaskSmack Test Co");
+    const std::vector<std::byte> block = TestSupport::versionInfoBlock(u"TaskSmack Test Co");
+    TestSupport::put16(image.bytes, image.blocks[0] + versionNodeAt(block, u"Translation") + 2, 0xFFFF);
+    const TempFile pe(L"-long-translation.exe", image.bytes);
+    const UniqueHandle file = openForRead(pe.path().wstring());
+    ASSERT_TRUE(file);
+    EXPECT_EQ(heldFilePublisher(file.get()), "");
+}
+
+// #4057 review: versionInfoCompanyName() reads only the block it is given, whatever lengths VerQueryValueW hands back.
+// The block's room ends at a page that can't be read, so a read past it would fault. GetFileVersionInfoW's by-path
+// block takes the same path.
+TEST(WindowsHeldFilePublisherTest, TheCompanyNameReadStaysInsideTheBlock)
+{
+    const std::vector<std::byte> bytes = TestSupport::versionInfoBlock(u"TaskSmack Test Co");
+    const std::size_t translation = versionNodeAt(bytes, u"Translation");
+    const std::size_t company = versionNodeAt(bytes, u"CompanyName");
+    ASSERT_NE(translation, 0U);
+    ASSERT_NE(company, 0U);
+
+    // The block, then as much zeroed room again as GetFileVersionInfoSizeW would give it, then the unreadable page: a
+    // value of 64 KB read to its declared end would fault.
+    const auto read = [](std::vector<std::byte> block)
+    {
+        block.resize((2 * block.size()) + 16);
+        const GuardedBytes guarded(block);
+        EXPECT_NE(guarded.data(), nullptr);
+        if (guarded.data() == nullptr)
+        {
+            return std::string{};
+        }
+        return versionInfoCompanyName(std::span<BYTE>(reinterpret_cast<BYTE*>(guarded.data()), block.size()));
+    };
+    EXPECT_EQ(read(bytes), "TaskSmack Test Co") << "as built";
+
+    std::vector<std::byte> longTranslation = bytes;
+    TestSupport::put16(longTranslation, translation + 2, 0xFFFF); // the reviewed case: 64 KB of translations
+    EXPECT_EQ(read(longTranslation), "TaskSmack Test Co") << "the translations are read only to the block's end";
+
+    std::vector<std::byte> longName = bytes;
+    TestSupport::put16(longName, company + 2, 0xFFFF);
+    // VerQueryValueW may refuse this one outright; either way only the block is read.
+    const std::string name = read(longName);
+    EXPECT_TRUE(name.empty() || name == "TaskSmack Test Co") << name;
+}
 // #4057: the held file's own bytes, not its name's. While the handle is held the file is renamed away (it was opened
 // sharing delete here, as a held image's file never is, so the rename can happen) and another file put at its name:
 // the publisher is still the held file's.
@@ -1128,9 +1235,17 @@ TEST_F(CiRealSystemSignatureBindingTest, ARenamedImageIsCheckedNotTheSignedDecoy
     EXPECT_NE(decoy.signer.find("Microsoft"), std::string::npos) << "the decoy is signed: " << decoy.note;
     EXPECT_EQ(check.check.signature, ImageSignature::Unsigned)
         << "the renamed copy of this unsigned test executable, not the decoy: " << check.check.signer << " " << check.check.note;
-    EXPECT_EQ(check.publisher, heldFilePublisher(openForRead(renamed.wstring()).get())) << "the renamed copy's publisher";
+    const UniqueHandle renamedFile = openForRead(renamed.wstring());
+    ASSERT_TRUE(renamedFile) << GetLastError();
+    const UniqueHandle decoyFile = openForRead(original.wstring());
+    ASSERT_TRUE(decoyFile) << GetLastError();
+    const std::string decoyPublisher = heldFilePublisher(decoyFile.get());
+    EXPECT_NE(decoyPublisher.find("Microsoft"), std::string::npos) << "the decoy names Microsoft: " << decoyPublisher;
+    EXPECT_EQ(check.publisher, heldFilePublisher(renamedFile.get())) << "the renamed copy's publisher";
+    EXPECT_NE(check.publisher, decoyPublisher) << "never the decoy's";
 
-    // #4057: Look up on VirusTotal hashes the renamed copy, or refuses: never the decoy's hash.
+    // #4057: Look up on VirusTotal hashes the renamed copy, never the decoy. The suspended child is a native image at
+    // its entry point, so on the hosted runner it is hashed, not refused.
     const std::stop_source stop;
     const auto decoyHash = Sha256::hashFile(original, stop.get_token());
     const auto imageHash = Sha256::hashFile(renamed, stop.get_token());
@@ -1138,15 +1253,9 @@ TEST_F(CiRealSystemSignatureBindingTest, ARenamedImageIsCheckedNotTheSignedDecoy
     ASSERT_TRUE(imageHash.has_value()) << imageHash.error();
     WindowsProcessActions actions(realWindowsProcessFunctions());
     const auto hash = actions.imageSha256({.pid = process.pid, .startTimeTicks = process.startTimeTicks}, stop.get_token());
-    if (hash.has_value())
-    {
-        EXPECT_EQ(*hash, Sha256::toHex(*imageHash)) << "the renamed copy's hash";
-    }
-    else
-    {
-        EXPECT_FALSE(hash.error().empty());
-    }
-    EXPECT_NE(hash.value_or(""), Sha256::toHex(*decoyHash)) << "never the decoy's: " << hash.error_or("");
+    ASSERT_TRUE(hash.has_value()) << hash.error();
+    EXPECT_EQ(*hash, Sha256::toHex(*imageHash)) << "the renamed copy's hash";
+    EXPECT_NE(*hash, Sha256::toHex(*decoyHash)) << "never the decoy's";
 }
 
 // #3292: the real stamp of a file on the system volume (NTFS) has its ID; writing it in place, then setting

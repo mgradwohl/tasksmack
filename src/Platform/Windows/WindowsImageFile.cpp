@@ -17,6 +17,7 @@
 #include <winver.h>  // VerQueryValueW
 // clang-format on
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -120,15 +121,27 @@ struct ImageLocation
     std::wstring name;
 };
 
-/// Whether @p address in @p process is in an image mapping (VirtualQueryEx's MEM_IMAGE). Without the call, assumed so.
-[[nodiscard]] bool isImageAt(const ImageFileFunctions& fns, HANDLE process, const void* address)
+/// Whether @p address in @p process is in an image mapping (VirtualQueryEx's MEM_IMAGE), or the call's Win32 error when
+/// it fails: a failed query isn't an answer that the image is elsewhere. Without the call, assumed so.
+[[nodiscard]] std::expected<bool, DWORD> isImageAt(const ImageFileFunctions& fns, HANDLE process, const void* address)
 {
     if (fns.virtualQueryEx == nullptr)
     {
         return true;
     }
     MEMORY_BASIC_INFORMATION region{};
-    return fns.virtualQueryEx(process, address, &region, sizeof(region)) != 0 && region.Type == MEM_IMAGE;
+    if (fns.virtualQueryEx(process, address, &region, sizeof(region)) == 0)
+    {
+        return std::unexpected(GetLastError());
+    }
+    return region.Type == MEM_IMAGE;
+}
+
+/// Whether @p process has exited, by GetExitCodeProcess (no call, or a failed one: not known to have).
+[[nodiscard]] bool hasExited(const ImageFileFunctions& fns, HANDLE process)
+{
+    DWORD exitCode = STILL_ACTIVE;
+    return fns.getExitCodeProcess != nullptr && fns.getExitCodeProcess(process, &exitCode) != 0 && exitCode != STILL_ACTIVE;
 }
 
 /// @p text, then "; @p notDone" when there is one.
@@ -149,7 +162,12 @@ struct ImageLocation
 [[nodiscard]] std::expected<ImageLocation, std::string>
 locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std::string_view notDone)
 {
-    if (!isImageAt(fns, process, entryPoint))
+    const std::expected<bool, DWORD> isImage = isImageAt(fns, process, entryPoint);
+    if (!isImage.has_value())
+    {
+        return std::unexpected(std::format("Its executable can't be read: {}", describe(isImage.error())));
+    }
+    if (!*isImage)
     {
         return std::unexpected(withNotDone("Its executable's image isn't where Windows says it is, so it couldn't be confirmed", notDone));
     }
@@ -158,11 +176,8 @@ locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std
     {
         return ImageLocation{.address = entryPoint, .name = *name};
     }
-    if (name.error() == ERROR_ACCESS_DENIED)
-    {
-        // A protected process, or one whose memory map Windows won't show this user.
-        return std::unexpected(withNotDone(std::string(PROTECTED_REFUSAL), notDone));
-    }
+    // Access denied is a protected process's answer, but not only theirs: openProcessImageFile() says protected only
+    // when the process is one.
     return std::unexpected(std::format("Its executable can't be read: {}", describe(name.error())));
 }
 
@@ -286,8 +301,13 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
     const std::expected<ImageLocation, std::string> image = locateImage(fns, process, info.TransferAddress, notDone);
     if (!image.has_value())
     {
-        // A protected process (or PPL) may not show its memory map at all (VirtualQueryEx refused, so no image at the
-        // entry point): said so, rather than that its image is elsewhere. It is never looked up by its path instead.
+        // A query that failed because the process has ended says so. A protected process (or PPL) may not show its
+        // memory map at all: said so, only when it is one, rather than that its image is elsewhere or can't be read.
+        // It is never looked up by its path instead.
+        if (hasExited(fns, process))
+        {
+            return std::unexpected(std::format("Process {} has exited", pid));
+        }
         if (isProtectedProcess(fns, process))
         {
             return std::unexpected(withNotDone(std::string(PROTECTED_REFUSAL), notDone));
@@ -302,8 +322,7 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
     const std::expected<std::wstring, DWORD> now = mappedFileName(fns, process, image->address);
     if (!now.has_value())
     {
-        DWORD exitCode = STILL_ACTIVE;
-        if (fns.getExitCodeProcess != nullptr && fns.getExitCodeProcess(process, &exitCode) != 0 && exitCode != STILL_ACTIVE)
+        if (hasExited(fns, process))
         {
             return std::unexpected(std::format("Process {} has exited", pid));
         }
@@ -366,30 +385,43 @@ std::wstring heldFileName(HANDLE file)
     return {};
 }
 
-std::string versionInfoCompanyName(std::vector<BYTE>& block)
+std::string versionInfoCompanyName(std::span<BYTE> block)
 {
-    // The pointers VerQueryValueW returns are into block, valid while it is.
-    const auto companyName = [&block](const std::wstring& subBlock) -> std::string
+    // VerQueryValueW hands back a pointer and the length the block's own node declares, which a file can make up
+    // (#4057): only bytes inside block are read, however long a value says it is.
+    const BYTE* const begin = block.data();
+    const BYTE* const end = begin + block.size();
+    const auto inBlock = [begin, end](LPVOID value) -> std::size_t
+    {
+        const auto* const at = static_cast<const BYTE*>(value);
+        return (at == nullptr || at < begin || at >= end) ? 0 : static_cast<std::size_t>(end - at);
+    };
+    const auto companyName = [block, &inBlock](const std::wstring& subBlock) -> std::string
     {
         LPVOID value = nullptr;
         UINT length = 0;
-        if (VerQueryValueW(block.data(), subBlock.c_str(), &value, &length) == 0 || value == nullptr || length == 0)
+        if (VerQueryValueW(block.data(), subBlock.c_str(), &value, &length) == 0 || length == 0)
         {
             return {};
         }
         // A StringFileInfo value is a wide string, length characters with its terminator, inside block.
+        const std::size_t room = inBlock(value) / sizeof(wchar_t);
         const auto* const text = static_cast<const wchar_t*>(value);
-        return WinString::wideToUtf8(std::wstring_view(text, wcsnlen(text, length)));
+        return WinString::wideToUtf8(std::wstring_view(text, wcsnlen(text, std::min<std::size_t>(length, room))));
     };
 
-    // Each translation is a DWORD: the language ID in its low word, the code page in its high word.
+    // Each translation is a DWORD: the language ID in its low word, the code page in its high word. Copied out, since
+    // the value needn't be aligned.
     LPVOID translations = nullptr;
     UINT translationBytes = 0;
-    if (VerQueryValueW(block.data(), L"\\VarFileInfo\\Translation", &translations, &translationBytes) != 0 && translations != nullptr)
+    if (VerQueryValueW(block.data(), L"\\VarFileInfo\\Translation", &translations, &translationBytes) != 0)
     {
-        const std::span<const DWORD> entries(static_cast<const DWORD*>(translations), translationBytes / sizeof(DWORD));
-        for (const DWORD entry : entries)
+        const std::size_t bytes = std::min<std::size_t>(translationBytes, inBlock(translations));
+        const auto* const first = static_cast<const BYTE*>(translations);
+        for (std::size_t at = 0; at + sizeof(DWORD) <= bytes; at += sizeof(DWORD))
         {
+            DWORD entry = 0;
+            std::memcpy(&entry, first + at, sizeof(entry));
             std::string name = companyName(std::format(L"\\StringFileInfo\\{:04X}{:04X}\\CompanyName", LOWORD(entry), HIWORD(entry)));
             if (!name.empty())
             {
@@ -404,7 +436,6 @@ std::string versionInfoCompanyName(std::vector<BYTE>& block)
     }
     return companyName(L"\\StringFileInfo\\040904E4\\CompanyName");
 }
-
 std::string heldFilePublisher(HANDLE file)
 {
     LARGE_INTEGER size{};
@@ -423,7 +454,9 @@ std::string heldFilePublisher(HANDLE file)
     {
         return {};
     }
-    // VerQueryValueW is given twice the block's room, as GetFileVersionInfoSizeW asks for: it may write after the block.
+    // VerQueryValueW is given twice the largest block's room, zeroed, as GetFileVersionInfoSizeW asks for: it may write
+    // after the block. Kept at that size whatever the block's own length, so a value that claims to run past the block
+    // still ends inside this buffer.
     constexpr std::size_t MAX_BLOCK = 0xFFFF; // VS_VERSIONINFO's wLength is a WORD
     std::vector<BYTE> block((2 * MAX_BLOCK) + 16, BYTE{0});
     const std::size_t copied =
@@ -432,7 +465,6 @@ std::string heldFilePublisher(HANDLE file)
     {
         return {};
     }
-    block.resize((2 * copied) + 16);
     return versionInfoCompanyName(block);
 }
 

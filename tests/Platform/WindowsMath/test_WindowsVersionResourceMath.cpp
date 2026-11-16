@@ -9,11 +9,13 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <random>
 #include <span>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -61,17 +63,21 @@ TEST(VersionResourceMathTest, TheBlockIsItsOwnLengthInsideALargerDataEntry)
     EXPECT_TRUE(isBlockAt(find(image.bytes), image, image.blocks[0], length));
 }
 
-// As FindResource prefers it: the neutral language, else the first listed.
-TEST(VersionResourceMathTest, TheNeutralLanguageIsTakenElseTheFirst)
+// The neutral language, else US English, else the first listed (not FindResource's UI-language order).
+TEST(VersionResourceMathTest, TheNeutralLanguageIsTakenThenUsEnglishThenTheFirst)
 {
     const std::vector<std::byte> german = versionInfoBlock(u"Deutsch");
     const std::vector<std::byte> neutral = versionInfoBlock(u"Neutral");
-    const PeImage withNeutral = buildPeImage({{0x0407U, german}, {0x0000U, neutral}});
-    EXPECT_TRUE(isBlockAt(find(withNeutral.bytes), withNeutral, withNeutral.blocks[1], neutral.size()));
-
     const std::vector<std::byte> english = versionInfoBlock(u"English");
-    const PeImage withoutNeutral = buildPeImage({{0x0407U, german}, {0x0409U, english}});
-    EXPECT_TRUE(isBlockAt(find(withoutNeutral.bytes), withoutNeutral, withoutNeutral.blocks[0], german.size()));
+    const PeImage withNeutral = buildPeImage({{0x0407U, german}, {0x0409U, english}, {0x0000U, neutral}});
+    EXPECT_TRUE(isBlockAt(find(withNeutral.bytes), withNeutral, withNeutral.blocks[2], neutral.size()));
+
+    const PeImage withEnglish = buildPeImage({{0x0407U, german}, {0x0409U, english}});
+    EXPECT_TRUE(isBlockAt(find(withEnglish.bytes), withEnglish, withEnglish.blocks[1], english.size()));
+
+    const std::vector<std::byte> french = versionInfoBlock(u"Francais");
+    const PeImage neither = buildPeImage({{0x0407U, german}, {0x040CU, french}});
+    EXPECT_TRUE(isBlockAt(find(neither.bytes), neither, neither.blocks[0], german.size()));
 }
 
 TEST(VersionResourceMathTest, NotAPeFileOrNoVersionResourceIsNone)
@@ -226,6 +232,88 @@ TEST(VersionResourceMathTest, HostileDataEntriesAndBlocksAreNone)
     EXPECT_FALSE(find(image.bytes).has_value());
 }
 
+/// The offset in @p bytes of the version node whose key is @p key: its header, 6 bytes before the key.
+[[nodiscard]] std::size_t nodeAt(const std::vector<std::byte>& bytes, std::u16string_view key)
+{
+    std::vector<std::byte> pattern;
+    for (const char16_t c : key)
+    {
+        put16(pattern, pattern.size(), c);
+    }
+    put16(pattern, pattern.size(), 0);
+    for (std::size_t at = 6; at + pattern.size() <= bytes.size(); at += 2)
+    {
+        if (std::equal(pattern.begin(), pattern.end(), bytes.begin() + static_cast<std::ptrdiff_t>(at)))
+        {
+            return at - 6;
+        }
+    }
+    ADD_FAILURE() << "no such node";
+    return 0;
+}
+
+/// A file whose block was changed by @p change, which is given the block (offset into the file) to change.
+template<typename Change> [[nodiscard]] PeImage changedBlock(Change change)
+{
+    PeImage image = buildPeImage(u"TaskSmack Test Co");
+    change(image.bytes, image.blocks[0]);
+    return image;
+}
+
+// #4057 review: VerQueryValueW walks the block by each node's own wLength and returns each value with its declared
+// length, so a node that lies about either is refused before it sees them, however the root looks.
+TEST(VersionResourceMathTest, NestedNodesThatDontFitTheirParentAreNone)
+{
+    const std::vector<std::byte> block = versionInfoBlock(u"TaskSmack Test Co");
+    const std::size_t translation = nodeAt(block, u"Translation");
+    const std::size_t company = nodeAt(block, u"CompanyName");
+    const std::size_t table = nodeAt(block, u"040904B0");
+
+    const auto at = [](std::size_t node, std::size_t field)
+    {
+        return [node, field](std::vector<std::byte>& bytes, std::size_t blockAt, std::uint16_t value)
+        {
+            put16(bytes, blockAt + node + field, value);
+        };
+    };
+    const auto refused = [](auto poke, std::uint16_t value)
+    {
+        const PeImage image = changedBlock([&](std::vector<std::byte>& bytes, std::size_t blockAt) { poke(bytes, blockAt, value); });
+        return !findVersionResource(std::span<const std::byte>(image.bytes)).has_value();
+    };
+
+    EXPECT_TRUE(refused(at(translation, 2), 0xFFFF)) << "a Translation value of 64 KB in a 4-byte node";
+    EXPECT_TRUE(refused(at(translation, 2), 8)) << "a Translation value one entry too long";
+    EXPECT_TRUE(refused(at(company, 2), 0xFFFF)) << "a CompanyName longer than its node, either way it's counted";
+    EXPECT_TRUE(refused(at(company, 0), 0)) << "a zero-length node, which would never advance";
+    EXPECT_TRUE(refused(at(company, 0), 4)) << "a node shorter than its header";
+    EXPECT_TRUE(refused(at(table, 0), 0x7FFF)) << "a string table longer than its parent";
+    EXPECT_TRUE(refused(at(0, 2), 0xFFFF)) << "the root's fixed info longer than the block";
+
+    // A text value counted in bytes, not characters, as some linkers write it, still fits, so the file still reads.
+    const std::size_t chars = std::u16string_view(u"TaskSmack Test Co").size() + 1;
+    EXPECT_FALSE(refused(at(company, 2), static_cast<std::uint16_t>(2 * chars)));
+    EXPECT_FALSE(refused(at(company, 2), static_cast<std::uint16_t>(chars))) << "as built";
+}
+
+// A tree deeper than any path VerQueryValueW is asked for is refused, rather than walked without bound.
+TEST(VersionResourceMathTest, ATreeTooDeepIsNone)
+{
+    const auto nested = [](int levels)
+    {
+        TestSupport::VersionNode node{.key = u"Leaf", .value = TestSupport::utf16Value(u"x"), .text = true, .children = {}};
+        for (int i = 0; i < levels; ++i)
+        {
+            node = TestSupport::VersionNode{.key = u"Level", .value = {}, .text = true, .children = {node}};
+        }
+        const std::vector<std::byte> fixed(52);
+        return TestSupport::VersionNode{.key = u"VS_VERSION_INFO", .value = fixed, .text = false, .children = {node}}.bytes();
+    };
+    const PeImage shallow = buildPeImage({{0x0409U, nested(3)}});
+    EXPECT_TRUE(find(shallow.bytes).has_value());
+    const PeImage deep = buildPeImage({{0x0409U, nested(12)}});
+    EXPECT_FALSE(find(deep.bytes).has_value());
+}
 // Random damage, from a fixed seed so a failure repeats: whatever the walk answers is inside the file and no
 // longer than a VS_VERSIONINFO can be.
 TEST(VersionResourceMathTest, RandomlyDamagedFilesAnswerNoneOrASpanInsideTheFile)
