@@ -5,6 +5,7 @@
 // header" pattern (as ProcessTableLayout.h and ProcessTreeIndent.h do).
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -109,80 +110,122 @@ inline constexpr float INFO_BLOCK_MAX_WIDTH_EM = 36.0F;
 /// gradient track and "Low", which the slider fits to the width it is given (#1493).
 inline constexpr float PRIORITY_SLIDER_ROW_WIDTH_EM = 28.0F;
 
-/// Where the Overview's Actions card and its Priority and I/O priority column go (#1789, #3741).
-struct TopRowLayout
+/// The Overview's cards, in the order they flow (#4029).
+enum class OverviewCard : std::uint8_t
 {
-    /// Both cards are on the Identity/Runtime row, to the right of Runtime; otherwise they wrap to a
-    /// row of their own below it.
-    bool besideInfo = true;
-    /// Priority is to the right of Actions; otherwise it is under it. Always so beside Identity and
-    /// Runtime, and on the wrapped row whenever the pane is wide enough for the two side by side.
-    bool priorityBesideActions = true;
-    /// The Actions card's width in pixels, padding included; 0 when it is not drawn.
-    float actionsWidth = 0.0F;
-    /// The Priority and I/O priority cards' width in pixels, padding included; 0 when neither is drawn.
-    float priorityWidth = 0.0F;
+    Identity,
+    Runtime,
+    Actions,
+    Priority,
+    IoPriority,
+};
+inline constexpr std::size_t OVERVIEW_CARD_COUNT = 5;
+
+/// Where one Overview card goes (#4029).
+struct OverviewSlot
+{
+    std::size_t row = 0;   ///< Its row, from 0. A card that isn't drawn keeps the row of the card before it.
+    bool sameLine = false; ///< Drawn to the right of the drawn card before it (ImGui::SameLine()); else it starts a row.
+    float width = 0.0F;    ///< Its width in pixels, padding included, held to the pane; 0 when it isn't drawn.
 };
 
-/// Lays out the Overview's top row (#1789): Identity and Runtime, then the Actions card (the
-/// process-control buttons) and the Priority column (the Priority and I/O priority cards, #3741), each
-/// at its content width.
-///
-/// The rule is width alone, at the font scale in force (every width passed in is measured at it):
-/// the four cards share one row when the pane is at least
-///   Identity + Runtime + Actions + Priority + 3 x ItemSpacing.x
-/// wide (@p infoRowWidthPx already counts the gap between Identity and Runtime). Otherwise Actions
-/// and Priority wrap to a row below Identity and Runtime -- side by side when the pane fits
-/// Actions + ItemSpacing.x + Priority, else one under the other, each held to the pane -- so nothing
-/// is clipped or overlaps. A card of width 0 is not drawn and takes no gap.
-///
-/// Each card is as tall as its own content (#3741): a card taller than Identity and Runtime makes the
-/// row taller, rather than being kept off it as the single Actions block once was (#1493), and none is
-/// stretched to another's height.
-///
-/// @param paneWidthPx       Width of the pane the row is laid out in.
-/// @param infoRowWidthPx    Width Identity and Runtime take, with the gap between them.
-/// @param spacingPx         Gap between two cards on a row (ImGuiStyle::ItemSpacing.x).
-/// @param actionsWidthPx    The Actions card's content width, padded; 0 when it is not drawn.
-/// @param priorityWidthPx   The Priority card's content width, padded; 0 when it is not drawn.
-/// @return Everything on the top row at its content width when the pane width is unknown.
-[[nodiscard]] inline TopRowLayout
-chooseTopRowLayout(float paneWidthPx, float infoRowWidthPx, float spacingPx, float actionsWidthPx, float priorityWidthPx) noexcept
+/// Where every Overview card goes, in OverviewCard order (#4029).
+struct OverviewLayout
+{
+    std::array<OverviewSlot, OVERVIEW_CARD_COUNT> slots{};
+
+    [[nodiscard]] const OverviewSlot& operator[](OverviewCard card) const
+    {
+        return slots.at(static_cast<std::size_t>(card));
+    }
+
+    [[nodiscard]] bool drawn(OverviewCard card) const
+    {
+        return (*this)[card].width > 0.0F;
+    }
+
+    /// Whether @p card is drawn on the first row, beside Identity (and Runtime).
+    [[nodiscard]] bool onFirstRow(OverviewCard card) const
+    {
+        return drawn(card) && (*this)[card].row == 0;
+    }
+
+    /// Whether @p a and @p b are both drawn, on the same row.
+    [[nodiscard]] bool sameRow(OverviewCard a, OverviewCard b) const
+    {
+        return drawn(a) && drawn(b) && (*this)[a].row == (*this)[b].row;
+    }
+};
+
+/// Lays out the Overview's cards (#4029; #1789, #3741 before it): Identity, Runtime, Actions, Priority and
+/// I/O priority, in that order, left to right, each at its own width (@p widthsPx, padding included; 0 for a
+/// card that isn't drawn, which takes no gap), wrapping to the next row whenever the next card doesn't fit
+/// beside the last: a card goes on the current row when the row's width so far, the gap (@p spacingPx,
+/// ImGuiStyle::ItemSpacing.x) and its own width fit @p paneWidthPx. A card wider than the pane starts a row
+/// of its own and is held to the pane, so nothing is clipped or overlaps. The rule is width alone, at the
+/// font scale in force (every width passed in is measured at it). An unknown pane width (not finite, or not
+/// above 0) puts every card on one row at its own width.
+[[nodiscard]] inline OverviewLayout
+layoutOverview(float paneWidthPx, float spacingPx, const std::array<float, OVERVIEW_CARD_COUNT>& widthsPx)
 {
     const auto nonNegative = [](float value) noexcept
     {
         return (std::isfinite(value) && value > 0.0F) ? value : 0.0F;
     };
-    const float actions = nonNegative(actionsWidthPx);
-    const float priority = nonNegative(priorityWidthPx);
     const float spacing = nonNegative(spacingPx);
-    const float between = (actions > 0.0F && priority > 0.0F) ? spacing : 0.0F;
-    const float controls = actions + between + priority;
-    const TopRowLayout atContentWidth{
-        .besideInfo = true,
-        .priorityBesideActions = true,
-        .actionsWidth = actions,
-        .priorityWidth = priority,
-    };
-    if (!std::isfinite(paneWidthPx) || paneWidthPx <= 0.0F)
+    const bool paneKnown = std::isfinite(paneWidthPx) && paneWidthPx > 0.0F;
+    OverviewLayout layout;
+    std::size_t row = 0;
+    float rowWidth = 0.0F; // 0: nothing on this row yet
+    for (std::size_t i = 0; i < OVERVIEW_CARD_COUNT; ++i)
     {
-        return atContentWidth;
+        OverviewSlot& slot = layout.slots.at(i);
+        const float wanted = nonNegative(widthsPx.at(i));
+        if (wanted <= 0.0F)
+        {
+            slot.row = row;
+            continue;
+        }
+        const float width = paneKnown ? std::min(wanted, paneWidthPx) : wanted;
+        if (rowWidth > 0.0F && (!paneKnown || rowWidth + spacing + width <= paneWidthPx))
+        {
+            slot = {.row = row, .sameLine = true, .width = width};
+            rowWidth += spacing + width;
+            continue;
+        }
+        if (rowWidth > 0.0F)
+        {
+            ++row;
+        }
+        slot = {.row = row, .sameLine = false, .width = width};
+        rowWidth = width;
     }
-    const float lead = controls > 0.0F ? spacing : 0.0F;
-    if (nonNegative(infoRowWidthPx) + lead + controls <= paneWidthPx)
+    return layout;
+}
+
+/// Each drawn card's height on its row (#4029): every row as tall as its tallest card, so a row reads as one
+/// band. @p naturalHeightsPx are the cards' own content heights (0 when not yet measured, or not drawn), in
+/// OverviewCard order; the answer is each card's row's tallest, and 0 for a card not drawn.
+[[nodiscard]] inline std::array<float, OVERVIEW_CARD_COUNT> rowHeights(const OverviewLayout& layout,
+                                                                       const std::array<float, OVERVIEW_CARD_COUNT>& naturalHeightsPx)
+{
+    std::array<float, OVERVIEW_CARD_COUNT> tallest{}; // by row: at most one row per card
+    for (std::size_t i = 0; i < OVERVIEW_CARD_COUNT; ++i)
     {
-        return atContentWidth;
+        const OverviewSlot& slot = layout.slots.at(i);
+        const float natural = naturalHeightsPx.at(i);
+        if (slot.width > 0.0F && std::isfinite(natural) && natural > 0.0F)
+        {
+            tallest.at(slot.row) = std::max(tallest.at(slot.row), natural);
+        }
     }
-    if (controls <= paneWidthPx)
+    std::array<float, OVERVIEW_CARD_COUNT> heights{};
+    for (std::size_t i = 0; i < OVERVIEW_CARD_COUNT; ++i)
     {
-        return {.besideInfo = false, .priorityBesideActions = true, .actionsWidth = actions, .priorityWidth = priority};
+        const OverviewSlot& slot = layout.slots.at(i);
+        heights.at(i) = slot.width > 0.0F ? tallest.at(slot.row) : 0.0F;
     }
-    return {
-        .besideInfo = false,
-        .priorityBesideActions = false,
-        .actionsWidth = std::min(actions, paneWidthPx),
-        .priorityWidth = std::min(priority, paneWidthPx),
-    };
+    return heights;
 }
 
 /// Whether a snapshot is of the process that was selected, and not merely of its PID (#927).
