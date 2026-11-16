@@ -26,6 +26,7 @@
 #ifdef _WIN32
 #include "Mocks/FakeBroker.h" // the helper's decorator is Windows only (#3784)
 #endif
+#include "Mocks/FakeClipboard.h"
 #include "Mocks/MockProbes.h"
 #ifdef _WIN32
 #include "Platform/BrokeredProcessActions.h"
@@ -117,6 +118,7 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
     {
         m_ImGui = ImGui::CreateContext();
         m_ImPlot = ImPlot::CreateContext();
+        m_Clipboard.install(); // not the shared system clipboard (#4066)
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
@@ -170,6 +172,7 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
     }
 
   private:
+    TestMocks::FakeClipboard m_Clipboard;
     ImGuiContext* m_ImGui = nullptr;
     ImPlotContext* m_ImPlot = nullptr;
 };
