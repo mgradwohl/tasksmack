@@ -57,9 +57,10 @@ enum class MemoryMappingKind : std::uint8_t
 /// One mapping (Linux) or region (Windows) of the process's address space, [start, end).
 ///
 /// The sizes past sizeBytes() are what the OS measured, absent where it doesn't: Linux's smaps gives every
-/// one (an older kernel lacks SwapPss), Windows' VirtualQueryEx none, though its lane may fill residentBytes
-/// and the private and shared split from QueryWorkingSetEx. A field the platform never fills is documented
-/// at the field.
+/// one (an older kernel lacks SwapPss); Windows fills a committed region's residentBytes and the shared and
+/// private split from QueryWorkingSetEx (#4031), where the process grants PROCESS_QUERY_INFORMATION and the
+/// region is within the reader's caps, but never pssBytes, swapBytes or swapPssBytes. Windows doesn't record
+/// whether a page was written: its clean and dirty split is by whether the page's protection allows writing.
 struct MemoryMapping
 {
     std::uint64_t start = 0; ///< The first byte's address.

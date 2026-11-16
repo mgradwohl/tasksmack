@@ -42,33 +42,24 @@ enum class OpenResult : std::uint8_t
     Withheld,
 };
 
-/// Opens a URL or UTF-8 string, as openWithSystemHandler() does, through the signed-in user's shell when
-/// TaskSmack runs elevated (Windows, #3658): never with an elevated ShellExecuteW, which would start the
-/// browser or editor as administrator. Withheld when that shell couldn't. Can block: call it on a worker.
+/// Opens a URL or UTF-8 string with the system's default handler.
+/// On Linux, runs xdg-open (found on PATH) through Platform::DetachedSpawn (#2138): detached, with
+/// none of TaskSmack's descriptors and stdio on /dev/null. Opened means xdg-open was exec'd; a missing
+/// xdg-open, or one that can't be exec'd, is Failed. Whether xdg-open then finds a handler isn't known.
+/// On Windows, uses ShellExecuteW with UTF-8 to UTF-16 conversion, or, when TaskSmack runs elevated,
+/// Explorer's IShellDispatch2::ShellExecute (Platform/Windows/UnelevatedShell.h, #3658): never an
+/// elevated ShellExecuteW, which would start the browser or editor as administrator. Withheld when that
+/// shell couldn't. A failure is logged.
+/// Can block (a shell extension, COM, a network folder, a fork and exec): call it from a worker, as
+/// App::BackgroundOpen does, never from the UI thread (#3155).
 [[nodiscard]] OpenResult open(std::string_view target);
 
-/// open() for a path, in its native form.
+/// open() for a filesystem path, in its native form: on Windows the path's own UTF-16, so a non-ASCII
+/// path goes through no ANSI or UTF-8 conversion. Can block, as the other does.
 [[nodiscard]] OpenResult open(const std::filesystem::path& path);
 
 /// The line a view shows for a Withheld open of @p target (a URL, or a path in UTF-8).
 [[nodiscard]] std::string withheldNotice(std::string_view target);
-
-/// Open a URL or UTF-8 encoded string with the system's default handler: open() == Opened.
-/// On Linux, runs xdg-open (found on PATH) through Platform::DetachedSpawn (#2138): detached, with
-/// none of TaskSmack's descriptors and stdio on /dev/null. Success means xdg-open was exec'd; a missing
-/// xdg-open, or one that can't be exec'd, is a failure. Whether xdg-open then finds a handler isn't known.
-/// On Windows, uses ShellExecuteW with UTF-8 to UTF-16 conversion, or, when TaskSmack runs elevated,
-/// Explorer's IShellDispatch2::ShellExecute (Platform/Windows/UnelevatedShell.h, #3658).
-/// Returns true on success, false on failure (with a logged warning).
-/// Can block (a shell extension, COM, a network folder, a fork and exec): call it from a worker, as
-/// App::BackgroundOpen does, never from the UI thread (#3155).
-[[nodiscard]] bool openWithSystemHandler(std::string_view target);
-
-/// Open a filesystem path with the system's default handler.
-/// Handles UTF-16 conversion on Windows using the native path representation,
-/// avoiding any ANSI/UTF-8 encoding issues with non-ASCII paths.
-/// Returns true on success, false on failure (with a logged warning). Can block, as the other does.
-[[nodiscard]] bool openWithSystemHandler(const std::filesystem::path& path);
 
 namespace Detail
 {
@@ -91,7 +82,7 @@ namespace Detail
 /// Who to open as: SessionUser::invokingUserSession() in the app, a stand-in in tests (#2461).
 using SessionLookup = std::function<std::optional<Platform::DetachedSpawn::RunAs>()>;
 
-/// openWithSystemHandler() for a UTF-8 target, opening as @p session's user when it names one.
+/// open() == Opened for a UTF-8 target, opening as @p session's user when it names one.
 [[nodiscard]] bool openWithSystemHandler(std::string_view target, const SessionLookup& session);
 } // namespace Detail
 #endif

@@ -114,12 +114,15 @@ struct SearchPublication
 /// What one process's reads add to @p into: its open files' and modules' matches, then its counts.
 /// A source a reader refuses makes the process denied for that source (#3357), even when the other source was read.
 /// One neither source read, and either reports exited, counts as exited. A source not read comes as a default
-/// (Unsupported) result.
+/// (Unsupported) result. @p asked is the sources this pass read: one left out was read by an earlier pass (an
+/// administrator's search reads only what was refused), so the process counts as read, never as exited or failed,
+/// whatever this pass's read reports (#3875).
 void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
                 std::string_view loweredQuery,
-                SearchPublication& into);
+                SearchPublication& into,
+                SearchSources asked = {});
 
 /// The readers one search uses; either may be null (that kind isn't searched).
 struct Readers

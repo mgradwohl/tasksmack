@@ -46,8 +46,7 @@ struct ServiceActionRequest
 struct ServiceActionMessage
 {
     bool ok = false;
-    std::string text;          ///< Empty when there is nothing to show.
-    bool canAuthorize = false; ///< Offer "Authenticate and retry" beside it (#2304)
+    std::string text; ///< Empty when there is nothing to show.
     /// Offer "Restart as administrator..." beside it (#3669): refused for want of an administrator, with no
     /// password prompt to retry it, where TaskSmack can restart elevated (Windows).
     bool offersRestart = false;
@@ -158,12 +157,8 @@ class ServiceActionsView
         return m_Result;
     }
 
-    /// Runs the last action again, allowed to ask for authorization with a password prompt (#2304): the
-    /// result line's "Authenticate and retry". Ignored while another action runs.
-    void retryAuthorized();
-
   private:
-    void run(ServiceActionRequest request, bool authorized = false);
+    void run(ServiceActionRequest request);
     /// The Start / Stop / Restart items or buttons and the start-type choices, for @p service.
     void renderStartTypeItems(const Platform::ServiceInfo& service);
 
@@ -178,8 +173,6 @@ class ServiceActionsView
     ServiceActionRequest m_Running;
     ServiceActionMessage m_Result;
     float m_ResultSecondsLeft = 0.0F;
-    /// An authorized retry found nothing to ask with (no polkit agent): not offered again this session.
-    bool m_AuthorizationUnavailable = false;
 };
 
 } // namespace App
