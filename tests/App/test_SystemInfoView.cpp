@@ -309,48 +309,39 @@ TEST(SystemInfoSectionsTest, FirmwareRootOnlyRowsSayWhy)
         EXPECT_TRUE(item->unavailableReason.contains("administrator")) << label;
     }
     EXPECT_FALSE(findRow(section, "Model")->unavailableReason.contains("administrator"));
-    EXPECT_EQ(findRow(section, "Readable by root only"), nullptr) << "nothing to offer without the helper";
-
-    // With the helper installed, the section leads with "Authenticate to read" (#2310)
-    const Section offered = SystemInfo::buildFirmwareSection(rootOnly, /*canAuthenticate=*/true);
-    ASSERT_FALSE(offered.rows.empty());
-    EXPECT_EQ(offered.rows.front().label, "Readable by root only");
-    EXPECT_EQ(offered.rows.front().action, SystemInfo::RowAction::AuthenticateToRead);
-    EXPECT_FALSE(offered.rows.front().isIdentifier) << "its button must stay visible";
+    EXPECT_EQ(findRow(section, "Readable by root only"), nullptr) << "nothing to offer where TaskSmack can't restart elevated";
 
     Platform::FirmwareInfo readable = rootOnly;
     readable.identifiersNeedAdmin = false;
     readable.smbiosVersionNeedsAdmin = false;
-    EXPECT_EQ(findRow(SystemInfo::buildFirmwareSection(readable, true), "Readable by root only"), nullptr);
+    EXPECT_EQ(findRow(SystemInfo::buildFirmwareSection(readable, /*canRestart=*/true), "Readable by root only"), nullptr);
 }
 
-// #3669: with no helper to read them, where TaskSmack can restart elevated, the section leads with Restart as
-// administrator... instead; with a helper, its Authenticate to read; with neither, nothing.
+// #3669: where TaskSmack can restart elevated, root-only facts lead the section with Restart as administrator...;
+// otherwise, nothing (no helper reads them on a password any more, #3866).
 TEST(SystemInfoSectionsTest, WithNoHelperRootOnlyFactsOfferRestartAsAdministrator)
 {
     Platform::FirmwareInfo rootOnly;
     rootOnly.available = true;
     rootOnly.identifiersNeedAdmin = true;
-    const Section restart = SystemInfo::buildFirmwareSection(rootOnly, /*canAuthenticate=*/false, /*canRestart=*/true);
+    const Section restart = SystemInfo::buildFirmwareSection(rootOnly, /*canRestart=*/true);
     ASSERT_FALSE(restart.rows.empty());
     EXPECT_EQ(restart.rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
     EXPECT_TRUE(restart.rows.front().unavailableReason.contains("Restart as administrator...")) << restart.rows.front().unavailableReason;
-    EXPECT_EQ(SystemInfo::buildFirmwareSection(rootOnly, true, true).rows.front().action, SystemInfo::RowAction::AuthenticateToRead)
-        << "the helper's read first";
 
     Platform::MemoryModulesInfo table;
     table.available = true;
     table.tableNeedsAdmin = true;
-    EXPECT_EQ(SystemInfo::buildMemorySection(table, false, true).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
-    EXPECT_NE(SystemInfo::buildMemorySection(table, false, false).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+    EXPECT_EQ(SystemInfo::buildMemorySection(table, true).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+    EXPECT_NE(SystemInfo::buildMemorySection(table, false).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
 
     Platform::CrashesInfo crashes;
     crashes.otherUsersHidden = true;
-    EXPECT_EQ(SystemInfo::buildCrashesSection(crashes, false, true).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
+    EXPECT_EQ(SystemInfo::buildCrashesSection(crashes, true).rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
 
     Platform::FirmwareInfo readable;
     readable.available = true;
-    for (const Row& item : SystemInfo::buildFirmwareSection(readable, false, true).rows)
+    for (const Row& item : SystemInfo::buildFirmwareSection(readable, true).rows)
     {
         EXPECT_EQ(item.action, SystemInfo::RowAction::None) << "nothing refused, nothing offered: " << item.label;
     }
@@ -491,8 +482,6 @@ TEST(SystemInfoSectionsTest, MemoryWithoutTheTableSaysWhy)
     const Section section = SystemInfo::buildMemorySection(rootOnly);
     EXPECT_EQ(findRow(section, "Usable memory")->value, "16 GiB");
     EXPECT_EQ(findRow(section, "Readable by root only"), nullptr);
-    EXPECT_EQ(SystemInfo::buildMemorySection(rootOnly, /*canAuthenticate=*/true).rows.front().action,
-              SystemInfo::RowAction::AuthenticateToRead); // #2310
     for (const std::string_view label : {"Slots used", "Maximum capacity", "Installed memory", "Modules"})
     {
         const Row* item = findRow(section, label);
@@ -2832,7 +2821,7 @@ TEST(SystemInfoSectionsTest, CrashesRowsWindows)
     EXPECT_EQ(section.rows[3].value, "Unknown application crashed, exception 0x12345678");
 }
 
-TEST(SystemInfoSectionsTest, HiddenCrashesOfferAuthenticateToRead)
+TEST(SystemInfoSectionsTest, HiddenCrashesOfferRestartAsAdministrator)
 {
     Platform::CrashesInfo crashes;
     crashes.available = true;
@@ -2840,11 +2829,11 @@ TEST(SystemInfoSectionsTest, HiddenCrashesOfferAuthenticateToRead)
     crashes.listed = true;
     crashes.journalRead = true;
     crashes.otherUsersHidden = true;
-    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(crashes), "Other users' crashes"), nullptr) << "not without the helper";
-    const Section offered = SystemInfo::buildCrashesSection(crashes, /*canAuthenticate=*/true);
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(crashes), "Other users' crashes"), nullptr) << "not where TaskSmack can't restart";
+    const Section offered = SystemInfo::buildCrashesSection(crashes, /*canRestart=*/true);
     ASSERT_FALSE(offered.rows.empty());
     EXPECT_EQ(offered.rows.front().label, "Other users' crashes");
-    EXPECT_EQ(offered.rows.front().action, SystemInfo::RowAction::AuthenticateToRead);
+    EXPECT_EQ(offered.rows.front().action, SystemInfo::RowAction::RestartAsAdministrator);
 
     crashes.otherUsersHidden = false; // root, or in systemd-journal: nothing to offer
     EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(crashes, true), "Other users' crashes"), nullptr);
