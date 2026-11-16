@@ -262,8 +262,8 @@ class ProcessDetailsPanel : public Panel
         return m_ProcessExited;
     }
 
-    /// What process actions the underlying IProcessActions supports, read at construction and again
-    /// every renderContent() (some, like the Realtime I/O class, follow the privileged helper, #2407).
+    /// What process actions the underlying IProcessActions supports, read once at construction: none of
+    /// them changes after that (#3580, #3889), so no frame asks again.
     /// Exposed publicly so tests constructing this panel with an injected mock can assert the
     /// capability flags were actually pulled from it.
     [[nodiscard]] const Platform::ProcessActionCapabilities& actionCapabilities() const
@@ -420,9 +420,9 @@ class ProcessDetailsPanel : public Panel
 
     // Process actions
     std::unique_ptr<Platform::IProcessActions> m_ProcessActions;
-    VirusTotalLookup::ContextCache m_LookupContext;         ///< The Context made once, refreshed on a key change (#3802)
-    std::shared_ptr<Platform::IHttpsClient> m_LookupClient; ///< Look up on VirusTotal's (#3094); none in the tests
-    Platform::ProcessActionCapabilities m_ActionCapabilities;
+    VirusTotalLookup::ContextCache m_LookupContext;           ///< The Context made once, refreshed on a key change (#3802)
+    std::shared_ptr<Platform::IHttpsClient> m_LookupClient;   ///< Look up on VirusTotal's (#3094); none in the tests
+    Platform::ProcessActionCapabilities m_ActionCapabilities; ///< Read once, at construction (#3889)
     Platform::ProcessCapabilities m_ProcessCapabilities;
     bool m_HasAccelerator = false;    // Shows the NPU tab (setHasAccelerator(), #1869)
     std::size_t m_SelectionCount = 0; // Rows selected in the Processes table (setSelectionCount(), #1926)

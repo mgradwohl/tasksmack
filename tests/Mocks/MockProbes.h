@@ -616,6 +616,7 @@ class MockProcessActions : public Platform::IProcessActions
 
     [[nodiscard]] Platform::ProcessActionCapabilities actionCapabilities() const override
     {
+        ++m_ActionCapabilitiesCount;
         return m_Capabilities;
     }
 
@@ -1207,8 +1208,15 @@ class MockProcessActions : public Platform::IProcessActions
         return m_WaitChainCount;
     }
 
+    /// How many times actionCapabilities() was asked (#3889: a panel reads it once, not every frame).
+    [[nodiscard]] int actionCapabilitiesCount() const
+    {
+        return m_ActionCapabilitiesCount;
+    }
+
   private:
     Platform::ProcessActionCapabilities m_Capabilities;
+    mutable int m_ActionCapabilitiesCount = 0; // actionCapabilities() is const
     Platform::DumpSpace m_DumpSpace;
     int m_DumpSpaceCount = 0;
     std::filesystem::path m_LastSpaceDirectory;

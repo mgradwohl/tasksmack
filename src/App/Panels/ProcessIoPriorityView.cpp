@@ -40,6 +40,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
                                    std::optional<std::int32_t> currentNice,
                                    const Platform::ProcessTarget& target,
                                    bool realtimeSettable,
+                                   bool canAuthorizeInteractively,
                                    bool windowsHints,
                                    Platform::SchedPolicy schedPolicy)
 {
@@ -52,9 +53,8 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     markDrawn();
     syncToProcess();
     // Windows (#3362): another user's or an elevated process often refuses the read, but the helper can make the
-    // identity-checked set, so Apply goes ahead with the current value unknown. Cheap: reports what was found at
-    // construction (IProcessActions::actionCapabilities()).
-    allowApplyWhenReadDenied(windowsHints && actions != nullptr && actions->actionCapabilities().canAuthorizeInteractively);
+    // identity-checked set, so Apply goes ahead with the current value unknown.
+    allowApplyWhenReadDenied(windowsHints && actions != nullptr && canAuthorizeInteractively);
 
     // Its own ID scope: the nice control above has an "Apply" button too.
     ImGui::PushID("io_priority");
@@ -192,7 +192,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CIRCLE_INFO "  %s", m_ReadError.c_str());
         ImGui::PopTextWrapPos();
         // A refused read with no helper leaves Apply disabled: the restart is the way on (#3669).
-        if (readRefusalOffersRestart(actions != nullptr && actions->actionCapabilities().canAuthorizeInteractively))
+        if (readRefusalOffersRestart(actions != nullptr && canAuthorizeInteractively))
         {
             static_cast<void>(RestartAsAdministrator::drawButton());
         }

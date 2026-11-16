@@ -456,14 +456,20 @@ TEST_F(ProcessIoPriorityViewRenderTest, AReadRefusedForAccessEnablesApplyOnlyWhe
     for (const bool helper : {false, true})
     {
         SCOPED_TRACE(helper ? "helper" : "no helper");
+        // The panel's capabilities, read once at construction, say whether the helper can redo it (#3889).
+        const Platform::ProcessActionCapabilities capabilities{
+            .canSetPriority = true,
+            .canSetIoPriority = true,
+            .ioPriorityHints = true,
+            .canAuthorizeInteractively = helper,
+        };
         TestMocks::MockProcessActions mock;
-        mock.setCapabilities(
-            {.canSetPriority = true, .canSetIoPriority = true, .ioPriorityHints = true, .canAuthorizeInteractively = helper});
+        mock.setCapabilities(capabilities);
         mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
         ProcessPriorityView view;
         const auto body = [&]
         {
-            draw(view, mock, NICE_AND_HINTS, NICE, TARGET_A);
+            draw(view, mock, capabilities, NICE, TARGET_A);
         };
         runFrame(body);
         runFrame(body);
@@ -477,13 +483,19 @@ TEST_F(ProcessIoPriorityViewRenderTest, ClickingNormalAfterARefusedReadQueuesNor
 {
     // The read refused, the slider shows Normal as a stand-in for the unknown value; clicking Normal itself must
     // still be an edit to the Normal hint, so Apply can send it through the helper.
+    constexpr Platform::ProcessActionCapabilities WITH_HELPER{
+        .canSetPriority = true,
+        .canSetIoPriority = true,
+        .ioPriorityHints = true,
+        .canAuthorizeInteractively = true,
+    };
     TestMocks::MockProcessActions mock;
-    mock.setCapabilities({.canSetPriority = true, .canSetIoPriority = true, .ioPriorityHints = true, .canAuthorizeInteractively = true});
+    mock.setCapabilities(WITH_HELPER);
     mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
     ProcessPriorityView view;
     const auto body = [&]
     {
-        draw(view, mock, NICE_AND_HINTS, NICE, TARGET_A);
+        draw(view, mock, WITH_HELPER, NICE, TARGET_A);
     };
     runFrame(body);
     runFrame(body);
