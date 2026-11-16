@@ -1,7 +1,8 @@
 // CI real-system tests on Windows, phase 3 (#3490; tracker #3492): TaskSmack.exe itself started on the runner. The
 // sign-in entry's --minimized start shows the window minimized without taking the foreground (#3093 part 2, never
 // launched before: #3259); a second start in Task Manager's place brings the running one back and exits
-// (showRunningTaskSmack(), #3072); and the folder dialog behind "Save dump to..." comes up and is cancelled (#2001).
+// (showRunningTaskSmack(), #3072); a version.dll planted beside it is never loaded (#3897); and the folder dialog
+// behind "Save dump to..." comes up and is cancelled (#2001).
 // They open windows on the desktop and start the app, so they run only on a disposable GitHub-hosted runner, where
 // CiRealSystem.h's guard lets them. The app runs from a scratch copy, with Mesa's software OpenGL beside it as the
 // display suites have theirs, its own TASKSMACK_CONFIG_DIR and TEMP, and is closed with WM_CLOSE; a scope guard
@@ -53,6 +54,9 @@
 
 #ifndef TASKSMACK_APP_PATH
 #error "TASKSMACK_APP_PATH must name TaskSmack.exe (tests/CMakeLists.txt)"
+#endif
+#ifndef TASKSMACK_CI_STUB_DLL_PATH
+#error "TASKSMACK_CI_STUB_DLL_PATH must name TaskSmackCiStubDll.dll (tests/CMakeLists.txt)"
 #endif
 
 namespace
@@ -294,6 +298,25 @@ TEST_F(CiRealSystemAppLaunchTest, ASecondStartInTaskManagersPlaceShowsTheRunning
     const std::optional<DWORD> firstExit = closeGracefully(first, window);
     ASSERT_TRUE(firstExit.has_value()) << "it didn't exit within " << CLOSE_WAIT.count() << " ms of WM_CLOSE" << taskSmack.logTail();
     EXPECT_EQ(firstExit.value_or(STILL_ACTIVE), static_cast<DWORD>(EXIT_SUCCESS)) << taskSmack.logTail();
+}
+
+TEST_F(CiRealSystemAppLaunchTest, AVersionDllPlantedBesideItIsNeverLoaded)
+{
+    // #3897: TaskSmack imports version.dll, which isn't a KnownDLL, so without /DEPENDENTLOADFLAG:0x800 the loader
+    // would take one beside the exe before System32's. The stub there (TaskSmackCiStubDll.dll) has no exports and a
+    // DllMain that refuses to load: had the loader taken it, TaskSmack couldn't start at all.
+    const ScratchTaskSmack taskSmack;
+    ASSERT_TRUE(std::filesystem::exists(taskSmack.exe())) << Core::pathToUtf8(taskSmack.exe());
+    copyFile(std::filesystem::path(TASKSMACK_CI_STUB_DLL_PATH), taskSmack.exe().parent_path() / L"version.dll");
+    const Child app = taskSmack.start(L"--minimized");
+    ASSERT_NE(app.process(), nullptr);
+
+    HWND window = taskSmackWindowOf(app, STARTUP_WAIT);
+    ASSERT_NE(window, nullptr) << "TaskSmack showed no window beside a planted version.dll (exit 0x" << std::hex
+                               << app.exitCode(0ms).value_or(STILL_ACTIVE) << std::dec << ")" << taskSmack.logTail();
+    const std::optional<DWORD> exitCode = closeGracefully(app, window);
+    ASSERT_TRUE(exitCode.has_value()) << "it didn't exit within " << CLOSE_WAIT.count() << " ms of WM_CLOSE" << taskSmack.logTail();
+    EXPECT_EQ(exitCode.value_or(STILL_ACTIVE), static_cast<DWORD>(EXIT_SUCCESS)) << taskSmack.logTail();
 }
 
 // --- The folder dialog (#2001) -----------------------------------------------------------------------------------
