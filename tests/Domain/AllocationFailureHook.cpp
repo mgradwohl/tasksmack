@@ -2,10 +2,7 @@
 
 #include "AllocationFailureHook.h"
 
-#include <cstddef>
 #include <cstdint>
-#include <cstdlib>
-#include <new>
 
 #if !defined(TASKSMACK_NO_ALLOCATOR_HOOK)
 #include <gtest/gtest.h>
@@ -13,10 +10,19 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstddef>
 #include <cstdio>
+#include <cstdlib>
+#include <new>
 
 #include <fcntl.h>
+#if defined(_WIN32)
+#include <io.h>
+#include <share.h>
+#include <sys/stat.h>
+#else
 #include <unistd.h>
+#endif
 #endif
 
 namespace
@@ -40,11 +46,22 @@ std::atomic<const ::testing::TestInfo*> g_LastNotedTest{nullptr};
 /// operator new (a stack buffer, open/write/close), so it can't spend or trip the allocation it arms.
 void noteArmedTest() noexcept
 {
+#if defined(_WIN32)
+    // getenv_s copies into a stack buffer; the CRT deprecates plain getenv on Windows.
+    std::array<char, 1024> pathBuffer{};
+    std::size_t pathLength = 0;
+    if (::getenv_s(&pathLength, pathBuffer.data(), pathBuffer.size(), "TASKSMACK_ALLOCATION_HOOK_LOG") != 0 || pathLength <= 1)
+    {
+        return;
+    }
+    const char* const path = pathBuffer.data();
+#else
     const char* const path = std::getenv("TASKSMACK_ALLOCATION_HOOK_LOG"); // NOLINT(concurrency-mt-unsafe) - set before the tests start
     if (path == nullptr || *path == '\0')
     {
         return;
     }
+#endif
     const ::testing::TestInfo* const test = ::testing::UnitTest::GetInstance()->current_test_info();
     if (test == nullptr || g_LastNotedTest.exchange(test) == test)
     {
@@ -56,16 +73,28 @@ void noteArmedTest() noexcept
     {
         return;
     }
+    // One write per line: append mode keeps lines whole when ctest runs suites in parallel processes.
+    const auto size = std::min(static_cast<std::size_t>(length), line.size() - 1);
+#if defined(_WIN32)
+    // The CRT's low-level I/O, which allocates with malloc, never operator new.
+    int file = -1;
+    if (::_sopen_s(&file, path, _O_WRONLY | _O_CREAT | _O_APPEND | _O_BINARY | _O_NOINHERIT, _SH_DENYNO, _S_IREAD | _S_IWRITE) != 0 ||
+        file < 0)
+    {
+        return;
+    }
+    [[maybe_unused]] const auto written = ::_write(file, line.data(), static_cast<unsigned int>(size));
+    ::_close(file);
+#else
     const int file = ::open(
         path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644); // NOLINT(cppcoreguidelines-pro-type-vararg,hicpp-vararg) - POSIX open
     if (file < 0)
     {
         return;
     }
-    // One write per line: O_APPEND keeps lines whole when ctest runs suites in parallel processes.
-    const auto size = std::min(static_cast<std::size_t>(length), line.size() - 1);
     [[maybe_unused]] const auto written = ::write(file, line.data(), size);
     ::close(file);
+#endif
 }
 #endif
 
@@ -103,8 +132,11 @@ std::uint64_t allocationsOnThisThread() noexcept
 // standard's default operator new[] and nothrow forms call operator new(size_t), and its default
 // operator delete[] and sized forms call operator delete(void*), so every unaligned form allocates
 // with malloc and frees with free. The aligned forms are not replaced at all, so they keep the
-// library's own matching new/delete pair.
-// NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc)
+// library's own matching new/delete pair (_aligned_malloc/_aligned_free in the MSVC runtime). The same
+// holds for the static MSVC runtime of the Windows release build, whose default forms are in the
+// executable and resolve to these.
+// The MSVC runtime's declarations name the pointer _Block, a reserved name this file can't use.
+// NOLINTBEGIN(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc,readability-inconsistent-declaration-parameter-name)
 void* operator new(std::size_t size)
 {
     ++t_AllocationCount;
@@ -133,5 +165,5 @@ void operator delete(void* memory, std::size_t /*size*/) noexcept
 {
     std::free(memory);
 }
-// NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc)
+// NOLINTEND(cppcoreguidelines-no-malloc,cppcoreguidelines-owning-memory,misc-new-delete-overloads,hicpp-no-malloc,readability-inconsistent-declaration-parameter-name)
 #endif

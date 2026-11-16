@@ -7,12 +7,18 @@
 // and its creation time is checked against the target's, as every Process Details reader's is
 // (WindowsProcessIdentity.h). Nothing is read out of the process's memory, so it needs no PROCESS_VM_READ.
 //
-// Windows measures none of smaps' sizes per region: a mapping's residentBytes, pssBytes and the rest stay
-// absent, and the view shows the address space, committed and reserved. Nor does VirtualQueryEx tell a heap
-// or a stack from other private memory: MEM_PRIVATE is Anonymous.
+// A committed region's resident, private and shared sizes come from QueryWorkingSetEx (#4031), page by page:
+// resident is a page in the working set (Valid), shared one that another process maps too (Shared, with a
+// ShareCount past 1, as smaps' Shared_* counts a page mapped more than once) and private any other resident
+// page. Windows doesn't record whether a page was written, so a page whose protection allows writing in place
+// counts as dirty and any other (read-only, executable, copy-on-write not yet written) as clean. The query
+// needs PROCESS_QUERY_INFORMATION: on the limited right the sizes stay absent. It is bounded (the
+// WORKING_SET_* constants): a region past the size cap, or past the read's page budget, keeps none. PSS and
+// swap stay absent: Windows has no proportional-set or per-region pagefile figure. Nor does VirtualQueryEx
+// tell a heap or a stack from other private memory: MEM_PRIVATE is Anonymous.
 //
 // The calls are a table of function pointers, the system's by default, so tests drive the walk, the
-// failures and the cap (test_WindowsProcessMemoryMap.cpp). The region decoding is pure and inline here.
+// failures and the caps (test_WindowsProcessMemoryMap.cpp). The region and page decoding is pure and inline here.
 
 #ifdef _WIN32
 // clang-format off
@@ -23,7 +29,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
-#include <psapi.h>   // GetMappedFileNameW (K32GetMappedFileNameW, in kernel32)
+#include <psapi.h>   // GetMappedFileNameW, QueryWorkingSetEx (K32*, in kernel32)
 // clang-format on
 
 #include "Platform/IProcessActions.h"
@@ -43,6 +49,48 @@ namespace Platform::Windows
 /// The most regions one read keeps; past it the result is truncated. A desktop process has a few thousand,
 /// a browser's or a JIT's tens of thousands; Linux's read stops at 32 MiB of smaps, about as many.
 inline constexpr std::size_t MAX_MEMORY_MAP_REGIONS = 65536;
+
+/// The page QueryWorkingSetEx is asked about: 4 KiB on every Windows TaskSmack runs on (x64, ARM64). A large
+/// page answers for each 4 KiB piece of it, each Valid, so the count still comes out in bytes.
+inline constexpr std::uint64_t WORKING_SET_PAGE_BYTES = 4096;
+
+/// The most pages one QueryWorkingSetEx call asks about: a 128 KiB buffer of
+/// PSAPI_WORKING_SET_EX_INFORMATION, reused across calls; a larger region takes several.
+inline constexpr std::size_t WORKING_SET_PAGES_PER_QUERY = 8192;
+
+/// A committed region larger than this (1 GiB, 262,144 pages) isn't asked about, and keeps no sizes: one
+/// huge reservation committed whole would otherwise take most of a read's budget by itself.
+inline constexpr std::uint64_t WORKING_SET_MAX_REGION_BYTES = std::uint64_t{1} << 30U;
+
+/// The most pages one read asks about, over all its regions (2 Mi pages, 8 GiB of committed memory, some
+/// tenths of a second on the read worker at the most); a region that doesn't fit what is left keeps no sizes.
+/// A desktop process commits well under it; the read refreshes every PROCESS_MEMORY_MAP_REFRESH_MS.
+inline constexpr std::uint64_t WORKING_SET_MAX_PAGES_PER_READ = std::uint64_t{1} << 21U;
+
+/// The bounds on a read's QueryWorkingSetEx calls (the WORKING_SET_* constants, or a test's).
+struct WorkingSetLimits
+{
+    std::size_t pagesPerQuery = WORKING_SET_PAGES_PER_QUERY;
+    std::uint64_t maxRegionBytes = WORKING_SET_MAX_REGION_BYTES;
+    std::uint64_t maxPagesPerRead = WORKING_SET_MAX_PAGES_PER_READ;
+};
+
+/// One region's resident pages, by whether another process maps them too and whether they may have been
+/// written, in pages.
+struct WorkingSetPages
+{
+    std::uint64_t sharedClean = 0;
+    std::uint64_t sharedDirty = 0;
+    std::uint64_t privateClean = 0;
+    std::uint64_t privateDirty = 0;
+
+    [[nodiscard]] constexpr std::uint64_t resident() const noexcept
+    {
+        return sharedClean + sharedDirty + privateClean + privateDirty;
+    }
+
+    friend bool operator==(const WorkingSetPages&, const WorkingSetPages&) = default;
+};
 
 /// What a region's page protection allows (MEMORY_BASIC_INFORMATION::Protect), decoded.
 struct RegionProtection
@@ -98,6 +146,41 @@ struct RegionProtection
         break;
     }
     return decoded;
+}
+
+/// @p page, one QueryWorkingSetEx answer, added to @p pages: nothing unless it is resident (Valid). It is shared
+/// when another process maps it too (Shared and a ShareCount past 1; a shareable page only this process maps
+/// is private, as in smaps), and dirty when its protection allows writing in place (copy-on-write doesn't:
+/// a written copy-on-write page becomes read/write and private).
+inline void countPage(WorkingSetPages& pages, const PSAPI_WORKING_SET_EX_BLOCK& page) noexcept
+{
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - the block is a union of the valid and invalid layouts
+    if (page.Valid == 0)
+    {
+        return;
+    }
+    const RegionProtection protection = decodeProtection(static_cast<DWORD>(page.Win32Protection));
+    const bool shared = page.Shared != 0 && page.ShareCount > 1;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    const bool dirty = protection.writable && !protection.copyOnWrite;
+    if (shared)
+    {
+        ++(dirty ? pages.sharedDirty : pages.sharedClean);
+    }
+    else
+    {
+        ++(dirty ? pages.privateDirty : pages.privateClean);
+    }
+}
+
+/// @p mapping with the sizes of its resident @p pages, in bytes.
+constexpr void setWorkingSetSizes(MemoryMapping& mapping, const WorkingSetPages& pages) noexcept
+{
+    mapping.residentBytes = pages.resident() * WORKING_SET_PAGE_BYTES;
+    mapping.sharedCleanBytes = pages.sharedClean * WORKING_SET_PAGE_BYTES;
+    mapping.sharedDirtyBytes = pages.sharedDirty * WORKING_SET_PAGE_BYTES;
+    mapping.privateCleanBytes = pages.privateClean * WORKING_SET_PAGE_BYTES;
+    mapping.privateDirtyBytes = pages.privateDirty * WORKING_SET_PAGE_BYTES;
 }
 
 /// A region's kind from its MEMORY_BASIC_INFORMATION::Type: MEM_IMAGE is Image, MEM_MAPPED a File when
@@ -157,6 +240,7 @@ struct ProcessMemoryMapFunctions
     using GetMappedFileNameFn = DWORD(WINAPI*)(HANDLE, LPVOID, LPWSTR, DWORD);
     using GetLogicalDrivesFn = DWORD(WINAPI*)();
     using QueryDosDeviceFn = DWORD(WINAPI*)(LPCWSTR, LPWSTR, DWORD);
+    using QueryWorkingSetExFn = BOOL(WINAPI*)(HANDLE, PVOID, DWORD);
 
     OpenProcessFn openProcess = &::OpenProcess;
     CloseHandleFn closeHandle = &::CloseHandle;
@@ -166,6 +250,7 @@ struct ProcessMemoryMapFunctions
     GetMappedFileNameFn getMappedFileName = &::GetMappedFileNameW;
     GetLogicalDrivesFn getLogicalDrives = &::GetLogicalDrives;
     QueryDosDeviceFn queryDosDevice = &::QueryDosDeviceW;
+    QueryWorkingSetExFn queryWorkingSetEx = &::QueryWorkingSetEx; // K32QueryWorkingSetEx, in kernel32
 };
 
 /// Not thread-safe: one read at a time (the Memory map view runs them one at a time on a worker).
@@ -174,9 +259,12 @@ class WindowsProcessMemoryMapReader final : public IProcessMemoryMapReader
   public:
     WindowsProcessMemoryMapReader() = default;
 
-    /// Test seam: make every call through @p api, and keep at most @p maxRegions regions.
-    explicit WindowsProcessMemoryMapReader(const ProcessMemoryMapFunctions& api, std::size_t maxRegions = MAX_MEMORY_MAP_REGIONS)
-        : m_Api(api), m_MaxRegions(maxRegions)
+    /// Test seam: make every call through @p api, keep at most @p maxRegions regions, and bound the working-set
+    /// queries by @p limits.
+    explicit WindowsProcessMemoryMapReader(const ProcessMemoryMapFunctions& api,
+                                           std::size_t maxRegions = MAX_MEMORY_MAP_REGIONS,
+                                           const WorkingSetLimits& limits = {})
+        : m_Api(api), m_MaxRegions(maxRegions), m_Limits(limits)
     {}
 
     [[nodiscard]] bool hasMemoryMap() const override;
@@ -185,6 +273,7 @@ class WindowsProcessMemoryMapReader final : public IProcessMemoryMapReader
   private:
     ProcessMemoryMapFunctions m_Api;
     std::size_t m_MaxRegions = MAX_MEMORY_MAP_REGIONS;
+    WorkingSetLimits m_Limits;
 };
 
 // NOLINTEND(misc-include-cleaner)

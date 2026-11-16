@@ -60,9 +60,10 @@ struct WindowsProcessFunctions
     /// affinity change (#2556). Null, or a failed call, refuses the action: a critical process is never
     /// acted on for want of an answer.
     BOOL(WINAPI* isProcessCritical)(HANDLE process, PBOOL critical) = nullptr;
-    /// GetProcessInformation(), read for ProcessProtectionLevelInfo before Kill, Terminate or Suspend (#2556).
-    /// Null, or a failed call, reads as not protected: Windows refuses to end or suspend one anyway,
-    /// so this only words the refusal.
+    /// GetProcessInformation(), read for ProcessProtectionLevelInfo before Kill, Terminate or Suspend (#2556), and
+    /// when Look up on VirusTotal can't find a process's image (#4057). Null, or a failed call, reads as not
+    /// protected: Windows refuses to end or suspend one anyway, and its image is never hashed, so this only words the
+    /// refusal.
     BOOL(WINAPI* getProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
     /// ntdll's NtSuspendProcess (#2582), through the verified handle once the guard has passed. Null:
     /// Suspend is unavailable (canStop false) and refused.
@@ -105,9 +106,9 @@ struct WindowsProcessFunctions
     /// finds the entry point and the image's size, ProcessImageInformation): no Look up on VirusTotal
     /// (canHashImage false).
     DWORD(WINAPI* getMappedFileName)(HANDLE process, LPVOID address, LPWSTR name, DWORD size) = nullptr;
-    /// VirtualQueryEx(), on the verified handle (#3861): whether the entry point is in an image mapping, and, for an
-    /// image the loader mapped elsewhere (a .NET executable, one relocated from its preferred base), the scan for
-    /// the image still named as the process started. Null: the entry point is taken as the image, and no scan.
+    /// VirtualQueryEx(), on the verified handle (#3861): whether the entry point is in an image mapping. An image the
+    /// loader mapped elsewhere (a .NET executable, one relocated from its preferred base) isn't hashed (#4057;
+    /// WindowsImageFile.h says why). Null: the entry point is taken as the image.
     SIZE_T(WINAPI* virtualQueryEx)(HANDLE process, LPCVOID address, PMEMORY_BASIC_INFORMATION info, SIZE_T size) = nullptr;
     /// Explorer asked to show that executable selected (#3426). Null queryFullProcessImageName, or no
     /// selectInFolder and no startProcess here: no Open file location (canOpenFileLocation false), as in

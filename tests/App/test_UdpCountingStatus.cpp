@@ -20,5 +20,49 @@ TEST(UdpCountingStatusTest, TheLastPublishedStatusIsWhatSettingsReads)
     publishUdpCountingStatus({}); // as a run starts: nothing known yet
 }
 
+// #3879: Settings' line follows what the collector says, on both platforms, rather than always saying it needs
+// administrator.
+TEST(UdpCountingLineTest, CountingIsSaidWhenItCounts)
+{
+    const UdpCountingLine line = udpCountingLine(true, true, false, {});
+    EXPECT_EQ(line.text(), "Counting UDP.");
+    EXPECT_FALSE(line.warning);
+}
+
+TEST(UdpCountingLineTest, NotAdministratorIsTheCollectorsProblemAsASentence)
+{
+    for (const bool on : {false, true})
+    {
+        const UdpCountingLine onWindows = udpCountingLine(on, false, false, "Needs TaskSmack running as administrator");
+        EXPECT_EQ(onWindows.text(), "Needs TaskSmack running as administrator.") << on;
+        EXPECT_FALSE(onWindows.warning);
+        const UdpCountingLine onLinux =
+            udpCountingLine(on, false, false, "Needs TaskSmack started as administrator: TaskSmack (Administrator), or sudo");
+        EXPECT_EQ(onLinux.text(), "Needs TaskSmack started as administrator: TaskSmack (Administrator), or sudo.") << on;
+    }
+    EXPECT_EQ(udpCountingLine(true, false, false, "Already a sentence.").text(), "Already a sentence.") << "no second period";
+}
+
+TEST(UdpCountingLineTest, ATraceThatDidNotStartSaysWhy)
+{
+    const UdpCountingLine line = udpCountingLine(true, false, false, "Windows refused to start the network event trace (access denied)");
+    EXPECT_EQ(line.text(), "Windows refused to start the network event trace (access denied).");
+}
+
+TEST(UdpCountingLineTest, ACounterThisSystemCantLoadIsAWarning)
+{
+    const UdpCountingLine line = udpCountingLine(false, false, true, "fexit: loading failed");
+    EXPECT_EQ(line.text(), "This system can't count UDP per process: fexit: loading failed");
+    EXPECT_TRUE(line.warning);
+}
+
+TEST(UdpCountingLineTest, AnAdministratorSessionWithNothingToReportSaysWhatTheSettingDoes)
+{
+    EXPECT_EQ(udpCountingLine(true, false, false, {}).text(), "On: UDP is counted from the first UDP traffic.");
+    EXPECT_EQ(udpCountingLine(false, false, false, {}).text(), "Off: Net Sent and Net Received count TCP only.");
+    EXPECT_EQ(udpCountingLine(false, true, false, {}).text(), "Off: Net Sent and Net Received count TCP only.")
+        << "unticked before Save: off is what Save does";
+}
+
 } // namespace
 } // namespace App

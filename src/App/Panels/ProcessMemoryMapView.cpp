@@ -91,7 +91,7 @@ void ProcessMemoryMapView::renderTotals()
     const int columns = 3 + (reserved ? 1 : 0) + (resident ? 1 : 0) + (pss ? 1 : 0) + (split ? 2 : 0) + (swap ? 1 : 0);
 
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_RowBg | ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_SizingStretchProp;
-    // Windows' layout (reserved space, no smaps sizes) has its own ID, so each keeps its own widths.
+    // Windows' layout (reserved space, no PSS or swap) has its own ID, so each keeps its own widths.
     if (!ImGui::BeginTable(reserved ? "##MemoryMapTotalsReserved" : "##MemoryMapTotals", columns, TABLE_FLAGS))
     {
         return;

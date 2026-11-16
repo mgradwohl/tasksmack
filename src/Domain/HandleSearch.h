@@ -15,6 +15,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <functional>
+#include <iterator>
+#include <memory>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -77,14 +79,100 @@ struct HandleMatch
     bool deleted = false; ///< The file was deleted after it was opened or mapped (Linux).
 };
 
+/// A search's matches in the order found (#3888): sealed chunks, each shared and immutable once sealed, then a tail
+/// still being added to. A copy shares the sealed chunks rather than copying their matches, so a generation never
+/// copies what an earlier one published, and a copy keeps exactly the matches it had: what the original adds later
+/// goes to the original's own tail. The walk seals before each publication, so a published list has no tail and is
+/// read, never written, from then on.
+class MatchList
+{
+  public:
+    /// Walks the matches in order: each sealed chunk, then the tail.
+    class Iterator
+    {
+      public:
+        // The standard library's iterator names, which range algorithms look for.
+        using value_type = HandleMatch;                      // NOLINT(readability-identifier-naming)
+        using difference_type = std::ptrdiff_t;              // NOLINT(readability-identifier-naming)
+        using iterator_category = std::forward_iterator_tag; // NOLINT(readability-identifier-naming)
+        using pointer = const HandleMatch*;                  // NOLINT(readability-identifier-naming)
+        using reference = const HandleMatch&;                // NOLINT(readability-identifier-naming)
+
+        Iterator() = default;
+
+        [[nodiscard]] const HandleMatch& operator*() const noexcept;
+        Iterator& operator++() noexcept;
+        Iterator operator++(int) noexcept
+        {
+            Iterator before = *this;
+            ++*this;
+            return before;
+        }
+        [[nodiscard]] friend bool operator==(const Iterator& a, const Iterator& b) noexcept
+        {
+            return a.m_List == b.m_List && a.m_Chunk == b.m_Chunk && a.m_Offset == b.m_Offset;
+        }
+
+      private:
+        friend class MatchList;
+        Iterator(const MatchList* list, std::size_t chunk, std::size_t offset) noexcept : m_List(list), m_Chunk(chunk), m_Offset(offset)
+        {}
+
+        const MatchList* m_List = nullptr;
+        std::size_t m_Chunk = 0;  ///< The sealed chunk it is in; m_Chunks.size() for the tail.
+        std::size_t m_Offset = 0; ///< Its place in that chunk.
+    };
+
+    MatchList() = default;
+    /// @p matches as one sealed chunk (a list made in one go, as a test's).
+    explicit MatchList(std::vector<HandleMatch> matches);
+
+    [[nodiscard]] std::size_t size() const noexcept
+    {
+        return sealedSize() + m_Tail.size();
+    }
+    [[nodiscard]] bool empty() const noexcept
+    {
+        return size() == 0;
+    }
+    /// The @p index th match found. @p index must be below size().
+    [[nodiscard]] const HandleMatch& operator[](std::size_t index) const noexcept;
+    [[nodiscard]] Iterator begin() const noexcept;
+    [[nodiscard]] Iterator end() const noexcept;
+
+    /// Adds @p match to the tail.
+    void append(HandleMatch match);
+    /// Makes the tail a sealed chunk, shared from then on by every copy. Strong guarantee: when it throws (no
+    /// memory), the list is as it was.
+    void seal();
+    /// How many sealed chunks it has.
+    [[nodiscard]] std::size_t chunkCount() const noexcept
+    {
+        return m_Chunks.size();
+    }
+    /// Whether this list is @p earlier with matches added after: @p earlier has no tail, and its chunks are this
+    /// one's first ones, the same chunks, not copies. Then @p earlier's matches are this one's first ones.
+    [[nodiscard]] bool extends(const MatchList& earlier) const noexcept;
+
+  private:
+    [[nodiscard]] std::size_t sealedSize() const noexcept
+    {
+        return m_Ends.empty() ? 0 : m_Ends.back();
+    }
+
+    std::vector<std::shared_ptr<const std::vector<HandleMatch>>> m_Chunks; ///< Sealed; never empty ones
+    std::vector<std::size_t> m_Ends;                                       ///< m_Ends[i]: the matches in chunks 0 to i
+    std::vector<HandleMatch> m_Tail;                                       ///< Added since the last seal(); this list's own
+};
+
 /// One generation of a search's results: all the matches so far and how far the walk has got.
 struct SearchPublication
 {
     std::uint64_t version = 0; ///< 0 before any search.
     std::string query;         ///< What this search looks for, as typed.
-    std::vector<HandleMatch> matches;
-    std::size_t total = 0;    ///< Processes to search.
-    std::size_t searched = 0; ///< Processes read so far, whether or not they could be.
+    MatchList matches;         ///< Shares its chunks with the generations before it (#3888)
+    std::size_t total = 0;     ///< Processes to search.
+    std::size_t searched = 0;  ///< Processes read so far, whether or not they could be.
     /// Processes with a source the OS wouldn't let this run read (another user's, or on Windows an elevated one), and
     /// which: an administrator can search those (processesOf(), sourcesOf()).
     std::vector<DeniedProcess> denied;
@@ -114,12 +202,15 @@ struct SearchPublication
 /// What one process's reads add to @p into: its open files' and modules' matches, then its counts.
 /// A source a reader refuses makes the process denied for that source (#3357), even when the other source was read.
 /// One neither source read, and either reports exited, counts as exited. A source not read comes as a default
-/// (Unsupported) result.
+/// (Unsupported) result. @p asked is the sources this pass read: one left out was read by an earlier pass (an
+/// administrator's search reads only what was refused), so the process counts as read, never as exited or failed,
+/// whatever this pass's read reports (#3875).
 void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
                 std::string_view loweredQuery,
-                SearchPublication& into);
+                SearchPublication& into,
+                SearchSources asked = {});
 
 /// The readers one search uses; either may be null (that kind isn't searched).
 struct Readers

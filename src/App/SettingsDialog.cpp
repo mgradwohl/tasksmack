@@ -4,6 +4,7 @@
 #include "App/SettingsLayerDetail.h"
 #include "App/TaskManagerReplacementController.h"
 #include "App/TaskManagerReplacementRows.h"
+#include "App/UdpCountingStatus.h"
 #include "App/UserConfig.h"
 #include "App/WithheldOpenNotice.h"
 #include "Domain/StartAtLogin.h"
@@ -570,36 +571,32 @@ Action render(State& state)
         // some CPU under heavy UDP and runs only as administrator (#1492), and on Linux an eBPF counter TaskSmack loads only
         // when started as root (#3366, #3580).
         ImGui::Spacing();
-#ifdef _WIN32
-        UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
-        ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and with TaskSmack running as "
-                              "administrator, TaskSmack starts a Windows network event trace (ETW) to count UDP too: QUIC/HTTP3, "
-                              "video calls, games, DNS. It costs some CPU when there is a lot of UDP traffic.");
-        ImGui::TextColored(theme.scheme().textMuted, "Needs TaskSmack running as administrator.");
-#else
         // A counter this system can't load isn't offered (#3366), though one already on can still be turned off.
         const bool offUnsupported = state.udpUnsupported && !state.udpEventTrace;
         ImGui::BeginDisabled(offUnsupported);
         UI::Widgets::outlinedCheckbox(UDP_EVENT_TRACE_LABEL, &state.udpEventTrace);
         ImGui::EndDisabled();
+#ifdef _WIN32
+        ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, and with TaskSmack running as "
+                              "administrator, TaskSmack starts a Windows network event trace (ETW) to count UDP too: QUIC/HTTP3, "
+                              "video calls, games, DNS. It costs some CPU when there is a lot of UDP traffic.");
+#else
         ImGui::SetItemTooltip("Net Sent and Net Received count TCP only unless this is on. On, with TaskSmack started as administrator, "
                               "it counts UDP too with a small eBPF program in the kernel: QUIC/HTTP3, video calls, games, DNS.");
-        // Wrapped to the dialog's row budget, so a large font or a narrow window doesn't clip or widen it.
-        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
-        if (state.udpEventTrace && state.udpDelivering)
-        {
-            ImGui::TextColored(theme.scheme().textMuted, "Counting UDP.");
-        }
-        else if (state.udpUnsupported)
-        {
-            ImGui::TextColored(theme.scheme().textWarning, "This system can't count UDP per process: %s", state.udpProblem.c_str());
-        }
-        else
-        {
-            ImGui::TextColored(theme.scheme().textMuted, "Needs TaskSmack started as administrator: TaskSmack (Administrator), or sudo.");
-        }
-        ImGui::PopTextWrapPos();
 #endif
+        // What it is doing, as the collector last said, on both platforms (#3879). Wrapped to the dialog's row budget,
+        // so a large font or a narrow window doesn't clip or widen it.
+        ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
+        const UdpCountingLine udpLine = udpCountingLine(state.udpEventTrace, state.udpDelivering, state.udpUnsupported, state.udpProblem);
+        ImGui::TextColored(udpLine.warning ? theme.scheme().textWarning : theme.scheme().textMuted,
+                           "%.*s%.*s%.*s",
+                           static_cast<int>(udpLine.lead.size()),
+                           udpLine.lead.data(),
+                           static_cast<int>(udpLine.detail.size()),
+                           udpLine.detail.data(),
+                           static_cast<int>(udpLine.end.size()),
+                           udpLine.end.data());
+        ImGui::PopTextWrapPos();
 
         UI::Widgets::sectionGap();
 

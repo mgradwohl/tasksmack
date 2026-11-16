@@ -178,7 +178,7 @@ OpenResult open(std::string_view target)
     const bool opened = Detail::openWithSystemHandler(target, [] { return Platform::SessionUser::invokingUserSession(); });
     return opened ? OpenResult::Opened : OpenResult::Failed;
 #else
-    spdlog::warn("openWithSystemHandler: not supported on this platform for target: {}", std::string{target});
+    spdlog::warn("PlatformOpen::open: not supported on this platform for target: {}", std::string{target});
     return OpenResult::Failed;
 #endif
 }
@@ -194,19 +194,9 @@ OpenResult open(const std::filesystem::path& path)
     const std::string nativePath = nativeTargetFromPath(path);
     return open(std::string_view{nativePath});
 #else
-    spdlog::warn("openWithSystemHandler: not supported on this platform for path: {}", nativeTargetFromPath(path));
+    spdlog::warn("PlatformOpen::open: not supported on this platform for path: {}", nativeTargetFromPath(path));
     return OpenResult::Failed;
 #endif
-}
-
-bool openWithSystemHandler(std::string_view target)
-{
-    return open(target) == OpenResult::Opened;
-}
-
-bool openWithSystemHandler(const std::filesystem::path& path)
-{
-    return open(path) == OpenResult::Opened;
 }
 
 } // namespace App::PlatformOpen

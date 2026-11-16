@@ -13,6 +13,7 @@
 #include <array>
 #include <cstdint>
 #include <new>
+#include <span>
 #include <string_view>
 
 namespace Platform
@@ -65,7 +66,13 @@ TEST(HasBatteryFromFlagTest, UnknownFlagReportsTrueNotFalse)
 // =============================================================================
 
 constexpr BatteryDetailsReported FULL_DETAILS{
-    .found = true, .designWh = 52.6, .fullChargeWh = 47.34, .healthPercent = 90, .cycleCount = 123, .hasTechnology = true};
+    .found = true,
+    .designWh = 52.6,
+    .fullChargeWh = 47.34,
+    .healthPercent = 90,
+    .cycleCount = 123,
+    .hasTechnology = true,
+};
 
 TEST(PowerCapabilitiesFromTest, ABatteryWithItsDetailsOffersEachOne)
 {
@@ -77,8 +84,27 @@ TEST(PowerCapabilitiesFromTest, ABatteryWithItsDetailsOffersEachOne)
     EXPECT_TRUE(caps.hasHealthPercent);
     EXPECT_TRUE(caps.hasCycleCount);
     EXPECT_TRUE(caps.hasTechnology);
-    // GetSystemPowerStatus has no live capacity, rate or voltage
+    // GetSystemPowerStatus has no live capacity, rate or voltage; only the battery's status gives them
     EXPECT_FALSE(caps.hasChargeCapacity || caps.hasPowerRate || caps.hasVoltage);
+}
+
+TEST(PowerCapabilitiesFromTest, TheBatteryStatusOffersTheLiveFiguresAndATimeToFull)
+{
+    // #4030: charging, so GetSystemPowerStatus has no time left; the rate and remaining Wh give a time to full
+    BatteryDetailsReported details = FULL_DETAILS;
+    details.hasPowerRate = true;
+    details.hasChargeCapacity = true;
+    details.hasVoltage = true;
+    const PowerCapabilities caps = powerCapabilitiesFrom(CHARGING_FLAG, 60, UNKNOWN_LIFE_TIME, details);
+    EXPECT_TRUE(caps.hasPowerRate);
+    EXPECT_TRUE(caps.hasChargeCapacity);
+    EXPECT_TRUE(caps.hasVoltage);
+    EXPECT_TRUE(caps.hasTimeEstimates);
+
+    details.hasChargeCapacity = false; // No remaining Wh: no time to full
+    EXPECT_FALSE(powerCapabilitiesFrom(CHARGING_FLAG, 60, UNKNOWN_LIFE_TIME, details).hasTimeEstimates);
+    details.hasChargeCapacity = true;
+    EXPECT_FALSE(powerCapabilitiesFrom(NO_BATTERY_FLAG, 255, UNKNOWN_LIFE_TIME, details).hasPowerRate) << "no battery, nothing";
 }
 
 TEST(PowerCapabilitiesFromTest, NoBatteryOffersNothingWhateverTheDeviceLastSaid)
@@ -223,7 +249,8 @@ TEST(BatteryCapacityTest, OnePacksHealthIsFullOverDesignRoundedAndCapped)
     const auto health = [](std::uint32_t designed, std::uint32_t fullCharged, std::uint32_t capabilities)
     {
         const std::array<BatteryCapacityReading, 1> pack{
-            {{.designed = designed, .fullCharged = fullCharged, .capabilities = capabilities, .cycleCount = 0U}}};
+            {{.designed = designed, .fullCharged = fullCharged, .capabilities = capabilities, .cycleCount = 0U}},
+        };
         return combineBatteryCapacities(pack).healthPercent;
     };
     EXPECT_EQ(health(50'000U, 45'000U, 0U), 90);
@@ -237,10 +264,12 @@ TEST(BatteryCapacityTest, OnePacksHealthIsFullOverDesignRoundedAndCapped)
 TEST(BatteryCapacityTest, TwoBatteriesAreSummedAndHealthComesFromTheSums)
 {
     // #2151: a 24 Wh internal pack at 95% and a 72 Wh external pack at 60%
-    const std::array<BatteryCapacityReading, 2> packs{{
-        {.designed = 24'000U, .fullCharged = 22'800U, .capabilities = 0U, .cycleCount = 40U},
-        {.designed = 72'000U, .fullCharged = 43'200U, .capabilities = 0U, .cycleCount = 310U},
-    }};
+    const std::array<BatteryCapacityReading, 2> packs{
+        {
+            {.designed = 24'000U, .fullCharged = 22'800U, .capabilities = 0U, .cycleCount = 40U},
+            {.designed = 72'000U, .fullCharged = 43'200U, .capabilities = 0U, .cycleCount = 310U},
+        },
+    };
     const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
     EXPECT_FALSE(totals.relativeCapacity);
     EXPECT_DOUBLE_EQ(totals.designWh, 96.0);
@@ -251,11 +280,13 @@ TEST(BatteryCapacityTest, TwoBatteriesAreSummedAndHealthComesFromTheSums)
 
 TEST(BatteryCapacityTest, RelativeAndUnknownCapacitiesAreLeftOutOfTheTotals)
 {
-    const std::array<BatteryCapacityReading, 3> packs{{
-        {.designed = 50'000U, .fullCharged = 45'000U, .capabilities = 0U, .cycleCount = 0U},
-        {.designed = 100U, .fullCharged = 80U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 12U},
-        {.designed = 30'000U, .fullCharged = BATTERY_CAPACITY_UNKNOWN_VALUE, .capabilities = 0U, .cycleCount = 0U},
-    }};
+    const std::array<BatteryCapacityReading, 3> packs{
+        {
+            {.designed = 50'000U, .fullCharged = 45'000U, .capabilities = 0U, .cycleCount = 0U},
+            {.designed = 100U, .fullCharged = 80U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 12U},
+            {.designed = 30'000U, .fullCharged = BATTERY_CAPACITY_UNKNOWN_VALUE, .capabilities = 0U, .cycleCount = 0U},
+        },
+    };
     const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
     EXPECT_FALSE(totals.relativeCapacity);
     // Design, full charge and health all describe the one pack that reports both (#2409), not
@@ -269,10 +300,12 @@ TEST(BatteryCapacityTest, RelativeAndUnknownCapacitiesAreLeftOutOfTheTotals)
 TEST(BatteryCapacityTest, APackWithoutADesignCapacityIsLeftOutOfEveryRow)
 {
     // #2409: the second pack's full charge would otherwise be weighed against the first's design
-    const std::array<BatteryCapacityReading, 2> packs{{
-        {.designed = 50'000U, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
-        {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
-    }};
+    const std::array<BatteryCapacityReading, 2> packs{
+        {
+            {.designed = 50'000U, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+            {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
+        },
+    };
     const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
     EXPECT_DOUBLE_EQ(totals.designWh, 50.0);
     EXPECT_DOUBLE_EQ(totals.fullChargeWh, 40.0);
@@ -281,10 +314,12 @@ TEST(BatteryCapacityTest, APackWithoutADesignCapacityIsLeftOutOfEveryRow)
 
 TEST(BatteryCapacityTest, WithoutAnyDesignCapacityOnlyTheFullChargeIsReported)
 {
-    const std::array<BatteryCapacityReading, 2> packs{{
-        {.designed = BATTERY_CAPACITY_UNKNOWN_VALUE, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
-        {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
-    }};
+    const std::array<BatteryCapacityReading, 2> packs{
+        {
+            {.designed = BATTERY_CAPACITY_UNKNOWN_VALUE, .fullCharged = 40'000U, .capabilities = 0U, .cycleCount = 0U},
+            {.designed = 0U, .fullCharged = 30'000U, .capabilities = 0U, .cycleCount = 0U},
+        },
+    };
     const BatteryCapacityTotals totals = combineBatteryCapacities(packs);
     EXPECT_DOUBLE_EQ(totals.designWh, 0.0);
     EXPECT_DOUBLE_EQ(totals.fullChargeWh, 70.0);
@@ -298,16 +333,105 @@ TEST(BatteryCapacityTest, NoBatteriesOrOnlyRelativeOnesReportNoCapacity)
     EXPECT_DOUBLE_EQ(none.designWh, 0.0);
     EXPECT_EQ(none.healthPercent, -1);
 
-    const std::array<BatteryCapacityReading, 2> relative{{
-        {.designed = 100U, .fullCharged = 92U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 5U},
-        {.designed = 100U, .fullCharged = 70U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 9U},
-    }};
+    const std::array<BatteryCapacityReading, 2> relative{
+        {
+            {.designed = 100U, .fullCharged = 92U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 5U},
+            {.designed = 100U, .fullCharged = 70U, .capabilities = BATTERY_CAPACITY_RELATIVE_BIT, .cycleCount = 9U},
+        },
+    };
     const BatteryCapacityTotals totals = combineBatteryCapacities(relative);
     EXPECT_TRUE(totals.relativeCapacity);
     EXPECT_DOUBLE_EQ(totals.designWh, 0.0);
     EXPECT_DOUBLE_EQ(totals.fullChargeWh, 0.0);
     EXPECT_EQ(totals.healthPercent, -1);
     EXPECT_EQ(totals.cycleCount, 9U);
+}
+
+// =============================================================================
+// combineBatteryStatus, timeToFullSeconds: IOCTL_BATTERY_QUERY_STATUS (#4030)
+// =============================================================================
+
+TEST(BatteryStatusTest, DischargingIsPositiveWattsAndChargingNegativeAsOnLinux)
+{
+    const std::array discharging{BatteryStatusReading{.rate = -12'500, .capacity = 37'872, .voltage = 11'400, .relative = false}};
+    const BatteryStatusTotals out = combineBatteryStatus(discharging);
+    EXPECT_TRUE(out.hasPowerRate);
+    EXPECT_DOUBLE_EQ(out.powerNowW, 12.5);
+    EXPECT_TRUE(out.hasChargeCapacity);
+    EXPECT_DOUBLE_EQ(out.chargeNowWh, 37.872);
+    EXPECT_TRUE(out.hasVoltage);
+    EXPECT_EQ(out.voltageMv, 11'400U);
+
+    const std::array charging{BatteryStatusReading{.rate = 20'000, .capacity = 30'000, .voltage = 12'600, .relative = false}};
+    EXPECT_DOUBLE_EQ(combineBatteryStatus(charging).powerNowW, -20.0);
+
+    const std::array idle{BatteryStatusReading{.rate = 0, .capacity = 50'000, .voltage = 12'900, .relative = false}};
+    const BatteryStatusTotals full = combineBatteryStatus(idle);
+    EXPECT_TRUE(full.hasPowerRate) << "0 W is a known rate";
+    EXPECT_DOUBLE_EQ(full.powerNowW, 0.0);
+}
+
+TEST(BatteryStatusTest, UnknownValuesAreNotOffered)
+{
+    const std::array unknown{BatteryStatusReading{}};
+    const BatteryStatusTotals out = combineBatteryStatus(unknown);
+    EXPECT_FALSE(out.hasPowerRate);
+    EXPECT_FALSE(out.hasChargeCapacity);
+    EXPECT_FALSE(out.hasVoltage);
+    EXPECT_DOUBLE_EQ(out.powerNowW, 0.0);
+    EXPECT_DOUBLE_EQ(out.chargeNowWh, 0.0);
+    EXPECT_EQ(out.voltageMv, 0U);
+
+    const std::array zeroVolts{BatteryStatusReading{.rate = -5'000, .capacity = 10'000, .voltage = 0, .relative = false}};
+    EXPECT_FALSE(combineBatteryStatus(zeroVolts).hasVoltage);
+    EXPECT_FALSE(combineBatteryStatus(std::span<const BatteryStatusReading>{}).hasPowerRate);
+}
+
+TEST(BatteryStatusTest, TwoBatteriesAreSummedAndTheVoltageIsTheFirstOnes)
+{
+    const std::array two{
+        BatteryStatusReading{.rate = -12'500, .capacity = 37'872, .voltage = 11'400, .relative = false},
+        BatteryStatusReading{.rate = 3'000, .capacity = 20'000, .voltage = 12'000, .relative = false},
+    };
+    const BatteryStatusTotals out = combineBatteryStatus(two);
+    EXPECT_DOUBLE_EQ(out.powerNowW, 9.5) << "one pack tops the other up: the net rate";
+    EXPECT_DOUBLE_EQ(out.chargeNowWh, 57.872);
+    EXPECT_EQ(out.voltageMv, 11'400U);
+}
+
+TEST(BatteryStatusTest, APackWithAnUnknownOrRelativeChargeLeavesNoSumButItsRateCounts)
+{
+    // As Linux (#2409): a charge sum missing a pack would read as the whole battery's
+    const std::array unknownCharge{
+        BatteryStatusReading{.rate = -10'000, .capacity = 30'000, .voltage = 11'400, .relative = false},
+        BatteryStatusReading{.rate = -2'000, .capacity = BATTERY_CAPACITY_UNKNOWN_VALUE, .voltage = 12'000, .relative = false},
+    };
+    const BatteryStatusTotals out = combineBatteryStatus(unknownCharge);
+    EXPECT_FALSE(out.hasChargeCapacity);
+    EXPECT_DOUBLE_EQ(out.chargeNowWh, 0.0);
+    EXPECT_DOUBLE_EQ(out.powerNowW, 12.0);
+
+    const std::array relative{
+        BatteryStatusReading{.rate = -10'000, .capacity = 30'000, .voltage = 11'400, .relative = false},
+        BatteryStatusReading{.rate = -40, .capacity = 80, .voltage = 12'000, .relative = true},
+    };
+    const BatteryStatusTotals mixed = combineBatteryStatus(relative);
+    EXPECT_FALSE(mixed.hasChargeCapacity);
+    EXPECT_DOUBLE_EQ(mixed.powerNowW, 10.0) << "the relative pack's rate isn't watts";
+
+    const std::array onlyRelative{BatteryStatusReading{.rate = -40, .capacity = 80, .voltage = 12'000, .relative = true}};
+    const BatteryStatusTotals none = combineBatteryStatus(onlyRelative);
+    EXPECT_FALSE(none.hasPowerRate);
+    EXPECT_FALSE(none.hasChargeCapacity);
+    EXPECT_TRUE(none.hasVoltage) << "volts are volts";
+}
+
+TEST(BatteryStatusTest, TimeToFullComesFromTheChargingRateAsOnLinux)
+{
+    EXPECT_EQ(timeToFullSeconds(30.0, 50.0, -20.0), 3'600U);
+    EXPECT_EQ(timeToFullSeconds(30.0, 50.0, 20.0), 0U) << "discharging";
+    EXPECT_EQ(timeToFullSeconds(30.0, 50.0, -0.05), 0U) << "a trickle gives no estimate";
+    EXPECT_EQ(timeToFullSeconds(50.0, 50.0, -20.0), 0U) << "already full";
 }
 
 // =============================================================================

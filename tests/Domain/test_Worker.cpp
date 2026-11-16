@@ -532,8 +532,8 @@ TEST(WorkerTest, AMergeKeepsTheQueuedJobsStopStateAndMakesNone)
 }
 
 // The same with the real allocation (#3472): the stop state is submit()'s first allocation, and when it fails
-// submit() answers Refused, with nothing queued. Skipped where the hook is compiled out (Windows, sanitizer
-// builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+// submit() answers Refused, with nothing queued. Skipped where the hook is compiled out (Windows debug,
+// sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds and Windows release run it.
 TEST(WorkerTest, AnAllocationFailureAtSubmitIsRefusedAndQueuesNothing)
 {
 #ifdef TASKSMACK_NO_ALLOCATOR_HOOK
@@ -597,7 +597,7 @@ TEST(WorkerTest, AQueuedJobReachesItsBodyWithoutAnAllocation)
 }
 
 /// A job that counts its moves: a debug STL's container move allocates a proxy, so a worker that moved a job
-/// on its way to the body could fail there, after Queued, where the allocation hook can't see it (Windows).
+/// on its way to the body could fail there, after Queued, where the allocation hook can't see it (Windows debug).
 class MoveCountingJob
 {
   public:
@@ -662,8 +662,8 @@ TEST(WorkerTest, AQueuedJobIsNotMovedOnItsWayToItsBody)
 // Low memory on the worker thread is contained: an allocation that fails inside the body (here, the one a
 // publication makes) ends the worker Failed with a reason, and the bookkeeping after it (the failure's
 // record, the queue, idle, a later submit(), the destructor) runs without terminating the process. The
-// allocation hook is per thread, so the body arms it. Skipped where the hook is compiled out (Windows,
-// sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds run it.
+// allocation hook is per thread, so the body arms it. Skipped where the hook is compiled out (Windows debug,
+// sanitizer builds: AllocationFailureHook.h); the Linux debug and release builds and Windows release run it.
 TEST(WorkerTest, AnAllocationFailureInsideTheBodyFailsTheWorkerAndTheProcessGoesOn)
 {
 #ifdef TASKSMACK_NO_ALLOCATOR_HOOK
@@ -730,8 +730,9 @@ TEST(WorkerTest, AFailureWhoseReasonCannotBeCopiedReadsTheFixedText)
 
 // Shutdown allocates nothing, so it can't terminate the process when memory has run out: stop() with a job
 // in flight (and its hook armed) and jobs queued, and the destructor of a worker that failed, both run with
-// the next allocation on their thread made to fail. The hook is compiled out on Windows and in sanitizer
-// builds (AllocationFailureHook.h), where these skip; the Linux debug and release builds run them.
+// the next allocation on their thread made to fail. The hook is compiled out in Windows debug and sanitizer
+// builds (AllocationFailureHook.h), where these skip; the Linux debug and release builds and Windows release
+// run them.
 TEST(WorkerTest, StopAllocatesNothingWithAJobInFlightAndJobsQueued)
 {
 #ifdef TASKSMACK_NO_ALLOCATOR_HOOK
