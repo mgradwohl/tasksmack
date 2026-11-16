@@ -1031,23 +1031,25 @@ std::vector<ImageProcess>& bindings()
 }
 
 constexpr std::string_view UNBOUND = "Its executable can't be found";
+constexpr std::int32_t PROTECTED_PID = 50; ///< A protected process (csrss.exe, say): never bound
 
 SignatureFunctions bindingFunctions()
 {
     SignatureFunctions functions = fakeFunctions();
-    functions.openProcessImage = [](const ImageProcess& process) -> std::expected<BoundImage, std::string>
+    functions.openProcessImage = [](const ImageProcess& process) -> std::expected<BoundImage, BindFailure>
     {
         const std::scoped_lock lock(fakes().mutex);
         bindings().push_back(process);
         const auto bound = boundFiles().find(process.pid);
         if (bound == boundFiles().end())
         {
-            return std::unexpected(std::string(UNBOUND));
+            // PROTECTED_PID can never be bound, as a protected process's memory map isn't shown.
+            return std::unexpected(BindFailure{.why = std::string(UNBOUND), .protectedProcess = process.pid == PROTECTED_PID});
         }
         const auto stamp = fakes().stamps.find(bound->second);
         if (stamp == fakes().stamps.end())
         {
-            return std::unexpected(std::string("Its executable can't be read"));
+            return std::unexpected(BindFailure{.why = "Its executable can't be read", .protectedProcess = false});
         }
         return BoundImage{.image = {.file = nullptr, .stamp = stamp->second}, .path = bound->second};
     };
@@ -1113,8 +1115,7 @@ TEST_F(SignatureBindingTest, AProcessWhoseImageCantBeBoundIsUnknownWithNoPublish
     ASSERT_TRUE(check.has_value());
     EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Unknown);
     const std::string note = check.value_or(SignatureCheck{}).note;
-    EXPECT_TRUE(note.contains("couldn't be confirmed")) << note;
-    EXPECT_TRUE(note.contains(UNBOUND)) << note;
+    EXPECT_EQ(note, std::string(UNBOUND) + "; its signature and publisher weren't read") << "said once, not twice";
     EXPECT_TRUE(check.value_or(SignatureCheck{}).signer.empty());
     EXPECT_TRUE(publisher.empty()) << "read with the answer: none, so the caller shows none";
     EXPECT_EQ(checksOf("C:\\app.exe"), 0) << "no fallback to the path";
@@ -1189,6 +1190,42 @@ TEST_F(SignatureBindingTest, CheckImageWithoutCallsOrWithoutAProcess)
     EXPECT_TRUE(missing.publisher.empty());
     const std::scoped_lock lock(fakes().mutex);
     EXPECT_TRUE(bindings().empty());
+}
+
+// #4021 review: a protected process's image can never be bound (Windows doesn't show its memory map), but it could
+// only start from a file with a protected signer: checked by its path, as before, not left Unknown for its lifetime.
+TEST_F(SignatureBindingTest, AProtectedProcessThatCantBeBoundIsCheckedByItsPath)
+{
+    const std::string csrssPath = R"(C:\Windows\System32\csrss.exe)";
+    setStamp(csrssPath, 1);
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess csrss{.pid = PROTECTED_PID, .startTimeTicks = 100};
+    worker.request(csrssPath, csrss);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    std::string publisher;
+    const std::optional<SignatureCheck> check = worker.find(csrssPath, csrss, &publisher);
+    ASSERT_TRUE(check.has_value());
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Embedded) << check.value_or(SignatureCheck{}).note;
+    EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of " + csrssPath);
+    EXPECT_EQ(publisher, "Publisher of " + csrssPath);
+    EXPECT_EQ(checksOf(csrssPath), 1);
+    EXPECT_EQ(readImagePublisher(bindingFunctions(), csrssPath, csrss), "Publisher of " + csrssPath)
+        << "the publisher fallback falls back the same way";
+}
+
+// #4021 review: the pause between files follows a WinVerifyTrust call only; a failed binding doesn't keep the next
+// file waiting.
+TEST_F(SignatureBindingTest, OnlyARealCheckIsPaused)
+{
+    setStamp("C:\\app.exe", 1);
+    bindTo(8, "C:\\app.exe");
+    WorkerOptions options;
+    options.pause = std::chrono::hours(1);
+    SignatureWorker worker(bindingFunctions(), options);
+    worker.request("C:\\other.exe", ImageProcess{.pid = 9, .startTimeTicks = 1}); // unbound: no check, no pause
+    worker.request("C:\\app.exe", ImageProcess{.pid = 8, .startTimeTicks = 1});   // checked, then the hour's pause
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT)) << "the failed binding didn't pause before the check";
+    EXPECT_EQ(checksOf("C:\\app.exe"), 1);
 }
 
 } // namespace

@@ -16,8 +16,11 @@
 // A process's image is checked as the file it was mapped from (#4021), never the file at its creation-time path: a
 // running image can be renamed and another, signed, file put at the old name. SignatureFunctions::openProcessImage
 // binds to that file (Windows::openProcessImageFile(), the binding Look up on VirusTotal hashes through, #3861) and
-// holds it; the signature and the publisher are both read through that handle. A process whose file can't be bound
-// is answered Unknown, saying why, with no publisher: never the answer for whatever file is at the old path.
+// holds it; the signature is verified through that handle, and the publisher read by the held file's own name while
+// it is held (with an identity check afterwards). A process whose file can't be bound is answered Unknown, saying
+// why, with no publisher: never the answer for whatever file is at the old path. Except a protected process
+// (csrss.exe, lsass.exe as a PPL, ...), whose memory map Windows doesn't show, so it can never be bound: it is
+// checked by its path, as before #4021, since code integrity required a protected signer to start it.
 
 #include "Platform/AsciiCase.h"
 #include "Platform/ImageSignature.h"
@@ -106,6 +109,13 @@ struct BoundImage
     std::string path;
 };
 
+/// Why a process's image couldn't be bound (#4021), and whether the process is protected, so it never can be.
+struct BindFailure
+{
+    std::string why;
+    bool protectedProcess = false;
+};
+
 /// A process by its identity, as the probe knows it: its PID and its creation time (100 ns FILETIME ticks).
 struct ImageProcess
 {
@@ -142,13 +152,14 @@ struct SignatureFunctions
     std::optional<TrustCheck> (*verifyCatalogSignature)(const std::string& path, void* file) = nullptr;
     /// The publisher (CompanyName) in the version info of the file @p file is open on (the handle openImage() or
     /// openProcessImage() gave; @p path names it), empty when it names none (#3703): read by the signature worker
-    /// with each check, through the check's handle (#4021), so the process sampler never opens a new image for it
-    /// and the publisher is the checked file's. Nullable: no publisher is read.
+    /// with each check, while the check holds the file (#4021), so the process sampler never opens a new image for
+    /// it and the publisher is the checked file's. Nullable: no publisher is read.
     std::string (*readPublisher)(const std::string& path, void* file) = nullptr;
     /// The file @p process's image was mapped from, bound and held (#4021; Windows::openProcessImageFile()), with
-    /// its stamp; or why it can't be. Close the file with closeImage(). Nullable: a process's image is opened by
-    /// the path it was asked for, with openImage().
-    std::expected<BoundImage, std::string> (*openProcessImage)(const ImageProcess& process) = nullptr;
+    /// its stamp; or why it can't be, and whether the process is protected (then it is checked by its path). Close
+    /// the file with closeImage(). Nullable: a process's image is opened by the path it was asked for, with
+    /// openImage().
+    std::expected<BoundImage, BindFailure> (*openProcessImage)(const ImageProcess& process) = nullptr;
 };
 
 /// WinVerifyTrust results (HRESULTs) that the check tells apart.
@@ -353,6 +364,7 @@ struct ImageCheck
 {
     SignatureCheck check;
     std::string publisher;
+    bool verified = false; ///< WinVerifyTrust was called (not a cached answer, nor a file that couldn't be opened)
 };
 
 /// The publisher of the file @p file is open on, through @p fns (empty without readPublisher). One that can't be read
@@ -374,8 +386,8 @@ struct ImageCheck
 }
 
 /// The check of @p image, held open (and closed here), as @p path: the embedded signature, else the catalogs, both
-/// read through its handle, and with @p withPublisher the publisher through the same handle; from @p cache (nullable)
-/// when it already holds @p cacheKey with the same file stamp.
+/// read through its handle, and with @p withPublisher the publisher while it is held; from @p cache (nullable) when
+/// it already holds @p cacheKey with the same file stamp.
 [[nodiscard]] inline ImageCheck checkHeldImage(const SignatureFunctions& fns,
                                                SignatureCache* cache,
                                                const std::string& path,
@@ -412,6 +424,7 @@ struct ImageCheck
     {
         check.signer = std::move(catalog->signer);
     }
+    answer.verified = true;
     answer.publisher = withPublisher ? readHeldPublisher(fns, path, image.file) : std::string{};
     if (cache != nullptr && verdict.signature != ImageSignature::Unknown)
     {
@@ -430,16 +443,16 @@ struct ImageCheck
 /// The note on a process's check when the file its image was mapped from can't be bound (#4021): @p why.
 [[nodiscard]] inline std::string unboundImageNote(std::string_view why)
 {
-    return std::format("The file this process runs couldn't be confirmed, so its signature and publisher weren't read: {}", why);
+    return std::format("{}; its signature and publisher weren't read", why);
 }
 
 /// The signature of the image @p process runs, and its publisher (#4021): the file its image was mapped from, bound
-/// and held by openProcessImage(), checked and read through that handle, never the file at @p path (the name it
-/// started with, which another file may have taken since). The answer is cached under the bound file's own name and
-/// stamp, so a second process of the same file costs a binding and a stamp read, and a decoy at the old name keeps
-/// its own entry. Without openProcessImage, or with no @p process, @p path is opened and checked as checkSignature()
-/// does, cached under @p cacheKey. NotChecked when the table has no signature calls; Unknown, with no publisher, when
-/// the file can't be bound or opened.
+/// and held by openProcessImage(), verified through that handle and its publisher read while it is held, never the
+/// file at @p path (the name it started with, which another file may have taken since); a protected process, which
+/// can't be bound, by @p path. The answer is cached under the bound file's own name and stamp, so a second process of the same file costs a
+/// binding and a stamp read, and a decoy at the old name keeps its own entry. Without openProcessImage, or with no @p process, @p path is
+/// opened and checked as checkSignature() does, cached under @p cacheKey. NotChecked when the table has no signature calls; Unknown, with
+/// no publisher, when the file can't be bound or opened.
 [[nodiscard]] inline ImageCheck checkImage(const SignatureFunctions& fns,
                                            SignatureCache* cache,
                                            const std::string& path,
@@ -452,15 +465,31 @@ struct ImageCheck
     }
     if (process.has_value() && fns.openProcessImage != nullptr)
     {
-        std::expected<BoundImage, std::string> bound = fns.openProcessImage(*process);
-        if (!bound.has_value())
+        std::expected<BoundImage, BindFailure> bound = fns.openProcessImage(*process);
+        if (bound.has_value())
+        {
+            std::string boundKey;
+            try
+            {
+                boundKey = pathKey(bound->path);
+            }
+            catch (...)
+            {
+                fns.closeImage(bound->image.file); // checkHeldImage() closes it from here on
+                throw;
+            }
+            return checkHeldImage(fns, cache, bound->path, boundKey, bound->image, true);
+        }
+        if (!bound.error().protectedProcess)
         {
             return {
-                .check = {.signature = ImageSignature::Unknown, .note = unboundImageNote(bound.error()), .signer = {}},
+                .check = {.signature = ImageSignature::Unknown, .note = unboundImageNote(bound.error().why), .signer = {}},
                 .publisher = {},
+                .verified = false,
             };
         }
-        return checkHeldImage(fns, cache, bound->path, pathKey(bound->path), bound->image, true);
+        // A protected process can't be bound (Windows doesn't show its memory map) but could only start from a file
+        // with a protected signer: checked by its path, as before #4021.
     }
     const std::optional<OpenedImage> image = fns.openImage(path);
     if (!image.has_value())
@@ -493,7 +522,7 @@ checkSignature(const SignatureFunctions& fns, SignatureCache* cache, const std::
     return checkHeldImage(fns, cache, path, cacheKey, *image, false).check;
 }
 
-/// The publisher of the image @p process runs, read through the handle openProcessImage() binds (#4021), or with no
+/// The publisher of the image @p process runs, read while openProcessImage() holds its file (#4021), or with no
 /// binding (no openProcessImage, or no @p process) through openImage()'s of @p path; empty when the file can't be
 /// opened or names none. For the probe once the signature worker has ended (#3862): the publisher it reads is still
 /// the bound file's, never the file at the old path.
@@ -506,13 +535,17 @@ readImagePublisher(const SignatureFunctions& fns, const std::string& path, const
     }
     if (process.has_value() && fns.openProcessImage != nullptr)
     {
-        std::expected<BoundImage, std::string> bound = fns.openProcessImage(*process);
-        if (!bound.has_value())
+        std::expected<BoundImage, BindFailure> bound = fns.openProcessImage(*process);
+        if (bound.has_value())
+        {
+            const ImageCloser closer(fns.closeImage, bound->image.file);
+            return readHeldPublisher(fns, bound->path, bound->image.file);
+        }
+        if (!bound.error().protectedProcess)
         {
             return {};
         }
-        const ImageCloser closer(fns.closeImage, bound->image.file);
-        return readHeldPublisher(fns, bound->path, bound->image.file);
+        // A protected process: by its path, as checkImage() checks it.
     }
     if (fns.openImage == nullptr)
     {

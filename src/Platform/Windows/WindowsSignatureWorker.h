@@ -12,11 +12,15 @@
 //   and handed over with the answer (#3703): a new image's version info is file I/O, tens of milliseconds while
 //   the file is first scanned, which the process sampler then never waits on.
 // - A process's request names the process too (#4021): its check binds to the file its image was mapped from
-//   (SignatureFunctions::openProcessImage) and reads the signature and the publisher through that handle, never the
-//   file at the path, which a running process can rename its image away from and leave a signed decoy at. So its
+//   (SignatureFunctions::openProcessImage), verifies the signature through that handle and reads the publisher by
+//   the held file's own name while it is held, never the file at the path, which a running process can rename its
+//   image away from and leave a signed decoy at. So its
 //   answer is the process's own, kept under its path and its identity: thirty svchost.exe processes are thirty
 //   bindings, but one WinVerifyTrust check, the rest from the cache by the bound file's stamp. A process whose file
-//   can't be bound is answered Unknown, saying why, with no publisher.
+//   can't be bound is answered Unknown, saying why, with no publisher; a protected one, which never can be, is
+//   checked by its path.
+// - The pause between files follows a WinVerifyTrust call only: an answer from the cache, or a file that couldn't
+//   be opened or bound, costs no check, so the next file isn't kept waiting for it.
 //
 // - Cached by path and {file ID, change time, size} (SignatureCache, bounded; #3292): a second process of
 //   the same image costs a file open and stamp read, not another check, and a file replaced or changed is
@@ -522,7 +526,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
                 m_Checking = true;
             }
             const std::string& key = queued.key;
-            // The check and the publisher in the same pass (#3703), through the one handle the check holds (#4021),
+            // The check and the publisher in the same pass (#3703), while the check holds the file (#4021),
             // at the worker's background priority, off the sampler. An unreadable publisher is none; it doesn't
             // change the check's answer. A bound check is cached by the bound file's own name, a path's by the path;
             // the stamp says which file either way.
@@ -533,8 +537,14 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
             }
             catch (const std::exception& e)
             {
-                answer = ImageCheck{.check = {.signature = ImageSignature::Unknown, .note = e.what(), .signer = {}}, .publisher = {}};
+                // It may have got as far as WinVerifyTrust: paced as a check.
+                answer = ImageCheck{
+                    .check = {.signature = ImageSignature::Unknown, .note = e.what(), .signer = {}},
+                    .publisher = {},
+                    .verified = true,
+                };
             }
+            const bool verified = answer.verified;
             {
                 const std::scoped_lock lock(m_Mutex);
                 if (const auto found = m_Paths.find(key); found != m_Paths.end())
@@ -550,7 +560,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
                     m_Idle.notify_all();
                 }
             }
-            if (m_Options.pause.count() > 0)
+            if (m_Options.pause.count() > 0 && verified)
             {
                 // A gentle pace; the stop (the job's own token, signalled by the destructor) ends it at once.
                 std::unique_lock lock(m_Mutex);

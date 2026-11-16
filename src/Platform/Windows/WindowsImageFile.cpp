@@ -84,13 +84,15 @@ constexpr DWORD IMAGE_NAME_CHARS = 32768; // the longest path Windows allows, wi
 /// for a real mismatch (another file, another size); a check that can't be made says so instead (unconfirmed()).
 [[nodiscard]] std::string imageReplaced(std::string_view notDone)
 {
-    return std::format("Its executable was renamed or replaced while it was read, so the file there isn't the image it runs; {}", notDone);
+    return std::format("Its executable was renamed or replaced while it was read, so the file there isn't the image it runs{}{}",
+                       notDone.empty() ? "" : "; ",
+                       notDone);
 }
 
 /// The refusal when the image's file can't be confirmed for a reason that isn't a mismatch (#3861): @p why.
 [[nodiscard]] std::string unconfirmed(std::string_view why, std::string_view notDone)
 {
-    return std::format("Its executable couldn't be confirmed as the image it runs ({}), so {}", why, notDone);
+    return std::format("Its executable couldn't be confirmed as the image it runs ({}){}{}", why, notDone.empty() ? "" : ", so ", notDone);
 }
 
 /// Opens the NT name @p ntName (\Device\HarddiskVolumeN\..., as GetMappedFileNameW writes it) through the Win32
@@ -153,7 +155,7 @@ struct ImageLocation
 /// preferred base) has nothing there: then it is the image whose file still has the name the process started with
 /// (QueryFullProcessImageNameW's native name). One both mapped elsewhere and renamed can't be found, and says so.
 [[nodiscard]] std::expected<ImageLocation, std::string>
-locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std::string_view notDone)
+locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std::string_view notDone, bool entryPointOnly)
 {
     if (isImageAt(fns, process, entryPoint))
     {
@@ -168,6 +170,14 @@ locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std
             return std::unexpected(std::string("Its executable can't be read: Windows doesn't show which file a protected process runs"));
         }
         return std::unexpected(std::format("Its executable can't be read: {}", describe(name.error())));
+    }
+    if (entryPointOnly)
+    {
+        // Found by name, the image could be any file mapped under that name: a process can rename its own image away,
+        // copy a signed file to the old name, map it as a resource and pad itself to its size (#4021 review). So the
+        // signature check doesn't take it.
+        return std::unexpected(
+            std::string("Its executable couldn't be confirmed: its image isn't where Windows says it is (its entry point)"));
     }
     if (fns.queryFullProcessImageName == nullptr) // isImageAt() said no, so virtualQueryEx is there
     {
@@ -185,7 +195,8 @@ locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std
         return std::move(*found);
     }
     return std::unexpected(std::format("Its executable can't be found: its image isn't at its entry point or under the name it "
-                                       "started with, so it may have been renamed; {}",
+                                       "started with, so it may have been renamed{}{}",
+                                       notDone.empty() ? "" : "; ",
                                        notDone));
 }
 
@@ -226,7 +237,7 @@ std::optional<FileIdentity> fileIdentity(HANDLE file)
 }
 
 std::expected<UniqueHandle, std::string>
-openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t pid, std::string_view notDone)
+openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t pid, std::string_view notDone, bool entryPointOnly)
 {
     if (fns.ntQueryInformationProcess == nullptr || fns.getMappedFileName == nullptr)
     {
@@ -245,7 +256,7 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
     {
         return std::unexpected(std::string("Its executable can't be read: Windows reports no image for it"));
     }
-    const std::expected<ImageLocation, std::string> image = locateImage(fns, process, info.TransferAddress, notDone);
+    const std::expected<ImageLocation, std::string> image = locateImage(fns, process, info.TransferAddress, notDone, entryPointOnly);
     if (!image.has_value())
     {
         return std::unexpected(image.error());

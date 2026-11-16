@@ -78,10 +78,12 @@ struct FileIdentity
 
 /// The file @p process's image was mapped from (see the top of this file), open for GENERIC_READ and shared for read
 /// only, or why not. @p process is a handle with PROCESS_QUERY_LIMITED_INFORMATION, already checked to be the
-/// process meant (Windows::openProcessVerified()); @p pid names it in the messages. @p notDone ends a refusal that
+/// process meant (Windows::openProcessVerified()); @p pid names it in the messages. With @p entryPointOnly, an image
+/// that isn't at its entry point is refused rather than looked for by the name it started with, which a process can
+/// put another mapped file under (the signature check, #4021). @p notDone (may be empty) ends a refusal that
 /// says what wasn't done with the file ("it wasn't hashed").
-[[nodiscard]] std::expected<UniqueHandle, std::string>
-openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t pid, std::string_view notDone);
+[[nodiscard]] std::expected<UniqueHandle, std::string> openProcessImageFile(
+    const ImageFileFunctions& fns, HANDLE process, std::int32_t pid, std::string_view notDone, bool entryPointOnly = false);
 
 /// The name @p file has now (GetFinalPathNameByHandleW): a drive-letter path where its volume has one, else its NT
 /// name under \\?\GLOBALROOT. Empty when it can't be read. While the file is held without FILE_SHARE_DELETE (as

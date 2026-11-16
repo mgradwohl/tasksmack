@@ -93,9 +93,11 @@ verifyCatalogSignature(const TrustApiFunctions& fns, const std::wstring& path, H
 /// The file the image of @p process was mapped from, bound and held for its signature check (#4021): the process
 /// opened through the identity check every reader makes (Windows::openProcessVerified(), so a reused PID is refused),
 /// then Windows::openProcessImageFile(), the binding Look up on VirusTotal hashes through (#3861), with the held
-/// file's stamp and the name it has now. Or why it can't be bound. Close the file with closeImage(). Not in
-/// systemSignatureFunctions(): the process probe sets it (SignatureFunctions::openProcessImage).
-[[nodiscard]] std::expected<WindowsSignature::BoundImage, std::string>
+/// file's stamp and the name it has now. Only an image at its entry point binds: one found by the name it started
+/// with could be another file mapped under that name. Or why it can't be bound, and whether the process is protected
+/// (GetProcessInformation's ProcessProtectionLevelInfo), so it is checked by its path. Close the file with
+/// closeImage(). Not in systemSignatureFunctions(): the process probe sets it (SignatureFunctions::openProcessImage).
+[[nodiscard]] std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure>
 openProcessImageForCheck(const WindowsSignature::ImageProcess& process);
 
 /// The system's calls, as WindowsImageSignature.h's checkSignature() takes them (UTF-8 paths).

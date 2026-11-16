@@ -1028,7 +1028,7 @@ std::string readHeldImagePublisher(const std::string& /*path*/, void* file)
 }
 
 /// The system's signature calls, with each process's image bound to the file it was mapped from and the publisher
-/// read through the check's handle (#3703, #4021).
+/// read while the check holds the file (#3703, #4021).
 WindowsSignature::SignatureFunctions signatureFunctionsWithPublisher()
 {
     WindowsSignature::SignatureFunctions functions = Windows::systemSignatureFunctions();

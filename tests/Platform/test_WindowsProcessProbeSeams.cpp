@@ -2025,13 +2025,13 @@ WindowsSignature::SignatureFunctions bindingSignatureFunctions()
 {
     WindowsSignature::SignatureFunctions functions = fakeSignatureFunctions();
     functions.openProcessImage =
-        [](const WindowsSignature::ImageProcess& process) -> std::expected<WindowsSignature::BoundImage, std::string>
+        [](const WindowsSignature::ImageProcess& process) -> std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure>
     {
         const std::scoped_lock lock(fakeBindings().mutex);
         fakeBindings().asked.push_back(process);
         if (fakeBindings().refuse)
         {
-            return std::unexpected(std::string("Its executable can't be found"));
+            return std::unexpected(WindowsSignature::BindFailure{.why = "Its executable can't be found", .protectedProcess = false});
         }
         const WindowsSignature::FileId id{.volumeSerial = 1, .id = {2}};
         return WindowsSignature::BoundImage{
@@ -2095,7 +2095,7 @@ TEST_F(WindowsProcessProbeSeamTest, AnImageThatCantBeBoundShowsUnknownAndNoPubli
 
     const ProcessCounters process = sampleUntilSigned(probe);
     EXPECT_EQ(process.signature.get().signature, ImageSignature::Unknown);
-    EXPECT_TRUE(process.signature.get().note.contains("couldn't be confirmed")) << process.signature.get().note;
+    EXPECT_TRUE(process.signature.get().note.contains("weren't read")) << process.signature.get().note;
     EXPECT_TRUE(process.publisher.empty()) << process.publisher;
     fake().now += std::chrono::hours(1); // Past every TTL: still none, never read from the path
     EXPECT_TRUE(find(probe.enumerate()).publisher.empty());
