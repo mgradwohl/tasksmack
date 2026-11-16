@@ -11,6 +11,7 @@
 #include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/UdpTrafficSamples.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
 
 #include <gtest/gtest.h>
@@ -190,9 +191,9 @@ TEST(EtwNetCountersTest, ClearEmptiesIt)
 
 TEST(EtwNetSamplesTest, UdpKeysHaveBit63SetAndDifferPerProcess)
 {
-    EXPECT_NE(udpSocketKey(10) & (std::uint64_t{1} << 63U), 0U);
-    EXPECT_NE(udpSocketKey(10), udpSocketKey(11));
-    EXPECT_NE(udpSocketKey(0), 0U); // 0 is the accumulator's "no key"
+    EXPECT_NE(UdpTraffic::socketKey(10) & (std::uint64_t{1} << 63U), 0U);
+    EXPECT_NE(UdpTraffic::socketKey(10), UdpTraffic::socketKey(11));
+    EXPECT_NE(UdpTraffic::socketKey(0), 0U); // 0 is the accumulator's "no key"
 }
 
 TEST(EtwNetSamplesTest, EachProcessBecomesOneReadableConnection)
@@ -202,10 +203,10 @@ TEST(EtwNetSamplesTest, EachProcessBecomesOneReadableConnection)
         UdpProcessTraffic{.pid = 10, .bytesSent = 300, .bytesReceived = 400},
         UdpProcessTraffic{.pid = 20, .bytesSent = 1, .bytesReceived = 0},
     };
-    appendUdpSamples(sockets, udp);
+    UdpTraffic::appendSamples(sockets, udp);
     ASSERT_EQ(sockets.size(), 3U);
     EXPECT_EQ(sockets[0].key, 5U); // The TCP rows stay as they were
-    EXPECT_EQ(sockets[1].key, udpSocketKey(10));
+    EXPECT_EQ(sockets[1].key, UdpTraffic::socketKey(10));
     EXPECT_EQ(sockets[1].pid, 10);
     EXPECT_EQ(sockets[1].bytesSent, 300U);
     EXPECT_EQ(sockets[1].bytesReceived, 400U);
@@ -230,7 +231,7 @@ struct UdpTrafficHarness
     {
         nowNs += SECOND_NS;
         SocketTrafficReading reading{.sockets = {SocketTrafficSample{.key = 1, .pid = PID}}, .sampleTimeNs = nowNs};
-        appendUdpSamples(reading.sockets, counters.sample(idleSamplesBeforeForget));
+        UdpTraffic::appendSamples(reading.sockets, counters.sample(idleSamplesBeforeForget));
         std::vector<ProcessCounters> processes(1);
         processes[0].pid = PID;
         accumulator.apply(reading, processes);

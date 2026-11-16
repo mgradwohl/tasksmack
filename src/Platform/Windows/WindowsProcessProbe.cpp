@@ -7,7 +7,7 @@
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/IoPriorityTypes.h"
 #include "Platform/ThreadName.h"
-#include "Platform/Windows/WindowsEtwNetMath.h"
+#include "Platform/UdpTrafficSamples.h"
 #include "WindowsEnergyMeter.h"
 #include "WindowsEnergyMeterMath.h"
 #include "WindowsProcessActionsMath.h"
@@ -2025,7 +2025,7 @@ SocketTrafficReading WindowsProcessProbe::readSocketTraffic() const
         if (const std::shared_ptr<IUdpTrafficCollector> udp = udpCollector(); udp != nullptr)
         {
             const std::vector<UdpProcessTraffic> udpTraffic = udp->sample();
-            EtwNet::appendUdpSamples(reading.sockets, udpTraffic);
+            UdpTraffic::appendSamples(reading.sockets, udpTraffic);
         }
     }
     return reading;

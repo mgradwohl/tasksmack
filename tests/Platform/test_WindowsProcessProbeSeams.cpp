@@ -10,6 +10,7 @@
 #include "Platform/ImageSignature.h"
 #include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
+#include "Platform/UdpTrafficSamples.h"
 #include "Platform/Windows/WindowsAppIdentity.h"
 #include "Platform/Windows/WindowsEtwNetCollector.h"
 #include "Platform/Windows/WindowsEtwNetMath.h"
@@ -1746,7 +1747,7 @@ TEST_F(WindowsProcessProbeSeamTest, TcpOnlyUntilTheUdpCollectorDelivers)
     const SocketTrafficReading reading = probe.readSocketTraffic();
     ASSERT_EQ(reading.sockets.size(), 4U); // The three TCP connections, then process 10's UDP
     const SocketTrafficSample& udpSample = reading.sockets.back();
-    EXPECT_EQ(udpSample.key, EtwNet::udpSocketKey(10));
+    EXPECT_EQ(udpSample.key, UdpTraffic::socketKey(10));
     EXPECT_EQ(udpSample.pid, 10);
     EXPECT_EQ(udpSample.bytesSent, 500U);
     EXPECT_EQ(udpSample.bytesReceived, 600U);
