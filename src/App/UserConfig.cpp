@@ -1494,14 +1494,21 @@ void UserConfig::reportBackgroundSaveFailure() const
     spdlog::warn("Settings weren't saved to {}; the next change tries again", Core::pathToUtf8(m_ConfigPath));
 }
 
+void UserConfig::applyFontSettings() const
+{
+    auto& theme = UI::Theme::get();
+    theme.setFontPointSize(m_Settings.fontPointSize);                 // UILayer builds (or rebuilds) the fonts at it (#3375)
+    theme.setInterfaceScalePercent(m_Settings.interfaceScalePercent); // and at this scale (#3376)
+}
+
 void UserConfig::applyToApplication() const
 {
     auto& theme = UI::Theme::get();
 
-    // Apply theme and font size
+    // Apply theme and font size. main() already applied the font size and scale before UILayer built its fonts
+    // (#3876), so they are unchanged here unless something set them since.
     theme.setThemeById(m_Settings.themeId);
-    theme.setFontPointSize(m_Settings.fontPointSize);                 // UILayer rebuilds the fonts at it next frame (#3375)
-    theme.setInterfaceScalePercent(m_Settings.interfaceScalePercent); // UILayer rebuilds at it next frame (#3376)
+    applyFontSettings();
 
     // Push the anti-aliasing preference and the smoothing knobs into UI (which must not depend on
     // App/UserConfig directly -- see tasksmack.md's Dependency Rules). All config-file-only, not
