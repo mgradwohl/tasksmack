@@ -292,7 +292,7 @@ struct BatteryStatusTotals
 ///   when any battery gives one.
 /// - Remaining charge: the sum in Wh, only when every battery gives a known mWh figure, so a battery
 ///   whose charge is unknown or in relative units neither drops out of the sum nor inflates it.
-/// - Voltage: the first battery's, as a combined voltage would mean nothing.
+/// - Voltage: the first battery's that reports one, as a combined voltage would mean nothing.
 /// Relative-unit batteries give no rate or charge: their scale is the driver's own.
 [[nodiscard]] inline BatteryStatusTotals combineBatteryStatus(std::span<const BatteryStatusReading> batteries) noexcept
 {
@@ -324,9 +324,15 @@ struct BatteryStatusTotals
     totals.powerNowW = totals.hasPowerRate ? -static_cast<double>(rateMw) / 1000.0 : 0.0;
     totals.hasChargeCapacity = everyCapacityKnown;
     totals.chargeNowWh = everyCapacityKnown ? static_cast<double>(capacityMwh) / 1000.0 : 0.0;
-    const std::uint32_t voltage = batteries.front().voltage;
-    totals.hasVoltage = voltage != BATTERY_VOLTAGE_UNKNOWN_VALUE && voltage > 0;
-    totals.voltageMv = totals.hasVoltage ? voltage : 0;
+    for (const BatteryStatusReading& battery : batteries)
+    {
+        if (battery.voltage != BATTERY_VOLTAGE_UNKNOWN_VALUE && battery.voltage > 0)
+        {
+            totals.hasVoltage = true;
+            totals.voltageMv = battery.voltage;
+            break;
+        }
+    }
     return totals;
 }
 
