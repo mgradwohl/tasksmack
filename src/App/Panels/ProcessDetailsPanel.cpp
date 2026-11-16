@@ -131,7 +131,7 @@ ProcessPriorityView& ProcessDetailsPanel::priorityViewForTesting() noexcept
 ProcessDetailsPanel::ProcessDetailsPanel() : ProcessDetailsPanel(makeProcessDetailsReaders(Synthetic::activeScenario()))
 {
     // Look up on VirusTotal's client (#3094), made with the panel; the tests' constructors bring none.
-    m_LookupClient = makeLookupClient(Synthetic::activeScenario(), SelectOverride::testHookActive());
+    m_LookupClient = makeHttpsClient(Synthetic::activeScenario(), SelectOverride::testHookActive());
 }
 
 ProcessDetailsPanel::ProcessDetailsPanel(ProcessDetailsReaders readers)

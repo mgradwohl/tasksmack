@@ -87,19 +87,15 @@ void preparePanelPlatforms(const Synthetic::Scenario* scenario);
 /// makes the per-user entries read-only in a TaskSmack elevated as another account (#3671).
 [[nodiscard]] StartupPanelPlatform makeStartupPanelPlatform(const Synthetic::Scenario* scenario);
 
-/// The System Information tab's probe: the platform's, in every run.
-[[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoPanelProbe(const Synthetic::Scenario* scenario);
-/// The System tab's sensor sampler's own probe (#2737), for readSensors() only: unbrokered, and safe to
-/// build off the UI thread (the sampler's first pass builds it).
-[[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSensorProbe(const Synthetic::Scenario* scenario);
+/// A System Information probe: the platform's, in every run (#3881). The System Information tab's model takes one, and
+/// the System tab's sensor sampler its own (#2737), for readSensors() only, built on the sampler's first pass, off
+/// the UI thread, which is safe: making it reads nothing and touches no shared state.
+[[nodiscard]] std::unique_ptr<Platform::ISystemInfoProbe> makeSystemInfoProbe(const Synthetic::Scenario* scenario);
 
-/// The HTTPS client the opt-in update check sends its request with (#3093): the platform's (null on Linux,
-/// which has none yet), or null in a synthetic run or while a test hook is set (@p testHookActive), where
-/// the check isn't offered. Making it opens and sends nothing.
-[[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeUpdateCheckClient(const Synthetic::Scenario* scenario, bool testHookActive);
-/// The client Look up on VirusTotal asks through (#3094): none for a made-up machine or an unattended test run, as
-/// for the update check.
-[[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeLookupClient(const Synthetic::Scenario* scenario, bool testHookActive);
+/// The HTTPS client the opt-in network features ask through, the update check (#3093) and Look up on VirusTotal
+/// (#3094): the platform's, or null in a synthetic run or while a test hook is set (@p testHookActive), where neither
+/// is offered. Making it opens and sends nothing.
+[[nodiscard]] std::shared_ptr<Platform::IHttpsClient> makeHttpsClient(const Synthetic::Scenario* scenario, bool testHookActive);
 
 /// The sign-in entry Settings' "Start TaskSmack when I sign in" reads and writes (#3093, part 2): the
 /// platform's (null on Linux, which has none yet), or null in a synthetic run or while a test hook is set
