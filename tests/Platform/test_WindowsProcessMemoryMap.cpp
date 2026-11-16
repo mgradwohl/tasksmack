@@ -2,8 +2,10 @@
 /// @brief Platform::Windows::WindowsProcessMemoryMapReader (#3089): the pure decoding (page protection,
 /// region kind, a region as a MemoryMapping), the NT device paths as drive paths, and the walk against
 /// fake kernel32 calls: free regions left out, a mapped file named once per allocation, the limited-right
-/// fallback, a denied open, a reused PID, a query that fails or finds the process gone, and the cap. Plus a
-/// read-only walk of this test process through the real calls.
+/// fallback, a denied open, a reused PID, a query that fails or finds the process gone, and the cap; and each
+/// committed region's resident, shared and private pages from QueryWorkingSetEx (#4031): the counting, the
+/// batches, the caps, the limited right and a refused query. Plus a read-only walk of this test process
+/// through the real calls.
 
 #include "Domain/ProcessMemoryMap.h"
 #include "Platform/IProcessActions.h"
@@ -18,6 +20,7 @@
 #include <cstdint>
 #include <limits>
 #include <map>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -54,6 +57,9 @@ struct FakeProcess
     int exitAfterQueries = -1;                    // >= 0: the process exits after this many queries
     std::vector<FakeRegion> regions;              // in address order, contiguous from 0 to ADDRESS_TOP
     std::map<std::uintptr_t, std::wstring> files; // allocation base -> NT path
+    std::map<std::uintptr_t, ULONG_PTR> pages;    // page address -> its working-set block's Flags (absent: not resident)
+    DWORD workingSetError = 0;                    // non-zero: every QueryWorkingSetEx fails with it
+    std::vector<std::size_t> workingSetBatches;   // the pages each QueryWorkingSetEx call asked about
     std::vector<DWORD> openAccess;
     int queries = 0;
     int nameCalls = 0;
@@ -183,6 +189,53 @@ DWORD WINAPI fakeQueryDosDevice(LPCWSTR name, LPWSTR target, DWORD size)
     return static_cast<DWORD>(device.size() + 2);
 }
 
+BOOL WINAPI fakeQueryWorkingSetEx(HANDLE process, PVOID buffer, DWORD bytes)
+{
+    EXPECT_EQ(process, fakeProcessHandle());
+    EXPECT_EQ(bytes % sizeof(PSAPI_WORKING_SET_EX_INFORMATION), 0U);
+    const std::size_t count = bytes / sizeof(PSAPI_WORKING_SET_EX_INFORMATION);
+    fake().workingSetBatches.push_back(count);
+    if (fake().workingSetError != 0)
+    {
+        SetLastError(fake().workingSetError);
+        return FALSE;
+    }
+    for (PSAPI_WORKING_SET_EX_INFORMATION& entry : std::span(static_cast<PSAPI_WORKING_SET_EX_INFORMATION*>(buffer), count))
+    {
+        const auto page = fake().pages.find(reinterpret_cast<std::uintptr_t>(entry.VirtualAddress));
+        entry.VirtualAttributes.Flags = page != fake().pages.end() ? page->second : 0;
+    }
+    return TRUE;
+}
+
+/// A working-set block: a resident page (or not), its share count, protection and whether it's shareable.
+PSAPI_WORKING_SET_EX_BLOCK pageBlock(bool valid, unsigned shareCount, DWORD protection, bool shareable)
+{
+    PSAPI_WORKING_SET_EX_BLOCK block{};
+    // NOLINTBEGIN(cppcoreguidelines-pro-type-union-access) - the valid layout of the block's union
+    block.Valid = valid ? 1U : 0U;
+    block.ShareCount = shareCount;
+    block.Win32Protection = protection;
+    block.Shared = shareable ? 1U : 0U;
+    // NOLINTEND(cppcoreguidelines-pro-type-union-access)
+    return block;
+}
+
+/// pageBlock()'s Flags, as the fake answers them.
+ULONG_PTR pageFlags(bool valid, unsigned shareCount, DWORD protection, bool shareable)
+{
+    return pageBlock(valid, shareCount, protection, shareable).Flags;
+}
+
+/// Marks @p count pages from @p first resident, with @p flags.
+void residentPages(std::uintptr_t first, std::size_t count, ULONG_PTR flags)
+{
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        fake().pages[first + (i * WORKING_SET_PAGE_BYTES)] = flags;
+    }
+}
+
 ProcessMemoryMapFunctions fakeApi()
 {
     return {
@@ -194,6 +247,7 @@ ProcessMemoryMapFunctions fakeApi()
         .getMappedFileName = &fakeGetMappedFileName,
         .getLogicalDrives = &fakeGetLogicalDrives,
         .queryDosDevice = &fakeQueryDosDevice,
+        .queryWorkingSetEx = &fakeQueryWorkingSetEx,
     };
 }
 
@@ -308,7 +362,7 @@ TEST(WindowsMemoryMapDecodingTest, ARegionAsAMapping)
     EXPECT_EQ(code.kind, MemoryMappingKind::Image);
     EXPECT_EQ(code.path, "C:\\Windows\\System32\\ntdll.dll");
     EXPECT_EQ(code.fileOffset, 0U);
-    EXPECT_FALSE(code.residentBytes.has_value()); // Windows measures none of smaps' sizes
+    EXPECT_FALSE(code.residentBytes.has_value()); // the read adds the working-set sizes, not the decoding
     EXPECT_FALSE(code.pssBytes.has_value());
 
     info.Protect = PAGE_WRITECOPY;
@@ -335,6 +389,36 @@ TEST(WindowsMemoryMapDecodingTest, ARegionAsAMapping)
     info.Protect = PAGE_READWRITE;
     EXPECT_EQ(toMapping(info, {}).kind, MemoryMappingKind::Other);
     EXPECT_TRUE(toMapping(info, {}).shared);
+}
+
+TEST(WindowsMemoryMapDecodingTest, CountsResidentPagesBySharingAndWriting)
+{
+    WorkingSetPages pages;
+    countPage(pages, pageBlock(false, 0, 0, false)); // not resident: nothing
+    countPage(pages, pageBlock(false, 0, 0, true));
+    EXPECT_EQ(pages, WorkingSetPages{});
+
+    countPage(pages, pageBlock(true, 0, PAGE_READWRITE, false));         // private memory, writable
+    countPage(pages, pageBlock(true, 0, PAGE_EXECUTE_READWRITE, false)); // JIT code
+    countPage(pages, pageBlock(true, 1, PAGE_EXECUTE_READ, true));       // a DLL's code only this process maps
+    countPage(pages, pageBlock(true, 1, PAGE_WRITECOPY, true));          // its copy-on-write data, not yet written
+    countPage(pages, pageBlock(true, 4, PAGE_EXECUTE_READ, true));       // ntdll's code, in every process
+    countPage(pages, pageBlock(true, 7, PAGE_READONLY | PAGE_GUARD, true));
+    countPage(pages, pageBlock(true, 2, PAGE_READWRITE, true));  // a shared section, writable
+    countPage(pages, pageBlock(true, 3, PAGE_READWRITE, false)); // a share count without Shared: private
+    EXPECT_EQ(pages, (WorkingSetPages{.sharedClean = 2, .sharedDirty = 1, .privateClean = 2, .privateDirty = 3}));
+    EXPECT_EQ(pages.resident(), 8U);
+
+    MemoryMapping mapping;
+    setWorkingSetSizes(mapping, pages);
+    EXPECT_EQ(mapping.residentBytes, 8 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(mapping.sharedCleanBytes, 2 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(mapping.sharedDirtyBytes, 1 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(mapping.privateCleanBytes, 2 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(mapping.privateDirtyBytes, 3 * WORKING_SET_PAGE_BYTES);
+    EXPECT_FALSE(mapping.pssBytes.has_value()); // Windows has no proportional-set or per-region swap figure
+    EXPECT_FALSE(mapping.swapBytes.has_value());
+    EXPECT_FALSE(mapping.swapPssBytes.has_value());
 }
 
 TEST(WindowsMemoryMapDecodingTest, ProtectionInWindowsWordsAndMapsLetters)
@@ -444,8 +528,11 @@ TEST_F(WindowsProcessMemoryMapTest, TheTotalsByKindAndFileFromWindowsRegions)
     EXPECT_EQ(summary.all.mappings, 7U);
     EXPECT_EQ(summary.all.reservedBytes, 0xF0000U);
     EXPECT_EQ(summary.all.sizeBytes, 0x10000U + 0x4000U + 0x2000U + 0x14000U);
-    EXPECT_FALSE(summary.all.residentBytes.has_value()); // absent, not "0 B"
-    EXPECT_FALSE(summary.all.privateBytes.has_value());
+    // Measured, though none of the fakes' pages is resident: "0 B", where the limited right leaves them absent.
+    EXPECT_EQ(summary.all.residentBytes, 0U);
+    EXPECT_EQ(summary.all.privateBytes, 0U);
+    EXPECT_FALSE(summary.all.pssBytes.has_value());
+    EXPECT_FALSE(summary.all.swapBytes.has_value());
     ASSERT_EQ(summary.byKind.size(), 4U);
     EXPECT_EQ(summary.byKind[0].kind, MemoryMappingKind::Image); // largest first: 0x14000 committed
     EXPECT_EQ(summary.byKind[0].totals.sizeBytes, 0x14000U);
@@ -535,6 +622,121 @@ TEST_F(WindowsProcessMemoryMapTest, StopsAtTheCapAndSaysSo)
     EXPECT_EQ(all.mappings.size(), 7U);
 }
 
+TEST_F(WindowsProcessMemoryMapTest, CountsEachCommittedRegionsResidentSharedAndPrivatePages)
+{
+    residentPages(HEAP, 3, pageFlags(true, 0, PAGE_READWRITE, false));             // three of the heap's 16
+    residentPages(VIEW, 1, pageFlags(true, 1, PAGE_READONLY, true));               // the view, this process's alone
+    residentPages(IMAGE + 0x1000, 5, pageFlags(true, 4, PAGE_EXECUTE_READ, true)); // ntdll's code, shared
+    residentPages(IMAGE + 0x12000, 1, pageFlags(true, 0, PAGE_READWRITE, false));  // its data, written: now private
+    WindowsProcessMemoryMapReader reader(fakeApi());
+    const MemoryMapReadResult result = reader.readMemoryMap(TARGET);
+    ASSERT_EQ(result.status, MemoryMapReadStatus::Ok);
+    ASSERT_EQ(result.mappings.size(), 7U);
+
+    const MemoryMapping& heap = result.mappings[0];
+    EXPECT_EQ(heap.residentBytes, 3 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(heap.privateDirtyBytes, 3 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(heap.privateCleanBytes, 0U);
+    EXPECT_EQ(heap.sharedCleanBytes, 0U);
+    EXPECT_FALSE(result.mappings[1].residentBytes.has_value()); // reserved: nothing to ask about
+    EXPECT_EQ(result.mappings[2].privateCleanBytes, WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(result.mappings[3].residentBytes, 0U); // the section: asked, none resident
+    EXPECT_EQ(result.mappings[5].sharedCleanBytes, 5 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(result.mappings[5].residentBytes, 5 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(result.mappings[6].privateDirtyBytes, WORKING_SET_PAGE_BYTES);
+    for (const MemoryMapping& mapping : result.mappings)
+    {
+        EXPECT_FALSE(mapping.pssBytes.has_value());
+        EXPECT_FALSE(mapping.swapBytes.has_value());
+    }
+
+    const Domain::MemoryMap::Summary summary = Domain::MemoryMap::summarize(result.mappings);
+    EXPECT_EQ(summary.all.residentBytes, 10 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(summary.all.privateBytes, 5 * WORKING_SET_PAGE_BYTES);
+    EXPECT_EQ(summary.all.sharedBytes, 5 * WORKING_SET_PAGE_BYTES);
+    // Every committed page was asked about once: 16 + 4 + 2 + 1 + 17 + 2, in one call per region.
+    EXPECT_EQ(fake().workingSetBatches, (std::vector<std::size_t>{16, 4, 2, 1, 17, 2}));
+}
+
+TEST_F(WindowsProcessMemoryMapTest, AsksInBatchesOfAtMostThePagesPerQuery)
+{
+    residentPages(HEAP, 16, pageFlags(true, 0, PAGE_READWRITE, false));
+    residentPages(IMAGE + 0x1000, 17, pageFlags(true, 2, PAGE_EXECUTE_READ, true));
+    const MemoryMapReadResult whole = WindowsProcessMemoryMapReader(fakeApi()).readMemoryMap(TARGET);
+    fake().workingSetBatches.clear();
+
+    const MemoryMapReadResult batched =
+        WindowsProcessMemoryMapReader(fakeApi(), MAX_MEMORY_MAP_REGIONS, {.pagesPerQuery = 4}).readMemoryMap(TARGET);
+    ASSERT_EQ(batched.status, MemoryMapReadStatus::Ok);
+    EXPECT_EQ(batched.mappings, whole.mappings); // the same counts, however they're asked for
+    EXPECT_EQ(fake().workingSetBatches, (std::vector<std::size_t>{4, 4, 4, 4, 4, 2, 1, 4, 4, 4, 4, 1, 2}));
+    EXPECT_EQ(batched.mappings[5].sharedCleanBytes, 17 * WORKING_SET_PAGE_BYTES);
+}
+
+TEST_F(WindowsProcessMemoryMapTest, ARegionPastTheCapsKeepsNoSizes)
+{
+    residentPages(HEAP, 2, pageFlags(true, 0, PAGE_READWRITE, false));
+    // Past the region size cap: the heap's 64 KiB and the image's 68 KiB of code aren't asked about.
+    const MemoryMapReadResult sized =
+        WindowsProcessMemoryMapReader(fakeApi(), MAX_MEMORY_MAP_REGIONS, {.maxRegionBytes = 0x4000}).readMemoryMap(TARGET);
+    ASSERT_EQ(sized.status, MemoryMapReadStatus::Ok);
+    EXPECT_FALSE(sized.mappings[0].residentBytes.has_value());
+    EXPECT_TRUE(sized.mappings[2].residentBytes.has_value()); // the view's 16 KiB, at the cap, is
+    EXPECT_FALSE(sized.mappings[5].residentBytes.has_value());
+    EXPECT_EQ(fake().workingSetBatches, (std::vector<std::size_t>{4, 2, 1, 2}));
+
+    // Past the read's page budget: the heap takes 16 of 18, the section the last 2; the rest don't fit.
+    fake().workingSetBatches.clear();
+    const MemoryMapReadResult budgeted =
+        WindowsProcessMemoryMapReader(fakeApi(), MAX_MEMORY_MAP_REGIONS, {.maxPagesPerRead = 18}).readMemoryMap(TARGET);
+    ASSERT_EQ(budgeted.status, MemoryMapReadStatus::Ok);
+    EXPECT_EQ(budgeted.mappings[0].residentBytes, 2 * WORKING_SET_PAGE_BYTES);
+    EXPECT_FALSE(budgeted.mappings[2].residentBytes.has_value());
+    EXPECT_EQ(budgeted.mappings[3].residentBytes, 0U);
+    for (std::size_t i = 4; i < 7; ++i)
+    {
+        EXPECT_FALSE(budgeted.mappings[i].residentBytes.has_value()) << i;
+    }
+    EXPECT_EQ(fake().workingSetBatches, (std::vector<std::size_t>{16, 2}));
+
+    // The summary leaves out what wasn't measured, rather than counting it as nothing resident.
+    EXPECT_EQ(Domain::MemoryMap::summarize(budgeted.mappings).all.residentBytes, 2 * WORKING_SET_PAGE_BYTES);
+}
+
+TEST_F(WindowsProcessMemoryMapTest, TheLimitedRightLeavesTheSizesAbsent)
+{
+    residentPages(HEAP, 3, pageFlags(true, 0, PAGE_READWRITE, false));
+    fake().refuseFullQuery = true;
+    const MemoryMapReadResult result = WindowsProcessMemoryMapReader(fakeApi()).readMemoryMap(TARGET);
+    ASSERT_EQ(result.status, MemoryMapReadStatus::Ok);
+    EXPECT_TRUE(fake().workingSetBatches.empty()); // never asked
+    EXPECT_TRUE(std::ranges::none_of(result.mappings, [](const MemoryMapping& m) { return m.residentBytes.has_value(); }));
+    const Domain::MemoryMap::Summary summary = Domain::MemoryMap::summarize(result.mappings);
+    EXPECT_FALSE(summary.all.residentBytes.has_value());
+    EXPECT_FALSE(summary.all.privateBytes.has_value());
+    EXPECT_FALSE(summary.all.sharedBytes.has_value());
+}
+
+TEST_F(WindowsProcessMemoryMapTest, AFailedWorkingSetQueryLeavesItsRegionEmpty)
+{
+    // Refused: the first query says so, and no other region is asked about. The map itself still reads.
+    fake().workingSetError = ERROR_ACCESS_DENIED;
+    WindowsProcessMemoryMapReader reader(fakeApi());
+    const MemoryMapReadResult refused = reader.readMemoryMap(TARGET);
+    ASSERT_EQ(refused.status, MemoryMapReadStatus::Ok);
+    EXPECT_EQ(refused.mappings.size(), 7U);
+    EXPECT_EQ(fake().workingSetBatches.size(), 1U);
+    EXPECT_TRUE(std::ranges::none_of(refused.mappings, [](const MemoryMapping& m) { return m.residentBytes.has_value(); }));
+
+    // Any other failure leaves only that region empty: each is still asked about.
+    fake().workingSetBatches.clear();
+    fake().workingSetError = ERROR_BAD_LENGTH;
+    const MemoryMapReadResult failed = reader.readMemoryMap(TARGET);
+    ASSERT_EQ(failed.status, MemoryMapReadStatus::Ok);
+    EXPECT_EQ(fake().workingSetBatches.size(), 6U);
+    EXPECT_TRUE(std::ranges::none_of(failed.mappings, [](const MemoryMapping& m) { return m.residentBytes.has_value(); }));
+}
+
 TEST_F(WindowsProcessMemoryMapTest, ARegionThatEndsAtTheTopEndsTheWalk)
 {
     // The last region runs to the very top of the address space: its end wraps, and the walk stops there.
@@ -595,6 +797,29 @@ TEST(WindowsProcessMemoryMapRealTest, ReadsThisProcess)
 
     // A thread's stack reserves more than it commits: some private region is reserved.
     EXPECT_TRUE(std::ranges::any_of(result.mappings, [](const MemoryMapping& m) { return m.reserved; }));
+
+    // The working set (#4031): the stack's page holding the local is resident and this process's alone, and
+    // every measured region's resident size is its four parts', within its size; a reserved one has none.
+    ASSERT_TRUE(stack->residentBytes.has_value());
+    EXPECT_GT(stack->residentBytes.value_or(0), 0U);
+    EXPECT_GT(stack->privateDirtyBytes.value_or(0), 0U);
+    for (const MemoryMapping& m : result.mappings)
+    {
+        if (m.reserved)
+        {
+            EXPECT_FALSE(m.residentBytes.has_value());
+            continue;
+        }
+        if (!m.residentBytes.has_value())
+        {
+            continue; // past a cap
+        }
+        EXPECT_LE(*m.residentBytes, m.sizeBytes());
+        EXPECT_EQ(*m.residentBytes,
+                  m.sharedCleanBytes.value_or(0) + m.sharedDirtyBytes.value_or(0) + m.privateCleanBytes.value_or(0) +
+                      m.privateDirtyBytes.value_or(0));
+        EXPECT_FALSE(m.pssBytes.has_value());
+    }
 }
 
 } // namespace

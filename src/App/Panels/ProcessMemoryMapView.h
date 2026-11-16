@@ -4,7 +4,8 @@
 // kind (Image, Mapped file, Private, ...) above an ADDRESS / SIZE / KIND / PROTECTION / PATH table of every
 // region, sortable by any column (by address by default) and filterable by kind, protection or path, with
 // the region count in the section's header. A RESIDENT column, and the kind table's resident, PSS, private,
-// shared and swap totals, show only when the platform measured them (Linux's smaps; Windows measures none),
+// shared and swap totals, show only when the platform measured them (Linux's smaps; Windows' QueryWorkingSetEx
+// gives resident, private and shared, #4031, and no PSS or swap),
 // and the RESERVED total only when some region is reserved (Windows). Windows writes a protection in its
 // own tools' words ("Execute/Read"), Linux as /proc/[pid]/maps does ("r-xp").
 //
