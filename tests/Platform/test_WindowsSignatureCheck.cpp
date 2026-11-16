@@ -5,13 +5,16 @@
 /// context released, each failure's HRESULT, both read through the check's own handle); the file stamp through a fake
 /// GetFileInformationByHandleEx and DeviceIoControl (its USN, #3313) and the file opened shared for read
 /// only (#3292); then the real calls on a
-/// signed system binary and on an unsigned file this test writes.
+/// signed system binary and on an unsigned file this test writes; this process's image bound to its own file, and on a
+/// CI runner a renamed image checked as itself, not the signed decoy left at its old name (#4021).
 
 #include "Platform/ImageSignature.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsImageSignature.h"
 #include "Platform/Windows/WindowsSignatureCheck.h"
+#include "Support/CiRealSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -20,15 +23,18 @@
 #include <wincrypt.h>
 #include <wintrust.h>
 #include <softpub.h>
+#include <tlhelp32.h>
 #include <mscat.h>
 #include <winioctl.h>
 // clang-format on
 
 #include <array>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <cwchar>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -39,6 +45,8 @@
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
+#include <utility>
 #include <vector>
 
 namespace Platform::Windows
@@ -746,6 +754,240 @@ TEST(WindowsSignatureCheckRealTest, NotepadIsSignedByMicrosoftAndAFileThisTestWr
     EXPECT_FALSE(fns.errorMessage(ERROR_ACCESS_DENIED).empty());
     EXPECT_FALSE(fns.errorMessage(0xC0000034U).empty()); // an NTSTATUS, from ntdll's messages
     EXPECT_TRUE(fns.errorMessage(0x2FFFFFFFU).empty());
+}
+
+/// This test process's identity, as the probe has it: its PID and creation time.
+WindowsSignature::ImageProcess thisProcess()
+{
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernel{};
+    FILETIME user{};
+    EXPECT_NE(GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernel, &user), 0);
+    return {
+        .pid = static_cast<std::int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+}
+
+/// The identity of the file at @p path, or nullopt when it can't be opened.
+std::optional<FileIdentity> identityOf(const std::wstring& path)
+{
+    const UniqueHandle file(CreateFileW(
+        path.c_str(), FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    return file ? fileIdentity(file.get()) : std::nullopt;
+}
+
+// #4021, the real calls on this test process: its image binds to the file it was mapped from, held so it can't be
+// renamed or deleted, and checks as that file does by path. A process identity that isn't this one's is refused.
+TEST(WindowsSignatureCheckRealTest, ThisProcesssImageBindsToItsOwnFileAndChecksAsItDoes)
+{
+    std::wstring module(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(length, 0U);
+    module.resize(length);
+
+    std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure> bound = openProcessImageForCheck(thisProcess());
+    ASSERT_TRUE(bound.has_value()) << bound.error().why;
+    const std::optional<FileIdentity> held = fileIdentity(bound->image.file);
+    ASSERT_TRUE(held.has_value());
+    EXPECT_EQ(held, identityOf(module)) << "the module's own file";
+    EXPECT_EQ(identityOf(WinString::utf8ToWide(bound->path)), held) << bound->path << ": its name now names it";
+    EXPECT_TRUE(bound->image.stamp.fileId.has_value());
+
+    // Held without FILE_SHARE_DELETE: the file can't be renamed while the check holds it.
+    const UniqueHandle forRename(
+        CreateFileW(module.c_str(), DELETE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, nullptr, OPEN_EXISTING, 0, nullptr));
+    EXPECT_FALSE(forRename) << "a handle that could rename it was granted";
+    EXPECT_EQ(GetLastError(), static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+    closeImage(bound->image.file);
+
+    WindowsSignature::SignatureFunctions fns = systemSignatureFunctions();
+    fns.openProcessImage = &openProcessImageForCheck;
+    const std::string path = WinString::wideToUtf8(module);
+    const WindowsSignature::ImageCheck viaBinding = WindowsSignature::checkImage(fns, nullptr, path, path, thisProcess());
+    const SignatureCheck viaPath = WindowsSignature::checkSignature(fns, nullptr, path, path);
+    EXPECT_EQ(viaBinding.check.signature, viaPath.signature) << viaBinding.check.note;
+    EXPECT_EQ(viaBinding.check.signer, viaPath.signer);
+
+    WindowsSignature::ImageProcess reused = thisProcess();
+    reused.startTimeTicks += 1;
+    const std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure> refused = openProcessImageForCheck(reused);
+    EXPECT_FALSE(refused.has_value()) << "another process's identity binds nothing";
+}
+
+/// The PID and identity of a running csrss.exe, or nullopt with @p why set when none can be opened for its start time.
+/// Its path is System32's: a protected process's image name isn't always shown.
+std::optional<WindowsSignature::ImageProcess> findCsrss(std::string& why)
+{
+    const UniqueHandle snapshot(CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0));
+    if (!snapshot)
+    {
+        why = std::format("no process snapshot (error {})", GetLastError());
+        return std::nullopt;
+    }
+    PROCESSENTRY32W entry{};
+    entry.dwSize = sizeof(entry);
+    why = "no csrss.exe is running";
+    for (BOOL more = Process32FirstW(snapshot.get(), &entry); more != 0; more = Process32NextW(snapshot.get(), &entry))
+    {
+        if (_wcsicmp(entry.szExeFile, L"csrss.exe") != 0)
+        {
+            continue;
+        }
+        const UniqueHandle process(OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, entry.th32ProcessID));
+        if (!process)
+        {
+            why = std::format("csrss.exe (PID {}) can't be opened (error {})", entry.th32ProcessID, GetLastError());
+            continue;
+        }
+        FILETIME creation{};
+        FILETIME exitTime{};
+        FILETIME kernel{};
+        FILETIME user{};
+        if (GetProcessTimes(process.get(), &creation, &exitTime, &kernel, &user) == 0)
+        {
+            why = std::format("csrss.exe's start time can't be read (error {})", GetLastError());
+            continue;
+        }
+        return WindowsSignature::ImageProcess{
+            .pid = static_cast<std::int32_t>(entry.th32ProcessID),
+            .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+        };
+    }
+    return std::nullopt;
+}
+
+// #4021 review: csrss.exe is a protected process, whose memory map Windows doesn't show, so its image never binds.
+// It is checked by its path instead (code integrity required a protected signer to start it), and gets a signature
+// rather than staying Not checked. Read-only: it only queries the process.
+TEST(WindowsSignatureCheckRealTest, AProtectedProcessIsCheckedByItsPathAndIsSigned)
+{
+    std::string why;
+    const std::optional<WindowsSignature::ImageProcess> csrss = findCsrss(why);
+    if (!csrss.has_value())
+    {
+        GTEST_SKIP() << "csrss.exe can't be identified in this session: " << why;
+    }
+    const std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure> bound = openProcessImageForCheck(*csrss);
+    if (bound.has_value())
+    {
+        closeImage(bound->image.file); // bound after all (a session that can see its map): checked as itself
+    }
+    else
+    {
+        EXPECT_TRUE(bound.error().protectedProcess) << bound.error().why;
+    }
+    WindowsSignature::SignatureFunctions fns = systemSignatureFunctions();
+    fns.openProcessImage = &openProcessImageForCheck;
+    const std::string path = systemBinary(L"csrss.exe");
+    const WindowsSignature::ImageCheck check = WindowsSignature::checkImage(fns, nullptr, path, path, *csrss);
+    EXPECT_TRUE(isVerifiedSignature(check.check.signature)) << path << ": " << check.check.note;
+    EXPECT_NE(check.check.signer.find("Microsoft"), std::string::npos) << check.check.signer;
+}
+
+// #4021 on a CI runner: a process that renamed its image away and left a Microsoft-signed file at the old name. A
+// copy of this test executable is started suspended (so nothing of it runs), renamed, and notepad.exe copied to its
+// old name. The check binds to the renamed copy, never to the decoy: the copy reads Unsigned, not notepad's signer.
+class CiRealSystemSignatureBindingTest : public TestSupport::CiRealSystemTest
+{};
+
+/// The suspended child and its folder, ended, waited for and removed however the test leaves.
+class SuspendedChild
+{
+  public:
+    explicit SuspendedChild(std::filesystem::path folder) : m_Folder(std::move(folder))
+    {}
+    SuspendedChild(const SuspendedChild&) = delete;
+    SuspendedChild& operator=(const SuspendedChild&) = delete;
+    SuspendedChild(SuspendedChild&&) = delete;
+    SuspendedChild& operator=(SuspendedChild&&) = delete;
+    ~SuspendedChild()
+    {
+        if (m_Info.hProcess != nullptr)
+        {
+            TerminateProcess(m_Info.hProcess, 1);
+            WaitForSingleObject(m_Info.hProcess, 10'000);
+            CloseHandle(m_Info.hProcess);
+        }
+        if (m_Info.hThread != nullptr)
+        {
+            CloseHandle(m_Info.hThread);
+        }
+        std::error_code ignored;
+        std::filesystem::remove_all(m_Folder, ignored);
+    }
+    PROCESS_INFORMATION& info() noexcept
+    {
+        return m_Info;
+    }
+
+  private:
+    std::filesystem::path m_Folder;
+    PROCESS_INFORMATION m_Info{};
+};
+
+TEST_F(CiRealSystemSignatureBindingTest, ARenamedImageIsCheckedNotTheSignedDecoyAtItsOldName)
+{
+    std::wstring module(32768, L'\0');
+    const DWORD length = GetModuleFileNameW(nullptr, module.data(), static_cast<DWORD>(module.size()));
+    ASSERT_GT(length, 0U);
+    module.resize(length);
+    const std::filesystem::path folder = std::filesystem::temp_directory_path() / std::format(L"tasksmack-4021-{}", GetCurrentProcessId());
+    std::filesystem::create_directories(folder);
+    SuspendedChild child(folder);
+    const std::filesystem::path original = folder / L"started.exe";
+    const std::filesystem::path renamed = folder / L"renamed.exe";
+    ASSERT_TRUE(std::filesystem::copy_file(module, original, std::filesystem::copy_options::overwrite_existing));
+
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    std::wstring commandLine = L"\"" + original.wstring() + L"\" --gtest_list_tests";
+    ASSERT_NE(
+        CreateProcessW(
+            original.c_str(), commandLine.data(), nullptr, nullptr, FALSE, CREATE_SUSPENDED, nullptr, nullptr, &startup, &child.info()),
+        0)
+        << GetLastError();
+
+    // A real-time scan of the new file can hold it for a moment: retry the rename briefly.
+    std::error_code error;
+    for (int attempt = 0; attempt < 50; ++attempt)
+    {
+        std::filesystem::rename(original, renamed, error);
+        if (!error)
+        {
+            break;
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+    }
+    ASSERT_FALSE(error) << "a running image can be renamed: " << error.message();
+    const std::filesystem::path notepad = std::filesystem::path(WinString::utf8ToWide(systemBinary(L"notepad.exe")));
+    ASSERT_TRUE(std::filesystem::copy_file(notepad, original, std::filesystem::copy_options::overwrite_existing));
+
+    FILETIME creation{};
+    FILETIME exitTime{};
+    FILETIME kernel{};
+    FILETIME user{};
+    ASSERT_NE(GetProcessTimes(child.info().hProcess, &creation, &exitTime, &kernel, &user), 0);
+    const WindowsSignature::ImageProcess process{
+        .pid = static_cast<std::int32_t>(child.info().dwProcessId),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
+
+    const std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure> bound = openProcessImageForCheck(process);
+    ASSERT_TRUE(bound.has_value()) << bound.error().why;
+    EXPECT_EQ(fileIdentity(bound->image.file), identityOf(renamed.wstring())) << bound->path;
+    EXPECT_NE(fileIdentity(bound->image.file), identityOf(original.wstring())) << "not the decoy";
+    closeImage(bound->image.file);
+
+    WindowsSignature::SignatureFunctions fns = systemSignatureFunctions();
+    fns.openProcessImage = &openProcessImageForCheck;
+    const std::string startedPath = WinString::wideToUtf8(original.wstring());
+    const WindowsSignature::ImageCheck check = WindowsSignature::checkImage(fns, nullptr, startedPath, startedPath, process);
+    const SignatureCheck decoy = WindowsSignature::checkSignature(fns, nullptr, startedPath, startedPath);
+    EXPECT_NE(decoy.signer.find("Microsoft"), std::string::npos) << "the decoy is signed: " << decoy.note;
+    EXPECT_EQ(check.check.signature, ImageSignature::Unsigned)
+        << "the renamed copy of this unsigned test executable, not the decoy: " << check.check.signer << " " << check.check.note;
 }
 
 // #3292: the real stamp of a file on the system volume (NTFS) has its ID; writing it in place, then setting

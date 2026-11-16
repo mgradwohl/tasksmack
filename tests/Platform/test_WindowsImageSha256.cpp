@@ -7,6 +7,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/Sha256.h"
+#include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 
 #include <gtest/gtest.h>
@@ -479,6 +480,39 @@ TEST_F(WindowsImageSha256Test, AnImageMappedElsewhereIsFoundByTheNameItStartedWi
     const auto unscanned = noScan.imageSha256(TARGET, stop.get_token());
     ASSERT_FALSE(unscanned.has_value());
     EXPECT_TRUE(unscanned.error().starts_with("Its executable can't be read: ")) << unscanned.error();
+}
+
+// #4021 review: the signature check binds only an image at its entry point. One found by the name it started with
+// could be any file mapped under that name (a process renames itself, copies a signed file to its old name, maps it
+// as a resource and pads itself to its size), so with entryPointOnly it is refused, saying why, and nothing is opened.
+TEST_F(WindowsImageSha256Test, TheSignatureCheckRefusesAnImageFoundOnlyByTheNameItStartedWith)
+{
+    const WindowsProcessFunctions process = FakeImage::functions();
+    const Windows::ImageFileFunctions fns{
+        .ntQueryInformationProcess = process.ntQueryInformationProcess,
+        .getMappedFileName = process.getMappedFileName,
+        .virtualQueryEx = process.virtualQueryEx,
+        .queryFullProcessImageName = process.queryFullProcessImageName,
+        .getExitCodeProcess = process.getExitCodeProcess,
+    };
+    FakeImage::relocated = true;
+    const auto refused = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {}, true);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Its executable couldn't be confirmed: its image isn't where Windows says it is (its entry point)");
+    EXPECT_EQ(FakeImage::mappedQueries, 0) << "nothing looked for by name";
+
+    FakeImage::reset(m_Image);
+    const auto atEntryPoint = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {}, true);
+    EXPECT_TRUE(atEntryPoint.has_value()) << atEntryPoint.error();
+
+    // With no suffix to add, a refusal ends at its reason.
+    writeOther("abc");
+    FakeImage::reset(m_Image);
+    FakeImage::mappedNameLater = ntNameOf(m_Other);
+    const auto replaced = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {}, true);
+    ASSERT_FALSE(replaced.has_value());
+    EXPECT_FALSE(replaced.error().contains("hashed")) << replaced.error();
+    EXPECT_FALSE(replaced.error().ends_with("; ")) << replaced.error();
 }
 
 TEST_F(WindowsImageSha256Test, AProtectedProcessOrOneWithNoImageSaysSo)

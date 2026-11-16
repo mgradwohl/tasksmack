@@ -8,19 +8,25 @@
 #pragma comment(lib, "wintrust.lib")
 #pragma comment(lib, "crypt32.lib")
 
+#include "Platform/IProcessActions.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsImageFile.h"
 #include "WindowsImageSignature.h"
+#include "WindowsProcessIdentity.h"
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
+#include <format>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform::Windows
@@ -369,6 +375,84 @@ std::string signatureErrorMessage(std::uint32_t code)
         }
     }
     return text;
+}
+
+namespace
+{
+
+/// Why openProcessVerified() refused a process whose image a signature check wanted (#4021), in words.
+[[nodiscard]] std::string identityRefusal(const IdentityFailure& failure)
+{
+    switch (failure.kind)
+    {
+    case IdentityFailureKind::InvalidPid:
+        return "Its process ID isn't valid";
+    case IdentityFailureKind::IdentityUnknown:
+        return "Its start time isn't known, so it can't be told from a process that reused its ID";
+    case IdentityFailureKind::AccessDenied:
+        return "Its process can't be opened: access is denied";
+    case IdentityFailureKind::ProcessGone:
+    case IdentityFailureKind::Exited:
+        return "The process has exited";
+    case IdentityFailureKind::Mismatch:
+        return "The process has exited, and another process now has its ID";
+    case IdentityFailureKind::TimesFailed:
+    case IdentityFailureKind::OpenFailed:
+        break;
+    }
+    return std::format("Its process can't be opened: {}", signatureErrorMessage(failure.win32Error));
+}
+
+/// Whether @p process is a protected process (or a PPL): GetProcessInformation(ProcessProtectionLevelInfo). A failed
+/// query reads as not protected, so such a process stays unconfirmed rather than checked by its path.
+[[nodiscard]] bool isProtectedProcess(HANDLE process)
+{
+    PROCESS_PROTECTION_LEVEL_INFORMATION protection{};
+    if (GetProcessInformation(process, ProcessProtectionLevelInfo, &protection, sizeof(protection)) == 0)
+    {
+        return false;
+    }
+    return protection.ProtectionLevel != PROTECTION_LEVEL_NONE;
+}
+
+} // namespace
+
+/// The file the image of @p process was mapped from, bound and held for its signature check (#4021).
+std::expected<WindowsSignature::BoundImage, WindowsSignature::BindFailure>
+openProcessImageForCheck(const WindowsSignature::ImageProcess& process)
+{
+    using WindowsSignature::BindFailure;
+    const ProcessTarget target{.pid = process.pid, .startTimeTicks = process.startTimeTicks};
+    std::expected<InjectableHandle, IdentityFailure> opened =
+        openProcessVerified(ProcessIdentityFunctions{}, target, PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!opened.has_value())
+    {
+        return std::unexpected(BindFailure{.why = identityRefusal(opened.error()), .protectedProcess = false});
+    }
+    // Only an image at its entry point: one found by the name it started with could be any file mapped under it.
+    std::expected<UniqueHandle, std::string> file =
+        openProcessImageFile(systemImageFileFunctions(), opened->get(), process.pid, {}, /*entryPointOnly=*/true);
+    if (!file.has_value())
+    {
+        // A protected process's memory map isn't shown to TaskSmack, so it never binds; code integrity required a
+        // protected signer to start it, so it is checked by its path instead.
+        return std::unexpected(BindFailure{.why = std::move(file.error()), .protectedProcess = isProtectedProcess(opened->get())});
+    }
+    const std::optional<WindowsSignature::FileStamp> stamp = readFileStamp(TrustApiFunctions{}, file->get());
+    if (!stamp.has_value())
+    {
+        return std::unexpected(BindFailure{.why = "Its executable's stamp can't be read", .protectedProcess = false});
+    }
+    const std::wstring name = heldFileName(file->get());
+    if (name.empty())
+    {
+        return std::unexpected(BindFailure{.why = "Its executable's name can't be read", .protectedProcess = false});
+    }
+    std::string path = WinString::wideToUtf8(name); // before the release: a throw here leaves the handle owned
+    return WindowsSignature::BoundImage{
+        .image = {.file = file->release(), .stamp = *stamp},
+        .path = std::move(path),
+    };
 }
 
 WindowsSignature::SignatureFunctions systemSignatureFunctions() noexcept
