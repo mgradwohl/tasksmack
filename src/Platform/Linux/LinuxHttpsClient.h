@@ -31,9 +31,8 @@ namespace Platform
 namespace LinuxHttpsDetail
 {
 
-/// Why @p request is refused before anything is sent, or nullopt when it can be sent: an empty host, path or
-/// User-Agent, a path that doesn't start with '/', or a host that isn't a plain DNS name (letters, digits, '.'
-/// and '-'), so nothing in it can change the URL's meaning.
+/// Why @p request is refused before anything is sent, or nullopt when it can be sent: Platform::requestRefusal()
+/// (HttpsRequestRules.h), the rule every platform's client checks (#3870).
 [[nodiscard]] std::optional<std::string> refusal(const HttpsRequest& request);
 
 /// Why a redirect to @p location (an absolute URL, from the reply's Location) isn't followed, or nullopt when

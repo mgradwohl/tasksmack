@@ -71,9 +71,9 @@ struct WinHttpFunctions
 [[nodiscard]] std::string errorText(std::string_view step, std::uint32_t error);
 
 /// The request's extra headers (#3646) as the lines WinHttpAddRequestHeaders takes, "name: value" each, in order;
-/// or why the request can't be sent: a name that isn't an RFC 9110 token, a value (an extra header's, or Accept's)
-/// holding CR, LF or NUL, which could end the header and start another, or one that isn't UTF-8. The reason names
-/// no value: an extra header may be a secret (VirusTotal's API key).
+/// or why the request can't be sent: Platform::requestRefusal()'s reason (HttpsRequestRules.h, the rule every
+/// platform's client checks, #3870), or a header value that isn't UTF-8. The reason names no value: an extra header
+/// may be a secret (VirusTotal's API key).
 [[nodiscard]] std::expected<std::vector<std::wstring>, std::string> headerLines(const HttpsRequest& request);
 
 /// One asynchronous WinHTTP call's completion, as the request's status callback reports it to the worker
