@@ -22,6 +22,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -373,53 +374,60 @@ appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const
 /// The App membership of the process at @p index in @p snapshots: what appKeys() and appGroupLabels() make
 /// of it, as the table's Group: App does, but found from that one process (#3885). Its key from its own
 /// app, else by walking up its parents as appKeys() does; its label by one scan for that key. No map of
-/// the generation is built, so Process Details' App row costs a few steps up and one pass of
-/// comparisons, not two hash maps of every process's strings. Empty past the end.
+/// the generation's strings is built: Process Details' App row costs, at most, one first-PID index of integers (only
+/// when the process has no app of its own), the steps up, and one pass of comparisons. Empty past the end.
 [[nodiscard]] inline AppMembership appMembershipAt(const std::vector<Domain::ProcessSnapshot>& snapshots, std::size_t index)
 {
     if (index >= snapshots.size())
     {
         return {};
     }
-    // appKeys()' parentOf(), found by a scan: the first process with the parent PID, as its byPid keeps.
-    const auto parentOf = [&snapshots](std::size_t child) -> std::optional<std::size_t>
+    // appKeys()' parentOf(), through a first-PID index (as its byPid keeps) built only when the walk needs a parent:
+    // a process with an app of its own costs no index at all, and a chain of any depth costs one O(n) pass of integers.
+    std::unordered_map<std::int32_t, std::size_t> byPid;
+    const auto parentOf = [&snapshots, &byPid](std::size_t child) -> std::optional<std::size_t>
     {
         const Domain::ProcessSnapshot& proc = snapshots[child];
         if (proc.parentPid == proc.pid)
         {
             return std::nullopt;
         }
-        const auto it = std::ranges::find(snapshots, proc.parentPid, &Domain::ProcessSnapshot::pid);
-        if (it == snapshots.end())
+        if (byPid.empty())
+        {
+            byPid.reserve(snapshots.size());
+            for (std::size_t i = 0; i < snapshots.size(); ++i)
+            {
+                byPid.try_emplace(snapshots[i].pid, i);
+            }
+        }
+        const auto it = byPid.find(proc.parentPid);
+        if (it == byPid.end() || it->second == child)
         {
             return std::nullopt;
         }
-        const auto parentIndex = static_cast<std::size_t>(std::distance(snapshots.begin(), it));
-        if (parentIndex == child)
-        {
-            return std::nullopt;
-        }
-        const Domain::ProcessSnapshot& parent = *it;
+        const Domain::ProcessSnapshot& parent = snapshots[it->second];
         if (parent.startTimeTicks != 0 && proc.startTimeTicks != 0 && parent.startTimeTicks > proc.startTimeTicks)
         {
             return std::nullopt; // Started after the child: a process that reused the parent's PID
         }
-        return parentIndex;
+        return it->second;
     };
 
     // Up through the processes with no app of their own, as appKeys() walks: to one with an app, one with no
-    // parent listed, or one whose parent is already on the walk (a PID loop).
+    // parent listed, or one whose parent is already on the walk (a PID loop, found in constant time).
     std::vector<std::size_t> chain;
+    std::unordered_set<std::size_t> onChain;
     std::size_t current = index;
     std::string key = ownAppKey(snapshots[current]);
     while (key.empty())
     {
         const std::optional<std::size_t> parent = parentOf(current);
-        if (!parent.has_value() || *parent == current || std::ranges::find(chain, *parent) != chain.end())
+        if (!parent.has_value() || *parent == current || onChain.contains(*parent))
         {
             break;
         }
         chain.push_back(current);
+        onChain.insert(current);
         current = *parent;
         key = ownAppKey(snapshots[current]);
     }

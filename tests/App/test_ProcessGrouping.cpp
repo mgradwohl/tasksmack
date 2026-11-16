@@ -535,6 +535,9 @@ TEST(ProcessGroupingTest, OneProcessesAppMembershipIsWhatTheWholeGenerationSays)
         windowsProc(90, 1, "!odd", "", "!odd"),
     };
     s[15].startTimeTicks = s[14].startTimeTicks + 1;
+    // The loop's two processes started together, so neither edge reads as a reused parent PID: the walk must stop on
+    // the loop itself.
+    s[11].startTimeTicks = s[12].startTimeTicks;
     s[5].appName = "Windows Terminal"; // the second of its app's processes has the Start menu's name
     for (const auto& [name, unit] : {std::pair{"firefox", "app-gnome-firefox-4521.scope"}, std::pair{"firefox", ""}})
     {
@@ -555,6 +558,30 @@ TEST(ProcessGroupingTest, OneProcessesAppMembershipIsWhatTheWholeGenerationSays)
     EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 3).label, "Windows Terminal") << "the Start menu's name, from a later process";
     EXPECT_TRUE(ProcessGrouping::appMembershipAt(s, 4).inherited) << "four levels down a packaged app";
     EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 22).key, "firefox") << "a Linux unit's child of the same program";
+}
+
+// #3885: a selected process thousands of levels down a chain is found in one pass up, and says what the whole
+// generation says: the package at the top for every process below it, and no app below a break in the chain.
+TEST(ProcessGroupingTest, ADeepChainsAppMembershipIsWhatTheWholeGenerationSays)
+{
+    constexpr std::int32_t DEPTH = 5000;
+    std::vector<Domain::ProcessSnapshot> s;
+    s.reserve(DEPTH + 1);
+    s.push_back(windowsProc(1, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""));
+    for (std::int32_t pid = 2; pid <= DEPTH; ++pid)
+    {
+        // Listed deepest first, so no lookup finds its parent by position.
+        s.insert(s.begin(), windowsProc(pid, pid - 1, (pid == DEPTH / 2) ? "other.exe" : "pwsh.exe", "", ""));
+    }
+    const std::vector<std::string> keys = ProcessGrouping::appKeys(s);
+    const auto labels = ProcessGrouping::appGroupLabels(s);
+    for (const std::size_t i : {std::size_t{0}, std::size_t{1}, s.size() / 2, s.size() - 2, s.size() - 1})
+    {
+        EXPECT_EQ(ProcessGrouping::appMembershipAt(s, i), ProcessGrouping::appMembership(s[i], keys[i], labels)) << "process " << i;
+    }
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, s.size() - 2).key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
+    EXPECT_EQ(ProcessGrouping::appMembershipAt(s, 0).key, "Microsoft.WindowsTerminal_8wekyb3d8bbwe")
+        << "a package's helpers follow it whatever program they run";
 }
 
 } // namespace
