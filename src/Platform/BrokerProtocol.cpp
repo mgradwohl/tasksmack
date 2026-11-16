@@ -124,12 +124,11 @@ template<typename Message>
     return MessageKind::SetEfficiencyMode;
 }
 
-/// CloseConnection (#3066): the target, the socket's inode, then the IPv4 TCP endpoints (#3358): the local
-/// address's 4 bytes and port, then the remote's.
+/// CloseConnection (#3066): the target, then the IPv4 TCP endpoints (#3358): the local address's 4 bytes and port,
+/// then the remote's.
 [[nodiscard]] MessageKind encodePayload(Writer& writer, const CloseConnectionRequest& close)
 {
     writer.target(close.target);
-    writer.u64(close.socketInode);
     const auto endpoint = [&writer](const std::array<std::uint8_t, 4>& address, std::uint16_t port)
     {
         for (const std::uint8_t byte : address)
@@ -242,7 +241,7 @@ template<typename Message>
     const ProcessTarget target = reader.target();
     const std::uint8_t value = reader.u8();
     Signal signal = Signal::Terminate;
-    if (value <= static_cast<std::uint8_t>(Signal::User2))
+    if (value <= static_cast<std::uint8_t>(Signal::Resume))
     {
         signal = static_cast<Signal>(value); // cast only once it is known to be in range
     }
@@ -362,13 +361,12 @@ template<typename Message>
     return request;
 }
 
-/// A CloseConnection payload (#3066): the target, the socket's inode, then the IPv4 TCP endpoints (#3358). Any
-/// values decode: the helper's actions refuse a socket or connection the target doesn't hold.
+/// A CloseConnection payload (#3066): the target, then the IPv4 TCP endpoints (#3358). Any values decode: the helper's
+/// actions refuse a connection the target doesn't hold.
 [[nodiscard]] CloseConnectionRequest decodeCloseConnectionRequest(Reader& reader)
 {
     CloseConnectionRequest request;
     request.target = reader.target();
-    request.socketInode = reader.u64();
     const auto endpoint = [&reader](std::array<std::uint8_t, 4>& address, std::uint16_t& port)
     {
         for (std::uint8_t& byte : address)

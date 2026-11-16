@@ -304,9 +304,6 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadName.cpp
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokerProtocol.cpp          # the privileged-broker protocol's encoders and decoders (#2306, #3786)
-    src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
-    src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
-    src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
     src/Platform/Sha256.cpp                  # SHA-256 of an executable, for Look up on VirusTotal (#3094)
@@ -383,6 +380,10 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/PipeBroker.cpp
     src/Platform/Windows/BrokerHelper.cpp # TaskSmackHelper.exe's session: parent checks, pipe, serve (#2517)
     src/Platform/Windows/HelperLauncher.cpp # starts TaskSmackHelper.exe elevated: ShellExecuteExW("runas") (#2549)
+    # The broker's client and request mapping: Windows only, since Linux has no helper (#3580, #3784)
+    src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
+    src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
+    src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
     src/Platform/Windows/ElevatedRestart.cpp # Restart as administrator: TaskSmack.exe again with "runas" (#2728)
     src/Platform/Windows/DllSearchPolicy.cpp # where WinMain lets a DLL loaded by name come from (#3897)
     src/Platform/Windows/PinnedFolder.cpp # the handed-over config folder, opened only relative to its held handle (#3774)

@@ -49,12 +49,9 @@ namespace Platform
 [[nodiscard]] std::unique_ptr<IProcessActions> withPrivilegedBroker(std::unique_ptr<IProcessActions> actions,
                                                                     std::shared_ptr<IPrivilegedBroker> broker);
 
-/// The broker request that does @p action; nullopt for a kind or signal this doesn't know (#3778), which is refused
-/// rather than sent as another action.
+/// The broker request that does @p action; nullopt for a kind this doesn't know (#3778), a POSIX signal, or a
+/// connection named only by its socket inode (#3784): each is refused rather than sent as another action.
 [[nodiscard]] std::optional<Broker::Request> brokerRequestFor(const AuthorizedAction& action);
-
-/// The Signal request's value for @p signal (#3063); nullopt for a signal this doesn't know (#3778).
-[[nodiscard]] std::optional<Broker::Signal> brokerSignalFor(ProcessSignal signal) noexcept;
 
 class BrokeredProcessActions final : public IProcessActions
 {
