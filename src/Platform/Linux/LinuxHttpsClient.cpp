@@ -1,5 +1,6 @@
 #include "LinuxHttpsClient.h"
 
+#include "Platform/HttpsRequestRules.h"
 #include "Platform/IHttpsClient.h"
 
 #include <algorithm>
@@ -39,45 +40,7 @@ namespace LinuxHttpsDetail
 
 std::optional<std::string> refusal(const HttpsRequest& request)
 {
-    if (request.host.empty() || request.path.empty() || request.userAgent.empty())
-    {
-        return "The request's host, path or User-Agent is empty";
-    }
-    if (!request.path.starts_with('/'))
-    {
-        return "The request's path doesn't start with '/'";
-    }
-    const auto dnsCharacter = [](char c)
-    {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '.' || c == '-';
-    };
-    if (!std::ranges::all_of(request.host, dnsCharacter))
-    {
-        return "The request's host isn't a plain host name";
-    }
-    // The path goes into the URL as it is: nothing in it may start a fragment or break the line.
-    if (std::ranges::any_of(request.path, [](char c) { return c == '#' || c == ' ' || c == '\r' || c == '\n' || c == '\0'; }))
-    {
-        return "The request's path holds a character a URL path can't";
-    }
-    // Extra headers (#3094): a name is an RFC 9110 token, and a value can't end the header or the request.
-    const auto tokenCharacter = [](char c)
-    {
-        return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') ||
-               std::string_view("!#$%&'*+-.^_`|~").contains(c);
-    };
-    for (const auto& [name, value] : request.headers)
-    {
-        if (name.empty() || !std::ranges::all_of(name, tokenCharacter))
-        {
-            return "A request header's name isn't a header token";
-        }
-        if (std::ranges::any_of(value, [](char c) { return c == '\r' || c == '\n' || c == '\0'; }))
-        {
-            return "A request header's value holds a line break";
-        }
-    }
-    return std::nullopt;
+    return requestRefusal(request); // the rule every platform's client checks (#3870)
 }
 
 std::optional<std::string> redirectRefusal(std::string_view location)
