@@ -315,11 +315,12 @@ TEST_F(ProcessActionsBlockRenderTest, OnWindowsThePriorityCardDrawsTheClassSlide
 {
     // Windows' actions: [Terminate] [Kill] in the Actions card, and the priority slider with a stop per
     // class (#1538), not a combo, in the Priority card. The card is measured wide enough for the
-    // slider's five stop names, and wrapped below the row it is shown whole: nothing to scroll.
+    // slider's five stop names, and wrapped below the row it is shown whole: nothing to scroll. 780px: too narrow
+    // for Actions beside Identity and Runtime, so the cards wrap (#4029; at 1000px Actions now fits on the row).
     constexpr Platform::ProcessActionCapabilities WINDOWS_ACTIONS{
         .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = true};
     Harness h;
-    const auto layout = renderBlock(h, WINDOWS_ACTIONS, 1000.0F, INFO_ROW);
+    const auto layout = renderBlock(h, WINDOWS_ACTIONS, 780.0F, INFO_ROW);
     ASSERT_FALSE(layout.onFirstRow(OverviewCard::Actions));
     float priorityWidth = 0.0F;
     float sliderMinWidth = 0.0F;
@@ -346,7 +347,7 @@ TEST_F(ProcessActionsBlockRenderTest, OnWindowsThePriorityCardDrawsTheClassSlide
             ImGui::SetFocusID(sliderId, cardForFocus);
             focus = false;
         }
-        renderCards(h.context(WINDOWS_ACTIONS), layoutFor(WINDOWS_ACTIONS, 1000.0F));
+        renderCards(h.context(WINDOWS_ACTIONS), layoutFor(WINDOWS_ACTIONS, 780.0F));
     };
     (void) runFrame(body);
     ImGui::GetIO().AddKeyEvent(ImGuiKey_RightArrow, true);
