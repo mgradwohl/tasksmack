@@ -7,6 +7,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/Sha256.h"
+#include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 
 #include <gtest/gtest.h>
@@ -69,8 +70,10 @@ constexpr LONG STATUS_ACCESS_DENIED_VALUE = static_cast<LONG>(0xC0000022UL);
 /// The refusal for a file that isn't the running image (#3861), as imageSha256() words it.
 constexpr std::string_view IMAGE_REPLACED =
     "Its executable was renamed or replaced while it was read, so the file there isn't the image it runs; it wasn't hashed";
+/// The refusal for a protected process's image (#3861, #4057), as imageSha256() words it.
+constexpr std::string_view PROTECTED_REFUSAL =
+    "Its executable can't be read: Windows doesn't show which file a protected process runs; it wasn't hashed";
 /// The NT name (\Device\HarddiskVolumeN\...) of the file or folder at @p path, as GetMappedFileNameW writes one.
-/// The NT name (\Device\HarddiskVolumeN\...) of the file at @p path, as GetMappedFileNameW writes one.
 [[nodiscard]] std::wstring ntNameOf(const std::filesystem::path& path)
 {
     HANDLE file = CreateFileW(path.c_str(),
@@ -110,7 +113,7 @@ constexpr std::uintptr_t SPACE_END = 0x60000;
 
 /// OpenProcess, GetProcessTimes, QueryFullProcessImageNameW,
 /// NtQueryInformationProcess's ProcessImageInformation, GetMappedFileNameW,
-/// VirtualQueryEx and GetExitCodeProcess, faked: the state the fakes share
+/// VirtualQueryEx, GetExitCodeProcess and GetProcessInformation, faked: the state the fakes share
 /// (function pointers can't capture), reset by each test.
 struct FakeImage
 {
@@ -127,6 +130,8 @@ struct FakeImage
     static inline LONG imageStatus = 0;                   // what ProcessImageInformation answers
     static inline bool noEntryPoint = false;              // it succeeds with a null TransferAddress
     static inline bool relocated = false;                 // the image isn't at the section's entry point
+    static inline bool memoryMapHidden = false;           // VirtualQueryEx is refused, as for a protected process
+    static inline bool protectedProcess = false;          // GetProcessInformation says it is one
     static inline DWORD openError = ERROR_SUCCESS;        // OpenProcess fails with this, when not 0
     static inline DWORD mappedError = ERROR_SUCCESS;      // GetMappedFileNameW fails with this, when not 0
     static inline DWORD mappedErrorLater = ERROR_SUCCESS; // the same, from its second call on the image
@@ -146,6 +151,8 @@ struct FakeImage
         imageStatus = 0;
         noEntryPoint = false;
         relocated = false;
+        memoryMapHidden = false;
+        protectedProcess = false;
         openError = ERROR_SUCCESS;
         mappedError = ERROR_SUCCESS;
         mappedErrorLater = ERROR_SUCCESS;
@@ -236,6 +243,11 @@ struct FakeImage
     static SIZE_T WINAPI virtualQueryEx(HANDLE /*process*/, LPCVOID address, PMEMORY_BASIC_INFORMATION info, SIZE_T size)
     {
         const auto at = reinterpret_cast<std::uintptr_t>(address);
+        if (memoryMapHidden)
+        {
+            SetLastError(ERROR_ACCESS_DENIED);
+            return 0;
+        }
         if (at >= SPACE_END || size < sizeof(MEMORY_BASIC_INFORMATION))
         {
             SetLastError(ERROR_INVALID_PARAMETER);
@@ -269,6 +281,17 @@ struct FakeImage
         *code = exitCode;
         return TRUE;
     }
+    static BOOL WINAPI getProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
+    {
+        if (infoClass != ProcessProtectionLevelInfo || size < sizeof(PROCESS_PROTECTION_LEVEL_INFORMATION))
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        static_cast<PROCESS_PROTECTION_LEVEL_INFORMATION*>(info)->ProtectionLevel =
+            protectedProcess ? PROTECTION_LEVEL_ANTIMALWARE_LIGHT : PROTECTION_LEVEL_NONE;
+        return TRUE;
+    }
 
     [[nodiscard]] static WindowsProcessFunctions functions()
     {
@@ -280,6 +303,7 @@ struct FakeImage
         fns.getMappedFileName = &getMappedFileName;
         fns.virtualQueryEx = &virtualQueryEx;
         fns.ntQueryInformationProcess = &ntQueryInformationProcess;
+        fns.getProcessInformation = &getProcessInformation;
         return fns;
     }
 };
@@ -448,48 +472,134 @@ TEST_F(WindowsImageSha256Test, AnotherFormOfTheImagesNameIsTheSameFile)
     }
 }
 
-// An image the loader mapped away from its entry point (a .NET executable, a relocated one) is found by the name
-// it started with; one that is also renamed can't be found, and says so rather than hashing the file at that name.
-TEST_F(WindowsImageSha256Test, AnImageMappedElsewhereIsFoundByTheNameItStartedWith)
+/// The refusal for an image that isn't at its entry point (#4057), as imageSha256() words it.
+constexpr std::string_view NOT_AT_ENTRY_POINT =
+    "Its executable's image isn't where Windows says it is, so it couldn't be confirmed; it wasn't hashed";
+
+// #4057: an image the loader mapped away from its entry point (a .NET executable, a relocated one) isn't hashed,
+// saying why, and nothing is looked for by the name it started with.
+TEST_F(WindowsImageSha256Test, AnImageNotAtItsEntryPointIsntHashed)
 {
     WindowsProcessActions actions(FakeImage::functions());
     const std::stop_source stop;
 
     FakeImage::relocated = true;
-    const auto found = actions.imageSha256(TARGET, stop.get_token());
-    ASSERT_TRUE(found.has_value()) << found.error();
-    EXPECT_EQ(*found, ABC_SHA256);
-
-    writeOther("a benign decoy");
-    FakeImage::reset(m_Image);
-    FakeImage::relocated = true;
-    FakeImage::startedNativeName = ntNameOf(m_Other); // renamed: the started name is the decoy's now
-    const auto renamed = actions.imageSha256(TARGET, stop.get_token());
-    ASSERT_FALSE(renamed.has_value());
-    EXPECT_EQ(renamed.error(),
-              "Its executable can't be found: its image isn't at its entry point or under the name it started with, so it "
-              "may have been renamed; it wasn't hashed");
+    const auto refused = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), NOT_AT_ENTRY_POINT);
+    EXPECT_EQ(FakeImage::mappedQueries, 0) << "no mapping looked up by name";
 
     // Without VirtualQueryEx the entry point is taken as the image, and nothing is there.
     WindowsProcessFunctions fns = FakeImage::functions();
     fns.virtualQueryEx = nullptr;
-    WindowsProcessActions noScan(fns);
+    WindowsProcessActions noQuery(fns);
     FakeImage::reset(m_Image);
     FakeImage::relocated = true;
-    const auto unscanned = noScan.imageSha256(TARGET, stop.get_token());
-    ASSERT_FALSE(unscanned.has_value());
-    EXPECT_TRUE(unscanned.error().starts_with("Its executable can't be read: ")) << unscanned.error();
+    const auto unread = noQuery.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(unread.has_value());
+    EXPECT_TRUE(unread.error().starts_with("Its executable can't be read: ")) << unread.error();
 }
 
+// #4057, the attack the name scan let through: a relocated image renames itself away, a signed file is copied to its
+// old name and mapped as a resource (an image mapping under the name it started with), and the image is padded to
+// the decoy's size beforehand. The decoy is never hashed: the image isn't at its entry point, so nothing is.
+TEST_F(WindowsImageSha256Test, ADecoyMappedUnderTheNameItStartedWithIsNeverHashed)
+{
+    writeOther("xyz"); // the decoy, the image's size (3), so a size check alone would pass it
+    FakeImage::relocated = true;
+    FakeImage::creationPath = m_Other.wstring();
+    FakeImage::startedNativeName = ntNameOf(m_Other);
+    FakeImage::mappedName = FakeImage::startedNativeName; // the image mapping at EXE_BASE is the decoy's
+
+    WindowsProcessActions actions(FakeImage::functions());
+    const std::stop_source stop;
+    const auto hash = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(hash.has_value()) << "hashed " << hash.value_or("") << ", the decoy's";
+    EXPECT_EQ(hash.error(), NOT_AT_ENTRY_POINT);
+}
+
+// The signature check uses the same binding with nothing to add: a refusal ends at its reason.
+TEST_F(WindowsImageSha256Test, WithoutASuffixARefusalEndsAtItsReason)
+{
+    const WindowsProcessFunctions process = FakeImage::functions();
+    const Windows::ImageFileFunctions fns{
+        .ntQueryInformationProcess = process.ntQueryInformationProcess,
+        .getMappedFileName = process.getMappedFileName,
+        .virtualQueryEx = process.virtualQueryEx,
+        .getExitCodeProcess = process.getExitCodeProcess,
+        .getProcessInformation = process.getProcessInformation,
+    };
+    FakeImage::relocated = true;
+    const auto refused = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), "Its executable's image isn't where Windows says it is, so it couldn't be confirmed");
+    EXPECT_EQ(FakeImage::mappedQueries, 0) << "nothing looked for by name";
+
+    FakeImage::reset(m_Image);
+    const auto atEntryPoint = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
+    EXPECT_TRUE(atEntryPoint.has_value()) << atEntryPoint.error();
+
+    writeOther("abc");
+    FakeImage::reset(m_Image);
+    FakeImage::mappedNameLater = ntNameOf(m_Other);
+    const auto replaced = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(replaced.has_value());
+    EXPECT_FALSE(replaced.error().contains("hashed")) << replaced.error();
+    EXPECT_FALSE(replaced.error().ends_with("; ")) << replaced.error();
+
+    FakeImage::reset(m_Image);
+    FakeImage::memoryMapHidden = true;
+    FakeImage::protectedProcess = true;
+    const auto hidden = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(hidden.has_value());
+    EXPECT_EQ(hidden.error(), "Its executable can't be read: Windows doesn't show which file a protected process runs");
+}
 TEST_F(WindowsImageSha256Test, AProtectedProcessOrOneWithNoImageSaysSo)
 {
     WindowsProcessActions actions(FakeImage::functions());
     const std::stop_source stop;
 
     FakeImage::mappedError = ERROR_ACCESS_DENIED;
+    FakeImage::protectedProcess = true;
     const auto denied = actions.imageSha256(TARGET, stop.get_token());
     ASSERT_FALSE(denied.has_value());
-    EXPECT_EQ(denied.error(), "Its executable can't be read: Windows doesn't show which file a protected process runs");
+    EXPECT_EQ(denied.error(), PROTECTED_REFUSAL);
+
+    // #4057 review: access denied from a process that isn't protected isn't called protected.
+    FakeImage::reset(m_Image);
+    FakeImage::mappedError = ERROR_ACCESS_DENIED;
+    const auto deniedUnprotected = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(deniedUnprotected.has_value());
+    EXPECT_TRUE(deniedUnprotected.error().starts_with("Its executable can't be read: ")) << deniedUnprotected.error();
+    EXPECT_FALSE(deniedUnprotected.error().contains("protected")) << deniedUnprotected.error();
+
+    // #4057: a protected process whose memory map isn't shown at all (VirtualQueryEx refused) is refused as protected,
+    // not as an image that isn't where Windows says, and never hashed by its path instead.
+    FakeImage::reset(m_Image);
+    FakeImage::memoryMapHidden = true;
+    FakeImage::protectedProcess = true;
+    const auto hidden = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(hidden.has_value());
+    EXPECT_EQ(hidden.error(), PROTECTED_REFUSAL);
+    EXPECT_EQ(FakeImage::mappedQueries, 0);
+
+    // #4057 review: the same, for a process that isn't protected, is a query that failed, worded by its error, not a
+    // claim that the image is elsewhere.
+    FakeImage::reset(m_Image);
+    FakeImage::memoryMapHidden = true;
+    const auto unprotected = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(unprotected.has_value());
+    EXPECT_EQ(unprotected.error(),
+              "Its executable can't be read: " + std::system_category().message(static_cast<int>(ERROR_ACCESS_DENIED)));
+
+    // ...and for one that has exited, says so.
+    FakeImage::reset(m_Image);
+    FakeImage::memoryMapHidden = true;
+    FakeImage::protectedProcess = true;
+    FakeImage::exitCode = 0;
+    const auto exited = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(exited.has_value());
+    EXPECT_EQ(exited.error(), "Process 4242 has exited");
 
     FakeImage::reset(m_Image);
     FakeImage::noEntryPoint = true;

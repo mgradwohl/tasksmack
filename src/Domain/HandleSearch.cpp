@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <exception>
 #include <format>
+#include <memory>
 #include <span>
 #include <stop_token>
 #include <string>
@@ -44,10 +45,82 @@ void addMatch(const SearchProcess& process,
         into.truncated = true;
         return;
     }
-    into.matches.push_back(HandleMatch{.target = process.target, .process = process.name, .kind = kind, .path = path, .deleted = deleted});
+    into.matches.append(HandleMatch{.target = process.target, .process = process.name, .kind = kind, .path = path, .deleted = deleted});
 }
 
 } // namespace
+
+const HandleMatch& MatchList::Iterator::operator*() const noexcept
+{
+    return m_Chunk < m_List->m_Chunks.size() ? (*m_List->m_Chunks[m_Chunk])[m_Offset] : m_List->m_Tail[m_Offset];
+}
+
+MatchList::Iterator& MatchList::Iterator::operator++() noexcept
+{
+    // Chunks are never empty, so the step past a chunk's last match lands on the next one's first, or on the tail.
+    ++m_Offset;
+    if (m_Chunk < m_List->m_Chunks.size() && m_Offset == m_List->m_Chunks[m_Chunk]->size())
+    {
+        ++m_Chunk;
+        m_Offset = 0;
+    }
+    return *this;
+}
+
+MatchList::MatchList(std::vector<HandleMatch> matches) : m_Tail(std::move(matches))
+{
+    seal();
+}
+
+const HandleMatch& MatchList::operator[](std::size_t index) const noexcept
+{
+    const std::size_t sealed = sealedSize();
+    if (index >= sealed)
+    {
+        return m_Tail[index - sealed];
+    }
+    // The first chunk that ends past index holds it.
+    const auto chunk = static_cast<std::size_t>(std::ranges::upper_bound(m_Ends, index) - m_Ends.begin());
+    const std::size_t first = chunk == 0 ? 0 : m_Ends[chunk - 1];
+    return (*m_Chunks[chunk])[index - first];
+}
+
+MatchList::Iterator MatchList::begin() const noexcept
+{
+    return {this, 0, 0};
+}
+
+MatchList::Iterator MatchList::end() const noexcept
+{
+    return {this, m_Chunks.size(), m_Tail.size()};
+}
+
+void MatchList::append(HandleMatch match)
+{
+    m_Tail.push_back(std::move(match));
+}
+
+void MatchList::seal()
+{
+    if (m_Tail.empty())
+    {
+        return; // no empty chunks: the iterator steps over a chunk only at its end
+    }
+    // Room first, then the chunk, whose allocation comes before the tail is moved into it: a throw leaves the tail.
+    m_Chunks.reserve(m_Chunks.size() + 1);
+    m_Ends.reserve(m_Ends.size() + 1);
+    const std::size_t end = size();
+    auto chunk = std::make_shared<const std::vector<HandleMatch>>(std::move(m_Tail));
+    m_Tail.clear(); // moved from: empty, and this list's own again
+    m_Chunks.push_back(std::move(chunk));
+    m_Ends.push_back(end);
+}
+
+bool MatchList::extends(const MatchList& earlier) const noexcept
+{
+    return earlier.m_Tail.empty() && earlier.m_Chunks.size() <= m_Chunks.size() &&
+           std::ranges::equal(earlier.m_Chunks, std::span(m_Chunks).first(earlier.m_Chunks.size()));
+}
 
 std::string lowered(std::string_view text)
 {
@@ -113,11 +186,16 @@ void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
                 std::string_view loweredQuery,
-                SearchPublication& into)
+                SearchPublication& into,
+                SearchSources asked)
 {
     ++into.searched;
     const bool filesOk = files.status == Platform::OpenFilesReadStatus::Ok;
     const bool modulesOk = modules.status == Platform::ModulesReadStatus::Ok;
+    // A source not asked for was read by the first search (#3875): an administrator's pass asks only for what was
+    // refused. Then the process was read, however this pass's read went: never exited or failed, whose matches the
+    // first search still lists.
+    const bool readBefore = !asked.openFiles || !asked.modules;
     if (filesOk)
     {
         for (const Platform::OpenFile& file : files.files)
@@ -145,7 +223,7 @@ void addProcess(const SearchProcess& process,
         .modules = modules.status == Platform::ModulesReadStatus::PermissionDenied,
     };
     const bool anyRefused = refused.openFiles || refused.modules;
-    if (filesOk || modulesOk)
+    if (filesOk || modulesOk || readBefore)
     {
         if (anyRefused)
         {
@@ -306,11 +384,14 @@ void walk(std::span<const SearchProcess> processes,
             modules =
                 authorized ? readers.modules->readAuthorized(process.target, stopToken) : readers.modules->readModules(process.target);
         }
-        addProcess(process, files, modules, loweredQuery, current);
+        addProcess(process, files, modules, loweredQuery, current, asked);
         if (++sincePublish == PUBLISH_EVERY_PROCESSES)
         {
             sincePublish = 0;
             ++current.version;
+            // The matches since the last generation become a chunk this one shares (#3888): the copy publish()
+            // takes copies no match, and the walk's later matches go to its own tail, not to what was published.
+            current.matches.seal();
             publish(current);
         }
     }
@@ -328,6 +409,7 @@ void finish(SearchPublication& current, const Publish& publish, const char* reas
             current.failure = std::format("The search stopped: {}", reason);
         }
         ++current.version;
+        current.matches.seal(); // published lists have no tail, so an administrator's search after it extends it
         publish(std::move(current));
     }
     catch (...) // NOLINT(bugprone-empty-catch) - nothing is left to report with; see above

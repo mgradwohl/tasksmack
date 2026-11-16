@@ -11,7 +11,8 @@ per-case JUnit report tools/merge-gtest-results.py writes. This prints a Markdow
 Job Summary: how many cases armed the hook, and how many skipped because the hook is compiled out
 (their skip message names operator new, as TASKSMACK_NO_ALLOCATOR_HOOK's reasons do).
 
---require is for the builds where the hook is compiled in (Linux debug and release): it exits 1 when
+--require is for the builds where the hook is compiled in (Linux debug and release, and Windows release
+since #3846; Windows debug leaves it out, see tests/Domain/AllocationFailureHook.h): it exits 1 when
 no case armed it or any case skipped for want of it, so a hook that silently stopped running fails
 the job instead of passing with its tests skipped. Without --require the summary is informational.
 

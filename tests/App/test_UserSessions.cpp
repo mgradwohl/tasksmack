@@ -13,10 +13,14 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/UsersModel.h"
 #include "Mocks/FakeUserSessions.h"
-#include "Platform/BrokeredUserSessions.h"
+#ifdef _WIN32
+#include "Platform/BrokeredUserSessions.h" // Windows only (#3784)
 #include "Platform/IPrivilegedBroker.h"
+#endif
 #include "Platform/IUserSessions.h"
+#ifdef _WIN32
 #include "Support/RestartOffered.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -142,6 +146,7 @@ TEST(SessionActionTest, AnotherUsersSessionOffersAuthenticateAndRetryOnce)
     EXPECT_FALSE(none.busy());
 }
 
+#ifdef _WIN32 // BrokeredProcessActions and BrokeredUserSessions are Windows only (#3784)
 // #3669: with no helper, another user's session is refused with nothing to retry it (BrokeredUserSessions says how to
 // get the rights), and the line offers Restart as administrator... where TaskSmack can restart elevated.
 TEST(SessionActionTest, WithNoHelperARefusalOffersRestartAsAdministrator)
@@ -177,6 +182,7 @@ TEST(SessionActionTest, WithNoHelperARefusalOffersRestartAsAdministrator)
     EXPECT_TRUE(withHelper.offersAuthenticateAndRetry());
     EXPECT_FALSE(withHelper.offersRestartAsAdministrator());
 }
+#endif
 
 // #3076 (Windows): Disconnect asks first, as Sign out does. Another user's session is told its programs keep
 // running; TaskSmack's own, that this screen locks. Refused for want of an administrator, it offers the retry.

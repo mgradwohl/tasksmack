@@ -82,7 +82,10 @@ namespace Platform::Broker
 /// 25: ReadMemoryMap again, now that Windows' helper serves it: an elevated or another user's process's memory map
 ///     for Process Details (#3665), answered with MemoryMapResult. The fields are v16's; the kinds take numbers
 ///     never used before (45 and 64), as v24's did.
-inline constexpr std::uint16_t PROTOCOL_VERSION = 25;
+/// 26: what only the Linux helper used is gone from the requests left (#3784): CloseConnection's socket inode (a
+///     Windows connection is named by its IPv4 TCP endpoints alone) and Signal's Hangup, Interrupt, Quit, User1 and
+///     User2 (Windows has no POSIX signals). The kinds keep their numbers.
+inline constexpr std::uint16_t PROTOCOL_VERSION = 26;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
@@ -114,7 +117,7 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     SetIoPriority = 18,
     SetAffinity = 19,
     SetEfficiencyMode = 21,      ///< Efficiency mode on or off for a process (#3071)
-    CloseConnection = 22,        ///< One of a process's sockets shut down, by inode (#3066)
+    CloseConnection = 22,        ///< One of a process's IPv4 TCP connections reset, by its endpoints (#3358)
     TaskManagerReplacement = 23, ///< TaskSmack set or cleared as Task Manager's IFEO debugger (#3072)
     SessionAction = 24,          ///< Another user's Windows session disconnected or signed out (#3076)
     ThreadAction = 25,           ///< One thread of a process suspended, resumed or ended (#3069, Windows)
@@ -137,18 +140,14 @@ enum class MessageKind : std::uint16_t // NOLINT(performance-enum-size): 16 bits
     MemoryMapResult = 64,        ///< The answer to ReadMemoryMap (#3665)
 };
 
-/// The signals a Signal request sends.
+/// The signals a Signal request sends. v8's Hangup to User2 (#3063), the POSIX signals only Linux sent, went in v26
+/// (#3784).
 enum class Signal : std::uint8_t
 {
     Terminate,
     Kill,
     Suspend,
     Resume,
-    Hangup, ///< protocol v8 (#3063): the signals ProcessSignal names
-    Interrupt,
-    Quit,
-    User1,
-    User2,
 };
 
 struct Hello
@@ -205,13 +204,12 @@ struct EfficiencyModeRequest
     friend bool operator==(const EfficiencyModeRequest&, const EfficiencyModeRequest&) = default;
 };
 
-/// Shut down one of a process's sockets (#3066, protocol v10): IProcessActions::closeConnection(). The inode names
-/// the socket; the helper finds it among the target's descriptors after the identity check. On Windows (#3358,
-/// protocol v20) the inode is 0 and the IPv4 TCP endpoints name it instead: IProcessActions::closeTcpConnection().
+/// Reset one of a process's IPv4 TCP connections (#3066, protocol v10; #3358, v20): IProcessActions::closeTcpConnection().
+/// Its endpoints name it; the helper looks it up again after the identity check. The socket inode the Linux helper
+/// closed by went in v26 (#3784).
 struct CloseConnectionRequest
 {
     ProcessTarget target;
-    std::uint64_t socketInode = 0;
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     TcpConnectionToClose tcpConnection{};
     friend bool operator==(const CloseConnectionRequest&, const CloseConnectionRequest&) = default;

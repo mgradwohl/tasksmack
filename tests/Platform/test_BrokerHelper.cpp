@@ -2398,22 +2398,33 @@ class PeFile
     std::vector<IMAGE_SECTION_HEADER> m_Sections;
 };
 
-TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardAndCetShadowStacks)
+/// Checks that @p path, an image that can run elevated, has the hardening tasksmack_apply_privileged_hardening gives
+/// it (cmake/CompilerOptions.cmake): Control Flow Guard, CET shadow-stack compatibility, and imports loaded from
+/// System32 only (#2557, #3897).
+void expectHardenedImage(const std::filesystem::path& path)
 {
-#ifndef TASKSMACK_WINDOWS_HELPER_HARDENED
-    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; CMakeLists.txt)";
-#else
-    const PeFile image(TASKSMACK_WINDOWS_HELPER_PATH);
+    const PeFile image(path);
     ASSERT_TRUE(image.valid()) << "not a 64-bit PE file";
     const WORD characteristics = image.headers().OptionalHeader.DllCharacteristics;
-    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_NX_COMPAT, 0);
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_DYNAMIC_BASE, 0);
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_HIGH_ENTROPY_VA, 0);
 
+    // Every DLL the imports load comes from System32 only (/DEPENDENTLOADFLAG:0x800), never the image's own folder:
+    // the load configuration's DependentLoadFlags, which the loader uses for the imports in place of its default
+    // search. In every build, a sanitizer's too.
+    const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
+    ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags) + sizeof(WORD)) << "no load configuration";
+    const auto dependentLoadFlags = image.at<WORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
+    EXPECT_EQ(dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32) << "no /DEPENDENTLOADFLAG:0x800";
+
+#ifndef TASKSMACK_WINDOWS_HARDENED
+    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; cmake/CompilerOptions.cmake)";
+#else
+    EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
+
     // The load configuration's guard flags: the compiler's checks went in (-cfguard), and the linker's
     // table of valid call targets with them.
-    const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
     ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags) + sizeof(DWORD)) << "no load configuration";
     const auto guardFlags = image.at<DWORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, GuardFlags));
     EXPECT_NE(guardFlags & IMAGE_GUARD_CF_INSTRUMENTED, 0U) << "no CFG checks";
@@ -2433,6 +2444,24 @@ TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardAndCetShadowStacks)
     }
     EXPECT_TRUE(cetCompatible) << "no /CETCOMPAT";
 #endif
+}
+
+TEST(TaskSmackHelperImageTest, IsBuiltWithControlFlowGuardCetShadowStacksAndSystem32Imports)
+{
+    expectHardenedImage(TASKSMACK_WINDOWS_HELPER_PATH);
+}
+
+// TaskSmack.exe runs elevated too, after Restart as administrator (#3657), from wherever its user unpacked it, so it
+// gets the helper's hardening (#3897). TaskSmackTests doesn't build it (tests/CMakeLists.txt, TASKSMACK_APP_PATH);
+// CI's build makes every target, so it is checked there.
+TEST(TaskSmackImageTest, IsBuiltWithControlFlowGuardCetShadowStacksAndSystem32Imports)
+{
+    const std::filesystem::path app(TASKSMACK_APP_PATH);
+    if (!std::filesystem::exists(app))
+    {
+        GTEST_SKIP() << "TaskSmack.exe isn't built: " << TASKSMACK_APP_PATH;
+    }
+    expectHardenedImage(app);
 }
 
 TEST(TaskSmackHelperImageTest, ImportsNeitherComNorTheDumpWriter)

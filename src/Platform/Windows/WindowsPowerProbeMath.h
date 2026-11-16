@@ -104,8 +104,8 @@ parsePowerStatus(std::uint8_t acLineStatus, std::uint8_t batteryFlag, std::uint8
         counters.chargePercent = -1;
     }
 
-    // Time remaining in seconds. The Windows API gives no time to full while charging, so
-    // timeToFullSec stays 0 (unavailable).
+    // Time remaining in seconds. GetSystemPowerStatus gives no time to full while charging, so
+    // timeToFullSec stays 0 here; WindowsPowerProbe works it out from the battery's status (#4030).
     if (batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN && counters.state == BatteryState::Discharging)
     {
         counters.timeToEmptySec = batteryLifeTimeSec;
@@ -124,14 +124,20 @@ struct BatteryDetailsReported
     int healthPercent = -1;
     std::uint64_t cycleCount = 0; ///< 0 is the driver's "no cycle counter"
     bool hasTechnology = false;
+    // IOCTL_BATTERY_QUERY_STATUS's live figures (#4030): offered once a cached battery has given them
+    bool hasPowerRate = false;
+    bool hasChargeCapacity = false;
+    bool hasVoltage = false;
 };
 
 /// WindowsPowerProbe's capabilities from one GetSystemPowerStatus snapshot and the battery device's
 /// latest answer. Recomputed on every read (#2413), so a battery inserted after start, or details the
 /// device first answered late, are offered. With no battery (hasBatteryFromFlag() false, the
 /// NotPresent state, #2408) nothing is offered, whatever the device last said. GetSystemPowerStatus
-/// has no live capacity, rate or voltage, and each device fact is offered only when the battery gave
-/// it: relative-unit capacities are not Wh, and a cycle count of 0 is the driver's "no counter".
+/// has no live capacity, rate or voltage; those come from the battery's status (#4030). Each device
+/// fact is offered only when the battery gave it: relative-unit capacities are not Wh, and a cycle
+/// count of 0 is the driver's "no counter". The time estimates are offered when GetSystemPowerStatus
+/// has a time left, or when the status gives the rate and remaining Wh a time to full is worked from.
 [[nodiscard]] inline PowerCapabilities powerCapabilitiesFrom(std::uint8_t batteryFlag,
                                                              std::uint8_t batteryLifePercent,
                                                              std::uint32_t batteryLifeTimeSec,
@@ -146,11 +152,15 @@ struct BatteryDetailsReported
         return caps;
     }
     caps.hasChargePercent = batteryLifePercent <= 100;
-    caps.hasTimeEstimates = batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN;
     caps.hasDesignCapacity = details.found && details.designWh > 0.0 && details.fullChargeWh > 0.0;
     caps.hasHealthPercent = details.found && details.healthPercent >= 0;
     caps.hasCycleCount = details.found && details.cycleCount > 0;
     caps.hasTechnology = details.found && details.hasTechnology;
+    caps.hasPowerRate = details.hasPowerRate;
+    caps.hasChargeCapacity = details.hasChargeCapacity;
+    caps.hasVoltage = details.hasVoltage;
+    caps.hasTimeEstimates = batteryLifeTimeSec != BATTERY_LIFE_TIME_UNKNOWN ||
+                            (details.hasPowerRate && details.hasChargeCapacity && details.fullChargeWh > 0.0);
     return caps;
 }
 
@@ -248,6 +258,87 @@ struct BatteryCapacityTotals
     totals.fullChargeWh = combined.fullCharge;
     totals.healthPercent = combined.healthPercent;
     return totals;
+}
+
+// ---- Battery status (#4030): IOCTL_BATTERY_QUERY_STATUS's BATTERY_STATUS fields ----
+
+/// BATTERY_UNKNOWN_RATE (poclass.h), as BATTERY_STATUS::Rate (a LONG) reads it
+inline constexpr std::int32_t BATTERY_RATE_UNKNOWN_VALUE = static_cast<std::int32_t>(0x80000000U);
+/// BATTERY_UNKNOWN_VOLTAGE (poclass.h)
+inline constexpr std::uint32_t BATTERY_VOLTAGE_UNKNOWN_VALUE = 0xFFFFFFFFU;
+
+/// One battery's BATTERY_STATUS, as combineBatteryStatus() takes it.
+struct BatteryStatusReading
+{
+    std::int32_t rate = BATTERY_RATE_UNKNOWN_VALUE;          ///< Rate: mW, negative while discharging
+    std::uint32_t capacity = BATTERY_CAPACITY_UNKNOWN_VALUE; ///< Capacity: the remaining charge, mWh
+    std::uint32_t voltage = BATTERY_VOLTAGE_UNKNOWN_VALUE;   ///< Voltage: mV
+    bool relative = false; ///< BATTERY_CAPACITY_RELATIVE: the capacity and rate are the driver's own units
+};
+
+/// Every battery's status together, in PowerCounters' units and signs (LinuxPowerProbe's).
+struct BatteryStatusTotals
+{
+    bool hasPowerRate = false;
+    double powerNowW = 0.0; ///< Positive while discharging, negative while charging
+    bool hasChargeCapacity = false;
+    double chargeNowWh = 0.0;
+    bool hasVoltage = false;
+    std::uint64_t voltageMv = 0;
+};
+
+/// The batteries' status combined by LinuxPowerProbe::combinePacks()'s rules (#2319, #2409):
+/// - Rate: the sum of the known rates, as watts with Linux's sign (positive = power going out); offered
+///   when any battery gives one.
+/// - Remaining charge: the sum in Wh, only when every battery gives a known mWh figure, so a battery
+///   whose charge is unknown or in relative units neither drops out of the sum nor inflates it.
+/// - Voltage: the first battery's, as a combined voltage would mean nothing.
+/// Relative-unit batteries give no rate or charge: their scale is the driver's own.
+[[nodiscard]] inline BatteryStatusTotals combineBatteryStatus(std::span<const BatteryStatusReading> batteries) noexcept
+{
+    BatteryStatusTotals totals;
+    if (batteries.empty())
+    {
+        return totals;
+    }
+    std::int64_t rateMw = 0;
+    std::uint64_t capacityMwh = 0;
+    bool everyCapacityKnown = true;
+    for (const BatteryStatusReading& battery : batteries)
+    {
+        if (!battery.relative && battery.rate != BATTERY_RATE_UNKNOWN_VALUE)
+        {
+            totals.hasPowerRate = true;
+            rateMw += battery.rate;
+        }
+        if (battery.relative || battery.capacity == BATTERY_CAPACITY_UNKNOWN_VALUE)
+        {
+            everyCapacityKnown = false;
+        }
+        else
+        {
+            capacityMwh += battery.capacity;
+        }
+    }
+    // Windows' rate is negative while discharging; PowerCounters' is positive then (#1158)
+    totals.powerNowW = totals.hasPowerRate ? -static_cast<double>(rateMw) / 1000.0 : 0.0;
+    totals.hasChargeCapacity = everyCapacityKnown;
+    totals.chargeNowWh = everyCapacityKnown ? static_cast<double>(capacityMwh) / 1000.0 : 0.0;
+    const std::uint32_t voltage = batteries.front().voltage;
+    totals.hasVoltage = voltage != BATTERY_VOLTAGE_UNKNOWN_VALUE && voltage > 0;
+    totals.voltageMv = totals.hasVoltage ? voltage : 0;
+    return totals;
+}
+
+/// Seconds to full while charging, from the remaining and full-charge Wh and the (negative) charging
+/// rate, as LinuxPowerProbe works it out; 0 (unavailable) unless charging above 0.1 W below full.
+[[nodiscard]] inline std::uint64_t timeToFullSeconds(double chargeNowWh, double chargeFullWh, double powerNowW) noexcept
+{
+    if (!(powerNowW < -0.1) || !(chargeFullWh > chargeNowWh) || chargeNowWh < 0.0)
+    {
+        return 0;
+    }
+    return static_cast<std::uint64_t>(((chargeFullWh - chargeNowWh) / -powerNowW) * 3600.0);
 }
 
 /// Takes @p published (a Domain::WorkerPublication) into @p facts when it is newer than @p takenVersion,

@@ -304,9 +304,6 @@ set(TASKSMACK_SOURCES
     src/Platform/ThreadName.cpp
     src/Platform/ThreadApartment.cpp         # a sampler thread's COM apartment (#2731)
     src/Platform/BrokerProtocol.cpp          # the privileged-broker protocol's encoders and decoders (#2306, #3786)
-    src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
-    src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
-    src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
     src/Platform/TaskManagerReplacementService.cpp # Replace Task Manager's read and change (#3072)
     src/Platform/PublicIpLookup.cpp          # what either OS's public IP lookup does with a reply (#3117)
     src/Platform/Sha256.cpp                  # SHA-256 of an executable, for Look up on VirusTotal (#3094)
@@ -383,7 +380,12 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/PipeBroker.cpp
     src/Platform/Windows/BrokerHelper.cpp # TaskSmackHelper.exe's session: parent checks, pipe, serve (#2517)
     src/Platform/Windows/HelperLauncher.cpp # starts TaskSmackHelper.exe elevated: ShellExecuteExW("runas") (#2549)
+    # The broker's client and request mapping: Windows only, since Linux has no helper (#3580, #3784)
+    src/Platform/BrokeredProcessActions.cpp  # retries a refused action through the privileged helper (#2308)
+    src/Platform/BrokeredUserSessions.cpp    # another user's Windows session disconnected or signed out by the helper (#3076)
+    src/Platform/BrokerRequestMapping.cpp    # what the Windows helper does with each request (#2517)
     src/Platform/Windows/ElevatedRestart.cpp # Restart as administrator: TaskSmack.exe again with "runas" (#2728)
+    src/Platform/Windows/DllSearchPolicy.cpp # where WinMain lets a DLL loaded by name come from (#3897)
     src/Platform/Windows/PinnedFolder.cpp # the handed-over config folder, opened only relative to its held handle (#3774)
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
@@ -410,6 +412,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsSystemProbe.cpp
     src/Platform/Windows/WindowsSystemInfoProbe.cpp
     src/Platform/Windows/WindowsSignatureCheck.cpp # images' signatures, embedded and catalog: drivers (#1661), processes (#3070)
+    src/Platform/Windows/WindowsImageFile.cpp # the file a process's image was mapped from, held: its hash and signature (#3861, #4021)
     src/Platform/Windows/WindowsCrashEvents.cpp
     src/Platform/Windows/WindowsBootPerformance.cpp
     src/Platform/Windows/WindowsPlatformSecurity.cpp
@@ -661,6 +664,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsElevation.h
         src/Platform/Windows/ElevatedRestart.h
+        src/Platform/Windows/DllSearchPolicy.h
         src/Platform/Windows/PinnedFolder.h
         src/Platform/Windows/BrokerPipe.h
         src/Platform/Windows/BrokerPipeServer.h
@@ -931,7 +935,9 @@ add_library(TaskSmackApp OBJECT
     ${TASKSMACK_HEADERS}
 )
 tasksmack_configure_app_target(TaskSmackApp)
-tasksmack_apply_privileged_hardening(TaskSmackApp) # runs as root in an Administrator session (#3605)
+# It runs as root in an Administrator session (#3605), and elevated after Restart as administrator (#3897): CFG's
+# checks go into the app's objects here, its table and the image flags into TaskSmack.exe below.
+tasksmack_apply_privileged_hardening(TaskSmackApp)
 
 # Precompiled headers, for the app's sources; main.cpp, alone in TaskSmack, is not worth one.
 if(TASKSMACK_ENABLE_PCH)
@@ -1071,32 +1077,12 @@ if(WIN32)
         wtsapi32 # the sessions a Disconnect or Sign out names, and the call itself (WindowsUserSessions, #3076)
     )
     target_link_libraries(TaskSmackHelper PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
-    # Exploit mitigations for the one image that runs elevated (#2557): Control Flow Guard (the compiler's
-    # checks on indirect calls, and the linker's table of their valid targets) and CET shadow-stack
-    # compatibility, so Windows checks returns against a hardware shadow stack where the CPU has one.
-    # Not under a sanitizer, whose runtime isn't built for CFG; TASKSMACK_HELPER_HARDENED tells the tests
-    # what to expect.
-    string(TOUPPER "${CMAKE_BUILD_TYPE}" _helper_config)
-    if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_helper_config}}" MATCHES "-fsanitize")
-        set(TASKSMACK_HELPER_HARDENED OFF)
-        message(STATUS "TaskSmackHelper: CFG and CETCOMPAT off under a sanitizer")
-    else()
-        set(TASKSMACK_HELPER_HARDENED ON)
-        # clang-cl's /guard:cf; the plain driver has no spelling of its own for an MSVC target (-mguard is
-        # MinGW's). A module flag, so ThinLTO's link-time code generation keeps it.
-        target_compile_options(TaskSmackHelper PRIVATE "SHELL:-Xclang -cfguard")
-        target_link_options(TaskSmackHelper PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT")
-    endif()
-    unset(_helper_config)
+    # Exploit mitigations for an image that runs elevated (#2557): Control Flow Guard, CET shadow-stack
+    # compatibility and System32-only imports, the same as TaskSmack.exe's (cmake/CompilerOptions.cmake).
+    tasksmack_apply_privileged_hardening(TaskSmackHelper)
     # The app's manifest: asInvoker (so only the launcher's "runas" elevates it, and Windows' installer
-    # detection never does), long paths and the UTF-8 code page. And every DLL its imports load comes
-    # from System32 only (LOAD_LIBRARY_SEARCH_SYSTEM32), never the helper's own folder, which a
-    # portable TaskSmack may have unpacked somewhere its user can write; HelperMain.cpp sets the same
-    # for anything loaded later.
-    target_link_options(TaskSmackHelper PRIVATE
-        "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
-        "LINKER:/DEPENDENTLOADFLAG:0x800"
-    )
+    # detection never does), long paths and the UTF-8 code page.
+    target_link_options(TaskSmackHelper PRIVATE "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}")
     # Beside TaskSmack.exe, where TaskSmack starts it from, the tests find it, and release packaging
     # (and its Authenticode signing, #2302) picks it up.
     get_property(_is_multi_config GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)

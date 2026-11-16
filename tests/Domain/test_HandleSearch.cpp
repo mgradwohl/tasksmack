@@ -11,6 +11,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <iterator>
 #include <map>
 #include <memory>
 #include <new>
@@ -307,7 +308,7 @@ TEST(HandleSearchTest, AnAdministratorSearchOnAFullResultIsMarkedTruncated)
     // postgres is read first (denied), then mine fills the cap.
     std::vector<SearchProcess> processes{process(2, "postgres"), process(1, "mine")};
     Domain::PublicationSlot<SearchPublication> slot;
-    std::stop_source stop;
+    const std::stop_source stop;
     run(processes,
         {.openFiles = &files, .modules = nullptr},
         false,
@@ -359,9 +360,11 @@ TEST(HandleSearchTest, AddProcessListsMatchingFilesAndModules)
 {
     SearchPublication into;
     addProcess(process(7, "soffice"),
-               openFiles({file(Platform::OpenFileKind::File, "/home/me/report.ods"),
-                          file(Platform::OpenFileKind::File, "/home/me/notes.txt"),
-                          file(Platform::OpenFileKind::Directory, "/home/me")}),
+               openFiles({
+                   file(Platform::OpenFileKind::File, "/home/me/report.ods"),
+                   file(Platform::OpenFileKind::File, "/home/me/notes.txt"),
+                   file(Platform::OpenFileKind::Directory, "/home/me"),
+               }),
                modules({"/usr/lib/libreport.so", "/usr/lib/libc.so.6"}),
                "report",
                into);
@@ -421,7 +424,7 @@ TEST(HandleSearchTest, RunWalksEveryProcessAndPublishesBatchesThenDone)
     files.results.erase(40); // denied
     mods.results.erase(40);
     Domain::PublicationSlot<SearchPublication> slot;
-    std::stop_source stop;
+    const std::stop_source stop;
     run(processes,
         {.openFiles = &files, .modules = &mods},
         false,
@@ -442,6 +445,112 @@ TEST(HandleSearchTest, RunWalksEveryProcessAndPublishesBatchesThenDone)
     // Two batches of 16, then the final generation, each one version on from the start.
     EXPECT_EQ(last->version, 5U + 3U);
     EXPECT_EQ(files.read.size(), 40U);
+}
+
+[[nodiscard]] HandleMatch matchAt(std::string path)
+{
+    return HandleMatch{.target = {.pid = 1, .startTimeTicks = 101}, .process = "p", .kind = HandleKind::File, .path = std::move(path)};
+}
+
+static_assert(std::forward_iterator<MatchList::Iterator>, "range algorithms walk a match list");
+
+// #3888: a copy of a match list shares its sealed chunks, not copies of their matches, and keeps exactly the matches
+// it had: what the original adds after goes to the original's own tail.
+TEST(HandleSearchTest, AMatchListCopySharesItsSealedChunksAndKeepsItsOwnMatches)
+{
+    MatchList list;
+    list.append(matchAt("/a"));
+    list.append(matchAt("/b"));
+    list.seal();
+    const MatchList copy = list;
+    EXPECT_EQ(&copy[0], &list[0]) << "the same match, not a copy";
+    EXPECT_EQ(&copy[1], &list[1]);
+
+    list.append(matchAt("/c"));
+    EXPECT_EQ(copy.size(), 2U) << "a match added after the copy isn't in it";
+    ASSERT_EQ(list.size(), 3U);
+    EXPECT_EQ(list[2].path, "/c");
+    EXPECT_TRUE(list.extends(copy));
+    EXPECT_FALSE(copy.extends(list)) << "a list with matches past the copy's isn't one of its prefixes";
+
+    list.seal();
+    EXPECT_EQ(list.chunkCount(), 2U);
+    list.seal(); // an empty tail makes no chunk
+    EXPECT_EQ(list.chunkCount(), 2U);
+    EXPECT_TRUE(list.extends(copy));
+    EXPECT_TRUE(list.extends(list));
+    EXPECT_TRUE(list.extends(MatchList{})) << "every list extends the empty one";
+
+    // The same matches, made again, aren't the same chunks: a new search doesn't extend the last one.
+    const MatchList again(std::vector<HandleMatch>{matchAt("/a"), matchAt("/b")});
+    EXPECT_EQ(again.chunkCount(), 1U);
+    EXPECT_FALSE(again.extends(copy));
+    EXPECT_FALSE(list.extends(again));
+
+    // A list with an unsealed tail is a prefix of nothing, not even of itself: its tail is its own.
+    MatchList unsealed = copy;
+    unsealed.append(matchAt("/d"));
+    EXPECT_FALSE(unsealed.extends(unsealed));
+
+    // The iterator walks the chunks and then the tail, in order.
+    std::vector<std::string> paths;
+    for (const HandleMatch& match : unsealed)
+    {
+        paths.push_back(match.path);
+    }
+    EXPECT_EQ(paths, (std::vector<std::string>{"/a", "/b", "/d"}));
+    const MatchList none;
+    EXPECT_TRUE(none.begin() == none.end());
+}
+
+// #3888: each progress generation shares the matches the ones before it published instead of copying them, and a
+// generation a reader keeps holds exactly its own matches, a prefix of every later one's: the walk's later matches
+// never reach it.
+TEST(HandleSearchTest, EachGenerationSharesTheMatchesBeforeItAndKeepsItsOwnPrefix)
+{
+    FakeOpenFiles files;
+    std::vector<SearchProcess> processes;
+    constexpr std::int32_t PROCESSES = 50;
+    for (std::int32_t pid = 1; pid <= PROCESSES; ++pid)
+    {
+        processes.push_back(process(pid, "p" + std::to_string(pid)));
+        files.results[pid] = openFiles({
+            file(Platform::OpenFileKind::File, "/tmp/hit-" + std::to_string(pid)),
+            file(Platform::OpenFileKind::File, "/tmp/miss"),
+        });
+    }
+    std::vector<std::shared_ptr<const SearchPublication>> generations;
+    const Publish keep = [&generations](SearchPublication generation)
+    {
+        generations.push_back(std::make_shared<const SearchPublication>(std::move(generation)));
+    };
+    const std::stop_source stop;
+    run(processes, {.openFiles = &files, .modules = nullptr}, false, startFor("HIT", processes.size(), 1), keep, stop.get_token());
+
+    // After 16, 32 and 48 processes, then done after 50.
+    ASSERT_EQ(generations.size(), 4U);
+    const SearchPublication& last = *generations.back();
+    ASSERT_TRUE(last.done);
+    ASSERT_EQ(last.matches.size(), static_cast<std::size_t>(PROCESSES));
+    const std::vector<std::size_t> sizes{16, 32, 48, 50};
+    for (std::size_t g = 0; g < generations.size(); ++g)
+    {
+        SCOPED_TRACE("generation " + std::to_string(g));
+        const MatchList& matches = generations[g]->matches;
+        ASSERT_EQ(matches.size(), sizes[g]) << "what was found by its own publication, no more";
+        EXPECT_EQ(matches.chunkCount(), g + 1) << "one sealed chunk per generation, and no tail";
+        EXPECT_TRUE(last.matches.extends(matches));
+        for (std::size_t i = 0; i < matches.size(); ++i)
+        {
+            EXPECT_EQ(&matches[i], &last.matches[i]) << "match " << i << ": shared, not copied";
+            EXPECT_EQ(matches[i].path, "/tmp/hit-" + std::to_string(i + 1));
+        }
+    }
+
+    // An administrator's search after it starts from its matches, still shared.
+    const SearchPublication after = startAuthorizedAfter(last, last.version + 1);
+    EXPECT_TRUE(after.matches.extends(last.matches));
+    EXPECT_EQ(&after.matches[0], &last.matches[0]);
 }
 
 TEST(HandleSearchTest, RunStopsBetweenProcessesWhenAsked)
@@ -492,7 +601,7 @@ class ThrowingOpenFiles final : public Platform::IProcessOpenFilesReader
             }
             if (kind == 2)
             {
-                throw 42; // NOLINT(hicpp-exception-baseclass) - an exception that isn't a std::exception
+                throw 42; // NOLINT(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - an exception that isn't a std::exception
             }
             throw std::runtime_error("injected reader failure");
         }
@@ -518,7 +627,7 @@ TEST(HandleSearchTest, AReaderOrAllocationFailureEndsTheWalkAsDoneWithItsReason)
     }
     ThrowingOpenFiles files;
     Domain::PublicationSlot<SearchPublication> slot;
-    std::stop_source stop;
+    const std::stop_source stop;
 
     files.throwOn = 18; // after the first progress publication (16 processes)
     run(processes,
@@ -604,7 +713,7 @@ TEST(HandleSearchTest, EveryAllocationRunMakesCanFailWithoutEscaping)
         // nonempty match list into a progress publication too.
         const SearchPublication start = startFor("a-much-longer-path-for-the-heap-1", processes.size(), 1);
         slot.commit(std::make_shared<const SearchPublication>(start));
-        std::stop_source stop;
+        const std::stop_source stop;
         SearchPublication input = start; // copied before the hook is armed: only run()'s own allocations fail
         const Publish publish = publishTo(slot);
         bool fired = false;
@@ -654,7 +763,7 @@ TEST(HandleSearchTest, AnAdministratorSearchAddsTheDeniedProcessesToTheFirstResu
     files.authorizedFiles[2] = openFiles({file(Platform::OpenFileKind::File, "/srv/data.db-wal")});
     std::vector<SearchProcess> processes{process(1, "mine"), process(2, "postgres")};
     Domain::PublicationSlot<SearchPublication> slot;
-    std::stop_source stop;
+    const std::stop_source stop;
     run(processes,
         {.openFiles = &files, .modules = nullptr},
         false,
@@ -835,6 +944,60 @@ TEST(HandleSearchTest, ModulesReadFilesRefusedRetriesOnlyTheFiles)
     EXPECT_EQ(second->matches[1].kind, HandleKind::File);
     EXPECT_TRUE(second->denied.empty());
     EXPECT_EQ(second->searched, 1U);
+}
+
+// #3875: a process whose open files the first search read, and whose modules it was refused, exits before the
+// administrator's pass. That pass's modules read says so, but the process was read: its file match stays listed, and
+// it isn't counted as exited (or failed) beside it.
+TEST(HandleSearchTest, AnAdministratorPassDoesNotCountAProcessExitedWhoseOtherSourceWasRead)
+{
+    FakeOpenFiles files;
+    files.results[1] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.db")});
+    files.results[2] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.dat")});
+    FakeModules mods; // both PIDs' modules refused
+    mods.authorizedResults[1] = modulesStatus(Platform::ModulesReadStatus::ProcessExited);
+    mods.authorizedResults[2] = modulesStatus(Platform::ModulesReadStatus::Failed);
+    const std::vector<SearchProcess> processes{process(1, "gone"), process(2, "odd")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    const std::stop_source stop;
+    run(processes,
+        {.openFiles = &files, .modules = &mods},
+        false,
+        startFor("data.d", processes.size(), 1),
+        publishTo(slot),
+        stop.get_token());
+    const std::shared_ptr<const SearchPublication> first = slot.load();
+    ASSERT_EQ(first->denied.size(), 2U);
+
+    run(processesOf(first->denied),
+        {.openFiles = &files, .modules = &mods},
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(slot),
+        stop.get_token(),
+        sourcesOf(first->denied));
+    const std::shared_ptr<const SearchPublication> second = slot.load();
+    EXPECT_TRUE(second->done);
+    EXPECT_EQ(mods.authorizedRead, (std::vector<std::int32_t>{1, 2}));
+    EXPECT_EQ(second->matches.size(), 2U) << "both open files' matches are kept";
+    EXPECT_EQ(second->exited, 0U) << "its open files were read: it didn't exit before it was read";
+    EXPECT_EQ(second->failed, 0U) << "nor did its read fail";
+    EXPECT_TRUE(second->denied.empty());
+    EXPECT_EQ(second->searched, 2U);
+
+    // With nothing read before (both sources asked), the same exit still counts.
+    SearchPublication into;
+    addProcess(process(3, "gone"), {}, modulesStatus(Platform::ModulesReadStatus::ProcessExited), "x", into, {});
+    EXPECT_EQ(into.exited, 1U);
+    // And a source left out means it was read: neither exited nor failed.
+    addProcess(process(4, "read"),
+               {},
+               modulesStatus(Platform::ModulesReadStatus::ProcessExited),
+               "x",
+               into,
+               {.openFiles = false, .modules = true});
+    EXPECT_EQ(into.exited, 1U);
+    EXPECT_EQ(into.failed, 0U);
 }
 
 // #3357: processesOf() and sourcesOf() line up with the denied list, and run() reads, for each process, the sources
