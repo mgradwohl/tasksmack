@@ -242,8 +242,12 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // Run as root for a user (sudo, pkexec, #3580), the config directory is that user's, the less-privileged side's, as
     // a handed-over one is on Windows (#3759): UserConfig writes through no link of theirs in it, and the dump folder and
     // recent commands stored there aren't offered. Before the configuration is first read.
+    // Its environment is the less-privileged side's too (sudo -E, an env_keep list): the TASKSMACK_CONFIG_DIR test hook
+    // is ignored, so root neither reads from nor creates the folder it names, as an elevated Windows session does (#3920,
+    // #4090).
     if (Platform::SessionUser::invokingUserHome().has_value())
     {
+        Core::ConfigDirOverride::ignoreTestHook();
         Core::ConfigDirOverride::markLessPrivilegedFolder();
     }
 #endif
