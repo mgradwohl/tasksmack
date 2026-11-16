@@ -8,7 +8,6 @@
 #include "Platform/IoPriorityTypes.h"
 #include "Platform/ThreadName.h"
 #include "Platform/UdpTrafficSamples.h"
-#include "Platform/Windows/WindowsEtwNetMath.h"
 #include "WindowsEnergyMeter.h"
 #include "WindowsEnergyMeterMath.h"
 #include "WindowsProcessActionsMath.h"
