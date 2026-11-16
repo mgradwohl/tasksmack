@@ -410,4 +410,55 @@ class Reader
     std::size_t m_Pos = 0;
 };
 
+/// What a member callback did with the member's value.
+enum class Member : std::uint8_t
+{
+    Skip,      ///< Not wanted: readObject() skips the value
+    Read,      ///< Read whole
+    Malformed, ///< Couldn't be read: the reply fails
+};
+
+/// Reads the object at @p reader, calling @p onMember(name) (Member(const std::string&)) for each member with the
+/// reader at its value: '{', the empty object, each quoted name and ':', then ',' or '}'. False when the object,
+/// or a member the callback read or skipValue() skipped, isn't well formed. Shared by the update check's release
+/// reply and Look up on VirusTotal's file report (#3873), so both accept the same objects.
+template<typename OnMember> [[nodiscard]] bool readObject(Reader& reader, const OnMember& onMember)
+{
+    reader.skipSpace();
+    if (!reader.consume('{'))
+    {
+        return false;
+    }
+    reader.skipSpace();
+    if (reader.consume('}'))
+    {
+        return true;
+    }
+    for (;;)
+    {
+        reader.skipSpace();
+        const std::optional<std::string> name = reader.peek() == '"' ? reader.readString() : std::nullopt;
+        reader.skipSpace();
+        if (!name.has_value() || !reader.consume(':'))
+        {
+            return false;
+        }
+        reader.skipSpace();
+        const Member member = onMember(*name);
+        if (member == Member::Malformed || (member == Member::Skip && !reader.skipValue()))
+        {
+            return false;
+        }
+        reader.skipSpace();
+        if (reader.consume('}'))
+        {
+            return true;
+        }
+        if (!reader.consume(','))
+        {
+            return false;
+        }
+    }
+}
+
 } // namespace Domain::Json
