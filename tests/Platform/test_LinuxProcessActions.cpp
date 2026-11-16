@@ -3910,25 +3910,27 @@ TEST_F(LinuxEfficiencyModeActionTest, OffAfterAnOnThatKeptTheWeightPutsBackOnlyT
 }
 
 // #3296: the on remembered nice 10 and weight 50, and the off was refused (raising the priority back from
-// nice 19 needs CAP_SYS_NICE). efficiencyNiceToRestore() gives 10 for the helper to set as a priority change;
-// once it has, the in-process off puts back only the weight and forgets the on.
-TEST_F(LinuxEfficiencyModeActionTest, ARefusedOffSaysWhichNiceTheHelperShouldPutBack)
+// nice 19 needs CAP_SYS_NICE). The memory still says 10 is what off puts back; once something with the
+// privilege (an Administrator session, since #3580 removed the helper) has set it, the in-process off puts
+// back only the weight and forgets the on.
+TEST_F(LinuxEfficiencyModeActionTest, ARefusedOffKeepsTheNiceToPutBack)
 {
     efficiency().nice = 10;
     efficiency().files["cpu.weight"] = "50\n";
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "nothing remembered before the on";
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::nullopt) << "nothing remembered before the on";
     ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
     efficiency().nice = 19;
     plan().setErrno = EPERM;
     const ProcessActionResult refused = m_Control.setEfficiencyMode(ownTarget(), false);
     ASSERT_TRUE(refused.permissionDenied) << refused.errorMessage;
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(10)) << "a refused off keeps the memory";
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::optional<std::int32_t>(10))
+        << "a refused off keeps the memory";
 
     // Someone changed the nice since: off would leave it, so there's nothing to put back.
     efficiency().nice = 15;
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt);
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::nullopt);
 
-    // The helper set nice 10; the in-process off then puts back only the weight, and forgets the on.
+    // Something with the privilege set nice 10; the in-process off then puts back only the weight, and forgets the on.
     plan().setErrno = 0;
     plan().setCalls = 0;
     efficiency().nice = 10;
@@ -3938,7 +3940,7 @@ TEST_F(LinuxEfficiencyModeActionTest, ARefusedOffSaysWhichNiceTheHelperShouldPut
     EXPECT_EQ(plan().setCalls, 0);
     EXPECT_EQ(efficiency().writes, (std::vector<std::pair<std::string, std::string>>{{"cpu.weight", "50"}}));
     efficiency().nice = 19;
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "forgotten";
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::nullopt) << "forgotten";
 }
 
 // #3330: the Processes tab and Process Details each have their own actions object. On through one is remembered
@@ -3958,12 +3960,12 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnThroughOneObjectIsPutBackByAnOffThroug
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_EQ(plan().lastSetValue, 5) << "the nice on found, not 0";
     EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "50"})) << "and its weight, not 100";
-    EXPECT_EQ(processesTab.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "forgotten by both";
+    EXPECT_EQ(processesTab.efficiencyNiceToRestoreForTesting(ownTarget()), std::nullopt) << "forgotten by both";
 
     // An object with a memory of its own (the fixture's) never sees another's on.
     ASSERT_TRUE(processesTab.setEfficiencyMode(ownTarget(), true).success);
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt);
-    EXPECT_EQ(processDetails.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(19));
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::nullopt);
+    EXPECT_EQ(processDetails.efficiencyNiceToRestoreForTesting(ownTarget()), std::optional<std::int32_t>(19));
 }
 
 // #3332: an off that can't find, read or write the weight on lowered says so and keeps the memory, so turning it
@@ -4018,7 +4020,7 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterAnUnfinishedOffThatLowersAgainOwe
     ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
     EXPECT_EQ(efficiency().writes.back(), (std::pair<std::string, std::string>{"cpu.weight", "1"}));
     efficiency().nice = 19;
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(5)) << "the nice this on found";
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::optional<std::int32_t>(5)) << "the nice this on found";
     efficiency().writes.clear();
     const ProcessActionResult off = m_Control.setEfficiencyMode(ownTarget(), false);
     ASSERT_TRUE(off.success) << off.errorMessage;
@@ -4253,13 +4255,13 @@ TEST_F(LinuxEfficiencyModeActionTest, AnOnAfterAPartialOffRecordsTheNiceItFindsA
     efficiency().writeErrno = EACCES;
     ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).successNote.contains("still the minimum"));
     EXPECT_EQ(plan().lastSetValue, 5);
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::nullopt) << "its nice is spent";
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::nullopt) << "its nice is spent";
 
     efficiency().writeErrno = 0;
     efficiency().nice = 10; // the user's change
     ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), true).success);
     efficiency().nice = 19;
-    EXPECT_EQ(m_Control.efficiencyNiceToRestore(ownTarget()), std::optional<std::int32_t>(10));
+    EXPECT_EQ(m_Control.efficiencyNiceToRestoreForTesting(ownTarget()), std::optional<std::int32_t>(10));
     efficiency().writes.clear();
     ASSERT_TRUE(m_Control.setEfficiencyMode(ownTarget(), false).success);
     EXPECT_EQ(plan().lastSetValue, 10) << "the nice the second on found";
@@ -4327,7 +4329,7 @@ TEST(LinuxEfficiencyModeRealTest, RealObjectsSharingAMemorySeeEachOthersOnAndFor
         const std::optional<std::int32_t> before = realProcessSyscalls().currentNice(first.target().pid);
         ASSERT_TRUE(before.has_value());
         ASSERT_TRUE(processesTab.setEfficiencyMode(first.target(), true).success);
-        EXPECT_EQ(processDetails.efficiencyNiceToRestore(first.target()), before);
+        EXPECT_EQ(processDetails.efficiencyNiceToRestoreForTesting(first.target()), before);
         EXPECT_EQ(processDetails.rememberedEfficiencyCount(), 1U);
     } // ended and reaped
     const SleepingChild second;
@@ -4347,7 +4349,9 @@ TEST(LinuxEfficiencyModeRealTest, TheFactorysActionsObjectsShareWhatOnRemembered
     const std::optional<std::int32_t> before = realProcessSyscalls().currentNice(child.target().pid);
     ASSERT_TRUE(before.has_value());
     ASSERT_TRUE(processesTab->setEfficiencyMode(child.target(), true).success);
-    EXPECT_EQ(processDetails->efficiencyNiceToRestore(child.target()), before);
+    const auto* details = dynamic_cast<const LinuxProcessControl*>(processDetails.get());
+    ASSERT_NE(details, nullptr) << "Linux's factory makes the Linux actions, undecorated (no broker since #3580)";
+    EXPECT_EQ(details->efficiencyNiceToRestoreForTesting(child.target()), before);
 }
 
 // #3331, the real calls on this process's own cgroup, writing nothing: a checked write with another identity is refused

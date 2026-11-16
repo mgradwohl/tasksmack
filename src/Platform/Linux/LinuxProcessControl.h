@@ -160,8 +160,10 @@ class LinuxProcessControl : public IProcessActions
     [[nodiscard]] ProcessActionResult setEfficiencyMode(const ProcessTarget& target, bool on) override;
     /// How many processes its Efficiency mode memory holds (for tests: one that exited is forgotten, #3330).
     [[nodiscard]] std::size_t rememberedEfficiencyCount() const;
-    /// The nice the on remembered for @p target, while it is still at nice 19 (#3296), for an off made later.
-    [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const override;
+    /// The nice the on remembered for @p target, while it is still at nice 19 (#3296), for tests: what an off would put
+    /// back. Not IProcessActions::efficiencyNiceToRestore(), which only Windows' broker path asks (#3868): Linux has no
+    /// helper since #3580, so nothing in the app asked it on Linux.
+    [[nodiscard]] std::optional<std::int32_t> efficiencyNiceToRestoreForTesting(const ProcessTarget& target) const;
     /// The online CPUs and, on a hybrid CPU, their efficiency classes, from sysfs (#1881).
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
 

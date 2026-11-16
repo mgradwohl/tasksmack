@@ -596,10 +596,10 @@ class IProcessActions
         return ProcessActionResult::error("Efficiency mode isn't available on this system");
     }
 
-    /// The priority Efficiency mode's off would put back for @p target, as a nice (#3296): the one this object's on
-    /// found, while the process is still at the nice on set. An off refused for want of permission is then finished
-    /// as a priority change to it, which the helper (which never saw the on) can make. nullopt otherwise, and by
-    /// default: such an off is retried as a plain off.
+    /// For BrokeredProcessActions' retry of a refused Efficiency mode off (Windows; #3868): a priority, as a nice, that
+    /// the elevated helper should set instead of a plain off. Windows answers REALTIME_CLASS_NICE while an off is
+    /// waiting to put back a Realtime class the in-process off couldn't (#3590, #3606); nullopt otherwise, and by
+    /// default, when the off is retried as a plain off. Linux has no helper since #3580 and keeps the default.
     [[nodiscard]] virtual std::optional<std::int32_t> efficiencyNiceToRestore(const ProcessTarget& target) const
     {
         static_cast<void>(target);
