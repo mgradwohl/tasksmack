@@ -444,7 +444,7 @@ time left on battery from the system's own estimate.
 
 With more than one battery (an internal and a removable pack, say), the figures describe them together: the
 charge is weighted by each pack's capacity, capacities and power are added up, and the cycle count is the
-most-cycled pack's. Chemistry, manufacturer, model and voltage are the first pack's.
+most-cycled pack's. Chemistry, manufacturer and model are the first pack's, and the voltage is the first pack's that reports one.
 
 ### GPU Monitoring
 
