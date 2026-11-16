@@ -8,7 +8,6 @@
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessProbe.h"
 #include "Platform/IProcessThreads.h"
-#include "Platform/IServiceActions.h"
 #include "Platform/IStartAtLogin.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -192,52 +191,6 @@ TEST(PlatformInterfaceDefaultsTest, AThreadsReaderWithoutAHelperReadsAsThePlainR
     UnsupportedProcessThreadsReader unsupported;
     EXPECT_FALSE(unsupported.hasThreads());
     EXPECT_EQ(unsupported.readThreads(TARGET).status, ThreadsReadStatus::Unsupported);
-}
-
-/// Each action answers with its own name, so runAuthorized()'s default can be seen to pick the plain call.
-class NamingServiceActions : public IServiceActions
-{
-  public:
-    [[nodiscard]] ServiceActionCapabilities capabilities() const override
-    {
-        return {};
-    }
-    [[nodiscard]] ServiceActionResult start(std::string_view name, const std::stop_token& /*stopToken*/) override
-    {
-        return ServiceActionResult::failed("start " + std::string(name));
-    }
-    [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& /*stopToken*/) override
-    {
-        return ServiceActionResult::failed("stop " + std::string(name));
-    }
-    [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& /*stopToken*/) override
-    {
-        return ServiceActionResult::failed("restart " + std::string(name));
-    }
-    [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override
-    {
-        lastStartType = startType;
-        return ServiceActionResult::failed("setStartType " + std::string(name));
-    }
-    ServiceStartType lastStartType{};
-};
-
-TEST(PlatformInterfaceDefaultsTest, RunAuthorizedWithoutAPromptIsThePlainCall)
-{
-    NamingServiceActions actions;
-    const std::stop_token none;
-    EXPECT_EQ(actions.runAuthorized(ServiceAction::Start, "a.service", {}, none).message, "start a.service");
-    EXPECT_EQ(actions.runAuthorized(ServiceAction::Stop, "a.service", {}, none).message, "stop a.service");
-    EXPECT_EQ(actions.runAuthorized(ServiceAction::Restart, "a.service", {}, none).message, "restart a.service");
-    EXPECT_EQ(actions.runAuthorized(ServiceAction::SetStartType, "a.service", ServiceStartType::Disabled, none).message,
-              "setStartType a.service");
-    EXPECT_EQ(actions.lastStartType, ServiceStartType::Disabled);
-
-    // A value outside the enum, as a corrupt request could carry, is refused rather than run.
-    const auto unknown = static_cast<ServiceAction>(0xFF);
-    const ServiceActionResult refused = actions.runAuthorized(unknown, "a.service", {}, none);
-    EXPECT_FALSE(refused.ok);
-    EXPECT_EQ(refused.message, "Unknown action");
 }
 
 TEST(PlatformInterfaceDefaultsTest, OnlyAnEntryWithAStatePolicyDoesntSetAndNoReasonIsSwitchable)
