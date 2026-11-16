@@ -437,9 +437,14 @@ On systems with a battery, TaskSmack shows:
 
 Power readings follow the convention: **positive watts = discharging/consuming**, negative watts = battery charging.
 
+Both platforms read the battery's live charge or discharge rate, its remaining charge in Wh and its voltage at
+the refresh interval you set: Linux from `/sys/class/power_supply`, Windows from the battery driver's status.
+The time to full while charging is worked out from the rate and the remaining charge on both. Windows takes the
+time left on battery from the system's own estimate.
+
 With more than one battery (an internal and a removable pack, say), the figures describe them together: the
 charge is weighted by each pack's capacity, capacities and power are added up, and the cycle count is the
-most-cycled pack's. Chemistry, manufacturer and model are the first pack's.
+most-cycled pack's. Chemistry, manufacturer, model and voltage are the first pack's.
 
 ### GPU Monitoring
 
@@ -935,6 +940,7 @@ The following table summarizes capabilities that differ between Windows and Linu
 | Per-process network (TCP only) | ✅ (Linux 4.2+ Netlink; other users' processes: `CAP_DAC_READ_SEARCH` + `CAP_SYS_PTRACE`, which root has with its normal capabilities; root alone isn't enough where capabilities are dropped) | ✅ (TCP EStats; administrator required) |
 | Per-process UDP network | Opt-in (**Count UDP traffic per process**; an eBPF counter; TaskSmack started as administrator) | Opt-in (**Count UDP traffic per process**; ETW kernel network events; administrator required) |
 | Per-process power (Power column, Process Details, the System tab's Power chart) | ✅ (the CPU package's RAPL energy counter in `/sys/class/powercap`, shared out by CPU time; readable by root only on current kernels) | ✅ (the CPU package channel of the Energy Meter Interface (EMI) device, shared out by CPU time; no administrator needed; only on machines whose CPU driver provides an energy meter, otherwise hidden) |
+| Battery: charge or discharge rate, remaining Wh, voltage, time to full (#4030) | ✅ (`/sys/class/power_supply`: `power_now` or `current_now` with `voltage_now`, `energy_now` or `charge_now`) | ✅ (the battery driver's status, `IOCTL_BATTERY_QUERY_STATUS`, sent each sample to the battery device opened at start and again every five minutes or when the power source changes; a battery that reports a value as unknown, or in relative units rather than mWh, leaves it out; time left on battery from `GetSystemPowerStatus`) |
 | Thread count per process | ✅ | ✅ |
 | Processes columns: Publisher, Signature, GDI | ❌ (the dash: Linux programs carry no version information or Authenticode signature, and GDI is a Windows resource; a publisher from the owning package isn't planned) | ✅ |
 | Processes columns: Private, Swap; Process Details: PSS, USS | ✅ (`/proc/[pid]/status`, `/proc/[pid]/smaps_rollup`) | ❌ (private bytes are the commit size, already the Virtual column; Windows doesn't count a process's pagefile use or its proportional set) |
