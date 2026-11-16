@@ -21,6 +21,13 @@
 //   checked by its path.
 // - The pause between files follows a WinVerifyTrust call only: an answer from the cache, or a file that couldn't
 //   be opened or bound, costs no check, so the next file isn't kept waiting for it.
+// - A process that has gone is dropped before its turn (#4059): no binding, no check, no pause, no answer and no
+//   cache entry, so a build's thousands of short-lived processes don't hold the queue (and, full, admission) while a
+//   long-lived one waits behind them. Gone is either of two signals. The probe stopped asking: a queued process no
+//   request() or find() has asked for through a whole sample (beginSample()) is no longer in its list, the rule a
+//   turn expires by (#3403); this costs nothing, and is decided under the lock as the entry is taken. Or it has
+//   exited: SignatureFunctions::processExited, the start-time-verified open's exit state, asked with no lock held.
+//   Its table entry is erased, so a process still asked for is simply requested again.
 //
 // - Cached by path and {file ID, change time, size} (SignatureCache, bounded; #3292): a second process of
 //   the same image costs a file open and stamp read, not another check, and a file replaced or changed is
@@ -244,6 +251,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
             requestLocked(path, std::move(key), Asker::LaterSample, process);
             return std::nullopt;
         }
+        found->second.askedInSample = m_Sample; // still in the probe's list (#4059)
         if (publisher != nullptr && found->second.result.has_value() && found->second.publisherRead)
         {
             *publisher = found->second.publisher;
@@ -257,6 +265,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         std::string publisher;                ///< Read with it (#3703); empty with no answer, or none named
         bool publisherRead = false;           ///< The answer came from a check, which read the publisher (#3862)
         bool queued = false;
+        std::uint64_t askedInSample{}; ///< The last sample (beginSample()) a request() or find() asked for it (#4059)
     };
 
     /// Who asks for a path: request(), for a process just seen, or find(), asking again on a later sample.
@@ -307,6 +316,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     {
         if (const auto found = m_Paths.find(key); found != m_Paths.end() && found->second.queued)
         {
+            found->second.askedInSample = m_Sample; // still in the probe's list (#4059)
             return;
         }
         if (!m_Paths.contains(key))
@@ -367,6 +377,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         state->publisher.clear();
         state->publisherRead = false;
         state->queued = true;
+        state->askedInSample = m_Sample;
         ++m_QueuedCount; // not queued before: a queued path returned at the top
         submitDrainLocked();
     }
@@ -488,6 +499,49 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         m_Idle.notify_all();
     }
 
+    /// Whether the queued process @p state is for has left the probe's list (under m_Mutex, #4059): no request() or
+    /// find() asked for it through the whole sample after its last ask, as a turn expires (#3403). A path asked for
+    /// without a process is never dropped this way.
+    [[nodiscard]] bool unlistedLocked(const PathState& state, const std::optional<ImageProcess>& process) const noexcept
+    {
+        return process.has_value() && m_Sample > state.askedInSample + 1;
+    }
+
+    /// Whether @p process has exited (#4059), by SignatureFunctions::processExited, with no lock held: false without
+    /// that call or a process, or when the call throws (the check then finds out for itself).
+    [[nodiscard]] bool exited(const std::optional<ImageProcess>& process) const noexcept
+    {
+        if (!process.has_value() || m_Fns.processExited == nullptr)
+        {
+            return false;
+        }
+        try
+        {
+            return m_Fns.processExited(*process);
+        }
+        catch (...)
+        {
+            return false;
+        }
+    }
+
+    /// Drops the queued entry @p key, taken off the queue for a process that has gone (under m_Mutex, #4059): no
+    /// answer, and its table entry erased, so its room admits another and a process still asked for is requested
+    /// again. One a failed worker has answered meanwhile keeps its answer.
+    void dropGoneLocked(const std::string& key)
+    {
+        if (const auto found = m_Paths.find(key); found != m_Paths.end() && found->second.queued)
+        {
+            --m_QueuedCount;
+            m_Paths.erase(found);
+        }
+        m_Checking = false;
+        if (m_Queue.empty())
+        {
+            m_Idle.notify_all();
+        }
+    }
+
     /// @p state's check is done (under m_Mutex): it is no longer queued, and the count follows.
     void markAnsweredLocked(PathState& state)
     {
@@ -515,6 +569,7 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         while (!stop.stop_requested())
         {
             QueuedPath queued;
+            bool unlisted = false;
             {
                 const std::scoped_lock lock(m_Mutex);
                 if (m_Queue.empty())
@@ -524,6 +579,24 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
                 queued = std::move(m_Queue.front());
                 m_Queue.pop_front();
                 m_Checking = true;
+                const auto found = m_Paths.find(queued.key);
+                unlisted = found != m_Paths.end() && unlistedLocked(found->second, queued.process);
+                if (unlisted)
+                {
+                    dropGoneLocked(queued.key); // the probe no longer lists it (#4059): no syscall needed
+                }
+            }
+            if (unlisted)
+            {
+                continue;
+            }
+            if (exited(queued.process))
+            {
+                // Exited (#4059): dropped with no binding, no check and no pause, so the next file isn't kept
+                // waiting for it.
+                const std::scoped_lock lock(m_Mutex);
+                dropGoneLocked(queued.key);
+                continue;
             }
             const std::string& key = queued.key;
             // The check and the publisher in the same pass (#3703), while the check holds the file (#4021),

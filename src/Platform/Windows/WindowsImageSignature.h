@@ -160,6 +160,10 @@ struct SignatureFunctions
     /// the file with closeImage(). Nullable: a process's image is opened by the path it was asked for, with
     /// openImage().
     std::expected<BoundImage, BindFailure> (*openProcessImage)(const ImageProcess& process) = nullptr;
+    /// Whether @p process has exited (#4059): gone, its PID reused, or exited with its object only held open. The
+    /// signature worker asks before each process's turn and drops one that has, with no binding or check. False
+    /// when that can't be told (access denied, say): the check then runs. Nullable: no process is dropped this way.
+    bool (*processExited)(const ImageProcess& process) = nullptr;
 };
 
 /// WinVerifyTrust results (HRESULTs) that the check tells apart.
