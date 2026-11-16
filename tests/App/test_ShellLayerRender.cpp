@@ -5,15 +5,19 @@
 /// button with native decorations; and the window's minimum size handed to the host from the panels'
 /// measurements.
 
+#include "App/BackgroundOpen.h"
+#include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
 #include "App/ShellHost.h"
 #include "App/ShellLayer.h"
 #include "App/StatusBarView.h"
 #include "App/UserConfig.h"
 #include "App/WindowOverride.h"
+#include "App/WithheldOpenNotice.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
 #include "Core/WindowGeometry.h"
+#include "Mocks/FakeClipboard.h"
 #include "Platform/IHttpsClient.h"
 
 #include <SDL3/SDL_video.h>
@@ -477,6 +481,61 @@ TEST_F(ShellLayerDetachTest, TheUpdateNoticeShowsAfterACheckAndCanBeDismissed)
     m_Shell->updateCheckerForTesting().waitForCheck();
     static_cast<void>(updateAndCapture(*m_Shell));
     EXPECT_FALSE(m_Shell->updateCheckerForTesting().checking());
+}
+
+// #3917: an elevated TaskSmack's title-bar update button whose open Windows' shell couldn't make as the user. With the
+// status bar's notice dismissed (the button stays lit), the withheld release page is still named, under the title bar,
+// with the Copy every withheld open has, until Close.
+TEST_F(ShellLayerDetachTest, AWithheldOpenFromTheTitleBarsUpdateButtonNamesTheLinkWithACopy)
+{
+    TestMocks::FakeClipboard clipboard; // never the machine's own clipboard (#1890)
+    clipboard.install();
+    UserConfig::get().settings().updates.enabled = true;
+    const auto now = std::chrono::system_clock::time_point(std::chrono::seconds(1'761'652'800));
+    m_Shell = std::make_unique<ShellLayer>(
+        std::make_unique<FakeShellHost>(m_Log, true), std::make_shared<NewerReleaseClient>(), [now] { return now; });
+    std::vector<std::string> opened;
+    m_Shell->setUpdateLinkOpenerForTesting(
+        [&opened](const std::string& target)
+        {
+            opened.push_back(target);
+            return BackgroundOpen::Job([] { return PlatformOpen::OpenResult::Withheld; }); // no browser is started
+        });
+    static_cast<void>(updateAndCapture(*m_Shell));
+    m_Shell->updateCheckerForTesting().waitForCheck();
+    static_cast<void>(updateAndCapture(*m_Shell));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    ASSERT_TRUE(m_Shell->updateButtonForTesting().active);
+
+    const ImGuiWindow* status = ImGui::FindWindowByName("##StatusBar");
+    ASSERT_NE(status, nullptr);
+    ImGui::ActivateItemByID(ImHashStr(StatusBarView::DISMISS_UPDATE_LABEL, 0, status->ID));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    ASSERT_FALSE(updateAndCapture(*m_Shell).contains("is available")) << "the notice is dismissed";
+    EXPECT_EQ(ImGui::FindWindowByName(ShellLayer::UPDATE_WITHHELD_WINDOW), nullptr) << "nothing withheld yet";
+
+    Core::OpenUpdatePageEvent click; // as the title bar raises it
+    m_Shell->onEvent(click);
+    m_Shell->waitForUpdateLinkForTesting();
+    const std::string url = "https://github.com/mgradwohl/tasksmack/releases/tag/v99.0.0";
+    EXPECT_EQ(opened, (std::vector<std::string>{url}));
+    const std::string text = updateAndCapture(*m_Shell);
+    EXPECT_TRUE(text.contains("Not opened, so that it doesn't run as administrator")) << text;
+    EXPECT_TRUE(text.contains("Open it yourself: " + url)) << text;
+    const ImGuiWindow* notice = ImGui::FindWindowByName(ShellLayer::UPDATE_WITHHELD_WINDOW);
+    ASSERT_NE(notice, nullptr);
+
+    ImGui::ActivateItemByID(ImHashStr(WithheldOpenNotice::COPY_LABEL, 0, notice->ID));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    EXPECT_EQ(clipboard.text(), url);
+    EXPECT_TRUE(updateAndCapture(*m_Shell).contains("Open it yourself")) << "Copy leaves the notice up";
+
+    ImGui::ActivateItemByID(ImHashStr(ShellLayer::UPDATE_WITHHELD_CLOSE_LABEL, 0, notice->ID));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    static_cast<void>(updateAndCapture(*m_Shell));
+    EXPECT_FALSE(updateAndCapture(*m_Shell).contains("Open it yourself")) << "Close takes it down";
 }
 
 // #3093: without a client nothing is offered: no notice, whatever config.toml says it saw.
