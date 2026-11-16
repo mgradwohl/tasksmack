@@ -945,6 +945,93 @@ TEST_F(ProcessDetailsPanelRenderTest, ThePriorityControlsWaitForAChangeInTheProc
     EXPECT_EQ(panel.actionsViewForTesting().pendingAction(), Detail::ProcessAction::SetRealtimePriority);
 }
 
+/// MockProcessActions whose setIoPriority() waits until open(), so an I/O priority apply stays on its worker (#3884).
+class GatedIoPriorityActions : public TestMocks::MockProcessActions
+{
+  public:
+    GatedIoPriorityActions()
+    {
+        setCapabilities({.canSetPriority = true, .canSetIoPriority = true});
+        setIoPriorityReadResult(Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 4});
+    }
+
+    [[nodiscard]] Platform::ProcessActionResult
+    setIoPriority(const Platform::ProcessTarget& target, Platform::IoPriorityClass ioClass, int32_t level) override
+    {
+        m_Gate.wait(false);
+        return TestMocks::MockProcessActions::setIoPriority(target, ioClass, level);
+    }
+
+    void open()
+    {
+        m_Gate = true;
+        m_Gate.notify_all();
+    }
+
+  private:
+    std::atomic<bool> m_Gate{false};
+};
+
+// #3884, both ways. The table to Process Details: while the Processes tab has an I/O priority change for the shown
+// process in flight, the I/O priority card's Apply sends nothing and says why; a CPU priority change there doesn't
+// hold it. Process Details to the table: its I/O apply, while it runs, is published as an I/O priority change for
+// its process, and not as a CPU priority one.
+TEST_F(ProcessDetailsPanelRenderTest, TheIoPriorityApplyWaitsForAnIoChangeInTheProcessesTabAndPublishesItsOwn)
+{
+    auto owned = std::make_unique<GatedIoPriorityActions>();
+    GatedIoPriorityActions* actions = owned.get();
+    ProcessDetailsPanel panel(std::move(owned));
+    PriorityChangesInFlight changes;
+    panel.setPriorityChanges(&changes);
+    Core::ActiveTabChangedEvent shown("ProcessDetails");
+    panel.onEvent(shown);
+    panel.setSelectedPid(PID, START_TICKS);
+    const std::vector samples{sampleAt(1.0, 10.0)};
+    panel.updateWithSamples(samples, 1.0F);
+    static_cast<void>(renderAndCapture(panel));
+    const Platform::ProcessTarget target{.pid = PID, .startTimeTicks = START_TICKS};
+    ProcessIoPriorityView& io = panel.priorityViewForTesting().ioPriorityView();
+    // The first update starts the current value's read; the next takes it in, so Apply has a value to replace.
+    static_cast<void>(panel.priorityViewForTesting().updateReads(actions, target, 0.0F));
+    static_cast<void>(panel.priorityViewForTesting().updateReads(actions, target, 0.0F, /*wait=*/true));
+    static_cast<void>(renderAndCapture(panel));
+    ASSERT_FALSE(io.heldForOtherIoPriorityChange());
+
+    // A CPU priority change in the table holds no I/O priority control.
+    const std::array table{target};
+    changes.publish(PriorityChangesInFlight::Panel::Processes, table);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(io.heldForOtherIoPriorityChange());
+
+    // An I/O priority change there does: Apply sends nothing meanwhile.
+    changes.publish(PriorityChangesInFlight::Panel::Processes, {});
+    changes.publish(PriorityChangesInFlight::Panel::Processes, table, PriorityChangesInFlight::Change::IoPriority);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_TRUE(io.heldForOtherIoPriorityChange()) << "held while the table changes its I/O priority";
+    io.editIoPriority({.ioClass = Platform::IoPriorityClass::BestEffort, .level = 6}, target);
+    io.apply(actions, target);
+    EXPECT_FALSE(io.applying()) << "Apply sends nothing meanwhile";
+    EXPECT_FALSE(io.applyingTarget().has_value());
+
+    // Released: the apply runs on its worker, and is published for its process as an I/O priority change.
+    changes.publish(PriorityChangesInFlight::Panel::Processes, {}, PriorityChangesInFlight::Change::IoPriority);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(io.heldForOtherIoPriorityChange());
+    io.apply(actions, target); // the edit is still pending
+    ASSERT_TRUE(io.applying());
+    ASSERT_EQ(io.applyingTarget(), std::optional<Platform::ProcessTarget>{target});
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_TRUE(changes.heldElsewhere(PriorityChangesInFlight::Panel::Processes, target, PriorityChangesInFlight::Change::IoPriority));
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::Processes, target)) << "not a CPU priority change";
+
+    actions->open();
+    io.update(/*wait=*/true);
+    EXPECT_EQ(actions->setIoPriorityCount(), 1);
+    static_cast<void>(renderAndCapture(panel));
+    EXPECT_FALSE(changes.heldElsewhere(PriorityChangesInFlight::Panel::Processes, target, PriorityChangesInFlight::Change::IoPriority))
+        << "released once its result is in";
+}
+
 // #3467, Process Details to the table: Set Realtime priority asked about, and the slider's apply on its worker, are
 // published for their process, so the Processes table holds its priority controls for it; the apply's result is
 // taken in on the update path too, so a change that finished with the tab hidden releases them without waiting

@@ -85,7 +85,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     const auto& theme = UI::Theme::get();
     const ImGuiStyle& style = ImGui::GetStyle();
     // Disabled, too, while an apply runs on its worker (#2305).
-    const bool enabled = canApply(target) && !applying();
+    const bool enabled = canApply(target) && !applying() && !heldForOtherIoPriorityChange();
     const bool waiting = waitingForProcessDetails(target);
     // Windows has no "never set": Normal is the default, and a stop like any other.
     const bool showReset = !windowsHints && m_Edit.ioClass != Platform::IoPriorityClass::None;
@@ -155,6 +155,10 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
         if (applying())
         {
             tooltip = "Applying the last change";
+        }
+        else if (heldForOtherIoPriorityChange())
+        {
+            tooltip = m_HoldReason; // the Processes table has a change for this process in flight (#3884)
         }
         else if (waiting)
         {
