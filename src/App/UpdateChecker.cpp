@@ -131,6 +131,7 @@ void UpdateChecker::takeIn(UpdateCheck::Outcome outcome, UpdateCheck::Persisted&
         break;
     }
     m_LastOutcome = std::move(outcome);
+    ++m_OutcomeGeneration;
 }
 
 std::optional<UpdateCheck::Notice> UpdateChecker::notice(const UpdateCheck::Persisted& state) const
