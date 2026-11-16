@@ -21,6 +21,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <format>
 #include <span>
 #include <string>
 #include <string_view>
@@ -174,6 +175,8 @@ void rebuildRowsIfStale(const Domain::StartupPublication& publication, StartupVi
     }
     state.rows =
         buildStartupRows(publication.entries, state.filter, state.sortColumn, state.ascending, publication.impacts, state.showOsComponents);
+    // Hidden Microsoft entries are named, not counted as filtered out (#3891).
+    state.countLabel = startupCountLabel(state.rows.size(), publication.entries.size(), state.osComponentCount, state.showOsComponents);
     state.rowsVersion = publication.version;
     state.rowsFilter = state.filter;
     state.rowsColumn = state.sortColumn;
@@ -408,6 +411,16 @@ std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry
     return rows;
 }
 
+std::string startupCountLabel(std::size_t shownCount, std::size_t entryCount, std::size_t osComponentCount, bool showOsComponents)
+{
+    if (showOsComponents || osComponentCount == 0)
+    {
+        return std::format("{} of {} startup apps", shownCount, entryCount);
+    }
+    const std::size_t hidden = std::min(osComponentCount, entryCount);
+    return std::format("{} of {} startup apps ({} hidden)", shownCount, entryCount - hidden, hidden);
+}
+
 namespace
 {
 
@@ -439,7 +452,7 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
     ImGui::PopStyleColor();
     rebuildRowsIfStale(publication, state);
     ImGui::SameLine();
-    ImGui::TextColored(scheme.textMuted, "%zu of %zu startup apps", state.rows.size(), publication.entries.size());
+    ImGui::TextColored(scheme.textMuted, "%s", state.countLabel.c_str());
     // Only where there are such entries (Windows' own scheduled tasks, #3424); the table's own rebuild below takes a click in.
     if (state.osComponentCount > 0)
     {
