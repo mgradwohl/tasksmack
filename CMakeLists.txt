@@ -329,6 +329,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/RootCapabilities.cpp # an Administrator session keeps only the capabilities it uses (#3621)
     src/Platform/Linux/SdlEnvironment.cpp # a session run as root for a user takes no SDL variable (#4111)
+    src/Platform/Linux/RootEnvironment.cpp # a root session with a user's environment keeps an allow-list (#4158, #4159, #4179)
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
