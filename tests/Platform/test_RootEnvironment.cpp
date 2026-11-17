@@ -6,6 +6,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <map>
 #include <optional>
@@ -55,9 +56,38 @@ TEST(RootEnvironmentTest, TheDisplayLocaleTerminalAndWhoStartedItAreKept)
     }
 }
 
-TEST(RootEnvironmentTest, EverythingElseGoesAndPathAndHomeAreRoots)
+/// A fake environment's operations, recording every unset and set.
+struct Recorder
 {
-    const std::array<const char*, 8> environment{
+    std::vector<std::string> unset;
+    std::map<std::string, std::string> set;
+    std::string failSet; ///< a name whose set fails
+    [[nodiscard]] Operations operations()
+    {
+        return Operations{
+            .unset =
+                [this](const std::string& name)
+            {
+                unset.push_back(name);
+                return true;
+            },
+            .set =
+                [this](const std::string& name, const std::string& value)
+            {
+                if (name == failSet)
+                {
+                    return false;
+                }
+                set[name] = value;
+                return true;
+            },
+        };
+    }
+};
+
+TEST(RootEnvironmentTest, EverythingElseGoesAndRootsValuesReplaceTheUsers)
+{
+    const std::array<const char*, 12> environment{
         "DISPLAY=:0",
         "GTK_MODULES=/home/me/evil",
         "PATH=/home/me/bin:/usr/bin",
@@ -65,54 +95,55 @@ TEST(RootEnvironmentTest, EverythingElseGoesAndPathAndHomeAreRoots)
         "PYTHONPATH=/home/me/py",
         "LC_ALL=C.UTF-8",
         "SUDO_UID=1000",
+        "XDG_DATA_DIRS=/home/me/x:/usr/share",
+        "XDG_RUNTIME_DIR=/run/user/1000",
+        "WAYLAND_DISPLAY=wayland-0",
+        "NOVALUE",
         nullptr,
     };
-    std::vector<std::string> unset;
-    std::map<std::string, std::string> set;
-    const std::vector<std::string> removed = applyTo(environment.data(),
-                                                     std::string("/root"),
-                                                     Operations{
-                                                         .unset =
-                                                             [&unset](const std::string& name)
-                                                         {
-                                                             unset.push_back(name);
-                                                             return true;
-                                                         },
-                                                         .set =
-                                                             [&set](const std::string& name, const std::string& value)
-                                                         {
-                                                             set[name] = value;
-                                                             return true;
-                                                         },
-                                                     });
-    EXPECT_EQ(removed, (std::vector<std::string>{"GTK_MODULES", "PYTHONPATH"}));
-    EXPECT_EQ(set.at("PATH"), std::string(ROOT_PATH)) << "#4159: never the user's PATH";
-    EXPECT_EQ(set.at("HOME"), "/root") << "root's passwd home, never the user's";
+    Recorder recorder;
+    const std::vector<std::string> removed =
+        applyTo(environment.data(),
+                RootValues{.home = "/root", .runtimeDir = "/run/user/0", .userXauthority = "/home/me/.Xauthority"},
+                recorder.operations());
+    EXPECT_EQ(removed, (std::vector<std::string>{"GTK_MODULES", "PYTHONPATH", "NOVALUE"}));
+    EXPECT_EQ(recorder.unset, removed) << "nothing kept (DISPLAY, LC_ALL, SUDO_UID) is ever unset";
+    EXPECT_EQ(recorder.set.at("PATH"), std::string(ROOT_PATH)) << "#4159: never the user's PATH";
+    EXPECT_EQ(recorder.set.at("HOME"), "/root");
+    EXPECT_EQ(recorder.set.at("XDG_DATA_DIRS"), std::string(ROOT_DATA_DIRS)) << "the #4187 review: Vulkan layers, schemas";
+    EXPECT_EQ(recorder.set.at("WAYLAND_DISPLAY"), "/run/user/1000/wayland-0") << "the user's socket, by its absolute path";
+    EXPECT_EQ(recorder.set.at("XDG_RUNTIME_DIR"), "/run/user/0") << "root's own, where dconf and the like write";
+    EXPECT_EQ(recorder.set.at("XAUTHORITY"), "/home/me/.Xauthority") << "HOME is root's now, so X11 auth says whose";
 }
 
-TEST(RootEnvironmentTest, AnUnknownRootHomeUnsetsHomeAndAFailedUnsetIsNotReported)
+TEST(RootEnvironmentTest, UnknownRootValuesAndAFailedSetUnsetRatherThanKeepTheUsers)
 {
-    const std::array<const char*, 3> environment{"GTK_MODULES=/x", "HOME=/home/me", nullptr};
-    std::vector<std::string> unset;
-    const std::vector<std::string> removed = applyTo(environment.data(),
-                                                     std::nullopt,
-                                                     Operations{
-                                                         .unset =
-                                                             [&unset](const std::string& name)
-                                                         {
-                                                             unset.push_back(name);
-                                                             return name != "GTK_MODULES";
-                                                         },
-                                                         .set = [](const std::string&, const std::string&) { return true; },
-                                                     });
-    EXPECT_TRUE(removed.empty()) << "the unset that failed isn't reported removed";
-    EXPECT_EQ(unset, (std::vector<std::string>{"GTK_MODULES", "HOME"}));
+    const std::array<const char*, 4> environment{"HOME=/home/me", "XDG_RUNTIME_DIR=/run/user/1000", "XAUTHORITY=/x", nullptr};
+    Recorder recorder;
+    recorder.failSet = "PATH";
+    const std::vector<std::string> removed = applyTo(
+        environment.data(), RootValues{.home = std::nullopt, .runtimeDir = std::nullopt, .userXauthority = "/u"}, recorder.operations());
+    EXPECT_TRUE(removed.empty());
+    for (const char* name : {"XDG_RUNTIME_DIR", "HOME", "PATH"})
+    {
+        EXPECT_NE(std::ranges::find(recorder.unset, name), recorder.unset.end()) << name << " unset, not left the user's";
+    }
+    EXPECT_FALSE(recorder.set.contains("XAUTHORITY")) << "one already set is left as it is";
 }
 
-TEST(RootEnvironmentTest, NotAppliedNothingChanges)
+TEST(RootEnvironmentTest, OnlyAPlainOrZoneinfoTimeZoneIsKept)
 {
-    applyToThisProcess(false);
-    EXPECT_TRUE(removedFromThisProcess().empty());
+    for (const char* tz : {"UTC", "Europe/Paris", ":Europe/Paris", "/usr/share/zoneinfo/UTC", ":/usr/share/zoneinfo/Asia/Tokyo"})
+    {
+        EXPECT_TRUE(isSafeTimeZone(tz)) << tz;
+    }
+    for (const char* tz : {"/home/u/f", ":../../../home/u/f", "/usr/share/zoneinfo/../../../home/u/f", "/etc/localtime"})
+    {
+        EXPECT_FALSE(isSafeTimeZone(tz)) << tz;
+    }
+    const std::array<const char*, 2> environment{"TZ=/home/u/f", nullptr};
+    Recorder recorder;
+    EXPECT_EQ(applyTo(environment.data(), RootValues{}, recorder.operations()), (std::vector<std::string>{"TZ"}));
 }
 
 } // namespace

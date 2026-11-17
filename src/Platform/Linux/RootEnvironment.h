@@ -18,6 +18,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -67,14 +68,33 @@ struct Operations
     std::function<bool(const std::string&, const std::string&)> set;
 };
 
-/// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list: every other name
-/// is unset (collected first), PATH is set to ROOT_PATH, and HOME to @p rootHome (or unset when unknown).
-/// @return The names removed (a failed unset is left out), in order.
-[[nodiscard]] std::vector<std::string>
-applyTo(const char* const* environment, const std::optional<std::string>& rootHome, const Operations& ops);
+/// What applyTo() sets in root's place, worked out outside it (the process's, or a test's).
+struct RootValues
+{
+    std::optional<std::string> home;           ///< root's passwd home; HOME is unset when unknown
+    std::optional<std::string> runtimeDir;     ///< root's own runtime folder (/run/user/0), if it's root's; else unset
+    std::optional<std::string> userXauthority; ///< the invoking user's ~/.Xauthority, from their passwd entry, if it's there
+};
 
-/// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment.
-/// Not thread-safe (setenv, unsetenv).
+/// The value XDG_DATA_DIRS gets (the XDG default): the user's could list a folder of theirs, where the Vulkan loader
+/// finds layers and GSettings schemas (the #4187 review).
+inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share";
+
+/// Whether TZ's @p value is kept: a zone name (relative, so under the zoneinfo folder) or a file under
+/// /usr/share/zoneinfo, never one with "..": glibc
+/// parses the file TZ names (sudo's env_check drops the rest).
+[[nodiscard]] bool isSafeTimeZone(std::string_view value) noexcept;
+
+/// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
+/// #4179, and the review of #4187): every name not kept, and a TZ that isn't safe, is unset (collected first); a
+/// relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's (or is
+/// unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY is the user's ~/.Xauthority when DISPLAY is set and it
+/// wasn't; PATH becomes ROOT_PATH and HOME root's. A value that can't be set is unset instead, so nothing of the
+/// user's is left by a failure. @return The names removed (a failed unset is left out), in order.
+[[nodiscard]] std::vector<std::string> applyTo(const char* const* environment, const RootValues& root, const Operations& ops);
+
+/// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment,
+/// then checks it: a PATH that isn't ROOT_PATH ends TaskSmack (fail closed). Not thread-safe (setenv, unsetenv).
 void applyToThisProcess(bool apply);
 
 /// The names applyToThisProcess() removed, for runApp() to log.
