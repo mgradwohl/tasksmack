@@ -3,6 +3,7 @@
 #include "Platform/IElevatedRestart.h"
 #include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
+#include "Platform/Windows/HandleRelativeFile.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
