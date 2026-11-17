@@ -2821,8 +2821,20 @@ class CiRevertGuardTests(unittest.TestCase):
     def test_the_job_runs_on_every_pull_request_and_merge_group(self):
         text = self.WORKFLOW.read_text(encoding="utf-8")
         job = text.split(f"\n  {self.JOB}:\n", 1)[1].split("\n  # ", 1)[0]
-        self.assertIn("    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'\n", job)
+        self.assertIn("(github.event_name == 'pull_request' || github.event_name == 'merge_group')", job)
         self.assertNotIn("needs:", job, "no detect job that could skip it on a docs-only change")
+        # #4128: only ci:revert-ok among the labels, and only a description edit, can change the verdict; any other
+        # label or edit skips the job, and has a concurrency group of its own so it never cancels the real run.
+        ignored = (
+            "(((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&\n"
+        )
+        self.assertIn("!" + ignored, job, "a label other than ci:revert-ok skips the job (#4128)")
+        self.assertIn("github.event.label.name != 'ci:revert-ok'", job)
+        self.assertIn("(github.event.action == 'edited' && !github.event.changes.body)", job)
+        concurrency = text.split("\nconcurrency:\n", 1)[1].split("\n\n", 1)[0]
+        self.assertIn("github.event.label.name != 'ci:revert-ok'", concurrency)
+        self.assertIn("(github.event.action == 'edited' && !github.event.changes.body)", concurrency)
+        self.assertIn("format('-ignored-{0}', github.run_id)", concurrency, "an ignored event can't cancel the real run")
         on = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertNotIn("paths", on, "no paths filter: a required check must report on every change")
         self.assertIn("merge_group:", on)
