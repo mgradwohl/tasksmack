@@ -902,7 +902,8 @@ auto main(int argc, char** argv) -> int
 #ifdef __linux__
     // First, before any SDL call (#4111): run as root for a user (sudo -E, an env_keep list), the environment is the
     // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
-    // SDL variable goes. The rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
+    // SDL variable goes, and the graphics loaders' (LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_FILENAMES, ..., #4151). The
+    // rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
     Platform::SdlEnvironment::removeForThisProcess(Platform::SessionUser::invokingUserHome().has_value());
 #endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them

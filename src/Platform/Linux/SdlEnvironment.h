@@ -34,8 +34,9 @@ namespace Platform::SdlEnvironment
 /// (#4151): Mesa's driver and GBM backend paths, libglvnd's vendor files (JSON naming the .so) and vendor name,
 /// libdecor's plugins (Wayland decorations), and the Vulkan loader's drivers and layers. Under sudo, uid and euid are
 /// both 0, so neither glibc's secure mode nor the libraries' own getuid() != geteuid() checks drop them. A fixed list:
-/// unlike SDL's hints, these names don't change from release to release.
-inline constexpr std::array<std::string_view, 15> LOADER_VARIABLES = {
+/// unlike SDL's hints, these names don't change from release to release. A list can't name every library's variables;
+/// GTK's, through libdecor's GTK plugin, and PATH are #4158 and #4159.
+inline constexpr std::array<std::string_view, 21> LOADER_VARIABLES = {
     "LIBGL_DRIVERS_PATH",
     "LIBGL_DRIVERS_DIR",
     "EGL_DRIVERS_PATH",
@@ -51,6 +52,14 @@ inline constexpr std::array<std::string_view, 15> LOADER_VARIABLES = {
     "VK_LAYER_PATH",
     "VK_ADD_LAYER_PATH",
     "VK_IMPLICIT_LAYER_PATH",
+    "VK_ADD_IMPLICIT_LAYER_PATH",
+    // NVIDIA's EGL external platforms: JSON manifests whose library_path (egl-wayland, egl-gbm) libEGL_nvidia loads.
+    "__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS",
+    "__EGL_EXTERNAL_PLATFORM_CONFIG_FILENAMES",
+    // glibc's iconv modules (dlopen()ed for a charset it doesn't build in), and libX11's loadable i18n modules.
+    "GCONV_PATH",
+    "XLOCALEDIR",
+    "XLOCALELIBDIR",
 };
 
 /// libglvnd's per-screen vendor override, __GLX_FORCE_VENDOR_LIBRARY_<n>, matched by its prefix.
@@ -63,7 +72,7 @@ inline constexpr std::string_view FORCE_VENDOR_PREFIX = "__GLX_FORCE_VENDOR_LIBR
 /// is), in order. An entry with no '=' is taken whole as a name.
 [[nodiscard]] std::vector<std::string> sdlVariableNames(const char* const* environment);
 
-/// Removes each SDL variable in @p environment with @p unset. @return The names removed (a failed unset is left out).
+/// Removes each SDL variable and loader variable in @p environment with @p unset. @return The names removed (a failed unset is left out).
 /// The names are collected first, so unsetting while walking environ can't skip one.
 [[nodiscard]] std::vector<std::string> removeSdlVariables(const char* const* environment,
                                                           const std::function<bool(const std::string&)>& unset);

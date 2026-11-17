@@ -55,6 +55,19 @@ TEST(LinuxSdlEnvironmentTest, TheGraphicsLoaderVariablesAreRemovedTooInExactCase
     };
     const std::vector<std::string> expected{"LIBGL_DRIVERS_PATH", "SDL_VIDEO_DRIVER", "__EGL_VENDOR_LIBRARY_FILENAMES"};
     EXPECT_EQ(sdlVariableNames(environment.data()), expected) << "the display variables stay: the window needs them";
+    std::vector<std::string> unset;
+    const std::vector<std::string> removed = removeSdlVariables(environment.data(),
+                                                                [&unset](const std::string& name)
+                                                                {
+                                                                    unset.push_back(name);
+                                                                    return true;
+                                                                });
+    EXPECT_EQ(unset, expected) << "each one reaches unset, the loader ones too";
+    EXPECT_EQ(removed, expected);
+    for (const char* name : {"__EGL_EXTERNAL_PLATFORM_CONFIG_DIRS", "VK_ADD_IMPLICIT_LAYER_PATH", "GCONV_PATH", "XLOCALELIBDIR"})
+    {
+        EXPECT_TRUE(isLoaderVariable(name)) << name << " (#4157 review)";
+    }
 }
 
 TEST(LinuxSdlEnvironmentTest, OnlyTheSdlVariablesAreRemovedAndNamedNeverTheirValues)
