@@ -10,11 +10,14 @@
 #include <algorithm>
 #include <charconv>
 #include <cstdlib>
+#include <functional>
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <sys/types.h>
@@ -246,4 +249,37 @@ TEST(SessionUserTest, TheSystemSourcesReadThisUsersEntryAndVariables)
 }
 
 } // namespace
+TEST(SessionUserTest, AnotherUsersEnvironmentIsDecidedWithNoLookup)
+{
+    using Platform::SessionUser::environmentMayBeAnotherUsers;
+    const auto envOf = [](std::initializer_list<std::pair<const char*, const char*>> vars)
+    {
+        std::map<std::string, std::string, std::less<>> values;
+        for (const auto& [name, value] : vars)
+        {
+            values.emplace(name, value);
+        }
+        return [values = std::move(values)](std::string_view name) -> std::optional<std::string>
+        {
+            if (const auto found = values.find(name); found != values.end())
+            {
+                return found->second;
+            }
+            return std::nullopt;
+        };
+    };
+    // #4154: sudo, pkexec and doas name the user; su -m and su -p keep their HOME. No passwd lookup of that user.
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"SUDO_UID", "1000"}, {"HOME", "/root"}}), "/root"));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"PKEXEC_UID", "1000"}}), "/root"));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"DOAS_USER", "alice"}, {"HOME", "/root"}}), "/root"));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/home/alice"}}), "/root")) << "su -m";
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/home/alice"}}), std::nullopt)) << "root's home unknown: /root";
+    // Root's own session, and anyone not root: no.
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/root"}}), "/root"));
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/root/"}, {"SUDO_UID", "0"}, {"DOAS_USER", "root"}}), "/root"));
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({}), "/root")) << "no HOME, nothing naming a user";
+    EXPECT_FALSE(environmentMayBeAnotherUsers(1000, envOf({{"SUDO_UID", "1000"}, {"HOME", "/home/alice"}}), "/root"));
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({{"SUDO_UID", "x"}, {"HOME", "/root"}}), "/root")) << "not a number";
+}
+
 } // namespace Platform::SessionUser

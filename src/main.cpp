@@ -49,6 +49,8 @@
 #include "Platform/Linux/SessionUser.h"
 
 #include <system_error>
+
+#include <unistd.h> // geteuid()
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -141,14 +143,18 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 
 /// Whether this session's environment may be the less-privileged side's (#4104), the one rule for the test hooks that
 /// write files: on Windows, elevated or restarted with --handoff (DllSearchPolicy::system32OnlyForThisProcess(), the
-/// rule the DLL search order and SDL's variables follow, #4103); on Linux, run as root for a user (sudo -E, an env_keep
-/// list: SessionUser::invokingUserHome()).
+/// rule the DLL search order and SDL's variables follow, #4103); on Linux, root with an environment that may be a
+/// user's (SessionUser::environmentMayBeAnotherUsers(), #4154: sudo -E or an env_keep list, pkexec, doas, su -m).
 [[nodiscard]] bool lessPrivilegedEnvironment()
 {
 #ifdef _WIN32
     return Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
 #elif defined(__linux__)
-    return Platform::SessionUser::invokingUserHome().has_value();
+    // Root with an environment that may be a user's (#4154): asks no directory service, so a lookup that fails, or a
+    // route that sets no SUDO_UID (su -m, doas), can't leave the gate off.
+    const std::optional<Platform::SessionUser::Account> root = Platform::SessionUser::systemAccount(0);
+    return Platform::SessionUser::environmentMayBeAnotherUsers(
+        ::geteuid(), &Platform::SessionUser::processVariable, root.has_value() ? std::optional(root->home) : std::nullopt);
 #else
     return false;
 #endif
@@ -909,7 +915,7 @@ auto main(int argc, char** argv) -> int
     // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
     // SDL variable goes, and the graphics loaders' (LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_FILENAMES, ..., #4151). The
     // rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
-    Platform::SdlEnvironment::removeForThisProcess(Platform::SessionUser::invokingUserHome().has_value());
+    Platform::SdlEnvironment::removeForThisProcess(lessPrivilegedEnvironment()); // #4154: no lookup needed
 #endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));

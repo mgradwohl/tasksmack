@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
 #include <functional>
 #include <optional>
 #include <string>
@@ -217,6 +218,47 @@ invokingUserSession(uid_t effectiveUid,
     }
     const std::optional<Account> self = account(effectiveUid);
     return {.otherAccount = true, .account = self.has_value() && !self->name.empty() ? self->name : std::string("root")};
+}
+
+/// Whether a process running as root (@p effectiveUid 0) may have another user's environment (#4154), so it ignores the
+/// test hooks that write files (#4104) and the SDL and loader variables (#4111, #4151): something names a user who
+/// started it (a nonzero SUDO_UID or PKEXEC_UID, a DOAS_USER other than root), or HOME isn't root's (@p rootHome, its
+/// passwd entry's, "/root" when unknown), which su -m and su -p keep. Unlike invokingUser(), it asks no directory
+/// service: a lookup that fails (SSSD or LDAP down) can't turn it off. Root's own login, HOME root's, is unaffected.
+[[nodiscard]] inline bool environmentMayBeAnotherUsers(uid_t effectiveUid,
+                                                       const std::function<std::optional<std::string>(std::string_view)>& env,
+                                                       const std::optional<std::string>& rootHome)
+{
+    if (effectiveUid != 0)
+    {
+        return false;
+    }
+    for (const char* name : {"SUDO_UID", "PKEXEC_UID"})
+    {
+        const std::optional<std::string> text = env(name);
+        std::uint32_t uid = 0;
+        if (text.has_value() && !text->empty() &&
+            std::from_chars(text->data(), text->data() + text->size(), uid).ptr == text->data() + text->size() && uid != 0)
+        {
+            return true;
+        }
+    }
+    if (const std::optional<std::string> doasUser = env("DOAS_USER"); doasUser.has_value() && !doasUser->empty() && *doasUser != "root")
+    {
+        return true;
+    }
+    // Normalized, and without a trailing separator ("/root/" is root's too): lexically_normal() keeps one.
+    const auto normal = [](const std::string& text)
+    {
+        std::filesystem::path path = std::filesystem::path(text).lexically_normal();
+        if (!path.has_filename() && path != path.root_path())
+        {
+            path = path.parent_path();
+        }
+        return path;
+    };
+    const std::optional<std::string> home = env("HOME");
+    return home.has_value() && !home->empty() && normal(*home) != normal(rootHome.value_or("/root"));
 }
 
 /// This process's invoking user (invokingUser() for its effective uid, environment and passwd database), looked up
