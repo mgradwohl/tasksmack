@@ -16,6 +16,7 @@
 #include <cstddef>
 #include <cstdlib>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -240,6 +241,28 @@ std::vector<std::string> loggedNames(const std::vector<std::wstring>& names)
     return logged;
 }
 
+std::wstring copyEnvironmentBlock(const std::function<wchar_t(std::size_t)>& charAt)
+{
+    if (charAt(0) == L'\0')
+    {
+        // Empty: the lone terminator, and nothing after it to read
+        std::wstring empty(1, L'\0');
+        return empty;
+    }
+    std::size_t length = 0;
+    // The null at @c length ends a string, so what follows it is the next string or the block's own terminator
+    while (charAt(length) != L'\0' || charAt(length + 1) != L'\0')
+    {
+        ++length;
+    }
+    std::wstring block(length + 1, L'\0');
+    for (std::size_t index = 0; index <= length; ++index)
+    {
+        block[index] = charAt(index);
+    }
+    return block;
+}
+
 std::vector<std::wstring> removeForThisProcess(bool system32Only)
 {
     stillSetNames().clear();
@@ -250,14 +273,8 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
         std::optional<std::wstring> block;
         if (wchar_t* const strings = GetEnvironmentStringsW(); strings != nullptr)
         {
-            std::size_t length = 0;
-            // NOLINTBEGIN(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the block ends at its first empty string
-            while (strings[length] != L'\0' || strings[length + 1] != L'\0')
-            {
-                ++length;
-            }
-            block.emplace(strings, length + 1);
-            // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the block ends at its first empty string
+            block = copyEnvironmentBlock([strings](std::size_t index) { return strings[index]; });
             FreeEnvironmentStringsW(strings);
         }
         else

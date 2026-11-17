@@ -55,14 +55,24 @@ class CheckTextTest(unittest.TestCase):
         self.assertTrue(errors[0].startswith("a.cpp:4: "), errors[0])
 
 
+POLICY = "Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()"
 MAIN_CALL = (
-    "    SetDefaultDllDirectories(system32Only() ? LOAD_LIBRARY_SEARCH_SYSTEM32\n"
-    "                                            : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
+    f"    SetDefaultDllDirectories({POLICY}\n"
+    "                                 ? LOAD_LIBRARY_SEARCH_SYSTEM32\n"
+    "                                 : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
 )
 # What TaskSmack.exe's WinMain must call next, before any SDL call (#4103)
-SCRUB_ARGUMENT = "Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()"
+SCRUB_ARGUMENT = POLICY
 SDL_SCRUB = f"    Platform::Windows::SdlEnvironment::removeForThisProcess({SCRUB_ARGUMENT});\n"
-MAIN_START = MAIN_CALL + SDL_SCRUB
+# And the check that fails closed (#4114, #4169)
+FAIL_CLOSED = (
+    "    if (const auto& stillSet = Platform::Windows::SdlEnvironment::stillSetInThisProcess(); !stillSet.empty())\n"
+    "    {\n"
+    '        MessageBoxW(nullptr, L"refused {", L"TaskSmack", MB_OK);\n'
+    "        return EXIT_FAILURE;\n"
+    "    }\n"
+)
+MAIN_START = MAIN_CALL + SDL_SCRUB + FAIL_CLOSED
 HELPER_CALL = "    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
 
 
@@ -171,29 +181,137 @@ class CheckEntryPointTest(unittest.TestCase):
 
     def test_the_sdl_scrub_argument_may_span_lines(self) -> None:
         scrub = f"    Platform::Windows::SdlEnvironment::removeForThisProcess(\n        {SCRUB_ARGUMENT});\n"
-        self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub)), [])
+        self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub + FAIL_CLOSED)), [])
 
     def test_set_default_dll_directories_must_be_a_statement_of_its_own(self) -> None:
         # #4114: extra code in the same statement, before its ';', is code the scrub's position check never sees.
         call = MAIN_CALL.rstrip().removesuffix(";")
         for extra in (', SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "windows")', " + 0", " , run()"):
             with self.subTest(extra=extra):
-                errors = check_main(entry_point("WinMain", call + extra + ";\n" + SDL_SCRUB))
+                errors = check_main(entry_point("WinMain", call + extra + ";\n" + SDL_SCRUB + FAIL_CLOSED))
                 self.assertEqual(len(errors), 1, errors)
                 self.assertIn("#4114", errors[0])
                 self.assertIn("statement of its own", errors[0])
 
     def test_whitespace_before_the_semicolon_is_fine(self) -> None:
         call = MAIN_CALL.rstrip().removesuffix(";")
-        self.assertEqual(check_main(entry_point("WinMain", call + " \n    ;\n" + SDL_SCRUB)), [])
+        self.assertEqual(check_main(entry_point("WinMain", call + " \n    ;\n" + SDL_SCRUB + FAIL_CLOSED)), [])
 
     def test_the_sdl_scrub_may_be_qualified_or_not_after_comments(self) -> None:
         for scrub in (
             "    SdlEnvironment::removeForThisProcess(DllSearchPolicy::system32OnlyForThisProcess());\n",
-            "    // Next, before any SDL call.\n    /* why */ Platform::Windows::SdlEnvironment::removeForThisProcess(system32OnlyForThisProcess());\n",
+            "    // Next, before any SDL call.\n    /* why */ Platform::Windows::SdlEnvironment::removeForThisProcess(::Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess());\n",
+            "    Platform::Windows::SdlEnvironment::removeForThisProcess(::DllSearchPolicy::system32OnlyForThisProcess());\n",
         ):
             with self.subTest(scrub=scrub):
-                self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub)), [])
+                self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub + FAIL_CLOSED)), [])
+
+    def test_the_policy_qualifier_is_pinned_to_dll_search_policy(self) -> None:
+        # #4169: any other qualifier, or none, names some other function that may answer differently.
+        for qualifier in (
+            "",
+            "Other::",
+            "Platform::Other::",
+            "Windows::Other::",
+            "Platform::DllSearchPolicy::Nested::",
+            "Platform::Windows::Other::DllSearchPolicy::",
+        ):
+            call = f"{qualifier}system32OnlyForThisProcess()"
+            scrub = f"    Platform::Windows::SdlEnvironment::removeForThisProcess({call});\n"
+            with self.subTest(scrub_argument=call):
+                errors = check_main(entry_point("WinMain", MAIN_CALL + scrub + FAIL_CLOSED))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4114", errors[0])
+            with self.subTest(set_default_argument=call):
+                errors = check_main(entry_point("WinMain", MAIN_CALL.replace(POLICY, call) + SDL_SCRUB + FAIL_CLOSED))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4169", errors[0])
+
+    def test_set_default_arguments_accept_the_global_qualifier_and_any_spacing(self) -> None:
+        for policy in (
+            "::Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()",
+            "DllSearchPolicy::system32OnlyForThisProcess( )",
+            "Platform :: Windows :: DllSearchPolicy :: system32OnlyForThisProcess ()",
+        ):
+            with self.subTest(policy=policy):
+                call = MAIN_CALL.replace(POLICY, policy)
+                self.assertEqual(check_main(entry_point("WinMain", call + SDL_SCRUB + FAIL_CLOSED)), [])
+
+    def test_set_default_arguments_must_hold_no_sdl_identifier_and_no_other_call(self) -> None:
+        # #4169: code in the argument runs before the scrub, so an SDL call there reads the variables the scrub removes.
+        for extra in ("SDL_GetError()", "SDL_INIT_VIDEO", "SDL3_DYNAMIC_API", "helper()", "static_cast<DWORD>(0)"):
+            with self.subTest(extra=extra):
+                call = MAIN_CALL.replace("LOAD_LIBRARY_SEARCH_APPLICATION_DIR |", f"{extra} | LOAD_LIBRARY_SEARCH_APPLICATION_DIR |")
+                errors = check_main(entry_point("WinMain", call + SDL_SCRUB + FAIL_CLOSED))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4169", errors[0])
+                self.assertIn("no SDL_ identifier", errors[0])
+
+    def test_set_default_arguments_must_match_the_one_expected_shape(self) -> None:
+        sys32 = "LOAD_LIBRARY_SEARCH_SYSTEM32"
+        app = "LOAD_LIBRARY_SEARCH_APPLICATION_DIR"
+        for flags in (
+            f"{POLICY} ? {sys32} : {sys32} | {app}",
+            f"{POLICY} ? {sys32} : {app} | {sys32} | 0",
+            f"!{POLICY} ? {sys32} : {app} | {sys32}",
+            f"true && {POLICY} ? {sys32} : {app} | {sys32}",
+            f"{POLICY} ? {sys32} : {sys32}",
+        ):
+            with self.subTest(flags=flags):
+                body = f"    SetDefaultDllDirectories({flags});\n" + SDL_SCRUB + FAIL_CLOSED
+                errors = check_main(entry_point("WinMain", body))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4169", errors[0])
+
+    def test_the_scrub_must_be_followed_by_the_fail_closed_check(self) -> None:
+        # #4169: without it a scrub that couldn't clear a variable lets TaskSmack run on to SDL.
+        scrub = MAIN_CALL + SDL_SCRUB
+        for name, body in (
+            ("nothing", scrub + "    return run();\n"),
+            ("another statement first", scrub + "    log();\n" + FAIL_CLOSED),
+            ("not stillSetInThisProcess", scrub + FAIL_CLOSED.replace("stillSetInThisProcess", "removedFromThisProcess")),
+            ("not negated", scrub + FAIL_CLOSED.replace("!stillSet.empty()", "stillSet.empty()")),
+            ("no braces", scrub + FAIL_CLOSED.replace("    {\n", "").replace("    }\n", "")),
+            ("no return", scrub + FAIL_CLOSED.replace("return EXIT_FAILURE;", "log();")),
+            ("a return after the block", scrub + FAIL_CLOSED.replace("        return EXIT_FAILURE;\n", "") + "    return EXIT_FAILURE;\n"),
+            ("a string says return", scrub + FAIL_CLOSED.replace("return EXIT_FAILURE;", 'log("will not return");')),
+            ("a string names the check", scrub + '    if (log("stillSetInThisProcess() !x.empty()")) { return 1; }\n'),
+            ("a comment only", scrub + "    // if (!stillSetInThisProcess().empty()) { return 1; }\n    return run();\n"),
+        ):
+            with self.subTest(name=name):
+                errors = check_main(entry_point("WinMain", body))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4169", errors[0])
+
+    def test_the_scrub_must_be_a_statement_of_its_own(self) -> None:
+        scrub = SDL_SCRUB.rstrip().removesuffix(";") + ", log();\n"
+        errors = check_main(entry_point("WinMain", MAIN_CALL + scrub + FAIL_CLOSED))
+        self.assertEqual(len(errors), 1, errors)
+        self.assertIn("statement of its own", errors[0])
+
+    def test_a_second_scrub_call_fails(self) -> None:
+        # #4169: removeForThisProcess() clears the names still set, so a second call before the check would hide them.
+        for body in (
+            MAIN_CALL + SDL_SCRUB + FAIL_CLOSED + SDL_SCRUB + "    return run();\n",
+            MAIN_CALL + SDL_SCRUB + FAIL_CLOSED + "    helper();\n    return run();\n" + SDL_SCRUB,
+            # Inside the check's own init: it passes the check's shape, only the count catches it
+            MAIN_CALL
+            + SDL_SCRUB
+            + FAIL_CLOSED.replace(
+                "const auto& stillSet = Platform::Windows::SdlEnvironment::stillSetInThisProcess()",
+                "const auto& stillSet = (Platform::Windows::SdlEnvironment::removeForThisProcess(x), "
+                "Platform::Windows::SdlEnvironment::stillSetInThisProcess())",
+            ),
+        ):
+            with self.subTest(body=body):
+                errors = check_main(entry_point("WinMain", body))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("exactly once", errors[0])
+
+    def test_a_brace_in_a_string_does_not_end_the_check_early(self) -> None:
+        # FAIL_CLOSED's message holds a "{"; the body that follows is still the function's.
+        self.assertEqual(check_main(entry_point("WinMain", MAIN_START + "    return run();\n")), [])
+        self.assertEqual(checker.matching_brace('{ "}" }', 0), 6)
 
     def test_the_helper_needs_no_sdl_scrub(self) -> None:
         # TaskSmackHelper.exe makes no SDL call.
