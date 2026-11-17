@@ -383,6 +383,10 @@ struct ProcessActionCapabilities
     /// TaskSmack's tasks are elevated already).
     bool canRunProgram = false;
     bool canRunProgramAsAdministrator = false;
+    /// Run as administrator runs the program directly, with no password asked (#4091): Linux, when TaskSmack itself runs
+    /// as root (euid 0), as runProgram() decides it; false elsewhere. Run new task's tooltip says which it will do, from
+    /// this rather than from the capability set, which a root container or a non-root process with capabilities splits.
+    bool runsProgramsAsRootDirectly = false;
     /// runProgram() as administrator: the prompt asks for an administrator's name and password, and the program runs
     /// as that administrator (Windows, #4108: a standard user, whose runas verb has no consent prompt to give), not for
     /// the user's own approval. Read once, at construction.
