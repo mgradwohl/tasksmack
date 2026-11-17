@@ -106,13 +106,15 @@ std::shared_ptr<const ProcessIconImage> BasicProcessIconCache<Faults>::lookupEnt
             static_cast<void>(entries(oldest.file).erase(oldest.uniqueKey));
             m_Queue.pop_front();
         }
-        m_Queue.push_back(Request{.uniqueKey = key,
-                                  .pid = pid,
-                                  .startTimeTicks = startTimeTicks,
-                                  .sizePx = sizePx,
-                                  .name = std::string(name),
-                                  .file = file,
-                                  .path = std::string(path)});
+        m_Queue.push_back(Request{
+            .uniqueKey = key,
+            .pid = pid,
+            .startTimeTicks = startTimeTicks,
+            .sizePx = sizePx,
+            .name = std::string(name),
+            .file = file,
+            .path = std::string(path),
+        });
     }
     wakeWorker();
     return nullptr;
