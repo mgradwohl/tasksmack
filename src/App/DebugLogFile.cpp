@@ -22,17 +22,23 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <aclapi.h> // SetSecurityInfo
-#include <sddl.h>   // ConvertStringSecurityDescriptorToSecurityDescriptorW
-#include <shlobj.h> // SHGetKnownFolderPath
+#include <aclapi.h>  // GetSecurityInfo, SetKernelObjectSecurity
+#include <winternl.h> // OBJECT_ATTRIBUTES, IO_STATUS_BLOCK, UNICODE_STRING
+#include <sddl.h>     // ConvertStringSecurityDescriptorToSecurityDescriptorW
+#include <shlobj.h>   // SHGetKnownFolderPath
 // clang-format on
 
 #include "Core/Utf8Path.h"
+#include "Platform/Windows/WindowsProcAddress.h"
 
 #include <spdlog/details/log_msg.h>
 #include <spdlog/sinks/base_sink.h>
 
+#include <algorithm>
+#include <cstddef>
+#include <cstdint>
 #include <format>
+#include <functional>
 #include <mutex>
 #include <system_error>
 #include <vector>
@@ -44,6 +50,45 @@ namespace
 {
 
 #ifdef _WIN32
+// NtCreateFile dispositions and options, and the NTSTATUS values used here (ntifs.h / ntstatus.h, which user-mode
+// headers don't declare).
+constexpr ULONG NT_FILE_CREATE = 0x00000002; // create new only, fail if it exists
+constexpr ULONG NT_FILE_OPEN = 0x00000001;   // open existing only
+constexpr ULONG NT_FILE_DIRECTORY = 0x00000001;
+constexpr ULONG NT_FILE_NON_DIRECTORY = 0x00000040;
+constexpr ULONG NT_FILE_SYNCHRONOUS = 0x00000020;
+constexpr ULONG NT_FILE_OPEN_REPARSE_POINT = 0x00200000;
+constexpr ULONG_PTR NT_FILE_CREATED = 2; // IO_STATUS_BLOCK.Information after a create
+constexpr auto STATUS_OBJECT_NAME_NOT_FOUND = static_cast<NTSTATUS>(0xC0000034L);
+constexpr auto STATUS_OBJECT_NAME_COLLISION = static_cast<NTSTATUS>(0xC0000035L);
+constexpr auto STATUS_OBJECT_PATH_NOT_FOUND = static_cast<NTSTATUS>(0xC000003AL);
+constexpr auto STATUS_NO_ENTRY_POINT = static_cast<NTSTATUS>(0xC000007AL);
+
+// FileRenameInformation and the delete classes (FILE_INFORMATION_CLASS), which winternl.h doesn't name.
+const auto FILE_RENAME_INFORMATION_CLASS = static_cast<FILE_INFORMATION_CLASS>(10);
+const auto FILE_DISPOSITION_INFORMATION_EX_CLASS = static_cast<FILE_INFORMATION_CLASS>(64);
+const auto FILE_DISPOSITION_INFORMATION_CLASS = static_cast<FILE_INFORMATION_CLASS>(13);
+constexpr DWORD FILE_DISPOSITION_DELETE = 0x00000001;
+constexpr DWORD FILE_DISPOSITION_POSIX_SEMANTICS = 0x00000002;
+constexpr DWORD FILE_DISPOSITION_IGNORE_READONLY = 0x00000010;
+
+using NtCreateFileFn =
+    NTSTATUS(NTAPI*)(PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+using NtSetInformationFileFn = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, FILE_INFORMATION_CLASS);
+
+[[nodiscard]] NtCreateFileFn ntCreateFile()
+{
+    static auto* const function = Platform::Windows::getProcAddress<NtCreateFileFn>(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile");
+    return function;
+}
+
+[[nodiscard]] NtSetInformationFileFn ntSetInformationFile()
+{
+    static auto* const function =
+        Platform::Windows::getProcAddress<NtSetInformationFileFn>(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile");
+    return function;
+}
+
 /// Closes a Win32 handle; INVALID_HANDLE_VALUE and null are none.
 struct HandleCloser
 {
@@ -67,8 +112,204 @@ using OwnedHandle = std::unique_ptr<void, HandleCloser>;
     return std::system_category().message(static_cast<int>(GetLastError()));
 }
 
-/// The log written through the file handle checked when it was opened (#4105), never reopened by its path. WriteFile
-/// hands each line to the system as it is written, so there is nothing of its own to flush.
+[[nodiscard]] std::string ntText(NTSTATUS status)
+{
+    return std::format("NTSTATUS 0x{:08X}", static_cast<std::uint32_t>(status));
+}
+
+/// A security descriptor built from @p sddl (LocalFree'd when it dies), or null when @p sddl doesn't parse.
+using OwnedDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
+[[nodiscard]] OwnedDescriptor descriptorFrom(std::string_view sddl)
+{
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const std::wstring wide(sddl.begin(), sddl.end()); // SDDL is ASCII
+    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(wide.c_str(), SDDL_REVISION_1, &descriptor, nullptr) == FALSE)
+    {
+        return {nullptr, &::LocalFree};
+    }
+    return {descriptor, &::LocalFree};
+}
+
+/// Whether the owner of @p handle (opened with READ_CONTROL) is BUILTIN\Administrators or SYSTEM; nullopt when it
+/// can't be read. A folder TaskSmack made while elevated is owned by Administrators; one a user made is not.
+[[nodiscard]] std::optional<bool> ownerIsAdminOrSystem(HANDLE handle)
+{
+    PSID owner = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
+            ERROR_SUCCESS ||
+        owner == nullptr)
+    {
+        if (descriptor != nullptr)
+        {
+            LocalFree(descriptor);
+        }
+        return std::nullopt;
+    }
+    const bool trusted = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(owner, WinLocalSystemSid) != FALSE;
+    LocalFree(descriptor);
+    return trusted;
+}
+
+/// NtCreateFile relative to @p parent (RootDirectory), for the one plain name @p name. @p disposition and the directory
+/// flag say whether it is opened or created, and as a folder or a file; @p descriptor is applied when it is created.
+/// @p outCreated, when set, says whether a create made a new object. The handle, or the NTSTATUS, is returned.
+[[nodiscard]] std::expected<OwnedHandle, NTSTATUS> openRelative(HANDLE parent,
+                                                                const std::wstring& name,
+                                                                ACCESS_MASK access,
+                                                                ULONG disposition,
+                                                                bool directory,
+                                                                PSECURITY_DESCRIPTOR descriptor,
+                                                                bool* outCreated = nullptr)
+{
+    if (ntCreateFile() == nullptr)
+    {
+        return std::unexpected(STATUS_NO_ENTRY_POINT); // LCOV_EXCL_LINE - ntdll always exports it
+    }
+    UNICODE_STRING text{};
+    text.Buffer = const_cast<PWSTR>(name.c_str()); // NOLINT(cppcoreguidelines-pro-type-const-cast) - NtCreateFile only reads it
+    text.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
+    text.MaximumLength = text.Length;
+    OBJECT_ATTRIBUTES attributes{};
+    attributes.Length = sizeof(attributes);
+    attributes.RootDirectory = parent;
+    attributes.ObjectName = &text;
+    attributes.Attributes = OBJ_CASE_INSENSITIVE;
+    attributes.SecurityDescriptor = descriptor;
+    IO_STATUS_BLOCK status{};
+    HANDLE opened = nullptr;
+    const ULONG options = NT_FILE_OPEN_REPARSE_POINT | NT_FILE_SYNCHRONOUS | (directory ? NT_FILE_DIRECTORY : NT_FILE_NON_DIRECTORY);
+    const NTSTATUS result = ntCreateFile()(&opened,
+                                           access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
+                                           &attributes,
+                                           &status,
+                                           nullptr,
+                                           FILE_ATTRIBUTE_NORMAL,
+                                           FILE_SHARE_READ, // no FILE_SHARE_DELETE: it can't be renamed or deleted while held
+                                           disposition,
+                                           options,
+                                           nullptr,
+                                           0);
+    if (result < 0)
+    {
+        return std::unexpected(result);
+    }
+    if (outCreated != nullptr)
+    {
+        *outCreated = status.Information == NT_FILE_CREATED;
+    }
+    return own(opened);
+}
+
+/// Renames the folder @p handle holds aside, out of the way, through that handle (RootDirectory @p parent): a fresh one
+/// can then be made under @p name. False when it can't be moved.
+[[nodiscard]] bool renameAside(HANDLE handle, HANDLE parent, std::wstring_view name)
+{
+    if (ntSetInformationFile() == nullptr)
+    {
+        return false; // LCOV_EXCL_LINE
+    }
+    const std::wstring moved = std::format(L"{}.untrusted-{:08X}", name, GetCurrentProcessId());
+    const std::size_t bytes = sizeof(FILE_RENAME_INFO) + (moved.size() * sizeof(wchar_t));
+    std::vector<std::byte> buffer(bytes); // zero-initialised: ReplaceIfExists (a union, left untouched) is already FALSE
+    auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+    rename->RootDirectory = parent;
+    rename->FileNameLength = static_cast<DWORD>(moved.size() * sizeof(wchar_t));
+    std::ranges::copy(moved, static_cast<wchar_t*>(rename->FileName));
+    IO_STATUS_BLOCK status{};
+    return ntSetInformationFile()(handle, &status, rename, static_cast<ULONG>(bytes), FILE_RENAME_INFORMATION_CLASS) >= 0;
+}
+
+/// Marks the file @p handle holds for deletion (opened with DELETE), through that handle: POSIX semantics where the
+/// volume takes them, so the name is free at once, else the classic flag. False when neither takes.
+[[nodiscard]] bool deleteThroughHandle(HANDLE handle)
+{
+    if (ntSetInformationFile() == nullptr)
+    {
+        return false; // LCOV_EXCL_LINE
+    }
+    FILE_DISPOSITION_INFO_EX exInfo{};
+    exInfo.Flags = FILE_DISPOSITION_DELETE | FILE_DISPOSITION_POSIX_SEMANTICS | FILE_DISPOSITION_IGNORE_READONLY;
+    IO_STATUS_BLOCK status{};
+    if (ntSetInformationFile()(handle, &status, &exInfo, sizeof(exInfo), FILE_DISPOSITION_INFORMATION_EX_CLASS) >= 0)
+    {
+        return true;
+    }
+    FILE_DISPOSITION_INFO info{};
+    info.DeleteFile = TRUE;
+    return ntSetInformationFile()(handle, &status, &info, sizeof(info), FILE_DISPOSITION_INFORMATION_CLASS) >= 0;
+}
+
+/// Whether @p handle is a plain folder (not a reparse point), read through it. nullopt when it can't be read.
+[[nodiscard]] std::optional<bool> isPlainFolder(HANDLE handle)
+{
+    BY_HANDLE_FILE_INFORMATION info{};
+    if (GetFileInformationByHandle(handle, &info) == FALSE)
+    {
+        return std::nullopt;
+    }
+    return (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
+}
+
+/// Folder @p name, under the held @p parent, secured to @p descriptor's DACL and owner: made fresh when it isn't there
+/// or a user owns it (an existing user-owned one is renamed aside first), or its DACL reset when Administrators or
+/// SYSTEM already owns it. Held open, without FILE_SHARE_DELETE. @p display names it for the error.
+[[nodiscard]] std::expected<OwnedHandle, std::string>
+secureChild(HANDLE parent, const std::wstring& name, PSECURITY_DESCRIPTOR descriptor, const std::string& display)
+{
+    constexpr ACCESS_MASK ACCESS = READ_CONTROL | WRITE_DAC | DELETE | FILE_LIST_DIRECTORY;
+    for (int attempt = 0; attempt < 2; ++attempt)
+    {
+        bool created = false;
+        auto fresh = openRelative(parent, name, ACCESS, NT_FILE_CREATE, true, descriptor, &created);
+        if (fresh.has_value() && created)
+        {
+            return std::move(*fresh); // made fresh, with the descriptor's owner and DACL
+        }
+        if (!fresh.has_value() && fresh.error() != STATUS_OBJECT_NAME_COLLISION)
+        {
+            return std::unexpected(std::format("{} can't be made: {}", display, ntText(fresh.error())));
+        }
+        // There already: open it without following a link, and decide by its owner.
+        auto existing = openRelative(parent, name, ACCESS, NT_FILE_OPEN, true, nullptr);
+        if (!existing.has_value())
+        {
+            return std::unexpected(std::format("{} can't be opened: {}", display, ntText(existing.error())));
+        }
+        const std::optional<bool> plain = isPlainFolder(existing->get());
+        if (!plain.has_value())
+        {
+            return std::unexpected(std::format("{} can't be read", display));
+        }
+        if (!*plain)
+        {
+            return std::unexpected(std::format("{} is a junction or link, or not a folder", display));
+        }
+        const std::optional<bool> trusted = ownerIsAdminOrSystem(existing->get());
+        if (!trusted.has_value())
+        {
+            return std::unexpected(std::format("{}'s owner can't be read", display));
+        }
+        if (*trusted)
+        {
+            // Administrators or SYSTEM owns it: reset its DACL (not its children's: SetKernelObjectSecurity doesn't
+            // propagate), and keep it.
+            if (SetKernelObjectSecurity(existing->get(), DACL_SECURITY_INFORMATION, descriptor) == FALSE)
+            {
+                return std::unexpected(std::format("{}'s security can't be set: {}", display, lastError()));
+            }
+            return std::move(*existing);
+        }
+        // A user owns it: move it aside through its handle and make a fresh one in its place on the next turn.
+        if (!renameAside(existing->get(), parent, name))
+        {
+            return std::unexpected(std::format("{} is owned by a user and can't be moved aside", display));
+        }
+    }
+    return std::unexpected(std::format("{} can't be secured: it keeps being replaced", display));
+}
+
+/// The log written through the file handle checked when it was opened (#4105), never reopened by its path.
 class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
 {
   public:
@@ -81,7 +322,6 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
         spdlog::memory_buf_t formatted;
         formatter_->format(msg, formatted);
         DWORD written = 0;
-        // A line that can't be written is lost, as one the CRT can't write is in a path-opened file.
         static_cast<void>(WriteFile(m_File.get(), formatted.data(), static_cast<DWORD>(formatted.size()), &written, nullptr));
     }
 
@@ -92,32 +332,6 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
     OwnedHandle m_File;
 };
 
-/// Whether @p handle's final path is @p path (ignoring case, as NTFS names do).
-[[nodiscard]] bool isAt(HANDLE handle, const std::filesystem::path& path)
-{
-    std::vector<wchar_t> buffer(MAX_PATH);
-    DWORD length = GetFinalPathNameByHandleW(handle, buffer.data(), static_cast<DWORD>(buffer.size()), FILE_NAME_NORMALIZED);
-    if (length >= buffer.size())
-    {
-        buffer.resize(length + 1);
-        length = GetFinalPathNameByHandleW(handle, buffer.data(), static_cast<DWORD>(buffer.size()), FILE_NAME_NORMALIZED);
-    }
-    if (length == 0 || length >= buffer.size())
-    {
-        return false;
-    }
-    std::wstring_view finalPath(buffer.data(), length);
-    constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
-    if (finalPath.starts_with(LONG_PREFIX))
-    {
-        finalPath.remove_prefix(LONG_PREFIX.size());
-    }
-    const std::wstring& expected = path.native();
-    return CompareStringOrdinal(
-               finalPath.data(), static_cast<int>(finalPath.size()), expected.data(), static_cast<int>(expected.size()), TRUE) ==
-           CSTR_EQUAL;
-}
-
 /// An elevated session's log (#4105), in %ProgramData%\TaskSmack\Logs, as this file's header says.
 [[nodiscard]] std::expected<Opened, std::string> openElevated(const Functions& functions)
 {
@@ -126,51 +340,63 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
     {
         return std::unexpected(std::string("the ProgramData folder isn't known"));
     }
-    const std::filesystem::path logs = elevatedLogFolder(*programData);
-    for (const std::filesystem::path& folder : {logs.parent_path(), logs})
+    const OwnedDescriptor descriptor = descriptorFrom(functions.folderSecurity);
+    if (descriptor == nullptr)
     {
-        if (auto secured = secureFolder(folder, functions.folderSecurity); !secured.has_value())
+        return std::unexpected(std::string("the log folder's security can't be built"));
+    }
+    // %ProgramData% by path, once: a system folder owned by SYSTEM, the trust root. Held without FILE_SHARE_DELETE.
+    const OwnedHandle root = own(CreateFileW(programData->c_str(),
+                                             FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                             FILE_SHARE_READ | FILE_SHARE_WRITE,
+                                             nullptr,
+                                             OPEN_EXISTING,
+                                             FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                                             nullptr));
+    if (root == nullptr)
+    {
+        return std::unexpected(std::format("{} can't be opened: {}", Core::pathToUtf8(*programData), lastError()));
+    }
+    if (isPlainFolder(root.get()) != std::optional(true))
+    {
+        return std::unexpected(std::format("{} isn't a plain folder", Core::pathToUtf8(*programData)));
+    }
+    auto taskSmack = secureChild(root.get(), L"TaskSmack", descriptor.get(), Core::pathToUtf8(*programData / "TaskSmack"));
+    if (!taskSmack.has_value())
+    {
+        return std::unexpected(std::move(taskSmack.error()));
+    }
+    const std::filesystem::path logs = elevatedLogFolder(*programData);
+    auto logsHandle = secureChild(taskSmack->get(), L"Logs", descriptor.get(), Core::pathToUtf8(logs));
+    if (!logsHandle.has_value())
+    {
+        return std::unexpected(std::move(logsHandle.error()));
+    }
+    // The log, relative to the held Logs folder. Any existing one is deleted through its own handle, then a fresh one is
+    // made with CREATE-only: a planted file with a user's DACL is never written to, and a race that re-makes one is refused.
+    const std::wstring name(FILE_NAME.begin(), FILE_NAME.end());
+    if (auto stale = openRelative(logsHandle->get(), name, DELETE, NT_FILE_OPEN, false, nullptr); stale.has_value())
+    {
+        if (!deleteThroughHandle(stale->get()))
         {
-            return std::unexpected(std::move(secured.error()));
+            return std::unexpected(std::format("the stale {} can't be removed", std::string(FILE_NAME)));
         }
     }
-    const std::filesystem::path path = logs / FILE_NAME;
-    // Opened without following a link (FILE_FLAG_OPEN_REPARSE_POINT), and not emptied until it is checked.
-    OwnedHandle file = own(CreateFileW(path.c_str(),
-                                       GENERIC_WRITE | FILE_READ_ATTRIBUTES,
-                                       FILE_SHARE_READ | FILE_SHARE_DELETE,
-                                       nullptr,
-                                       OPEN_ALWAYS,
-                                       FILE_ATTRIBUTE_NORMAL | FILE_FLAG_OPEN_REPARSE_POINT,
-                                       nullptr));
-    if (file == nullptr)
+    else if (stale.error() != STATUS_OBJECT_NAME_NOT_FOUND && stale.error() != STATUS_OBJECT_PATH_NOT_FOUND)
     {
-        return std::unexpected(std::format("{} can't be opened: {}", Core::pathToUtf8(path), lastError()));
+        return std::unexpected(std::format("{} can't be checked: {}", std::string(FILE_NAME), ntText(stale.error())));
     }
-    BY_HANDLE_FILE_INFORMATION info{};
-    if (GetFileInformationByHandle(file.get(), &info) == FALSE)
+    bool created = false;
+    auto file = openRelative(logsHandle->get(), name, GENERIC_WRITE, NT_FILE_CREATE, false, descriptor.get(), &created);
+    if (!file.has_value() || !created)
     {
-        return std::unexpected(std::format("{} can't be read: {}", Core::pathToUtf8(path), lastError()));
+        return std::unexpected(
+            std::format("{} can't be made fresh{}", std::string(FILE_NAME), file.has_value() ? "" : ": " + ntText(file.error())));
     }
-    if ((info.dwFileAttributes & (FILE_ATTRIBUTE_REPARSE_POINT | FILE_ATTRIBUTE_DIRECTORY)) != 0)
-    {
-        return std::unexpected(std::format("{} is a link or a folder", Core::pathToUtf8(path)));
-    }
-    if (info.nNumberOfLinks != 1)
-    {
-        return std::unexpected(std::format("{} is hard-linked to another file", Core::pathToUtf8(path)));
-    }
-    if (!isAt(file.get(), path))
-    {
-        return std::unexpected(std::format("{} opened somewhere else", Core::pathToUtf8(path)));
-    }
-    // Emptied only now, through the handle checked: a run's log starts empty, as a path-opened one does.
-    FILE_END_OF_FILE_INFO end{};
-    if (SetFileInformationByHandle(file.get(), FileEndOfFileInfo, &end, sizeof(end)) == FALSE)
-    {
-        return std::unexpected(std::format("{} can't be emptied: {}", Core::pathToUtf8(path), lastError()));
-    }
-    return Opened{.path = path, .sink = std::make_shared<HandleFileSink>(std::move(file))};
+    // Where it is, as Windows names it: the held folder's final path, which doesn't follow a link, plus the name.
+    const std::wstring logsFinal = functions.finalPath(logsHandle->get());
+    const std::filesystem::path path = logsFinal.empty() ? logs / FILE_NAME : std::filesystem::path(logsFinal) / FILE_NAME;
+    return Opened{.path = path, .sink = std::make_shared<HandleFileSink>(std::move(*file))};
 }
 #endif
 
@@ -204,74 +430,54 @@ std::filesystem::path elevatedLogFolder(const std::filesystem::path& programData
 }
 
 #ifdef _WIN32
-std::expected<void, std::string> secureFolder(const std::filesystem::path& folder, std::string_view sddl)
+std::wstring systemFinalPath(void* handle)
 {
-    const std::string name = Core::pathToUtf8(folder);
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    const std::wstring wideSddl(sddl.begin(), sddl.end()); // SDDL is ASCII
-    if (ConvertStringSecurityDescriptorToSecurityDescriptorW(wideSddl.c_str(), SDDL_REVISION_1, &descriptor, nullptr) == FALSE)
+    std::wstring path(MAX_PATH, L'\0');
+    for (int attempt = 0; attempt < 2; ++attempt)
     {
-        return std::unexpected(std::format("its security can't be built: {}", lastError()));
+        const DWORD length =
+            GetFinalPathNameByHandleW(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
+        if (length == 0)
+        {
+            return {};
+        }
+        if (length < path.size())
+        {
+            path.resize(length);
+            constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
+            if (path.starts_with(LONG_PREFIX) && !path.starts_with(LR"(\\?\UNC\)"))
+            {
+                path.erase(0, LONG_PREFIX.size());
+            }
+            return path;
+        }
+        path.assign(length, L'\0');
     }
-    const std::unique_ptr<void, decltype(&::LocalFree)> ownedDescriptor(descriptor, &::LocalFree);
-    SECURITY_ATTRIBUTES attributes{.nLength = sizeof(SECURITY_ATTRIBUTES), .lpSecurityDescriptor = descriptor, .bInheritHandle = FALSE};
-    const bool made = CreateDirectoryW(folder.c_str(), &attributes) != FALSE;
-    if (!made && GetLastError() != ERROR_ALREADY_EXISTS)
+    return {};
+}
+
+std::expected<void, std::string> secureFolder(const std::filesystem::path& folder, std::string_view sddl, const FinalPathFn& /*finalPath*/)
+{
+    const OwnedDescriptor descriptor = descriptorFrom(sddl);
+    if (descriptor == nullptr)
     {
-        return std::unexpected(std::format("{} can't be made: {}", name, lastError()));
+        return std::unexpected(std::string("its security can't be built"));
     }
-    PSID owner = nullptr;
-    BOOL ownerDefaulted = FALSE;
-    PACL dacl = nullptr;
-    BOOL daclPresent = FALSE;
-    BOOL daclDefaulted = FALSE;
-    if (GetSecurityDescriptorOwner(descriptor, &owner, &ownerDefaulted) == FALSE ||
-        GetSecurityDescriptorDacl(descriptor, &daclPresent, &dacl, &daclDefaulted) == FALSE || daclPresent == FALSE)
-    {
-        return std::unexpected(std::string("its security names no DACL"));
-    }
-    // The folder itself, never what a junction or link there names; held while it is checked and secured.
-    const OwnedHandle handle = own(CreateFileW(folder.c_str(),
-                                               READ_CONTROL | WRITE_DAC | (owner != nullptr ? WRITE_OWNER : 0) | FILE_READ_ATTRIBUTES,
+    const OwnedHandle parent = own(CreateFileW(folder.parent_path().c_str(),
+                                               FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
                                                FILE_SHARE_READ | FILE_SHARE_WRITE,
                                                nullptr,
                                                OPEN_EXISTING,
                                                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                                nullptr));
-    if (handle == nullptr)
+    if (parent == nullptr)
     {
-        return std::unexpected(std::format("{} can't be opened: {}", name, lastError()));
+        return std::unexpected(std::format("{} can't be opened: {}", Core::pathToUtf8(folder.parent_path()), lastError()));
     }
-    BY_HANDLE_FILE_INFORMATION info{};
-    if (GetFileInformationByHandle(handle.get(), &info) == FALSE)
+    auto held = secureChild(parent.get(), folder.filename().native(), descriptor.get(), Core::pathToUtf8(folder));
+    if (!held.has_value())
     {
-        return std::unexpected(std::format("{} can't be read: {}", name, lastError()));
-    }
-    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
-    {
-        return std::unexpected(std::format("{} is a junction or link", name));
-    }
-    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) == 0)
-    {
-        return std::unexpected(std::format("{} isn't a folder", name));
-    }
-    if (!isAt(handle.get(), folder))
-    {
-        return std::unexpected(std::format("{} is reached through a link", name));
-    }
-    if (!made)
-    {
-        // There already, perhaps made by someone else (Users may create folders in %ProgramData%): taken over, so only
-        // Administrators and SYSTEM may change it from now on.
-        SECURITY_INFORMATION what = DACL_SECURITY_INFORMATION | PROTECTED_DACL_SECURITY_INFORMATION;
-        if (owner != nullptr)
-        {
-            what |= OWNER_SECURITY_INFORMATION;
-        }
-        if (const DWORD error = SetSecurityInfo(handle.get(), SE_FILE_OBJECT, what, owner, nullptr, dacl, nullptr); error != ERROR_SUCCESS)
-        {
-            return std::unexpected(std::format("{} can't be secured: {}", name, std::system_category().message(static_cast<int>(error))));
-        }
+        return std::unexpected(std::move(held.error()));
     }
     return {};
 }
