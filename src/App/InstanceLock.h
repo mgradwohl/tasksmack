@@ -7,6 +7,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
 #ifdef _WIN32
 namespace Platform
@@ -61,6 +62,15 @@ class InstanceLock
     /// directory) if needed. Running as root with another user's config directory (sudo -E), what it
     /// creates is given to that user (#2437), or the user's next normal run couldn't open the lock.
     explicit InstanceLock(const std::filesystem::path& lockPath, const Testing& testing = {});
+    /// Why a lock isn't even tried (#4106): an elevated session whose own config folder was refused writes nothing there,
+    /// the lock file included.
+    struct NotTaken
+    {
+        std::string why;
+    };
+    /// A lock that is Unavailable for @p notTaken's reason, with nothing opened or created.
+    explicit InstanceLock(NotTaken notTaken) noexcept : m_Error(std::move(notTaken.why))
+    {}
 #ifdef _WIN32
     /// Tries to take the lock on file @p name in @p folder, a config folder an elevated restart was handed (#2728),
     /// opened only through the folder held (#3774): never by a path to it, so nothing on the way is looked up again.
