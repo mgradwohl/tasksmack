@@ -49,6 +49,8 @@
 #include "Platform/Linux/SessionUser.h"
 
 #include <system_error>
+
+#include <unistd.h> // geteuid(): a root session's log (#4150)
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -405,9 +407,16 @@ auto runApp(const App::LaunchOptions& launch) -> int
 
     // tasksmack-debug.log: the temp folder's, or, where the temp folder is the less-privileged side's, a folder only
     // administrators may change (App/DebugLogFile.h): elevated or handed off on Windows, %ProgramData%\TaskSmack\Logs
-    // (#4105); run as root for a user on Linux (sudo -E keeps their TMPDIR), /var/log/tasksmack (#4150). The same rule
-    // as the DLL search order and SDL's variables (#3897, #4103): lessPrivilegedEnvironment() (#4104).
+    // (#4105); any root session on Linux, /run/tasksmack (#4150): sudo -E, su -m and doas keep the user's TMPDIR, and
+    // root never needs its log in a temp folder it didn't set, so the rule there is the effective uid, not the invoking
+    // user (the #4165 review). Windows' is the rule the DLL search order and SDL's variables follow (#3897, #4103).
+#ifdef _WIN32
     const bool adminOnlyLog = lessPrivilegedEnvironment();
+#elif defined(__linux__)
+    const bool adminOnlyLog = ::geteuid() == 0;
+#else
+    constexpr bool adminOnlyLog = false;
+#endif
     const auto logFile = App::DebugLogFile::open(adminOnlyLog);
     if (logFile.has_value())
     {
@@ -429,7 +438,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
     else if (adminOnlyLog)
     {
-        spdlog::warn("No debug log file: TaskSmack runs as administrator (elevated, or as root for a user), and {} in its "
+        spdlog::warn("No debug log file: TaskSmack runs as administrator (elevated, or as root), and {} in its "
                      "administrators-only folder couldn't be opened safely: {}. This log goes to the debugger and the console only",
                      App::DebugLogFile::FILE_NAME,
                      logFile.error());

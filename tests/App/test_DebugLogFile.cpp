@@ -620,7 +620,7 @@ TEST(DebugLogFileTest, ALinuxRootSessionsLogIsMadeFreshInAPrivateFolderNotTheTem
     EXPECT_EQ(std::filesystem::status(folder).permissions() & std::filesystem::perms::all, std::filesystem::perms::owner_all);
     EXPECT_EQ(std::filesystem::status(first->path).permissions() & std::filesystem::perms::all,
               std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-    EXPECT_TRUE(std::filesystem::is_empty(scratch.temp())) << "never the temp folder TMPDIR names";
+    EXPECT_TRUE(std::filesystem::is_empty(scratch.temp())) << "nothing in the temp folder TMPDIR names";
     const auto second = App::DebugLogFile::open(true, functions);
     ASSERT_TRUE(second.has_value()) << second.error();
     logThrough(second->sink, "the second run");
@@ -669,6 +669,30 @@ TEST(DebugLogFileTest, ALinuxLogParentOthersMayWriteIsRefused)
     ASSERT_FALSE(opened.has_value());
     EXPECT_TRUE(opened.error().contains("only this user may change")) << opened.error();
     EXPECT_FALSE(std::filesystem::exists(functions.linuxLogParent / "tasksmack"));
+}
+
+TEST(DebugLogFileTest, AGroupWritableLinuxLogParentIsRefusedAndTheTempFolderIsNeverAsked)
+{
+    // Ubuntu's /var/log is root:syslog 0775 (the #4165 review): a parent a group may write is refused, which is why the
+    // log's parent is /run.
+    const ScratchFolder scratch;
+    App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    std::filesystem::permissions(functions.linuxLogParent, std::filesystem::perms(0775));
+    bool tempAsked = false;
+    functions.tempFolder = [&tempAsked, temp = scratch.temp()]
+    {
+        tempAsked = true;
+        return temp;
+    };
+    const auto opened = App::DebugLogFile::open(true, functions);
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_TRUE(opened.error().contains("only this user may change")) << opened.error();
+    EXPECT_FALSE(tempAsked) << "a root session's log is never in the temp folder";
+}
+
+TEST(DebugLogFileTest, TheLinuxLogParentIsRun)
+{
+    EXPECT_EQ(App::DebugLogFile::LINUX_LOG_PARENT, "/run");
 }
 
 TEST(DebugLogFileTest, AnExistingLinuxLogFolderOthersCouldReadIsMadePrivate)
