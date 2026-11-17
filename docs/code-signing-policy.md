@@ -31,8 +31,8 @@ unsigned.
 The release workflow builds and packages each Windows `.zip` on a GitHub-hosted runner, with a first build of
 the installer whose only use is its uninstaller. A separate job, which checks out no code and builds nothing,
 then takes both `.zip`s and both uninstallers, signs and timestamps `TaskSmack.exe` and `TaskSmackHelper.exe`
-from each `.zip` and each uninstaller through Azure Artifact Signing, and writes the executables back into their
-`.zip`s, leaving everything else unchanged. It signs in to Azure with GitHub's OpenID Connect token for the
+from each `.zip`, and each `Uninstall.exe` itself, through Azure Artifact Signing, and writes the
+executables back into their `.zip`s, leaving everything else unchanged. It signs in to Azure with GitHub's OpenID Connect token for the
 `release-signing` environment; no password or client secret exists. Another job, without that token, builds
 each installer from its signed `.zip`'s files and its signed uninstaller, and a third job like the first signs
 and timestamps the two installers. The workflow then checks the signatures in each `.zip`
@@ -57,8 +57,10 @@ ships with that project's own signature or none.
 Every signed `TaskSmack.exe`, `TaskSmackHelper.exe` and installer carries the product name **TaskSmack** and the product version of the release
 (`project(TaskSmack VERSION ...)` in `CMakeLists.txt`, which the release workflow requires to match the tag).
 
-On top of Authenticode, every release asset (the `.zip`, installer, `.deb`, `.tar.gz` and SBOM) is listed with its
-SHA-256 in the release's `SHA256SUMS`, which is signed with Sigstore; see
+On top of Authenticode, every release from v0.10.0 lists each of its files (the `.zip`, installer, `.deb`,
+`.tar.gz`, build-inputs manifests and source SBOM) with its SHA-256 in `SHA256SUMS`, signed with Sigstore as
+`SHA256SUMS.bundle`, and every file has a GitHub build-provenance attestation. v0.9.0 and v0.9.1 carry a Sigstore
+bundle per file instead (with attestations from v0.9.1), and earlier releases have neither; see
 [Verifying a Release](guide/user-guide.md#verifying-a-release).
 
 ## Team roles and members
@@ -69,8 +71,10 @@ SHA-256 in the release's `SHA256SUMS`, which is signed with Sigstore; see
 | Approvers | [mgradwohl](https://github.com/mgradwohl) |
 
 - **Committers and reviewers.** mgradwohl owns the repository and is its only committer and reviewer. AI coding
-  agents working for the maintainer open pull requests; they push nothing to `main` directly. Branch protection
-  on `main` requires the CI checks to pass, allows no force-pushes, and applies to administrators too. An agent may merge a pull request it opened only
+  agents working for the maintainer open pull requests; they push nothing to `main` directly. A repository ruleset
+  on `main` and every `release/*` branch requires a pull request, the CI checks to pass and a linear history, and
+  allows no force-pushes and no deleting the branch; it has no bypass list, so it applies to the owner and to
+  administrators too. An agent may merge a pull request it opened only
   once CI is green and every review thread on it is resolved. It never merges with administrator override,
   never force-pushes, and needs the maintainer's go-ahead to merge anyone else's pull request or take any
   other shared or hard-to-reverse action. These rules are in
@@ -107,9 +111,10 @@ it on. The only network requests it makes are the ones the user asks for:
 
 - **Look up on VirusTotal** (Processes row menu and Process Details' Actions; off until you enter your own
   VirusTotal API key in Settings). Each lookup sends one HTTPS request to VirusTotal's API,
-  `GET https://www.virustotal.com/api/v3/files/<sha256>`, with your key: only the SHA-256 of the process's
-  executable. The file, its path, the command line and the process name are never sent. VirusTotal receives
-  the request's IP address, the hash and your key.
+  `GET https://www.virustotal.com/api/v3/files/<sha256>`, with your key and the header
+  `User-Agent: TaskSmack/<version>`: only the SHA-256 of the process's executable. The file, its path, the
+  command line and the process name are never sent. VirusTotal receives the request's IP address, the hash,
+  your key and the version in the User-Agent.
 
 - **Show public IP** (System tab, Network adapters section). Clicking it sends a DNS query for
   `myip.opendns.com` to OpenDNS's resolvers (208.67.222.222 over IPv4 and 2620:119:35::35 over IPv6), which

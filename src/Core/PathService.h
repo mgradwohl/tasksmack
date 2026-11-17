@@ -43,7 +43,7 @@ class PathService
 
     /// Returns the user-specific configuration directory.
     /// Linux: ~/.config/tasksmack (or $XDG_CONFIG_HOME/tasksmack)
-    /// Windows: %APPDATA%/TaskSmack
+    /// Windows: the roaming AppData known folder (usually %APPDATA%)/TaskSmack
     /// TASKSMACK_CONFIG_DIR, when set, replaces both (#1596).
     [[nodiscard]] const std::filesystem::path& userConfigDir() const noexcept;
 

@@ -1,6 +1,7 @@
 #include "WindowsRunProgram.h"
 
 #include "ComScope.h"
+#include "ElevatedRestart.h"
 #include "Platform/CommandWords.h"
 #include "Platform/IProcessActions.h"
 #include "WinString.h"
@@ -101,11 +102,18 @@ DWORD realShellExecute(const ShellRun& run)
     }
 }
 
+/// A standard user's runas prompt asks for an administrator's name and password: the same choice the restart's prompt
+/// makes (ElevatedRestart::promptFor()).
+bool realAsksCredentials()
+{
+    return ElevatedRestart::promptFor(currentElevationType()) == AdministratorPrompt::Credentials;
+}
+
 } // namespace
 
 RunProgramFunctions realRunProgramFunctions() noexcept
 {
-    return {.shellExecute = &realShellExecute, .isElevated = &isProcessElevated};
+    return {.shellExecute = &realShellExecute, .isElevated = &isProcessElevated, .asksCredentials = &realAsksCredentials};
 }
 
 const wchar_t* runVerb(bool asAdministrator, bool elevated) noexcept

@@ -295,6 +295,7 @@ class WindowsProcessActions : public IProcessActions
     WindowsProcessFunctions m_Fns;
     std::vector<std::uint32_t> m_GroupSizes; // Each processor group's maximum processor count, read at construction
     bool m_Elevated = false;                 // TaskSmack's token elevated, read at construction (#3427)
+    bool m_AsksCredentials = false;          // the runas prompt asks for a name and password, read at construction (#4108)
     DWORD m_ThreadActionRefusedPid = 0;      // refuseThreadActionsOn()'s
     std::shared_ptr<EfficiencyModePriorities> m_EfficiencyPriorities; // Efficiency mode's replaced classes (#3071, #3327)
 };

@@ -37,6 +37,8 @@ struct FakeShellRun
     static inline DWORD error = ERROR_SUCCESS;         // what shellExecute() answers
     static inline bool elevated = false;               // what isElevated() answers
     static inline int elevationChecks = 0;             // how often isElevated() was asked
+    static inline bool credentials = false;            // what asksCredentials() answers (#4108)
+    static inline int credentialChecks = 0;            // how often asksCredentials() was asked
     static inline std::vector<Windows::ShellRun> runs; // each call shellExecute() was given
 
     static void reset()
@@ -44,6 +46,8 @@ struct FakeShellRun
         error = ERROR_SUCCESS;
         elevated = false;
         elevationChecks = 0;
+        credentials = false;
+        credentialChecks = 0;
         runs.clear();
     }
 
@@ -58,9 +62,15 @@ struct FakeShellRun
         return elevated;
     }
 
+    static bool asksCredentials()
+    {
+        ++credentialChecks;
+        return credentials;
+    }
+
     [[nodiscard]] static Windows::RunProgramFunctions functions()
     {
-        return {.shellExecute = &shellExecute, .isElevated = &isElevated};
+        return {.shellExecute = &shellExecute, .isElevated = &isElevated, .asksCredentials = &asksCredentials};
     }
 
     /// A process-actions table with only the Run new task calls: nothing else is reached.
@@ -225,6 +235,25 @@ TEST_F(WindowsRunProgramTest, TheAdministratorOptionIsOfferedOnlyWhenNotElevated
     EXPECT_FALSE(elevated.actionCapabilities().canRunProgramAsAdministrator); // its tasks are elevated already
     static_cast<void>(elevated.actionCapabilities());
     EXPECT_EQ(FakeShellRun::elevationChecks, 2); // once per construction, never per capabilities call
+}
+
+// #4108: Run new task's tooltip says whether the runas prompt asks for consent or for an administrator's credentials.
+TEST_F(WindowsRunProgramTest, TheCapabilitySaysWhetherTheRunasPromptAsksForCredentials)
+{
+    FakeShellRun::credentials = false;
+    const WindowsProcessActions consent(FakeShellRun::processFunctions());
+    EXPECT_FALSE(consent.actionCapabilities().runAsAdministratorAsksCredentials);
+
+    FakeShellRun::credentials = true;
+    const WindowsProcessActions standardUser(FakeShellRun::processFunctions());
+    EXPECT_TRUE(standardUser.actionCapabilities().runAsAdministratorAsksCredentials);
+    static_cast<void>(standardUser.actionCapabilities());
+    EXPECT_EQ(FakeShellRun::credentialChecks, 2); // once per construction, never per capabilities call
+
+    WindowsProcessFunctions noAnswer = FakeShellRun::processFunctions();
+    noAnswer.runProgram.asksCredentials = nullptr;
+    EXPECT_FALSE(WindowsProcessActions(noAnswer).actionCapabilities().runAsAdministratorAsksCredentials) << "no answer reads as consent";
+    EXPECT_FALSE(WindowsProcessActions(WindowsProcessFunctions{}).actionCapabilities().runAsAdministratorAsksCredentials);
 }
 
 TEST_F(WindowsRunProgramTest, RunProgramGoesThroughTheTableWithTheElevationReadAtConstruction)
