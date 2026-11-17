@@ -111,9 +111,9 @@ struct ProcessCounters
     // refresh interval sets it, so rates are taken over the time between real reads (#1063 review).
     std::uint64_t netSampleTimeNs = 0;
 
-    // Power usage (optional, platform-dependent; see ProcessCapabilities::hasPowerUsage)
-    // On Linux: from powercap sysfs (per-package energy counters), shared out by CPU time
-    // On Windows: not populated; always 0 (#1028)
+    // Power usage (optional, platform-dependent; see ProcessCapabilities::hasPowerUsage). Written by
+    // Domain::ProcessEnergyAttribution from the probe's package energy (readPackageEnergy(): RAPL on Linux,
+    // the Energy Meter Interface on Windows, #2587), shared out by CPU time; 0 without package energy.
     std::uint64_t energyMicrojoules = 0; // Cumulative energy consumption in microjoules
 
     // Publisher / vendor info (optional, Windows-only via PE version info)
