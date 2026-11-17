@@ -28,6 +28,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <mutex>
 #include <optional>
 #include <stop_token>
@@ -190,10 +191,11 @@ struct NewFile
 {
     UniqueHandle handle;
     std::filesystem::path path;
-    DWORD error = 0;         ///< Why there is no handle
-    std::string refusal;     ///< Why the folder was refused (a held folder's check, #4164); used in place of error
-    bool heldFolder = false; ///< Made relative to a held folder: deleted through its handle, never by its path
-    UniqueHandle folder;     ///< The held folder, kept open (so it can't be renamed or removed) until the dump is done
+    DWORD error = 0;            ///< Why there is no handle
+    std::string refusal;        ///< Why the folder was refused (a held folder's check, #4164); used in place of error
+    bool heldFolder = false;    ///< Made relative to a held folder: deleted through its handle, never by its path
+    bool deletePending = false; ///< Marked delete-on-close since its create, so a dump that never finishes leaves no file
+    UniqueHandle folder;        ///< The held folder, kept open (so it can't be renamed or removed) until the dump is done
 };
 
 [[nodiscard]] NewFile createDumpFile(const std::filesystem::path& directory, std::string_view image, std::int32_t pid)
@@ -218,24 +220,21 @@ struct NewFile
     return file;
 }
 
-/// The Win32 error createFileFailureMessage() words for @p status, an NtCreateFile failure.
+/// The Win32 error createFileFailureMessage() words for @p status, an NtCreateFile failure: ntdll's
+/// RtlNtStatusToDosError, as kernel32's CreateFileW maps it (the status itself, in the unlikely case it can't be found).
 [[nodiscard]] DWORD createErrorOf(NTSTATUS status)
 {
-    constexpr auto ACCESS_DENIED = static_cast<NTSTATUS>(0xC0000022L);
-    constexpr auto DISK_FULL = static_cast<NTSTATUS>(0xC000007FL);
-    if (status == ACCESS_DENIED)
-    {
-        return ERROR_ACCESS_DENIED;
-    }
-    if (status == DISK_FULL)
-    {
-        return ERROR_DISK_FULL;
-    }
-    if (status == NT_OBJECT_NAME_COLLISION)
-    {
-        return ERROR_FILE_EXISTS;
-    }
-    return isNotFound(status) ? ERROR_PATH_NOT_FOUND : static_cast<DWORD>(status);
+    using RtlNtStatusToDosErrorFn = ULONG(NTAPI*)(NTSTATUS);
+    static auto* const toDosError = getProcAddress<RtlNtStatusToDosErrorFn>(GetModuleHandleW(L"ntdll.dll"), "RtlNtStatusToDosError");
+    return toDosError != nullptr ? static_cast<DWORD>(toDosError(status)) : static_cast<DWORD>(status);
+}
+
+/// Sets (@p remove) or clears the classic delete-on-close of @p file, opened with DELETE; false when Windows refuses.
+[[nodiscard]] bool setDeleteOnClose(HANDLE file, bool remove) noexcept
+{
+    FILE_DISPOSITION_INFO disposition{};
+    disposition.DeleteFile = remove ? TRUE : FALSE;
+    return SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)) != FALSE;
 }
 
 /// createDumpFile() in an elevated session (#4164): @p directory opened and held by openHeldDumpFolder(), and the file
@@ -270,6 +269,16 @@ struct NewFile
         {
             file.handle = std::move(opened->handle);
             file.error = 0;
+            // Deleted when its handle closes unless the dump finishes: a failure, a cancel, or TaskSmack ending mid-write
+            // leaves no partial file of an administrator's dump behind.
+            file.deletePending = setDeleteOnClose(file.handle.get(), true);
+            if (!file.deletePending)
+            {
+                const std::string why = lastErrorText(); // before anything else can change GetLastError()
+                spdlog::warn("Dump file {} couldn't be marked to delete if the dump doesn't finish: {}",
+                             WinString::wideToUtf8(file.path.wstring()),
+                             why);
+            }
             return file;
         }
         file.error = createErrorOf(opened.error());
@@ -384,8 +393,12 @@ ProcessDumpResult writeProcessDump(
     {
         if (file.heldFolder)
         {
-            // Through its own handle (#4164), never by its path, which a link could have pointed elsewhere since.
-            static_cast<void>(deleteThroughHandle(file.handle.get()));
+            // Through its own handle (#4164), never by its path, which a link could have pointed elsewhere since: closing it
+            // deletes it when it was marked so at its create, else it is deleted now.
+            if (!file.deletePending && !deleteThroughHandle(file.handle.get()))
+            {
+                spdlog::warn("Dump of PID {}: the partial file {} couldn't be deleted", pid, WinString::wideToUtf8(file.path.wstring()));
+            }
             file.handle.reset();
         }
         else
@@ -400,6 +413,13 @@ ProcessDumpResult writeProcessDump(
 
     LARGE_INTEGER size{};
     const std::uint64_t sizeBytes = (GetFileSizeEx(file.handle.get(), &size) != 0) ? static_cast<std::uint64_t>(size.QuadPart) : 0;
+    if (file.deletePending && !setDeleteOnClose(file.handle.get(), false))
+    {
+        // Still marked: it goes when the handle closes, so the dump is reported failed rather than named.
+        std::string message = std::format("The dump of PID {} was written, but Windows wouldn't keep the file: {}", pid, lastErrorText());
+        spdlog::warn("Dump of PID {}: {}", pid, message);
+        return std::unexpected(std::move(message));
+    }
     spdlog::info("Wrote a {}-byte dump of PID {}", sizeBytes, pid);
     return ProcessDump{
         .file = std::move(file.path),

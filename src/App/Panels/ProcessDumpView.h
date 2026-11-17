@@ -156,8 +156,8 @@ inline constexpr std::string_view FOLDER_READABLE_TEXT =
     "Programs running as you can read files in this folder. Choose one only administrators can open.";
 /// What the confirm says when who can read its folder couldn't be told (#4164).
 inline constexpr std::string_view FOLDER_ACCESS_UNKNOWN_TEXT =
-    "TaskSmack couldn't read who can open this folder, so programs running as you may be able to read the dump. Choose "
-    "one only administrators can open.";
+    "TaskSmack couldn't tell who can open files made in this folder, so programs running as you may be able to read the "
+    "dump. Choose one only administrators can open.";
 
 /// The confirm's warning for @p check (#4164): FOLDER_READABLE_TEXT, FOLDER_ACCESS_UNKNOWN_TEXT, or why the dump would
 /// refuse the folder; empty when only administrators can read a new file there, or when it wasn't checked.
@@ -246,6 +246,13 @@ class ProcessDumpView
         return m_NoDefaultFolder && m_Directory.empty();
     }
 
+    /// Whether the confirm's folder is one the dump would refuse (#4164: Platform::DumpFolderAccess::Refused, a junction or
+    /// link as administrator): its Create dump file button is disabled until another is chosen with "Save dump to...".
+    [[nodiscard]] bool folderRefused() const noexcept
+    {
+        return m_FolderRefused;
+    }
+
     /// Whether "Save dump to..." is offered with @p actions: the platform's folder dialog, or the fallback.
     [[nodiscard]] bool canChooseFolder(Platform::IProcessActions* actions) const;
     /// Cancels a dump in flight and waits for it, and for a folder dialog still up (shutdown()).
@@ -299,7 +306,7 @@ class ProcessDumpView
     /// The confirm was accepted: starts the dump on a worker, through @p actions (null: the result says
     /// actions are unavailable, and nothing starts). @p actions must outlive the dump: see the file
     /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up, its
-    /// folder is being checked, or it has no folder yet (needsFolder()).
+    /// folder is being checked, it has no folder yet (needsFolder()), or its folder would be refused (folderRefused()).
     void confirm(Platform::IProcessActions* actions);
 
     /// The confirm was cancelled or dismissed: nothing starts.
@@ -452,6 +459,7 @@ class ProcessDumpView
     bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
     bool m_NoDefaultFolder = false;   // no default folder: the user must choose one (setNoDefaultFolder(), #4141)
+    bool m_FolderRefused = false;     // the confirm's folder is one the dump would refuse (folderRefused(), #4164)
 };
 
 } // namespace App

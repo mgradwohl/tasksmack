@@ -522,6 +522,36 @@ TEST(ProcessDumpViewTest, TheConfirmWarnsWhenTheFolderIsReadableAndStillConfirms
     EXPECT_EQ(mock.createDumpCount(), 1);
 }
 
+// A folder the dump would refuse (a junction, as administrator) disables Create dump file until another is chosen.
+TEST(ProcessDumpViewTest, ARefusedFolderCantBeConfirmedUntilAnotherIsChosen)
+{
+    TestMocks::MockProcessActions mock;
+    Platform::ProcessActionCapabilities caps = dumpCapable(true);
+    caps.canChooseDumpFolder = true;
+    mock.setCapabilities(caps);
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::Refused, .problem = "it is a junction"});
+    mock.setFolderChoice(std::optional<std::filesystem::path>(std::filesystem::path("admins") / "dumps"));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "lsass.exe", someFolder(), &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_TRUE(view.folderRefused());
+    EXPECT_TRUE(view.confirmQuestion().contains("it is a junction")) << view.confirmQuestion();
+    view.confirm(&mock);
+    EXPECT_FALSE(view.busy());
+    EXPECT_TRUE(view.confirmPending()) << "nothing started";
+    EXPECT_EQ(mock.createDumpCount(), 0);
+
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::AdministratorsOnly, .problem = {}});
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_FALSE(view.folderRefused());
+    mock.setDumpResult(Platform::ProcessDumpResult(std::unexpected(std::string("test"))));
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.createDumpCount(), 1);
+}
+
 // A confirm with no folder yet (an elevated session's, #4141) asks nothing about one.
 TEST(ProcessDumpViewTest, NoFolderIsNoFolderAccessCheck)
 {
