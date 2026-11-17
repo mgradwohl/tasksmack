@@ -29,6 +29,7 @@ TaskManagerReplacementInfo TaskManagerReplacementService::read()
         .readFailed = false,
         .otherProgramExists = true,
         .installedCopy = m_Setup.installedCopy,
+        .writesDirectly = m_Setup.direct != nullptr,
     };
     if (const auto refused = directSetRefused(); refused.has_value())
     {
