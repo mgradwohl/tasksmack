@@ -79,7 +79,7 @@ TaskManagerRequest renderSettings(const TaskManagerReplacementView& view, RowSta
         state.confirmingReplaceOther = outcome.confirm;
     }
     ImGui::EndDisabled();
-    wrapped(TaskManagerReplacementText::NOTE, scheme.textMuted, wrapWidth);
+    wrapped(TaskManagerReplacementText::noteText(view), scheme.textMuted, wrapWidth);
     wrapped(TaskManagerReplacementText::stateText(view), scheme.textPrimary, wrapWidth);
 
     if (current == State::OtherTaskSmack)
