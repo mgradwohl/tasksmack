@@ -33,9 +33,11 @@ inline constexpr std::string_view LOG_LEVEL_ENV_VAR = "TASKSMACK_LOG_LEVEL";
 /// Every TASKSMACK_* variable TaskSmack reads at run time (the compile-time TASKSMACK_HAS_* macros
 /// aren't hooks). Debugging and test aids, not settings: none is needed to run the app.
 inline constexpr std::array KNOWN_ENV_HOOKS{
-    EnvHook{.name = "TASKSMACK_CONFIG_DIR",
-            .description = "Use this folder for config.toml and user themes instead of the usual one",
-            .writesFiles = true},
+    EnvHook{
+        .name = "TASKSMACK_CONFIG_DIR",
+        .description = "Use this folder for config.toml and user themes instead of the usual one",
+        .writesFiles = true,
+    },
     EnvHook{.name = "TASKSMACK_WINDOW", .description = "Open at WIDTHxHEIGHT, or WIDTHxHEIGHT,maximized; the geometry isn't saved"},
     EnvHook{.name = "TASKSMACK_SYNTHETIC", .description = "Show a generated machine (processes=N,cores=N,...) instead of this one"},
     EnvHook{.name = "TASKSMACK_SELECT_PID", .description = "Select this process at startup"},
