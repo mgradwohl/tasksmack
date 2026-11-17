@@ -14,8 +14,11 @@ namespace App::TaskManagerReplacementText
 {
 
 inline constexpr const char* TOGGLE_LABEL = "Replace Task Manager";
-inline constexpr std::string_view NOTE = "Ctrl+Shift+Esc, and anything else that starts Task Manager, opens TaskSmack instead. "
-                                         "Needs administrator rights: Windows asks first. It takes effect at once, without Save.";
+inline constexpr std::string_view NOTE_INTRO = "Ctrl+Shift+Esc, and anything else that starts Task Manager, opens TaskSmack instead. ";
+/// Through the helper, Windows asks for approval first; an elevated copy writes the key itself (#4109), and asks nothing.
+inline constexpr std::string_view NOTE_RIGHTS_ASKED = "Needs administrator rights: Windows asks first. ";
+inline constexpr std::string_view NOTE_RIGHTS_HELD = "Needs administrator rights, which this copy has. ";
+inline constexpr std::string_view NOTE_OUTRO = "It takes effect at once, without Save.";
 inline constexpr std::string_view PORTABLE_WARNING =
     "This copy isn't installed in Program Files. Turn this off before deleting this copy, or Task Manager won't open.";
 inline constexpr std::string_view BUSY = "Working...";
@@ -26,6 +29,18 @@ inline constexpr const char* NOT_NOW_LABEL = "Not now";
 inline constexpr const char* CLOSE_LABEL = "Close";
 inline constexpr const char* REPLACE_LABEL = "Replace it";
 inline constexpr const char* CANCEL_LABEL = "Cancel";
+
+/// The note under the toggle (#4109): what it does, the rights it needs, and whether Windows asks first. An elevated
+/// copy (the last read's writesDirectly) writes the key itself, so Windows asks nothing; until a read is in, or for
+/// a copy that goes through the helper, it asks first.
+[[nodiscard]] inline std::string noteText(const TaskManagerReplacementView& view)
+{
+    const bool direct = view.info.has_value() && view.info->writesDirectly;
+    std::string note(NOTE_INTRO);
+    note += direct ? NOTE_RIGHTS_HELD : NOTE_RIGHTS_ASKED;
+    note += NOTE_OUTRO;
+    return note;
+}
 
 /// Whether the toggle shows as on: Task Manager starts a TaskSmack, this one or another.
 [[nodiscard]] constexpr bool toggleChecked(Platform::TaskManagerReplacement::State state) noexcept

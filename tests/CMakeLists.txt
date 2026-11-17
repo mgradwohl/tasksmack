@@ -936,6 +936,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_HelperLauncher.cpp  # starting the helper with ShellExecuteExW("runas"), through fakes (#2549)
     Platform/test_ElevatedRestart.cpp  # Restart as administrator: ShellExecuteExW("runas") and the hand-off wait, through fakes (#2728)
     Platform/test_DllSearchPolicy.cpp  # where TaskSmack.exe lets a DLL loaded by name come from, elevated or not (#3897)
+    Platform/test_SdlEnvironment.cpp  # the SDL variables an elevated TaskSmack.exe removes, through a fake environment and this process's (#4103)
     Platform/test_PinnedFolder.cpp  # the handed-over config folder: every open relative to its held handle, through fakes and in a temp folder (#3774)
     Platform/test_WindowsFactory.cpp  # every Windows factory product is the Windows one, with Windows' capabilities (#3676)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
@@ -1015,6 +1016,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_RootCapabilities.cpp  # what an Administrator session keeps of root's capabilities (#3621)
+    Platform/test_LinuxSdlEnvironment.cpp  # a session run as root for a user takes no SDL variable (#4111)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
     Platform/test_ReplaceFile.cpp  # a file replaced whole, through an unpredictable O_EXCL staging file (#3771)
     Platform/test_CronTab.cpp # cron tables for the Linux Startup tab (#3425)

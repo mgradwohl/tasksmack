@@ -80,6 +80,22 @@ class TaskManagerReplacementRenderTest : public ::testing::Test
         return request;
     }
 
+    /// One frame of the Settings rows, and the text they drew.
+    std::string settingsText(const TaskManagerReplacementView& view)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("Rows", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        static_cast<void>(TaskManagerReplacementRows::renderSettings(view, m_Row, 400.0F));
+        std::string text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+        return text;
+    }
+
     /// Clicks @p label among the Settings rows on the next frame, and returns what that frame asked for.
     TaskManagerRequest clickInRows(const TaskManagerReplacementView& view, const char* label)
     {
@@ -142,6 +158,31 @@ class TaskManagerReplacementRenderTest : public ::testing::Test
   private:
     ImGuiContext* m_Context = nullptr;
 };
+
+// #4109: an elevated TaskSmack writes the key itself, so Windows asks nothing; any other copy goes through the helper,
+// whose UAC prompt Windows raises first.
+TEST_F(TaskManagerReplacementRenderTest, TheNoteSaysWindowsAsksFirstOnlyWhenTheChangeGoesThroughTheHelper)
+{
+    TaskManagerReplacementView helper = viewOf(State::Off);
+    ASSERT_TRUE(helper.info.has_value());
+    helper.info->writesDirectly = false;
+    const std::string asked = settingsText(helper);
+    EXPECT_TRUE(asked.contains("Windows asks first")) << asked;
+    EXPECT_TRUE(asked.contains("opens TaskSmack instead")) << asked;
+    EXPECT_TRUE(asked.contains("without Save")) << asked;
+
+    TaskManagerReplacementView direct = viewOf(State::Off);
+    ASSERT_TRUE(direct.info.has_value());
+    direct.info->writesDirectly = true;
+    const std::string held = settingsText(direct);
+    EXPECT_FALSE(held.contains("Windows asks")) << held;
+    EXPECT_TRUE(held.contains("Needs administrator rights, which this copy has")) << held;
+    EXPECT_TRUE(held.contains("opens TaskSmack instead")) << held;
+    EXPECT_TRUE(held.contains("without Save")) << held;
+
+    EXPECT_TRUE(TaskManagerReplacementText::noteText(TaskManagerReplacementView{}).contains("Windows asks first"))
+        << "before the first read it asks first";
+}
 
 TEST_F(TaskManagerReplacementRenderTest, AnUnsupportedViewDrawsNothing)
 {

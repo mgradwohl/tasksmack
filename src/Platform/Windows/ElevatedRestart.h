@@ -29,6 +29,7 @@
 // clang-format on
 
 #include "Platform/IElevatedRestart.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -36,6 +37,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -139,6 +141,51 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
 
 /// checkConfigDir() against this machine's user profiles folder (FOLDERID_UserProfiles).
 [[nodiscard]] std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::path& dir);
+
+/// Whether the owner of @p handle (opened with READ_CONTROL) is this process's token user or BUILTIN\Administrators,
+/// and no one else (#4106): the owners an elevated session's own config folder may have. nullopt when it can't be read.
+[[nodiscard]] std::optional<bool> ownerIsOwnAccountOrAdministrators(HANDLE handle);
+
+/// This process token's own profile folder, from HKLM's ProfileList (GetUserProfileDirectoryW), not a user-writable
+/// source; nullopt when it can't be read. The folder the own config folder must sit inside (#4106).
+[[nodiscard]] std::optional<std::filesystem::path> currentUserProfileDirectory();
+
+/// Whether @p child sits strictly inside @p ancestor, comparing whole components (so "C:\Users\patrick" isn't inside
+/// "C:\Users\pat"), case-insensitively as NTFS does, after both are normalized as handedOverFolderPath() keeps a path
+/// (a trailing separator doesn't matter). A redirected AppData under another profile is not inside the token's own.
+[[nodiscard]] bool pathIsInside(const std::filesystem::path& child, const std::filesystem::path& ancestor);
+
+/// Whether @p ownerAcceptable returns true for a handle's owner: the real one is ownerIsOwnAccountOrAdministrators.
+using OwnerAcceptableFn = std::optional<bool> (*)(HANDLE);
+
+/// The account's own config folder @p dir (FOLDERID_RoamingAppData\TaskSmack) for an elevated session that took no
+/// hand-off (#4106), held as a handed-over one is: its environment and its known folders are the less-privileged side's
+/// (HKCU), which can redirect AppData, so the folder must be anchored to the token's own profile and its owner checked.
+///   - @p profileDir is this token's own profile (currentUserProfileDirectory()); @p dir, and the parent when it is
+///     created, must sit inside it, so a redirected AppData under another profile is refused.
+///   - It is checked and held by checkConfigDir() against @p profilesRoot (the user profiles folder), but its owner is
+///     required to pass @p ownerAcceptable (this account or Administrators), not refused for being an administrator's:
+///     an elevated TaskSmack made its own folder owned by Administrators, and SYSTEM, TrustedInstaller or another user
+///     is refused. The same rule holds for the parent when the folder is made in it.
+///   - Not there yet (a first elevated run), it is made in its parent, which is checked, held and owner-checked the same
+///     way, relative to that handle, so nothing is made behind a junction or in another account's folder.
+/// The handle is the caller's to hold; the error says which check failed.
+[[nodiscard]] std::expected<UniqueHandle, std::string>
+checkOwnConfigDir(const std::filesystem::path& dir,
+                  const std::filesystem::path& profileDir,
+                  const std::filesystem::path& profilesRoot,
+                  ConfigDirFunctions functions = {},
+                  OwnerAcceptableFn ownerAcceptable = &ownerIsOwnAccountOrAdministrators);
+
+/// The account's own config folder, FOLDERID_RoamingAppData\TaskSmack (UserConfig's, when nothing overrides it), checked
+/// and held by checkOwnConfigDir() against this machine's user profiles folder (#4106). The folder's path, and the
+/// folder held or why not.
+struct OwnConfigDir
+{
+    std::filesystem::path path; ///< Empty when the known folder can't be read
+    std::expected<std::shared_ptr<IHandedOverFolder>, std::string> held;
+};
+[[nodiscard]] OwnConfigDir holdOwnConfigDir();
 
 /// The IElevatedRestart a Standard TaskSmack is given (Platform::makeElevatedRestart()).
 class WindowsElevatedRestart final : public IElevatedRestart

@@ -585,6 +585,9 @@ WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions,
       m_GroupSizes((m_Fns.readGroupSizes != nullptr) ? m_Fns.readGroupSizes() : std::vector<std::uint32_t>{}),
       // Constant for the process's life, so read once: actionCapabilities() is asked every frame (#3182).
       m_Elevated(m_Fns.runProgram.shellExecute != nullptr && m_Fns.runProgram.isElevated != nullptr && m_Fns.runProgram.isElevated()),
+      // Read once too (#4108): which prompt the runas verb raises doesn't change while TaskSmack runs.
+      m_AsksCredentials(m_Fns.runProgram.shellExecute != nullptr && m_Fns.runProgram.asksCredentials != nullptr &&
+                        m_Fns.runProgram.asksCredentials()),
       m_EfficiencyPriorities(std::move(efficiencyPriorities))
 {
     if (m_EfficiencyPriorities == nullptr)
@@ -618,6 +621,7 @@ ProcessActionCapabilities WindowsProcessActions::actionCapabilities() const
         .canRunProgram = m_Fns.runProgram.shellExecute != nullptr, // ShellExecuteExW, as Run new task (#3427)
         // The runas verb's UAC prompt, unless TaskSmack is elevated already, when every task it starts is too.
         .canRunProgramAsAdministrator = m_Fns.runProgram.shellExecute != nullptr && !m_Elevated,
+        .runAsAdministratorAsksCredentials = m_AsksCredentials,       // a standard user: an administrator's name and password (#4108)
         .canSetEfficiencyMode = hasEfficiencyMode(m_Fns),             // EcoQoS and the Idle class, as Task Manager (#3071)
         .canAnalyzeWaitChain = HAS_WAIT_CHAINS,                       // GetThreadWaitChain, as Task Manager's Analyze wait chain (#3084)
         .canCloseConnections = m_Fns.tcpClose.setTcpEntry != nullptr, // SetTcpEntry(MIB_TCP_STATE_DELETE_TCB), IPv4 (#3358)
