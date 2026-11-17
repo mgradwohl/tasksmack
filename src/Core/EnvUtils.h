@@ -17,11 +17,14 @@
 namespace Core
 {
 
-/// One TASKSMACK_* environment hook: its name and what it does, in a line.
+/// One TASKSMACK_* environment hook: its name, what it does in a line, and whether it makes TaskSmack create or write a
+/// file or folder at a path the variable names (#4104). A session whose environment may be the less-privileged side's
+/// (Windows elevated or handed off, Linux root for a user) ignores those: Core::ignoreWritingHooks().
 struct EnvHook
 {
     std::string_view name;
     std::string_view description;
+    bool writesFiles = false;
 };
 
 inline constexpr std::string_view TRACE_RESIZE_PERF_ENV_VAR = "TASKSMACK_TRACE_RESIZE_PERF";
@@ -30,7 +33,9 @@ inline constexpr std::string_view LOG_LEVEL_ENV_VAR = "TASKSMACK_LOG_LEVEL";
 /// Every TASKSMACK_* variable TaskSmack reads at run time (the compile-time TASKSMACK_HAS_* macros
 /// aren't hooks). Debugging and test aids, not settings: none is needed to run the app.
 inline constexpr std::array KNOWN_ENV_HOOKS{
-    EnvHook{.name = "TASKSMACK_CONFIG_DIR", .description = "Use this folder for config.toml and user themes instead of the usual one"},
+    EnvHook{.name = "TASKSMACK_CONFIG_DIR",
+            .description = "Use this folder for config.toml and user themes instead of the usual one",
+            .writesFiles = true},
     EnvHook{.name = "TASKSMACK_WINDOW", .description = "Open at WIDTHxHEIGHT, or WIDTHxHEIGHT,maximized; the geometry isn't saved"},
     EnvHook{.name = "TASKSMACK_SYNTHETIC", .description = "Show a generated machine (processes=N,cores=N,...) instead of this one"},
     EnvHook{.name = "TASKSMACK_SELECT_PID", .description = "Select this process at startup"},
@@ -42,14 +47,17 @@ inline constexpr std::array KNOWN_ENV_HOOKS{
     EnvHook{
         .name = "TASKSMACK_SCREENSHOT",
         .description = "Write a PNG of the window (file[;after=N][;frames=N][;fps=N]) after startup, then quit",
+        .writesFiles = true,
     },
     EnvHook{
         .name = "TASKSMACK_DEMO",
         .description = "Replay timed UI requests (seconds:action=value,...) once startup has settled, for a capture",
+        .writesFiles = true, // metrics=export writes a CSV
     },
     EnvHook{
         .name = "TASKSMACK_RENDER_METRICS",
         .description = "Show the Render Metrics overlay from the first frame and write its CSV to this file at exit",
+        .writesFiles = true,
     },
     EnvHook{.name = "TASKSMACK_LOCALE", .description = "Format numbers and dates with this locale instead of the user's"},
     EnvHook{.name = LOG_LEVEL_ENV_VAR, .description = "Log at this level: trace, debug, info, warn, error, critical or off"},
@@ -63,6 +71,12 @@ inline constexpr std::array KNOWN_ENV_HOOKS{
 }
 
 static_assert(isKnownEnvHook(TRACE_RESIZE_PERF_ENV_VAR) && isKnownEnvHook(LOG_LEVEL_ENV_VAR));
+
+/// Whether @p name is a hook that writes a file or folder at a path it names (EnvHook::writesFiles, #4104).
+[[nodiscard]] constexpr bool hookWritesFiles(std::string_view name) noexcept
+{
+    return std::ranges::any_of(KNOWN_ENV_HOOKS, [name](const EnvHook& hook) { return hook.name == name && hook.writesFiles; });
+}
 
 /// Returns true if the environment variable value represents a truthy flag.
 /// "0", "false", "off", "no" (case-insensitive) and nullptr, empty or blank are treated

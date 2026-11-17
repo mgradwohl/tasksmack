@@ -23,13 +23,6 @@ namespace Core::ConfigDirOverride
 namespace
 {
 
-/// Whether TASKSMACK_CONFIG_DIR is ignored, in an elevated session (ignoreTestHook(), #3920).
-bool& testHookIgnoredFlag()
-{
-    static bool ignored = false;
-    return ignored;
-}
-
 /// What active() returns. Read once: a function-local static is initialised exactly once,
 /// thread-safely. Only setActiveForTesting() replaces it after that.
 std::optional<std::filesystem::path>& current()
@@ -38,7 +31,7 @@ std::optional<std::filesystem::path>& current()
     {
         // An elevated session takes no directory from its environment, which the less-privileged side may have set:
         // nothing is read from it, and nothing created there (#3920).
-        if (testHookIgnoredFlag())
+        if (Core::writingHooksIgnored())
         {
             return std::nullopt;
         }
@@ -109,13 +102,13 @@ void markLessPrivilegedFolder()
 
 void ignoreTestHook()
 {
-    testHookIgnoredFlag() = true;
+    Core::ignoreWritingHooks(); // the one gate for every hook that writes files (#4104)
 }
 
 bool testHookIgnored()
 {
     // Reading the variable is harmless; only taking it, and making its directory, is what an elevated session must not.
-    return testHookIgnoredFlag() && parse(Core::readEnv(ENV_VAR)).has_value();
+    return Core::writingHooksIgnored() && parse(Core::readEnvUnfiltered(ENV_VAR)).has_value();
 }
 
 bool handedOver()
