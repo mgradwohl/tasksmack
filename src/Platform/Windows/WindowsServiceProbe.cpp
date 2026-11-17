@@ -125,27 +125,29 @@ ServiceConfig readServiceConfig(const ServiceConfigFunctions& api, SC_HANDLE scm
 
 struct WindowsServiceProbe::Impl
 {
-    Windows::UniqueServiceHandle scm;
-    DWORD scmOpenError = ERROR_SUCCESS; ///< OpenSCManagerW's error at construction; nonzero disables the probe.
+    explicit Impl(const Windows::ServiceConfigFunctions& functions)
+        : api(functions), scm(nullptr, Windows::InjectedServiceHandleCloser{.close = functions.closeServiceHandle})
+    {}
+
     Windows::ServiceConfigFunctions api;
+    Windows::InjectableServiceHandle scm; ///< Opened by the first enumerate(), on the sampler thread (#4184).
+    /// Nonzero once OpenSCManagerW was refused with ERROR_ACCESS_DENIED, the one permanent refusal.
+    DWORD scmOpenError = ERROR_SUCCESS;
     std::unordered_map<std::string, CachedConfig> configs;
 };
 
-WindowsServiceProbe::WindowsServiceProbe() : m_Impl(std::make_unique<Impl>())
-{
-    m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SCM_ACCESS));
-    if (!m_Impl->scm)
-    {
-        const DWORD error = GetLastError();
-        m_Impl->scmOpenError = (error != ERROR_SUCCESS) ? error : ERROR_GEN_FAILURE;
-        spdlog::warn("WindowsServiceProbe: OpenSCManagerW failed (error {})", m_Impl->scmOpenError);
-    }
-}
+WindowsServiceProbe::WindowsServiceProbe() : WindowsServiceProbe(Windows::ServiceConfigFunctions{})
+{}
+
+// No Service Control Manager call here: the panel builds the probe on the UI thread (#2731, #4184).
+WindowsServiceProbe::WindowsServiceProbe(const Windows::ServiceConfigFunctions& api) : m_Impl(std::make_unique<Impl>(api))
+{}
 
 WindowsServiceProbe::~WindowsServiceProbe() = default;
 
 ServiceCapabilities WindowsServiceProbe::capabilities() const
 {
+    // Optimistic until the first enumerate() has opened the manager; a denial then makes it unavailable.
     return Windows::ServiceMath::capabilitiesForScmOpen(m_Impl->scmOpenError);
 }
 
@@ -162,10 +164,23 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
     }
     if (!m_Impl->scm)
     {
-        m_Impl->scm.reset(OpenSCManagerW(nullptr, nullptr, SCM_ACCESS));
+        // The first open, or the reopen of a handle that went bad. Only a denial is final: anything else
+        // (an RPC error, a timeout while services.exe is busy early in sign-in) is tried again next sample.
+        m_Impl->scm.reset(m_Impl->api.openSCManager(nullptr, nullptr, SCM_ACCESS));
         if (!m_Impl->scm)
         {
-            return ServiceEnumeration::failed(Windows::ServiceMath::scmFailureReason(GetLastError(), "be opened"));
+            const DWORD last = GetLastError();
+            const DWORD error = (last != ERROR_SUCCESS) ? last : ERROR_GEN_FAILURE;
+            if (error == ERROR_ACCESS_DENIED)
+            {
+                m_Impl->scmOpenError = error;
+                spdlog::warn("WindowsServiceProbe: OpenSCManagerW was denied (error {})", error);
+            }
+            else
+            {
+                spdlog::debug("WindowsServiceProbe: OpenSCManagerW failed (error {}), trying again next sample", error);
+            }
+            return ServiceEnumeration::failed(Windows::ServiceMath::scmFailureReason(error, "be opened"));
         }
     }
 
@@ -178,16 +193,16 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
     {
         DWORD needed = 0;
         DWORD count = 0;
-        const BOOL ok = EnumServicesStatusExW(m_Impl->scm.get(),
-                                              SC_ENUM_PROCESS_INFO,
-                                              SERVICE_WIN32,
-                                              SERVICE_STATE_ALL,
-                                              reinterpret_cast<LPBYTE>(buffer.data()),
-                                              static_cast<DWORD>(buffer.size() * sizeof(ENUM_SERVICE_STATUS_PROCESSW)),
-                                              &needed,
-                                              &count,
-                                              &resume,
-                                              nullptr);
+        const BOOL ok = m_Impl->api.enumServicesStatusEx(m_Impl->scm.get(),
+                                                         SC_ENUM_PROCESS_INFO,
+                                                         SERVICE_WIN32,
+                                                         SERVICE_STATE_ALL,
+                                                         reinterpret_cast<LPBYTE>(buffer.data()),
+                                                         static_cast<DWORD>(buffer.size() * sizeof(ENUM_SERVICE_STATUS_PROCESSW)),
+                                                         &needed,
+                                                         &count,
+                                                         &resume,
+                                                         nullptr);
         const DWORD error = (ok != FALSE) ? ERROR_SUCCESS : GetLastError();
         if (error != ERROR_SUCCESS && error != ERROR_MORE_DATA)
         {
