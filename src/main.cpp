@@ -403,14 +403,11 @@ auto runApp(const App::LaunchOptions& launch) -> int
 #endif
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
-    // tasksmack-debug.log: the temp folder's, or, elevated or handed off, where TEMP is the less-privileged side's (#4105),
-    // %ProgramData%\TaskSmack\Logs, which only administrators may change (App/DebugLogFile.h). The same rule as the DLL
-    // search order and SDL's variables (#3897, #4103): lessPrivilegedEnvironment() (#4104). Linux's twin is #4150.
-#ifdef _WIN32
+    // tasksmack-debug.log: the temp folder's, or, where the temp folder is the less-privileged side's, a folder only
+    // administrators may change (App/DebugLogFile.h): elevated or handed off on Windows, %ProgramData%\TaskSmack\Logs
+    // (#4105); run as root for a user on Linux (sudo -E keeps their TMPDIR), /var/log/tasksmack (#4150). The same rule
+    // as the DLL search order and SDL's variables (#3897, #4103): lessPrivilegedEnvironment() (#4104).
     const bool adminOnlyLog = lessPrivilegedEnvironment();
-#else
-    constexpr bool adminOnlyLog = false;
-#endif
     const auto logFile = App::DebugLogFile::open(adminOnlyLog);
     if (logFile.has_value())
     {
@@ -432,11 +429,10 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
     else if (adminOnlyLog)
     {
-        spdlog::warn(
-            "No debug log file: TaskSmack runs as administrator, and {} in its administrators-only folder couldn't be opened safely: "
-            "{}. This log goes to the debugger and the console only",
-            App::DebugLogFile::FILE_NAME,
-            logFile.error());
+        spdlog::warn("No debug log file: TaskSmack runs as administrator (elevated, or as root for a user), and {} in its "
+                     "administrators-only folder couldn't be opened safely: {}. This log goes to the debugger and the console only",
+                     App::DebugLogFile::FILE_NAME,
+                     logFile.error());
     }
 
     // Logged here rather than when it is read (UserConfig::get() above), so it reaches the log file.
