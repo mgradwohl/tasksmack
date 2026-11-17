@@ -7,9 +7,9 @@ TaskSmack is a system monitor and task manager for Linux and Windows, built with
 - **One app on Linux and Windows.** The same window, keys and themes on both, with each platform's own depth rather than a lowest common denominator.
 - **Administrator when you start it that way, Standard otherwise.** On Linux, **TaskSmack (Administrator)** in your applications menu (or `sudo`) starts it as root, so it sees and acts on every process; started normally, it never asks for a password after it starts. On Windows it starts as Standard: **Restart as administrator...** restarts it elevated after the UAC prompt, and in a Standard session a signed helper (from v0.9.1) acts on or reads another account's or an elevated process after one.
 - **Deep process inspection.** Security context (capabilities, seccomp and LSM labels on Linux; token integrity on Windows), modules, open files, per-process connections, crash history, and dumps (gcore on Linux; snapshot minidumps on Windows).
-- **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power on Linux, in the same table as CPU and memory.
-- **A System Information report.** Firmware, memory modules, storage, sensors, drivers and recent crashes, plus boot performance, BitLocker and HVCI status on Windows, exportable as text or JSON.
-- **Open source and verifiable.** MIT-licensed, and every release asset, x64 and ARM64, is listed in a Sigstore-signed `SHA256SUMS` and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
+- **GPU, NPU and power per process.** GPU use on NVIDIA, AMD and Intel, NPU use where the platform reports it, and per-process power where the CPU reports package energy (RAPL on Linux, the Energy Meter Interface on Windows), in the same table as CPU and memory.
+- **A System Information report.** Firmware, memory modules, storage, sensors, drivers, boot performance and recent crashes, plus BitLocker and HVCI status on Windows, exportable as text or JSON.
+- **Open source and verifiable.** MIT-licensed, and from v0.10.0 every release asset, x64 and ARM64, is listed in a Sigstore-signed `SHA256SUMS` and ships with an SBOM and build provenance (see [Verifying a Release](#verifying-a-release)).
 
 ---
 
@@ -92,15 +92,16 @@ ones you didn't). On Windows, run the same `cosign verify-blob` (cosign publishe
 Get-Content SHA256SUMS | ForEach-Object { $h, $n = $_ -split '  ', 2; if (Test-Path -LiteralPath $n) { "${n}: $(if ((Get-FileHash -LiteralPath $n -Algorithm SHA256).Hash -eq $h) { 'OK' } else { 'FAILED' })" } }
 ```
 
-Each file you downloaded should show `OK`. Releases up to v0.9.x have no `SHA256SUMS`, but a
+Each file you downloaded should show `OK`. v0.9.0 and v0.9.1 have no `SHA256SUMS`, but a
 `<filename>.bundle` beside each file instead: check one with the same `cosign verify-blob` command,
-giving `--bundle` the file's own bundle and the file in place of `SHA256SUMS`.
+giving `--bundle` the file's own bundle and the file in place of `SHA256SUMS`. Releases before
+v0.9.0 aren't signed.
 
-**With the GitHub CLI** (releases after v0.9.0): the workflow records a GitHub
+**With the GitHub CLI** (releases from v0.9.1): the workflow records a GitHub
 [artifact attestation](https://docs.github.com/actions/security-for-github-actions/using-artifact-attestations)
 (SLSA build provenance) for every file. With [`gh`](https://cli.github.com/) 2.49 or later installed and signed in
 (`gh auth login`), run this on the downloaded file. Check `gh --version` first: some distributions
-package an older `gh` without the `attestation` command (Ubuntu's is 2.46), which then prints its list
+package an older `gh` without the `attestation` command (Ubuntu 26.04's is 2.46), which then prints its list
 of commands instead of a result. That isn't a failed check; install `gh` from
 [GitHub's packages](https://github.com/cli/cli#installation), or use cosign above:
 
@@ -163,10 +164,10 @@ Building from source lets you target other microarchitectures instead:
 | Preset | Target microarchitecture | Minimum CPU |
 |--------|--------------------------|-------------|
 | `release` / `win-release` | Default compiler optimizations | Any x86-64 |
-| `release-compatible` / `win-release-compatible` | x86-64-v2 (SSSE3, SSE4.1, SSE4.2, POPCNT) | Intel Nehalem (first-generation Core i3/i5/i7) and later / AMD Bulldozer (FX) and later, and Jaguar-based chips |
+| `release-compatible` / `win-release-compatible` | x86-64-v2 (SSE4.2, POPCNT and others; see below) | Intel Nehalem (first-generation Core i3/i5/i7) and later / AMD Bulldozer (FX) and later, and Jaguar-based chips |
 | `optimized` / `win-optimized` | x86-64-v3 (AVX2) | Intel Haswell 2013+ / AMD Excavator 2015+ |
 
-x86-64-v2 needs SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT and CMPXCHG16B. Some CPUs from the same era lack part of that set, such as AMD's Athlon II and Phenom II (which have SSE4a, not SSSE3 or SSE4.1/4.2) and Intel's Core 2, so check the CPU's feature flags rather than its age or brand: on Linux, `/lib64/ld-linux-x86-64.so.2 --help` (glibc 2.33 or newer) lists `x86-64-v2 (supported, searched)` when the CPU qualifies. A CPU without them uses the plain `release` / `win-release` preset, which targets the baseline x86-64.
+x86-64-v2 needs SSE3, SSSE3, SSE4.1, SSE4.2, POPCNT, CMPXCHG16B and LAHF/SAHF in 64-bit mode. Some CPUs from the same era lack part of that set, such as AMD's Athlon II and Phenom II (which have SSE4a, not SSSE3 or SSE4.1/4.2) and Intel's Core 2, so check the CPU's feature flags rather than its age or brand: on Linux, `/lib64/ld-linux-x86-64.so.2 --help` (glibc 2.33 or newer) lists `x86-64-v2 (supported, searched)` when the CPU qualifies. A CPU without them uses the plain `release` / `win-release` preset, which targets the baseline x86-64.
 
 See [CONTRIBUTING.md](https://github.com/mgradwohl/tasksmack/blob/main/CONTRIBUTING.md#cpu-compatibility) for build instructions. An "Illegal instruction" crash on launch from an `optimized` build means the CPU has no AVX2; see the [FAQ](faq.md#illegal-instruction-error-on-launch).
 

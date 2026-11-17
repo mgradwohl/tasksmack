@@ -38,6 +38,7 @@
 #include "Platform/Factory.h"
 #include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/DllSearchPolicy.h"
+#include "Platform/Windows/SdlEnvironment.h"
 #include "Platform/Windows/WinString.h"
 #endif
 #ifdef __linux__
@@ -408,6 +409,18 @@ auto runApp(const App::LaunchOptions& launch) -> int
                      Core::ConfigDirOverride::ENV_VAR);
     }
 #ifdef _WIN32
+    // Removed in WinMain, before any SDL call (#4103). Names only: a value may be a path the user would rather not log.
+    if (const auto& sdlRemoved = Platform::Windows::SdlEnvironment::removedFromThisProcess(); !sdlRemoved.empty())
+    {
+        std::string names;
+        for (const std::string& name : sdlRemoved)
+        {
+            names += names.empty() ? name : ", " + name;
+        }
+        spdlog::warn("Ignoring the SDL environment variables {}: TaskSmack runs as administrator, and takes no SDL setting "
+                     "from an environment the less-privileged side may have set",
+                     names);
+    }
     if (handoffWait.has_value())
     {
         spdlog::info("Restarted as administrator for TaskSmack PID {}, {}, after {:.1f} s; the instance lock after {:.1f} s more",
@@ -789,6 +802,11 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
     SetDefaultDllDirectories(Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()
                                  ? LOAD_LIBRARY_SEARCH_SYSTEM32
                                  : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);
+    // Next, under the same rule and before any SDL call (#4103): SDL takes a hint it isn't given from the variable of
+    // the same name, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a DLL it loads by full path, which no
+    // search order restricts. Elevated, the environment may be the less-privileged side's (HKCU\Environment), so
+    // every SDL variable goes. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
+    Platform::Windows::SdlEnvironment::removeForThisProcess(Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess());
     return runAppGuarded(App::parseLaunchOptions(commandLineArguments()));
 }
 // LCOV_EXCL_STOP
