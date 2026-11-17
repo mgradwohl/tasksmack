@@ -15,8 +15,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include <functional>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -217,6 +220,129 @@ invokingUserSession(uid_t effectiveUid,
     }
     const std::optional<Account> self = account(effectiveUid);
     return {.otherAccount = true, .account = self.has_value() && !self->name.empty() ? self->name : std::string("root")};
+}
+
+/// A process's parent and real and effective uids, as /proc/<pid>/status gives them.
+struct ProcessIds
+{
+    int parent = 0;
+    std::uint32_t realUid = 0;
+    std::uint32_t effectiveUid = 0;
+};
+
+/// /proc/<@p pid>/status's PPid and Uid lines, or nullopt when it can't be read (the process is gone).
+[[nodiscard]] inline std::optional<ProcessIds> processIds(int pid)
+{
+    std::ifstream in("/proc/" + std::to_string(pid) + "/status");
+    std::optional<int> parent;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> uids;
+    for (std::string line; std::getline(in, line);)
+    {
+        std::istringstream fields(line);
+        std::string key;
+        fields >> key;
+        if (key == "PPid:")
+        {
+            int value = 0;
+            if (fields >> value)
+            {
+                parent = value;
+            }
+        }
+        else if (key == "Uid:")
+        {
+            std::uint32_t real = 0;
+            std::uint32_t effective = 0;
+            if (fields >> real >> effective)
+            {
+                uids = std::pair(real, effective);
+            }
+        }
+    }
+    if (!parent.has_value() || !uids.has_value())
+    {
+        return std::nullopt;
+    }
+    return ProcessIds{.parent = *parent, .realUid = uids->first, .effectiveUid = uids->second};
+}
+
+/// Whether a process above @p self, up to pid 1, runs as someone other than root (real or effective uid not 0), from
+/// @p ids (processIds(), or a test's). su, sudo, doas and pkexec are run by a user, so a root process they start has
+/// that user above it, whatever its environment says; a root login, a service, cron, wsl -u root and a container's
+/// processes have only root above them. An ancestor that can't be read ends the walk (nothing more is known).
+[[nodiscard]] inline bool aUserIsAbove(int self, const std::function<std::optional<ProcessIds>(int)>& ids)
+{
+    constexpr int MAX_HOPS = 64; // a chain this long is no shell's; and a loop can't keep the walk going
+    std::optional<ProcessIds> at = ids(self);
+    for (int hop = 0; hop < MAX_HOPS && at.has_value() && at->parent > 1; ++hop)
+    {
+        at = ids(at->parent);
+        if (at.has_value() && (at->realUid != 0 || at->effectiveUid != 0))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// Whether this process's environment may be another, less-privileged user's (#4154), so it ignores the test hooks that
+/// write files (#4104) and the SDL and loader variables (#4111, #4151). No passwd lookup, and no signal the user's own
+/// environment can set to turn it off:
+///   - @p secureExecution, the kernel's AT_SECURE: setuid, setgid or file capabilities (the FAQ's setcap, #4171);
+///   - not root but holding capabilities (@p holdsCapabilities: ambient ones, which set no AT_SECURE);
+///   - a SUDO_UID or PKEXEC_UID that isn't this effective uid (sudo -u another user too), even a malformed one: only
+///     sudo and pkexec set them;
+///   - root with a DOAS_USER but root;
+///   - root with a user's process above it (@p aUserAbove: aUserIsAbove()), which su, and sudo with SUDO_UID=0 given
+///     on its command line, can't hide.
+/// Root's own session (a root login, a service, cron, a container) is unaffected. Not HOME (release.yml's upgrade check
+/// runs as root with HOME a scratch folder), nor the login uid (unset on WSL, and a user's inside a container they
+/// started): the reviews of #4170.
+[[nodiscard]] inline bool environmentMayBeAnotherUsers(uid_t effectiveUid,
+                                                       bool secureExecution,
+                                                       bool holdsCapabilities,
+                                                       const std::function<std::optional<std::string>(std::string_view)>& env,
+                                                       bool aUserAbove)
+{
+    if (secureExecution || (effectiveUid != 0 && holdsCapabilities))
+    {
+        return true;
+    }
+    const std::string self = std::to_string(effectiveUid);
+    for (const char* name : {"SUDO_UID", "PKEXEC_UID"})
+    {
+        if (const std::optional<std::string> text = env(name); text.has_value() && !text->empty() && *text != self)
+        {
+            return true;
+        }
+    }
+    if (effectiveUid != 0)
+    {
+        return false;
+    }
+    if (const std::optional<std::string> doasUser = env("DOAS_USER"); doasUser.has_value() && !doasUser->empty() && *doasUser != "root")
+    {
+        return true;
+    }
+    return aUserAbove;
+}
+
+/// Whether this process, not root, holds any effective or permitted capability (/proc/self/status CapEff, CapPrm).
+[[nodiscard]] inline bool processHoldsCapabilities()
+{
+    std::ifstream in("/proc/self/status");
+    for (std::string line; std::getline(in, line);)
+    {
+        if (line.starts_with("CapEff:") || line.starts_with("CapPrm:"))
+        {
+            const std::string_view hex = std::string_view(line).substr(line.find_first_not_of(" \t", 7));
+            if (hex.find_first_not_of('0') != std::string_view::npos)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// This process's invoking user (invokingUser() for its effective uid, environment and passwd database), looked up

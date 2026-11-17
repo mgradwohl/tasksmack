@@ -16,6 +16,10 @@
 
 #include <gtest/gtest.h>
 
+#ifdef __linux__
+#include <unistd.h>
+#endif
+
 #include <atomic>
 #include <chrono>
 #include <cstdint>
@@ -101,7 +105,11 @@ TEST(ProcessDumpViewTest, ASessionWithNoDefaultFolderHasNone)
     // A folder that exists is still used: one chosen with Save dump to... in this session (trustedDumpFolder()).
     EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp), true), temp);
 #ifndef _WIN32
-    EXPECT_FALSE(DumpDetail::noDefaultDumpFolder()) << "Windows only";
+#ifdef __linux__
+    EXPECT_EQ(DumpDetail::noDefaultDumpFolder(), ::geteuid() == 0) << "on Linux, any root process (#4163)";
+#else
+    EXPECT_FALSE(DumpDetail::noDefaultDumpFolder()) << "this test isn't elevated";
+#endif
 #endif
 }
 

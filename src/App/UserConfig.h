@@ -144,7 +144,7 @@ struct UserSettings
 
     // The folder "Create dump file..." writes to (#2001), [dumps] folder, UTF-8: the last one chosen
     // with the confirm's "Save dump to...". Empty, or a folder that no longer exists: the temp folder, or none in an
-    // elevated Windows session (DumpDetail::noDefaultDumpFolder(), #4141).
+    // elevated Windows session or a Linux root one (DumpDetail::noDefaultDumpFolder(), #4141, #4163).
     std::string dumpFolder;
 
     // Run new task's recent command lines (#3065), newest first, [run_task] recent. Written only when
