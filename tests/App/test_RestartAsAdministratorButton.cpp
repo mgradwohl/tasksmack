@@ -51,6 +51,24 @@ class RestartOffered
     std::vector<Core::EventType> m_Raised;
 };
 
+/// Tells the button which prompt the restart raises for the test's length, as ElevationNoticeLayer does, and puts it back.
+class PromptKind
+{
+  public:
+    explicit PromptKind(bool credentials)
+    {
+        RestartAsAdministrator::setCredentials(credentials);
+    }
+    ~PromptKind()
+    {
+        RestartAsAdministrator::setCredentials(false);
+    }
+    PromptKind(const PromptKind&) = delete;
+    PromptKind& operator=(const PromptKind&) = delete;
+    PromptKind(PromptKind&&) = delete;
+    PromptKind& operator=(PromptKind&&) = delete;
+};
+
 /// A Process Details section, as AuthenticateToReadButton.h sees one.
 struct FakeSection
 {
@@ -108,6 +126,30 @@ class RestartAsAdministratorButtonTest : public ::testing::Test
         return captured;
     }
 
+    /// Draws the button, hovers it with no tooltip delay, and returns what the frames then drew: the tooltip among it.
+    static std::string hoverTooltip()
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.HoverStationaryDelay = 0.0F;
+        style.HoverDelayShort = 0.0F;
+        style.HoverDelayNormal = 0.0F;
+        ImVec2 centre;
+        static_cast<void>(frame(
+            [&centre]
+            {
+                static_cast<void>(RestartAsAdministrator::drawButton());
+                centre = ImVec2((ImGui::GetItemRectMin().x + ImGui::GetItemRectMax().x) * 0.5F,
+                                (ImGui::GetItemRectMin().y + ImGui::GetItemRectMax().y) * 0.5F);
+            }));
+        ImGui::GetIO().AddMousePosEvent(centre.x, centre.y);
+        std::string text;
+        for (int settled = 0; settled < 3; ++settled)
+        {
+            text += frame([] { static_cast<void>(RestartAsAdministrator::drawButton()); });
+        }
+        return text;
+    }
+
     /// Presses the window's button @p label on the next frame.
     static void press(const char* label)
     {
@@ -127,6 +169,34 @@ TEST(RestartAsAdministratorWordingTest, SaysWhatTheChipsNoticeSays)
     EXPECT_TRUE(std::string_view(RestartAsAdministrator::LABEL).ends_with(AuthorizeWording::WINDOWS_WORDING.switchSession));
     EXPECT_STREQ(AuthorizeWording::WINDOWS_WORDING.switchSession, "Restart as administrator...");
     EXPECT_TRUE(std::string_view(RestartAsAdministrator::TOOLTIP).contains("UAC")) << "names the prompt it raises";
+}
+
+// #4108: the tooltip says what the restart's prompt asks for, from the same flag the notice's note reads.
+TEST(RestartAsAdministratorWordingTest, TheTooltipNamesTheConsentOrTheCredentialsPrompt)
+{
+    EXPECT_STREQ(RestartAsAdministrator::tooltipFor(false), RestartAsAdministrator::TOOLTIP);
+    EXPECT_STREQ(RestartAsAdministrator::tooltipFor(true), RestartAsAdministrator::CREDENTIALS_TOOLTIP);
+    EXPECT_TRUE(std::string_view(RestartAsAdministrator::TOOLTIP).ends_with(AuthorizeWording::promptTooltipFor(false)));
+    EXPECT_TRUE(std::string_view(RestartAsAdministrator::CREDENTIALS_TOOLTIP).ends_with(AuthorizeWording::promptTooltipFor(true)));
+    EXPECT_FALSE(std::string_view(RestartAsAdministrator::TOOLTIP).contains("password"));
+    EXPECT_TRUE(std::string_view(RestartAsAdministrator::CREDENTIALS_TOOLTIP).contains("name and password"));
+}
+
+TEST_F(RestartAsAdministratorButtonTest, TheTooltipIsTheConsentOneUntilToldTheRestartAsksForCredentials)
+{
+    const RestartOffered offered;
+    const PromptKind prompt(false);
+    const std::string text = hoverTooltip();
+    EXPECT_TRUE(text.contains(RestartAsAdministrator::TOOLTIP)) << text;
+    EXPECT_FALSE(text.contains("name and password")) << text;
+}
+
+TEST_F(RestartAsAdministratorButtonTest, TheTooltipSaysNameAndPasswordForAStandardUser)
+{
+    const RestartOffered offered;
+    const PromptKind prompt(true);
+    const std::string text = hoverTooltip();
+    EXPECT_TRUE(text.contains(RestartAsAdministrator::CREDENTIALS_TOOLTIP)) << text;
 }
 
 TEST(RestartAsAdministratorWordingTest, OfferedOnlyForAPermissionRefusalWithNoHelperWhereTaskSmackCanRestart)

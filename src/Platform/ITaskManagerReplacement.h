@@ -35,6 +35,9 @@ struct TaskManagerReplacementInfo
     bool otherProgramExists = true;
     /// Whether this copy is installed in Program Files (TaskManagerReplacement::isInstalledCopy()).
     bool installedCopy = false;
+    /// Whether this copy writes the IFEO key itself (an elevated TaskSmack, #4109), so a change raises no prompt of
+    /// Windows'. False: the change goes through the helper, whose UAC prompt Windows raises first.
+    bool writesDirectly = false;
 };
 
 class ITaskManagerReplacement

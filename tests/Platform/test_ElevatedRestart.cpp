@@ -9,6 +9,7 @@
 #include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Support/Junction.h"
 
 #include <gtest/gtest.h>
 
@@ -855,6 +856,133 @@ TEST(ElevatedRestartConfigDirTest, TheRealHoldKeepsTheFolderFromBeingRemoved)
     const DWORD error = GetLastError();
     EXPECT_FALSE(forDelete) << "the held folder opened for deletion";
     EXPECT_EQ(error, static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+}
+
+// #4106: an elevated session's own folder (FOLDERID_RoamingAppData\TaskSmack), anchored to the token's own profile and
+// its owner required to be this account or Administrators. The scratch folders are made by the test's own account, so
+// the real owner check accepts them; the fakes below stand in for an administrator's and another account's.
+std::optional<bool> ownerAccepted(HANDLE /*handle*/)
+{
+    return true;
+}
+std::optional<bool> ownerRejected(HANDLE /*handle*/)
+{
+    return false;
+}
+
+// pathIsInside(): whole components, so a sibling that only shares a prefix is outside; case doesn't matter, as on
+// NTFS; and a trailing separator on either path changes nothing (#4106 review).
+TEST(ElevatedRestartOwnConfigDirTest, PathIsInsideComparesWholeComponents)
+{
+    const std::filesystem::path profile(LR"(C:\Users\pat)");
+    EXPECT_TRUE(pathIsInside(LR"(C:\Users\pat\AppData\Roaming\TaskSmack)", profile));
+    EXPECT_FALSE(pathIsInside(LR"(C:\Users\patrick\AppData\Roaming\TaskSmack)", profile)) << "a sibling with the same prefix";
+    EXPECT_FALSE(pathIsInside(LR"(C:\Users\patrick)", profile));
+    EXPECT_TRUE(pathIsInside(LR"(c:\users\PAT\AppData\Roaming\TaskSmack)", profile)) << "case is ignored";
+    EXPECT_TRUE(pathIsInside(LR"(C:\Users\pat\AppData\Roaming\TaskSmack)", LR"(C:\Users\pat\)")) << "a trailing separator";
+    EXPECT_TRUE(pathIsInside(LR"(C:\Users\pat\AppData\Roaming\TaskSmack\)", profile)) << "a trailing separator on the child";
+    EXPECT_FALSE(pathIsInside(profile, profile)) << "strictly inside: the profile itself isn't";
+    EXPECT_FALSE(pathIsInside(LR"(C:\Users\pat\)", profile)) << "nor with a trailing separator";
+    EXPECT_FALSE(pathIsInside(LR"(D:\Users\pat\AppData)", profile)) << "another drive";
+}
+
+// The real owner check, on a folder this test's own account made: its owner is the token user, so it is accepted.
+TEST(ElevatedRestartOwnConfigDirTest, TheRealOwnerCheckAcceptsAFolderThisAccountMade)
+{
+    const ScratchFolder scratch;
+    const UniqueHandle folder(openToPin(scratch.configDir().native()));
+    ASSERT_TRUE(folder) << GetLastError();
+    EXPECT_EQ(ownerIsOwnAccountOrAdministrators(folder.get()), std::optional<bool>(true));
+}
+
+// Not there yet: made in its held parent, then checked and held itself, and held again once it is there.
+TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderIsMadeInItsHeldParentAndHeld)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path profile = scratch.configDir().parent_path();
+    const std::filesystem::path own = scratch.configDir() / L"Own";
+    ASSERT_FALSE(std::filesystem::exists(own));
+    const auto held = checkOwnConfigDir(own, profile, scratch.root(), {}, &ownerAccepted);
+    ASSERT_TRUE(held.has_value()) << held.error();
+    EXPECT_TRUE(std::filesystem::is_directory(own));
+    const auto again = checkOwnConfigDir(own, profile, scratch.root(), {}, &ownerAccepted);
+    EXPECT_TRUE(again.has_value()) << "there now, and held again: " << (again.has_value() ? std::string() : again.error());
+}
+
+// A folder outside the token's own profile is refused: a redirected AppData (HKCU can move it) that points at another
+// profile doesn't pass just because it is somewhere under the user profiles folder.
+TEST(ElevatedRestartOwnConfigDirTest, AFolderOutsideTheTokensProfileIsRefused)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path profile = scratch.configDir().parent_path();          // this account's
+    const std::filesystem::path elsewhere = scratch.root() / L"other" / L"TaskSmack"; // another profile's
+    std::filesystem::create_directories(elsewhere);
+    const auto held = checkOwnConfigDir(elsewhere, profile, scratch.root(), {}, &ownerAccepted);
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("isn't inside this account's own profile")) << held.error();
+}
+
+// A folder owned by another account (SYSTEM, another admin) is refused, even inside the profile and a real folder.
+TEST(ElevatedRestartOwnConfigDirTest, AFolderOwnedByAnotherAccountIsRefused)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path profile = scratch.configDir().parent_path();
+    const std::filesystem::path own = scratch.configDir() / L"Own";
+    std::filesystem::create_directory(own);
+    const auto held = checkOwnConfigDir(own, profile, scratch.root(), {}, &ownerRejected);
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("owned by another account")) << held.error();
+}
+
+// Its parent owned by another account, with the own folder not there yet: refused, and nothing made in it.
+TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderWhoseParentIsAnotherAccountsIsNotMade)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path profile = scratch.configDir().parent_path();
+    const std::filesystem::path own = scratch.configDir() / L"Own";
+    ASSERT_FALSE(std::filesystem::exists(own));
+    const auto held = checkOwnConfigDir(own, profile, scratch.root(), {}, &ownerRejected);
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("owned by another account")) << held.error();
+    EXPECT_FALSE(std::filesystem::exists(own)) << "not made under a parent that isn't this account's";
+}
+
+// #4106's scenario: %APPDATA%\TaskSmack a junction to a folder the user may not change (C:\Program Files\Foo). Refused,
+// and nothing is made or written behind it.
+TEST(ElevatedRestartOwnConfigDirTest, AnOwnFolderThatIsAJunctionIsRefused)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path profile = scratch.configDir().parent_path();
+    const std::filesystem::path target = scratch.root() / L"ProgramFilesFoo";
+    std::filesystem::create_directory(target);
+    const std::filesystem::path own = scratch.configDir() / L"Own";
+    std::filesystem::create_directory(own);
+    const auto made = TestSupport::makeJunction(own, target);
+    ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
+    const auto held = checkOwnConfigDir(own, profile, scratch.root(), {}, &ownerAccepted);
+    EXPECT_TRUE(TestSupport::removeJunction(own)) << GetLastError();
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
+    EXPECT_TRUE(std::filesystem::is_empty(target));
+}
+
+// Its parent a junction, with the own folder not there yet: refused before anything is made behind the junction.
+TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderUnderAJunctionIsNotMade)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path profile = scratch.configDir().parent_path();
+    const std::filesystem::path target = scratch.root() / L"ProgramFiles";
+    std::filesystem::create_directory(target);
+    const std::filesystem::path parent = scratch.configDir() / L"Roaming";
+    std::filesystem::create_directory(parent);
+    const auto made = TestSupport::makeJunction(parent, target);
+    ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
+    const auto held = checkOwnConfigDir(parent / L"TaskSmack", profile, scratch.root(), {}, &ownerAccepted);
+    EXPECT_TRUE(TestSupport::removeJunction(parent)) << GetLastError();
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("its parent can't be held")) << held.error();
+    EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
+    EXPECT_TRUE(std::filesystem::is_empty(target)) << "no TaskSmack folder made behind the junction";
 }
 
 } // namespace

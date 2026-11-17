@@ -187,6 +187,17 @@ HandoffWait waitForHandoff(std::uint32_t pid, std::uint64_t startTicks, const Ha
 /// (Windows::ElevatedRestart::checkConfigDir(), the trust boundary in IElevatedRestart.h).
 [[nodiscard]] std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverConfigDir(const std::filesystem::path& dir);
 
+/// This account's own config folder (FOLDERID_RoamingAppData\TaskSmack), held as a handed-over one is, for an elevated
+/// session that adopted no hand-off (#4106): its environment and known folders are the less-privileged side's, so the
+/// folder is anchored to the token's own profile, its owner required to be this account or Administrators, and held
+/// through the same PinnedFolder path a hand-off uses. Windows only; the composition root (main.cpp) calls it.
+struct OwnElevatedConfigFolder
+{
+    std::filesystem::path path; ///< The folder, even when it couldn't be held, for the log and for adoptHandedOver()
+    std::expected<std::shared_ptr<IHandedOverFolder>, std::string> held;
+};
+[[nodiscard]] OwnElevatedConfigFolder holdOwnElevatedConfigFolder();
+
 /// Brings the window of another running TaskSmack.exe to the front (#3072): what Ctrl+Shift+Esc does
 /// when TaskSmack replaces Task Manager and one already runs. False when there is none to show.
 bool showRunningTaskSmack();

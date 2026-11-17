@@ -348,9 +348,11 @@ jobs:
           fi
 
       # An Administrator session on Linux is TaskSmack started as root (#3580): here with sudo, as the "TaskSmack
-      # (Administrator)" launcher's pkexec would, keeping the display. It must open on the X display, draw, and close
-      # by itself (TASKSMACK_SCREENSHOT: a PNG once startup has settled, then the normal close), and keep the runner
-      # user's settings: config.toml lands in their ~/.config/tasksmack, owned by them, and root's stays untouched.
+      # (Administrator)" launcher's pkexec would, keeping the display. It must open on the X display, reach its main
+      # loop, close on SIGTERM (which SDL turns into a normal quit that saves the settings, as release.yml's launcher
+      # check does), and keep the runner user's settings: config.toml lands in their ~/.config/tasksmack, owned by
+      # them, and root's stays untouched. TASKSMACK_SCREENSHOT is set on purpose: a session run as root for a user
+      # ignores the hooks that write files (#4104), so it must say so and write no screenshot.
       - name: Root launch (Linux)
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         env:
@@ -359,16 +361,35 @@ jobs:
           set -o pipefail
           user="$(id -un)"
           config="$HOME/.config/tasksmack"
-          rm -rf "$config"
+          rm -rf "$config" "$TASKSMACK_SCREENSHOT"
           sudo rm -rf /root/.config/tasksmack
           # Named, not -E: this runner's sudo ignores -E (see "Root tests (Linux)"). xvfb-run sets DISPLAY and
           # XAUTHORITY for the command it runs.
           xvfb-run -a -s "-screen 0 1280x800x24 -noreset" \
             sudo --preserve-env=DISPLAY,XAUTHORITY,TASKSMACK_SCREENSHOT \
-            timeout --kill-after=10s 120s build/debug/bin/TaskSmack 2>&1 | tee root-launch.log
+            timeout --kill-after=10s 120s build/debug/bin/TaskSmack > root-launch.log 2>&1 &
+          launch=$!
+          for _ in $(seq 90); do
+            grep -q "Entering main loop" root-launch.log && break
+            sleep 1
+          done
+          sleep 3 # a few frames
+          # TaskSmack runs as root, so the signal needs sudo.
+          sudo pkill -TERM -x TaskSmack || true
+          status=0
+          wait "$launch" || status=$?
+          cat root-launch.log
           failed=0
-          if [[ ! -s "$TASKSMACK_SCREENSHOT" ]]; then
-            echo "::error title=Root launch::TaskSmack as root wrote no screenshot: it didn't reach a frame"
+          if ! grep -q "Entering main loop" root-launch.log; then
+            echo "::error title=Root launch::TaskSmack as root didn't reach its main loop"
+            failed=1
+          fi
+          if [[ "$status" -ne 0 ]]; then
+            echo "::error title=Root launch::TaskSmack as root didn't quit cleanly on SIGTERM (exit $status)"
+            failed=1
+          fi
+          if ! grep -q "TASKSMACK_SCREENSHOT set but ignored" root-launch.log || [[ -e "$TASKSMACK_SCREENSHOT" ]]; then
+            echo "::error title=Root launch::TaskSmack as root used TASKSMACK_SCREENSHOT, a hook that writes files (#4104)"
             failed=1
           fi
           if [[ ! -f "$config/config.toml" ]]; then

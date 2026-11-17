@@ -328,6 +328,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxProcessIconSource.cpp
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/RootCapabilities.cpp # an Administrator session keeps only the capabilities it uses (#3621)
+    src/Platform/Linux/SdlEnvironment.cpp # a session run as root for a user takes no SDL variable (#4111)
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
@@ -820,9 +821,9 @@ endif()
 
 # The Windows compile definitions and system libraries the platform sources need, in one place for
 # every target that compiles them: tasksmack_configure_app_target() below and TaskSmackTests
-# (tests/CMakeLists.txt), so the two can't drift (#1702). The tests link pdh, psapi and userenv on
-# top of it. Call it only when WIN32. tasksmack_apply_windows_definitions() is the definitions alone, for
-# TaskSmackHelper.exe, which links a smaller list of its own (#2557).
+# (tests/CMakeLists.txt), so the two can't drift (#1702). The tests link pdh and psapi on top of it (they also name
+# userenv, which is in the shared list since #4106). Call it only when WIN32. tasksmack_apply_windows_definitions()
+# is the definitions alone, for TaskSmackHelper.exe, which links a smaller list of its own (#2557).
 function(tasksmack_apply_windows_definitions target)
     # Windows SDK version: GetIfTable2 and MIB_IF_TABLE2 are available on Vista+,
     # but we intentionally target Windows 10+ via _WIN32_WINNT=0x0A00 / WINVER=0x0A00.
@@ -865,6 +866,7 @@ function(tasksmack_apply_windows_platform target)
         dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)
         wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152); Group: User's sessions (#3076)
         winhttp # WindowsHttpsClient: the opt-in update check's one HTTPS request (#3093)
+        userenv # ElevatedRestart: the token's own profile folder (GetUserProfileDirectoryW), to anchor the own config folder (#4106)
     )
 endfunction()
 

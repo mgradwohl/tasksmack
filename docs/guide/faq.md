@@ -4,7 +4,7 @@
 
 ## "Illegal instruction" error on launch
 
-**Cause:** You built TaskSmack yourself with the `optimized` or `win-optimized` preset, which targets the x86-64-v3 microarchitecture (AVX2). Intel processors before Haswell (2013) and AMD processors before Excavator (2015) do not support these instructions. The packages published on the [releases page](https://github.com/mgradwohl/tasksmack/releases/latest) use the `release`/`win-release` preset instead (default compiler optimizations, no AVX2 requirement), so this should not happen with an official download — if it does, please [file a bug](https://github.com/mgradwohl/tasksmack/issues/new).
+**Cause:** You built TaskSmack yourself with the `optimized`, `pgo-use` or `pgo-baseline` preset (or their `win-` twins), which target the x86-64-v3 microarchitecture (AVX2). Intel processors before Haswell (2013) and AMD processors before Excavator (2015) do not support these instructions. The packages published on the [releases page](https://github.com/mgradwohl/tasksmack/releases/latest) use the `release`/`win-release` preset instead (default compiler optimizations, no AVX2 requirement), so this should not happen with an official download — if it does, please [file a bug](https://github.com/mgradwohl/tasksmack/issues/new).
 
 **Fix:** Rebuild with a preset that doesn't require AVX2:
 
@@ -21,13 +21,13 @@ The `release-compatible` presets need an x86-64-v2 CPU: Intel Nehalem (first-gen
 
 ## How do I check that a download is genuine?
 
-Every release file (the `.deb`, `.tar.gz`, `.zip` and Windows installer for each architecture, the Windows build-inputs manifests and the source SBOM) can be checked against TaskSmack's release workflow in either of two ways. Releases after v0.9.0 carry a GitHub build-provenance attestation for each file; with the [GitHub CLI](https://cli.github.com/) installed and signed in, run:
+From v0.10.0, every release file (the `.deb`, `.tar.gz`, `.zip` and Windows installer for each architecture, the Windows build-inputs manifests and the source SBOM) can be checked against TaskSmack's release workflow in either of two ways. Releases from v0.9.1 carry a GitHub build-provenance attestation for each file; with the [GitHub CLI](https://cli.github.com/) installed and signed in, run:
 
 ```bash
 gh attestation verify <asset> --repo mgradwohl/tasksmack
 ```
 
-Every release also has a `SHA256SUMS` listing each file's SHA-256, signed with Sigstore in `SHA256SUMS.bundle` (up to v0.9.x, a `<asset>.bundle` beside each file instead). Download both next to your files, then check them with [cosign](https://github.com/sigstore/cosign), which needs no GitHub account:
+From v0.10.0, every release also has a `SHA256SUMS` listing each file's SHA-256, signed with Sigstore in `SHA256SUMS.bundle`. v0.9.0 and v0.9.1 have a `<asset>.bundle` beside each file instead, and no `SHA256SUMS`; releases before v0.9.0 aren't signed. Download both next to your files, then check them with [cosign](https://github.com/sigstore/cosign), which needs no GitHub account:
 
 ```bash
 cosign verify-blob \
@@ -44,12 +44,12 @@ If either check fails, don't use the file. See the user guide's [Verifying a Rel
 
 ## "Process I/O, FDs or network show N/A" on Linux
 
-**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values are shown as N/A (not 0), and the system FD and network totals leave them out.
+**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values show as a dimmed **—** in the Processes table and N/A in Process Details (not 0), and the system FD and network totals leave them out.
 
 **Fix (option 1 — start TaskSmack as administrator):** choose **TaskSmack (Administrator)** in your applications menu (the `.deb` and `.rpm` install it), which starts TaskSmack as root through `pkexec` after one administrator's password, or run it with `sudo` (from the extracted `.tar.gz`, `sudo ./bin/TaskSmack`):
 
 ```bash
-sudo ./TaskSmack
+sudo ./bin/TaskSmack
 ```
 
 Run this way, links, **Open folder**, and Settings' **Edit Config File** and **Open Themes Folder** still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root.
@@ -216,7 +216,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 ## Why are per-process network rates missing?
 
-Per-process network rates read N/A when the platform cannot attribute traffic.
+Per-process network rates read **—** in the table (N/A in Process Details) when the platform cannot attribute traffic.
 
 - **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support. A process in another network namespace than TaskSmack's (inside a container, say) reads N/A, since TaskSmack sees only its own namespace's sockets.
 - **Windows:** TCP EStats collection requires administrator privileges.

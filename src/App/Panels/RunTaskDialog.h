@@ -42,10 +42,12 @@ class RunTaskDialog
     /// Opens the dialog on the next render(), offering @p recent (newest first) and, when
     /// @p canRunAsAdministrator, the administrator tick. The command line is kept from the last time.
     /// @p alreadyAdministrator: TaskSmack itself runs as administrator, so the tick asks for no password (#3805).
-    void open(std::vector<std::string> recent, bool canRunAsAdministrator, bool alreadyAdministrator = false);
+    /// @p asksCredentials: Windows asks for an administrator's name and password, not the user's own consent (#4108).
+    void open(std::vector<std::string> recent, bool canRunAsAdministrator, bool alreadyAdministrator = false, bool asksCredentials = false);
 
-    /// The administrator tick's tooltip: whether a password is asked first depends on @p alreadyAdministrator (#3805).
-    [[nodiscard]] static const char* administratorTooltip(bool alreadyAdministrator) noexcept;
+    /// The administrator tick's tooltip: whether a password is asked first depends on @p alreadyAdministrator (#3805);
+    /// on Windows, whether Windows asks for consent or for an administrator's credentials, on @p asksCredentials (#4108).
+    [[nodiscard]] static const char* administratorTooltip(bool alreadyAdministrator, bool asksCredentials = false) noexcept;
 
     [[nodiscard]] bool isOpen() const noexcept
     {
@@ -75,6 +77,7 @@ class RunTaskDialog
     bool m_AsAdministrator = false;
     bool m_CanRunAsAdministrator = false;
     bool m_AlreadyAdministrator = false;
+    bool m_AsksCredentials = false;
     bool m_ShowRequested = false;
     bool m_Open = false;
     bool m_FocusCommand = false;
