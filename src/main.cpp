@@ -194,6 +194,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // Its environment may be the less-privileged side's (#4104): every test hook that writes a file or folder at a path it
     // names (TASKSMACK_CONFIG_DIR, _SCREENSHOT, _DEMO's metrics export, _RENDER_METRICS) is ignored, before anything reads
     // one, so nothing is written where that side chose (#3920, #4090). One rule on both platforms, lessPrivilegedEnvironment().
+    // Keep this ahead of every read of a hook: each hook keeps its first answer (a function-local static), so a hook read
+    // before the gate would keep a path the less-privileged side chose for the whole run.
     if (lessPrivilegedEnvironment()) // LCOV_EXCL_LINE - an elevated or root-for-a-user session only (#2039)
     {
         Core::ignoreWritingHooks(); // LCOV_EXCL_LINE
@@ -413,8 +415,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
         }
         if (!ignored.empty())
         {
-            spdlog::warn("{} set but ignored: TaskSmack runs as administrator, and writes nothing where an environment the "
-                         "less-privileged side may have set points (#4104)",
+            spdlog::warn("{} set but ignored: TaskSmack runs as administrator (elevated, or as root for a user), and writes "
+                         "nothing where an environment the less-privileged side may have set points (#4104)",
                          ignored);
         }
     }
