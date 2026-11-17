@@ -2,7 +2,7 @@
 
 // Pure logic extracted from WindowsPathProvider.cpp so the "OS primitive keeps failing" fallback
 // branches - which need a genuinely broken environment to reach for real (GetModuleFileNameW
-// failing, APPDATA missing, current_path() failing) - can be exercised by injecting fabricated
+// failing, the known folder unavailable, current_path() failing) - can be exercised by injecting fabricated
 // behavior instead. See CONTRIBUTING.md's "extract the pure decision logic into a small header"
 // pattern (also used by Core/PathServiceMath.h for the equivalent Core-layer fallback).
 
@@ -74,16 +74,16 @@ resolveExecutableDir(const std::function<std::uint32_t(wchar_t* buffer, std::uin
     return {};
 }
 
-/// Pure fallback logic extracted from WindowsPathProvider::getUserConfigDir(): if @p appDataEnv
+/// Pure fallback logic extracted from WindowsPathProvider::getUserConfigDir(): if @p appDataReader
 /// returns a non-empty value, appends "TaskSmack" to it; otherwise falls back to @p
 /// currentPathFn (same last-resort-empty-path contract as resolveExecutableDir() above).
-/// @param appDataEnv Mimics reading the APPDATA environment variable: nullopt or an empty path
+/// @param appDataReader Mimics reading the roaming AppData known folder: nullopt or an empty path
 /// both count as "not found". A path, not a std::string, so the real reader can hand over the
-/// variable's UTF-16 value without a narrow conversion through the code page (#1648).
-[[nodiscard]] inline std::filesystem::path resolveUserConfigDir(const std::function<std::optional<std::filesystem::path>()>& appDataEnv,
+/// folder's UTF-16 value without a narrow conversion through the code page (#1648).
+[[nodiscard]] inline std::filesystem::path resolveUserConfigDir(const std::function<std::optional<std::filesystem::path>()>& appDataReader,
                                                                 const PathProviderCurrentPathFn& currentPathFn)
 {
-    if (const auto appData = appDataEnv(); appData.has_value() && !appData->empty())
+    if (const auto appData = appDataReader(); appData.has_value() && !appData->empty())
     {
         return *appData / "TaskSmack";
     }
