@@ -38,7 +38,6 @@
 #include "Platform/Factory.h"
 #include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/DllSearchPolicy.h"
-#include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/SdlEnvironment.h"
 #include "Platform/Windows/WinString.h"
 #endif
@@ -249,7 +248,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // LCOV_EXCL_START - TaskSmack.exe only, elevated (#2039); checkOwnConfigDir() has the tests
     if (handedOverFolder == nullptr && Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess())
     {
-        auto own = Platform::Windows::ElevatedRestart::holdOwnConfigDir();
+        auto own = Platform::holdOwnElevatedConfigFolder();
         // A known folder that can't be read still fails closed: adopted, with nothing held, at the working directory.
         std::error_code cwdError;
         const std::filesystem::path ownDir = own.path.empty() ? std::filesystem::current_path(cwdError) : own.path;

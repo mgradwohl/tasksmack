@@ -81,34 +81,6 @@ namespace App
 namespace
 {
 
-#ifdef _WIN32
-/// The first folder or file on @p path, from the drive down, that is a reparse point (a junction, a mount point, a
-/// symbolic link), as far as the path exists; nullopt when there is none (#4106). What isn't there yet is made later,
-/// below a folder this has seen to be plain.
-[[nodiscard]] std::optional<std::filesystem::path> reparsePointOnPath(const std::filesystem::path& path)
-{
-    std::filesystem::path at = path.root_path();
-    for (const std::filesystem::path& part : path.relative_path())
-    {
-        if (part.empty())
-        {
-            continue;
-        }
-        at /= part;
-        const DWORD attributes = GetFileAttributesW(at.c_str());
-        if (attributes == INVALID_FILE_ATTRIBUTES)
-        {
-            break;
-        }
-        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
-        {
-            return at;
-        }
-    }
-    return std::nullopt;
-}
-#endif
-
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
@@ -1091,17 +1063,16 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     }
 #endif
 #ifdef _WIN32
-    // Windows' links are reparse points (#4106): a junction or mount point on the way to the less-privileged side's
-    // folder, which symlink_status() of the folder itself doesn't see, or a config.toml that is one, could send the save,
-    // and the folder's creation, elsewhere. Checked before anything is made.
-    if (handedOver)
+    // The less-privileged side's folder is only ever written through the folder held (writeIntoHandedOver() above), so a
+    // Windows session that reaches this by-path save with handedOver set has no held folder: fail closed rather than
+    // write by a path a junction could redirect (#4106). An elevated session with no hand-off gets here only when its own
+    // folder was refused, and already saves nothing; this is the belt-and-braces guard, and it can't be reached in the
+    // shipped app.
+    if (handedOver && held == nullptr)
     {
-        if (const std::optional<std::filesystem::path> link = reparsePointOnPath(m_ConfigPath); link.has_value())
-        {
-            spdlog::error("Not saving settings: {} is a junction or link, which an elevated TaskSmack doesn't write through",
-                          Core::pathToUtf8(*link));
-            return false;
-        }
+        spdlog::error("Not saving settings: {} is the less-privileged side's and isn't held open; writing nothing there",
+                      Core::pathToUtf8(configDir));
+        return false;
     }
 #endif
     if (!std::filesystem::exists(configDir, ec))

@@ -294,6 +294,12 @@ std::expected<std::shared_ptr<IHandedOverFolder>, std::string> checkHandedOverCo
     return std::make_shared<Windows::PinnedFolder>(handedOverFolderPath(dir), std::move(*pinned));
 }
 
+OwnElevatedConfigFolder holdOwnElevatedConfigFolder()
+{
+    Windows::ElevatedRestart::OwnConfigDir own = Windows::ElevatedRestart::holdOwnConfigDir();
+    return {.path = std::move(own.path), .held = std::move(own.held)};
+}
+
 bool enableDebugPrivilege()
 {
     return Windows::enableDebugPrivilegeIfElevated() == Windows::DebugPrivilegeResult::Enabled;

@@ -864,6 +864,7 @@ function(tasksmack_apply_windows_platform target)
         dwmapi # Core/Window: whether DWM has cloaked the window (DWMWA_CLOAKED) (#3152)
         wtsapi32 # Core/Window: the session's lock and disconnect notifications (#3152); Group: User's sessions (#3076)
         winhttp # WindowsHttpsClient: the opt-in update check's one HTTPS request (#3093)
+        userenv # ElevatedRestart: the token's own profile folder (GetUserProfileDirectoryW), to anchor the own config folder (#4106)
     )
 endfunction()
 

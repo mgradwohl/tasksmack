@@ -2668,34 +2668,52 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
 }
 
 #ifdef _WIN32
-// #4106: Windows' links are reparse points. A junction on the way to the less-privileged side's config folder (here
-// its parent, which symlink_status() of the folder itself doesn't see) sends no save, and no folder's creation, behind it.
-TEST_F(UserConfigSaveLoadFixture, ALessPrivilegedFolderIsNeverWrittenThroughAJunction)
+/// Restores Core::ConfigDirOverride to @p previous when it dies, so a failed assertion in a test that marked a
+/// less-privileged folder doesn't leak that state to the next test.
+class RestoreConfigOverride
+{
+  public:
+    explicit RestoreConfigOverride(std::optional<std::filesystem::path> previous) : m_Previous(std::move(previous))
+    {}
+    ~RestoreConfigOverride()
+    {
+        Core::ConfigDirOverride::setActiveForTesting(m_Previous);
+    }
+    RestoreConfigOverride(const RestoreConfigOverride&) = delete;
+    RestoreConfigOverride& operator=(const RestoreConfigOverride&) = delete;
+    RestoreConfigOverride(RestoreConfigOverride&&) = delete;
+    RestoreConfigOverride& operator=(RestoreConfigOverride&&) = delete;
+
+  private:
+    std::optional<std::filesystem::path> m_Previous;
+};
+
+// #4106: on Windows the less-privileged side's folder is written only through the folder held. A session that marked
+// one but holds nothing (a refused own folder) saves nothing: writeSettings() fails closed, so no config.toml is written
+// and no folder is made, here not even behind a junction planted on the way.
+TEST_F(UserConfigSaveLoadFixture, ALessPrivilegedFolderWithNothingHeldSavesNothing)
 {
     const auto target = m_TempDir / "elsewhere";
     std::filesystem::create_directories(target / "cfg");
     const auto link = m_TempDir / "linked";
     std::filesystem::create_directory(link);
     const auto made = TestSupport::makeJunction(link, target);
-    ASSERT_FALSE(made.has_value()) << *made;
+    ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
 
-    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
-    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    const RestoreConfigOverride restore(Core::ConfigDirOverride::active());
     Core::ConfigDirOverride::markLessPrivilegedFolder();
     auto& config = UserConfig::get();
-    for (const std::filesystem::path& through : {link / "cfg" / "config.toml", link / "new" / "config.toml"})
-    {
-        config.resetConfigPathForTesting(through);
-        config.load();
-        config.settings().themeId = "mocha";
-        config.save();
-    }
+    const auto through = link / "cfg" / "config.toml";
+    config.resetConfigPathForTesting(through);
+    config.load();
+    config.settings().themeId = "mocha";
+    EXPECT_FALSE(config.writeIfMissing(config.settings())) << "the save is refused: nothing is held";
+    config.save();
     config.resetConfigPathForTesting(m_ConfigPath);
-    Core::ConfigDirOverride::setActiveForTesting(previous);
     EXPECT_TRUE(TestSupport::removeJunction(link));
 
     EXPECT_FALSE(std::filesystem::exists(target / "cfg" / "config.toml")) << "not written behind the junction";
-    EXPECT_FALSE(std::filesystem::exists(target / "new")) << "no folder made behind the junction";
+    EXPECT_FALSE(std::filesystem::exists(link / "cfg" / "config.toml")) << "not written at all";
 }
 #endif
 // #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as

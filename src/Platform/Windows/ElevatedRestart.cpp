@@ -11,6 +11,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cwchar>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -26,7 +27,8 @@
 // clang-format off
 #include <aclapi.h> // GetSecurityInfo
 #include <sddl.h>   // ConvertStringSidToSidW
-#include <shlobj.h> // SHGetKnownFolderPath
+#include <shlobj.h>  // SHGetKnownFolderPath
+#include <userenv.h> // GetUserProfileDirectoryW: the token's own profile (#4106)
 // clang-format on
 
 namespace Platform::Windows::ElevatedRestart
@@ -402,21 +404,135 @@ std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::p
     return checkConfigDir(dir, *root);
 }
 
-std::expected<UniqueHandle, std::string>
-checkOwnConfigDir(const std::filesystem::path& dir, const std::filesystem::path& profilesRoot, ConfigDirFunctions functions)
+namespace
 {
-    // Whoever owns it (see the header): the rest of checkConfigDir()'s checks stand.
+
+/// Whether @p child sits strictly inside @p ancestor, comparing whole components, case-insensitively as NTFS does: a
+/// redirected AppData under another profile is not inside the token's own.
+[[nodiscard]] bool pathIsInside(const std::filesystem::path& child, const std::filesystem::path& ancestor)
+{
+    const std::filesystem::path c = child.lexically_normal();
+    const std::filesystem::path a = ancestor.lexically_normal();
+    if (!sameComponent(c.root_name().native(), a.root_name().native()))
+    {
+        return false;
+    }
+    auto childPart = c.begin();
+    for (auto ancestorPart = a.begin(); ancestorPart != a.end(); ++ancestorPart, ++childPart)
+    {
+        if (childPart == c.end() || !sameComponent(childPart->native(), ancestorPart->native()))
+        {
+            return false;
+        }
+    }
+    return childPart != c.end(); // strictly below: at least one component more
+}
+
+/// @p handle's owner, acceptable to @p ownerAcceptable, or the error why not.
+[[nodiscard]] std::expected<void, std::string>
+requireAcceptableOwner(HANDLE handle, OwnerAcceptableFn ownerAcceptable, std::string_view what)
+{
+    const std::optional<bool> acceptable = ownerAcceptable(handle);
+    if (!acceptable.has_value())
+    {
+        return std::unexpected(std::format("{}'s owner can't be read", what));
+    }
+    if (!*acceptable)
+    {
+        return std::unexpected(std::format("{} is owned by another account, not this one or an administrator", what));
+    }
+    return {};
+}
+
+} // namespace
+
+std::optional<bool> ownerIsOwnAccountOrAdministrators(HANDLE handle)
+{
+    PSID owner = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
+            ERROR_SUCCESS ||
+        owner == nullptr)
+    {
+        if (descriptor != nullptr)
+        {
+            LocalFree(descriptor);
+        }
+        return std::nullopt;
+    }
+    bool acceptable = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE;
+    DWORD size = 0;
+    GetTokenInformation(GetCurrentProcessToken(), TokenUser, nullptr, 0, &size);
+    if (size != 0)
+    {
+        std::vector<std::byte> buffer(size);
+        if (GetTokenInformation(GetCurrentProcessToken(), TokenUser, buffer.data(), size, &size) != FALSE)
+        {
+            const auto* const user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
+            acceptable = acceptable || EqualSid(owner, user->User.Sid) != FALSE;
+        }
+    }
+    LocalFree(descriptor);
+    return acceptable;
+}
+
+std::optional<std::filesystem::path> currentUserProfileDirectory()
+{
+    DWORD size = 0;
+    GetUserProfileDirectoryW(GetCurrentProcessToken(), nullptr, &size); // asks for the length first
+    if (size == 0)
+    {
+        return std::nullopt;
+    }
+    std::wstring buffer(size, L'\0');
+    if (GetUserProfileDirectoryW(GetCurrentProcessToken(), buffer.data(), &size) == FALSE)
+    {
+        return std::nullopt;
+    }
+    buffer.resize(std::wcslen(buffer.c_str()));
+    return std::filesystem::path(buffer);
+}
+
+std::expected<UniqueHandle, std::string> checkOwnConfigDir(const std::filesystem::path& dir,
+                                                           const std::filesystem::path& profileDir,
+                                                           const std::filesystem::path& profilesRoot,
+                                                           ConfigDirFunctions functions,
+                                                           OwnerAcceptableFn ownerAcceptable)
+{
+    if (profileDir.empty())
+    {
+        return std::unexpected(std::string("this account's own profile folder isn't known"));
+    }
+    // Anchored to the token's own profile, not just somewhere under the user profiles folder: a redirected AppData
+    // (HKCU can move it) that points outside this profile is refused.
+    if (!pathIsInside(dir, profileDir))
+    {
+        return std::unexpected(std::format("{} isn't inside this account's own profile {}",
+                                           WinString::wideToUtf8(dir.native()),
+                                           WinString::wideToUtf8(profileDir.native())));
+    }
+    // checkConfigDir()'s own owner check is set aside; the owner is required to pass ownerAcceptable below instead
+    // (this account or Administrators), so a folder an elevated TaskSmack made (owned by Administrators) is kept while
+    // SYSTEM's, TrustedInstaller's or another user's is refused.
     functions.ownerIsPrivileged = [](HANDLE /*handle*/) -> std::optional<bool>
     {
         return false;
     };
     if (functions.getFileAttributes(dir.c_str()) == INVALID_FILE_ATTRIBUTES)
     {
-        // Not there yet: made in its parent, checked and held as the folder itself is, relative to that handle.
+        if (!pathIsInside(dir.parent_path(), profileDir))
+        {
+            return std::unexpected(std::format("{}'s parent isn't inside this account's own profile", WinString::wideToUtf8(dir.native())));
+        }
+        // Not there yet: made in its parent, checked, held and owner-checked the same way, relative to that handle.
         auto parent = checkConfigDir(dir.parent_path(), profilesRoot, functions);
         if (!parent.has_value())
         {
             return std::unexpected(std::format("it isn't there, and its parent can't be held to make it in: {}", parent.error()));
+        }
+        if (auto owner = requireAcceptableOwner(parent->get(), ownerAcceptable, "its parent"); !owner.has_value())
+        {
+            return std::unexpected(std::move(owner.error()));
         }
         const PinnedFolder held(dir.parent_path(), std::move(*parent));
         if (const auto made = held.createFolder(dir.filename()); !made.has_value())
@@ -424,7 +540,16 @@ checkOwnConfigDir(const std::filesystem::path& dir, const std::filesystem::path&
             return std::unexpected(std::format("{}: it can't be made: {}", WinString::wideToUtf8(dir.native()), made.error()));
         }
     }
-    return checkConfigDir(dir, profilesRoot, functions);
+    auto pinned = checkConfigDir(dir, profilesRoot, functions);
+    if (!pinned.has_value())
+    {
+        return pinned;
+    }
+    if (auto owner = requireAcceptableOwner(pinned->get(), ownerAcceptable, WinString::wideToUtf8(dir.native())); !owner.has_value())
+    {
+        return std::unexpected(std::move(owner.error()));
+    }
+    return pinned;
 }
 
 OwnConfigDir holdOwnConfigDir()
@@ -440,7 +565,12 @@ OwnConfigDir holdOwnConfigDir()
     {
         return {.path = dir, .held = std::unexpected(std::string("the user profiles folder isn't known"))};
     }
-    auto pinned = checkOwnConfigDir(dir, *root);
+    const auto profile = currentUserProfileDirectory();
+    if (!profile.has_value())
+    {
+        return {.path = dir, .held = std::unexpected(std::string("this account's own profile folder isn't known"))};
+    }
+    auto pinned = checkOwnConfigDir(dir, *profile, *root);
     if (!pinned.has_value())
     {
         return {.path = dir, .held = std::unexpected(std::move(pinned.error()))};
