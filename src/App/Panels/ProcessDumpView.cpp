@@ -22,6 +22,8 @@
 
 #ifdef _WIN32
 #include "Platform/Windows/DllSearchPolicy.h"
+#elif defined(__linux__)
+#include <unistd.h> // geteuid(): a root session has no default dump folder (#4163)
 #endif
 
 #include <SDL3/SDL_video.h>
@@ -70,6 +72,11 @@ bool noDefaultDumpFolder() noexcept
 #ifdef _WIN32
     // The token and the command line don't change while TaskSmack runs: read once, not at every confirm.
     static const bool noDefault = Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
+    return noDefault;
+#elif defined(__linux__)
+    // Any root process (#4163): sudo -E, su and doas keep the user's TMPDIR, so a dump's default folder there is theirs
+    // to point anywhere, and root writes the dump. As a root session's debug log (#4150), not only one sudo names.
+    static const bool noDefault = ::geteuid() == 0;
     return noDefault;
 #else
     return false;
