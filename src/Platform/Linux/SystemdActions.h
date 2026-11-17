@@ -11,8 +11,8 @@
 // A stop never takes running dependents with it (systemd would stop every unit that Requires=, BindsTo=,
 // PartOf= or Requisite= it):
 // it is refused, naming them, as on Windows. polkit's "interactive authentication required" reads as
-// "Requires administrator": TaskSmack lets polkit prompt only on the user's "Authenticate and retry"
-// (#2304), and then reads its refusals as a dismissed prompt or no agent to show one.
+// "Requires administrator": TaskSmack never lets polkit prompt (sd_bus_set_allow_interactive_authorization off,
+// SystemdUnitActions.cpp), since a session is Administrator or Standard for its whole life (#3580).
 
 #include "Platform/IServiceProbe.h"
 
