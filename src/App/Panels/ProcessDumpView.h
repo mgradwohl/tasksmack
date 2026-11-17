@@ -92,17 +92,30 @@ inline constexpr std::uint64_t DUMP_SIZE_OVERHEAD_DIVISOR = 4; ///< A quarter mo
 [[nodiscard]] std::string
 lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory, bool canChooseFolder = true);
 
+/// Whether this session has no default dump folder (#4141): on Windows, elevated or restarted with --handoff
+/// (DllSearchPolicy::system32OnlyForThisProcess(), the rule main.cpp's lessPrivilegedEnvironment() uses, #4104). Its
+/// %TEMP% is then the less-privileged side's: a junction or another TEMP could steer the dump elsewhere, and anything
+/// running as that user could read the memory of a process only an administrator may open. Read once, then kept.
+/// False on Linux.
+[[nodiscard]] bool noDefaultDumpFolder() noexcept;
+
+/// What the confirm says while it has no folder, in a session with no default one (noDefaultDumpFolder()).
+inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
+    "Choose a folder with Save dump to...: as administrator, TaskSmack has no default folder, because your temp folder "
+    "can be redirected and read by programs running as you. Choose one only administrators can open.";
+
 /// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
-/// do. Empty when there is none; the platform then refuses the dump and says so.
-[[nodiscard]] std::filesystem::path defaultDumpDirectory();
+/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one. Empty when there is
+/// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
+[[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
 
 /// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
-/// folder, else defaultDumpDirectory(). Asks the file system: on the confirm's worker, never the UI thread.
-[[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered);
+/// folder, else defaultDumpDirectory(@p noDefault). Asks the file system: on the confirm's worker, never the UI thread.
+[[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault);
 /// The dump folder to use from @p stored (UserSettings::dumpFolder): in a session whose config folder an elevated
 /// restart was handed (@p handedOver, #2728) only @p chosenThisSession, the one this session's user picked with
 /// Save dump to..., as the stored one is the less-privileged side's and an elevated dump there is a write to a
-/// place it chose. Empty: defaultDumpDirectory().
+/// place it chose. Empty: defaultDumpDirectory(noDefaultDumpFolder()).
 [[nodiscard]] std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::string_view chosenThisSession);
 /// The folder the user last chose (UserSettings::dumpFolder, UTF-8), from the user's config (trustedDumpFolder()): read on
 /// the UI thread, checked by dumpDirectory() on the confirm's worker (#3155).
@@ -125,12 +138,14 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 /// What the dump does and where it goes, for the confirm dialog; then @p warning (lowSpaceWarning(),
 /// or why the folder dialog failed) when there is one. @p dumpsFromSnapshot
 /// (ProcessActionCapabilities::dumpsFromSnapshot) says how long the process pauses: while a snapshot
-/// is taken (Windows), or for the whole write (Linux's gcore, #2241).
+/// is taken (Windows), or for the whole write (Linux's gcore, #2241). An empty @p directory is "the temporary
+/// folder", or "the folder you choose" where @p noDefaultFolder (#4141).
 [[nodiscard]] std::string confirmQuestion(std::string_view processName,
                                           std::int32_t pid,
                                           const std::filesystem::path& directory,
                                           bool dumpsFromSnapshot,
-                                          std::string_view warning = {});
+                                          std::string_view warning = {},
+                                          bool noDefaultFolder = false);
 /// "Writing a dump file of notepad.exe (PID 1234)... 12 s", while it runs.
 [[nodiscard]] std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed);
 
@@ -200,6 +215,22 @@ class ProcessDumpView
         m_FolderDialog = std::move(dialog);
     }
 
+    /// Whether this view has no default folder (#4141). The default constructor reads the session's
+    /// (DumpDetail::noDefaultDumpFolder(), true when elevated on Windows), so a panel's view does too; the
+    /// FolderChosenHandler one starts false. Tests set it here to pin either case. Then a confirm with no folder
+    /// can't be confirmed until one is chosen with "Save dump to..." (needsFolder()).
+    void setNoDefaultFolder(bool noDefault) noexcept
+    {
+        m_NoDefaultFolder = noDefault;
+    }
+
+    /// Whether the confirm has no folder to write to and must wait for "Save dump to..." (#4141): it has none, and
+    /// this view has no default one. Its Create dump file button is disabled meanwhile.
+    [[nodiscard]] bool needsFolder() const noexcept
+    {
+        return m_NoDefaultFolder && m_Directory.empty();
+    }
+
     /// Whether "Save dump to..." is offered with @p actions: the platform's folder dialog, or the fallback.
     [[nodiscard]] bool canChooseFolder(Platform::IProcessActions* actions) const;
     /// Cancels a dump in flight and waits for it, and for a folder dialog still up (shutdown()).
@@ -224,7 +255,7 @@ class ProcessDumpView
 
     /// request() into the folder the user last chose, @p remembered (UserSettings::dumpFolder, UTF-8;
     /// empty: none): the worker checks that it still exists, and uses the default folder where it
-    /// doesn't (DumpDetail::dumpDirectory()), before reading its drive's space. The Actions card's
+    /// doesn't (DumpDetail::dumpDirectory(), none where needsFolder()), before reading its drive's space. The Actions card's
     /// button and the row menu's item.
     void requestInRememberedFolder(const Platform::ProcessTarget& target,
                                    std::string processName,
@@ -252,8 +283,8 @@ class ProcessDumpView
 
     /// The confirm was accepted: starts the dump on a worker, through @p actions (null: the result says
     /// actions are unavailable, and nothing starts). @p actions must outlive the dump: see the file
-    /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up or its
-    /// folder is being checked.
+    /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up, its
+    /// folder is being checked, or it has no folder yet (needsFolder()).
     void confirm(Platform::IProcessActions* actions);
 
     /// The confirm was cancelled or dismissed: nothing starts.
@@ -405,6 +436,7 @@ class ProcessDumpView
     bool m_CheckWanted = false;       // a folder check was asked for and not started yet
     bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
+    bool m_NoDefaultFolder = false;   // no default folder: the user must choose one (setNoDefaultFolder(), #4141)
 };
 
 } // namespace App
