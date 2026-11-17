@@ -908,7 +908,6 @@ using NewFileOwner::FileOwner;
     return ok;
 }
 
-using NewFileOwner::chownCreatedDirectory;
 using NewFileOwner::ownerForNewFiles;
 
 } // namespace
@@ -1051,13 +1050,22 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     const std::optional<FileOwner> newFileOwner =
         ownerForNewFiles(configDir, m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid());
     // Run as root for a user (#3759), a link of theirs on the way to the config folder could send this write, and the
-    // folder's creation, anywhere they chose: nothing is written through one.
-    if (Core::ConfigDirOverride::handedOver())
+    // folder's creation, anywhere they chose: the folder is walked and made by descriptor (#4152), never through a link
+    // of theirs, and what's made is theirs (#2121).
     {
-        if (const std::optional<std::filesystem::path> link = NewFileOwner::userOwnedLinkOnPath(configDir); link.has_value())
+        auto folder = NewFileOwner::openDirectoryForUser(
+            configDir,
+            handedOver,
+            m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid(),
+            saveStepFails(SaveStep::ChownDirectory));
+        if (!folder.has_value())
         {
-            spdlog::error("Not saving settings: {} is a link of a user's, which TaskSmack run as root doesn't write through",
-                          Core::pathToUtf8(*link));
+            spdlog::error("Not saving settings: {}", folder.error());
+            return false;
+        }
+        if (!folder->handOverError.empty())
+        {
+            spdlog::error("Not saving settings: {}", folder->handOverError);
             return false;
         }
     }
@@ -1074,39 +1082,16 @@ bool UserConfig::writeSettings(const UserSettings& settings)
                       Core::pathToUtf8(configDir));
         return false;
     }
-#endif
     if (!std::filesystem::exists(configDir, ec))
     {
-#ifndef _WIN32
-        // The directories about to be made, outermost first, to hand to the user afterwards (#2121).
-        std::vector<std::filesystem::path> created;
-        for (std::filesystem::path at = configDir; !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec);
-             at = at.parent_path())
-        {
-            created.insert(created.begin(), at);
-        }
-#endif
         std::filesystem::create_directories(configDir, ec);
         if (ec)
         {
             spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), ec.message());
             return false;
         }
-#ifndef _WIN32
-        if (newFileOwner.has_value())
-        {
-            for (const std::filesystem::path& dir : created)
-            {
-                if (saveStepFails(SaveStep::ChownDirectory) || !chownCreatedDirectory(dir, *newFileOwner))
-                {
-                    spdlog::error(
-                        "Not saving settings: can't give {} to its user: {}", Core::pathToUtf8(dir), std::system_category().message(errno));
-                    return false;
-                }
-            }
-        }
-#endif
     }
+#endif
 
     // A config folder an elevated restart was handed (#2728) is the less-privileged side's: an elevated TaskSmack
     // writes through no link there, so a link planted after the startup check can't send a write elsewhere.
