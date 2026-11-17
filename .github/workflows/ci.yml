@@ -334,60 +334,6 @@ jobs:
           done
           exit "$status"
 
-  # The revert guard (#3986, after #3972): a change whose diff takes out what a recent merge put in, as two
-  # squash merges did when stale copies of files reverted six merged PRs, which CI and the queue can't see (the
-  # reverted state builds and tests on its own). tools/check-no-reverts.py blames each removed line over the 60
-  # first-parent commits ending at the merge base. Advisory for now: it warns and passes, and lists every finding
-  # and every line it counted as moved in the job summary, to count false positives before it is required. Every
-  # pull request and merge group gets it, docs-only ones too (no paths filter), so it can become a required check
-  # without stalling the queue. Cleared by the ci:revert-ok label, or for one commit by a description naming its PR.
-  revert-guard:
-    name: Revert guard (advisory)
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
-    runs-on: ubuntu-26.04
-    timeout-minutes: 10
-    permissions:
-      contents: read
-    steps:
-      # The change's head and the base it merges into, with enough history for the merge base and the window
-      # before it; too little history is an advisory warning, not a failure.
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-        with:
-          ref: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-          fetch-depth: 300
-          persist-credentials: false
-
-      - name: Fetch the base
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-        run: git fetch --no-tags --depth=300 origin "$BASE_SHA"
-
-      - name: Setup Python
-        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
-        with:
-          python-version: '3.14'
-
-      # The labels and description are untrusted text: they reach the script through the environment and a
-      # file, never the command line. A merge group has neither.
-      - name: Check for reverts of recent merges
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha || github.event.merge_group.base_sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha || github.event.merge_group.head_sha }}
-          PR_LABELS: ${{ join(github.event.pull_request.labels.*.name, ',') }}
-          PR_BODY: ${{ github.event.pull_request.body }}
-        run: |
-          printf '%s' "${PR_BODY}" > "$RUNNER_TEMP/body.md"
-          # The base branch's copy of the guard, not the change's: a branch made before the guard merged has none
-          # (the job exited 2 on #4002), and a change can't loosen the guard that judges it. A base without one
-          # (an old release branch) has nothing to run.
-          guard="$RUNNER_TEMP/check-no-reverts.py"
-          if ! git show "$BASE_SHA:tools/check-no-reverts.py" > "$guard" 2>/dev/null; then
-            echo "::notice title=Revert guard::not run: the base branch has no tools/check-no-reverts.py"
-            exit 0
-          fi
-          python -X utf8 "$guard" --advisory --repo "$PWD" --base "$BASE_SHA" --head "$HEAD_SHA" \
-            --labels "$PR_LABELS" --body-file "$RUNNER_TEMP/body.md" --summary "$GITHUB_STEP_SUMMARY"
-
   # Blocking clang-tidy for Windows-only code (#1233). The Linux run in build-linux-debug can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
   # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job

@@ -2809,11 +2809,12 @@ def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:
 
 @unittest.skipUnless(shutil.which("git"), "git not available")
 class CiRevertGuardTests(unittest.TestCase):
-    """#3986: ci.yml's advisory revert guard runs on every pull request and merge group, docs-only ones too, and its
+    """#3986: the advisory revert guard runs on every pull request and merge group, docs-only ones too, and its
     step warns, passes and writes the summary for a change that reverts a recent merge; the description is data. It
-    runs the base branch's copy of the guard, so a branch made before the guard merged is still checked (#4002)."""
+    runs the base branch's copy of the guard, so a branch made before the guard merged is still checked (#4002). Its
+    own workflow since #4095, so a label added or removed and a description edited run it again."""
 
-    WORKFLOW = WORKFLOWS / "ci.yml"
+    WORKFLOW = WORKFLOWS / "revert-guard.yml"
     JOB = "revert-guard"
     STEP = "Check for reverts of recent merges"
 
@@ -2825,6 +2826,9 @@ class CiRevertGuardTests(unittest.TestCase):
         on = text.split("\non:\n", 1)[1].split("\n\n", 1)[0]
         self.assertNotIn("paths", on, "no paths filter: a required check must report on every change")
         self.assertIn("merge_group:", on)
+        for event in ("labeled", "unlabeled", "edited"):
+            self.assertIn(event, on, f"a {event} PR runs it again: the label or the description can clear a finding (#4095)")
+        self.assertNotIn("revert-guard:", (WORKFLOWS / "ci.yml").read_text(encoding="utf-8"), "not also in ci.yml")
         step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
         self.assertIn("--advisory", step.run, "advisory until the maintainer requires it (#3986)")
         self.assertNotIn("${{", step.run, "the labels and description reach it through the environment")
