@@ -1610,6 +1610,8 @@ class ProcessDetailsDialogsTest : public ProcessDetailsPanelRenderTest
         actions->setCapabilities(caps);
         m_Mock = actions.get();
         m_Panel = std::make_unique<ProcessDetailsPanel>(std::move(actions));
+        // The panel's dump view reads this session's elevation (#4141): pinned, so an elevated run behaves the same.
+        dumpView().setNoDefaultFolder(false);
         Core::ActiveTabChangedEvent shown("ProcessDetails");
         m_Panel->onEvent(shown);
         m_Panel->setSelectedPid(PID, START_TICKS);

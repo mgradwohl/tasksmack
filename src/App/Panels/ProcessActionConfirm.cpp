@@ -150,7 +150,7 @@ Outcome renderOpen(bool& showRequested,
             .label = confirmLabel,
             .fills = destructive ? &dangerFills : nullptr,
             .tooltip = nullptr,
-            .disabled = leading.busy,
+            .disabled = leading.busy || leading.confirmDisabled,
         };
         const UI::Widgets::DialogFooterButton cancelButton{.label = "Cancel", .fills = nullptr, .tooltip = nullptr};
         const UI::Widgets::DialogFooterButton leadingButton{

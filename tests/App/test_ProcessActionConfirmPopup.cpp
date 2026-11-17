@@ -451,6 +451,37 @@ TEST_F(ProcessActionConfirmPopupTest, AnotherSelectionClosesTheDumpConfirmUnconf
     EXPECT_EQ(mock.createDumpCount(), 0);
 }
 
+// #4141: with no default folder (elevated), the confirm's Create dump file button is disabled: pressing it leaves the
+// modal open and writes nothing, until Save dump to... chooses a folder.
+TEST_F(ProcessActionConfirmPopupTest, WithNoFolderTheDumpConfirmsButtonDoesNothing)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.requestInRememberedFolder(TARGET_A, "a", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true)); // its folder, resolved on the worker: none
+    ASSERT_TRUE(view.needsFolder());
+    const auto draw = [&]
+    {
+        view.render(&mock, &TARGET_A);
+    };
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    ASSERT_TRUE(topModalTitle().starts_with("Create a dump file of a (PID 1001)?")) << topModalTitle();
+
+    activateConfirmDump();
+    static_cast<void>(runFrame(draw));
+    static_cast<void>(runFrame(draw));
+    EXPECT_TRUE(topModalTitle().starts_with("Create a dump file of a (PID 1001)?")) << "still open: " << topModalTitle();
+    EXPECT_TRUE(view.confirmPending());
+    EXPECT_FALSE(view.busy());
+    EXPECT_EQ(mock.createDumpCount(), 0);
+
+    pressEscape(draw);
+    static_cast<void>(runFrame(draw));
+    EXPECT_FALSE(view.active());
+}
+
 TEST_F(ProcessActionConfirmPopupTest, EscapeStopsADumpBeingWrittenAndClosesItsProgress)
 {
     TestMocks::MockProcessActions mock;
