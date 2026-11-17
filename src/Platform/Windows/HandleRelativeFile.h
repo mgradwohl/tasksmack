@@ -157,10 +157,14 @@ using OwnedSecurityDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
 /// The security descriptor @p sddl describes, or null when it doesn't parse.
 [[nodiscard]] OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl);
 
-/// The folder @p folder opened by its path to be a held parent (FILE_LIST_DIRECTORY and FILE_READ_ATTRIBUTES, shared
-/// read and write, never delete), a reparse point opened itself, never followed: callers check isPlainFolder(). The
-/// error is GetLastError()'s message.
-[[nodiscard]] std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder);
+/// The folder @p folder opened by its path to be a held parent (FILE_LIST_DIRECTORY and FILE_READ_ATTRIBUTES, and
+/// @p extraAccess, such as READ_CONTROL to read its DACL; shared read and write, never delete), a reparse point opened
+/// itself, never followed: callers check isPlainFolder(). The error is GetLastError()'s message.
+[[nodiscard]] std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess = 0);
+
+/// Whether two paths are the same text, ignoring case as NTFS compares names (CompareStringOrdinal): a held folder's
+/// finalPathOf() against the path it was opened by.
+[[nodiscard]] bool samePathText(std::wstring_view left, std::wstring_view right) noexcept;
 
 /// Whether an existing folder's owner (read through the handle) is trusted to take it over in place; nullopt when the
 /// owner can't be read.

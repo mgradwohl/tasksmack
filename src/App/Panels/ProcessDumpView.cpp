@@ -67,6 +67,24 @@ std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesys
                        canChooseFolder ? "choose another folder with Save dump to..., or free some space." : "free some space first.");
 }
 
+std::string folderAccessWarning(const Platform::DumpFolderCheck& check)
+{
+    switch (check.access)
+    {
+    case Platform::DumpFolderAccess::ReadableByUser:
+        return std::string(FOLDER_READABLE_TEXT);
+    case Platform::DumpFolderAccess::Unknown:
+        return std::string(FOLDER_ACCESS_UNKNOWN_TEXT);
+    case Platform::DumpFolderAccess::Refused:
+        return check.problem.empty() ? std::string("TaskSmack can't write a dump to this folder. Choose another with Save dump to...")
+                                     : check.problem;
+    case Platform::DumpFolderAccess::NotChecked:
+    case Platform::DumpFolderAccess::AdministratorsOnly:
+        break;
+    }
+    return {};
+}
+
 bool noDefaultDumpFolder() noexcept
 {
 #ifdef _WIN32
@@ -337,6 +355,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_OpenFolder = std::move(other.m_OpenFolder);
         m_DismissAfterOpen = other.m_DismissAfterOpen;
         m_NoDefaultFolder = other.m_NoDefaultFolder;
+        m_FolderRefused = other.m_FolderRefused;
     }
     return *this;
 }
@@ -384,6 +403,7 @@ void ProcessDumpView::openConfirm(const Platform::ProcessTarget& target,
     m_Directory = std::move(directory);
     m_FolderFailure.clear();
     m_SpaceWarning.clear();
+    m_FolderRefused = false;
     // Whether the platform dumps from a snapshot: the pause the confirm promises (#2241).
     m_DumpsFromSnapshot = actions != nullptr && actions->actionCapabilities().dumpsFromSnapshot;
     // Built once here, not every frame the dialog is up.
@@ -428,10 +448,15 @@ void ProcessDumpView::startCheckIfDue()
                 DumpDetail::ConfirmFacts facts{
                     .directory = resolve ? DumpDetail::dumpDirectory(remembered, noDefault) : directory,
                     .space = {},
+                    .folder = {},
                 };
                 if (actions != nullptr)
                 {
                     facts.space = actions->dumpSpace(target, facts.directory);
+                    if (!facts.directory.empty())
+                    {
+                        facts.folder = actions->dumpFolderAccess(facts.directory); // who could read it (#4164)
+                    }
                 }
                 return facts;
             }))
@@ -463,11 +488,19 @@ void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProc
     if (check.has_value())
     {
         m_Directory = std::move(check->directory);
-        m_SpaceWarning = DumpDetail::lowSpaceWarning(check->space, m_Directory, canChooseFolder(actions));
+        // Who can read a dump there first (#4164), then whether it fits.
+        m_SpaceWarning = DumpDetail::folderAccessWarning(check->folder);
+        m_FolderRefused = check->folder.access == Platform::DumpFolderAccess::Refused; // until another is chosen
+        if (const std::string space = DumpDetail::lowSpaceWarning(check->space, m_Directory, canChooseFolder(actions)); !space.empty())
+        {
+            m_SpaceWarning += m_SpaceWarning.empty() ? "" : "\n\n";
+            m_SpaceWarning += space;
+        }
     }
     else
     {
         // The dump is still offered: the warning is a forecast, and the dump says why if it fails.
+        m_FolderRefused = false;
         m_SpaceWarning = std::format("Couldn't check the free space on the folder's drive: {}", check.error());
     }
     rebuildQuestion();
@@ -569,9 +602,9 @@ bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool 
 
 void ProcessDumpView::confirm(Platform::IProcessActions* actions)
 {
-    if (!m_ConfirmPending || choosingFolder() || checkingFolder() || needsFolder())
+    if (!m_ConfirmPending || choosingFolder() || checkingFolder() || needsFolder() || m_FolderRefused)
     {
-        return; // no folder yet: never the less-privileged side's %TEMP% (#4141)
+        return; // no folder yet (never the less-privileged side's %TEMP%, #4141), or one the dump would refuse (#4164)
     }
     m_ConfirmPending = false;
     m_ShowConfirm = false;
@@ -689,7 +722,7 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
             .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
             .busy = choosingFolder() || checkingFolder(),
             .pressed = &choosePressed,
-            .confirmDisabled = needsFolder(), // until a folder is chosen (#4141)
+            .confirmDisabled = needsFolder() || m_FolderRefused, // until a folder is chosen (#4141) that isn't refused (#4164)
         };
         // The shared confirm dialog under an ID of its own: the panel's own confirm (Kill, Suspend...)
         // is submitted every frame too, and must never see this one open as its own.

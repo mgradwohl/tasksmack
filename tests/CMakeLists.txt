@@ -940,6 +940,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_SdlEnvironment.cpp  # the SDL variables an elevated TaskSmack.exe removes, through a fake environment and this process's (#4103)
     Platform/test_PinnedFolder.cpp  # the handed-over config folder: every open relative to its held handle, through fakes and in a temp folder (#3774)
     Platform/test_HandleRelativeFile.cpp  # opens, renames and deletes relative to a held folder handle, through fakes and in a temp folder (#4143)
+    Platform/test_WindowsDumpFolder.cpp  # an elevated dump's held folder: junctions refused, and who can read it, on temp folders with explicit SDDL (#4164)
     Platform/test_WindowsFactory.cpp  # every Windows factory product is the Windows one, with Windows' capabilities (#3676)
     Platform/test_WindowsTaskManagerReplacement.cpp  # taskmgr.exe's IFEO key, on a scratch HKCU key, and the helper's checks (#3072)
     Platform/test_WindowsUserSessions.cpp  # the WTS sessions reader and actions through fakes, and this machine's sessions (#3076)

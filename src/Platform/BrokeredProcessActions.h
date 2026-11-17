@@ -92,6 +92,7 @@ class BrokeredProcessActions final : public IProcessActions
     [[nodiscard]] ProcessDumpResult
     createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;
     [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
+    [[nodiscard]] DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory) override;
     [[nodiscard]] FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow) override;
     [[nodiscard]] CpuAffinityLayout affinityLayout() const override;
     /// In-process only (#3084): the helper serves no wait chain read, so an elevated process's threads read as access denied.

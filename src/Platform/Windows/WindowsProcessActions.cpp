@@ -11,6 +11,10 @@
 #include "WindowsAffinityMath.h"
 #include "WindowsConversions.h"
 #include "WindowsDebugPrivilege.h"
+#ifndef TASKSMACK_NO_PROCESS_DUMPS
+#include "DllSearchPolicy.h"
+#include "WindowsDumpFolder.h"
+#endif
 #include "WindowsFileLocation.h"
 #include "WindowsFolderPicker.h"
 #include "WindowsHandles.h"
@@ -531,6 +535,11 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
         .readCores = &realReadCores,
         .readCpuSets = &realReadCpuSets,
         .pssCaptureSnapshot = &PssCaptureSnapshot,
+#ifdef TASKSMACK_NO_PROCESS_DUMPS
+        .holdDumpFolder = nullptr, // TaskSmackHelper.exe writes no dumps
+#else
+        .holdDumpFolder = &Windows::DllSearchPolicy::system32OnlyForThisProcess, // elevated or hand-off (#4164)
+#endif
         .isProcessCritical = &IsProcessCritical,
         .getProcessInformation = &GetProcessInformation,
         .ntSuspendProcess = Windows::ntSuspendProcess(),
@@ -588,6 +597,7 @@ WindowsProcessActions::WindowsProcessActions(WindowsProcessFunctions functions,
       // Read once too (#4108): which prompt the runas verb raises doesn't change while TaskSmack runs.
       m_AsksCredentials(m_Fns.runProgram.shellExecute != nullptr && m_Fns.runProgram.asksCredentials != nullptr &&
                         m_Fns.runProgram.asksCredentials()),
+      m_HoldDumpFolder(m_Fns.holdDumpFolder != nullptr && m_Fns.holdDumpFolder()),
       m_EfficiencyPriorities(std::move(efficiencyPriorities))
 {
     if (m_EfficiencyPriorities == nullptr)
@@ -1203,6 +1213,11 @@ DumpSpace WindowsProcessActions::dumpSpace(const ProcessTarget& target, const st
     return IProcessActions::dumpSpace(target, directory);
 }
 
+DumpFolderCheck WindowsProcessActions::dumpFolderAccess(const std::filesystem::path& directory)
+{
+    return IProcessActions::dumpFolderAccess(directory);
+}
+
 FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
 {
     return IProcessActions::chooseDumpFolder(initial, ownerWindow);
@@ -1215,7 +1230,12 @@ WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesy
     // A snapshot needs more access than a live dump (Windows::SNAPSHOT_PROCESS_ACCESS). A process that
     // refuses it may still allow a live dump's, so that is asked for next, and the dump says why it
     // is live.
-    Windows::DumpSource source{.captureSnapshot = m_Fns.pssCaptureSnapshot, .liveReason = {}, .processMachine = nullptr};
+    Windows::DumpSource source{
+        .captureSnapshot = m_Fns.pssCaptureSnapshot,
+        .liveReason = {},
+        .processMachine = nullptr,
+        .holdFolder = m_HoldDumpFolder,
+    };
     VerifiedProcess process;
     bool snapshotOpenRefused = false;
     if (source.captureSnapshot != nullptr)
@@ -1268,6 +1288,12 @@ DumpSpace WindowsProcessActions::dumpSpace(const ProcessTarget& target, const st
         space.processBytes = Windows::processPrivateBytes(process.handle.get());
     }
     return space;
+}
+
+DumpFolderCheck WindowsProcessActions::dumpFolderAccess(const std::filesystem::path& directory)
+{
+    // The checks createDump() will make, read now for the confirm (#4164): createDump() makes them again, as it opens it.
+    return m_HoldDumpFolder ? Windows::checkDumpFolder(directory) : DumpFolderCheck{};
 }
 
 FolderChoice WindowsProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
