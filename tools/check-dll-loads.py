@@ -22,7 +22,13 @@ TaskSmack is). So:
         as its very next statement, SdlEnvironment::removeForThisProcess( (#4103), passed
         system32OnlyForThisProcess() and not another value, with SetDefaultDllDirectories a statement of
         its own (nothing but whitespace between its ")" and ";", #4114): an elevated TaskSmack drops the SDL variables that name a DLL SDL loads by full path (SDL3_DYNAMIC_API,
-        read at SDL's first call, and SDL_OPENGL_LIBRARY) before anything can make an SDL call.
+        read at SDL's first call, and SDL_OPENGL_LIBRARY) before anything can make an SDL call. Its
+        SetDefaultDllDirectories argument must be exactly "DllSearchPolicy::system32OnlyForThisProcess() ?
+        LOAD_LIBRARY_SEARCH_SYSTEM32 : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32" (so no
+        SDL_ identifier or other call runs before the scrub), the scrub is its only removeForThisProcess( call, and
+        the statement after it is the fail-closed "if (... !x.empty())" over stillSetInThisProcess() that returns
+        (#4169). A [[nodiscard]] result would be enforced by the compiler but not that WinMain returns on it, and
+        would reshape the API and its tests; this rule checks the return, which is the part that matters.
     That restricts what third-party code (SDL, the GL loaders) and the DLLs it loads find by name;
     the linker's /DEPENDENTLOADFLAG:0x800 covers the imports (cmake/CompilerOptions.cmake).
 
@@ -67,8 +73,26 @@ SDL_SCRUB = "SdlEnvironment::removeForThisProcess("
 SDL_SCRUB_CALL = re.compile(r"(?:\w+\s*::\s*)*SdlEnvironment\s*::\s*removeForThisProcess\s*\(")
 # What that call must be passed: the rule WinMain's SetDefaultDllDirectories uses (#4114).
 SCRUB_ARGUMENT = "system32OnlyForThisProcess()"
-# The whole argument, qualified or not: nothing negating it, combining it, or merely containing its name (#4114).
-SCRUB_ARGUMENT_SHAPE = re.compile(r"(?:\w+\s*::\s*)*system32OnlyForThisProcess\s*\(\s*\)")
+# The rule's call, as written: the qualifier is pinned to DllSearchPolicy::, optionally under Platform::Windows:: and
+# a leading global "::" (#4169), so another namespace's system32OnlyForThisProcess() or a bare name is rejected.
+POLICY_CALL = (
+    r"(?:::\s*)?(?:Platform\s*::\s*Windows\s*::\s*)?DllSearchPolicy\s*::\s*system32OnlyForThisProcess\s*\(\s*\)"
+)
+# The whole argument of the scrub: nothing negating it, combining it, or merely containing its name (#4114).
+SCRUB_ARGUMENT_SHAPE = re.compile(POLICY_CALL)
+# The one shape WinMain's SetDefaultDllDirectories argument may have (#4169): the rule picks System32 only, or the
+# application folder as well.
+SET_DEFAULT_ARGUMENT_SHAPE = re.compile(
+    POLICY_CALL + r"\s*\?\s*LOAD_LIBRARY_SEARCH_SYSTEM32\s*:\s*"
+    r"LOAD_LIBRARY_SEARCH_APPLICATION_DIR\s*\|\s*LOAD_LIBRARY_SEARCH_SYSTEM32"
+)
+SDL_IDENTIFIER = re.compile(r"\bSDL\d*_\w*")
+CALLEE = re.compile(r"(\w+)\s*(?:<[^()]*>)?\s*\(")
+# WinMain's check right after the scrub: "if (... !x.empty())" over stillSetInThisProcess(), whose block returns (#4169).
+STILL_SET_CALL = re.compile(r"\bstillSetInThisProcess\s*\(\s*\)")
+NOT_EMPTY = re.compile(r"!\s*\w+\s*\.\s*empty\s*\(\s*\)")
+RETURN = re.compile(r"\breturn\b")
+IF_STATEMENT = re.compile(r"if\s*\(")
 NAMESPACE_ALIAS = re.compile(r"namespace\s+\w+\s*=[^;]*;")
 LEADING_SPACE = re.compile(r"\s*")
 
@@ -98,6 +122,21 @@ def call_arguments(text: str, open_paren: int) -> str:
     return text[open_paren + 1 :]
 
 
+def matching_brace(text: str, open_brace: int) -> int:
+    """The index of the brace closing the one at @p open_brace (or the end of @p text, if unbalanced). String and
+    character literals are skipped, so a brace in one doesn't count."""
+    blanked = TOKENS.sub(lambda match: " " * len(match.group(0)), text)
+    depth = 0
+    for index in range(open_brace, len(blanked)):
+        if blanked[index] == "{":
+            depth += 1
+        elif blanked[index] == "}":
+            depth -= 1
+            if depth == 0:
+                return index
+    return len(text)
+
+
 def check_text(text: str, name: str) -> list[str]:
     errors: list[str] = []
     code = strip_comments(text)
@@ -115,6 +154,27 @@ def check_text(text: str, name: str) -> list[str]:
                 "directory first; pass LOAD_LIBRARY_SEARCH_SYSTEM32"
             )
     return errors
+
+
+def check_fail_closed(body: str, position: int) -> str | None:
+    """Why the text at @p position in @p body (the function's body, after the scrub) isn't the fail-closed check, or None
+    if it is: "if (... !x.empty())" over SdlEnvironment::stillSetInThisProcess() whose block returns (#4169). Without it
+    a scrub that couldn't clear a variable lets TaskSmack run on to SDL."""
+    guard = IF_STATEMENT.match(body, position)
+    if guard is None:
+        return (
+            "the statement after the SDL scrub must be the fail-closed check, 'if (... "
+            "stillSetInThisProcess() ... !x.empty())' returning a failure (#4169)"
+        )
+    condition = call_arguments(body, guard.end() - 1)
+    if STILL_SET_CALL.search(condition) is None or NOT_EMPTY.search(condition) is None:
+        return "the check after the SDL scrub must test !<names>.empty() of SdlEnvironment::stillSetInThisProcess() (#4169)"
+    open_brace = LEADING_SPACE.match(body, guard.end() + len(condition) + 1).end()
+    if not body.startswith("{", open_brace):
+        return "the check after the SDL scrub must have a braced block that returns (#4169)"
+    if RETURN.search(body[open_brace : matching_brace(body, open_brace) + 1]) is None:
+        return "the check after the SDL scrub must return a failure when a name is still set (#4169)"
+    return None
 
 
 def check_entry_point(text: str, name: str, function: str, rule: str) -> list[str]:
@@ -146,6 +206,20 @@ def check_entry_point(text: str, name: str, function: str, rule: str) -> list[st
             f"'? {SYSTEM32_FLAG} :', for an elevated TaskSmack"
         ]
     if rule == BRANCH:
+        stray = [m.group(0) for m in SDL_IDENTIFIER.finditer(arguments)]
+        stray += [m.group(1) + "(" for m in CALLEE.finditer(arguments) if m.group(1) != SCRUB_ARGUMENT.rstrip("()")]
+        if stray:
+            return [
+                f"{name}:{line}: {function}()'s SetDefaultDllDirectories arguments must hold no SDL_ identifier and "
+                f"no call but {SCRUB_ARGUMENT} (found {', '.join(stray)}): nothing may run before the scrub (#4169)"
+            ]
+        if SET_DEFAULT_ARGUMENT_SHAPE.fullmatch(arguments.strip()) is None:
+            return [
+                f"{name}:{line}: {function}()'s SetDefaultDllDirectories must be passed exactly "
+                f"'DllSearchPolicy::{SCRUB_ARGUMENT} ? {SYSTEM32_FLAG} : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | "
+                f"{SYSTEM32_FLAG}', optionally under Platform::Windows:: or a leading '::' (#4169)"
+            ]
+    if rule == BRANCH:
         close = call.end() - 1 + len(arguments) + 1
         statement_end = body.find(";", close)
         # Nothing but whitespace between the call's ")" and its ";": no "SetDefaultDllDirectories(...), SDL_SetHint(...);" (#4114)
@@ -162,10 +236,28 @@ def check_entry_point(text: str, name: str, function: str, rule: str) -> list[st
                 f"{SDL_SCRUB}...): an elevated TaskSmack removes the SDL variables (SDL3_DYNAMIC_API, read at SDL's "
                 "first call, SDL_OPENGL_LIBRARY) that name a DLL SDL loads by full path, before any SDL call (#4103)"
             ]
-        if SCRUB_ARGUMENT_SHAPE.fullmatch(call_arguments(body, scrub.end() - 1).strip()) is None:
+        scrub_arguments = call_arguments(body, scrub.end() - 1)
+        if SCRUB_ARGUMENT_SHAPE.fullmatch(scrub_arguments.strip()) is None:
             return [
                 f"{name}:{line}: {function}()'s {SDL_SCRUB}...) must be passed {SCRUB_ARGUMENT}, the rule "
                 "SetDefaultDllDirectories uses, not another value (#4114)"
+            ]
+        scrub_close = scrub.end() - 1 + len(scrub_arguments) + 1
+        scrub_end = body.find(";", scrub_close)
+        if scrub_end < 0 or body[scrub_close + 1 : scrub_end].strip() != "":
+            return [
+                f"{name}:{line}: {function}()'s {SDL_SCRUB}...) call must be a statement of its own: only whitespace "
+                "between its closing parenthesis and its ';' (#4169)"
+            ]
+        failure = check_fail_closed(body, LEADING_SPACE.match(body, scrub_end + 1).end())
+        if failure is not None:
+            return [f"{name}:{line}: {function}(): {failure}"]
+        function_open = definition.end() - 1
+        function_body = code[function_open : matching_brace(code, function_open) + 1]
+        if len(SDL_SCRUB_CALL.findall(function_body)) != 1:
+            return [
+                f"{name}:{line}: {function}() must call {SDL_SCRUB}...) exactly once: a second call before the check "
+                "clears the names still set (#4169)"
             ]
     return []
 

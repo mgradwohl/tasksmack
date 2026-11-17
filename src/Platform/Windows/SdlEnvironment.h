@@ -102,6 +102,12 @@ struct EnvironmentOps
 /// At most MAX_LOGGED_NAMES of @p names through logName(), then "and N more" if there are others.
 [[nodiscard]] std::vector<std::string> loggedNames(const std::vector<std::wstring>& names);
 
+/// The environment block as @p charAt reads it (GetEnvironmentStringsW()'s: "NAME=value" strings, each ending in a null,
+/// the last followed by another), up to and including the last string's null. An empty environment is one lone null: the
+/// character after it is never read, so a block that is only a terminator can't be read past. @p charAt is asked for
+/// index n+1 only after index n was a null that ends a string, so the block's own terminator is the farthest it reads.
+[[nodiscard]] std::wstring copyEnvironmentBlock(const std::function<wchar_t(std::size_t)>& charAt);
+
 /// removeSdlVariables() on this process's environment: GetEnvironmentStringsW(), GetEnvironmentVariableW() and
 /// SetEnvironmentVariableW(name, nullptr), with _wputenv_s(name, L"") for the CRT's copy. WinMain calls it right after
 /// SetDefaultDllDirectories, before any SDL call, and runApp() logs the names it removed once logging is up
@@ -114,8 +120,10 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only);
 /// The names the last removeForThisProcess() could not remove: still set when it was done. Not empty means the
 /// process may still take an SDL setting, or a library, from the less-privileged side, so WinMain refuses to start
 /// (logging isn't up; it says so in a message box and OutputDebugStringW). Also holds UNREADABLE_BLOCK if the
-/// environment block couldn't be read. Reachable only if the OS refuses a removal or more than eight entries answer
-/// to one name; not through HKCU\Environment, whose names compare case-insensitively.
+/// environment block couldn't be read. Reachable only if the OS refuses a removal, a removal reports success but takes
+/// a different entry (two names that compare equal), or more than eight entries answer to one name; not through
+/// HKCU\Environment, whose names compare case-insensitively. An unreadable block refuses to start too, and so does
+/// --handoff without elevation, which also scrubs.
 [[nodiscard]] const std::vector<std::wstring>& stillSetInThisProcess() noexcept;
 
 } // namespace Platform::Windows::SdlEnvironment
