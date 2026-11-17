@@ -51,9 +51,7 @@
 
 #include <system_error>
 
-#include <elf.h>      // AT_SECURE
-#include <sys/auxv.h> // getauxval()
-#include <unistd.h>   // geteuid(): the gate (#4154) and a root session's log (#4150)
+#include <unistd.h> // geteuid(): a root session's log (#4150)
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -153,20 +151,7 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 #ifdef _WIN32
     return Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
 #elif defined(__linux__)
-    // #4154: secure execution (setuid, setgid, file capabilities: #4171), capabilities held another way, or root that
-    // sudo, pkexec, doas or a user's process above it names a user for. No passwd lookup, and nothing the user's
-    // environment can set to turn it off. Worked out once.
-    static const bool lessPrivileged = []
-    {
-        const auto effective = ::geteuid(); // uid_t
-        return Platform::SessionUser::environmentMayBeAnotherUsers(
-            effective,
-            ::getauxval(AT_SECURE) != 0,
-            effective != 0 && Platform::SessionUser::processHoldsCapabilities(),
-            &Platform::SessionUser::processVariable,
-            effective == 0 && Platform::SessionUser::aUserIsAbove(::getpid(), &Platform::SessionUser::processIds));
-    }();
-    return lessPrivileged;
+    return Platform::SessionUser::thisProcessMayHaveAnotherUsersEnvironment(); // #4154: worked out once, there
 #else
     return false;
 #endif
@@ -943,7 +928,7 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
         }
         OutputDebugStringW((L"TaskSmack: SDL environment variables still set, not starting: " + names + L"\n").c_str());
         MessageBoxW(nullptr,
-                    L"TaskSmack could not clear an inherited SDL setting and will not start elevated.",
+                    L"TaskSmack will not start: it couldn't clear the SDL settings it inherited (or couldn't read its environment).",
                     L"TaskSmack",
                     MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return EXIT_FAILURE;

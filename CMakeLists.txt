@@ -393,6 +393,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/PinnedFolder.cpp # the handed-over config folder, opened only relative to its held handle (#3774)
     src/Platform/Windows/HandleRelativeFile.cpp # opens, renames and deletes relative to a held folder handle: PinnedFolder and the elevated log (#4143)
     src/Platform/Windows/WindowsProcessDump.cpp
+    src/Platform/Windows/WindowsDumpFolder.cpp # an elevated dump's folder: held, checked, and who can read it (#4164)
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
@@ -679,6 +680,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsTaskManagerReplacement.h
         src/Platform/Windows/WindowsTaskManagerInstall.h
         src/Platform/Windows/WindowsProcessDump.h
+        src/Platform/Windows/WindowsDumpFolder.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsWaitChain.h
         src/Platform/Windows/WindowsWaitChainMath.h

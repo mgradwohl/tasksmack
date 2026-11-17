@@ -26,8 +26,10 @@
 #include <utility>
 #include <vector>
 
+#include <elf.h> // AT_SECURE
 #include <grp.h>
 #include <pwd.h>
+#include <sys/auxv.h> // getauxval()
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -363,6 +365,22 @@ struct ProcessIds
         }
     }
     return false;
+}
+
+/// environmentMayBeAnotherUsers() for this process, worked out once (#4154): the rule for the writing hooks (#4104),
+/// the SDL and loader scrub (#4111, #4151) and the config folder (#4172), in one place.
+[[nodiscard]] inline bool thisProcessMayHaveAnotherUsersEnvironment()
+{
+    static const bool mayBe = []
+    {
+        const auto effective = ::geteuid(); // uid_t
+        return environmentMayBeAnotherUsers(effective,
+                                            ::getauxval(AT_SECURE) != 0,
+                                            effective != 0 && processHoldsCapabilities(),
+                                            &processVariable,
+                                            effective == 0 && aUserIsAbove(::getpid(), &processIds));
+    }();
+    return mayBe;
 }
 
 /// This process's invoking user (invokingUser() for its effective uid, environment and passwd database), looked up

@@ -57,6 +57,7 @@
 #include <spawn.h>
 #include <sys/poll.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/types.h> // NOLINT(misc-include-cleaner) - pid_t; clang-tidy 23 maps it to no header
 // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG, WIFEXITED and WEXITSTATUS, which tidy maps elsewhere (see their uses)
@@ -777,6 +778,29 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     {
         return std::unexpected(std::format("The folder {} doesn't exist", directory.string()));
     }
+    // Run as root, gcore writes the dump by path as root (#4176): only into a folder only root may change, so no link
+    // can be planted in it, nor the folder swapped. Not root, it writes as this account, into its own files.
+    if (::geteuid() == 0)
+    {
+        std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat);
+        if (!refusal.has_value())
+        {
+            // Fail closed: a filesystem that won't say what it is (a FUSE daemon can refuse statfs) may be a user's (the
+            // second #4177 review).
+            struct statvfs vfs = {};
+            struct statfs fs = {};
+            refusal = (::statvfs(directory.c_str(), &vfs) != 0 || ::statfs(directory.c_str(), &fs) != 0)
+                        ? std::optional(std::format("TaskSmack can't tell what filesystem {} is on", directory.string()))
+                        : LinuxCoreDump::userMountRefusal(directory, vfs.f_flag, static_cast<long>(fs.f_type));
+        }
+        if (refusal.has_value())
+        {
+            spdlog::warn("Not dumping PID {}: {}", target.pid, *refusal);
+            return std::unexpected(std::format("TaskSmack runs as root, so a dump goes only into a folder only root may change, "
+                                               "such as root's home folder: {}",
+                                               *refusal));
+        }
+    }
 
     // A name not taken yet: the process name, PID and local time, then " (2)" and on. Reserved by
     // creating it (O_EXCL), an empty placeholder until the dump is renamed over it (#2147): two dumps
@@ -817,12 +841,57 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     // gcore writes "<prefix>.<pid>"; the prefix marks it partial until it is renamed into place.
     const std::filesystem::path prefix = file.string() + ".partial";
     const std::filesystem::path written = LinuxCoreDump::gcoreOutputFile(prefix, target.pid);
+    struct stat workingFile = {}; // its identity, to know it's still this file after gdb (the second #4177 review)
+    // gdb's file, made first by this process: owner-only from the start (#4175), so no one opens it mid-write and keeps
+    // reading, and the name reserved (O_EXCL, O_NOFOLLOW) against a link planted where gdb writes by path (#4176). gdb
+    // writes into it (fopen "w" truncates an empty file, and bfd doesn't remove one first).
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int partial = ::open(written.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (partial < 0)
+        {
+            const int error = errno;
+            releaseName();
+            return std::unexpected(
+                std::format("Couldn't make the dump's working file {}: {}", written.string(), std::system_category().message(error)));
+        }
+        if (::fstat(partial, &workingFile) != 0)
+        {
+            const int error = errno;
+            ::close(partial);
+            std::filesystem::remove(written, ec);
+            releaseName();
+            return std::unexpected(
+                std::format("Couldn't read the dump's working file {}: {}", written.string(), std::system_category().message(error)));
+        }
+        ::close(partial);
+    }
     const bool wasStopped = processIsStopped(syscalls(), target.pid);
     const std::int32_t tracerBefore = syscalls().tracerPid(target.pid).value_or(0);
     spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
-    const ToolRun run = runCancellable(syscalls(), LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
+    // Under umask 077, so a file gdb makes anew (one swapped out of a shared folder: bfd recreates a non-empty one) is
+    // owner-only too (the second #4177 review). Process-wide for the run, which only narrows what anything else makes.
+    struct UmaskScope
+    {
+        mode_t previous = ::umask(S_IRWXG | S_IRWXO);
+        UmaskScope() = default;
+        UmaskScope(const UmaskScope&) = delete;
+        UmaskScope& operator=(const UmaskScope&) = delete;
+        UmaskScope(UmaskScope&&) = delete;
+        UmaskScope& operator=(UmaskScope&&) = delete;
+        ~UmaskScope()
+        {
+            ::umask(previous);
+        }
+    };
+    const ToolRun run = [&]
+    {
+        const UmaskScope ownerOnly;
+        return runCancellable(syscalls(), LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
+    }();
     if (run.spawnError)
     {
+        std::filesystem::remove(written, ec);
         releaseName();
         return std::unexpected(std::format("Couldn't start {}: {}", gcore, run.spawnError.message()));
     }
@@ -850,13 +919,37 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::info("Dump of PID {} cancelled", target.pid);
         return std::unexpected(std::string(LinuxCoreDump::CANCELLED_MESSAGE));
     }
-    if (run.exitStatus != 0 || !std::filesystem::exists(written, ec))
+    // The working file was made empty above (#4176): a core is one gdb wrote into, not merely one that exists.
+    if (run.exitStatus != 0 || !std::filesystem::exists(written, ec) || std::filesystem::file_size(written, ec) == 0 || ec)
     {
         std::filesystem::remove(written, ec);
         releaseName();
         std::string message = LinuxCoreDump::gcoreFailureMessage(target.pid, run.exitStatus, run.stderrText);
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
+    }
+    // Still the file made above, this account's, opened without following a link (a shared folder's member could swap
+    // one in), and made owner-only through that descriptor before it's published (#4175, the second #4177 review).
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int finished = ::open(written.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        struct stat current = {};
+        const bool same = finished >= 0 && ::fstat(finished, &current) == 0 && S_ISREG(current.st_mode) &&
+                          current.st_dev == workingFile.st_dev && current.st_ino == workingFile.st_ino && current.st_uid == ::geteuid() &&
+                          ::fchmod(finished, S_IRUSR | S_IWUSR) == 0;
+        const int error = errno;
+        if (finished >= 0)
+        {
+            ::close(finished);
+        }
+        if (!same)
+        {
+            std::filesystem::remove(written, ec);
+            releaseName();
+            return std::unexpected(std::format("Couldn't make the dump file {} private: it isn't the file TaskSmack made for it ({})",
+                                               written.string(),
+                                               std::system_category().message(error)));
+        }
     }
     // Over the placeholder reserved above, which only this dump made.
     std::filesystem::rename(written, file, ec);

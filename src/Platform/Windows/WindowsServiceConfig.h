@@ -23,18 +23,23 @@
 namespace Platform::Windows
 {
 
-/// The Service Control Manager calls readServiceConfig() makes: advapi32's, or a test's fakes.
+/// The Service Control Manager calls readServiceConfig() makes, and the probe's open and list calls:
+/// advapi32's, or a test's fakes.
 struct ServiceConfigFunctions
 {
     using OpenServiceFn = SC_HANDLE(WINAPI*)(SC_HANDLE, LPCWSTR, DWORD);
     using QueryServiceConfigFn = BOOL(WINAPI*)(SC_HANDLE, LPQUERY_SERVICE_CONFIGW, DWORD, LPDWORD);
     using QueryServiceConfig2Fn = BOOL(WINAPI*)(SC_HANDLE, DWORD, LPBYTE, DWORD, LPDWORD);
     using CloseServiceHandleFn = BOOL(WINAPI*)(SC_HANDLE);
+    using OpenSCManagerFn = SC_HANDLE(WINAPI*)(LPCWSTR, LPCWSTR, DWORD);
+    using EnumServicesStatusExFn = BOOL(WINAPI*)(SC_HANDLE, SC_ENUM_TYPE, DWORD, DWORD, LPBYTE, DWORD, LPDWORD, LPDWORD, LPDWORD, LPCWSTR);
 
     OpenServiceFn openService = &::OpenServiceW;
     QueryServiceConfigFn queryServiceConfig = &::QueryServiceConfigW;
     QueryServiceConfig2Fn queryServiceConfig2 = &::QueryServiceConfig2W;
     CloseServiceHandleFn closeServiceHandle = &::CloseServiceHandle;
+    OpenSCManagerFn openSCManager = &::OpenSCManagerW;
+    EnumServicesStatusExFn enumServicesStatusEx = &::EnumServicesStatusExW;
 };
 
 /// A service's configuration fields. Those that could not be read are empty or Unknown.

@@ -56,6 +56,11 @@ struct WindowsProcessFunctions
     std::vector<CpuSetRecord> (*readCpuSets)() = nullptr;
     /// PssCaptureSnapshot(), which a dump is written from (#2001); null: every dump is written live.
     Windows::PssCaptureSnapshotFn pssCaptureSnapshot = nullptr;
+    /// Whether a dump's folder is held and checked, and the file made relative to it (#4164; Windows::DumpSource::holdFolder),
+    /// and the confirm told who can read it (dumpFolderAccess()): DllSearchPolicy::system32OnlyForThisProcess(), true in an
+    /// elevated or hand-off session. Read once, at construction. Null: never, as in a test's table and TaskSmackHelper.exe,
+    /// which writes no dumps.
+    bool (*holdDumpFolder)() = nullptr;
     /// IsProcessCritical(), asked of the verified handle before Kill, Terminate, Suspend, a priority change or an
     /// affinity change (#2556). Null, or a failed call, refuses the action: a critical process is never
     /// acted on for want of an answer.
@@ -232,6 +237,9 @@ class WindowsProcessActions : public IProcessActions
     createDump(const ProcessTarget& target, const std::filesystem::path& directory, const std::stop_token& stopToken) override;
     /// GetDiskFreeSpaceEx() on the folder, and the process's private bytes through the identity check.
     [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
+    /// Where the dump's folder is held (WindowsProcessFunctions::holdDumpFolder), the checks createDump() makes on it and who
+    /// can read a new file there (Windows::checkDumpFolder()); NotChecked otherwise.
+    [[nodiscard]] DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory) override;
     /// IFileOpenDialog with FOS_PICKFOLDERS (Windows::pickFolder()).
     [[nodiscard]] FolderChoice chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow) override;
     /// The Wait Chain Traversal API on each of the process's threads (#3084; Windows::readWaitChains()),
@@ -296,6 +304,7 @@ class WindowsProcessActions : public IProcessActions
     std::vector<std::uint32_t> m_GroupSizes; // Each processor group's maximum processor count, read at construction
     bool m_Elevated = false;                 // TaskSmack's token elevated, read at construction (#3427)
     bool m_AsksCredentials = false;          // the runas prompt asks for a name and password, read at construction (#4108)
+    bool m_HoldDumpFolder = false;           // WindowsProcessFunctions::holdDumpFolder's answer, read at construction (#4164)
     DWORD m_ThreadActionRefusedPid = 0;      // refuseThreadActionsOn()'s
     std::shared_ptr<EfficiencyModePriorities> m_EfficiencyPriorities; // Efficiency mode's replaced classes (#3071, #3327)
 };

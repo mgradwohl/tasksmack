@@ -802,6 +802,11 @@ TEST(BrokeredProcessActionsTest, TraceDumpAndFolderCallsAreTheInProcessOnes)
     EXPECT_EQ(space.freeBytes, std::optional<std::uint64_t>{1000U});
     EXPECT_EQ(f.inner->lastSpaceDirectory(), std::filesystem::path("/var"));
 
+    // Who can read a dump there (#4164): the in-process check, of the folder createDump() writes in.
+    f.inner->setDumpFolderCheck({.access = DumpFolderAccess::ReadableByUser, .problem = {}});
+    EXPECT_EQ(f.actions->dumpFolderAccess("/srv").access, DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(f.inner->lastFolderAccessDirectory(), std::filesystem::path("/srv"));
+
     int owner = 0;
     const FolderChoice choice = f.actions->chooseDumpFolder("/home", &owner);
     ASSERT_TRUE(choice.has_value());

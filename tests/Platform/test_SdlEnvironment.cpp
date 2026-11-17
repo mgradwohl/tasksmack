@@ -98,6 +98,44 @@ TEST(SdlEnvironmentTest, TheBlocksSdlNamesComeInOrderWithoutTheirValues)
     EXPECT_TRUE(sdlVariableNames(block(L"SDL_X\0\0")).empty());
 }
 
+/// Copies @p text (a block's characters, its literal's terminator excluded) through copyEnvironmentBlock() with a reader
+/// that records the farthest index asked for, and fails the test on one at or past @p readable: the characters a real
+/// block has. @p farthest receives that index.
+[[nodiscard]] std::wstring copyChecked(std::wstring_view text, std::size_t readable, std::size_t& farthest)
+{
+    farthest = 0;
+    return copyEnvironmentBlock(
+        [&](std::size_t index)
+        {
+            farthest = std::max(farthest, index);
+            EXPECT_LT(index, readable) << "read past the environment block";
+            return index < text.size() ? text[index] : L'\xDEAD';
+        });
+}
+
+TEST(SdlEnvironmentTest, AnEmptyBlockIsOneTerminatorAndNothingPastItIsRead)
+{
+    std::size_t farthest = 0;
+    // GetEnvironmentStringsW() on an empty environment: two nulls. Only the first is needed.
+    EXPECT_EQ(copyChecked(block(L"\0\0"), 1, farthest), std::wstring(1, L'\0'));
+    EXPECT_EQ(farthest, 0U);
+    // Even a block that is a lone null, which can't be read past.
+    EXPECT_EQ(copyChecked(block(L"\0"), 1, farthest), std::wstring(1, L'\0'));
+    EXPECT_EQ(farthest, 0U);
+    EXPECT_TRUE(sdlVariableNames(copyChecked(block(L"\0"), 1, farthest)).empty());
+}
+
+TEST(SdlEnvironmentTest, ABlockIsCopiedThroughItsLastStringsNullAndNoFurther)
+{
+    std::size_t farthest = 0;
+    const std::wstring_view text = block(L"A=1\0SDL_X=2\0\0");
+    const std::wstring copied = copyChecked(text, text.size(), farthest);
+    EXPECT_EQ(copied, std::wstring(block(L"A=1\0SDL_X=2\0")));
+    EXPECT_EQ(farthest, text.size() - 1);
+    EXPECT_EQ(sdlVariableNames(copied), std::vector<std::wstring>{L"SDL_X"});
+    EXPECT_EQ(std::wstring_view(copyChecked(BLOCK, BLOCK.size(), farthest)), BLOCK.substr(0, BLOCK.size() - 1));
+}
+
 /// A fake environment, matching names as the OS does: case-insensitively, beyond ASCII too. Only U+017F (long s,
 /// which upper-cases to 'S') is modelled past ASCII, the case the block's ASCII fold misses.
 class FakeEnvironment

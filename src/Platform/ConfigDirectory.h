@@ -107,13 +107,37 @@ struct ConfigDirectoryChoice
 /// settings, not root's. When $HOME is theirs (sudo -E) their XDG_CONFIG_HOME is used only inside their home (#4153):
 /// root writes the config, the lock and the themes there, so a folder anywhere else (/etc) is passed over, with a
 /// warning, for their home's .config/tasksmack. Otherwise (pkexec, and sudo, set HOME to root's) it's their home's
-/// .config/tasksmack, and the environment's XDG_CONFIG_HOME, root's, is ignored.
+/// .config/tasksmack, and the environment's XDG_CONFIG_HOME, root's, is ignored. @p rootWithAnotherUsersEnvironment: root,
+/// and SessionUser::thisProcessMayHaveAnotherUsersEnvironment() (#4172).
 [[nodiscard]] inline auto configDirectoryFor(const std::optional<std::string>& xdgConfigHome,
                                              const std::optional<std::string>& home,
                                              const std::function<std::optional<std::filesystem::path>()>& passwdHome,
                                              const std::filesystem::path& currentPath,
-                                             const std::optional<std::string>& invokingUserHome) -> ConfigDirectoryChoice
+                                             const std::optional<std::string>& invokingUserHome,
+                                             bool rootWithAnotherUsersEnvironment = false) -> ConfigDirectoryChoice
 {
+    // Root whose environment may be a user's, with no known user to keep the settings of (su, doas keepenv: no SUDO_UID,
+    // #4172): root's own folder, from its passwd entry, and neither XDG_CONFIG_HOME nor HOME, which are the user's.
+    if (rootWithAnotherUsersEnvironment && !invokingUserHome.has_value())
+    {
+        // Never the working directory, which su keeps as the user's: root's passwd home, or /root when it can't be read
+        // (the #4182 review).
+        const std::optional<std::filesystem::path> rootHome = passwdHome ? passwdHome() : std::nullopt;
+        ConfigDirectoryChoice choice{
+            .directory =
+                (rootHome.has_value() && rootHome->is_absolute() ? *rootHome : std::filesystem::path("/root")) / ".config" / "tasksmack",
+            .warning = {},
+        };
+        // Said only when the environment would have chosen another folder (plain su sets HOME to root's anyway).
+        if (const std::filesystem::path environments = configDirectoryFrom(xdgConfigHome, home, passwdHome, currentPath).directory;
+            (xdgConfigHome.has_value() || home.has_value()) && environments.lexically_normal() != choice.directory.lexically_normal())
+        {
+            choice.warning = "Ignoring XDG_CONFIG_HOME and HOME: TaskSmack runs as root with an environment that may be "
+                             "another user's; using " +
+                             choice.directory.string();
+        }
+        return choice;
+    }
     if (invokingUserHome.has_value() && home != invokingUserHome)
     {
         return configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
