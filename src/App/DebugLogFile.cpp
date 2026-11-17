@@ -7,10 +7,8 @@
 #include <exception>
 #include <expected>
 #include <filesystem>
-#include <memory>
 #include <optional>
 #include <string>
-#include <string_view>
 #include <utility>
 
 #ifdef _WIN32
@@ -39,8 +37,10 @@
 #include <cstdint>
 #include <format>
 #include <functional>
+#include <memory>
 #include <mutex>
 #include <random>
+#include <string_view>
 #include <system_error>
 #include <vector>
 #endif

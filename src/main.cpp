@@ -405,9 +405,9 @@ auto runApp(const App::LaunchOptions& launch) -> int
 
     // tasksmack-debug.log: the temp folder's, or, elevated or handed off, where TEMP is the less-privileged side's (#4105),
     // %ProgramData%\TaskSmack\Logs, which only administrators may change (App/DebugLogFile.h). The same rule as the DLL
-    // search order and SDL's variables (#3897, #4103).
+    // search order and SDL's variables (#3897, #4103): lessPrivilegedEnvironment() (#4104). Linux's twin is #4150.
 #ifdef _WIN32
-    const bool adminOnlyLog = Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
+    const bool adminOnlyLog = lessPrivilegedEnvironment();
 #else
     constexpr bool adminOnlyLog = false;
 #endif
