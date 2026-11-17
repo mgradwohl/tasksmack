@@ -10,9 +10,12 @@
 #include <cstdint>
 #include <ctime>
 #include <filesystem>
+#include <map>
 #include <optional>
 #include <string>
 #include <vector>
+
+#include <sys/stat.h>
 
 namespace Platform
 {
@@ -135,4 +138,49 @@ TEST(LinuxCoreDumpTest, GcoreRunsTheGdbBesideIt)
 }
 
 } // namespace
+// #4176: run as root, a dump goes only into a folder only root may change, from "/" down: no link, root's, and no
+// group or other write (a sticky /tmp too), so no link can be planted where gcore writes by path.
+TEST(LinuxCoreDumpTest, ARootSessionsDumpFolderIsOneOnlyRootMayChange)
+{
+    struct Entry
+    {
+        mode_t mode;
+        uid_t uid;
+    };
+    const std::map<std::string, Entry> tree{
+        {"/", {S_IFDIR | 0755, 0}},
+        {"/root", {S_IFDIR | 0700, 0}},
+        {"/root/dumps", {S_IFDIR | 0755, 0}},
+        {"/tmp", {S_IFDIR | 01777, 0}},
+        {"/home", {S_IFDIR | 0755, 0}},
+        {"/home/u", {S_IFDIR | 0750, 1000}},
+        {"/home/u/dumps", {S_IFDIR | 0755, 0}},
+        {"/srv", {S_IFDIR | 0775, 0}},
+        {"/var", {S_IFDIR | 0755, 0}},
+        {"/var/link", {S_IFLNK | 0777, 0}},
+    };
+    const auto lstatOf = [&tree](const char* path, struct stat* out)
+    {
+        const auto found = tree.find(path);
+        if (found == tree.end())
+        {
+            return -1;
+        }
+        *out = {};
+        out->st_mode = found->second.mode;
+        out->st_uid = found->second.uid;
+        return 0;
+    };
+    using Platform::LinuxCoreDump::rootOnlyFolderRefusal;
+    EXPECT_EQ(rootOnlyFolderRefusal("/root", lstatOf), std::nullopt);
+    EXPECT_EQ(rootOnlyFolderRefusal("/root/dumps/", lstatOf), std::nullopt);
+    EXPECT_TRUE(rootOnlyFolderRefusal("/tmp", lstatOf).has_value()) << "sticky, but anyone may add to it";
+    EXPECT_TRUE(rootOnlyFolderRefusal("/home/u/dumps", lstatOf).has_value()) << "root's folder in a user's: they may swap it";
+    EXPECT_TRUE(rootOnlyFolderRefusal("/srv", lstatOf).has_value()) << "group-writable";
+    EXPECT_TRUE(rootOnlyFolderRefusal("/var/link", lstatOf)->contains("a link"));
+    EXPECT_TRUE(rootOnlyFolderRefusal("root/dumps", lstatOf).has_value()) << "relative";
+    EXPECT_TRUE(rootOnlyFolderRefusal("/root/../tmp", lstatOf).has_value()) << "\"..\"";
+    EXPECT_TRUE(rootOnlyFolderRefusal("/nowhere", lstatOf).has_value()) << "can't be read";
+}
+
 } // namespace Platform

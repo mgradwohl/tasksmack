@@ -7,11 +7,14 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#include <sys/stat.h>
 
 /// The pure parts of LinuxProcessActions::createDump() (#807): the core file's name, the gcore command
 /// that writes it, and what is said when it can't. gdb's gcore attaches to the process with ptrace,
@@ -204,6 +207,60 @@ inline constexpr int DETACH_WAIT_MS = 2000;
         return std::format("gcore couldn't write a dump of process {} (exit status {})", pid, exitStatus);
     }
     return std::format("gcore couldn't write a dump of process {}: {}", pid, said);
+}
+
+/// Run as root (#4176): why @p directory isn't a folder only root may change, or nullopt when it is. gdb's gcore writes
+/// "<file>.partial.<pid>" by path, as root, following a link: in a folder anyone else may write, a link planted at
+/// that predictable name, or the folder swapped for one, would make root write the dump into any file. So every
+/// component from "/" down must be a plain folder (lstat: no link) that root owns and no group or other may write; a
+/// sticky world-writable one (/tmp) refuses too. @p lstatOf is ::lstat, or a test's.
+[[nodiscard]] inline std::optional<std::string> rootOnlyFolderRefusal(const std::filesystem::path& directory,
+                                                                      const std::function<int(const char*, struct stat*)>& lstatOf)
+{
+    const std::filesystem::path normal = directory.lexically_normal();
+    if (!normal.is_absolute())
+    {
+        return std::format("{} isn't an absolute folder", directory.string());
+    }
+    std::filesystem::path at = normal.root_path();
+    const auto check = [&lstatOf](const std::filesystem::path& folder) -> std::optional<std::string>
+    {
+        struct stat info = {};
+        if (lstatOf(folder.c_str(), &info) != 0)
+        {
+            return std::format("{} can't be read", folder.string());
+        }
+        if (!S_ISDIR(info.st_mode))
+        {
+            return std::format("{} is {}", folder.string(), S_ISLNK(info.st_mode) ? "a link" : "not a folder");
+        }
+        if (info.st_uid != 0 || (info.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+        {
+            return std::format("{} may be changed by an account other than root", folder.string());
+        }
+        return std::nullopt;
+    };
+    if (auto refusal = check(at); refusal.has_value())
+    {
+        return refusal;
+    }
+    for (const std::filesystem::path& part : normal.relative_path())
+    {
+        if (part.empty() || part == ".")
+        {
+            continue;
+        }
+        if (part == "..")
+        {
+            return std::format("{} climbs with \"..\"", directory.string());
+        }
+        at /= part;
+        if (auto refusal = check(at); refusal.has_value())
+        {
+            return refusal;
+        }
+    }
+    return std::nullopt;
 }
 
 } // namespace Platform::LinuxCoreDump

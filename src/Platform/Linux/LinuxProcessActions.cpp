@@ -777,6 +777,18 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     {
         return std::unexpected(std::format("The folder {} doesn't exist", directory.string()));
     }
+    // Run as root, gcore writes the dump by path as root (#4176): only into a folder only root may change, so no link
+    // can be planted in it, nor the folder swapped. Not root, it writes as this account, into its own files.
+    if (::geteuid() == 0)
+    {
+        if (const std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat))
+        {
+            spdlog::warn("Not dumping PID {}: {}", target.pid, *refusal);
+            return std::unexpected(std::format("TaskSmack runs as root, so a dump goes only into a folder only root may change, "
+                                               "such as /root: {}",
+                                               *refusal));
+        }
+    }
 
     // A name not taken yet: the process name, PID and local time, then " (2)" and on. Reserved by
     // creating it (O_EXCL), an empty placeholder until the dump is renamed over it (#2147): two dumps
@@ -857,6 +869,17 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         std::string message = LinuxCoreDump::gcoreFailureMessage(target.pid, run.exitStatus, run.stderrText);
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
+    }
+    // Owner-only before it's published (#4175): gdb made it with the umask (usually 0644), and it holds the whole of
+    // the process's memory. By path: run as root, the folder is one only root may change (above); not root, it's this
+    // account's own file.
+    if (::chmod(written.c_str(), S_IRUSR | S_IWUSR) != 0)
+    {
+        const int error = errno;
+        std::filesystem::remove(written, ec);
+        releaseName();
+        return std::unexpected(
+            std::format("Couldn't make the dump file {} private: {}", written.string(), std::system_category().message(error)));
     }
     // Over the placeholder reserved above, which only this dump made.
     std::filesystem::rename(written, file, ec);
