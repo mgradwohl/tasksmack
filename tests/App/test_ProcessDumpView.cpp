@@ -480,6 +480,106 @@ TEST(ProcessDumpViewTest, TheConfirmSaysNothingOfSpaceWhenTheDumpFits)
     EXPECT_EQ(view.confirmQuestion(), DumpDetail::confirmQuestion("big.exe", 1001, someFolder(), false));
 }
 
+// --- Who can read the folder (#4164) ---------------------------------------------------------------
+
+TEST(ProcessDumpViewTest, TheFolderAccessWarningNamesWhatTheCheckFound)
+{
+    using Platform::DumpFolderAccess;
+    EXPECT_TRUE(DumpDetail::folderAccessWarning({}).empty()) << "not checked: an unelevated session's folder";
+    EXPECT_TRUE(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::AdministratorsOnly, .problem = {}}).empty());
+    EXPECT_EQ(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::ReadableByUser, .problem = {}}),
+              DumpDetail::FOLDER_READABLE_TEXT);
+    EXPECT_EQ(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::Unknown, .problem = {}}),
+              DumpDetail::FOLDER_ACCESS_UNKNOWN_TEXT);
+    EXPECT_EQ(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::Refused, .problem = "it is a junction"}), "it is a junction");
+    EXPECT_FALSE(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::Refused, .problem = {}}).empty());
+}
+
+// The confirm warns when programs running as the user could read the dump, and the admin can still go on, or choose
+// another folder, which is checked again.
+TEST(ProcessDumpViewTest, TheConfirmWarnsWhenTheFolderIsReadableAndStillConfirms)
+{
+    TestMocks::MockProcessActions mock;
+    Platform::ProcessActionCapabilities caps = dumpCapable(true);
+    caps.canChooseDumpFolder = true;
+    mock.setCapabilities(caps);
+    mock.setDumpSpace({.freeBytes = 512 * MIB, .processBytes = 3 * GIB});
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::ReadableByUser, .problem = {}});
+    mock.setFolderChoice(std::optional<std::filesystem::path>(std::filesystem::path("admins") / "dumps"));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "lsass.exe", someFolder(), &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(mock.dumpFolderAccessCount(), 1);
+    EXPECT_EQ(mock.lastFolderAccessDirectory(), someFolder());
+    const std::string& question = view.confirmQuestion();
+    EXPECT_TRUE(question.contains(DumpDetail::FOLDER_READABLE_TEXT)) << question;
+    EXPECT_TRUE(question.contains("may not fit")) << "the space warning still follows: " << question;
+    EXPECT_LT(question.find(DumpDetail::FOLDER_READABLE_TEXT), question.find("may not fit")) << question;
+
+    // Choose again: an administrators-only folder, checked on the worker, and the warning goes.
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::AdministratorsOnly, .problem = {}});
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(mock.dumpFolderAccessCount(), 2);
+    EXPECT_EQ(mock.lastFolderAccessDirectory(), std::filesystem::path("admins") / "dumps");
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::FOLDER_READABLE_TEXT)) << view.confirmQuestion();
+
+    // A warning only: back to a readable folder, the dump is still confirmed.
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::ReadableByUser, .problem = {}});
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::FOLDER_READABLE_TEXT)) << view.confirmQuestion();
+    mock.setDumpResult(Platform::ProcessDumpResult(std::unexpected(std::string("test"))));
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.createDumpCount(), 1);
+}
+
+// A folder the dump would refuse (a junction, as administrator) disables Create dump file until another is chosen.
+TEST(ProcessDumpViewTest, ARefusedFolderCantBeConfirmedUntilAnotherIsChosen)
+{
+    TestMocks::MockProcessActions mock;
+    Platform::ProcessActionCapabilities caps = dumpCapable(true);
+    caps.canChooseDumpFolder = true;
+    mock.setCapabilities(caps);
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::Refused, .problem = "it is a junction"});
+    mock.setFolderChoice(std::optional<std::filesystem::path>(std::filesystem::path("admins") / "dumps"));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.request(TARGET, "lsass.exe", someFolder(), &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_TRUE(view.folderRefused());
+    EXPECT_TRUE(view.confirmQuestion().contains("it is a junction")) << view.confirmQuestion();
+    view.confirm(&mock);
+    EXPECT_FALSE(view.busy());
+    EXPECT_TRUE(view.confirmPending()) << "nothing started";
+    EXPECT_EQ(mock.createDumpCount(), 0);
+
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::AdministratorsOnly, .problem = {}});
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_FALSE(view.folderRefused());
+    mock.setDumpResult(Platform::ProcessDumpResult(std::unexpected(std::string("test"))));
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.createDumpCount(), 1);
+}
+
+// A confirm with no folder yet (an elevated session's, #4141) asks nothing about one.
+TEST(ProcessDumpViewTest, NoFolderIsNoFolderAccessCheck)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::ReadableByUser, .problem = {}});
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_TRUE(view.needsFolder());
+    EXPECT_EQ(mock.dumpFolderAccessCount(), 0);
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::FOLDER_READABLE_TEXT)) << view.confirmQuestion();
+}
 // --- Save dump to... (#2001) ----------------------------------------------------------------------
 
 [[nodiscard]] Platform::ProcessActionCapabilities folderCapable()

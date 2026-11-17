@@ -244,10 +244,16 @@ OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
     return {descriptor, &::LocalFree};
 }
 
-std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder)
+bool samePathText(std::wstring_view left, std::wstring_view right) noexcept
+{
+    return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) ==
+           CSTR_EQUAL;
+}
+
+std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess)
 {
     UniqueHandle handle(CreateFileW(folder.c_str(),
-                                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                                    FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | extraAccess,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE,
                                     nullptr,
                                     OPEN_EXISTING,

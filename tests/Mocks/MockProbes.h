@@ -1133,6 +1133,27 @@ class MockProcessActions : public Platform::IProcessActions
         return m_LastSpaceDirectory;
     }
 
+    /// What dumpFolderAccess() returns (#4164): not checked by default, as an unelevated session's folder.
+    void setDumpFolderCheck(Platform::DumpFolderCheck check)
+    {
+        m_DumpFolderCheck = std::move(check);
+    }
+    /// Called on the confirm's check worker (#3155), with dumpSpace(), for a confirm with a folder.
+    [[nodiscard]] Platform::DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory) override
+    {
+        m_LastFolderAccessDirectory = directory;
+        ++m_DumpFolderAccessCount;
+        return m_DumpFolderCheck;
+    }
+    [[nodiscard]] int dumpFolderAccessCount() const
+    {
+        return m_DumpFolderAccessCount;
+    }
+    [[nodiscard]] const std::filesystem::path& lastFolderAccessDirectory() const
+    {
+        return m_LastFolderAccessDirectory;
+    }
+
     /// What chooseDumpFolder() returns (#2001): cancelled by default.
     void setFolderChoice(Platform::FolderChoice choice)
     {
@@ -1220,6 +1241,9 @@ class MockProcessActions : public Platform::IProcessActions
     Platform::DumpSpace m_DumpSpace;
     int m_DumpSpaceCount = 0;
     std::filesystem::path m_LastSpaceDirectory;
+    Platform::DumpFolderCheck m_DumpFolderCheck;
+    int m_DumpFolderAccessCount = 0;
+    std::filesystem::path m_LastFolderAccessDirectory;
     Platform::FolderChoice m_FolderChoice = std::optional<std::filesystem::path>{};
     int m_ChooseFolderCount = 0;
     std::filesystem::path m_LastFolderInitial;

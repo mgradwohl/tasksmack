@@ -251,6 +251,23 @@ struct DumpSpace
     std::optional<std::uint64_t> processBytes;
 };
 
+/// Who can read a new file in a dump's folder (#4164), as IProcessActions::dumpFolderAccess() finds it.
+enum class DumpFolderAccess : std::uint8_t
+{
+    NotChecked,         ///< Not read: an unelevated session's folder, or a platform that doesn't check
+    AdministratorsOnly, ///< None of the less-privileged accounts the check looks for can read a new file there
+    ReadableByUser,     ///< Programs running as the signed-in user can read a new file there, or can change who may
+    Unknown,            ///< Its permissions couldn't be read
+    Refused,            ///< The dump would refuse the folder: a junction or link, or not where its path says (problem)
+};
+
+/// What dumpFolderAccess() found, and why the folder is refused when it is.
+struct DumpFolderCheck
+{
+    DumpFolderAccess access = DumpFolderAccess::NotChecked;
+    std::string problem; ///< Why it is Refused; empty otherwise
+};
+
 /// The folder chosen in IProcessActions::chooseDumpFolder(), nullopt when the dialog was cancelled, or
 /// the message saying why it couldn't be shown.
 using FolderChoice = std::expected<std::optional<std::filesystem::path>, std::string>;
@@ -566,6 +583,16 @@ class IProcessActions
     [[nodiscard]] virtual DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)
     {
         static_cast<void>(target);
+        static_cast<void>(directory);
+        return {};
+    }
+
+    /// Whether a dump in @p directory would be readable by less-privileged programs, for the dump's confirm to warn
+    /// (#4164); or why createDump() would refuse the folder. Read only where createDump() holds and checks the folder
+    /// (Windows, elevated); NotChecked elsewhere. Reads the file system: on the confirm's worker, never the UI thread.
+    /// The default checks nothing.
+    [[nodiscard]] virtual DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory)
+    {
         static_cast<void>(directory);
         return {};
     }

@@ -45,14 +45,13 @@
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
 #include "Platform/Linux/RootCapabilities.h"
+#include "Platform/Linux/RootEnvironment.h"
 #include "Platform/Linux/SdlEnvironment.h"
 #include "Platform/Linux/SessionUser.h"
 
 #include <system_error>
 
-#include <elf.h>      // AT_SECURE
-#include <sys/auxv.h> // getauxval()
-#include <unistd.h>   // geteuid(): the gate (#4154) and a root session's log (#4150)
+#include <unistd.h> // geteuid(): a root session's log (#4150)
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -152,20 +151,7 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 #ifdef _WIN32
     return Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
 #elif defined(__linux__)
-    // #4154: secure execution (setuid, setgid, file capabilities: #4171), capabilities held another way, or root that
-    // sudo, pkexec, doas or a user's process above it names a user for. No passwd lookup, and nothing the user's
-    // environment can set to turn it off. Worked out once.
-    static const bool lessPrivileged = []
-    {
-        const auto effective = ::geteuid(); // uid_t
-        return Platform::SessionUser::environmentMayBeAnotherUsers(
-            effective,
-            ::getauxval(AT_SECURE) != 0,
-            effective != 0 && Platform::SessionUser::processHoldsCapabilities(),
-            &Platform::SessionUser::processVariable,
-            effective == 0 && Platform::SessionUser::aUserIsAbove(::getpid(), &Platform::SessionUser::processIds));
-    }();
-    return lessPrivileged;
+    return Platform::SessionUser::thisProcessMayHaveAnotherUsersEnvironment(); // #4154: worked out once, there
 #else
     return false;
 #endif
@@ -485,6 +471,20 @@ auto runApp(const App::LaunchOptions& launch) -> int
             spdlog::info("Config directory (the launching user's, handed over): {}", Core::pathToUtf8(*configDir));
         }
     }
+#ifdef __linux__
+    // Removed in main(), before any SDL call (#4158, #4159, #4179). Names only.
+    if (const auto& dropped = Platform::RootEnvironment::removedFromThisProcess(); !dropped.empty())
+    {
+        std::string names;
+        for (const std::string& name : dropped)
+        {
+            names += names.empty() ? name : ", " + name;
+        }
+        spdlog::warn("Kept only an allow-list of environment variables, and root's PATH and HOME: TaskSmack runs as root "
+                     "with an environment that may be another user's. Dropped: {}",
+                     names);
+    }
+#endif
 #ifdef __linux__
     // Removed in main(), before any SDL call (#4111). Names only: a value may be a path the user would rather not log.
     if (const auto& sdlRemoved = Platform::SdlEnvironment::removedFromThisProcess(); !sdlRemoved.empty())
@@ -947,6 +947,10 @@ auto main(int argc, char** argv) -> int
     // SDL variable goes, and the graphics loaders' (LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_FILENAMES, ..., #4151). The
     // rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
     Platform::SdlEnvironment::removeForThisProcess(lessPrivilegedEnvironment()); // #4154: no lookup needed
+    // Root with an environment that may be a user's keeps only an allow-list (#4158, #4159, #4179): GTK's modules,
+    // PATH, PYTHONPATH and whatever else a list of bad names would miss. After the SDL scrub, which a setcap session
+    // (not root) still needs on its own. Logged in runApp().
+    Platform::RootEnvironment::applyToThisProcess(::geteuid() == 0 && lessPrivilegedEnvironment());
 #endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IServiceProbe.h"
+#include "WindowsServiceConfig.h"
 
 #include <memory>
 #include <vector>
@@ -10,7 +11,10 @@ namespace Platform
 
 /// Windows services from the Service Control Manager (#800), read-only and without elevation.
 ///
-/// The manager is opened once with SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE. Each
+/// The manager is opened with SC_MANAGER_CONNECT | SC_MANAGER_ENUMERATE_SERVICE by the first
+/// enumerate(), on the sampler thread, never in the constructor, which runs on the UI thread (#4184).
+/// A failed open is tried again on the next sample; only ERROR_ACCESS_DENIED is final. Until that
+/// first open capabilities() is optimistic (the Services model reads it once, at construction). Each
 /// enumerate() lists the services with their state and PID through EnumServicesStatusExW
 /// (SC_ENUM_PROCESS_INFO), paging with its resume handle: the first call only sizes the buffer, then
 /// each call returns as many entries as fit (the SCM caps one call at 256 KiB, a few hundred
@@ -23,6 +27,8 @@ class WindowsServiceProbe : public IServiceProbe
 {
   public:
     WindowsServiceProbe();
+    /// A probe whose Service Control Manager calls are `api`'s, for tests with fakes.
+    explicit WindowsServiceProbe(const Windows::ServiceConfigFunctions& api);
     ~WindowsServiceProbe() override;
 
     WindowsServiceProbe(const WindowsServiceProbe&) = delete;

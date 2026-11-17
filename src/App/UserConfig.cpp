@@ -199,7 +199,8 @@ constexpr std::size_t MAX_BUILD_TEXT_BYTES = 256;
     struct passwd pwBuf = {};
     struct passwd* pwResult = nullptr;
     std::array<char, 1024> buffer{};
-    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
+    // The effective uid's: root's in a root session, whatever the real uid (the #4182 review).
+    if (getpwuid_r(geteuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
     {
         return std::filesystem::path(pwResult->pw_dir);
     }
@@ -791,12 +792,13 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config, decided by Platform::ConfigDirectory::configDirectoryFor() (#1891): run as
     // root for a user (sudo, pkexec), that user's (#3580).
-    const UserConfigHelpers::ConfigDirectoryChoice choice =
-        Platform::ConfigDirectory::configDirectoryFor(readEnvVarString("XDG_CONFIG_HOME"),
-                                                      readEnvVarString("HOME"),
-                                                      passwdHomeDirectory,
-                                                      std::filesystem::current_path(),
-                                                      Platform::SessionUser::invokingUserHome());
+    const UserConfigHelpers::ConfigDirectoryChoice choice = Platform::ConfigDirectory::configDirectoryFor(
+        readEnvVarString("XDG_CONFIG_HOME"),
+        readEnvVarString("HOME"),
+        passwdHomeDirectory,
+        std::filesystem::current_path(),
+        Platform::SessionUser::invokingUserHome(),
+        ::geteuid() == 0 && Platform::SessionUser::thisProcessMayHaveAnotherUsersEnvironment());
     if (!choice.warning.empty())
     {
         spdlog::warn("{}", choice.warning);
