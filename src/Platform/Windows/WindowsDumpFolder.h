@@ -10,18 +10,21 @@
 //
 // The confirm warns when programs not running as an administrator could read the dump (newFileReaders()). It is an
 // allowlist read of the folder's owner and DACL, not an access check: only Administrators (BA), SYSTEM (SY) and
-// TrustedInstaller are trusted, and CREATOR OWNER only where this token's default owner is Administrators. It flags:
+// TrustedInstaller are trusted, and CREATOR OWNER in an inherited ACE. It flags:
 //   - a folder with no DACL (everyone has every access);
+//   - any folder, when this token's default owner (a new file's owner, who always gets READ_CONTROL and WRITE_DAC on it)
+//     isn't Administrators or SYSTEM;
 //   - an owner other than Administrators or SYSTEM (as ownerIsAdministratorsOrSystem() trusts), who can change the
 //     DACL new files inherit;
 //   - an allow ACE new files inherit (OBJECT_INHERIT_ACE) granting read (FILE_READ_DATA, which is also
-//     FILE_LIST_DIRECTORY, GENERIC_READ or GENERIC_ALL) to any SID not trusted -- the signed-in user, a group they are
+//     FILE_LIST_DIRECTORY, FILE_EXECUTE, GENERIC_READ, GENERIC_EXECUTE or GENERIC_ALL), WRITE_DAC or WRITE_OWNER to any SID
+//     not trusted -- the signed-in user, a group they are
 //     in, or the user whose credentials weren't the ones that elevated;
 //   - an allow ACE on the folder itself granting WRITE_DAC, WRITE_OWNER or GENERIC_ALL to any SID not trusted.
 // A folder with no inheritable allow ACE at all is Unknown: a new file then gets the token's default DACL, which isn't
-// read. Deny ACEs are ignored (so it may warn where a deny would stop the read); an object ACE that grants an
-// inheritable read is flagged whatever its SID. Who can read the folder's existing files isn't looked at.
-// A warning, never a refusal: the administrator chose the folder.
+// read. Deny, audit and alarm ACEs are ignored (so it may warn where a deny would stop the read); an object ACE that
+// grants an inheritable read or control is flagged whatever its SID, and any other allow ACE type is Unknown. Who can read the folder's
+// existing files isn't looked at. A warning, never a refusal: the administrator chose the folder.
 
 #include "Platform/IProcessActions.h"
 #include "WindowsHandles.h"
@@ -58,19 +61,20 @@ namespace Platform::Windows
 [[nodiscard]] std::expected<UniqueHandle, std::string> openHeldDumpFolder(const std::filesystem::path& folder);
 
 /// Who can read a new file made in a folder with security descriptor @p descriptor (its owner and DACL), as this file's
-/// header says. @p creatorOwnerIsAdministrators: whether CREATOR OWNER is trusted (this token's default owner is
-/// Administrators, so a new file's owner is). AdministratorsOnly or ReadableByUser; Unknown when the DACL can't be read,
-/// or no allow ACE is inherited by a new file.
-[[nodiscard]] DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool creatorOwnerIsAdministrators);
+/// header says. @p defaultOwnerTrusted: whether this token's default owner, a new file's owner, is Administrators or SYSTEM;
+/// ReadableByUser when it isn't. AdministratorsOnly or ReadableByUser; Unknown when the DACL can't be read, an allow ACE
+/// type isn't one it reads, or no allow ACE is inherited by a new file.
+[[nodiscard]] DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwnerTrusted);
 
 /// newFileReaders() of the folder @p folder holds (opened with READ_CONTROL); Unknown when its security can't be read.
 /// (Named apart from it: HANDLE and PSECURITY_DESCRIPTOR are both void*.)
-[[nodiscard]] DumpFolderAccess heldFolderReaders(HANDLE folder, bool creatorOwnerIsAdministrators);
+[[nodiscard]] DumpFolderAccess heldFolderReaders(HANDLE folder, bool defaultOwnerTrusted);
 
-/// Whether this process's token's default owner (TokenOwner) is BUILTIN\Administrators; nullopt when it can't be read.
-[[nodiscard]] std::optional<bool> defaultOwnerIsAdministrators();
+/// Whether this process's token's default owner (TokenOwner), which owns a file it makes, is BUILTIN\Administrators or
+/// SYSTEM; nullopt when it can't be read.
+[[nodiscard]] std::optional<bool> defaultOwnerIsAdministratorsOrSystem();
 
-/// openHeldDumpFolder() of @p folder, and heldFolderReaders() of it with defaultOwnerIsAdministrators(): Refused, with the
+/// openHeldDumpFolder() of @p folder, and heldFolderReaders() of it with defaultOwnerIsAdministratorsOrSystem(): Refused, with the
 /// reason, when it can't be held; Unknown when the token can't be read.
 [[nodiscard]] DumpFolderCheck checkDumpFolder(const std::filesystem::path& folder);
 

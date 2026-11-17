@@ -23,6 +23,7 @@
 #include <sddl.h> // ConvertSidToStringSidW, ConvertStringSidToSidW
 // clang-format on
 
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <format>
@@ -81,6 +82,17 @@ constexpr std::string_view OTHER_USER = "S-1-5-21-1000000001-1000000002-10000000
 /// TrustedInstaller's service SID.
 constexpr std::string_view TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
 
+/// The SID @p text describes (an SDDL alias such as "BU", or S-1-...), LocalFree'd; null when it doesn't parse.
+[[nodiscard]] std::unique_ptr<void, decltype(&::LocalFree)> sidFrom(std::string_view text)
+{
+    PSID sid = nullptr;
+    const std::wstring wide(text.begin(), text.end());
+    if (ConvertStringSidToSidW(wide.c_str(), &sid) == FALSE)
+    {
+        return {nullptr, &::LocalFree};
+    }
+    return {sid, &::LocalFree};
+}
 /// This test's own account (its token user) as an SDDL SID string; empty when it can't be read.
 [[nodiscard]] std::string ownSidText()
 {
@@ -112,12 +124,12 @@ constexpr std::string_view TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-18
     return narrow;
 }
 
-/// newFileReaders() of the descriptor @p sddl describes; CREATOR OWNER trusted where @p creatorOwnerIsAdministrators.
-[[nodiscard]] DumpFolderAccess readersOf(std::string_view sddl, bool creatorOwnerIsAdministrators = true)
+/// newFileReaders() of the descriptor @p sddl describes, for a token whose default owner is trusted where @p defaultOwnerTrusted.
+[[nodiscard]] DumpFolderAccess readersOf(std::string_view sddl, bool defaultOwnerTrusted = true)
 {
     const OwnedSecurityDescriptor descriptor = securityDescriptorFrom(sddl);
     EXPECT_NE(descriptor, nullptr) << sddl;
-    return newFileReaders(descriptor.get(), creatorOwnerIsAdministrators);
+    return newFileReaders(descriptor.get(), defaultOwnerTrusted);
 }
 /// Folder @p folder made with the security descriptor @p sddl.
 [[nodiscard]] bool makeFolderWith(const std::filesystem::path& folder, std::string_view sddl)
@@ -246,6 +258,19 @@ TEST(WindowsDumpFolderTest, AnAllowlistTrustsOnlyAdministratorsSystemAndTrustedI
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;GA;;;CO)"), DumpFolderAccess::AdministratorsOnly);
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;GA;;;CO)", false), DumpFolderAccess::ReadableByUser)
         << "CREATOR OWNER is the user when the token's default owner is";
+    // A new file's own owner is the token's default owner, who always gets READ_CONTROL and WRITE_DAC: an
+    // administrators-only folder is flagged when that isn't Administrators or SYSTEM.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", false), DumpFolderAccess::ReadableByUser);
+    // Inherited control of a new file (WRITE_DAC, WRITE_OWNER) lets its holder grant itself a read; so does inherited
+    // execute, which maps the file.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;WD;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;WO;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;FX;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;GX;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;GA;;;CO)(A;OIIO;WD;;;CO)"), DumpFolderAccess::AdministratorsOnly)
+        << "CREATOR OWNER is the trusted owner";
+    // An object ACE: any inherited read or control is flagged, whatever its SID.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(OA;OIIO;WD;bf967aba-0de6-11d0-a285-00aa003049e2;;BA)"), DumpFolderAccess::ReadableByUser);
     // Any other SID with an inherited read: the well-known groups, an unknown user (the one who didn't type the
     // credentials), and inherit-only ACEs, which still reach a new file.
     for (const std::string_view sid : {"BU", "WD", "AU", "IU", "BG", "S-1-5-21-1000000001-1000000002-1000000003-1001"})
@@ -276,6 +301,33 @@ TEST(WindowsDumpFolderTest, AnAllowlistTrustsOnlyAdministratorsSystemAndTrustedI
     EXPECT_EQ(newFileReaders(nullptr, true), DumpFolderAccess::Unknown);
 }
 
+// An allow ACE type the check doesn't read (a compound ACE here) fails closed: Unknown, never AdministratorsOnly.
+TEST(WindowsDumpFolderTest, AnAllowAceTypeItDoesntReadIsUnknown)
+{
+    const auto users = sidFrom("BU");
+    const auto admins = sidFrom("BA");
+    ASSERT_NE(users, nullptr);
+    ASSERT_NE(admins, nullptr);
+    const DWORD sidSize = GetLengthSid(users.get());
+    // ACCESS_ALLOWED_ACE's layout under another type: header, mask, then the SID.
+    const DWORD aceSize = static_cast<DWORD>(offsetof(ACCESS_ALLOWED_ACE, SidStart)) + sidSize;
+    std::vector<BYTE> ace(aceSize);
+    auto* allowed = reinterpret_cast<ACCESS_ALLOWED_ACE*>(ace.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    allowed->Header.AceType = ACCESS_ALLOWED_COMPOUND_ACE_TYPE;
+    allowed->Header.AceFlags = OBJECT_INHERIT_ACE;
+    allowed->Header.AceSize = static_cast<WORD>(aceSize);
+    allowed->Mask = FILE_GENERIC_WRITE; // no read: still Unknown, as the type isn't read at all
+    ASSERT_NE(CopySid(sidSize, &allowed->SidStart, users.get()), FALSE);
+    std::vector<BYTE> aclBuffer(sizeof(ACL) + aceSize + 64);
+    auto* acl = reinterpret_cast<PACL>(aclBuffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+    ASSERT_NE(InitializeAcl(acl, static_cast<DWORD>(aclBuffer.size()), ACL_REVISION3), FALSE) << GetLastError();
+    ASSERT_NE(AddAce(acl, ACL_REVISION3, MAXDWORD, ace.data(), aceSize), FALSE) << GetLastError();
+    SECURITY_DESCRIPTOR descriptor{};
+    ASSERT_NE(InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION), FALSE);
+    ASSERT_NE(SetSecurityDescriptorOwner(&descriptor, admins.get(), FALSE), FALSE);
+    ASSERT_NE(SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE), FALSE);
+    EXPECT_EQ(newFileReaders(&descriptor, true), DumpFolderAccess::Unknown);
+}
 // The reviewer's case (#4164): a standard user elevates with an administrator's credentials and picks their own
 // Documents. The folder's ACEs name only SYSTEM, Administrators and that user, whom no denylist would know.
 TEST(WindowsDumpFolderTest, AnotherUsersOwnFolderIsFlaggedThoughItNamesNoWellKnownGroup)

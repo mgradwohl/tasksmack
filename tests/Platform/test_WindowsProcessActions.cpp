@@ -2484,6 +2484,7 @@ TEST(WindowsProcessDumpTest, AHeldFolderGetsTheDumpAndItsAccessIsChecked)
     const ProcessDumpResult result = held.createDump(child.target(), real, std::stop_token{});
     ASSERT_TRUE(result.has_value()) << result.error();
     EXPECT_EQ(result->file.parent_path(), real);
+    // Marked delete-on-close at its create, and kept once the dump finished: still there after its handle closed.
     ASSERT_TRUE(std::filesystem::exists(result->file));
     EXPECT_EQ(result->sizeBytes, std::filesystem::file_size(result->file));
     std::array<char, 4> signature{};
