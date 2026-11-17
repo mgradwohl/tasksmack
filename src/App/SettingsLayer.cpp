@@ -72,6 +72,42 @@ namespace
     return StartAtLoginSetting(std::move(entry), sessionAccountCheck());
 }
 
+/// Settings' Open Themes Folder (#3155): the user themes folder, made on first use, on the open worker. A failure is
+/// logged, and the path opened anyway (the handler says what it can't open). Its own function so the dialog's action
+/// switch stays short (#4146).
+void makeUserThemesDir(const std::filesystem::path& dir)
+{
+    // In a handed-over config folder (#3774), only through the folder held.
+    if (const std::shared_ptr<const Platform::IHandedOverFolder> folder = Core::ConfigDirOverride::handedOverFolder(); folder != nullptr)
+    {
+        if (const auto made = folder->createFolder(dir.filename()); !made.has_value())
+        {
+            spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), made.error());
+        }
+        return;
+    }
+    if (Core::ConfigDirOverride::handedOverFolderReleased())
+    {
+        return; // the folder isn't held as it was checked: nothing is made in it
+    }
+#ifndef _WIN32
+    // Run as root for a user, the folder is theirs: made through no link of theirs, and given to them (#4089),
+    // as UserConfig's save makes the config folder.
+    if (const std::string why = NewFileOwner::createDirectoriesForUser(dir, Core::ConfigDirOverride::handedOver(), ::geteuid());
+        !why.empty())
+    {
+        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), why);
+    }
+#else
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    if (ec)
+    {
+        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
+    }
+#endif
+}
+
 } // namespace
 
 // The sign-in entry (#3093 part 2) is made here, at construction: making it reads nothing.
@@ -330,42 +366,8 @@ void SettingsLayer::onRender()
     case SettingsDialog::Action::OpenThemesFolder:
     {
         const std::filesystem::path dir = userThemesDir();
-        startOpen(
-            [dir = dir] // a copy of its own, movable
-            {
-                // Made on first use; a failure is logged, and the path opened anyway (the handler
-                // says what it can't open). In a handed-over config folder (#3774), only through the folder held.
-                if (const std::shared_ptr<const Platform::IHandedOverFolder> folder = Core::ConfigDirOverride::handedOverFolder();
-                    folder != nullptr)
-                {
-                    if (const auto made = folder->createFolder(dir.filename()); !made.has_value())
-                    {
-                        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), made.error());
-                    }
-                    return;
-                }
-                if (Core::ConfigDirOverride::handedOverFolderReleased())
-                {
-                    return; // the folder isn't held as it was checked: nothing is made in it
-                }
-#ifndef _WIN32
-                // Run as root for a user, the folder is theirs: made through no link of theirs, and given to them (#4089),
-                // as UserConfig's save makes the config folder.
-                if (const std::string why = NewFileOwner::createDirectoriesForUser(dir, Core::ConfigDirOverride::handedOver(), ::geteuid());
-                    !why.empty())
-                {
-                    spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), why);
-                }
-#else
-            std::error_code ec;
-            std::filesystem::create_directories(dir, ec);
-            if (ec)
-            {
-                spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
-            }
-#endif
-            },
-            dir); // a copy, as above
+        startOpen([dir = dir] { makeUserThemesDir(dir); }, // a copy of its own, movable
+                  dir);                                    // a copy, as above
         break;
     }
     case SettingsDialog::Action::CheckForUpdates:
