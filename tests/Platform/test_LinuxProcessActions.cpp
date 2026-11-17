@@ -3124,6 +3124,7 @@ TEST(LinuxProcessActionsTest, RunProgramAsAdministratorGoesThroughPkexec)
     LinuxProcessActions actions(SyscallTrace::Tools{
         .tracerPath = {}, .terminal = std::nullopt, .coreDumperPath = {}, .folderOpenerPath = {}, .elevatorPath = pkexec.string()});
     EXPECT_TRUE(actions.actionCapabilities().canRunProgramAsAdministrator);
+    EXPECT_FALSE(actions.actionCapabilities().runsProgramsAsRootDirectly) << "not root: the tooltip says a password comes (#4091)";
 
     const auto result = actions.runProgram({.commandLine = program.string() + " -x", .asAdministrator = true});
 
@@ -3131,6 +3132,14 @@ TEST(LinuxProcessActionsTest, RunProgramAsAdministratorGoesThroughPkexec)
     // pkexec is given the program's absolute path, then its arguments.
     EXPECT_EQ(recordedLines(dir.path / "pkexec.txt"), (std::vector<std::string>{program.string(), "-x"}));
     EXPECT_FALSE(std::filesystem::exists(dir.path / "prog.txt"));
+}
+
+// #4091: whether Run as administrator runs the program directly follows the euid, as runProgram() decides it, not the
+// capability set: root with capabilities taken away (a container) still runs it as root, with no password.
+TEST(LinuxProcessActionsTest, RunsProgramsAsRootDirectlyIsTheEuidTest)
+{
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    EXPECT_EQ(actions.actionCapabilities().runsProgramsAsRootDirectly, ::geteuid() == 0);
 }
 
 TEST(LinuxProcessActionsTest, RunProgramSaysWhatIsWrongWithTheCommand)

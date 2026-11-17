@@ -43,8 +43,8 @@ namespace Platform::Windows::DllSearchPolicy
 ///     a DLL there, as far as TaskSmack can tell (SECURITY.md names the cases left).
 [[nodiscard]] bool system32Only(TOKEN_ELEVATION_TYPE elevation, std::wstring_view commandLine) noexcept;
 
-/// system32Only() for this process: its token's TokenElevationType (TokenElevationTypeDefault if it can't be read)
-/// and GetCommandLineW().
+/// system32Only() for this process: its token's TokenElevationType, as currentElevationType() (WindowsElevation.h)
+/// reads it (TokenElevationTypeDefault if it can't be read), and GetCommandLineW().
 [[nodiscard]] bool system32OnlyForThisProcess() noexcept;
 
 } // namespace Platform::Windows::DllSearchPolicy

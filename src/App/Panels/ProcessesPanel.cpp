@@ -2049,7 +2049,7 @@ void ProcessesPanel::renderContent()
             m_RunTaskDialog.open(
                 RunTaskHistory::offered(UserConfig::get().settings().recentCommands, Core::ConfigDirOverride::handedOver()),
                 m_ActionCapabilities.canRunProgramAsAdministrator,
-                !processCapabilities().hasReducedPrivileges);
+                m_ActionCapabilities.runsProgramsAsRootDirectly); // as runProgram() decides it, not the capability set (#4091)
         }
         ImGui::EndDisabled();
         ImGui::SetItemTooltip("Run new task: start a program, optionally as administrator");
