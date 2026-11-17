@@ -2848,6 +2848,46 @@ TEST(NewFileOwnerTest, CreateDirectoriesForUserRefusesAUsersLinkAndMakesTheRest)
     std::filesystem::remove_all(root);
 }
 
+// #4152: openDirectoryForUser() walks and makes the folder by descriptor: a user's link on the way refuses run as root
+// for a user and is followed otherwise, a file on the way refuses, and a refused hand-over leaves the folder made and
+// says so.
+TEST(NewFileOwnerTest, OpenDirectoryForUserWalksByDescriptorMakesTheRestAndSaysWhatFailed)
+{
+    const std::filesystem::path root = std::filesystem::temp_directory_path() / ("tasksmack-opendir-" + std::to_string(::getpid()));
+    std::filesystem::remove_all(root);
+    std::filesystem::create_directories(root / "real");
+    std::filesystem::create_directory_symlink(root / "real", root / "link");
+    std::ofstream(root / "file") << "not a folder";
+
+    auto made = NewFileOwner::openDirectoryForUser(root / "real" / "a" / "b", false, 0);
+    ASSERT_TRUE(made.has_value()) << made.error();
+    EXPECT_GE(made->fd.get(), 0);
+    EXPECT_EQ(made->handOverError, "") << "as \"root\", made and given to the folder's owner (this test's user)";
+    EXPECT_TRUE(std::filesystem::is_directory(root / "real" / "a" / "b"));
+
+    auto followed = NewFileOwner::openDirectoryForUser(root / "link" / "c", false, ::geteuid());
+    ASSERT_TRUE(followed.has_value()) << followed.error();
+    EXPECT_TRUE(std::filesystem::is_directory(root / "real" / "c")) << "not less privileged: a link is followed";
+
+    auto refused = NewFileOwner::openDirectoryForUser(root / "link" / "d", true, 0);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(refused.error().contains("is a link of a user's")) << refused.error();
+    EXPECT_FALSE(std::filesystem::exists(root / "real" / "d"));
+    auto refusedAtTheEnd = NewFileOwner::openDirectoryForUser(root / "link", true, 0);
+    EXPECT_FALSE(refusedAtTheEnd.has_value()) << "the folder itself a user's link";
+
+    auto notAFolder = NewFileOwner::openDirectoryForUser(root / "file" / "e", false, ::geteuid());
+    ASSERT_FALSE(notAFolder.has_value());
+    EXPECT_TRUE(notAFolder.error().contains("isn't a folder")) << notAFolder.error();
+
+    auto unchowned = NewFileOwner::openDirectoryForUser(root / "real" / "f", false, 0, true);
+    ASSERT_TRUE(unchowned.has_value()) << unchowned.error();
+    EXPECT_TRUE(unchowned->handOverError.contains("couldn't give")) << unchowned->handOverError;
+    EXPECT_TRUE(std::filesystem::is_directory(root / "real" / "f")) << "still made, and usable";
+
+    std::filesystem::remove_all(root);
+}
+
 // #2728, #3374: the handed-over config folder itself swapped for a link after the startup check is refused too:
 // an elevated save writes nothing into the folder the link points at.
 TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderSwappedForALinkIsNotSavedInto)

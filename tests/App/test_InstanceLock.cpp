@@ -206,6 +206,22 @@ TEST_F(InstanceLockTest, AsRootAnExistingLockFileIsHandedOver)
 }
 
 // Not root: nothing is handed over, and nothing to report.
+// #4156: run as root for a user, the lock's folder is never made, nor the lock opened, through a link of theirs.
+TEST_F(InstanceLockTest, RunAsRootForAUserALinkOfTheUsersOnTheWayIsRefused)
+{
+    const std::filesystem::path real = m_Dir / "real";
+    std::filesystem::create_directory(real);
+    std::filesystem::create_directory_symlink(real, m_Dir / "link");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    const InstanceLock lock(m_Dir / "link" / "tasksmack" / "tasksmack.lock", InstanceLock::Testing{.effectiveUid = 0});
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+    EXPECT_NE(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().contains("is a link of a user's")) << lock.error();
+    EXPECT_FALSE(std::filesystem::exists(real / "tasksmack")) << "nothing made through the link";
+}
+
 TEST_F(InstanceLockTest, NotRootNothingIsHandedOver)
 {
     const InstanceLock lock(m_Dir / "tasksmack.lock", InstanceLock::Testing{.effectiveUid = 1000, .failChown = true});

@@ -8,10 +8,13 @@
 
 #ifndef _WIN32
 
+#include <cerrno>
+#include <expected>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <system_error>
+#include <utility>
 #include <vector>
 
 #include <fcntl.h>
@@ -91,48 +94,151 @@ struct FileOwner
     return std::nullopt;
 }
 
-/// Creates @p dir and any missing ancestors the way UserConfig's save does (#4089): when @p lessPrivileged (run as root
-/// for a user, #3759) nothing is created through a link of theirs on the way, and each directory made while root is
-/// given to the owner of its nearest existing ancestor (ownerForNewFiles(), #2121), so the user's next normal run can
-/// use it. @p effectiveUid is the process's (::geteuid(), or a test's). @return Empty when @p dir exists afterwards,
-/// else why not.
-[[nodiscard]] inline std::string createDirectoriesForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_t effectiveUid)
+/// A directory descriptor, closed with its owner.
+class DirectoryFd
 {
-    if (lessPrivileged)
+  public:
+    DirectoryFd() noexcept = default;
+    explicit DirectoryFd(int fd) noexcept : m_Fd(fd)
+    {}
+    DirectoryFd(const DirectoryFd&) = delete;
+    DirectoryFd& operator=(const DirectoryFd&) = delete;
+    DirectoryFd(DirectoryFd&& other) noexcept : m_Fd(std::exchange(other.m_Fd, -1))
+    {}
+    DirectoryFd& operator=(DirectoryFd&& other) noexcept
     {
-        if (const std::optional<std::filesystem::path> link = userOwnedLinkOnPath(dir); link.has_value())
+        if (this != &other)
         {
-            return link->string() + " is a link of a user's, which TaskSmack run as root doesn't create through";
+            reset();
+            m_Fd = std::exchange(other.m_Fd, -1);
+        }
+        return *this;
+    }
+    ~DirectoryFd()
+    {
+        reset();
+    }
+    [[nodiscard]] int get() const noexcept
+    {
+        return m_Fd;
+    }
+
+  private:
+    void reset() noexcept
+    {
+        if (m_Fd >= 0)
+        {
+            ::close(m_Fd);
+            m_Fd = -1;
         }
     }
-    std::error_code ec;
-    if (std::filesystem::is_directory(dir, ec))
+    int m_Fd = -1;
+};
+
+/// openDirectoryForUser()'s answer: the folder, and why one it made couldn't be given to its user (empty when nothing
+/// failed). The folder is still made and usable then, as the instance lock and the config save have always treated it.
+struct OpenedDirectory
+{
+    DirectoryFd fd;
+    std::string handOverError;
+};
+
+/// @p dir opened as a folder (O_RDONLY | O_DIRECTORY), made first where it's missing (#4152). Walked one component at a
+/// time from "/" (or the working directory, for a relative @p dir) with openat(O_NOFOLLOW), so nothing is resolved by
+/// path after it was checked: a link swapped in between steps isn't followed. A link on the way is followed only when
+/// root owns it (/home on some systems) or @p lessPrivileged is false; one of a user's, when run as root for a user
+/// (#3759), refuses. Each folder made (mkdirat, 0777 less the umask) is given, through its own descriptor, to the
+/// owner of the deepest folder that already existed, when @p effectiveUid is root's and that folder isn't
+/// (ownerForNewFiles()'s rule, #2121); @p failChown stands in for a refused fchown, for tests. @return The folder,
+/// or why it couldn't be opened or made.
+[[nodiscard]] inline std::expected<OpenedDirectory, std::string>
+openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_t effectiveUid, bool failChown = false)
+{
+    const std::filesystem::path normal = dir.lexically_normal();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    DirectoryFd at(::open(normal.is_absolute() ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (at.get() < 0)
     {
-        return {};
+        return std::unexpected(std::system_category().message(errno));
     }
-    const std::optional<FileOwner> owner = ownerForNewFiles(dir, effectiveUid);
-    // The directories about to be made, outermost first, to hand to the user afterwards.
-    std::vector<std::filesystem::path> created;
-    for (std::filesystem::path at = dir; !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec); at = at.parent_path())
+    std::filesystem::path walked = normal.is_absolute() ? std::filesystem::path("/") : std::filesystem::path();
+    std::optional<FileOwner> owner;
+    bool ownerKnown = false;
+    std::string handOverError;
+    for (const std::filesystem::path& part : normal.relative_path())
     {
-        created.insert(created.begin(), at);
-    }
-    std::filesystem::create_directories(dir, ec);
-    if (ec)
-    {
-        return ec.message();
-    }
-    if (owner.has_value())
-    {
-        for (const std::filesystem::path& made : created)
+        if (part.empty() || part == ".")
         {
-            if (!chownCreatedDirectory(made, *owner))
+            continue;
+        }
+        if (part == "..")
+        {
+            return std::unexpected(normal.string() + " climbs with \"..\", which TaskSmack doesn't walk");
+        }
+        walked /= part;
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        int next = ::openat(at.get(), part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        if (next < 0 && errno == ENOENT)
+        {
+            if (!ownerKnown)
             {
-                return "can't give " + made.string() + " to its user";
+                // The deepest folder that exists, this walk's own descriptor of it: the new folders' owner (#2121).
+                struct stat existing = {};
+                if (effectiveUid == 0 && ::fstat(at.get(), &existing) == 0 && existing.st_uid != 0)
+                {
+                    owner = FileOwner{.uid = existing.st_uid, .gid = existing.st_gid};
+                }
+                ownerKnown = true;
+            }
+            if (::mkdirat(at.get(), part.c_str(), S_IRWXU | S_IRWXG | S_IRWXO) != 0 && errno != EEXIST)
+            {
+                return std::unexpected(walked.string() + " can't be made: " + std::system_category().message(errno));
+            }
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+            next = ::openat(at.get(), part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+            if (next >= 0 && owner.has_value() && (failChown || ::fchown(next, owner->uid, owner->gid) != 0) && handOverError.empty())
+            {
+                handOverError =
+                    "couldn't give " + walked.string() + " to its user: " + std::system_category().message(failChown ? EPERM : errno);
             }
         }
+        else if (next < 0 && (errno == ELOOP || errno == ENOTDIR))
+        {
+            // O_NOFOLLOW met a link (ELOOP), or the entry isn't a folder: which, from the entry itself.
+            struct stat entry = {};
+            if (::fstatat(at.get(), part.c_str(), &entry, AT_SYMLINK_NOFOLLOW) != 0 || !S_ISLNK(entry.st_mode))
+            {
+                return std::unexpected(walked.string() + " isn't a folder");
+            }
+            if (lessPrivileged && entry.st_uid != 0)
+            {
+                return std::unexpected(walked.string() + " is a link of a user's, which TaskSmack run as root doesn't create through");
+            }
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+            next = ::openat(at.get(), part.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); // root's own link, or ours
+        }
+        if (next < 0)
+        {
+            return std::unexpected(walked.string() + " can't be opened: " + std::system_category().message(errno));
+        }
+        at = DirectoryFd(next);
     }
-    return {};
+    return OpenedDirectory{.fd = std::move(at), .handOverError = std::move(handOverError)};
+}
+
+/// Creates @p dir and any missing ancestors the way UserConfig's save does (#4089), through openDirectoryForUser()
+/// (#4152): when @p lessPrivileged (run as root for a user, #3759) nothing is created through a link of theirs on the
+/// way, and each directory made while root is given to the owner of its nearest existing ancestor, so the user's next
+/// normal run can use it. @p effectiveUid is the process's (::geteuid(), or a test's). @return Empty when @p dir exists
+/// afterwards and what was made is the user's, else why not.
+[[nodiscard]] inline std::string createDirectoriesForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_t effectiveUid)
+{
+    auto opened = openDirectoryForUser(dir, lessPrivileged, effectiveUid);
+    if (!opened.has_value())
+    {
+        return std::move(opened.error());
+    }
+    return std::move(opened->handOverError);
 }
 
 } // namespace App::NewFileOwner
