@@ -14,14 +14,19 @@
 //     is then opened relative to the handle above it (NtCreateFile with RootDirectory), never by re-walking the path, so
 //     nothing swapped in between steps is followed.
 //   - TaskSmack and Logs: created fresh with ADMIN_SECURITY (owned by Administrators, a protected DACL for
-//     Administrators and SYSTEM only), or, if there already and owned by Administrators or SYSTEM, their DACL reset to
-//     that (SetKernelObjectSecurity, which doesn't propagate to children). A folder there already that a user owns is
-//     renamed aside (TaskSmack.untrusted-<n>) through its own handle and a fresh one made in its place; a name that
-//     still can't be created fresh is refused. Each folder is held open, without FILE_SHARE_DELETE, until the file is.
+//     Administrators and SYSTEM only). An entry there already is taken over in place only when it is a plain folder that
+//     Administrators or SYSTEM owns and this process can open for WRITE_DAC: its DACL is reset to ADMIN_SECURITY
+//     (SetKernelObjectSecurity, which doesn't propagate to children). Anything else -- a user-owned folder, a protected
+//     DACL this process can't open for WRITE_DAC, a junction or a planted file -- is moved aside (a random
+//     TaskSmack.untrusted-<n>) through a handle opened for DELETE alone, granted by the parent folder's
+//     FILE_DELETE_CHILD, and a fresh one is made in its place. Each folder is held open, without FILE_SHARE_DELETE,
+//     until the file is. The in-place takeover is not claimed to be unraceable: a user who has full control of an
+//     Administrators-owned folder and keeps a WRITE_DAC handle on it can still change its DACL while it is held, but the
+//     worst that does is get the log refused, since the log file below carries its own ADMIN_SECURITY and is never reused.
 //   - The log file: any existing one is opened without following a link and deleted through that handle (POSIX
-//     semantics), then a new one is created with CREATE-only disposition and ADMIN_SECURITY. A file that can't be made
-//     fresh (a race re-made it) is refused. It is never reused, so a planted file with the user's own DACL is never
-//     written to.
+//     semantics, or delete-on-close), then a new one is created with CREATE-only disposition and ADMIN_SECURITY. A file
+//     that can't be made fresh (a race re-made it) is refused. It is never reused, so a planted file with the user's own
+//     DACL is never written to.
 //   - Anything that fails a check is refused: the log goes to the debugger and the console only, and says why there.
 //
 // The folders, their security and the final-path read are seams, so test_DebugLogFile.cpp drives each case in a temp
@@ -58,8 +63,8 @@ inline constexpr std::string_view ADMIN_SECURITY = "O:BAD:P(A;OICI;FA;;;BA)(A;OI
 [[nodiscard]] std::filesystem::path elevatedLogFolder(const std::filesystem::path& programData);
 
 #ifdef _WIN32
-/// A handle's final path (GetFinalPathNameByHandleW), or empty when it can't be read: a seam the tests drive to force
-/// the final-path mismatch branch.
+/// A handle's final path (GetFinalPathNameByHandleW), or empty when it can't be read: a seam the tests drive to steer
+/// the reported path of the opened log.
 using FinalPathFn = std::function<std::wstring(void* /*handle*/)>;
 [[nodiscard]] std::wstring systemFinalPath(void* handle);
 #endif
@@ -91,10 +96,10 @@ struct Opened
 
 #ifdef _WIN32
 /// Folder @p folder secured as this file's header says, and held: made fresh with @p sddl, or, there already and owned
-/// by Administrators or SYSTEM, its DACL reset; a user-owned one renamed aside and remade. @p finalPath reads a handle's
-/// final path. The error says which step failed. For open() and its tests.
-[[nodiscard]] std::expected<void, std::string>
-secureFolder(const std::filesystem::path& folder, std::string_view sddl, const FinalPathFn& finalPath = &systemFinalPath);
+/// by Administrators or SYSTEM and openable for WRITE_DAC, its DACL reset; anything else (a user-owned folder, a
+/// junction, a planted file) moved aside through a DELETE handle and remade. The error says which step failed. For
+/// open() and its tests.
+[[nodiscard]] std::expected<void, std::string> secureFolder(const std::filesystem::path& folder, std::string_view sddl);
 #endif
 
 } // namespace App::DebugLogFile

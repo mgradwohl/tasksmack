@@ -40,6 +40,7 @@
 #include <format>
 #include <functional>
 #include <mutex>
+#include <random>
 #include <system_error>
 #include <vector>
 #endif
@@ -151,14 +152,24 @@ using OwnedDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
     return trusted;
 }
 
-/// NtCreateFile relative to @p parent (RootDirectory), for the one plain name @p name. @p disposition and the directory
-/// flag say whether it is opened or created, and as a folder or a file; @p descriptor is applied when it is created.
-/// @p outCreated, when set, says whether a create made a new object. The handle, or the NTSTATUS, is returned.
+/// What an open expects @p name to be: a folder, a file, or either (whatever is there, e.g. an entry to be removed).
+enum class OpenKind : std::uint8_t
+{
+    Directory,
+    File,
+    Either,
+};
+
+/// NtCreateFile relative to @p parent (RootDirectory), for the one plain name @p name, with exactly the access asked
+/// (nothing added), so a delete-only open stays grantable through the parent's FILE_DELETE_CHILD. @p disposition says
+/// open or create; @p descriptor is applied when it is created. Shared read and write, never delete, so it can't be
+/// renamed or deleted from under the handle, but a sibling rename into the parent doesn't collide. A synchronous handle
+/// only when SYNCHRONIZE was asked. @p outCreated, when set, says whether a create made a new object.
 [[nodiscard]] std::expected<OwnedHandle, NTSTATUS> openRelative(HANDLE parent,
                                                                 const std::wstring& name,
                                                                 ACCESS_MASK access,
                                                                 ULONG disposition,
-                                                                bool directory,
+                                                                OpenKind kind,
                                                                 PSECURITY_DESCRIPTOR descriptor,
                                                                 bool* outCreated = nullptr)
 {
@@ -178,14 +189,26 @@ using OwnedDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
     attributes.SecurityDescriptor = descriptor;
     IO_STATUS_BLOCK status{};
     HANDLE opened = nullptr;
-    const ULONG options = NT_FILE_OPEN_REPARSE_POINT | NT_FILE_SYNCHRONOUS | (directory ? NT_FILE_DIRECTORY : NT_FILE_NON_DIRECTORY);
+    ULONG options = NT_FILE_OPEN_REPARSE_POINT;
+    if ((access & SYNCHRONIZE) != 0)
+    {
+        options |= NT_FILE_SYNCHRONOUS;
+    }
+    if (kind == OpenKind::Directory)
+    {
+        options |= NT_FILE_DIRECTORY;
+    }
+    else if (kind == OpenKind::File)
+    {
+        options |= NT_FILE_NON_DIRECTORY;
+    }
     const NTSTATUS result = ntCreateFile()(&opened,
-                                           access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
+                                           access,
                                            &attributes,
                                            &status,
                                            nullptr,
                                            FILE_ATTRIBUTE_NORMAL,
-                                           FILE_SHARE_READ, // no FILE_SHARE_DELETE: it can't be renamed or deleted while held
+                                           FILE_SHARE_READ | FILE_SHARE_WRITE, // never FILE_SHARE_DELETE
                                            disposition,
                                            options,
                                            nullptr,
@@ -201,23 +224,33 @@ using OwnedDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
     return own(opened);
 }
 
-/// Renames the folder @p handle holds aside, out of the way, through that handle (RootDirectory @p parent): a fresh one
-/// can then be made under @p name. False when it can't be moved.
+/// Renames the entry @p handle holds (opened with DELETE) aside, out of the way, through that handle (RootDirectory
+/// @p parent): a fresh one can then be made under @p name. Any entry can be moved this way, a junction or a planted
+/// file included, which only takes it out of the path. The moved-aside name has a random suffix and is retried a few
+/// times, so one left from a crashed run doesn't block it. False when it can't be moved.
 [[nodiscard]] bool renameAside(HANDLE handle, HANDLE parent, std::wstring_view name)
 {
     if (ntSetInformationFile() == nullptr)
     {
         return false; // LCOV_EXCL_LINE
     }
-    const std::wstring moved = std::format(L"{}.untrusted-{:08X}", name, GetCurrentProcessId());
-    const std::size_t bytes = sizeof(FILE_RENAME_INFO) + (moved.size() * sizeof(wchar_t));
-    std::vector<std::byte> buffer(bytes); // zero-initialised: ReplaceIfExists (a union, left untouched) is already FALSE
-    auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
-    rename->RootDirectory = parent;
-    rename->FileNameLength = static_cast<DWORD>(moved.size() * sizeof(wchar_t));
-    std::ranges::copy(moved, static_cast<wchar_t*>(rename->FileName));
-    IO_STATUS_BLOCK status{};
-    return ntSetInformationFile()(handle, &status, rename, static_cast<ULONG>(bytes), FILE_RENAME_INFORMATION_CLASS) >= 0;
+    std::random_device random;
+    for (int attempt = 0; attempt < 8; ++attempt)
+    {
+        const std::wstring moved = std::format(L"{}.untrusted-{:08X}", name, random());
+        const std::size_t bytes = sizeof(FILE_RENAME_INFO) + (moved.size() * sizeof(wchar_t));
+        std::vector<std::byte> buffer(bytes); // zero-initialised: ReplaceIfExists (a union, left untouched) is FALSE
+        auto* const rename = reinterpret_cast<FILE_RENAME_INFO*>(buffer.data());
+        rename->RootDirectory = parent;
+        rename->FileNameLength = static_cast<DWORD>(moved.size() * sizeof(wchar_t));
+        std::ranges::copy(moved, static_cast<wchar_t*>(rename->FileName));
+        IO_STATUS_BLOCK status{};
+        if (ntSetInformationFile()(handle, &status, rename, static_cast<ULONG>(bytes), FILE_RENAME_INFORMATION_CLASS) >= 0)
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Marks the file @p handle holds for deletion (opened with DELETE), through that handle: POSIX semantics where the
@@ -251,17 +284,21 @@ using OwnedDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
     return (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
-/// Folder @p name, under the held @p parent, secured to @p descriptor's DACL and owner: made fresh when it isn't there
-/// or a user owns it (an existing user-owned one is renamed aside first), or its DACL reset when Administrators or
-/// SYSTEM already owns it. Held open, without FILE_SHARE_DELETE. @p display names it for the error.
+/// Folder @p name, under the held @p parent, secured to @p descriptor's DACL and owner, and held open (without
+/// FILE_SHARE_DELETE). It is made fresh when it isn't there. An entry there already is taken over in place only when it
+/// is a plain folder that Administrators or SYSTEM owns and this process can open for WRITE_DAC (its DACL reset, not its
+/// children's: SetKernelObjectSecurity doesn't propagate). Anything else -- a user-owned folder, a protected DACL this
+/// process can't open for WRITE_DAC, a junction or a planted file -- is moved aside (renameAside()) through a handle
+/// opened for DELETE alone, which the parent's FILE_DELETE_CHILD grants even when the entry's own DACL grants this
+/// process nothing, and a fresh one is made in its place. @p display names it for the error.
 [[nodiscard]] std::expected<OwnedHandle, std::string>
 secureChild(HANDLE parent, const std::wstring& name, PSECURITY_DESCRIPTOR descriptor, const std::string& display)
 {
-    constexpr ACCESS_MASK ACCESS = READ_CONTROL | WRITE_DAC | DELETE | FILE_LIST_DIRECTORY;
-    for (int attempt = 0; attempt < 2; ++attempt)
+    constexpr ACCESS_MASK HELD = READ_CONTROL | WRITE_DAC | FILE_LIST_DIRECTORY | SYNCHRONIZE | FILE_READ_ATTRIBUTES;
+    for (int attempt = 0; attempt < 8; ++attempt)
     {
         bool created = false;
-        auto fresh = openRelative(parent, name, ACCESS, NT_FILE_CREATE, true, descriptor, &created);
+        auto fresh = openRelative(parent, name, HELD, NT_FILE_CREATE, OpenKind::Directory, descriptor, &created);
         if (fresh.has_value() && created)
         {
             return std::move(*fresh); // made fresh, with the descriptor's owner and DACL
@@ -270,40 +307,28 @@ secureChild(HANDLE parent, const std::wstring& name, PSECURITY_DESCRIPTOR descri
         {
             return std::unexpected(std::format("{} can't be made: {}", display, ntText(fresh.error())));
         }
-        // There already: open it without following a link, and decide by its owner.
-        auto existing = openRelative(parent, name, ACCESS, NT_FILE_OPEN, true, nullptr);
-        if (!existing.has_value())
+        // There already. A plain folder Administrators or SYSTEM owns, that this process can open for WRITE_DAC, is kept
+        // and its DACL reset; the open for WRITE_DAC is tried separately so a protected DACL doesn't stop the removal below.
+        if (auto dacl = openRelative(parent, name, HELD, NT_FILE_OPEN, OpenKind::Directory, nullptr);
+            dacl.has_value() && isPlainFolder(dacl->get()) == std::optional(true) &&
+            ownerIsAdminOrSystem(dacl->get()) == std::optional(true))
         {
-            return std::unexpected(std::format("{} can't be opened: {}", display, ntText(existing.error())));
-        }
-        const std::optional<bool> plain = isPlainFolder(existing->get());
-        if (!plain.has_value())
-        {
-            return std::unexpected(std::format("{} can't be read", display));
-        }
-        if (!*plain)
-        {
-            return std::unexpected(std::format("{} is a junction or link, or not a folder", display));
-        }
-        const std::optional<bool> trusted = ownerIsAdminOrSystem(existing->get());
-        if (!trusted.has_value())
-        {
-            return std::unexpected(std::format("{}'s owner can't be read", display));
-        }
-        if (*trusted)
-        {
-            // Administrators or SYSTEM owns it: reset its DACL (not its children's: SetKernelObjectSecurity doesn't
-            // propagate), and keep it.
-            if (SetKernelObjectSecurity(existing->get(), DACL_SECURITY_INFORMATION, descriptor) == FALSE)
+            if (SetKernelObjectSecurity(dacl->get(), DACL_SECURITY_INFORMATION, descriptor) == FALSE)
             {
                 return std::unexpected(std::format("{}'s security can't be set: {}", display, lastError()));
             }
-            return std::move(*existing);
+            return std::move(*dacl);
         }
-        // A user owns it: move it aside through its handle and make a fresh one in its place on the next turn.
-        if (!renameAside(existing->get(), parent, name))
+        // Otherwise move it aside and make a fresh one on the next turn. Opened for DELETE only, whatever it is (a folder,
+        // a junction, a planted file), which the parent's FILE_DELETE_CHILD grants without the entry's own DACL.
+        auto removable = openRelative(parent, name, DELETE, NT_FILE_OPEN, OpenKind::Either, nullptr);
+        if (!removable.has_value())
         {
-            return std::unexpected(std::format("{} is owned by a user and can't be moved aside", display));
+            return std::unexpected(std::format("the existing {} can't be opened to move aside: {}", display, ntText(removable.error())));
+        }
+        if (!renameAside(removable->get(), parent, name))
+        {
+            return std::unexpected(std::format("the existing {} can't be moved aside", display));
         }
     }
     return std::unexpected(std::format("{} can't be secured: it keeps being replaced", display));
@@ -375,19 +400,26 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
     // The log, relative to the held Logs folder. Any existing one is deleted through its own handle, then a fresh one is
     // made with CREATE-only: a planted file with a user's DACL is never written to, and a race that re-makes one is refused.
     const std::wstring name(FILE_NAME.begin(), FILE_NAME.end());
-    if (auto stale = openRelative(logsHandle->get(), name, DELETE, NT_FILE_OPEN, false, nullptr); stale.has_value())
     {
-        if (!deleteThroughHandle(stale->get()))
+        // DELETE alone, whatever it is (a file, a link): granted through the held Logs folder's FILE_DELETE_CHILD even
+        // when the planted file's own DACL grants this process nothing. Closed before the fresh create, so the classic
+        // delete-on-close (where POSIX semantics aren't taken) has freed the name.
+        auto stale = openRelative(logsHandle->get(), name, DELETE, NT_FILE_OPEN, OpenKind::Either, nullptr);
+        if (stale.has_value())
         {
-            return std::unexpected(std::format("the stale {} can't be removed", std::string(FILE_NAME)));
+            if (!deleteThroughHandle(stale->get()))
+            {
+                return std::unexpected(std::format("the stale {} can't be removed", std::string(FILE_NAME)));
+            }
+        }
+        else if (stale.error() != STATUS_OBJECT_NAME_NOT_FOUND && stale.error() != STATUS_OBJECT_PATH_NOT_FOUND)
+        {
+            return std::unexpected(std::format("{} can't be checked: {}", std::string(FILE_NAME), ntText(stale.error())));
         }
     }
-    else if (stale.error() != STATUS_OBJECT_NAME_NOT_FOUND && stale.error() != STATUS_OBJECT_PATH_NOT_FOUND)
-    {
-        return std::unexpected(std::format("{} can't be checked: {}", std::string(FILE_NAME), ntText(stale.error())));
-    }
     bool created = false;
-    auto file = openRelative(logsHandle->get(), name, GENERIC_WRITE, NT_FILE_CREATE, false, descriptor.get(), &created);
+    auto file =
+        openRelative(logsHandle->get(), name, GENERIC_WRITE | SYNCHRONIZE, NT_FILE_CREATE, OpenKind::File, descriptor.get(), &created);
     if (!file.has_value() || !created)
     {
         return std::unexpected(
@@ -456,7 +488,7 @@ std::wstring systemFinalPath(void* handle)
     return {};
 }
 
-std::expected<void, std::string> secureFolder(const std::filesystem::path& folder, std::string_view sddl, const FinalPathFn& /*finalPath*/)
+std::expected<void, std::string> secureFolder(const std::filesystem::path& folder, std::string_view sddl)
 {
     const OwnedDescriptor descriptor = descriptorFrom(sddl);
     if (descriptor == nullptr)

@@ -40,6 +40,7 @@
 #include <array>
 #include <cstddef>
 #include <memory>
+#include <vector>
 #else
 #include <unistd.h>
 #endif
@@ -217,6 +218,44 @@ void grantBack(const std::filesystem::path& folder)
 /// to read back. Everything else is the real thing: protected, nothing inherited, Administrators and SYSTEM full control.
 constexpr std::string_view ADMINS_SYSTEM_AND_OWNER = "D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;OW)";
 
+/// This test process's own user SID, as an owned buffer; empty when it can't be read.
+[[nodiscard]] std::vector<std::byte> currentUserSid()
+{
+    DWORD size = 0;
+    GetTokenInformation(GetCurrentProcessToken(), TokenUser, nullptr, 0, &size);
+    if (size == 0)
+    {
+        return {};
+    }
+    std::vector<std::byte> buffer(size);
+    if (GetTokenInformation(GetCurrentProcessToken(), TokenUser, buffer.data(), size, &size) == FALSE)
+    {
+        return {};
+    }
+    return buffer;
+}
+
+/// Sets @p folder's owner to @p sid; whether it took. Any token may make itself a folder's owner; only an elevated one
+/// may set it to Administrators, so a test that needs that skips when this returns false.
+[[nodiscard]] bool setOwner(const std::filesystem::path& folder, PSID sid)
+{
+    std::wstring path = folder.native();
+    return SetNamedSecurityInfoW(path.data(), SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, sid, nullptr, nullptr, nullptr) == ERROR_SUCCESS;
+}
+
+/// Whether this token can set @p folder's owner to BUILTIN\Administrators (an elevated token can): the gate for the
+/// in-place takeover tests, which only an elevated run reaches.
+[[nodiscard]] bool canOwnAsAdministrators(const std::filesystem::path& folder)
+{
+    std::array<std::byte, SECURITY_MAX_SID_SIZE> administrators{};
+    auto size = static_cast<DWORD>(administrators.size());
+    if (CreateWellKnownSid(WinBuiltinAdministratorsSid, nullptr, administrators.data(), &size) == FALSE)
+    {
+        return false;
+    }
+    return setOwner(folder, administrators.data());
+}
+
 /// Whether an entry named like TaskSmack.untrusted-* sits next to @p folder: a folder renamed aside.
 [[nodiscard]] bool hasUntrustedSibling(const std::filesystem::path& folder)
 {
@@ -239,13 +278,17 @@ TEST(DebugLogFileTest, AFreshFolderIsMadeForAdministratorsAndSystemOnly)
     grantBack(folder);
 }
 
-// A user-owned folder that is there already is renamed aside and a fresh one made in its place (finding 2): it is never
-// taken over where a handle the user still holds could re-grant them.
+// A user-owned folder that is there already is renamed aside and a fresh one made in its place (#4138 review): it is
+// never taken over where a handle the user still holds could re-grant them. The owner is set to this test's account
+// explicitly, so the path is the same whether the run is elevated (where a created folder is Administrators-owned) or not.
 TEST(DebugLogFileTest, AUserOwnedFolderIsRenamedAsideAndRemade)
 {
     const ScratchFolder scratch;
     const std::filesystem::path folder = scratch.programData() / "TaskSmack";
     std::filesystem::create_directory(folder);
+    auto sid = currentUserSid();
+    ASSERT_FALSE(sid.empty());
+    ASSERT_TRUE(setOwner(folder, reinterpret_cast<TOKEN_USER*>(sid.data())->User.Sid)) << "this account can own its own folder";
     std::ofstream(folder / "planted.txt", std::ios::binary) << "the user's own file\n";
     const auto secured = App::DebugLogFile::secureFolder(folder, ADMINS_SYSTEM_AND_OWNER);
     ASSERT_TRUE(secured.has_value()) << secured.error();
@@ -397,9 +440,21 @@ struct MountPointReparseData
     return std::nullopt;
 }
 
-// %ProgramData%\TaskSmack a junction a user made first (#4105's \RPC Control, in a form any test can make): refused as a
-// link, and the folder behind it is neither made over nor written, its DACL unchanged.
-TEST(DebugLogFileTest, ATaskSmackFolderThatIsAJunctionIsRefused)
+/// Undoes makeJunction(), so removing @p link removes nothing behind it.
+void removeJunction(const std::filesystem::path& link)
+{
+    const Platform::Windows::UniqueHandle folder = openForReparse(link);
+    REPARSE_GUID_DATA_BUFFER header{};
+    header.ReparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    DWORD returned = 0;
+    DeviceIoControl(
+        folder.get(), FSCTL_DELETE_REPARSE_POINT, &header, REPARSE_GUID_DATA_BUFFER_HEADER_SIZE, nullptr, 0, &returned, nullptr);
+}
+
+// %ProgramData%\TaskSmack a junction a user made first (#4105's \RPC Control, in a form any test can make): it is moved
+// aside through its own handle, never followed, a fresh TaskSmack is made, and the log is written. The folder behind the
+// junction is neither made over nor written (#4138 review: a link is moved aside, not refused).
+TEST(DebugLogFileTest, ATaskSmackFolderThatIsAJunctionIsMovedAside)
 {
     const ScratchFolder scratch;
     const std::filesystem::path target = scratch.root() / "elsewhere";
@@ -411,11 +466,66 @@ TEST(DebugLogFileTest, ATaskSmackFolderThatIsAJunctionIsRefused)
     const auto made = makeJunction(taskSmack, target);
     ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
 
-    const auto opened = App::DebugLogFile::open(true, functionsIn(scratch));
-    ASSERT_FALSE(opened.has_value());
-    EXPECT_TRUE(opened.error().contains("is a junction or link")) << opened.error();
+    auto opened = App::DebugLogFile::open(true, functionsIn(scratch));
+    // Take the junction out of the path before any cleanup, so remove_all can't follow it into the target.
+    for (std::filesystem::directory_iterator it(scratch.programData()), end; it != end; ++it)
+    {
+        if (it->path().filename().wstring().contains(L".untrusted-") && std::filesystem::is_symlink(it->path()))
+        {
+            removeJunction(it->path());
+        }
+    }
+    ASSERT_TRUE(opened.has_value()) << opened.error();
+    logThrough(opened->sink, "this run");
+    opened->sink.reset();
+    EXPECT_TRUE(
+        contentsOf(App::DebugLogFile::elevatedLogFolder(scratch.programData()) / App::DebugLogFile::FILE_NAME).contains("this run"));
     EXPECT_EQ(contentsOf(target / App::DebugLogFile::FILE_NAME), "a file the user may not change\n") << "untouched";
     EXPECT_EQ(daclOf(target), daclBefore) << "the folder behind the junction isn't secured either";
+}
+
+// An Administrators-owned folder this run can open for WRITE_DAC is taken over in place: its DACL is reset and its
+// contents kept. Only an elevated run can make a folder Administrators-owned, so it is skipped otherwise.
+TEST(DebugLogFileTest, AnAdministratorsOwnedFolderIsTakenOverInPlace)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path folder = scratch.programData() / "TaskSmack";
+    std::filesystem::create_directory(folder);
+    std::ofstream(folder / "kept.txt", std::ios::binary) << "made by a trusted run\n";
+    if (!canOwnAsAdministrators(folder))
+    {
+        GTEST_SKIP() << "this token can't own a folder as Administrators (not elevated)";
+    }
+    const auto secured = App::DebugLogFile::secureFolder(folder, ADMINS_SYSTEM_AND_OWNER);
+    ASSERT_TRUE(secured.has_value()) << secured.error();
+    EXPECT_EQ(daclOf(folder), ADMINS_SYSTEM_AND_OWNER);
+    EXPECT_TRUE(std::filesystem::exists(folder / "kept.txt")) << "taken over in place, not remade";
+    EXPECT_FALSE(hasUntrustedSibling(folder)) << "nothing moved aside";
+    grantBack(folder);
+}
+
+// An Administrators-owned TaskSmack holding a user-owned Logs (#4138 review): TaskSmack is taken over in place, Logs is
+// moved aside and remade, and the log is written. Elevated-only, since TaskSmack must be Administrators-owned.
+TEST(DebugLogFileTest, AnAdminTaskSmackWithAUserOwnedLogsTakesOverAndRemakesLogs)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path taskSmack = scratch.programData() / "TaskSmack";
+    const std::filesystem::path logs = taskSmack / "Logs";
+    std::filesystem::create_directories(logs);
+    auto sid = currentUserSid();
+    ASSERT_FALSE(sid.empty());
+    ASSERT_TRUE(setOwner(logs, reinterpret_cast<TOKEN_USER*>(sid.data())->User.Sid));
+    if (!canOwnAsAdministrators(taskSmack))
+    {
+        GTEST_SKIP() << "this token can't own TaskSmack as Administrators (not elevated)";
+    }
+    auto opened = App::DebugLogFile::open(true, functionsIn(scratch));
+    ASSERT_TRUE(opened.has_value()) << opened.error();
+    logThrough(opened->sink, "this run");
+    opened->sink.reset();
+    EXPECT_TRUE(contentsOf(logs / App::DebugLogFile::FILE_NAME).contains("this run"));
+    EXPECT_TRUE(hasUntrustedSibling(logs)) << "the user-owned Logs was moved aside";
+    grantBack(taskSmack);
 }
 
 // A log hard-linked to another file before the run: replaced, not reused (finding 1 again), and the other file keeps its
