@@ -334,6 +334,11 @@ DumpSpace BrokeredProcessActions::dumpSpace(const ProcessTarget& target, const s
     return m_Inner->dumpSpace(target, directory);
 }
 
+DumpFolderCheck BrokeredProcessActions::dumpFolderAccess(const std::filesystem::path& directory)
+{
+    return m_Inner->dumpFolderAccess(directory); // the folder the in-process createDump() writes in
+}
+
 FolderChoice BrokeredProcessActions::chooseDumpFolder(const std::filesystem::path& initial, void* ownerWindow)
 {
     return m_Inner->chooseDumpFolder(initial, ownerWindow);

@@ -61,6 +61,10 @@ struct DumpSource
     /// Reads the machine the process runs as, to refuse one of another architecture (#2152); null:
     /// processMachine() (WindowsProcessMachine.h).
     ProcessMachineFn processMachine = nullptr;
+    /// The folder is opened once and held, checked, and the file made relative to that handle, never by its path
+    /// (#4164; WindowsDumpFolder.h): an elevated session's, where the folder may be the less-privileged user's. A
+    /// junction or link for the folder, or on its path, is refused. False: the file is created by its path, as before.
+    bool holdFolder = false;
 };
 
 /// Writes a full-memory dump of @p process into a new file in @p directory: Task Manager's dump type
@@ -69,7 +73,8 @@ struct DumpSource
 /// ARM64 one, from the x64 build on Windows on ARM) is refused before any file is made
 /// (DumpMath::dumpArchitecture()). From a snapshot when @p source can take one, else from the
 /// running process, with the reason in ProcessDump::liveReason. The file is deleted again on any
-/// failure, and when @p stopToken is requested before it is done.
+/// failure, and when @p stopToken is requested before it is done. Where @p source holds the folder
+/// (DumpSource::holdFolder), the file is made in the held folder and deleted through its own handle.
 /// @param process  An open handle, already confirmed to be the target: with SNAPSHOT_PROCESS_ACCESS
 ///                 for a snapshot, DUMP_PROCESS_ACCESS at least.
 [[nodiscard]] ProcessDumpResult writeProcessDump(

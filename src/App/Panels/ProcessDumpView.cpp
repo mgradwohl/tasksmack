@@ -65,6 +65,24 @@ std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesys
                        canChooseFolder ? "choose another folder with Save dump to..., or free some space." : "free some space first.");
 }
 
+std::string folderAccessWarning(const Platform::DumpFolderCheck& check)
+{
+    switch (check.access)
+    {
+    case Platform::DumpFolderAccess::ReadableByUser:
+        return std::string(FOLDER_READABLE_TEXT);
+    case Platform::DumpFolderAccess::Unknown:
+        return std::string(FOLDER_ACCESS_UNKNOWN_TEXT);
+    case Platform::DumpFolderAccess::Refused:
+        return check.problem.empty() ? std::string("TaskSmack can't write a dump to this folder. Choose another with Save dump to...")
+                                     : check.problem;
+    case Platform::DumpFolderAccess::NotChecked:
+    case Platform::DumpFolderAccess::AdministratorsOnly:
+        break;
+    }
+    return {};
+}
+
 bool noDefaultDumpFolder() noexcept
 {
 #ifdef _WIN32
@@ -418,10 +436,15 @@ void ProcessDumpView::startCheckIfDue()
                 DumpDetail::ConfirmFacts facts{
                     .directory = resolve ? DumpDetail::dumpDirectory(remembered, noDefault) : directory,
                     .space = {},
+                    .folder = {},
                 };
                 if (actions != nullptr)
                 {
                     facts.space = actions->dumpSpace(target, facts.directory);
+                    if (!facts.directory.empty())
+                    {
+                        facts.folder = actions->dumpFolderAccess(facts.directory); // who could read it (#4164)
+                    }
                 }
                 return facts;
             }))
@@ -453,7 +476,13 @@ void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProc
     if (check.has_value())
     {
         m_Directory = std::move(check->directory);
-        m_SpaceWarning = DumpDetail::lowSpaceWarning(check->space, m_Directory, canChooseFolder(actions));
+        // Who can read a dump there first (#4164), then whether it fits.
+        m_SpaceWarning = DumpDetail::folderAccessWarning(check->folder);
+        if (const std::string space = DumpDetail::lowSpaceWarning(check->space, m_Directory, canChooseFolder(actions)); !space.empty())
+        {
+            m_SpaceWarning += m_SpaceWarning.empty() ? "" : "\n\n";
+            m_SpaceWarning += space;
+        }
     }
     else
     {

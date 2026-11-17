@@ -1,7 +1,9 @@
 #include "WindowsProcessDump.h"
 
+#include "HandleRelativeFile.h"
 #include "Platform/IProcessActions.h"
 #include "WinString.h"
+#include "WindowsDumpFolder.h"
 #include "WindowsHandles.h"
 #include "WindowsProcAddress.h"
 #include "WindowsProcessDumpMath.h"
@@ -188,7 +190,10 @@ struct NewFile
 {
     UniqueHandle handle;
     std::filesystem::path path;
-    DWORD error = 0; ///< Why there is no handle
+    DWORD error = 0;         ///< Why there is no handle
+    std::string refusal;     ///< Why the folder was refused (a held folder's check, #4164); used in place of error
+    bool heldFolder = false; ///< Made relative to a held folder: deleted through its handle, never by its path
+    UniqueHandle folder;     ///< The held folder, kept open (so it can't be renamed or removed) until the dump is done
 };
 
 [[nodiscard]] NewFile createDumpFile(const std::filesystem::path& directory, std::string_view image, std::int32_t pid)
@@ -206,6 +211,69 @@ struct NewFile
         }
         file.error = GetLastError();
         if (file.error != ERROR_FILE_EXISTS)
+        {
+            break;
+        }
+    }
+    return file;
+}
+
+/// The Win32 error createFileFailureMessage() words for @p status, an NtCreateFile failure.
+[[nodiscard]] DWORD createErrorOf(NTSTATUS status)
+{
+    constexpr auto ACCESS_DENIED = static_cast<NTSTATUS>(0xC0000022L);
+    constexpr auto DISK_FULL = static_cast<NTSTATUS>(0xC000007FL);
+    if (status == ACCESS_DENIED)
+    {
+        return ERROR_ACCESS_DENIED;
+    }
+    if (status == DISK_FULL)
+    {
+        return ERROR_DISK_FULL;
+    }
+    if (status == NT_OBJECT_NAME_COLLISION)
+    {
+        return ERROR_FILE_EXISTS;
+    }
+    return isNotFound(status) ? ERROR_PATH_NOT_FOUND : static_cast<DWORD>(status);
+}
+
+/// createDumpFile() in an elevated session (#4164): @p directory opened and held by openHeldDumpFolder(), and the file
+/// made relative to that handle with FILE_CREATE, so nothing on the folder's path is looked up again and no link is
+/// followed. Opened for DELETE too, so a failed dump is deleted through its own handle.
+[[nodiscard]] NewFile createDumpFileInHeldFolder(const std::filesystem::path& directory, std::string_view image, std::int32_t pid)
+{
+    NewFile file;
+    file.heldFolder = true;
+    auto folder = openHeldDumpFolder(directory);
+    if (!folder.has_value())
+    {
+        file.refusal = std::move(folder.error());
+        return file;
+    }
+    file.folder = std::move(*folder);
+    const DumpMath::DumpTime time = localTimeNow();
+    for (int attempt = 1; attempt <= DumpMath::MAX_NAME_ATTEMPTS; ++attempt)
+    {
+        const std::wstring name = WinString::utf8ToWide(DumpMath::dumpFileName(image, pid, time, attempt));
+        file.path = directory / name;
+        auto opened = openRelative(file.folder.get(),
+                                   name,
+                                   RelativeOpen{
+                                       .access = GENERIC_WRITE | FILE_READ_ATTRIBUTES | DELETE | SYNCHRONIZE,
+                                       .share = 0,
+                                       .disposition = FILE_CREATE,
+                                       .kind = EntryKind::File,
+                                       .security = nullptr, // the folder's inheritable ACEs, as a file made by path gets
+                                   });
+        if (opened.has_value())
+        {
+            file.handle = std::move(opened->handle);
+            file.error = 0;
+            return file;
+        }
+        file.error = createErrorOf(opened.error());
+        if (opened.error() != NT_OBJECT_NAME_COLLISION)
         {
             break;
         }
@@ -258,10 +326,11 @@ ProcessDumpResult writeProcessDump(
     }
 
     const std::string directoryText = WinString::wideToUtf8(directory.wstring());
-    NewFile file = createDumpFile(directory, imageName(process), pid);
+    NewFile file = source.holdFolder ? createDumpFileInHeldFolder(directory, imageName(process), pid)
+                                     : createDumpFile(directory, imageName(process), pid);
     if (!file.handle)
     {
-        std::string message = DumpMath::createFileFailureMessage(file.error, directoryText);
+        std::string message = file.refusal.empty() ? DumpMath::createFileFailureMessage(file.error, directoryText) : file.refusal;
         spdlog::warn("Dump of PID {}: {}", pid, message);
         return std::unexpected(std::move(message));
     }
@@ -313,8 +382,17 @@ ProcessDumpResult writeProcessDump(
 
     if (written == FALSE || stopToken.stop_requested())
     {
-        file.handle.reset(); // closed before it can be deleted
-        DeleteFileW(file.path.c_str());
+        if (file.heldFolder)
+        {
+            // Through its own handle (#4164), never by its path, which a link could have pointed elsewhere since.
+            static_cast<void>(deleteThroughHandle(file.handle.get()));
+            file.handle.reset();
+        }
+        else
+        {
+            file.handle.reset(); // closed before it can be deleted
+            DeleteFileW(file.path.c_str());
+        }
         std::string message = DumpMath::writeFailureMessage(error, pid, directoryText, stopToken.stop_requested());
         spdlog::warn("Dump of PID {}: {}", pid, message);
         return std::unexpected(std::move(message));

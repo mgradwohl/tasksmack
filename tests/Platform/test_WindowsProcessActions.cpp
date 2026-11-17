@@ -2460,6 +2460,57 @@ TEST(WindowsProcessDumpTest, DumpsAChildIntoTheFolderWithAMinidumpHeader)
     EXPECT_NE(second->file, result->file);
 }
 
+namespace
+{
+/// WindowsProcessFunctions::holdDumpFolder standing in for an elevated session's answer (#4164), so no test elevates.
+bool alwaysHold()
+{
+    return true;
+}
+} // namespace
+
+// An elevated session's dump (#4164): the folder is held and the file made relative to it, a full dump as before, and
+// who can read the folder is checked for the confirm. Unelevated (the real table, in a test), nothing is checked.
+TEST(WindowsProcessDumpTest, AHeldFolderGetsTheDumpAndItsAccessIsChecked)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    const std::filesystem::path real = std::filesystem::canonical(folder.path()); // as Windows names it: its final path
+    WindowsProcessFunctions functions = realWindowsProcessFunctions();
+    functions.holdDumpFolder = &alwaysHold;
+    WindowsProcessActions held(functions);
+
+    const ProcessDumpResult result = held.createDump(child.target(), real, std::stop_token{});
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(result->file.parent_path(), real);
+    ASSERT_TRUE(std::filesystem::exists(result->file));
+    EXPECT_EQ(result->sizeBytes, std::filesystem::file_size(result->file));
+    std::array<char, 4> signature{};
+    {
+        std::ifstream file(result->file, std::ios::binary);
+        file.read(signature.data(), static_cast<std::streamsize>(signature.size()));
+        ASSERT_TRUE(file.good());
+    }
+    EXPECT_EQ(std::string(signature.data(), signature.size()), "MDMP");
+    const ProcessDumpResult second = held.createDump(child.target(), real, std::stop_token{});
+    ASSERT_TRUE(second.has_value()) << second.error();
+    EXPECT_NE(second->file, result->file) << "the next free name, as a dump by path gets";
+
+    // %TEMP%'s folders inherit the user's own full access: flagged.
+    EXPECT_EQ(held.dumpFolderAccess(real).access, DumpFolderAccess::ReadableByUser);
+    const DumpFolderCheck missing = held.dumpFolderAccess(real / "missing");
+    EXPECT_EQ(missing.access, DumpFolderAccess::Refused);
+    EXPECT_FALSE(missing.problem.empty());
+    const ProcessDumpResult refused = held.createDump(child.target(), real / "missing", std::stop_token{});
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), missing.problem);
+
+    WindowsProcessFunctions unheld = realWindowsProcessFunctions();
+    unheld.holdDumpFolder = nullptr;
+    WindowsProcessActions byPath(unheld);
+    EXPECT_EQ(byPath.dumpFolderAccess(real).access, DumpFolderAccess::NotChecked);
+}
 TEST(WindowsProcessDumpTest, AnInvalidOrGoneOrReusedPidWritesNothing)
 {
     const DumpFolder folder;
