@@ -147,8 +147,9 @@ struct OpenedDirectory
 /// Walked one component at a time from "/" (or the working directory, for a relative @p dir) with openat(O_NOFOLLOW),
 /// so nothing is resolved by path after it was checked, and each step needs only search permission. A link on the way
 /// is followed when @p lessPrivileged is false; run as root for a user (#3759), only when root owns both it and the
-/// folder holding it, which no one else may write (/home on some systems), and otherwise refuses. A ".." refuses. Each
-/// folder this walk made (mkdirat, 0777 less the umask), and that is still that empty folder, is given through its own
+/// folder holding it, which no one else may write, and only before the walk enters a folder root doesn't own (/home on
+/// some systems), and otherwise refuses; a ".." refuses then too. Each folder this walk made (mkdirat, 0777 less the
+/// umask), and that is still this process's (one swapped in refuses), is given through its own
 /// descriptor to the owner of the deepest folder that already existed, when @p effectiveUid is root's and that folder
 /// isn't (ownerForNewFiles()'s rule, #2121); @p failChown stands in for a refused fchown, for tests. @return The
 /// folder, or why it couldn't be opened or made.
@@ -157,11 +158,14 @@ openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_
 {
     // ".." is refused before anything is normalized: dropping it lexically could check a folder other than the one the
     // kernel would resolve through a link before it (the #4166 review).
-    for (const std::filesystem::path& part : dir)
+    if (lessPrivileged)
     {
-        if (part == "..")
+        for (const std::filesystem::path& part : dir)
         {
-            return std::unexpected(dir.string() + " climbs with \"..\", which TaskSmack doesn't walk");
+            if (part == "..")
+            {
+                return std::unexpected(dir.string() + " climbs with \"..\", which TaskSmack run as root doesn't walk");
+            }
         }
     }
     // O_PATH: each step needs only search permission on the folder above it, as a by-path open does, not read.
@@ -176,11 +180,31 @@ openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_
     std::optional<FileOwner> owner;
     bool ownerKnown = false;
     std::string handOverError;
+    // Run as root for a user: once the walk is in a folder root doesn't own, no link is followed, whatever owner it
+    // claims (a FUSE or NFS mount the user controls can report root's): the second review of #4166.
+    bool inAUsersFolder = false;
     for (const std::filesystem::path& part : dir.relative_path())
     {
         if (part.empty() || part == ".")
         {
             continue;
+        }
+        if (part == "..")
+        {
+            // Not root for a user (refused above otherwise): resolved as a by-path walk would.
+            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+            const int up = ::openat(at.get(), "..", O_PATH | O_DIRECTORY | O_CLOEXEC);
+            if (up < 0)
+            {
+                return std::unexpected(walked.string() + "/.. can't be opened: " + std::system_category().message(errno));
+            }
+            walked /= part;
+            at = DirectoryFd(up);
+            continue;
+        }
+        if (struct stat here = {}; !inAUsersFolder && ::fstat(at.get(), &here) == 0 && here.st_uid != 0)
+        {
+            inAUsersFolder = true;
         }
         walked /= part;
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
@@ -204,15 +228,21 @@ openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_
             }
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
             next = ::openat(at.get(), part.c_str(), WALK);
-            // Given to its user only when this walk made it and it's still that folder: this process's, and empty (two
-            // links, no subfolders). A folder renamed in its place (EEXIST, or a swap after mkdirat) is left as it is.
-            struct stat made = {};
-            if (next >= 0 && madeHere && owner.has_value() && ::fstat(next, &made) == 0 && made.st_uid == ::geteuid() &&
-                made.st_nlink == 2 && (failChown || ::fchownat(next, "", owner->uid, owner->gid, AT_EMPTY_PATH) != 0) &&
-                handOverError.empty())
+            // Given to its user only when this walk made it and it's still that folder, this process's. One renamed in
+            // its place after mkdirat (another account's) refuses; one that was there already (EEXIST) is left as it is.
+            if (next >= 0 && madeHere && owner.has_value())
             {
-                handOverError =
-                    "couldn't give " + walked.string() + " to its user: " + std::system_category().message(failChown ? EPERM : errno);
+                struct stat made = {};
+                if (::fstat(next, &made) != 0 || made.st_uid != ::geteuid())
+                {
+                    ::close(next);
+                    return std::unexpected(walked.string() + " was replaced while TaskSmack made it");
+                }
+                if ((failChown || ::fchownat(next, "", owner->uid, owner->gid, AT_EMPTY_PATH) != 0) && handOverError.empty())
+                {
+                    handOverError =
+                        "couldn't give " + walked.string() + " to its user: " + std::system_category().message(failChown ? EPERM : errno);
+                }
             }
         }
         else if (next < 0 && (errno == ELOOP || errno == ENOTDIR))
@@ -229,7 +259,7 @@ openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_
                 // which no one else may write: the user can neither place a link of root's there nor swap one in after
                 // this check (the #4166 review). A link in a folder of theirs is refused, root's or not.
                 struct stat holder = {};
-                if (entry.st_uid != 0 || ::fstat(at.get(), &holder) != 0 || holder.st_uid != 0 ||
+                if (inAUsersFolder || entry.st_uid != 0 || ::fstat(at.get(), &holder) != 0 || holder.st_uid != 0 ||
                     (holder.st_mode & (S_IWGRP | S_IWOTH)) != 0)
                 {
                     return std::unexpected(walked.string() + " is a link of a user's, which TaskSmack run as root doesn't create through");

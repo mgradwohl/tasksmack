@@ -2894,6 +2894,10 @@ TEST(NewFileOwnerTest, OpenDirectoryForUserWalksByDescriptorMakesTheRestAndSaysW
     ASSERT_FALSE(climbs.has_value());
     EXPECT_TRUE(climbs.error().contains("climbs")) << climbs.error();
     EXPECT_FALSE(std::filesystem::exists(root / "g"));
+    // Not root for a user, ".." walks as a path does (a TASKSMACK_CONFIG_DIR of ../cfg, say): as before #4166.
+    auto up = NewFileOwner::openDirectoryForUser(root / "real" / ".." / "up", false, ::geteuid());
+    ASSERT_TRUE(up.has_value()) << up.error();
+    EXPECT_TRUE(std::filesystem::is_directory(root / "up"));
 
     // Search permission alone is enough on the way (O_PATH), as it is for a path: no read permission needed.
     std::filesystem::create_directories(root / "searchOnly" / "sub");
