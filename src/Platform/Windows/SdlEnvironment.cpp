@@ -19,7 +19,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace Platform::Windows::SdlEnvironment
@@ -51,11 +50,34 @@ constexpr int MAX_REMOVALS_PER_NAME = 8;
     return c >= 0xD800 && c <= 0xDBFF;
 }
 
-/// The names removeForThisProcess() last removed, as logName() gives them.
+/// The names removeForThisProcess() last removed, as loggedNames() gives them.
 std::vector<std::string>& removedNames()
 {
     static std::vector<std::string> names;
     return names;
+}
+
+/// The names removeForThisProcess() last found still set after trying to remove them.
+std::vector<std::wstring>& stillSetNames()
+{
+    static std::vector<std::wstring> names;
+    return names;
+}
+
+/// Adds @p name to @p names unless one matching it, ignoring ASCII case, is there already.
+void addOnce(std::vector<std::wstring>& names, const std::wstring& name)
+{
+    if (std::ranges::none_of(names, [&name](const std::wstring& already) { return equalsIgnoringAsciiCase(already, name); }))
+    {
+        names.push_back(name);
+    }
+}
+
+/// Bidirectional controls, which can reorder the text around them in a log viewer: the Arabic letter mark U+061C, the
+/// marks U+200E and U+200F, the embeddings and overrides U+202A to U+202E, and the isolates U+2066 to U+2069.
+[[nodiscard]] constexpr bool isBidiControl(unsigned code) noexcept
+{
+    return code == 0x061C || code == 0x200E || code == 0x200F || (code >= 0x202A && code <= 0x202E) || (code >= 0x2066 && code <= 0x2069);
 }
 
 } // namespace
@@ -99,20 +121,25 @@ std::vector<std::wstring> sdlVariableNames(std::wstring_view block)
     return names;
 }
 
-std::vector<std::wstring> removeSdlVariables(bool system32Only, std::optional<std::wstring_view> block, const EnvironmentOps& environment)
+std::vector<std::wstring> removeSdlVariables(bool system32Only,
+                                             std::optional<std::wstring_view> block,
+                                             const EnvironmentOps& environment,
+                                             std::vector<std::wstring>* stillSet)
 {
     std::vector<std::wstring> removed;
     if (!system32Only)
     {
         return removed;
     }
+    std::vector<std::wstring> blockNames;
     if (block.has_value())
     {
-        for (std::wstring& name : sdlVariableNames(*block))
+        blockNames = sdlVariableNames(*block);
+        for (const std::wstring& name : blockNames)
         {
             if (environment.remove(name))
             {
-                removed.push_back(std::move(name));
+                removed.push_back(name);
             }
         }
     }
@@ -136,6 +163,27 @@ std::vector<std::wstring> removeSdlVariables(bool system32Only, std::optional<st
             removed.push_back(name);
         }
     }
+    // Asked again after both passes, for each name either found: a remove() that says it worked may have taken another
+    // entry, when two names compare equal ("ſDL_FOO" and "SDL_FOO"), and the by-name passes are bounded. A name still
+    // set can't be made safe here, so the caller fails closed. Only the Win32 block counts: SDL reads nothing else on
+    // Windows, so a leftover in the CRT's copy alone (cleared best effort in remove()) is deliberately not fatal.
+    if (stillSet != nullptr)
+    {
+        for (const std::wstring& name : blockNames)
+        {
+            if (environment.isSet(name))
+            {
+                addOnce(*stillSet, name);
+            }
+        }
+        for (const std::wstring_view name : BY_NAME_VARIABLES)
+        {
+            if (environment.isSet(std::wstring(name)))
+            {
+                addOnce(*stillSet, std::wstring(name));
+            }
+        }
+    }
     return removed;
 }
 
@@ -152,11 +200,15 @@ std::string logName(std::wstring_view name)
     for (const wchar_t c : kept)
     {
         const auto code = static_cast<unsigned>(c);
-        if (code < 0x20 || (code >= 0x7F && code <= 0x9F))
+        if (c == L'\\')
+        {
+            safe += L"\\\\"; // So an escape written below can't be forged with a literal one
+        }
+        else if (code < 0x20 || (code >= 0x7F && code <= 0x9F))
         {
             safe += std::format(L"\\x{:02X}", code);
         }
-        else if (code == 0x2028 || code == 0x2029)
+        else if (code == 0x2028 || code == 0x2029 || isBidiControl(code))
         {
             safe += std::format(L"\\u{:04X}", code);
         }
@@ -172,8 +224,25 @@ std::string logName(std::wstring_view name)
     return Platform::WinString::wideToUtf8(safe);
 }
 
+std::vector<std::string> loggedNames(const std::vector<std::wstring>& names)
+{
+    std::vector<std::string> logged;
+    const std::size_t shown = std::min(names.size(), MAX_LOGGED_NAMES);
+    logged.reserve(shown + 1);
+    for (std::size_t index = 0; index < shown; ++index)
+    {
+        logged.push_back(logName(names[index]));
+    }
+    if (names.size() > shown)
+    {
+        logged.push_back(std::format("and {} more", names.size() - shown));
+    }
+    return logged;
+}
+
 std::vector<std::wstring> removeForThisProcess(bool system32Only)
 {
+    stillSetNames().clear();
     std::vector<std::wstring> removed;
     if (system32Only)
     {
@@ -191,6 +260,12 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
             // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             FreeEnvironmentStringsW(strings);
         }
+        else
+        {
+            // Unreadable: the SDL variables outside BY_NAME_VARIABLES can't be found, so fail closed, whatever the by-name
+            // pass finds.
+            stillSetNames().emplace_back(UNREADABLE_BLOCK);
+        }
         const EnvironmentOps environment{
             .isSet = [](const std::wstring& name) { return GetEnvironmentVariableW(name.c_str(), nullptr, 0) > 0; },
             .remove =
@@ -201,20 +276,21 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
                 return SetEnvironmentVariableW(name.c_str(), nullptr) != FALSE || GetLastError() == ERROR_ENVVAR_NOT_FOUND;
             },
         };
-        removed = removeSdlVariables(true, block.has_value() ? std::optional<std::wstring_view>(*block) : std::nullopt, environment);
+        removed = removeSdlVariables(
+            true, block.has_value() ? std::optional<std::wstring_view>(*block) : std::nullopt, environment, &stillSetNames());
     }
-    std::vector<std::string>& names = removedNames();
-    names.clear();
-    for (const std::wstring& name : removed)
-    {
-        names.push_back(logName(name));
-    }
+    removedNames() = loggedNames(removed);
     return removed;
 }
 
 const std::vector<std::string>& removedFromThisProcess() noexcept
 {
     return removedNames();
+}
+
+const std::vector<std::wstring>& stillSetInThisProcess() noexcept
+{
+    return stillSetNames();
 }
 
 } // namespace Platform::Windows::SdlEnvironment

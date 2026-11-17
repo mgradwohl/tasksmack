@@ -1,13 +1,12 @@
 #include "PinnedFolder.h"
 
+#include "Platform/Windows/HandleRelativeFile.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
-#include "Platform/Windows/WindowsProcAddress.h"
 
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
 #include <expected>
 #include <filesystem>
 #include <format>
@@ -15,7 +14,6 @@
 #include <random>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -25,21 +23,13 @@ namespace Platform::Windows
 namespace
 {
 
-/// NTSTATUS values NtCreateFile answers for a name that isn't there.
-constexpr auto STATUS_NAME_NOT_FOUND = static_cast<NTSTATUS>(0xC0000034L);
-constexpr auto STATUS_PATH_NOT_FOUND = static_cast<NTSTATUS>(0xC000003AL);
-constexpr auto STATUS_NO_ENTRY_POINT = static_cast<NTSTATUS>(0xC000007AL);
-
-/// FileRenameInformation and FileRenameInformationEx, which winternl.h's FILE_INFORMATION_CLASS doesn't name.
-constexpr ULONG FILE_RENAME_INFORMATION_CLASS = 10;
-constexpr ULONG FILE_RENAME_INFORMATION_EX_CLASS = 65;
-/// FILE_RENAME_INFORMATION_EX's flags (ntifs.h): replace the target, and with POSIX semantics, even one held open.
-constexpr DWORD FILE_RENAME_FLAGS_REPLACE_IF_EXISTS = 0x00000001;
-constexpr DWORD FILE_RENAME_FLAGS_POSIX_SEMANTICS = 0x00000002;
 /// What a volume or Windows without FileRenameInformationEx answers it.
 constexpr auto STATUS_BAD_INFO_CLASS = static_cast<NTSTATUS>(0xC0000003L);
 constexpr auto STATUS_BAD_PARAMETER = static_cast<NTSTATUS>(0xC000000DL);
 constexpr auto STATUS_UNSUPPORTED = static_cast<NTSTATUS>(0xC00000BBL);
+/// FILE_RENAME_INFORMATION_EX's flags (ntifs.h): replace the target, and with POSIX semantics, even one held open.
+constexpr DWORD FILE_RENAME_FLAGS_REPLACE_IF_EXISTS = 0x00000001;
+constexpr DWORD FILE_RENAME_FLAGS_POSIX_SEMANTICS = 0x00000002;
 
 /// The most of a file read from the folder: config.toml and a theme are a few kilobytes.
 constexpr std::size_t MAX_READ_BYTES = std::size_t{16} * 1024 * 1024;
@@ -76,81 +66,7 @@ constexpr std::size_t MAX_READ_BYTES = std::size_t{16} * 1024 * 1024;
     return WinString::wideToUtf8(path.native());
 }
 
-[[nodiscard]] std::string ntStatusText(NTSTATUS status)
-{
-    return std::format("NTSTATUS 0x{:08X}", static_cast<std::uint32_t>(status));
-}
-
-[[nodiscard]] std::string lastErrorText()
-{
-    return std::system_category().message(static_cast<int>(GetLastError()));
-}
-
-/// Marks @p file, opened with DELETE, to be deleted when its handle closes.
-void deleteOnClose(HANDLE file) noexcept
-{
-    FILE_DISPOSITION_INFO disposition{};
-    disposition.DeleteFile = TRUE;
-    static_cast<void>(SetFileInformationByHandle(file, FileDispositionInfo, &disposition, sizeof(disposition)));
-}
-
 } // namespace
-
-NTSTATUS NTAPI PinnedFolderFunctions::systemNtCreateFile(PHANDLE handle,
-                                                         ACCESS_MASK access,
-                                                         POBJECT_ATTRIBUTES attributes,
-                                                         PIO_STATUS_BLOCK status,
-                                                         PLARGE_INTEGER allocationSize,
-                                                         ULONG fileAttributes,
-                                                         ULONG share,
-                                                         ULONG disposition,
-                                                         ULONG options,
-                                                         PVOID eaBuffer,
-                                                         ULONG eaLength)
-{
-    static auto* const create = getProcAddress<NtCreateFileFn>(GetModuleHandleW(L"ntdll.dll"), "NtCreateFile");
-    if (create == nullptr)
-    {
-        return STATUS_NO_ENTRY_POINT; // LCOV_EXCL_LINE - ntdll always exports it
-    }
-    return create(handle, access, attributes, status, allocationSize, fileAttributes, share, disposition, options, eaBuffer, eaLength);
-}
-
-NTSTATUS NTAPI
-PinnedFolderFunctions::systemNtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK status, PVOID information, ULONG length, ULONG what)
-{
-    static auto* const set = getProcAddress<NtSetInformationFileFn>(GetModuleHandleW(L"ntdll.dll"), "NtSetInformationFile");
-    if (set == nullptr)
-    {
-        return STATUS_NO_ENTRY_POINT; // LCOV_EXCL_LINE - ntdll always exports it
-    }
-    return set(file, status, information, length, what);
-}
-
-std::optional<std::wstring> finalPathOf(HANDLE handle, PinnedFolderFunctions::FinalPathFn getFinalPath)
-{
-    std::wstring path(MAX_PATH, L'\0');
-    for (int attempt = 0; attempt < 2; ++attempt)
-    {
-        const DWORD length = getFinalPath(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (length == 0)
-        {
-            return std::nullopt;
-        }
-        if (length < path.size())
-        {
-            path.resize(length);
-            constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
-            if (path.starts_with(LONG_PREFIX) && !path.starts_with(LR"(\\?\UNC\)"))
-            {
-                path.erase(0, LONG_PREFIX.size());
-            }
-            return path;
-        }
-        path.assign(length, L'\0'); // too short: length is the size it needs, with its terminator
-    }
-    return std::nullopt;
-}
 
 PinnedFolder::PinnedFolder(std::filesystem::path path, UniqueHandle handle, PinnedFolderFunctions functions)
     : m_Path(std::move(path)), m_Handle(std::move(handle)), m_Functions(functions)
@@ -185,39 +101,25 @@ std::expected<UniqueHandle, std::string>
 PinnedFolder::openIn(HANDLE parent, const std::wstring& parentPath, const std::wstring& name, const Open& how) const
 {
     const std::wstring expected = parentPath + L'\\' + name;
-    UNICODE_STRING text{};
-    text.Buffer = const_cast<PWSTR>(name.c_str()); // NOLINT(cppcoreguidelines-pro-type-const-cast) - NtCreateFile only reads it
-    text.Length = static_cast<USHORT>(name.size() * sizeof(wchar_t));
-    text.MaximumLength = text.Length;
-    OBJECT_ATTRIBUTES attributes{};
-    attributes.Length = sizeof(attributes);
-    attributes.RootDirectory = parent; // relative to the folder held: nothing above it is looked up again
-    attributes.ObjectName = &text;
-    attributes.Attributes = OBJ_CASE_INSENSITIVE;
-    IO_STATUS_BLOCK status{};
-    HANDLE opened = nullptr;
-    const ULONG options =
-        FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT | (how.directory ? FILE_DIRECTORY_FILE : FILE_NON_DIRECTORY_FILE);
-    const NTSTATUS result = m_Functions.ntCreateFile(&opened,
-                                                     how.access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
-                                                     &attributes,
-                                                     &status,
-                                                     nullptr,
-                                                     FILE_ATTRIBUTE_NORMAL,
-                                                     how.share,
-                                                     how.disposition,
-                                                     options,
-                                                     nullptr,
-                                                     0);
-    if ((result == STATUS_NAME_NOT_FOUND || result == STATUS_PATH_NOT_FOUND) && how.disposition == FILE_OPEN)
+    // Relative to the folder held: nothing above it is looked up again, and a link is opened itself, never followed.
+    auto opened = openRelative(parent,
+                               name,
+                               RelativeOpen{
+                                   .access = how.access | SYNCHRONIZE | FILE_READ_ATTRIBUTES,
+                                   .share = how.share,
+                                   .disposition = how.disposition,
+                                   .kind = how.directory ? EntryKind::Directory : EntryKind::File,
+                               },
+                               m_Functions.ntCreateFile);
+    if (!opened.has_value() && isNotFound(opened.error()) && how.disposition == FILE_OPEN)
     {
         return UniqueHandle{}; // not there
     }
-    if (result < 0)
+    if (!opened.has_value())
     {
-        return std::unexpected(std::format("couldn't open {}: {}", WinString::wideToUtf8(expected), ntStatusText(result)));
+        return std::unexpected(std::format("couldn't open {}: {}", WinString::wideToUtf8(expected), ntStatusText(opened.error())));
     }
-    UniqueHandle file(opened);
+    UniqueHandle file = std::move(opened->handle);
     // A file this open created and may delete (replaceFile()'s staging file) is removed if a check below refuses it:
     // nothing it made is left behind. Disarmed once every check has passed.
     class RemoveIfRefused
@@ -233,7 +135,7 @@ PinnedFolder::openIn(HANDLE parent, const std::wstring& parentPath, const std::w
         {
             if (m_Created != nullptr)
             {
-                deleteOnClose(m_Created);
+                markDeleteOnClose(m_Created);
             }
         }
         void disarm() noexcept
@@ -445,7 +347,7 @@ std::expected<void, std::string> PinnedFolder::replaceFile(const std::filesystem
         {
             if (m_File != nullptr)
             {
-                deleteOnClose(m_File); // deleted when the handle closes, just after this
+                markDeleteOnClose(m_File); // deleted when the handle closes, just after this
             }
         }
         void published() noexcept
@@ -470,31 +372,22 @@ std::expected<void, std::string> PinnedFolder::replaceFile(const std::filesystem
     }
     // Renamed over @p name in the held folder: RootDirectory is the held handle, so the name is looked up there.
     const std::wstring& target = components->front();
-    const std::size_t nameBytes = target.size() * sizeof(wchar_t);
-    // FILE_RENAME_INFORMATION_EX, whose layout FILE_RENAME_INFO mirrors (Flags in place of ReplaceIfExists), handed
-    // to NtSetInformationFile itself: kernel32's SetFileInformationByHandle refuses a relative name with a
-    // RootDirectory (ERROR_INVALID_PARAMETER). POSIX semantics, so a config.toml an indexer or antivirus holds open
-    // (with FILE_SHARE_DELETE) is still replaced; FileRenameInformation, replace only, where the volume has no Ex.
-    std::vector<std::byte> buffer(sizeof(FILE_RENAME_INFO) + nameBytes);
-    auto* rename = reinterpret_cast<FILE_RENAME_INFO*>(
-        buffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast) - a variable-length Win32 struct
-    // The flags are the struct's first ULONG (ReplaceIfExists, padded, in the older SDK layout this builds with).
-    const auto setFlags = [&buffer](DWORD flags)
-    {
-        std::memcpy(buffer.data(), &flags, sizeof(flags));
-    };
-    setFlags(FILE_RENAME_FLAGS_REPLACE_IF_EXISTS | FILE_RENAME_FLAGS_POSIX_SEMANTICS);
-    rename->RootDirectory = m_Handle.get();
-    rename->FileNameLength = static_cast<DWORD>(nameBytes);
-    std::memcpy(static_cast<void*>(rename->FileName), target.c_str(), nameBytes + sizeof(wchar_t));
-    IO_STATUS_BLOCK renameStatus{};
-    NTSTATUS renamed = m_Functions.ntSetInformationFile(
-        staging.get(), &renameStatus, rename, static_cast<ULONG>(buffer.size()), FILE_RENAME_INFORMATION_EX_CLASS);
+    // POSIX semantics, so a config.toml an indexer or antivirus holds open (with FILE_SHARE_DELETE) is still replaced;
+    // FileRenameInformation, replace only, where the volume has no Ex.
+    NTSTATUS renamed = renameRelative(staging.get(),
+                                      m_Handle.get(),
+                                      target,
+                                      FILE_RENAME_INFORMATION_EX_CLASS,
+                                      FILE_RENAME_FLAGS_REPLACE_IF_EXISTS | FILE_RENAME_FLAGS_POSIX_SEMANTICS,
+                                      m_Functions.ntSetInformationFile);
     if (renamed == STATUS_BAD_INFO_CLASS || renamed == STATUS_UNSUPPORTED || renamed == STATUS_BAD_PARAMETER)
     {
-        setFlags(FILE_RENAME_FLAGS_REPLACE_IF_EXISTS); // ReplaceIfExists = TRUE
-        renamed = m_Functions.ntSetInformationFile(
-            staging.get(), &renameStatus, rename, static_cast<ULONG>(buffer.size()), FILE_RENAME_INFORMATION_CLASS);
+        renamed = renameRelative(staging.get(),
+                                 m_Handle.get(),
+                                 target,
+                                 FILE_RENAME_INFORMATION_CLASS,
+                                 FILE_RENAME_FLAGS_REPLACE_IF_EXISTS, // ReplaceIfExists = TRUE
+                                 m_Functions.ntSetInformationFile);
     }
     if (renamed < 0)
     {
