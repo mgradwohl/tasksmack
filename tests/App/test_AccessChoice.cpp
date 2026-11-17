@@ -27,6 +27,10 @@ TEST(AccessChoiceTest, TheChoiceIsWordedAsWindowsAsksForIt)
     EXPECT_STREQ(WINDOWS_WORDING.launch, "Run as administrator");
     EXPECT_STREQ(WINDOWS_WORDING.switchSession, "Restart as administrator...");
     EXPECT_TRUE(std::string_view{WINDOWS_WORDING.promptTooltip}.contains("UAC"));
+    // #4108: a standard user's prompt asks for another administrator's name and password, so its tooltip says so.
+    EXPECT_TRUE(std::string_view{WINDOWS_WORDING.credentialsPromptTooltip}.contains("name and password"));
+    EXPECT_STREQ(AuthorizeWording::promptTooltipFor(false), WINDOWS_WORDING.promptTooltip);
+    EXPECT_STREQ(AuthorizeWording::promptTooltipFor(true), WINDOWS_WORDING.credentialsPromptTooltip);
 }
 
 TEST(AccessChoiceTest, TheButtonWordsAreTheChoicesWords)
