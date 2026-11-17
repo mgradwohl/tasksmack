@@ -24,11 +24,11 @@
 #include <utility>
 #else
 #include "App/NewFileOwner.h"
+#include "Core/ConfigDirOverride.h"
 
 #include <cerrno>
 #include <optional>
 #include <utility>
-#include <vector>
 
 #include <fcntl.h>
 #include <sys/file.h>
@@ -42,33 +42,29 @@ namespace App
 
 InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing& testing)
 {
-    std::error_code ec;
 #ifndef _WIN32
-    // Root with the user's config directory (sudo -E): what's created here goes to the user (#2437),
-    // as UserConfig::save() does for config.toml (#2121). Worked out before anything is created.
-    const std::optional<NewFileOwner::FileOwner> owner =
-        NewFileOwner::ownerForNewFiles(lockPath.has_parent_path() ? lockPath.parent_path() : lockPath,
-                                       testing.effectiveUid.has_value() ? static_cast<uid_t>(*testing.effectiveUid) : ::geteuid());
-    std::string handOverError;
-    const auto handOverFailed = [&handOverError](const std::filesystem::path& path, int error)
+    // The lock's folder, opened and made by descriptor (#4152, #4156): run as root for a user, never through a link of
+    // theirs, and what's made, given to them (#2437), as UserConfig::save() and Open Themes Folder make theirs.
+    const uid_t effectiveUid = testing.effectiveUid.has_value() ? static_cast<uid_t>(*testing.effectiveUid) : ::geteuid();
+    auto folder = NewFileOwner::openDirectoryForUser(lockPath.has_parent_path() ? lockPath.parent_path() : std::filesystem::path("."),
+                                                     Core::ConfigDirOverride::handedOver(),
+                                                     effectiveUid,
+                                                     testing.failChown);
+    if (!folder.has_value())
     {
-        if (handOverError.empty())
-        {
-            handOverError = "couldn't give " + path.string() + " to its user: " + std::system_category().message(error);
-        }
-    };
-    std::vector<std::filesystem::path> created; // outermost first
-    if (lockPath.has_parent_path())
+        m_Error = std::move(folder.error());
+        return;
+    }
+    std::string handOverError = std::move(folder->handOverError);
+    // The lock file's owner: the folder's, when root and the folder isn't root's (ownerForNewFiles()'s rule).
+    std::optional<NewFileOwner::FileOwner> owner;
+    if (struct stat dirInfo = {}; effectiveUid == 0 && ::fstat(folder->fd.get(), &dirInfo) == 0 && dirInfo.st_uid != 0)
     {
-        for (std::filesystem::path at = lockPath.parent_path(); !at.empty() && at != at.parent_path() && !std::filesystem::exists(at, ec);
-             at = at.parent_path())
-        {
-            created.insert(created.begin(), at);
-        }
+        owner = NewFileOwner::FileOwner{.uid = dirInfo.st_uid, .gid = dirInfo.st_gid};
     }
 #else
     (void) testing;
-#endif
+    std::error_code ec;
     if (lockPath.has_parent_path())
     {
         std::filesystem::create_directories(lockPath.parent_path(), ec);
@@ -76,17 +72,6 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
         {
             m_Error = ec.message();
             return;
-        }
-    }
-#ifndef _WIN32
-    if (owner.has_value())
-    {
-        for (const std::filesystem::path& dir : created)
-        {
-            if (testing.failChown || !NewFileOwner::chownCreatedDirectory(dir, *owner))
-            {
-                handOverFailed(dir, testing.failChown ? EPERM : errno);
-            }
         }
     }
 #endif
@@ -112,12 +97,21 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
     lock(handle);
 #else
     // O_CLOEXEC: a program TaskSmack starts (a file manager, say) mustn't inherit the descriptor
-    // and so hold the lock after TaskSmack exits. O_NOFOLLOW: never lock, or create, a link's target.
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int fd = ::open(lockPath.c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
+    // and so hold the lock after TaskSmack exits. O_NOFOLLOW: never lock, or create, a link's target. Relative to the
+    // folder opened above, never by its path again (#4156).
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const int fd = ::openat(folder->fd.get(), lockPath.filename().c_str(), O_RDWR | O_CREAT | O_CLOEXEC | O_NOFOLLOW, S_IRUSR | S_IWUSR);
     if (fd < 0)
     {
         m_Error = std::system_category().message(errno);
+        return;
+    }
+    // Only a plain file with no other name: a hard link to another file (where fs.protected_hardlinks is off) planted as
+    // the lock would otherwise be locked, and handed to the user below (the #4166 review).
+    if (struct stat lockInfo = {}; ::fstat(fd, &lockInfo) != 0 || !S_ISREG(lockInfo.st_mode) || lockInfo.st_nlink != 1)
+    {
+        ::close(fd);
+        m_Error = lockPath.string() + " isn't a plain file of its own (another name links to it); not using it as the lock";
         return;
     }
     int result = ::flock(fd, LOCK_EX | LOCK_NB);
@@ -141,9 +135,10 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
     }
     // The lock file too, whether this run made it or an older one left it root's: the user's next run
     // opens it read-write (#2437).
-    if (owner.has_value() && (testing.failChown || ::fchown(fd, owner->uid, owner->gid) != 0))
+    if (owner.has_value() && (testing.failChown || ::fchown(fd, owner->uid, owner->gid) != 0) && handOverError.empty())
     {
-        handOverFailed(lockPath, testing.failChown ? EPERM : errno);
+        handOverError =
+            "couldn't give " + lockPath.string() + " to its user: " + std::system_category().message(testing.failChown ? EPERM : errno);
     }
     m_Fd = fd;
     m_Status = Status::Acquired;
