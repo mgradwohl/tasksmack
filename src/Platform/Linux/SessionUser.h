@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -153,6 +154,25 @@ invokingUserSession(uid_t effectiveUid,
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - read on the UI thread; nothing sets these
     const char* const value = std::getenv(std::string(name).c_str());
     return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
+}
+
+/// The user's own values of the variables a root session replaced for itself (RootEnvironment: PATH, XDG_DATA_DIRS,
+/// XAUTHORITY; the second #4187 review), kept for the programs it starts as that user, which run as them, so their own
+/// values are safe there and needed (snap and Flatpak handlers, their ~/.local/bin, their Xauthority).
+[[nodiscard]] inline std::map<std::string, std::string, std::less<>>& userSideValues()
+{
+    static std::map<std::string, std::string, std::less<>> values;
+    return values;
+}
+
+/// processVariable(), or the user's own value of a variable a root session replaced (userSideValues()).
+[[nodiscard]] inline std::optional<std::string> userSideVariable(std::string_view name)
+{
+    if (const auto found = userSideValues().find(name); found != userSideValues().end())
+    {
+        return found->second;
+    }
+    return processVariable(name);
 }
 
 /// Every group @p name is in, with @p gid (its primary group) among them, as a login sets them (getgrouplist());
@@ -400,7 +420,7 @@ struct ProcessIds
 [[nodiscard]] inline std::optional<DetachedSpawn::RunAs> invokingUserSession()
 {
     return invokingUserSession(
-        ::geteuid(), &processVariable, &processAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
+        ::geteuid(), &userSideVariable, &processAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
 }
 
 } // namespace Platform::SessionUser

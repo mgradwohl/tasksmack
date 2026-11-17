@@ -1,0 +1,105 @@
+#pragma once
+
+// A Linux root session's environment, when it may be a less-privileged user's (#4158, #4159, #4179; the maintainer's
+// decision of 2026-11-17): only an allow-list of variables is kept, as sudo's env_reset keeps them, and PATH and HOME
+// are root's own. A list of bad names kept missing some (SDL's, then the GL loaders', then GTK's through libdecor's
+// plugin, PATH choosing zenity, PYTHONPATH reaching gdb): an allow-list doesn't.
+//
+// Kept: how to reach the user's display and their locale and desktop (what SessionUser::KEPT_VARIABLES rebuilds a
+// user-side child from, so links still open in their session), the terminal, what names the user who started it
+// (sudo, pkexec, doas), and TaskSmack's own TASKSMACK_* hooks (the writing ones are ignored by the gate, #4104).
+// Everything else goes, logged by name, never value. Cost: an env-chosen driver or tool (PRIME offload's
+// __GLX_VENDOR_LIBRARY_NAME, a VK ICD) no longer applies in such a session.
+//
+// The logic takes the environment and its operations as arguments, so test_RootEnvironment.cpp covers it with a fake
+// one; applyToThisProcess() works on the process's own.
+
+#ifdef __linux__
+
+#include <array>
+#include <functional>
+#include <map>
+#include <optional>
+#include <string>
+#include <string_view>
+#include <vector>
+
+namespace Platform::RootEnvironment
+{
+
+/// The variables kept by name.
+inline constexpr std::array<std::string_view, 21> KEPT = {
+    "DISPLAY",
+    "WAYLAND_DISPLAY",
+    "XAUTHORITY",
+    "XDG_RUNTIME_DIR",
+    "XDG_SESSION_TYPE",
+    "XDG_CURRENT_DESKTOP",
+    "XDG_DATA_DIRS",
+    "DESKTOP_SESSION",
+    "LANG",
+    "LANGUAGE",
+    "TZ",
+    "TERM",
+    "COLORTERM",
+    "SUDO_UID",
+    "SUDO_GID",
+    "SUDO_USER",
+    "SUDO_COMMAND",
+    "PKEXEC_UID",
+    "DOAS_USER",
+    "PATH",
+    "HOME",
+};
+
+/// The prefixes whose variables are kept: the locale's categories, and TaskSmack's own hooks.
+inline constexpr std::array<std::string_view, 2> KEPT_PREFIXES = {"LC_", "TASKSMACK_"};
+
+/// root's PATH in such a session, whatever the user's was (#4159): sudo's secure_path, on any distribution.
+inline constexpr std::string_view ROOT_PATH = "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin";
+
+/// Whether @p name is kept (KEPT, or a KEPT_PREFIXES prefix). Exact case.
+[[nodiscard]] bool isKept(std::string_view name) noexcept;
+
+/// What applyTo() does to an environment: the process's own, or a test's.
+struct Operations
+{
+    std::function<bool(const std::string&)> unset;
+    std::function<bool(const std::string&, const std::string&)> set;
+};
+
+/// What applyTo() sets in root's place, worked out outside it (the process's, or a test's).
+struct RootValues
+{
+    std::optional<std::string> home;       ///< root's passwd home; HOME is unset when unknown
+    std::optional<std::string> runtimeDir; ///< root's own runtime folder (/run/user/0), if it's root's; else unset
+    std::optional<std::string> xauthority; ///< root's own copy of the invoking user's Xauthority (applyToThisProcess()); else unset
+};
+
+/// The value XDG_DATA_DIRS gets (the XDG default): the user's could list a folder of theirs, where the Vulkan loader
+/// finds layers and GSettings schemas (the #4187 review).
+inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share";
+
+/// Whether TZ's @p value is kept: a zone name (relative, so under the zoneinfo folder) or a file under
+/// /usr/share/zoneinfo, never one with "..": glibc
+/// parses the file TZ names (sudo's env_check drops the rest).
+[[nodiscard]] bool isSafeTimeZone(std::string_view value) noexcept;
+
+/// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
+/// #4179, and the review of #4187): every name not kept, and a TZ that isn't safe, is unset (collected first); a
+/// relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's (or is
+/// unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH
+/// becomes ROOT_PATH and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value that can't be set is unset
+/// instead, so nothing of the user's is left by a failure. @return The names removed (a failed unset is left out), in order.
+[[nodiscard]] std::vector<std::string> applyTo(const char* const* environment, const RootValues& root, const Operations& ops);
+
+/// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment,
+/// then checks it: a PATH that isn't ROOT_PATH ends TaskSmack (fail closed). Not thread-safe (setenv, unsetenv).
+void applyToThisProcess(bool apply);
+
+/// The names applyToThisProcess() removed, for runApp() to log.
+[[nodiscard]] const std::vector<std::string>& removedFromThisProcess() noexcept;
+
+} // namespace Platform::RootEnvironment
+
+#endif

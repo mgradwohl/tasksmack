@@ -1020,6 +1020,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_RootCapabilities.cpp  # what an Administrator session keeps of root's capabilities (#3621)
     Platform/test_LinuxSdlEnvironment.cpp  # a session run as root for a user takes no SDL variable (#4111)
+    Platform/test_RootEnvironment.cpp  # a root session with a user's environment keeps an allow-list (#4158, #4159, #4179)
     Platform/test_LinuxStartup.cpp  # the Startup tab on Linux: XDG autostart (#2541)
     Platform/test_ReplaceFile.cpp  # a file replaced whole, through an unpredictable O_EXCL staging file (#3771)
     Platform/test_CronTab.cpp # cron tables for the Linux Startup tab (#3425)
