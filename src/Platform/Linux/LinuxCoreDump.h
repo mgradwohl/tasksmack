@@ -7,11 +7,15 @@
 #include <ctime>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#include <sys/stat.h>
+#include <sys/statvfs.h>
 
 /// The pure parts of LinuxProcessActions::createDump() (#807): the core file's name, the gcore command
 /// that writes it, and what is said when it can't. gdb's gcore attaches to the process with ptrace,
@@ -204,6 +208,91 @@ inline constexpr int DETACH_WAIT_MS = 2000;
         return std::format("gcore couldn't write a dump of process {} (exit status {})", pid, exitStatus);
     }
     return std::format("gcore couldn't write a dump of process {}: {}", pid, said);
+}
+
+/// Run as root (#4176): why @p directory isn't a folder only root may change, or nullopt when it is. gdb's gcore writes
+/// "<file>.partial.<pid>" by path, as root, following a link: in a folder anyone else may write, a link planted at
+/// that predictable name, or the folder swapped for one, would make root write the dump into any file. So every
+/// component from "/" down must be a plain folder (lstat: no link) that root owns and no group or other may write; a
+/// sticky world-writable one (/tmp) refuses too. @p lstatOf is ::lstat, or a test's.
+[[nodiscard]] inline std::optional<std::string> rootOnlyFolderRefusal(const std::filesystem::path& directory,
+                                                                      const std::function<int(const char*, struct stat*)>& lstatOf)
+{
+    // "." and ".." are refused as given, before anything is normalized: normalizing drops "name/.." pairs the kernel
+    // still resolves through name, a link (/proc/<pid>/cwd/..) included, so the folder checked wouldn't be the one
+    // gcore writes in (the #4177 review).
+    for (const std::filesystem::path& part : directory)
+    {
+        if (part == "." || part == "..")
+        {
+            return std::format("{} has a \"{}\" in it", directory.string(), part.string());
+        }
+    }
+    const std::filesystem::path normal = directory.lexically_normal();
+    if (!normal.is_absolute())
+    {
+        return std::format("{} isn't an absolute folder", directory.string());
+    }
+    std::filesystem::path at = normal.root_path();
+    const auto check = [&lstatOf](const std::filesystem::path& folder) -> std::optional<std::string>
+    {
+        struct stat info = {};
+        if (lstatOf(folder.c_str(), &info) != 0)
+        {
+            return std::format("{} can't be read", folder.string());
+        }
+        if (!S_ISDIR(info.st_mode))
+        {
+            return std::format("{} is {}", folder.string(), S_ISLNK(info.st_mode) ? "a link" : "not a folder");
+        }
+        if (info.st_uid != 0 || (info.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+        {
+            return std::format("{} may be changed by an account other than root", folder.string());
+        }
+        return std::nullopt;
+    };
+    if (auto refusal = check(at); refusal.has_value())
+    {
+        return refusal;
+    }
+    for (const std::filesystem::path& part : normal.relative_path())
+    {
+        if (part.empty() || part == ".")
+        {
+            continue;
+        }
+        if (part == "..")
+        {
+            return std::format("{} climbs with \"..\"", directory.string());
+        }
+        at /= part;
+        if (auto refusal = check(at); refusal.has_value())
+        {
+            return refusal;
+        }
+    }
+    return std::nullopt;
+}
+
+/// FUSE's statfs f_type (linux/magic.h's FUSE_SUPER_MAGIC).
+inline constexpr long FUSE_FILESYSTEM_TYPE = 0x65735546;
+
+/// Run as root (#4176): why the filesystem the dump folder is on may be one a user controls, or nullopt. A filesystem
+/// a user mounted (udisks: a disk image they built, nosuid,nodev) or a FUSE one can report root as every entry's owner
+/// and hold links the user planted, so rootOnlyFolderRefusal()'s ownership is no proof there (the #4177 review).
+/// @p vfsFlags is statvfs()'s f_flag, @p fsType statfs()'s f_type.
+[[nodiscard]] inline std::optional<std::string>
+userMountRefusal(const std::filesystem::path& directory, unsigned long vfsFlags, long fsType)
+{
+    if (fsType == FUSE_FILESYSTEM_TYPE)
+    {
+        return std::format("{} is on a FUSE filesystem, which a user may run", directory.string());
+    }
+    if ((vfsFlags & (ST_NOSUID | ST_NODEV)) != 0)
+    {
+        return std::format("{} is on a filesystem mounted nosuid or nodev, as a user's own mounts are", directory.string());
+    }
+    return std::nullopt;
 }
 
 } // namespace Platform::LinuxCoreDump

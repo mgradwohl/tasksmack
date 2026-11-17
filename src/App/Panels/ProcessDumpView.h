@@ -231,7 +231,7 @@ class ProcessDumpView
     }
 
     /// Whether this view has no default folder (#4141). The default constructor reads the session's
-    /// (DumpDetail::noDefaultDumpFolder(), true when elevated on Windows), so a panel's view does too; the
+    /// (DumpDetail::noDefaultDumpFolder(), true when elevated on Windows or root on Linux), so a panel's view does too; the
     /// FolderChosenHandler one starts false. Tests set it here to pin either case. Then a confirm with no folder
     /// can't be confirmed until one is chosen with "Save dump to..." (needsFolder()).
     void setNoDefaultFolder(bool noDefault) noexcept
