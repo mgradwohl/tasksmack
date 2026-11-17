@@ -50,7 +50,9 @@
 
 #include <system_error>
 
-#include <unistd.h> // geteuid()
+#include <elf.h>      // AT_SECURE
+#include <sys/auxv.h> // getauxval()
+#include <unistd.h>   // geteuid()
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -143,18 +145,18 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 
 /// Whether this session's environment may be the less-privileged side's (#4104), the one rule for the test hooks that
 /// write files: on Windows, elevated or restarted with --handoff (DllSearchPolicy::system32OnlyForThisProcess(), the
-/// rule the DLL search order and SDL's variables follow, #4103); on Linux, root with an environment that may be a
-/// user's (SessionUser::environmentMayBeAnotherUsers(), #4154: sudo -E or an env_keep list, pkexec, doas, su -m).
+/// rule the DLL search order and SDL's variables follow, #4103); on Linux, secure execution or root with an environment
+/// that may be a user's (SessionUser::environmentMayBeAnotherUsers(), #4154: setcap, sudo, pkexec, doas, su).
 [[nodiscard]] bool lessPrivilegedEnvironment()
 {
 #ifdef _WIN32
     return Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
 #elif defined(__linux__)
-    // Root with an environment that may be a user's (#4154): asks no directory service, so a lookup that fails, or a
-    // route that sets no SUDO_UID (su -m, doas), can't leave the gate off.
-    const std::optional<Platform::SessionUser::Account> root = Platform::SessionUser::systemAccount(0);
-    return Platform::SessionUser::environmentMayBeAnotherUsers(
-        ::geteuid(), &Platform::SessionUser::processVariable, root.has_value() ? std::optional(root->home) : std::nullopt);
+    // #4154: secure execution (setuid, setgid, file capabilities: #4171), or root that something names a user for. No
+    // passwd lookup, and nothing the user's environment can set to turn it off. Worked out once.
+    static const bool lessPrivileged = Platform::SessionUser::environmentMayBeAnotherUsers(
+        ::geteuid(), ::getauxval(AT_SECURE) != 0, &Platform::SessionUser::processVariable, Platform::SessionUser::processLoginUid());
+    return lessPrivileged;
 #else
     return false;
 #endif

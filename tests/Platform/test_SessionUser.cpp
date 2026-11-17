@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstdint>
 #include <cstdlib>
 #include <functional>
 #include <initializer_list>
@@ -268,18 +269,28 @@ TEST(SessionUserTest, AnotherUsersEnvironmentIsDecidedWithNoLookup)
             return std::nullopt;
         };
     };
-    // #4154: sudo, pkexec and doas name the user; su -m and su -p keep their HOME. No passwd lookup of that user.
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"SUDO_UID", "1000"}, {"HOME", "/root"}}), "/root"));
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"PKEXEC_UID", "1000"}}), "/root"));
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"DOAS_USER", "alice"}, {"HOME", "/root"}}), "/root"));
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/home/alice"}}), "/root")) << "su -m";
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/home/alice"}}), std::nullopt)) << "root's home unknown: /root";
-    // Root's own session, and anyone not root: no.
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/root"}}), "/root"));
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({{"HOME", "/root/"}, {"SUDO_UID", "0"}, {"DOAS_USER", "root"}}), "/root"));
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({}), "/root")) << "no HOME, nothing naming a user";
-    EXPECT_FALSE(environmentMayBeAnotherUsers(1000, envOf({{"SUDO_UID", "1000"}, {"HOME", "/home/alice"}}), "/root"));
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, envOf({{"SUDO_UID", "x"}, {"HOME", "/root"}}), "/root")) << "not a number";
+    constexpr std::optional<std::uint32_t> NO_LOGIN = std::nullopt;
+    // #4154: sudo, pkexec and doas name the user; plain su keeps their login uid. No passwd lookup of that user.
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"SUDO_UID", "1000"}}), NO_LOGIN));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"PKEXEC_UID", "1000"}}), NO_LOGIN));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"DOAS_USER", "alice"}}), NO_LOGIN));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"HOME", "/root"}}), 1000U)) << "plain su: HOME root's, the login alice's";
+    // Only sudo and pkexec set these: even a malformed one counts (the #4170 review).
+    for (const char* odd : {"+1000", " 1000", "1000 ", "-1", "x", "99999999999"})
+    {
+        EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"SUDO_UID", odd}}), NO_LOGIN)) << odd;
+    }
+    // #4171: secure execution (setuid, setgid, the FAQ's file capabilities) whatever the effective uid.
+    EXPECT_TRUE(environmentMayBeAnotherUsers(1000, true, envOf({}), NO_LOGIN));
+    // Root's own session: a root login (login uid 0), a service or a container (unset), HOME anything (#4170 review:
+    // release.yml's upgrade check runs as root with HOME a scratch folder).
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, envOf({{"HOME", "/root"}}), 0U));
+    EXPECT_FALSE(
+        environmentMayBeAnotherUsers(0, false, envOf({{"HOME", "/tmp/upgrade-home"}, {"SDL_VIDEODRIVER", "offscreen"}}), NO_LOGIN));
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, envOf({{"SUDO_UID", "0"}, {"DOAS_USER", "root"}, {"PKEXEC_UID", ""}}), NO_LOGIN));
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, envOf({}), NO_LOGIN));
+    // Not root and not secure execution: the user's own session.
+    EXPECT_FALSE(environmentMayBeAnotherUsers(1000, false, envOf({{"SUDO_UID", "1000"}}), 1000U));
 }
 
 } // namespace Platform::SessionUser
