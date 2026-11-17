@@ -18,7 +18,10 @@ TaskSmack is). So:
       - TaskSmackHelper.exe's wWinMain (EXACT): exactly LOAD_LIBRARY_SEARCH_SYSTEM32, never its own
         folder, since it always runs elevated;
       - TaskSmack.exe's WinMain (BRANCH): a conditional with a System32-only branch,
-        "? LOAD_LIBRARY_SEARCH_SYSTEM32 :", the one it takes elevated (DllSearchPolicy.h).
+        "? LOAD_LIBRARY_SEARCH_SYSTEM32 :", the one it takes elevated (DllSearchPolicy.h), and then,
+        as its very next statement, SdlEnvironment::removeForThisProcess( (#4103): an elevated
+        TaskSmack drops the SDL variables that name a DLL SDL loads by full path (SDL3_DYNAMIC_API,
+        read at SDL's first call, and SDL_OPENGL_LIBRARY) before anything can make an SDL call.
     That restricts what third-party code (SDL, the GL loaders) and the DLLs it loads find by name;
     the linker's /DEPENDENTLOADFLAG:0x800 covers the imports (cmake/CompilerOptions.cmake).
 
@@ -57,6 +60,9 @@ SYSTEM32_FLAG = "LOAD_LIBRARY_SEARCH_SYSTEM32"
 SYSTEM32_BRANCH = re.compile(r"\?\s*LOAD_LIBRARY_SEARCH_SYSTEM32\s*:")
 WIDE_FLAGS = ("LOAD_LIBRARY_SEARCH_DEFAULT_DIRS", "LOAD_LIBRARY_SEARCH_USER_DIRS")
 SET_DEFAULT_DIRS = re.compile(r"SetDefaultDllDirectories\s*\(")
+# What TaskSmack.exe's WinMain (BRANCH) must call right after SetDefaultDllDirectories, qualified or not (#4103).
+SDL_SCRUB = "SdlEnvironment::removeForThisProcess("
+SDL_SCRUB_CALL = re.compile(r"(?:\w+\s*::\s*)*SdlEnvironment\s*::\s*removeForThisProcess\s*\(")
 NAMESPACE_ALIAS = re.compile(r"namespace\s+\w+\s*=[^;]*;")
 LEADING_SPACE = re.compile(r"\s*")
 
@@ -133,6 +139,16 @@ def check_entry_point(text: str, name: str, function: str, rule: str) -> list[st
             f"{name}:{line}: {function}()'s SetDefaultDllDirectories must keep a System32-only branch, "
             f"'? {SYSTEM32_FLAG} :', for an elevated TaskSmack"
         ]
+    if rule == BRANCH:
+        close = call.end() - 1 + len(arguments) + 1
+        statement_end = body.find(";", close)
+        following = LEADING_SPACE.match(body, statement_end + 1).end() if statement_end >= 0 else len(body)
+        if statement_end < 0 or SDL_SCRUB_CALL.match(body, following) is None:
+            return [
+                f"{name}:{line}: {function}()'s next statement after SetDefaultDllDirectories must be "
+                f"{SDL_SCRUB}...): an elevated TaskSmack removes the SDL variables (SDL3_DYNAMIC_API, read at SDL's "
+                "first call, SDL_OPENGL_LIBRARY) that name a DLL SDL loads by full path, before any SDL call (#4103)"
+            ]
     return []
 
 

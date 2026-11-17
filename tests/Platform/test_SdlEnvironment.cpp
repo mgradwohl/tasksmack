@@ -22,6 +22,8 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdlib>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -93,43 +95,224 @@ TEST(SdlEnvironmentTest, TheBlocksSdlNamesComeInOrderWithoutTheirValues)
     EXPECT_TRUE(sdlVariableNames(block(L"SDL_X\0\0")).empty());
 }
 
+/// A fake environment, matching names as the OS does: case-insensitively, beyond ASCII too. Only U+017F (long s,
+/// which upper-cases to 'S') is modelled past ASCII, the case the block's ASCII fold misses.
+class FakeEnvironment
+{
+  public:
+    explicit FakeEnvironment(std::wstring_view entries)
+    {
+        std::size_t position = 0;
+        while (position < entries.size() && entries[position] != L'\0')
+        {
+            const std::size_t end = std::min(entries.find(L'\0', position), entries.size());
+            const std::wstring_view entry = entries.substr(position, end - position);
+            const std::size_t equals = entry.find(L'=', 1);
+            m_Entries.emplace_back(entry.substr(0, equals), equals == std::wstring_view::npos ? L"" : entry.substr(equals + 1));
+            position = end + 1;
+        }
+    }
+
+    /// The entries as a block, as GetEnvironmentStringsW() gives them.
+    [[nodiscard]] std::wstring block() const
+    {
+        std::wstring text;
+        for (const auto& [name, value] : m_Entries)
+        {
+            text.append(name).append(L"=").append(value).push_back(L'\0');
+        }
+        text.push_back(L'\0');
+        return text;
+    }
+
+    [[nodiscard]] std::vector<std::wstring> names() const
+    {
+        std::vector<std::wstring> result;
+        result.reserve(m_Entries.size());
+        for (const auto& [name, value] : m_Entries)
+        {
+            result.push_back(name);
+        }
+        return result;
+    }
+
+    /// The operations, which record each name asked about or removed and refuse
+    /// to remove @p refused.
+    [[nodiscard]] EnvironmentOps ops(std::wstring refused = {})
+    {
+        return EnvironmentOps{
+            .isSet =
+                [this](const std::wstring& name)
+            {
+                m_Asked.push_back(name);
+                return std::ranges::any_of(m_Entries, [&name](const auto& entry) { return osEqual(entry.first, name); });
+            },
+            .remove =
+                [this, refused = std::move(refused)](const std::wstring& name)
+            {
+                m_Removals.push_back(name);
+                if (!refused.empty() && osEqual(name, refused))
+                {
+                    return false;
+                }
+                const auto found = std::ranges::find_if(m_Entries, [&name](const auto& entry) { return osEqual(entry.first, name); });
+                if (found == m_Entries.end())
+                {
+                    return false;
+                }
+                m_Entries.erase(found);
+                return true;
+            },
+        };
+    }
+
+    [[nodiscard]] const std::vector<std::wstring>& asked() const noexcept
+    {
+        return m_Asked;
+    }
+
+    [[nodiscard]] const std::vector<std::wstring>& removals() const noexcept
+    {
+        return m_Removals;
+    }
+
+  private:
+    [[nodiscard]] static wchar_t osUpper(wchar_t c) noexcept
+    {
+        if (c == L'\u017F')
+        {
+            return L'S';
+        }
+        return (c >= L'a' && c <= L'z') ? static_cast<wchar_t>(c - L'a' + L'A') : c;
+    }
+
+    [[nodiscard]] static bool osEqual(std::wstring_view a, std::wstring_view b) noexcept
+    {
+        return std::ranges::equal(a, b, [](wchar_t x, wchar_t y) { return osUpper(x) == osUpper(y); });
+    }
+
+    std::vector<std::pair<std::wstring, std::wstring>> m_Entries;
+    std::vector<std::wstring> m_Asked;
+    std::vector<std::wstring> m_Removals;
+};
+
 TEST(SdlEnvironmentTest, System32OnlyRemovesEverySdlVariable)
 {
-    std::vector<std::wstring> asked;
-    const std::vector<std::wstring> removed = removeSdlVariables(true,
-                                                                 BLOCK,
-                                                                 [&asked](const std::wstring& name)
-                                                                 {
-                                                                     asked.push_back(name);
-                                                                     return true;
-                                                                 });
-    EXPECT_EQ(asked, sdlNames());
+    FakeEnvironment environment(BLOCK);
+    const std::wstring text = environment.block();
+    const std::vector<std::wstring> removed = removeSdlVariables(true, text, environment.ops());
     EXPECT_EQ(removed, sdlNames());
+    EXPECT_EQ(environment.names(), (std::vector<std::wstring>{L"=C:", L"PATH", L"SDLX", L"MYSDL_THING", L"TASKSMACK_CONFIG_DIR"}));
+    // Every dangerous name is asked about by name as well; none is still set, so
+    // none is removed twice.
+    for (const std::wstring_view name : BY_NAME_VARIABLES)
+    {
+        EXPECT_NE(std::ranges::find(environment.asked(), std::wstring(name)), environment.asked().end()) << std::wstring(name);
+    }
+    EXPECT_EQ(environment.removals(), sdlNames());
 }
 
 TEST(SdlEnvironmentTest, OnlyTheVariablesActuallyRemovedAreReported)
 {
-    const std::vector<std::wstring> removed =
-        removeSdlVariables(true, BLOCK, [](const std::wstring& name) { return name != L"SDL_VIDEODRIVER"; });
+    // SDL_VIDEODRIVER can't be removed: not reported from the block, nor by name,
+    // where it is found but stays.
+    FakeEnvironment environment(BLOCK);
+    const std::wstring text = environment.block();
+    const std::vector<std::wstring> removed = removeSdlVariables(true, text, environment.ops(L"SDL_VIDEODRIVER"));
     EXPECT_EQ(removed, (std::vector<std::wstring>{L"SDL_OPENGL_LIBRARY", L"sdl3_dynamic_api", L"Sdl_Egl_Library"}));
 }
 
-TEST(SdlEnvironmentTest, OtherwiseNothingIsRemoved)
+TEST(SdlEnvironmentTest, ADangerousNameTheAsciiFoldMissesIsRemovedByName)
 {
-    bool called = false;
-    const std::vector<std::wstring> removed = removeSdlVariables(false,
-                                                                 BLOCK,
-                                                                 [&called](const std::wstring& /*name*/)
-                                                                 {
-                                                                     called = true;
-                                                                     return true;
-                                                                 });
-    EXPECT_FALSE(called);
-    EXPECT_TRUE(removed.empty());
+    // "ſDL3_DYNAMIC_API" (U+017F) isn't SDL's by the block's ASCII fold, but the
+    // OS answers SDL3_DYNAMIC_API with it.
+    FakeEnvironment environment(block(L"\u017FDL3_DYNAMIC_API=C:\\Users\\me\\SDL3.dll\0\u017Fdl_OPENGL_"
+                                      L"LIBRARY=x.dll\0PATH=x\0\0"));
+    const std::wstring text = environment.block();
+    EXPECT_TRUE(sdlVariableNames(text).empty());
+    const std::vector<std::wstring> removed = removeSdlVariables(true, text, environment.ops());
+    EXPECT_EQ(removed, (std::vector<std::wstring>{L"SDL3_DYNAMIC_API", L"SDL_OPENGL_LIBRARY"}));
+    EXPECT_EQ(environment.names(), std::vector<std::wstring>{L"PATH"});
 }
 
-/// This process's environment: its SDL variables saved before each test and put back after, and two planted ones.
-/// The planted names are SDL's form, "SDL_" and "SDL<digits>_" as SDL3_DYNAMIC_API is, but no variable SDL reads:
+TEST(SdlEnvironmentTest, WithNoBlockTheDangerousNamesAreStillRemovedByName)
+{
+    // GetEnvironmentStringsW() failed: it fails closed on the names that load a
+    // library or pick a driver.
+    FakeEnvironment environment(block(L"SDL_OPENGL_LIBRARY=x.dll\0sdl3_dynamic_"
+                                      L"api=y.dll\0SDL_OTHER=1\0PATH=x\0\0"));
+    const std::vector<std::wstring> removed = removeSdlVariables(true, std::nullopt, environment.ops());
+    EXPECT_EQ(removed, (std::vector<std::wstring>{L"SDL3_DYNAMIC_API", L"SDL_OPENGL_LIBRARY"}));
+    for (const std::wstring_view name : BY_NAME_VARIABLES)
+    {
+        EXPECT_NE(std::ranges::find(environment.asked(), name), environment.asked().end()) << std::wstring(name);
+    }
+    // Only the block pass finds the rest of SDL's variables.
+    EXPECT_EQ(environment.names(), (std::vector<std::wstring>{L"SDL_OTHER", L"PATH"}));
+}
+
+TEST(SdlEnvironmentTest, ANameThatIsNotSetIsNeitherRemovedNorReported)
+{
+    FakeEnvironment environment(block(L"PATH=x\0\0"));
+    EXPECT_TRUE(removeSdlVariables(true, std::nullopt, environment.ops()).empty());
+    EXPECT_TRUE(environment.removals().empty());
+}
+
+TEST(SdlEnvironmentTest, TheByNamePassStopsOnAVariableThatStaysSet)
+{
+    // An environment that says each removal worked but keeps the variable: a
+    // bounded number of tries, reported once.
+    int removals = 0;
+    const EnvironmentOps stuck{
+        .isSet = [](const std::wstring& name) { return name == L"SDL3_DYNAMIC_API"; },
+        .remove =
+            [&removals](const std::wstring& /*name*/)
+        {
+            ++removals;
+            return true;
+        },
+    };
+    EXPECT_EQ(removeSdlVariables(true, std::nullopt, stuck), std::vector<std::wstring>{L"SDL3_DYNAMIC_API"});
+    EXPECT_GT(removals, 1);
+    EXPECT_LE(removals, 8);
+}
+
+TEST(SdlEnvironmentTest, OtherwiseNothingIsAskedOrRemoved)
+{
+    FakeEnvironment environment(BLOCK);
+    const std::wstring text = environment.block();
+    EXPECT_TRUE(removeSdlVariables(false, text, environment.ops()).empty());
+    EXPECT_TRUE(removeSdlVariables(false, std::nullopt, environment.ops()).empty());
+    EXPECT_TRUE(environment.asked().empty());
+    EXPECT_TRUE(environment.removals().empty());
+}
+
+TEST(SdlEnvironmentTest, ALoggedNameCannotForgeALogLine)
+{
+    EXPECT_EQ(logName(L"SDL_OPENGL_LIBRARY"), "SDL_OPENGL_LIBRARY");
+    EXPECT_EQ(logName(L"SDL_x\r\n[error] forged"), "SDL_x\\x0D\\x0A[error] forged");
+    EXPECT_EQ(logName(L"SDL_\t\x1B[31m\x7F"), "SDL_\\x09\\x1B[31m\\x7F");
+    EXPECT_EQ(logName(L"SDL_\x85\u2028\u2029"), "SDL_\\x85\\u2028\\u2029");
+    EXPECT_EQ(logName(L"SDL_\u00E9"), "SDL_\xC3\xA9");
+}
+
+TEST(SdlEnvironmentTest, ALoggedNameIsCutAtItsLimitWithoutSplittingACharacter)
+{
+    const std::wstring longName = L"SDL_" + std::wstring(500, L'A');
+    const std::string logged = logName(longName);
+    EXPECT_EQ(logged, "SDL_" + std::string(MAX_LOGGED_NAME - 4, 'A') + "...");
+
+    // A surrogate pair straddling the limit is dropped whole, not halved.
+    std::wstring straddling = L"SDL_" + std::wstring(MAX_LOGGED_NAME - 5, L'A');
+    straddling += L"\U0001F600";
+    straddling += L"tail";
+    EXPECT_EQ(logName(straddling), "SDL_" + std::string(MAX_LOGGED_NAME - 5, 'A') + "...");
+    EXPECT_EQ(logName(std::wstring(MAX_LOGGED_NAME, L'B')), std::string(MAX_LOGGED_NAME, 'B'));
+}
+
+/// This process's environment: its SDL variables saved before each test and put back after, and three planted ones.
+/// The planted names are SDL's form, "SDL_" and "SDL<digits>_" as SDL3_DYNAMIC_API is, one in mixed case, but no
+/// variable SDL reads (no *_LIBRARY, *DRIVER or SDL3_DYNAMIC_API):
 /// a test must never plant one that makes SDL load a library, since SDL's dynamic API reads SDL3_DYNAMIC_API at the
 /// process's first SDL call and, when it can't load what that names, blocks on a message box. No SDL call is made
 /// while anything is planted; SDL's view is checked only after the scrub, when the process has no SDL variable left.
@@ -138,6 +321,7 @@ class SdlEnvironmentProcessTest : public ::testing::Test
   protected:
     static constexpr const wchar_t* PLANTED = L"SDL_TASKSMACK_TEST_PLANTED";
     static constexpr const wchar_t* PLANTED_DIGITS = L"SDL9_TASKSMACK_TEST_PLANTED";
+    static constexpr const wchar_t* PLANTED_MIXED_CASE = L"sdl_Tasksmack_Test_Planted_Lower";
     static constexpr const wchar_t* KEPT = L"TASKSMACK_SDL_ENVIRONMENT_TEST_KEPT";
 
     void SetUp() override
@@ -157,6 +341,7 @@ class SdlEnvironmentProcessTest : public ::testing::Test
         }
         ASSERT_NE(SetEnvironmentVariableW(PLANTED, L"C:\\Users\\Public\\planted.dll"), FALSE);
         ASSERT_NE(SetEnvironmentVariableW(PLANTED_DIGITS, L"C:\\Users\\Public\\planted.dll"), FALSE);
+        ASSERT_NE(SetEnvironmentVariableW(PLANTED_MIXED_CASE, L"1"), FALSE);
         ASSERT_NE(SetEnvironmentVariableW(KEPT, L"1"), FALSE);
     }
 
@@ -164,10 +349,12 @@ class SdlEnvironmentProcessTest : public ::testing::Test
     {
         SetEnvironmentVariableW(PLANTED, nullptr);
         SetEnvironmentVariableW(PLANTED_DIGITS, nullptr);
+        SetEnvironmentVariableW(PLANTED_MIXED_CASE, nullptr);
         SetEnvironmentVariableW(KEPT, nullptr);
+        // Through the CRT, which sets the block too: the scrub cleared the CRT's copy as well.
         for (const auto& [name, value] : m_Saved)
         {
-            SetEnvironmentVariableW(name.c_str(), value.c_str());
+            static_cast<void>(_wputenv_s(name.c_str(), value.c_str()));
         }
         // Clears what removedFromThisProcess() reports, as an unelevated TaskSmack's is.
         static_cast<void>(removeForThisProcess(false));
@@ -190,6 +377,11 @@ TEST_F(SdlEnvironmentProcessTest, System32OnlyRemovesEverySdlVariableBeforeSdlCa
     EXPECT_NE(std::ranges::find(removed, std::wstring(PLANTED_DIGITS)), removed.end());
     EXPECT_FALSE(isSet(PLANTED));
     EXPECT_FALSE(isSet(PLANTED_DIGITS));
+    EXPECT_FALSE(isSet(PLANTED_MIXED_CASE));
+    EXPECT_NE(std::ranges::find(removed, std::wstring(PLANTED_MIXED_CASE)), removed.end());
+    std::size_t crtSize = 1;
+    EXPECT_EQ(_wgetenv_s(&crtSize, nullptr, 0, PLANTED), 0);
+    EXPECT_EQ(crtSize, 0U); // The CRT's copy too
     EXPECT_TRUE(isSet(KEPT));
 
     // Nothing of SDL's is left, so SDL may now be called. A fresh SDL environment, built from the process's as
@@ -218,6 +410,7 @@ TEST_F(SdlEnvironmentProcessTest, OtherwiseTheyStay)
     EXPECT_TRUE(removedFromThisProcess().empty());
     EXPECT_TRUE(isSet(PLANTED));
     EXPECT_TRUE(isSet(PLANTED_DIGITS));
+    EXPECT_TRUE(isSet(PLANTED_MIXED_CASE));
     EXPECT_TRUE(isSet(KEPT));
 }
 

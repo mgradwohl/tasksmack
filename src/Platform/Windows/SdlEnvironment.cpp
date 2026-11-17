@@ -12,9 +12,11 @@
 #include <windows.h>
 // clang-format on
 
-#include <array>
+#include <algorithm>
 #include <cstddef>
-#include <functional>
+#include <cstdlib>
+#include <format>
+#include <optional>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -24,6 +26,9 @@ namespace Platform::Windows::SdlEnvironment
 {
 namespace
 {
+
+/// How many times the by-name pass removes one name that is still set: more than one entry can answer to a name.
+constexpr int MAX_REMOVALS_PER_NAME = 8;
 
 /// @p c in upper case, for ASCII letters; anything else as it is.
 [[nodiscard]] constexpr wchar_t asciiUpper(wchar_t c) noexcept
@@ -36,20 +41,17 @@ namespace
     return c >= L'0' && c <= L'9';
 }
 
-/// What removeForThisProcess() removes if it can't read the environment block: the variables that name a library SDL
-/// loads (SDL 3.4's *_LIBRARY hints, and SDL3_DYNAMIC_API) or pick the video driver.
-constexpr std::array<std::wstring_view, 8> FALLBACK_NAMES = {
-    L"SDL3_DYNAMIC_API",
-    L"SDL_OPENGL_LIBRARY",
-    L"SDL_EGL_LIBRARY",
-    L"SDL_VULKAN_LIBRARY",
-    L"SDL_OPENVR_LIBRARY",
-    L"SDL_X11_XCB_LIBRARY",
-    L"SDL_VIDEO_DRIVER",
-    L"SDL_VIDEODRIVER",
-};
+[[nodiscard]] bool equalsIgnoringAsciiCase(std::wstring_view a, std::wstring_view b) noexcept
+{
+    return std::ranges::equal(a, b, [](wchar_t x, wchar_t y) { return asciiUpper(x) == asciiUpper(y); });
+}
 
-/// The names removeForThisProcess() last removed, in UTF-8.
+[[nodiscard]] constexpr bool isHighSurrogate(wchar_t c) noexcept
+{
+    return c >= 0xD800 && c <= 0xDBFF;
+}
+
+/// The names removeForThisProcess() last removed, as logName() gives them.
 std::vector<std::string>& removedNames()
 {
     static std::vector<std::string> names;
@@ -97,22 +99,77 @@ std::vector<std::wstring> sdlVariableNames(std::wstring_view block)
     return names;
 }
 
-std::vector<std::wstring>
-removeSdlVariables(bool system32Only, std::wstring_view block, const std::function<bool(const std::wstring&)>& remove)
+std::vector<std::wstring> removeSdlVariables(bool system32Only, std::optional<std::wstring_view> block, const EnvironmentOps& environment)
 {
     std::vector<std::wstring> removed;
     if (!system32Only)
     {
         return removed;
     }
-    for (std::wstring& name : sdlVariableNames(block))
+    if (block.has_value())
     {
-        if (remove(name))
+        for (std::wstring& name : sdlVariableNames(*block))
         {
-            removed.push_back(std::move(name));
+            if (environment.remove(name))
+            {
+                removed.push_back(std::move(name));
+            }
+        }
+    }
+    // By name too, whether or not the block was read: the OS matches a name its own way, so this finds a variant of a
+    // dangerous name the block's ASCII fold missed, and reports a name only if one was set before it was removed.
+    for (const std::wstring_view nameView : BY_NAME_VARIABLES)
+    {
+        const std::wstring name(nameView);
+        bool removedOne = false;
+        for (int pass = 0; pass < MAX_REMOVALS_PER_NAME && environment.isSet(name); ++pass)
+        {
+            if (!environment.remove(name))
+            {
+                break;
+            }
+            removedOne = true;
+        }
+        if (removedOne &&
+            std::ranges::none_of(removed, [&name](const std::wstring& already) { return equalsIgnoringAsciiCase(already, name); }))
+        {
+            removed.push_back(name);
         }
     }
     return removed;
+}
+
+std::string logName(std::wstring_view name)
+{
+    const bool cut = name.size() > MAX_LOGGED_NAME;
+    std::wstring_view kept = name.substr(0, std::min(name.size(), MAX_LOGGED_NAME));
+    if (cut && !kept.empty() && isHighSurrogate(kept.back()))
+    {
+        kept.remove_suffix(1); // Not half a character
+    }
+    std::wstring safe;
+    safe.reserve(kept.size());
+    for (const wchar_t c : kept)
+    {
+        const auto code = static_cast<unsigned>(c);
+        if (code < 0x20 || (code >= 0x7F && code <= 0x9F))
+        {
+            safe += std::format(L"\\x{:02X}", code);
+        }
+        else if (code == 0x2028 || code == 0x2029)
+        {
+            safe += std::format(L"\\u{:04X}", code);
+        }
+        else
+        {
+            safe.push_back(c);
+        }
+    }
+    if (cut)
+    {
+        safe += L"...";
+    }
+    return Platform::WinString::wideToUtf8(safe);
 }
 
 std::vector<std::wstring> removeForThisProcess(bool system32Only)
@@ -121,7 +178,7 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
     if (system32Only)
     {
         // A copy of the block: removing a variable while walking the live one would change what is walked.
-        std::wstring block;
+        std::optional<std::wstring> block;
         if (wchar_t* const strings = GetEnvironmentStringsW(); strings != nullptr)
         {
             std::size_t length = 0;
@@ -130,26 +187,27 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
             {
                 ++length;
             }
-            block.assign(strings, length + 1);
+            block.emplace(strings, length + 1);
             // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             FreeEnvironmentStringsW(strings);
         }
-        else
-        {
-            // The block couldn't be read: at least the variables that name a library SDL loads, or pick a video driver.
-            for (const std::wstring_view name : FALLBACK_NAMES)
+        const EnvironmentOps environment{
+            .isSet = [](const std::wstring& name) { return GetEnvironmentVariableW(name.c_str(), nullptr, 0) > 0; },
+            .remove =
+                [](const std::wstring& name)
             {
-                block.append(name).append(L"=").push_back(L'\0');
-            }
-        }
-        removed = removeSdlVariables(
-            true, block, [](const std::wstring& name) { return SetEnvironmentVariableW(name.c_str(), nullptr) != FALSE; });
+                // The CRT's copy first, best effort (it also clears the block's); then the block, which is what counts.
+                static_cast<void>(_wputenv_s(name.c_str(), L""));
+                return SetEnvironmentVariableW(name.c_str(), nullptr) != FALSE || GetLastError() == ERROR_ENVVAR_NOT_FOUND;
+            },
+        };
+        removed = removeSdlVariables(true, block.has_value() ? std::optional<std::wstring_view>(*block) : std::nullopt, environment);
     }
     std::vector<std::string>& names = removedNames();
     names.clear();
     for (const std::wstring& name : removed)
     {
-        names.push_back(Platform::WinString::wideToUtf8(name));
+        names.push_back(logName(name));
     }
     return removed;
 }
