@@ -34,7 +34,8 @@ namespace
 /// LDAP/SSSD entry (#2498).
 [[nodiscard]] std::optional<std::filesystem::path> passwdHome()
 {
-    return lookUpHomeDirectory(::getuid(), ::getpwuid_r).transform([](const std::string& home) { return std::filesystem::path(home); });
+    // The effective uid's, as UserConfig's (the #4182 review).
+    return lookUpHomeDirectory(::geteuid(), ::getpwuid_r).transform([](const std::string& home) { return std::filesystem::path(home); });
 }
 
 } // namespace
@@ -79,8 +80,12 @@ std::filesystem::path LinuxPathProvider::getUserConfigDir() const
         cwd.clear();
     }
     // Run as root for a user (sudo, pkexec), that user's directory, as UserConfig's (#3580).
-    return ConfigDirectory::configDirectoryFor(
-               readEnv("XDG_CONFIG_HOME"), readEnv("HOME"), passwdHome, cwd, SessionUser::invokingUserHome())
+    return ConfigDirectory::configDirectoryFor(readEnv("XDG_CONFIG_HOME"),
+                                               readEnv("HOME"),
+                                               passwdHome,
+                                               cwd,
+                                               SessionUser::invokingUserHome(),
+                                               ::geteuid() == 0 && SessionUser::thisProcessMayHaveAnotherUsersEnvironment())
         .directory;
 }
 
