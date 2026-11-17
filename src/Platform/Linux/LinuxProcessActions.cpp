@@ -464,6 +464,7 @@ ProcessActionCapabilities LinuxProcessActions::actionCapabilities() const
     capabilities.canHashImage = true;  // /proc/<pid>/exe (#3094)
     capabilities.canRunProgram = true; // Run new task (#3065)
     capabilities.canRunProgramAsAdministrator = ::geteuid() == 0 || !m_TraceTools.elevatorPath.empty();
+    capabilities.runsProgramsAsRootDirectly = ::geteuid() == 0; // runProgram()'s own test: root runs it as it is (#4091)
     return capabilities;
 }
 
