@@ -50,7 +50,9 @@
 
 #include <system_error>
 
-#include <unistd.h> // geteuid(): a root session's log (#4150)
+#include <elf.h>      // AT_SECURE
+#include <sys/auxv.h> // getauxval()
+#include <unistd.h>   // geteuid(): the gate (#4154) and a root session's log (#4150)
 #endif
 #include "UI/Format.h"
 #include "UI/UILayer.h"
@@ -143,14 +145,27 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 
 /// Whether this session's environment may be the less-privileged side's (#4104), the one rule for the test hooks that
 /// write files: on Windows, elevated or restarted with --handoff (DllSearchPolicy::system32OnlyForThisProcess(), the
-/// rule the DLL search order and SDL's variables follow, #4103); on Linux, run as root for a user (sudo -E, an env_keep
-/// list: SessionUser::invokingUserHome()).
+/// rule the DLL search order and SDL's variables follow, #4103); on Linux, secure execution or root with an environment
+/// that may be a user's (SessionUser::environmentMayBeAnotherUsers(), #4154: setcap, sudo, pkexec, doas, su).
 [[nodiscard]] bool lessPrivilegedEnvironment()
 {
 #ifdef _WIN32
     return Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
 #elif defined(__linux__)
-    return Platform::SessionUser::invokingUserHome().has_value();
+    // #4154: secure execution (setuid, setgid, file capabilities: #4171), capabilities held another way, or root that
+    // sudo, pkexec, doas or a user's process above it names a user for. No passwd lookup, and nothing the user's
+    // environment can set to turn it off. Worked out once.
+    static const bool lessPrivileged = []
+    {
+        const auto effective = ::geteuid(); // uid_t
+        return Platform::SessionUser::environmentMayBeAnotherUsers(
+            effective,
+            ::getauxval(AT_SECURE) != 0,
+            effective != 0 && Platform::SessionUser::processHoldsCapabilities(),
+            &Platform::SessionUser::processVariable,
+            effective == 0 && Platform::SessionUser::aUserIsAbove(::getpid(), &Platform::SessionUser::processIds));
+    }();
+    return lessPrivileged;
 #else
     return false;
 #endif
@@ -931,7 +946,7 @@ auto main(int argc, char** argv) -> int
     // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
     // SDL variable goes, and the graphics loaders' (LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_FILENAMES, ..., #4151). The
     // rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
-    Platform::SdlEnvironment::removeForThisProcess(Platform::SessionUser::invokingUserHome().has_value());
+    Platform::SdlEnvironment::removeForThisProcess(lessPrivilegedEnvironment()); // #4154: no lookup needed
 #endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
