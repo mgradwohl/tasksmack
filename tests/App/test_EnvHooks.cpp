@@ -18,6 +18,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <format>
 #include <functional>
 #include <string>
@@ -189,6 +190,43 @@ TEST(EnvHooksTest, ABlankFlagIsOff)
     EXPECT_FALSE(Core::isEnvFlagEnabled(" \t\r\n"));
     EXPECT_TRUE(Core::isEnvFlagEnabled(" 1\r\n"));
     EXPECT_FALSE(Core::isEnvFlagEnabled(" off\r\n"));
+}
+
+// #4104: the hooks that write a file or folder at a path they name are the ones a less-privileged environment's session
+// ignores, and only those.
+TEST(EnvHooksTest, TheHooksThatWriteFilesAreTheOnesALessPrivilegedSessionIgnores)
+{
+    for (const std::string_view name : {"TASKSMACK_CONFIG_DIR", "TASKSMACK_SCREENSHOT", "TASKSMACK_DEMO", "TASKSMACK_RENDER_METRICS"})
+    {
+        EXPECT_TRUE(Core::hookWritesFiles(name)) << name;
+    }
+    for (const std::string_view name : {"TASKSMACK_TAB", "TASKSMACK_SYNTHETIC", "TASKSMACK_LOG_LEVEL", "TASKSMACK_WINDOW"})
+    {
+        EXPECT_FALSE(Core::hookWritesFiles(name)) << name;
+    }
+    EXPECT_FALSE(Core::hookWritesFiles("TASKSMACK_NOT_A_HOOK"));
+}
+
+/// In a death test's own child: a writing hook and a plain one set, then ignoreWritingHooks(), as an elevated or
+/// root-for-a-user session does. Exits 0 when the writing hook reads as unset (but is still visible unfiltered, for the
+/// warning), the plain one still reads, and the config folder's hook says it is ignored.
+[[noreturn]] void writingHooksIgnoredInChild()
+{
+    static_cast<void>(SDL_setenv_unsafe("TASKSMACK_RENDER_METRICS", "/tmp/should-not-be-written.csv", 1));
+    static_cast<void>(SDL_setenv_unsafe("TASKSMACK_CONFIG_DIR", "/tmp/should-not-be-made", 1));
+    static_cast<void>(SDL_setenv_unsafe("TASKSMACK_TAB", "processes", 1));
+    const bool readBefore = Core::readEnv("TASKSMACK_RENDER_METRICS") != nullptr;
+    Core::ignoreWritingHooks();
+    const bool ok = readBefore && Core::writingHooksIgnored() && Core::readEnv("TASKSMACK_RENDER_METRICS") == nullptr &&
+                    Core::readEnvUnfiltered("TASKSMACK_RENDER_METRICS") != nullptr && Core::readEnv("TASKSMACK_TAB") != nullptr &&
+                    Core::ConfigDirOverride::testHookIgnored();
+    std::exit(ok ? 0 : 1); // NOLINT(concurrency-mt-unsafe) - the death test's own child
+}
+
+TEST(EnvHooksDeathTest, IgnoringTheWritingHooksLeavesTheOthersReadable)
+{
+    GTEST_FLAG_SET(death_test_style, "threadsafe");
+    EXPECT_EXIT(writingHooksIgnoredInChild(), ::testing::ExitedWithCode(0), "");
 }
 
 } // namespace

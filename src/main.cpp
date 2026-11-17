@@ -28,6 +28,7 @@
 #include "Core/ConfigDirOverride.h"
 // NOLINTNEXTLINE(misc-include-cleaner) - used in the NDEBUG (release) branch below, invisible to debug-config analysis
 #include "Core/EnvRead.h"
+#include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/LocaleSetup.h"
 #include "Core/LogFileSink.h"
@@ -138,6 +139,21 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
 }
 #endif
 
+/// Whether this session's environment may be the less-privileged side's (#4104), the one rule for the test hooks that
+/// write files: on Windows, elevated or restarted with --handoff (DllSearchPolicy::system32OnlyForThisProcess(), the
+/// rule the DLL search order and SDL's variables follow, #4103); on Linux, run as root for a user (sudo -E, an env_keep
+/// list: SessionUser::invokingUserHome()).
+[[nodiscard]] bool lessPrivilegedEnvironment()
+{
+#ifdef _WIN32
+    return Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
+#elif defined(__linux__)
+    return Platform::SessionUser::invokingUserHome().has_value();
+#else
+    return false;
+#endif
+}
+
 auto runApp(const App::LaunchOptions& launch) -> int
 {
 #ifdef __linux__
@@ -178,13 +194,16 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // passes the checks for a directory handed over from the less-privileged side; otherwise keep this account's
     // own. The instance lock below, tried again for a while, covers a Standard copy this one couldn't wait on.
     // Logged below. A Linux session is never restarted (#3580), so there the arguments are ignored.
-#ifdef _WIN32
-    // Elevated through UAC, the environment may be the less-privileged side's: the TASKSMACK_CONFIG_DIR test hook is
-    // ignored, before anything reads the config directory, so nothing is read from or made where it points (#3920).
-    if (Platform::elevatedThroughUac()) // LCOV_EXCL_LINE - TaskSmack.exe only (#2039)
+    // Its environment may be the less-privileged side's (#4104): every test hook that writes a file or folder at a path it
+    // names (TASKSMACK_CONFIG_DIR, _SCREENSHOT, _DEMO's metrics export, _RENDER_METRICS) is ignored, before anything reads
+    // one, so nothing is written where that side chose (#3920, #4090). One rule on both platforms, lessPrivilegedEnvironment().
+    // Keep this ahead of every read of a hook: each hook keeps its first answer (a function-local static), so a hook read
+    // before the gate would keep a path the less-privileged side chose for the whole run.
+    if (lessPrivilegedEnvironment()) // LCOV_EXCL_LINE - an elevated or root-for-a-user session only (#2039)
     {
-        Core::ConfigDirOverride::ignoreTestHook(); // LCOV_EXCL_LINE
+        Core::ignoreWritingHooks(); // LCOV_EXCL_LINE
     }
+#ifdef _WIN32
     const bool handoffSession = launch.handoffPid.has_value();
     std::optional<Platform::HandoffWait> handoffWait;
     std::string handoffDirRefused;
@@ -274,12 +293,9 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // Run as root for a user (sudo, pkexec, #3580), the config directory is that user's, the less-privileged side's, as
     // a handed-over one is on Windows (#3759): UserConfig writes through no link of theirs in it, and the dump folder and
     // recent commands stored there aren't offered. Before the configuration is first read.
-    // Its environment is the less-privileged side's too (sudo -E, an env_keep list): the TASKSMACK_CONFIG_DIR test hook
-    // is ignored, so root neither reads from nor creates the folder it names, as an elevated Windows session does (#3920,
-    // #4090).
+    // Its environment is the less-privileged side's too: the writing test hooks were ignored above (#4090, #4104).
     if (Platform::SessionUser::invokingUserHome().has_value())
     {
-        Core::ConfigDirOverride::ignoreTestHook();
         Core::ConfigDirOverride::markLessPrivilegedFolder();
     }
 #endif
@@ -458,11 +474,23 @@ auto runApp(const App::LaunchOptions& launch) -> int
                      names);
     }
 #endif
-    if (Core::ConfigDirOverride::testHookIgnored())
+    // Names only: a value may be a path the user would rather not log.
+    if (Core::writingHooksIgnored())
     {
-        spdlog::warn("{} is set but ignored: TaskSmack runs as administrator, and takes no folder from an environment the "
-                     "less-privileged side may have set",
-                     Core::ConfigDirOverride::ENV_VAR);
+        std::string ignored;
+        for (const Core::EnvHook& hook : Core::KNOWN_ENV_HOOKS)
+        {
+            if (hook.writesFiles && Core::readEnvUnfiltered(hook.name) != nullptr)
+            {
+                ignored += ignored.empty() ? std::string(hook.name) : ", " + std::string(hook.name);
+            }
+        }
+        if (!ignored.empty())
+        {
+            spdlog::warn("{} set but ignored: TaskSmack runs as administrator (elevated, or as root for a user), and writes "
+                         "nothing where an environment the less-privileged side may have set points (#4104)",
+                         ignored);
+        }
     }
 #ifdef _WIN32
     // Removed in WinMain, before any SDL call (#4103). Names only: a value may be a path the user would rather not log.
