@@ -90,6 +90,18 @@ TEST_F(RootDumpFolderTest, AParentOthersMayWriteOrSomeoneElsesIsRefused)
     EXPECT_FALSE(std::filesystem::exists(m_Parent / FOLDER_NAME)) << "nothing is made under a refused parent";
 }
 
+TEST_F(RootDumpFolderTest, AParentTheGroupOrOthersMayWriteIsRefused)
+{
+    using std::filesystem::perms;
+    for (const perms extra : {perms::group_write, perms::others_write})
+    {
+        std::filesystem::permissions(m_Parent, perms::owner_all | perms::group_exec | perms::others_exec | extra);
+        EXPECT_TRUE(makePrivateFolder(m_Parent, FOLDER_NAME, ::geteuid()).has_value()) << static_cast<unsigned>(extra);
+    }
+    std::filesystem::permissions(m_Parent, perms::owner_all | perms::group_exec | perms::others_exec);
+    EXPECT_EQ(makePrivateFolder(m_Parent, FOLDER_NAME, ::geteuid()), std::nullopt) << "0711: only the owner may write";
+}
+
 TEST_F(RootDumpFolderTest, AParentThatIsALinkIsRefused)
 {
     const std::filesystem::path link = m_Parent / "home-link";

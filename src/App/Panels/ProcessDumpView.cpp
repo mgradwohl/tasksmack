@@ -135,7 +135,8 @@ std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::str
 namespace
 {
 #ifdef __linux__
-constexpr const char* NO_DEFAULT_LOG_TEXT = "using root's own folder unless Save dump to... chooses another (#4181)";
+constexpr const char* NO_DEFAULT_LOG_TEXT =
+    "using root's own folder (TaskSmack-dumps in root's home) when it can be made, unless Save dump to... chooses another (#4181)";
 #else
 constexpr const char* NO_DEFAULT_LOG_TEXT = "no folder until Save dump to... chooses one (#4141)";
 #endif

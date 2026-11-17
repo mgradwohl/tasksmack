@@ -1,7 +1,10 @@
 #include "RootDumpFolder.h"
 
+#include "LinuxCoreDump.h"
+
 #include <spdlog/spdlog.h>
 
+#include <atomic>
 #include <cerrno>
 #include <filesystem>
 #include <format>
@@ -14,6 +17,8 @@
 #include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
+#include <sys/statvfs.h>
 #include <sys/types.h>
 #include <unistd.h>
 
@@ -88,6 +93,24 @@ std::optional<std::string> makePrivateFolder(const std::filesystem::path& parent
     return std::nullopt;
 }
 
+std::optional<std::string> rootDumpRefusal(const std::filesystem::path& directory)
+{
+    std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat);
+    if (refusal.has_value())
+    {
+        return refusal;
+    }
+    // Fail closed: a filesystem that won't say what it is (a FUSE daemon can refuse statfs) may be a user's (the second
+    // #4177 review).
+    struct statvfs vfs = {};
+    struct statfs fs = {};
+    if (::statvfs(directory.c_str(), &vfs) != 0 || ::statfs(directory.c_str(), &fs) != 0)
+    {
+        return std::format("TaskSmack can't tell what filesystem {} is on", directory.string());
+    }
+    return LinuxCoreDump::userMountRefusal(directory, vfs.f_flag, static_cast<long>(fs.f_type));
+}
+
 std::filesystem::path rootDumpFolder()
 {
     passwd entry{};
@@ -99,13 +122,29 @@ std::filesystem::path rootDumpFolder()
         spdlog::warn("No default dump folder: root's home isn't in the passwd database (#4181)");
         return {};
     }
-    const std::filesystem::path home(entry.pw_dir);
-    if (const std::optional<std::string> refusal = makePrivateFolder(home, FOLDER_NAME, 0); refusal.has_value())
+    // Without a trailing "/": one would make open() follow a link the O_NOFOLLOW check is there to refuse.
+    std::string homeText(entry.pw_dir);
+    while (homeText.size() > 1 && homeText.ends_with('/'))
     {
-        spdlog::warn("No default dump folder: {} (#4181)", *refusal);
+        homeText.pop_back();
+    }
+    const std::filesystem::path home(homeText);
+    std::filesystem::path folder = home / FOLDER_NAME;
+    std::optional<std::string> refusal = makePrivateFolder(home, FOLDER_NAME, 0);
+    if (!refusal.has_value())
+    {
+        refusal = rootDumpRefusal(folder);
+    }
+    if (refusal.has_value())
+    {
+        static std::atomic_flag warned; // once a session, not at every confirm
+        if (!warned.test_and_set())
+        {
+            spdlog::warn("No default dump folder: {} (#4181)", *refusal);
+        }
         return {};
     }
-    return home / FOLDER_NAME;
+    return folder;
 }
 
 } // namespace Platform::RootDumpFolder
