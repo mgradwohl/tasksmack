@@ -20,6 +20,7 @@
 
 #include <fcntl.h>
 #include <pwd.h>
+#include <sys/fsuid.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h> // environ
@@ -109,6 +110,36 @@ bool loginUidAllows(uid_t uid)
     return login == UNSET || login == static_cast<std::uint32_t>(uid);
 }
 
+/// Opens @p path read-only as @p uid would (setfsuid/setfsgid to them and their primary group for the open, then back
+/// to root), without following a final link or blocking on a FIFO. -1 when it can't, or when the ids can't be put back.
+int openAsUser(const std::string& path, uid_t uid)
+{
+    passwd entry{};
+    passwd* found = nullptr;
+    std::vector<char> buffer(16384);
+    if (::getpwuid_r(uid, &entry, buffer.data(), buffer.size(), &found) != 0 || found == nullptr)
+    {
+        return -1;
+    }
+    static_cast<void>(::setfsgid(entry.pw_gid));
+    static_cast<void>(::setfsuid(uid));
+    const bool switched = ::setfsuid(static_cast<uid_t>(-1)) == static_cast<int>(uid);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int file = switched ? ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) : -1;
+    static_cast<void>(::setfsuid(0));
+    static_cast<void>(::setfsgid(0));
+    if (::setfsuid(static_cast<uid_t>(-1)) != 0)
+    {
+        if (file >= 0)
+        {
+            ::close(file);
+        }
+        std::fputs("TaskSmack: couldn't restore root's filesystem uid; not starting\n", stderr);
+        std::_Exit(1);
+    }
+    return file;
+}
+
 /// root's own copy of the invoking user's Xauthority (the second #4187 review): the file XAUTHORITY names, or their
 /// ~/.Xauthority from their passwd entry, opened without following a link and used only if it's a plain file of
 /// theirs (and the login uid agrees whose), so no other account's cookie can be read and sent to a display the user chose; copied 0600 into
@@ -137,8 +168,9 @@ std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& 
         }
         source = std::string(entry.pw_dir) + "/.Xauthority";
     }
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int in = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    // Opened as the user (filesystem uid and gid theirs for this one open; no thread runs yet), so a path the user
+    // names reaches only what they could open themselves; never blocking on a FIFO (the CodeQL path alert on #4187).
+    const int in = openAsUser(source, *uid);
     if (in < 0)
     {
         return std::nullopt;
