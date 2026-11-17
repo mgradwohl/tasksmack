@@ -27,7 +27,8 @@ TaskSmack is). So:
     the linker's /DEPENDENTLOADFLAG:0x800 covers the imports (cmake/CompilerOptions.cmake).
 
 Comments are ignored. This is a text scan of the C++ sources under src/, not a parse, so it needs
-nothing beyond the standard library.
+nothing beyond the standard library. For the same reason it can't see a macro or a using-declaration
+that redefines system32OnlyForThisProcess or SetDefaultDllDirectories; review catches that.
 
 Run by pre-commit (local hook `check-dll-loads`) and by ctest (CheckDllLoadsScript). `--root` points
 at another tree, for testing. Exits 1 on any failure, 0 otherwise.
@@ -66,6 +67,8 @@ SDL_SCRUB = "SdlEnvironment::removeForThisProcess("
 SDL_SCRUB_CALL = re.compile(r"(?:\w+\s*::\s*)*SdlEnvironment\s*::\s*removeForThisProcess\s*\(")
 # What that call must be passed: the rule WinMain's SetDefaultDllDirectories uses (#4114).
 SCRUB_ARGUMENT = "system32OnlyForThisProcess()"
+# The whole argument, qualified or not: nothing negating it, combining it, or merely containing its name (#4114).
+SCRUB_ARGUMENT_SHAPE = re.compile(r"(?:\w+\s*::\s*)*system32OnlyForThisProcess\s*\(\s*\)")
 NAMESPACE_ALIAS = re.compile(r"namespace\s+\w+\s*=[^;]*;")
 LEADING_SPACE = re.compile(r"\s*")
 
@@ -159,7 +162,7 @@ def check_entry_point(text: str, name: str, function: str, rule: str) -> list[st
                 f"{SDL_SCRUB}...): an elevated TaskSmack removes the SDL variables (SDL3_DYNAMIC_API, read at SDL's "
                 "first call, SDL_OPENGL_LIBRARY) that name a DLL SDL loads by full path, before any SDL call (#4103)"
             ]
-        if SCRUB_ARGUMENT not in call_arguments(body, scrub.end() - 1):
+        if SCRUB_ARGUMENT_SHAPE.fullmatch(call_arguments(body, scrub.end() - 1).strip()) is None:
             return [
                 f"{name}:{line}: {function}()'s {SDL_SCRUB}...) must be passed {SCRUB_ARGUMENT}, the rule "
                 "SetDefaultDllDirectories uses, not another value (#4114)"

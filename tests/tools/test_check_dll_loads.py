@@ -150,7 +150,18 @@ class CheckEntryPointTest(unittest.TestCase):
 
     def test_the_sdl_scrub_must_be_passed_the_system32_only_rule(self) -> None:
         # #4114: the call alone isn't enough; removeForThisProcess(false) removes nothing.
-        for argument in ("false", "true", "x", "system32Only()"):
+        for argument in (
+            "false",
+            "true",
+            "x",
+            "system32Only()",
+            "!Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()",
+            "false && Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()",
+            "Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess() && false",
+            "false, Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()",
+            "notsystem32OnlyForThisProcess()",
+            '"system32OnlyForThisProcess()"',
+        ):
             with self.subTest(argument=argument):
                 scrub = f"    Platform::Windows::SdlEnvironment::removeForThisProcess({argument});\n"
                 errors = check_main(entry_point("WinMain", MAIN_CALL + scrub))

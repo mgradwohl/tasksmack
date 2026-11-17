@@ -60,6 +60,9 @@ inline constexpr std::size_t MAX_LOGGED_NAME = 128;
 /// The most names removedFromThisProcess() keeps; after them it has one "and N more".
 inline constexpr std::size_t MAX_LOGGED_NAMES = 32;
 
+/// What stillSetInThisProcess() holds when GetEnvironmentStringsW() failed: the block's SDL variables can't be found.
+inline constexpr std::wstring_view UNREADABLE_BLOCK = L"(environment block unreadable)";
+
 /// What removeSdlVariables() does to an environment: the process's own, or a test's fake.
 struct EnvironmentOps
 {
@@ -80,8 +83,10 @@ struct EnvironmentOps
 /// BY_NAME_VARIABLES while @p environment says one of that name is still set (a bounded number of times). With no
 /// @p block (it couldn't be read), only the second. Returns the names removed: from the block, each @p environment
 /// removed; by name, each it found set and then removed at least once. Otherwise leaves everything alone and calls nothing.
-/// Each name @p environment still says is set when its passes are done (a removal that failed, or more entries
-/// answering to the name than the bounded passes remove) is added to @p stillSet, if given, once: the caller fails closed.
+/// Each name @p environment still says is set when its passes are done (a removal that failed, one that took another
+/// entry, or more entries answering to the name than the bounded passes remove) is added to @p stillSet, if given,
+/// once: the caller fails closed. Only the Win32 block counts, since SDL reads nothing else: a leftover in the CRT's
+/// copy alone is deliberately not fatal.
 [[nodiscard]] std::vector<std::wstring> removeSdlVariables(bool system32Only,
                                                            std::optional<std::wstring_view> block,
                                                            const EnvironmentOps& environment,
@@ -108,8 +113,9 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only);
 
 /// The names the last removeForThisProcess() could not remove: still set when it was done. Not empty means the
 /// process may still take an SDL setting, or a library, from the less-privileged side, so WinMain refuses to start
-/// (logging isn't up, and a window is SDL's to open). Reachable only if the OS refuses a removal or more than eight
-/// entries answer to one name; not through HKCU\Environment, whose names compare case-insensitively.
+/// (logging isn't up; it says so in a message box and OutputDebugStringW). Also holds UNREADABLE_BLOCK if the
+/// environment block couldn't be read. Reachable only if the OS refuses a removal or more than eight entries answer
+/// to one name; not through HKCU\Environment, whose names compare case-insensitively.
 [[nodiscard]] const std::vector<std::wstring>& stillSetInThisProcess() noexcept;
 
 } // namespace Platform::Windows::SdlEnvironment

@@ -897,9 +897,20 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
     // every SDL variable goes. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
     Platform::Windows::SdlEnvironment::removeForThisProcess(Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess());
     // Fail closed (#4114): a variable still set (a removal the OS refused) would reach SDL, so don't start. Logging isn't
-    // up and a window is SDL's to open, so the exit code is all there is; HKCU\Environment can't cause it.
-    if (!Platform::Windows::SdlEnvironment::stillSetInThisProcess().empty())
+    // up, so say so in a message box (no SDL involved; user32 is imported, and SetDefaultDllDirectories has run) and, with
+    // the names only, to the debugger. HKCU\Environment can't cause it.
+    if (const auto& stillSet = Platform::Windows::SdlEnvironment::stillSetInThisProcess(); !stillSet.empty())
     {
+        std::wstring names;
+        for (const std::string& name : Platform::Windows::SdlEnvironment::loggedNames(stillSet))
+        {
+            names += (names.empty() ? L"" : L", ") + Platform::WinString::utf8ToWide(name);
+        }
+        OutputDebugStringW((L"TaskSmack: SDL environment variables still set, not starting: " + names + L"\n").c_str());
+        MessageBoxW(nullptr,
+                    L"TaskSmack could not clear an inherited SDL setting and will not start elevated.",
+                    L"TaskSmack",
+                    MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return EXIT_FAILURE;
     }
     return runAppGuarded(App::parseLaunchOptions(commandLineArguments()));

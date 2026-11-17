@@ -4,6 +4,7 @@
 // each test puts back every SDL variable it found.
 
 #include "Platform/Windows/SdlEnvironment.h"
+#include "Platform/Windows/WinString.h"
 
 #include <gtest/gtest.h>
 
@@ -236,6 +237,69 @@ TEST(SdlEnvironmentTest, NothingIsStillSetWhenEverythingWasRemoved)
     EXPECT_TRUE(stillSet.empty());
 }
 
+TEST(SdlEnvironmentTest, AByNameRemovalThatFailsLeavesTheNameStillSet)
+{
+    FakeEnvironment environment(block(L"SDL_OPENGL_LIBRARY=x.dll\0PATH=x\0\0"));
+    std::vector<std::wstring> stillSet;
+    const std::vector<std::wstring> removed = removeSdlVariables(true, std::nullopt, environment.ops(L"SDL_OPENGL_LIBRARY"), &stillSet);
+    EXPECT_TRUE(removed.empty());
+    EXPECT_EQ(stillSet, std::vector<std::wstring>{L"SDL_OPENGL_LIBRARY"});
+}
+
+TEST(SdlEnvironmentTest, EightEntriesOfOneNameAreRemovedAndNineAreFlagged)
+{
+    const auto entries = [](int count)
+    {
+        std::wstring text;
+        for (int index = 0; index < count; ++index)
+        {
+            text += L"SDL3_DYNAMIC_API=x";
+            text.push_back(L'\0');
+        }
+        text.push_back(L'\0');
+        return text;
+    };
+    for (const int count : {8, 9})
+    {
+        FakeEnvironment environment(entries(count));
+        std::vector<std::wstring> stillSet;
+        const std::vector<std::wstring> removed = removeSdlVariables(true, std::nullopt, environment.ops(), &stillSet);
+        EXPECT_EQ(removed, std::vector<std::wstring>{L"SDL3_DYNAMIC_API"}) << count;
+        if (count == 8)
+        {
+            EXPECT_TRUE(stillSet.empty());
+        }
+        else
+        {
+            EXPECT_EQ(stillSet, std::vector<std::wstring>{L"SDL3_DYNAMIC_API"});
+        }
+    }
+}
+
+TEST(SdlEnvironmentTest, ABlockNameStillSetAfterARemovalThatSaidItWorkedIsFlagged)
+{
+    // remove() says true but took another entry (names that compare equal): asked again, it is still set.
+    const EnvironmentOps wrongEntry{
+        .isSet = [](const std::wstring& name) { return name == L"SDL_FOO"; },
+        .remove = [](const std::wstring& /*name*/) { return true; },
+    };
+    std::vector<std::wstring> stillSet;
+    static_cast<void>(removeSdlVariables(true, block(L"SDL_FOO=1\0\0"), wrongEntry, &stillSet));
+    EXPECT_EQ(stillSet, std::vector<std::wstring>{L"SDL_FOO"});
+}
+
+TEST(SdlEnvironmentTest, AStillSetNameIsNotRecordedTwiceInAnotherCase)
+{
+    // The block's "sdl_videodriver" and the by-name "SDL_VIDEODRIVER" are one variable to the OS.
+    const EnvironmentOps stuck{
+        .isSet = [](const std::wstring& name) { return _wcsicmp(name.c_str(), L"SDL_VIDEODRIVER") == 0; },
+        .remove = [](const std::wstring& /*name*/) { return false; },
+    };
+    std::vector<std::wstring> stillSet;
+    static_cast<void>(removeSdlVariables(true, block(L"sdl_videodriver=x\0\0"), stuck, &stillSet));
+    EXPECT_EQ(stillSet, std::vector<std::wstring>{L"sdl_videodriver"});
+}
+
 TEST(SdlEnvironmentTest, AByNameVariableThatRemovalDidNotClearIsStillSet)
 {
     // With no block, so only the by-name pass: the OS says it removed it, and still answers that it is set.
@@ -339,13 +403,17 @@ TEST(SdlEnvironmentTest, ABackslashInALoggedNameIsDoubledSoAnEscapeCannotBeForge
 
 TEST(SdlEnvironmentTest, BidirectionalControlsInALoggedNameAreEscaped)
 {
-    for (const unsigned code : {0x200EU, 0x200FU, 0x202AU, 0x202BU, 0x202CU, 0x202DU, 0x202EU, 0x2066U, 0x2067U, 0x2068U, 0x2069U})
+    for (const unsigned code : {0x061CU, 0x200EU, 0x200FU, 0x202AU, 0x202BU, 0x202CU, 0x202DU, 0x202EU, 0x2066U, 0x2067U, 0x2068U, 0x2069U})
     {
         const std::wstring name = std::wstring(L"SDL_a") + static_cast<wchar_t>(code) + L"b";
         EXPECT_EQ(logName(name), std::format("SDL_a\\u{:04X}b", code)) << std::hex << code;
     }
     // The characters either side of those ranges are not controls.
-    EXPECT_EQ(logName(L"SDL_‍‰⁥⁪"), "SDL_\xE2\x80\x8D\xE2\x80\xB0\xE2\x81\xA5\xE2\x81\xAA");
+    for (const wchar_t outside : {L'\u061B', L'\u061D', L'\u200D', L'\u2010', L'\u202F', L'\u2065', L'\u206A'})
+    {
+        const std::wstring name = std::wstring(L"SDL_") + outside;
+        EXPECT_EQ(logName(name), Platform::WinString::wideToUtf8(name)) << std::hex << static_cast<unsigned>(outside);
+    }
 }
 
 TEST(SdlEnvironmentTest, AtMostThirtyTwoNamesAreLoggedThenAndNMore)
@@ -498,7 +566,7 @@ TEST_F(SdlEnvironmentProcessTest, System32OnlyRemovesEverySdlVariableBeforeSdlCa
     EXPECT_EQ(SDL_getenv_unsafe("SDL_OPENGL_LIBRARY"), nullptr);
 
     const std::vector<std::string>& logged = removedFromThisProcess();
-    EXPECT_EQ(logged.size(), removed.size());
+    EXPECT_EQ(logged, loggedNames(removed));
     EXPECT_NE(std::ranges::find(logged, std::string("SDL_TASKSMACK_TEST_PLANTED")), logged.end());
     EXPECT_NE(std::ranges::find(logged, std::string("SDL9_TASKSMACK_TEST_PLANTED")), logged.end());
 }

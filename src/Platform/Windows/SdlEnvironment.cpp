@@ -19,7 +19,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <utility>
 #include <vector>
 
 namespace Platform::Windows::SdlEnvironment
@@ -74,11 +73,11 @@ void addOnce(std::vector<std::wstring>& names, const std::wstring& name)
     }
 }
 
-/// Bidirectional controls, which can reorder the text around them in a log viewer: the marks U+200E and U+200F, the
-/// embeddings and overrides U+202A to U+202E, and the isolates U+2066 to U+2069.
+/// Bidirectional controls, which can reorder the text around them in a log viewer: the Arabic letter mark U+061C, the
+/// marks U+200E and U+200F, the embeddings and overrides U+202A to U+202E, and the isolates U+2066 to U+2069.
 [[nodiscard]] constexpr bool isBidiControl(unsigned code) noexcept
 {
-    return code == 0x200E || code == 0x200F || (code >= 0x202A && code <= 0x202E) || (code >= 0x2066 && code <= 0x2069);
+    return code == 0x061C || code == 0x200E || code == 0x200F || (code >= 0x202A && code <= 0x202E) || (code >= 0x2066 && code <= 0x2069);
 }
 
 } // namespace
@@ -132,17 +131,15 @@ std::vector<std::wstring> removeSdlVariables(bool system32Only,
     {
         return removed;
     }
+    std::vector<std::wstring> blockNames;
     if (block.has_value())
     {
-        for (std::wstring& name : sdlVariableNames(*block))
+        blockNames = sdlVariableNames(*block);
+        for (const std::wstring& name : blockNames)
         {
             if (environment.remove(name))
             {
-                removed.push_back(std::move(name));
-            }
-            else if (stillSet != nullptr && environment.isSet(name))
-            {
-                addOnce(*stillSet, name);
+                removed.push_back(name);
             }
         }
     }
@@ -165,10 +162,26 @@ std::vector<std::wstring> removeSdlVariables(bool system32Only,
         {
             removed.push_back(name);
         }
-        // Still set after the passes ran out, or the removal failed: nothing here can make the process safe to run.
-        if (stillSet != nullptr && environment.isSet(name))
+    }
+    // Asked again after both passes, for each name either found: a remove() that says it worked may have taken another
+    // entry, when two names compare equal ("ſDL_FOO" and "SDL_FOO"), and the by-name passes are bounded. A name still
+    // set can't be made safe here, so the caller fails closed. Only the Win32 block counts: SDL reads nothing else on
+    // Windows, so a leftover in the CRT's copy alone (cleared best effort in remove()) is deliberately not fatal.
+    if (stillSet != nullptr)
+    {
+        for (const std::wstring& name : blockNames)
         {
-            addOnce(*stillSet, name);
+            if (environment.isSet(name))
+            {
+                addOnce(*stillSet, name);
+            }
+        }
+        for (const std::wstring_view name : BY_NAME_VARIABLES)
+        {
+            if (environment.isSet(std::wstring(name)))
+            {
+                addOnce(*stillSet, std::wstring(name));
+            }
         }
     }
     return removed;
@@ -246,6 +259,12 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
             block.emplace(strings, length + 1);
             // NOLINTEND(cppcoreguidelines-pro-bounds-pointer-arithmetic)
             FreeEnvironmentStringsW(strings);
+        }
+        else
+        {
+            // Unreadable: the SDL variables outside BY_NAME_VARIABLES can't be found, so fail closed, whatever the by-name
+            // pass finds.
+            stillSetNames().emplace_back(UNREADABLE_BLOCK);
         }
         const EnvironmentOps environment{
             .isSet = [](const std::wstring& name) { return GetEnvironmentVariableW(name.c_str(), nullptr, 0) > 0; },
