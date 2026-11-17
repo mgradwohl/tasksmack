@@ -783,17 +783,21 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     if (::geteuid() == 0)
     {
         std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat);
-        if (struct statvfs vfs = {}; !refusal.has_value() && ::statvfs(directory.c_str(), &vfs) == 0)
+        if (!refusal.has_value())
         {
+            // Fail closed: a filesystem that won't say what it is (a FUSE daemon can refuse statfs) may be a user's (the
+            // second #4177 review).
+            struct statvfs vfs = {};
             struct statfs fs = {};
-            refusal = LinuxCoreDump::userMountRefusal(
-                directory, vfs.f_flag, ::statfs(directory.c_str(), &fs) == 0 ? static_cast<long>(fs.f_type) : 0);
+            refusal = (::statvfs(directory.c_str(), &vfs) != 0 || ::statfs(directory.c_str(), &fs) != 0)
+                        ? std::optional(std::format("TaskSmack can't tell what filesystem {} is on", directory.string()))
+                        : LinuxCoreDump::userMountRefusal(directory, vfs.f_flag, static_cast<long>(fs.f_type));
         }
         if (refusal.has_value())
         {
             spdlog::warn("Not dumping PID {}: {}", target.pid, *refusal);
             return std::unexpected(std::format("TaskSmack runs as root, so a dump goes only into a folder only root may change, "
-                                               "such as /root: {}",
+                                               "such as root's home folder: {}",
                                                *refusal));
         }
     }
@@ -837,6 +841,7 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     // gcore writes "<prefix>.<pid>"; the prefix marks it partial until it is renamed into place.
     const std::filesystem::path prefix = file.string() + ".partial";
     const std::filesystem::path written = LinuxCoreDump::gcoreOutputFile(prefix, target.pid);
+    struct stat workingFile = {}; // its identity, to know it's still this file after gdb (the second #4177 review)
     // gdb's file, made first by this process: owner-only from the start (#4175), so no one opens it mid-write and keeps
     // reading, and the name reserved (O_EXCL, O_NOFOLLOW) against a link planted where gdb writes by path (#4176). gdb
     // writes into it (fopen "w" truncates an empty file, and bfd doesn't remove one first).
@@ -850,12 +855,40 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
             return std::unexpected(
                 std::format("Couldn't make the dump's working file {}: {}", written.string(), std::system_category().message(error)));
         }
+        if (::fstat(partial, &workingFile) != 0)
+        {
+            const int error = errno;
+            ::close(partial);
+            std::filesystem::remove(written, ec);
+            releaseName();
+            return std::unexpected(
+                std::format("Couldn't read the dump's working file {}: {}", written.string(), std::system_category().message(error)));
+        }
         ::close(partial);
     }
     const bool wasStopped = processIsStopped(syscalls(), target.pid);
     const std::int32_t tracerBefore = syscalls().tracerPid(target.pid).value_or(0);
     spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
-    const ToolRun run = runCancellable(syscalls(), LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
+    // Under umask 077, so a file gdb makes anew (one swapped out of a shared folder: bfd recreates a non-empty one) is
+    // owner-only too (the second #4177 review). Process-wide for the run, which only narrows what anything else makes.
+    struct UmaskScope
+    {
+        mode_t previous = ::umask(S_IRWXG | S_IRWXO);
+        UmaskScope() = default;
+        UmaskScope(const UmaskScope&) = delete;
+        UmaskScope& operator=(const UmaskScope&) = delete;
+        UmaskScope(UmaskScope&&) = delete;
+        UmaskScope& operator=(UmaskScope&&) = delete;
+        ~UmaskScope()
+        {
+            ::umask(previous);
+        }
+    };
+    const ToolRun run = [&]
+    {
+        const UmaskScope ownerOnly;
+        return runCancellable(syscalls(), LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
+    }();
     if (run.spawnError)
     {
         std::filesystem::remove(written, ec);
@@ -895,16 +928,28 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
     }
-    // Still the plain file made above (a shared folder's member could have swapped a link in), and owner-only (#4175)
-    // before it's published.
-    if (struct stat finished = {};
-        ::lstat(written.c_str(), &finished) != 0 || !S_ISREG(finished.st_mode) || ::chmod(written.c_str(), S_IRUSR | S_IWUSR) != 0)
+    // Still the file made above, this account's, opened without following a link (a shared folder's member could swap
+    // one in), and made owner-only through that descriptor before it's published (#4175, the second #4177 review).
     {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int finished = ::open(written.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+        struct stat current = {};
+        const bool same = finished >= 0 && ::fstat(finished, &current) == 0 && S_ISREG(current.st_mode) &&
+                          current.st_dev == workingFile.st_dev && current.st_ino == workingFile.st_ino && current.st_uid == ::geteuid() &&
+                          ::fchmod(finished, S_IRUSR | S_IWUSR) == 0;
         const int error = errno;
-        std::filesystem::remove(written, ec);
-        releaseName();
-        return std::unexpected(
-            std::format("Couldn't make the dump file {} private: {}", written.string(), std::system_category().message(error)));
+        if (finished >= 0)
+        {
+            ::close(finished);
+        }
+        if (!same)
+        {
+            std::filesystem::remove(written, ec);
+            releaseName();
+            return std::unexpected(std::format("Couldn't make the dump file {} private: it isn't the file TaskSmack made for it ({})",
+                                               written.string(),
+                                               std::system_category().message(error)));
+        }
     }
     // Over the placeholder reserved above, which only this dump made.
     std::filesystem::rename(written, file, ec);

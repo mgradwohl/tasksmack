@@ -3302,6 +3302,32 @@ TEST(LinuxProcessActionsDumpTest, ADumpSaysWhenGcoreIsGoneOrCantStartOrThePidfdC
     EXPECT_FALSE(std::filesystem::exists(work.path / "gcore-args.txt")) << "gcore never ran";
 }
 
+// #4175, #4176: gdb writes into a file TaskSmack made first, owner-only from the start, and the dump published is that
+// file, owner-only; one swapped for a link while gcore ran isn't published.
+TEST(LinuxProcessActionsDumpTest, GdbWritesIntoAnOwnerOnlyFileTaskSmackMadeAndNoSwappedOneIsPublished)
+{
+    const TestSupport::ScopedTempDir work("tasksmack_dump_mode_tools");
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_mode_out");
+    const std::stop_source stop;
+    // gcore refuses to write unless the file it's given is already there, 0600.
+    LinuxProcessActions checked(fakeDumpTools(work.path, "[ \"$(stat -c %a \"$2.$3\")\" = 600 ] || exit 9\nprintf 'CORE' > \"$2.$3\"\n"),
+                                syscallsWithPtrace(&ptraceAllowed));
+    const ProcessDumpResult dump = checked.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_TRUE(dump.has_value()) << dump.error();
+    EXPECT_EQ(std::filesystem::status(dump->file).permissions() & std::filesystem::perms::all,
+              std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+
+    // A link put where gdb's file was, to a file with the core in it: refused, and the link's target left alone.
+    const std::filesystem::path elsewhere = work.path / "elsewhere";
+    std::ofstream(elsewhere) << "CORE";
+    LinuxProcessActions swapped(fakeDumpTools(work.path, std::format("rm -f \"$2.$3\" && ln -s '{}' \"$2.$3\"\n", elsewhere.string())),
+                                syscallsWithPtrace(&ptraceAllowed));
+    const ProcessDumpResult refused = swapped.createDump(ownTarget(), dumps.path, stop.get_token());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(refused.error().contains("isn't the file TaskSmack made")) << refused.error();
+    EXPECT_TRUE(std::filesystem::exists(elsewhere));
+}
+
 TEST(LinuxProcessActionsDumpTest, ADumpSaysWhenItsFileCantBeCreatedOrNamed)
 {
     const TestSupport::ScopedTempDir work("tasksmack_dump_name_tools");
