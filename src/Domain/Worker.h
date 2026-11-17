@@ -415,6 +415,14 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
         return m_FailureUnrecorded ? std::string(FAILURE_UNRECORDED) : m_Failure;
     }
 
+    /// Whether the worker's thread has returned from its run (a closed or failed worker's ends by itself), so
+    /// destroying the worker joins at once. False for a worker whose thread is still ending, or never started. An
+    /// owner on the UI thread waits for this before destroying a closed worker instead of joining (#4149).
+    [[nodiscard]] bool threadExited() const noexcept
+    {
+        return m_ThreadExited.load(std::memory_order_acquire);
+    }
+
     /// The jobs queued, not counting the one in flight.
     [[nodiscard]] std::size_t queued() const noexcept
     {
@@ -548,6 +556,7 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
         {
             failRun(FAILURE_UNKNOWN);
         }
+        m_ThreadExited.store(true, std::memory_order_release); // the thread's last act: a join after this is immediate
     }
 
     /// Ends the thread's run for @p reason: Failed, the queue dropped, and anyone waiting woken.
@@ -670,6 +679,7 @@ template<typename Job, typename Snapshot, typename StopState = std::stop_source>
     bool m_FailureUnrecorded = false;
     // Written under m_Mutex, read without it
     std::atomic<WorkerState> m_State{WorkerState::Running};
+    std::atomic<bool> m_ThreadExited{false}; // set by the thread as run() returns; threadExited()
 
     // The worker thread's. Made with the worker, so a job constructs neither before its body (#3472).
     std::list<QueuedJob> m_Current; // the job in flight's node, spliced off m_Queue under m_Mutex

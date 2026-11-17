@@ -151,6 +151,12 @@ class FindHandlesDialog
     /// returned and nothing is queued (#3893), made again by the next one. For tests.
     [[nodiscard]] bool workerRunning() const noexcept;
 
+    /// How many closed workers wait to be destroyed once their threads have ended (#4149). For tests.
+    [[nodiscard]] std::size_t retiredWorkers() const noexcept;
+
+    /// How many workers have been set aside this way, for good. For tests.
+    [[nodiscard]] std::size_t workersRetired() const noexcept;
+
   private:
     /// One search: what the worker runs.
     struct SearchJob
@@ -168,8 +174,12 @@ class FindHandlesDialog
     /// one lock, so reading in this order never misses one between the two.
     [[nodiscard]] bool jobActive() const noexcept;
     /// Ends the worker's thread once its job has returned with nothing queued, so none sits parked between searches
-    /// (#3893). The UI thread's: close() doesn't wait, and the worker is joined when the next search replaces it.
+    /// (#3893). The UI thread's: close() doesn't wait. The closed worker stays in m_Worker, so its results stay
+    /// readable, until the next search sets it aside in m_Retired; reapRetiredWorkers() ends it from there.
     void retireIdleWorker() noexcept;
+    /// Destroys each retired worker whose thread has returned, so the join in its destructor waits on nothing: the
+    /// UI thread never blocks on a worker's thread (#2731, #4149).
+    void reapRetiredWorkers() noexcept;
     /// Ends the search just begun as one that couldn't start, so the status line says so.
     void failToStart() noexcept;
     /// Starts a search of @p processes on the worker, reading @p sources of each (empty: both); @p start carries the query and
@@ -205,6 +215,11 @@ class FindHandlesDialog
     /// Last: stopped and joined first, before the readers its job uses go. Made with the first search, and again
     /// after one that failed (a failed worker takes no more work).
     std::unique_ptr<SearchWorker> m_Worker;
+    /// Closed workers a later search replaced, kept until their threads have returned (reapRetiredWorkers()), so
+    /// no worker is destroyed, and joined, while its thread is still ending. ~FindHandlesDialog() ends them with
+    /// m_Worker, before the readers go.
+    std::vector<std::unique_ptr<SearchWorker>> m_Retired;
+    std::size_t m_WorkersRetired = 0;
 };
 
 } // namespace App
