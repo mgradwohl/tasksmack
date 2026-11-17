@@ -101,25 +101,21 @@ lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& d
 
 /// What the confirm says while it has no folder, in a session with no default one (noDefaultDumpFolder()).
 inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
-    "Choose a folder with Save dump to...: as administrator, TaskSmack doesn't save dumps in your temp folder, where "
-    "programs running as you could read them.";
+    "Choose a folder with Save dump to...: as administrator, TaskSmack has no default folder, because your temp folder "
+    "can be redirected and read by programs running as you. Choose one only administrators can open.";
 
 /// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
 /// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one. Empty when there is
 /// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
 [[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
-/// defaultDumpDirectory(bool) with this session's noDefaultDumpFolder().
-[[nodiscard]] std::filesystem::path defaultDumpDirectory();
 
 /// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
 /// folder, else defaultDumpDirectory(@p noDefault). Asks the file system: on the confirm's worker, never the UI thread.
 [[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault);
-/// dumpDirectory(std::string_view, bool) with this session's noDefaultDumpFolder().
-[[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered);
 /// The dump folder to use from @p stored (UserSettings::dumpFolder): in a session whose config folder an elevated
 /// restart was handed (@p handedOver, #2728) only @p chosenThisSession, the one this session's user picked with
 /// Save dump to..., as the stored one is the less-privileged side's and an elevated dump there is a write to a
-/// place it chose. Empty: defaultDumpDirectory().
+/// place it chose. Empty: defaultDumpDirectory(noDefaultDumpFolder()).
 [[nodiscard]] std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::string_view chosenThisSession);
 /// The folder the user last chose (UserSettings::dumpFolder, UTF-8), from the user's config (trustedDumpFolder()): read on
 /// the UI thread, checked by dumpDirectory() on the confirm's worker (#3155).
@@ -219,9 +215,10 @@ class ProcessDumpView
         m_FolderDialog = std::move(dialog);
     }
 
-    /// Whether this view has no default folder (#4141): DumpDetail::noDefaultDumpFolder() for the default view,
-    /// false for the tests' unless they set it here. Then a confirm with no folder can't be confirmed until one is
-    /// chosen with "Save dump to..." (needsFolder()).
+    /// Whether this view has no default folder (#4141). The default constructor reads the session's
+    /// (DumpDetail::noDefaultDumpFolder(), true when elevated on Windows), so a panel's view does too; the
+    /// FolderChosenHandler one starts false. Tests set it here to pin either case. Then a confirm with no folder
+    /// can't be confirmed until one is chosen with "Save dump to..." (needsFolder()).
     void setNoDefaultFolder(bool noDefault) noexcept
     {
         m_NoDefaultFolder = noDefault;
@@ -258,7 +255,7 @@ class ProcessDumpView
 
     /// request() into the folder the user last chose, @p remembered (UserSettings::dumpFolder, UTF-8;
     /// empty: none): the worker checks that it still exists, and uses the default folder where it
-    /// doesn't (DumpDetail::dumpDirectory()), before reading its drive's space. The Actions card's
+    /// doesn't (DumpDetail::dumpDirectory(), none where needsFolder()), before reading its drive's space. The Actions card's
     /// button and the row menu's item.
     void requestInRememberedFolder(const Platform::ProcessTarget& target,
                                    std::string processName,

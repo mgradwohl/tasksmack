@@ -212,6 +212,12 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
         ProcessPriorityView priorityView;
         std::string name = "victim";
 
+        Harness()
+        {
+            // The view's default reads this session's elevation (#4141): pinned, so an elevated run uses %TEMP% too.
+            actionsView.dumpView().setNoDefaultFolder(false);
+        }
+
         [[nodiscard]] ProcessActionsBlock::Context context(const Platform::ProcessActionCapabilities& capabilities)
         {
             return ProcessActionsBlock::Context{
@@ -1729,7 +1735,7 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     (void) runFrame(body);
     EXPECT_EQ(h.mock.createDumpCount(), 1);
     EXPECT_EQ(h.mock.lastTarget(), TARGET);
-    EXPECT_EQ(h.mock.lastDumpDirectory(), DumpDetail::defaultDumpDirectory());
+    EXPECT_EQ(h.mock.lastDumpDirectory(), DumpDetail::defaultDumpDirectory(false));
     EXPECT_TRUE(text.contains("Wrote a dump file of victim (PID 1001)")) << text;
     EXPECT_TRUE(text.contains(file.string())) << text;
     EXPECT_TRUE(text.contains("Written from a snapshot")) << text;      // #2001
@@ -1941,7 +1947,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheDumpConfirmWarnsOfLowSpaceAndOffersAFol
     static_cast<void>(h.actionsView.dumpView().takeFolderChoice(&h.mock, true));
     (void) runFrame(body);
     EXPECT_EQ(h.mock.chooseFolderCount(), 1);
-    EXPECT_EQ(h.mock.lastFolderInitial(), DumpDetail::defaultDumpDirectory());
+    EXPECT_EQ(h.mock.lastFolderInitial(), DumpDetail::defaultDumpDirectory(false));
     EXPECT_TRUE(h.actionsView.dumpView().confirmPending()); // cancelled: the confirm is still up, as it was
     EXPECT_EQ(h.mock.createDumpCount(), 0);
 

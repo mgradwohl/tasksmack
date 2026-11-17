@@ -87,11 +87,6 @@ std::filesystem::path defaultDumpDirectory(bool noDefault)
     return error ? std::filesystem::path{} : directory;
 }
 
-std::filesystem::path defaultDumpDirectory()
-{
-    return defaultDumpDirectory(noDefaultDumpFolder());
-}
-
 std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault)
 {
     if (!remembered.empty())
@@ -104,11 +99,6 @@ std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault)
         }
     }
     return defaultDumpDirectory(noDefault);
-}
-
-std::filesystem::path dumpDirectory(std::string_view remembered)
-{
-    return dumpDirectory(remembered, noDefaultDumpFolder());
 }
 
 namespace
@@ -135,9 +125,10 @@ std::string rememberedDumpFolder()
         static bool logged = false; // once a session, not at every dump
         if (!std::exchange(logged, true))
         {
-            spdlog::info("Not writing dumps to {}: it came from a handed-over settings folder (#2728); using this account's "
-                         "default unless Save dump to... chooses another",
-                         stored);
+            spdlog::info("Not writing dumps to {}: it came from a handed-over settings folder (#2728); {}",
+                         stored,
+                         noDefaultDumpFolder() ? "no folder until Save dump to... chooses one (#4141)"
+                                               : "using this account's default unless Save dump to... chooses another");
         }
     }
     return trustedDumpFolder(stored, handedOver, folderChosenThisSession());

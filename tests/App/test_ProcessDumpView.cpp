@@ -88,9 +88,6 @@ TEST(ProcessDumpViewTest, TheDefaultFolderIsTheTempFolder)
 {
     EXPECT_EQ(DumpDetail::defaultDumpDirectory(false), std::filesystem::temp_directory_path());
     EXPECT_EQ(DumpDetail::dumpDirectory("", false), std::filesystem::temp_directory_path());
-    // This session's: the temp folder unless it has no default (elevated on Windows, #4141).
-    EXPECT_EQ(DumpDetail::defaultDumpDirectory(),
-              DumpDetail::noDefaultDumpFolder() ? std::filesystem::path{} : std::filesystem::temp_directory_path());
 }
 
 // #4141: elevated, %TEMP% is the less-privileged side's (redirectable, and readable unelevated): no default folder.
@@ -1004,10 +1001,10 @@ TEST(ProcessDumpViewTest, EachTempFolderIsItsOwn)
 TEST(ProcessDumpViewTest, TheRememberedFolderIsUsedWhileItExists)
 {
     const TempFolder folder;
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path())), folder.path());
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path()), false), folder.path());
     // Never chosen, or gone since: the temp folder, as before.
-    EXPECT_EQ(DumpDetail::dumpDirectory(""), DumpDetail::defaultDumpDirectory());
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path() / "gone")), DumpDetail::defaultDumpDirectory());
+    EXPECT_EQ(DumpDetail::dumpDirectory("", false), DumpDetail::defaultDumpDirectory(false));
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path() / "gone"), false), DumpDetail::defaultDumpDirectory(false));
 }
 
 // #1891: the default view remembers a chosen folder in the user's config, saving it once; choosing the
