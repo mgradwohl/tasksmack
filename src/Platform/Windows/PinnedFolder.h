@@ -10,7 +10,8 @@
 //   - refuses a file with more than one hard link;
 //   - checks that the opened file's final path is inside the held folder, where it was asked for.
 // A replaced file (config.toml) is written to a new file beside it, then renamed over it through FileRenameInfo with
-// the held folder as RootDirectory. The NT and Win32 calls are function pointers, so the tests drive each answer.
+// the held folder as RootDirectory. The NT and Win32 calls are function pointers, so the tests drive each answer. The
+// handle-relative opens and the rename are HandleRelativeFile.h's, shared with App::DebugLogFile (#4143).
 
 #ifdef _WIN32
 // clang-format off
@@ -25,6 +26,7 @@
 // clang-format on
 
 #include "Platform/IHandedOverFolder.h"
+#include "Platform/Windows/HandleRelativeFile.h" // openRelative(), renameRelative(), finalPathOf()
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <cstdint>
@@ -43,39 +45,16 @@ namespace Platform::Windows
 /// The calls PinnedFolder makes: the system's, or a test's fakes.
 struct PinnedFolderFunctions
 {
-    using NtCreateFileFn = NTSTATUS(NTAPI*)(
-        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
+    using NtCreateFileFn = Platform::Windows::NtCreateFileFn;
+    using NtSetInformationFileFn = Platform::Windows::NtSetInformationFileFn; ///< Its class as the ULONG the enum is passed as
     using FileInformationFn = BOOL(WINAPI*)(HANDLE, LPBY_HANDLE_FILE_INFORMATION);
-    using FinalPathFn = DWORD(WINAPI*)(HANDLE, LPWSTR, DWORD, DWORD);
-
-    /// ntdll's NtCreateFile, found when first called.
-    static NTSTATUS NTAPI systemNtCreateFile(PHANDLE handle,
-                                             ACCESS_MASK access,
-                                             POBJECT_ATTRIBUTES attributes,
-                                             PIO_STATUS_BLOCK status,
-                                             PLARGE_INTEGER allocationSize,
-                                             ULONG fileAttributes,
-                                             ULONG share,
-                                             ULONG disposition,
-                                             ULONG options,
-                                             PVOID eaBuffer,
-                                             ULONG eaLength);
-
-    using NtSetInformationFileFn =
-        NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG); ///< Its class as the ULONG the enum is passed as
-
-    /// ntdll's NtSetInformationFile, found when first called: the rename, whose RootDirectory kernel32 won't pass.
-    static NTSTATUS NTAPI systemNtSetInformationFile(HANDLE file, PIO_STATUS_BLOCK status, PVOID information, ULONG length, ULONG what);
+    using FinalPathFn = GetFinalPathFn;
 
     NtCreateFileFn ntCreateFile = &systemNtCreateFile;
-    NtSetInformationFileFn ntSetInformationFile = &systemNtSetInformationFile;
+    NtSetInformationFileFn ntSetInformationFile = &systemNtSetInformationFile; ///< The rename, whose RootDirectory kernel32 won't pass
     FileInformationFn getFileInformation = &::GetFileInformationByHandle;
     FinalPathFn getFinalPath = &::GetFinalPathNameByHandleW;
 };
-
-/// GetFinalPathNameByHandleW's path for @p handle as a plain drive path, without the \\?\ prefix; nullopt when it
-/// can't be read.
-[[nodiscard]] std::optional<std::wstring> finalPathOf(HANDLE handle, PinnedFolderFunctions::FinalPathFn getFinalPath);
 
 /// A handed-over config folder that passed ElevatedRestart::checkConfigDir(), held open by its handle for as long as
 /// this lives, and the one way into it.
