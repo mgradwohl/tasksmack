@@ -791,12 +791,13 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config, decided by Platform::ConfigDirectory::configDirectoryFor() (#1891): run as
     // root for a user (sudo, pkexec), that user's (#3580).
-    const UserConfigHelpers::ConfigDirectoryChoice choice =
-        Platform::ConfigDirectory::configDirectoryFor(readEnvVarString("XDG_CONFIG_HOME"),
-                                                      readEnvVarString("HOME"),
-                                                      passwdHomeDirectory,
-                                                      std::filesystem::current_path(),
-                                                      Platform::SessionUser::invokingUserHome());
+    const UserConfigHelpers::ConfigDirectoryChoice choice = Platform::ConfigDirectory::configDirectoryFor(
+        readEnvVarString("XDG_CONFIG_HOME"),
+        readEnvVarString("HOME"),
+        passwdHomeDirectory,
+        std::filesystem::current_path(),
+        Platform::SessionUser::invokingUserHome(),
+        ::geteuid() == 0 && Platform::SessionUser::thisProcessMayHaveAnotherUsersEnvironment());
     if (!choice.warning.empty())
     {
         spdlog::warn("{}", choice.warning);

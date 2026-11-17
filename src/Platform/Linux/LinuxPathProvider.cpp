@@ -79,8 +79,12 @@ std::filesystem::path LinuxPathProvider::getUserConfigDir() const
         cwd.clear();
     }
     // Run as root for a user (sudo, pkexec), that user's directory, as UserConfig's (#3580).
-    return ConfigDirectory::configDirectoryFor(
-               readEnv("XDG_CONFIG_HOME"), readEnv("HOME"), passwdHome, cwd, SessionUser::invokingUserHome())
+    return ConfigDirectory::configDirectoryFor(readEnv("XDG_CONFIG_HOME"),
+                                               readEnv("HOME"),
+                                               passwdHome,
+                                               cwd,
+                                               SessionUser::invokingUserHome(),
+                                               ::geteuid() == 0 && SessionUser::thisProcessMayHaveAnotherUsersEnvironment())
         .directory;
 }
 

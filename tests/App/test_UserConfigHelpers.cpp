@@ -176,6 +176,20 @@ TEST(UserConfigHelpersTest, RootRunForAUserUsesThatUsersConfigWhenHomeIsRoots)
         << "inside, once normalized, with a trailing separator on the home";
     // A home of "/" vouches for nothing: every absolute path is lexically inside it.
     EXPECT_EQ(configDirectoryFor("/etc", "/", noPasswdLookup, "/cwd", "/").directory, std::filesystem::path("/.config/tasksmack"));
+    // #4172: root with an environment that may be a user's, but no SUDO_UID to say whose (su, doas keepenv): root's own
+    // folder from its passwd entry, and neither the user's XDG_CONFIG_HOME nor HOME.
+    const auto rootsPasswd = []
+    {
+        return std::optional<std::filesystem::path>("/root");
+    };
+    const auto suChoice = configDirectoryFor("/etc", "/home/u", rootsPasswd, "/cwd", std::nullopt, true);
+    EXPECT_EQ(suChoice.directory, std::filesystem::path("/root/.config/tasksmack"));
+    EXPECT_TRUE(suChoice.warning.contains("Ignoring XDG_CONFIG_HOME and HOME")) << suChoice.warning;
+    EXPECT_EQ(configDirectoryFor(std::nullopt, std::nullopt, rootsPasswd, "/cwd", std::nullopt, true).warning, "")
+        << "nothing set, nothing to say";
+    // A known invoking user still wins (sudo): their home's, as before.
+    EXPECT_EQ(configDirectoryFor("/etc", "/root", rootsPasswd, "/cwd", "/home/u", true).directory,
+              std::filesystem::path("/home/u/.config/tasksmack"));
     // Not run for another user: unchanged, XDG_CONFIG_HOME anywhere.
     EXPECT_EQ(configDirectoryFor("/etc", "/home/u", noPasswdLookup, "/cwd", std::nullopt).directory,
               std::filesystem::path("/etc/tasksmack"));
