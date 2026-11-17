@@ -32,9 +32,21 @@ inline constexpr const char* LABEL = ICON_FA_LOCK "  Restart as administrator...
 static_assert(std::string_view(LABEL).ends_with(AuthorizeWording::WINDOWS_WORDING.switchSession),
               "the per-item button says what the chip's notice says");
 
-/// Its tooltip: why there is no Retry as administrator here, and what the button does.
-inline constexpr const char* TOOLTIP = "This copy of TaskSmack has no helper to do it as an administrator (a portable copy, or one "
-                                       "you can change). Restarts TaskSmack as administrator: Windows asks for approval (UAC)";
+// NOLINTBEGIN(cppcoreguidelines-macro-usage) - a string literal the two tooltips are joined from
+#define TASKSMACK_RESTART_TOOLTIP_INTRO                                                                                                    \
+    "This copy of TaskSmack has no helper to do it as an administrator (a portable copy, or one you can change). Restarts "                \
+    "TaskSmack as administrator: "
+// NOLINTEND(cppcoreguidelines-macro-usage)
+
+/// Its tooltip: why there is no Retry as administrator here, and what the button does, then the prompt line: approval
+/// (UAC), or for a standard user an administrator's name and password (#4108).
+inline constexpr const char* TOOLTIP = TASKSMACK_RESTART_TOOLTIP_INTRO "Windows asks for approval (UAC)";
+inline constexpr const char* CREDENTIALS_TOOLTIP =
+    TASKSMACK_RESTART_TOOLTIP_INTRO "Windows asks for an administrator's name and password (UAC)";
+static_assert(std::string_view(TOOLTIP).ends_with(AuthorizeWording::WINDOWS_WORDING.promptTooltip) &&
+                  std::string_view(CREDENTIALS_TOOLTIP).ends_with(AuthorizeWording::WINDOWS_WORDING.credentialsPromptTooltip),
+              "the per-item button says what the notice's Restart button says");
+#undef TASKSMACK_RESTART_TOOLTIP_INTRO
 
 /// What a press is handed: Core::OpenElevationNoticeEvent, for the application to raise.
 using RaiseEvent = std::function<void(Core::Event&)>;
@@ -47,6 +59,13 @@ namespace Detail
     static RaiseEvent raise;
     return raise;
 }
+
+/// Whether the prompt asks for an administrator's name and password: set by setCredentials().
+[[nodiscard]] inline bool& credentialsPrompt()
+{
+    static bool credentials = false;
+    return credentials;
+}
 } // namespace Detail
 
 /// Offers the button from now on; a press raises Core::OpenElevationNoticeEvent through @p raise. main.cpp
@@ -55,6 +74,26 @@ namespace Detail
 inline void setOffered(RaiseEvent raise)
 {
     Detail::offer() = std::move(raise);
+}
+
+/// Says what the restart's prompt will ask for (#4108): an administrator's name and password for a standard user,
+/// else approval. ElevationNoticeLayer sets it once, from the restart's prompt() it reads for the notice's own
+/// note; the tooltip only reads it, so nothing is asked of Windows while drawing.
+inline void setCredentials(bool credentials) noexcept
+{
+    Detail::credentialsPrompt() = credentials;
+}
+
+/// The tooltip for a prompt that asks for credentials (@p credentials), else for approval.
+[[nodiscard]] constexpr const char* tooltipFor(bool credentials) noexcept
+{
+    return credentials ? CREDENTIALS_TOOLTIP : TOOLTIP;
+}
+
+/// The tooltip for the prompt setCredentials() was told of.
+[[nodiscard]] inline const char* tooltip() noexcept
+{
+    return tooltipFor(Detail::credentialsPrompt());
 }
 
 /// Whether a refused item offers the button: this TaskSmack can restart elevated and has no helper.
@@ -85,7 +124,7 @@ inline void requestRestart()
 inline bool drawButton()
 {
     const bool pressed = ImGui::SmallButton(LABEL);
-    ImGui::SetItemTooltip("%s", TOOLTIP);
+    ImGui::SetItemTooltip("%s", tooltip());
     if (pressed)
     {
         requestRestart();

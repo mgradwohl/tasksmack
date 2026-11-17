@@ -1062,6 +1062,19 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         }
     }
 #endif
+#ifdef _WIN32
+    // The less-privileged side's folder is only ever written through the folder held (writeIntoHandedOver() above), so a
+    // Windows session that reaches this by-path save with handedOver set has no held folder: fail closed rather than
+    // write by a path a junction could redirect (#4106). An elevated session with no hand-off gets here only when its own
+    // folder was refused, and already saves nothing; this is the belt-and-braces guard, and it can't be reached in the
+    // shipped app.
+    if (handedOver && held == nullptr)
+    {
+        spdlog::error("Not saving settings: {} is the less-privileged side's and isn't held open; writing nothing there",
+                      Core::pathToUtf8(configDir));
+        return false;
+    }
+#endif
     if (!std::filesystem::exists(configDir, ec))
     {
 #ifndef _WIN32

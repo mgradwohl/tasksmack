@@ -16,6 +16,9 @@
 #include "UI/FontPointSize.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
+#ifdef _WIN32
+#include "Support/Junction.h"
+#endif
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
@@ -2664,6 +2667,55 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+#ifdef _WIN32
+/// Restores Core::ConfigDirOverride to @p previous when it dies, so a failed assertion in a test that marked a
+/// less-privileged folder doesn't leak that state to the next test.
+class RestoreConfigOverride
+{
+  public:
+    explicit RestoreConfigOverride(std::optional<std::filesystem::path> previous) : m_Previous(std::move(previous))
+    {}
+    ~RestoreConfigOverride()
+    {
+        Core::ConfigDirOverride::setActiveForTesting(m_Previous);
+    }
+    RestoreConfigOverride(const RestoreConfigOverride&) = delete;
+    RestoreConfigOverride& operator=(const RestoreConfigOverride&) = delete;
+    RestoreConfigOverride(RestoreConfigOverride&&) = delete;
+    RestoreConfigOverride& operator=(RestoreConfigOverride&&) = delete;
+
+  private:
+    std::optional<std::filesystem::path> m_Previous;
+};
+
+// #4106: on Windows the less-privileged side's folder is written only through the folder held. A session that marked
+// one but holds nothing (a refused own folder) saves nothing: writeSettings() fails closed, so no config.toml is written
+// and no folder is made, here not even behind a junction planted on the way.
+TEST_F(UserConfigSaveLoadFixture, ALessPrivilegedFolderWithNothingHeldSavesNothing)
+{
+    const auto target = m_TempDir / "elsewhere";
+    std::filesystem::create_directories(target / "cfg");
+    const auto link = m_TempDir / "linked";
+    std::filesystem::create_directory(link);
+    const auto made = TestSupport::makeJunction(link, target);
+    ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
+
+    const RestoreConfigOverride restore(Core::ConfigDirOverride::active());
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    const auto through = link / "cfg" / "config.toml";
+    config.resetConfigPathForTesting(through);
+    config.load();
+    config.settings().themeId = "mocha";
+    EXPECT_FALSE(config.writeIfMissing(config.settings())) << "the save is refused: nothing is held";
+    config.save();
+    config.resetConfigPathForTesting(m_ConfigPath);
+    EXPECT_TRUE(TestSupport::removeJunction(link));
+
+    EXPECT_FALSE(std::filesystem::exists(target / "cfg" / "config.toml")) << "not written behind the junction";
+    EXPECT_FALSE(std::filesystem::exists(link / "cfg" / "config.toml")) << "not written at all";
+}
+#endif
 // #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as
 // the staging file is named) can't leave the write going on with nothing held.
 TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWrite)

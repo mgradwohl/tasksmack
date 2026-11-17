@@ -44,6 +44,7 @@
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
 #include "Platform/Linux/RootCapabilities.h"
+#include "Platform/Linux/SdlEnvironment.h"
 #include "Platform/Linux/SessionUser.h"
 
 #include <system_error>
@@ -63,7 +64,8 @@
 // spdlog's msvc_sink.h is itself guarded on _WIN32; the other sinks are portable.
 #include <spdlog/sinks/msvc_sink.h>
 
-#include <cstdint> // std::uint32_t, the Standard TaskSmack's PID in the hand-off (#3781)
+#include <cstdint>      // std::uint32_t, the Standard TaskSmack's PID in the hand-off (#3781)
+#include <system_error> // the own config folder's fallback (#4106)
 #endif
 
 #include <algorithm>
@@ -235,6 +237,35 @@ auto runApp(const App::LaunchOptions& launch) -> int
             }
         }
     }
+    // Elevated or handed off with no folder handed over (a refused hand-off, or Run as administrator; #4106): this
+    // account's own folder, %APPDATA%\TaskSmack, is the less-privileged side's as much as a handed-over one, since its
+    // known folder and anything on its path are the user's to change. So it is held as one (checkOwnConfigDir()), and
+    // adopted as one: UserConfig, the instance lock, the themes and Open Themes Folder go only through the folder held,
+    // and its dump folder and recent commands aren't offered. Refused, it is adopted with nothing held, which fails
+    // closed: this run starts from the defaults and saves nothing. The same rule as the DLL search order and SDL's
+    // variables (#3897, #4103); a session whose environment is its own (no UAC split token) is unchanged.
+    std::string ownDirRefused;
+    bool ownDirHeld = false;
+    // LCOV_EXCL_START - TaskSmack.exe only, elevated (#2039); checkOwnConfigDir() has the tests
+    if (handedOverFolder == nullptr && Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess())
+    {
+        auto own = Platform::holdOwnElevatedConfigFolder();
+        // A known folder that can't be read still fails closed: adopted, with nothing held, at the working directory.
+        std::error_code cwdError;
+        const std::filesystem::path ownDir = own.path.empty() ? std::filesystem::current_path(cwdError) : own.path;
+        if (own.held.has_value() && *own.held != nullptr)
+        {
+            handedOverFolder = std::move(*own.held);
+            Core::ConfigDirOverride::adoptHandedOver(ownDir, handedOverFolder);
+            ownDirHeld = true;
+        }
+        else
+        {
+            ownDirRefused = own.held.has_value() ? std::string("it can't be held") : own.held.error();
+            Core::ConfigDirOverride::adoptHandedOver(ownDir);
+        }
+    }
+    // LCOV_EXCL_STOP
 #else
     constexpr bool handoffSession = false;
     constexpr std::chrono::milliseconds handoffWaited{0};
@@ -280,11 +311,23 @@ auto runApp(const App::LaunchOptions& launch) -> int
     }
 #ifdef _WIN32
     const auto lockStarted = std::chrono::steady_clock::now();
-    // A handed-over folder's lock is opened only through the folder held (#3774), never by its path.
-    const std::unique_ptr<App::InstanceLock> instanceLock =
-        handedOverFolder != nullptr
-            ? App::acquireInstanceLock(*handedOverFolder, instanceLockPath.filename(), lockPatience, App::LOCK_RETRY_EVERY, lockProgress)
-            : App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
+    // A handed-over folder's lock is opened only through the folder held (#3774), never by its path. A refused own folder
+    // (#4106) gets none: nothing is opened or made there.
+    std::unique_ptr<App::InstanceLock> instanceLock;
+    if (handedOverFolder != nullptr)
+    {
+        instanceLock =
+            App::acquireInstanceLock(*handedOverFolder, instanceLockPath.filename(), lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
+    }
+    else if (!ownDirRefused.empty())
+    {
+        instanceLock =
+            std::make_unique<App::InstanceLock>(App::InstanceLock::NotTaken{.why = "this account's settings folder was refused"});
+    }
+    else
+    {
+        instanceLock = App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
+    }
 #else
     const std::unique_ptr<App::InstanceLock> instanceLock =
         App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
@@ -382,11 +425,39 @@ auto runApp(const App::LaunchOptions& launch) -> int
         {
             spdlog::info("Config directory (test hook {}): {}", Core::ConfigDirOverride::ENV_VAR, Core::pathToUtf8(*configDir));
         }
+#ifdef _WIN32
+        else if (ownDirHeld)
+        {
+            spdlog::info("Config directory (this account's own, checked and held as a handed-over one is, #4106): {}",
+                         Core::pathToUtf8(*configDir));
+        }
+        else if (!ownDirRefused.empty())
+        {
+            spdlog::warn("Not using this account's settings folder {} ({}): TaskSmack runs as administrator, and writes there only "
+                         "through a folder it has checked and holds. This run starts from the default settings and saves none",
+                         Core::pathToUtf8(*configDir),
+                         ownDirRefused);
+        }
+#endif
         else
         {
             spdlog::info("Config directory (the launching user's, handed over): {}", Core::pathToUtf8(*configDir));
         }
     }
+#ifdef __linux__
+    // Removed in main(), before any SDL call (#4111). Names only: a value may be a path the user would rather not log.
+    if (const auto& sdlRemoved = Platform::SdlEnvironment::removedFromThisProcess(); !sdlRemoved.empty())
+    {
+        std::string names;
+        for (const std::string& name : sdlRemoved)
+        {
+            names += names.empty() ? name : ", " + name;
+        }
+        spdlog::warn("Ignoring the SDL environment variables {}: TaskSmack runs as root for a user, and takes no SDL "
+                     "setting from the environment they started it with",
+                     names);
+    }
+#endif
     if (Core::ConfigDirOverride::testHookIgnored())
     {
         spdlog::warn("{} is set but ignored: TaskSmack runs as administrator, and takes no folder from an environment the "
@@ -800,6 +871,12 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start
 auto main(int argc, char** argv) -> int
 {
+#ifdef __linux__
+    // First, before any SDL call (#4111): run as root for a user (sudo -E, an env_keep list), the environment is the
+    // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
+    // SDL variable goes. The rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
+    Platform::SdlEnvironment::removeForThisProcess(Platform::SessionUser::invokingUserHome().has_value());
+#endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
     return runAppGuarded(App::parseLaunchOptions(arguments));

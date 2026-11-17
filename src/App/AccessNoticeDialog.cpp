@@ -174,7 +174,8 @@ Action render(State& state)
             const UI::Widgets::DialogFooterButton restart{
                 .label = RESTART_LABEL,
                 .fills = nullptr,
-                .tooltip = state.restart == Restart::Unavailable ? RESTART_UNAVAILABLE : AuthorizeWording::WINDOWS_WORDING.promptTooltip,
+                .tooltip =
+                    state.restart == Restart::Unavailable ? RESTART_UNAVAILABLE : AuthorizeWording::promptTooltipFor(state.credentials),
                 .disabled = state.restart != Restart::Ready,
             };
             pressed = UI::Widgets::dialogFooter(

@@ -44,7 +44,7 @@ If either check fails, don't use the file. See the user guide's [Verifying a Rel
 
 ## "Process I/O, FDs or network show N/A" on Linux
 
-**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values are shown as N/A (not 0), and the system FD and network totals leave them out.
+**Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values show as a dimmed **—** in the Processes table and N/A in Process Details (not 0), and the system FD and network totals leave them out.
 
 **Fix (option 1 — start TaskSmack as administrator):** choose **TaskSmack (Administrator)** in your applications menu (the `.deb` and `.rpm` install it), which starts TaskSmack as root through `pkexec` after one administrator's password, or run it with `sudo` (from the extracted `.tar.gz`, `sudo ./bin/TaskSmack`):
 
@@ -216,7 +216,7 @@ The Total counts hardware interfaces only. On Linux these are network cards, Wi-
 
 ## Why are per-process network rates missing?
 
-Per-process network rates read N/A when the platform cannot attribute traffic.
+Per-process network rates read **—** in the table (N/A in Process Details) when the platform cannot attribute traffic.
 
 - **Linux:** requires Linux 4.2 or later with Netlink `INET_DIAG` support. A process in another network namespace than TaskSmack's (inside a container, say) reads N/A, since TaskSmack sees only its own namespace's sockets.
 - **Windows:** TCP EStats collection requires administrator privileges.

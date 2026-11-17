@@ -74,6 +74,16 @@ TEST(InstanceLockExitCodeTest, AlreadyRunningExitCodeIsDistinct)
     EXPECT_EQ(ALREADY_RUNNING_EXIT_CODE, 75);
 }
 
+// #4106: an elevated session whose own config folder was refused takes no lock there: nothing is opened or made, and
+// TaskSmack starts anyway, as with any lock that can't be taken.
+TEST(InstanceLockNotTakenTest, ALockNotTakenIsUnavailableAndSaysWhy)
+{
+    const InstanceLock lock(InstanceLock::NotTaken{.why = "this account's settings folder was refused"});
+    EXPECT_EQ(lock.status(), InstanceLock::Status::Unavailable);
+    EXPECT_EQ(lock.error(), "this account's settings folder was refused");
+    EXPECT_EQ(exitCodeForLockStatus(lock.status()), std::nullopt) << "TaskSmack still starts";
+}
+
 TEST_F(InstanceLockTest, FirstInstanceAcquiresTheLock)
 {
     const InstanceLock lock(m_Dir / "tasksmack.lock");

@@ -49,6 +49,9 @@ constexpr const char* COMMAND_HINT = "notepad, or cmd /k ver";
 constexpr const char* COMMAND_NOTE = "Windows opens it as the Run box does, so a document, a folder or a web address works too. Quote a "
                                      "program whose path has spaces in it.";
 constexpr const char* ADMINISTRATOR_TOOLTIP = "Windows asks for your consent first (User Account Control).";
+/// A standard user: the runas prompt asks for another account's credentials, and the program runs as that account (#4108).
+constexpr const char* ADMINISTRATOR_TOOLTIP_CREDENTIALS = "Windows asks for an administrator's name and password (User Account "
+                                                          "Control), and the program runs as that administrator.";
 #else
 constexpr const char* COMMAND_HINT = "konsole, or /usr/bin/foot --title Rescue";
 constexpr const char* COMMAND_NOTE = "No shell runs it, so $VARIABLES, ~ and wildcards stay as typed. Quote a word with spaces in it.";
@@ -124,20 +127,22 @@ RunTaskDialog::RunTaskDialog() : RunTaskDialog(&sdlBrowse)
 RunTaskDialog::RunTaskDialog(Browse browse) : m_Browse(std::move(browse))
 {}
 
-const char* RunTaskDialog::administratorTooltip([[maybe_unused]] bool alreadyAdministrator) noexcept
+const char* RunTaskDialog::administratorTooltip([[maybe_unused]] bool alreadyAdministrator, [[maybe_unused]] bool asksCredentials) noexcept
 {
 #ifdef _WIN32
-    return ADMINISTRATOR_TOOLTIP; // Windows offers the tick only when TaskSmack isn't elevated (#3427)
+    // Windows offers the tick only when TaskSmack isn't elevated (#3427)
+    return asksCredentials ? ADMINISTRATOR_TOOLTIP_CREDENTIALS : ADMINISTRATOR_TOOLTIP;
 #else
     return alreadyAdministrator ? ADMINISTRATOR_TOOLTIP_ELEVATED : ADMINISTRATOR_TOOLTIP;
 #endif
 }
 
-void RunTaskDialog::open(std::vector<std::string> recent, bool canRunAsAdministrator, bool alreadyAdministrator)
+void RunTaskDialog::open(std::vector<std::string> recent, bool canRunAsAdministrator, bool alreadyAdministrator, bool asksCredentials)
 {
     m_Recent = std::move(recent);
     m_CanRunAsAdministrator = canRunAsAdministrator;
     m_AlreadyAdministrator = alreadyAdministrator;
+    m_AsksCredentials = asksCredentials;
     if (!m_CanRunAsAdministrator)
     {
         m_AsAdministrator = false;
@@ -267,7 +272,7 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
     if (m_CanRunAsAdministrator)
     {
         UI::Widgets::outlinedCheckbox("Run as administrator", &m_AsAdministrator);
-        ImGui::SetItemTooltip("%s", administratorTooltip(m_AlreadyAdministrator));
+        ImGui::SetItemTooltip("%s", administratorTooltip(m_AlreadyAdministrator, m_AsksCredentials));
     }
 
     const bool typed = m_Command.find_first_not_of(" \t\n") != std::string::npos;
