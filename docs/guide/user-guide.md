@@ -372,7 +372,7 @@ The machine tab, the first tab, is named after the computer. Its sub-tabs (**Ove
   - **At startup:** on Linux, detecting an NVIDIA GPU doesn't wake it either: until it first wakes it is listed under the model name its driver reports (or "NVIDIA GPU"), and TaskSmack asks NVML about it only once it is awake. On Windows, on WSL, in a container that hides the PCI devices, or with an NVIDIA driver too old to look a GPU up by PCI address, startup detection can still wake it once. A GPU that is asleep when TaskSmack starts shows the sensor charts its driver supports in general until it first wakes, then only its own.
 - **NPU** — shown beside the GPU tab only when the machine has an NPU or another compute accelerator. Windows lists them through DXCore; Linux through the kernel's accel subsystem (`/sys/class/accel`). One section per device: its name and kind (**NPU** or **Compute accelerator**), its vendor, its driver version and which memory it counts, then a chart of its utilization and memory in use, with the same history window as every other chart. An NPU such as Intel AI Boost has no memory of its own, so its memory is the shared system memory it maps. It has no clock, temperature, power or fan sensors, so none are charted. Its use is never counted in the GPU tab, the GPU columns or the Overview's GPU figures.
   - **Linux:** Intel's NPU (driver `intel_vpu`, shown as "Intel NPU") has its utilization charted, sampled from the driver's `npu_busy_time_us` counter. That counter needs kernel 6.11 or later; on older kernels the chart stays empty. AMD's NPU (`amdxdna`, "AMD NPU") is listed with its name and vendor only, because its driver has no counter an ordinary user can read. Any other accel device is listed as "Accelerator (<driver>)". Intel's NPU also reports the memory it has in use (`npu_memory_utilization`); it is shown in bytes on the device's details line ("Memory: Shared, 12.0 MiB in use"). The driver gives no total to set it against, so no percent is made up and the device's memory chart stays empty. AMD's NPU reports neither. Per process, the memory each process holds on an NPU is read from the driver's DRM fdinfo (`drm-resident-memory`) for the processes holding `/dev/accel/accelN` open: TaskSmack looks for those processes every 5 seconds, by walking every process's open files, and reads only their fdinfo each sample. A process that opens the NPU appears within 5 seconds. Another user's processes are visible only with the privileges that read their open files.
-- **Battery** — charge, power flow, remaining time, and health when present
+- **Battery** — charge, the time left or the time to full, and health when present
 - **Load average** (Linux only) — 1, 5, and 15-minute load averages
 - **Pressure** (Linux only) — pressure stall information: the share of the last 10 seconds that tasks spent waiting for CPU, memory and I/O, in the Overview's CPU Details block, with the 60-second and 5-minute averages and the "full" figures (every running task waiting at once) on hover. Shown when the kernel has PSI enabled (`/proc/pressure`); it's left out on kernels built without it or booted with `psi=0`.
 - **I/O wait** (Linux only) — percentage of CPU time spent waiting for I/O
@@ -428,22 +428,22 @@ The kernel's socket statistics carry byte counts for TCP connections only. With 
 On systems with a battery, TaskSmack shows:
 
 - Charge percentage
-- Current power consumption in watts
-- Estimated time remaining (discharge) or time to full (charging)
-- Battery health percentage
+- Estimated time remaining (discharge) or time to full (charging), beside the charge above the chart
+- Battery health percentage, in the chart heading's tooltip
 - Battery details beneath the chart: design and full-charge capacity, wear (the share of the design capacity
   the battery can no longer hold), cycle count, chemistry, manufacturer and model. A value the battery doesn't
   report shows a muted "—"; hover it for the reason. The serial number is never shown.
 
-Power readings follow the convention: **positive watts = discharging/consuming**, negative watts = battery charging.
+The chart's **Power** line, on a machine whose CPU reports package energy, is the processes' power: an estimate that shares the CPU's power out by each process's CPU use, added up. It isn't the battery's own charge or discharge rate.
 
 Both platforms read the battery's live charge or discharge rate, its remaining charge in Wh and its voltage at
 the refresh interval you set: Linux from `/sys/class/power_supply`, Windows from the battery driver's status.
-The time to full while charging is worked out from the rate and the remaining charge on both. Windows takes the
-time left on battery from the system's own estimate.
+They aren't shown yet ([#4054](https://github.com/mgradwohl/tasksmack/issues/4054)). The time to full while
+charging is worked out from the rate and the remaining charge on both. Windows takes the time left on battery
+from the system's own estimate.
 
 With more than one battery (an internal and a removable pack, say), the figures describe them together: the
-charge is weighted by each pack's capacity, capacities and power are added up, and the cycle count is the
+charge is weighted by each pack's capacity, capacities and rates are added up, and the cycle count is the
 most-cycled pack's. Chemistry, manufacturer and model are the first pack's, and the voltage is the first pack's that reports one.
 
 ### GPU Monitoring
@@ -585,7 +585,7 @@ The Process Details **Overview** tab also has a collapsible **Threads** section,
 
 ### Security
 
-The Process Details **Overview** tab also has a collapsible **Security** section, closed by default, under the Modules section (and the Threads section). Open it to see what the selected process is allowed to do, as a two-column table. On **Linux**:
+The Process Details **Overview** tab also has a collapsible **Security** section, closed by default, under the Threads section and above Open files. Open it to see what the selected process is allowed to do, as a two-column table. On **Linux**:
 
 - **User** and **Group**: the effective ID with its name (`1000 (matt)`). When the real, saved or filesystem ID differs, as in a setuid program, it follows: `0 (root), real 1000 (matt), saved 1000 (matt)`.
 - **Supplementary groups**: the other groups the process belongs to, with their names, or "none".
@@ -595,7 +595,7 @@ The Process Details **Overview** tab also has a collapsible **Security** section
 - **Security label**: the SELinux context or AppArmor profile (`unconfined`, `/usr/bin/firefox (enforce)`); no row where there is no security module label.
 - **Control group**: the process's cgroup (`/user.slice/user-1000.slice/session-2.scope`), as systemd and containers place it.
 
-TaskSmack reads these from `/proc/[pid]/status`, `/proc/[pid]/attr/current` and `/proc/[pid]/cgroup`, only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds. They are readable for every user's processes. A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet".
+TaskSmack reads these from `/proc/[pid]/status`, `/proc/[pid]/attr/current` and `/proc/[pid]/cgroup`, only for the selected process and only while the section is open: once when you open it or select another process, then every 3 seconds. They are readable for every user's processes, except on a system that mounts `/proc` with `hidepid`: there another user's process shows "Not readable (permission denied)" until TaskSmack is started as administrator. A process that has exited shows "Process exited", and until TaskSmack has confirmed which process holds the PID (its start time), "Not available yet".
 
 On **Windows** the section shows the process's token:
 
