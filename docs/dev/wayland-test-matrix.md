@@ -10,7 +10,7 @@ This document defines the test matrix and acceptance criteria for the Wayland na
 ## Implementation Summary
 The implementation uses backend capability gating (`Core::VideoBackend`) to provide platform-specific behavior:
 1. **Native Wayland:** Compositor-managed maximize/restore, and a compositor-run title-bar drag and border resize (`SDL_HITTEST_DRAGGABLE`, #744)
-2. **X11/XWayland:** Maximize asks the window manager when it supports EWMH maximize (#1339), otherwise client-side maximize/restore; global-coordinate drag (existing behavior preserved)
+2. **X11/XWayland:** Maximize asks the window manager when it supports EWMH maximize (#1339), otherwise client-side maximize/restore; a client-side, global-coordinate title-bar drag, and the border resize handed to the window manager (`SDL_HITTEST_RESIZE_*`)
 3. **Windows:** Title-bar drag handed to the OS move loop (`SDL_HITTEST_DRAGGABLE` -> `HTCAPTION`, so Aero Snap works, #2716); client-side maximize/restore and border resize (existing behavior preserved)
 
 Backend classification is driven by `SDL_GetCurrentVideoDriver()`, not by which env vars happen to be set. Native Wayland is `driver == "wayland"`, checked first -- this matters because `DISPLAY` is commonly set on a Wayland session too (e.g. XWayland running for other apps), so testers should not assume "DISPLAY is set" means an X11/XWayland run. XWayland fallback is `driver == "x11"` *and* `WAYLAND_DISPLAY` set; plain X11 is `driver == "x11"` with `WAYLAND_DISPLAY` unset.
@@ -27,9 +27,9 @@ Wayland is handed to the compositor since #750, which fixed #744; on Windows to 
 since #2716). What the window's hit test answers -- and so who runs each gesture -- is covered:
 `tests/App/test_TitleBarGeometry.cpp` (`ComputeWindowHitTestAtTest`: the empty bar, every button,
 the icon, every edge and corner, maximized, at a 1.0 and a 2.0 display scale, for each policy) and
-`tests/App/test_UiLayersOnDisplay.cpp` (`TheHitTestCallbackAnswersForTheRealWindow`: the callback
+`tests/App/test_UiLayersOnDisplayResize.cpp` (`TheHitTestCallbackAnswersForTheRealWindow`: the callback
 installed on the real window, asked through `TitleBarLayer::hitTest()` and, on Windows, through
-`WM_NCHITTEST`; `TitleBarDragGeometryKeepsThePointerOnTheWindow` records the answer at each of its
+`WM_NCHITTEST`; `TitleBarDragGeometryKeepsThePointerOnTheWindow`, in `test_UiLayersOnDisplayDrag.cpp`, records the answer at each of its
 press points beside the client-side path it drives).
 
 #### VideoBackend Detection Tests (tests/Core/test_VideoBackend.cpp)
@@ -107,7 +107,7 @@ Test that borderless window maximize/restore works reliably:
 - [ ] Restore from maximized state via the maximize button
   - Expected: Window returns to previous size/position
 - [ ] Restore via restore button
-  - Expected: Same as double-click
+  - Expected: Same as the maximize button above (a double-click on the title bar does nothing on native Wayland; see Window Dragging)
 - [ ] Multi-monitor: Maximize on primary, move to secondary, restore
   - Expected: Window restores to original position on primary
 
@@ -129,7 +129,7 @@ Test that title-bar dragging is smooth and accurate:
   - Expected: Compositor's own maximize/restore-on-drag behavior applies (varies by compositor -- note what actually happens)
 - [ ] Drag onto a different monitor (multi-monitor)
   - Expected: Window moves smoothly between monitors
-- [ ] **Regression check: every title-bar button still works** (icon/system-menu, about, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`computeWindowHitTestAt()` in `App/TitleBarGeometry.h` must answer `SDL_HITTEST_NORMAL` for every button).
+- [ ] **Regression check: every title-bar button still works** (icon/system-menu, about, help, settings, minimize, maximize, close) -- these must stay clickable and must NOT start a window drag. This is the highest-risk regression surface for #744's fix (`computeWindowHitTestAt()` in `App/TitleBarGeometry.h` must answer `SDL_HITTEST_NORMAL` for every button, except the window's top-right resize corner, which sits inside the Close button's slot, #2882).
 - [ ] Double-click the empty title-bar area
   - Expected (accepted trade-off, not a bug): does NOT toggle maximize/restore on native Wayland, since the compositor consumes the button-down entirely. Use the maximize button instead.
 
@@ -153,14 +153,15 @@ Test that title-bar dragging is smooth and accurate:
 - [ ] Double-click the empty title bar
   - Expected: toggles maximize/restore (Windows' own caption double-click, then the app's for the maximized window)
 - [ ] Hover and click every button (icon/system menu, About, Help, Settings, Minimize, Maximize, Close)
-  - Expected: each works; none starts a drag (buttons stay `SDL_HITTEST_NORMAL`)
+  - Expected: each works; none starts a drag (buttons stay `SDL_HITTEST_NORMAL`, except the top-right resize corner inside Close, #2882)
 - [ ] Hover the Maximize button
   - Expected (known limitation): no Snap Layouts flyout; SDL has no `HTMAXBUTTON` hit-test result
 - [ ] Two monitors, one at 150% DPI: drag the window between them and snap on each
   - Expected: the drag crosses over and the snap targets the monitor the pointer is on
 
 #### 3. **Window Resizing (Edges)**
-Test that custom border resize works:
+Test that border resize works. It's client-side only on Windows; native Wayland hands it to the compositor and
+X11/XWayland to the window manager (`SDL_HITTEST_RESIZE_*`), so there the cursor and the resize are theirs:
 
 **All Platforms:**
 - [ ] Resize from top-left corner
@@ -189,7 +190,7 @@ Test toggle maximize/restore:
 - [ ] Double-click on empty area of title bar
   - Expected (accepted trade-off, not a bug -- see #744): does nothing; the compositor consumes the button-down for the drag gesture before the app can see it as a double-click. Use the maximize button instead.
 - [ ] Double-click while hovering over a button (minimize/maximize/close)
-  - Expected: Button action still takes precedence and works normally (buttons stay `SDL_HITTEST_NORMAL` on every backend)
+  - Expected: Button action still takes precedence and works normally (buttons stay `SDL_HITTEST_NORMAL` on every backend, except the top-right resize corner inside Close, #2882)
 
 #### 5. **Multi-Monitor Edge Cases**
 
@@ -321,12 +322,14 @@ bar and the borders), so the client-side drag and resize tests skip there and sa
 maximize at all, so Maximize's own checks need a stacking one (labwc). `UiScenarioTest` needs
 `TASKSMACK_SYNTHETIC=processes=120,seed=2711`, as CTest sets it.
 
-`tools/wayland-matrix.sh` runs all of it on a headless sway and a headless labwc, and adds what only a real
-pointer can check: a title-bar drag and a right-edge resize (through `tools/wayland/virtual-pointer.c`, since a
-headless seat has no pointer device for clients, and `wlrctl`'s lives for one command), a second output at scale
-1.5 that the window moves onto and that is then unplugged under it, the size saved on a close the compositor
-asks for and restored on the next start, and, on labwc, Maximize and Restore (`TASKSMACK_COMPOSITOR_MAXIMIZES=1`).
-It needs sway, labwc, wayland-scanner, libwayland-dev and a C compiler; labwc starts Xwayland, so where
+`tools/wayland-matrix.sh` runs all of it on a headless sway (with every window floating), and adds what only a
+real pointer can check: a title-bar drag and a right-edge resize (through `tools/wayland/virtual-pointer.c`, since
+a headless seat has no pointer device for clients, and `wlrctl`'s lives for one command), a second output at
+scale 1.5 that `swaymsg` moves the window onto and that is then unplugged under it, and the size saved on a close
+the compositor asks for and restored on the next start. On a headless labwc it runs only
+`TitleBarButtonsDoWhatTheySay` and `TheHitTestCallbackAnswersForTheRealWindow`, with
+`TASKSMACK_COMPOSITOR_MAXIMIZES=1`, for Maximize and Restore (sway, a tiling compositor, never maximizes).
+It needs sway (`swaymsg`), labwc, wayland-scanner, pkg-config with libwayland-dev, a C compiler and python3; labwc starts Xwayland, so where
 `/tmp/.X11-unix` isn't sticky (WSLg) the script gives labwc its own in an unprivileged mount namespace.
 
 ## Known Limitations / Future Work
