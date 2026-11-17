@@ -118,7 +118,9 @@ struct ConfigDirectoryChoice
     {
         return configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
     }
-    if (invokingUserHome.has_value() && xdgConfigHome.has_value() && !isInside(*xdgConfigHome, *invokingUserHome))
+    // A home of "/" (some service accounts) would hold every path, so it vouches for none (#4155 review).
+    if (invokingUserHome.has_value() && xdgConfigHome.has_value() &&
+        (std::filesystem::path(*invokingUserHome).lexically_normal() == "/" || !isInside(*xdgConfigHome, *invokingUserHome)))
     {
         ConfigDirectoryChoice choice = configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
         choice.warning = "Ignoring XDG_CONFIG_HOME " + *xdgConfigHome +

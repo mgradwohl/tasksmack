@@ -174,6 +174,8 @@ TEST(UserConfigHelpersTest, RootRunForAUserUsesThatUsersConfigWhenHomeIsRoots)
     EXPECT_EQ(configDirectoryFor("/home/u/./a/../.xdg", "/home/u/", noPasswdLookup, "/cwd", "/home/u/").directory,
               std::filesystem::path("/home/u/.xdg/tasksmack"))
         << "inside, once normalized, with a trailing separator on the home";
+    // A home of "/" vouches for nothing: every absolute path is lexically inside it.
+    EXPECT_EQ(configDirectoryFor("/etc", "/", noPasswdLookup, "/cwd", "/").directory, std::filesystem::path("/.config/tasksmack"));
     // Not run for another user: unchanged, XDG_CONFIG_HOME anywhere.
     EXPECT_EQ(configDirectoryFor("/etc", "/home/u", noPasswdLookup, "/cwd", std::nullopt).directory,
               std::filesystem::path("/etc/tasksmack"));
@@ -181,6 +183,23 @@ TEST(UserConfigHelpersTest, RootRunForAUserUsesThatUsersConfigWhenHomeIsRoots)
               std::filesystem::path("/root/.config/tasksmack"));
     EXPECT_EQ(configDirectoryFor("/home/u/.xdg", "/home/u", noPasswdLookup, "/cwd", std::nullopt).directory,
               std::filesystem::path("/home/u/.xdg/tasksmack"));
+}
+
+TEST(UserConfigHelpersTest, IsInsideComparesWholeComponentsAfterNormalizing)
+{
+    using Platform::ConfigDirectory::isInside;
+    EXPECT_TRUE(isInside("/home/u", "/home/u"));
+    EXPECT_TRUE(isInside("/home/u/", "/home/u"));
+    EXPECT_TRUE(isInside("/home/u/.xdg", "/home/u/"));
+    EXPECT_TRUE(isInside("//home//u//x", "/home/u"));
+    EXPECT_TRUE(isInside("/home/u/.", "/home/u"));
+    EXPECT_FALSE(isInside("/home/u2", "/home/u"));
+    EXPECT_FALSE(isInside("/home/u/..", "/home/u"));
+    EXPECT_FALSE(isInside("/home/u/../v", "/home/u"));
+    EXPECT_FALSE(isInside("/home", "/home/u"));
+    EXPECT_FALSE(isInside("/home/U", "/home/u"));
+    EXPECT_FALSE(isInside("home/u/x", "/home/u")) << "relative";
+    EXPECT_FALSE(isInside("", "/home/u"));
 }
 
 TEST(UserConfigHelpersTest, ConfigDirectoryIsXdgConfigHomesWhenItIsSafe)
