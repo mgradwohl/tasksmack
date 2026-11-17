@@ -57,6 +57,9 @@ inline constexpr std::array<std::wstring_view, 9> BY_NAME_VARIABLES = {
 /// The longest name, in UTF-16 code units, logName() keeps.
 inline constexpr std::size_t MAX_LOGGED_NAME = 128;
 
+/// The most names removedFromThisProcess() keeps; after them it has one "and N more".
+inline constexpr std::size_t MAX_LOGGED_NAMES = 32;
+
 /// What removeSdlVariables() does to an environment: the process's own, or a test's fake.
 struct EnvironmentOps
 {
@@ -77,13 +80,22 @@ struct EnvironmentOps
 /// BY_NAME_VARIABLES while @p environment says one of that name is still set (a bounded number of times). With no
 /// @p block (it couldn't be read), only the second. Returns the names removed: from the block, each @p environment
 /// removed; by name, each it found set and then removed at least once. Otherwise leaves everything alone and calls nothing.
-[[nodiscard]] std::vector<std::wstring>
-removeSdlVariables(bool system32Only, std::optional<std::wstring_view> block, const EnvironmentOps& environment);
+/// Each name @p environment still says is set when its passes are done (a removal that failed, or more entries
+/// answering to the name than the bounded passes remove) is added to @p stillSet, if given, once: the caller fails closed.
+[[nodiscard]] std::vector<std::wstring> removeSdlVariables(bool system32Only,
+                                                           std::optional<std::wstring_view> block,
+                                                           const EnvironmentOps& environment,
+                                                           std::vector<std::wstring>* stillSet = nullptr);
 
 /// @p name as it may be logged: UTF-8, with each control character (C0, DEL, C1, and U+2028/U+2029, which end a line)
-/// written as "\xNN" or "\uNNNN", and cut to MAX_LOGGED_NAME code units with "..." after, so a name set in
+/// written as "\xNN" or "\uNNNN", as is each bidirectional control (U+200E, U+200F, U+202A to U+202E, U+2066 to
+/// U+2069) that could reorder the log around the name, each backslash written as two so an escape can't be forged
+/// with a literal one, and cut to MAX_LOGGED_NAME code units with "..." after, so a name set in
 /// HKCU\Environment can't forge a log line.
 [[nodiscard]] std::string logName(std::wstring_view name);
+
+/// At most MAX_LOGGED_NAMES of @p names through logName(), then "and N more" if there are others.
+[[nodiscard]] std::vector<std::string> loggedNames(const std::vector<std::wstring>& names);
 
 /// removeSdlVariables() on this process's environment: GetEnvironmentStringsW(), GetEnvironmentVariableW() and
 /// SetEnvironmentVariableW(name, nullptr), with _wputenv_s(name, L"") for the CRT's copy. WinMain calls it right after
@@ -91,8 +103,14 @@ removeSdlVariables(bool system32Only, std::optional<std::wstring_view> block, co
 /// (removedFromThisProcess()). Never their values. Not thread-safe: WinMain's alone.
 std::vector<std::wstring> removeForThisProcess(bool system32Only);
 
-/// The names the last removeForThisProcess() removed, as logName() gives them, for main.cpp to log.
+/// The names the last removeForThisProcess() removed, as loggedNames() gives them, for main.cpp to log.
 [[nodiscard]] const std::vector<std::string>& removedFromThisProcess() noexcept;
+
+/// The names the last removeForThisProcess() could not remove: still set when it was done. Not empty means the
+/// process may still take an SDL setting, or a library, from the less-privileged side, so WinMain refuses to start
+/// (logging isn't up, and a window is SDL's to open). Reachable only if the OS refuses a removal or more than eight
+/// entries answer to one name; not through HKCU\Environment, whose names compare case-insensitively.
+[[nodiscard]] const std::vector<std::wstring>& stillSetInThisProcess() noexcept;
 
 } // namespace Platform::Windows::SdlEnvironment
 #endif

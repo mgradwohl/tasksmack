@@ -896,6 +896,12 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
     // search order restricts. Elevated, the environment may be the less-privileged side's (HKCU\Environment), so
     // every SDL variable goes. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
     Platform::Windows::SdlEnvironment::removeForThisProcess(Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess());
+    // Fail closed (#4114): a variable still set (a removal the OS refused) would reach SDL, so don't start. Logging isn't
+    // up and a window is SDL's to open, so the exit code is all there is; HKCU\Environment can't cause it.
+    if (!Platform::Windows::SdlEnvironment::stillSetInThisProcess().empty())
+    {
+        return EXIT_FAILURE;
+    }
     return runAppGuarded(App::parseLaunchOptions(commandLineArguments()));
 }
 // LCOV_EXCL_STOP

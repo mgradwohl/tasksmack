@@ -60,7 +60,8 @@ MAIN_CALL = (
     "                                            : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
 )
 # What TaskSmack.exe's WinMain must call next, before any SDL call (#4103)
-SDL_SCRUB = "    Platform::Windows::SdlEnvironment::removeForThisProcess(system32Only());\n"
+SCRUB_ARGUMENT = "Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess()"
+SDL_SCRUB = f"    Platform::Windows::SdlEnvironment::removeForThisProcess({SCRUB_ARGUMENT});\n"
 MAIN_START = MAIN_CALL + SDL_SCRUB
 HELPER_CALL = "    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
 
@@ -147,10 +148,38 @@ class CheckEntryPointTest(unittest.TestCase):
                 self.assertIn("SdlEnvironment::removeForThisProcess(", errors[0])
                 self.assertIn("#4103", errors[0])
 
+    def test_the_sdl_scrub_must_be_passed_the_system32_only_rule(self) -> None:
+        # #4114: the call alone isn't enough; removeForThisProcess(false) removes nothing.
+        for argument in ("false", "true", "x", "system32Only()"):
+            with self.subTest(argument=argument):
+                scrub = f"    Platform::Windows::SdlEnvironment::removeForThisProcess({argument});\n"
+                errors = check_main(entry_point("WinMain", MAIN_CALL + scrub))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4114", errors[0])
+                self.assertIn(checker.SCRUB_ARGUMENT, errors[0])
+
+    def test_the_sdl_scrub_argument_may_span_lines(self) -> None:
+        scrub = f"    Platform::Windows::SdlEnvironment::removeForThisProcess(\n        {SCRUB_ARGUMENT});\n"
+        self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub)), [])
+
+    def test_set_default_dll_directories_must_be_a_statement_of_its_own(self) -> None:
+        # #4114: extra code in the same statement, before its ';', is code the scrub's position check never sees.
+        call = MAIN_CALL.rstrip().removesuffix(";")
+        for extra in (', SDL_SetHint(SDL_HINT_VIDEO_DRIVER, "windows")', " + 0", " , run()"):
+            with self.subTest(extra=extra):
+                errors = check_main(entry_point("WinMain", call + extra + ";\n" + SDL_SCRUB))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("#4114", errors[0])
+                self.assertIn("statement of its own", errors[0])
+
+    def test_whitespace_before_the_semicolon_is_fine(self) -> None:
+        call = MAIN_CALL.rstrip().removesuffix(";")
+        self.assertEqual(check_main(entry_point("WinMain", call + " \n    ;\n" + SDL_SCRUB)), [])
+
     def test_the_sdl_scrub_may_be_qualified_or_not_after_comments(self) -> None:
         for scrub in (
-            "    SdlEnvironment::removeForThisProcess(true);\n",
-            "    // Next, before any SDL call.\n    /* why */ Platform::Windows::SdlEnvironment::removeForThisProcess(x);\n",
+            "    SdlEnvironment::removeForThisProcess(DllSearchPolicy::system32OnlyForThisProcess());\n",
+            "    // Next, before any SDL call.\n    /* why */ Platform::Windows::SdlEnvironment::removeForThisProcess(system32OnlyForThisProcess());\n",
         ):
             with self.subTest(scrub=scrub):
                 self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub)), [])

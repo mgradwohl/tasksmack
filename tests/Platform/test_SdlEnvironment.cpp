@@ -23,6 +23,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdlib>
+#include <format>
+#include <ios>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -218,8 +220,37 @@ TEST(SdlEnvironmentTest, OnlyTheVariablesActuallyRemovedAreReported)
     // where it is found but stays.
     FakeEnvironment environment(BLOCK);
     const std::wstring text = environment.block();
-    const std::vector<std::wstring> removed = removeSdlVariables(true, text, environment.ops(L"SDL_VIDEODRIVER"));
+    std::vector<std::wstring> stillSet;
+    const std::vector<std::wstring> removed = removeSdlVariables(true, text, environment.ops(L"SDL_VIDEODRIVER"), &stillSet);
     EXPECT_EQ(removed, (std::vector<std::wstring>{L"SDL_OPENGL_LIBRARY", L"sdl3_dynamic_api", L"Sdl_Egl_Library"}));
+    // Failing closed (#4114): named once, though both passes found it.
+    EXPECT_EQ(stillSet, std::vector<std::wstring>{L"SDL_VIDEODRIVER"});
+}
+
+TEST(SdlEnvironmentTest, NothingIsStillSetWhenEverythingWasRemoved)
+{
+    FakeEnvironment environment(BLOCK);
+    const std::wstring text = environment.block();
+    std::vector<std::wstring> stillSet;
+    static_cast<void>(removeSdlVariables(true, text, environment.ops(), &stillSet));
+    EXPECT_TRUE(stillSet.empty());
+}
+
+TEST(SdlEnvironmentTest, AByNameVariableThatRemovalDidNotClearIsStillSet)
+{
+    // With no block, so only the by-name pass: the OS says it removed it, and still answers that it is set.
+    const EnvironmentOps stuck{
+        .isSet = [](const std::wstring& name) { return name == L"SDL3_DYNAMIC_API"; },
+        .remove = [](const std::wstring& /*name*/) { return true; },
+    };
+    std::vector<std::wstring> stillSet;
+    static_cast<void>(removeSdlVariables(true, std::nullopt, stuck, &stillSet));
+    EXPECT_EQ(stillSet, std::vector<std::wstring>{L"SDL3_DYNAMIC_API"});
+
+    // Without the system32-only rule nothing is asked, so nothing is still set.
+    stillSet.clear();
+    static_cast<void>(removeSdlVariables(false, std::nullopt, stuck, &stillSet));
+    EXPECT_TRUE(stillSet.empty());
 }
 
 TEST(SdlEnvironmentTest, ADangerousNameTheAsciiFoldMissesIsRemovedByName)
@@ -296,6 +327,53 @@ TEST(SdlEnvironmentTest, ALoggedNameCannotForgeALogLine)
     EXPECT_EQ(logName(L"SDL_\u00E9"), "SDL_\xC3\xA9");
 }
 
+TEST(SdlEnvironmentTest, ABackslashInALoggedNameIsDoubledSoAnEscapeCannotBeForged)
+{
+    EXPECT_EQ(logName(L"SDL_a\\b"), "SDL_a\\\\b");
+    // A literal backslash-x-0-D is not the escape of a carriage return, and the two read differently.
+    EXPECT_EQ(logName(L"SDL_\\x0D"), "SDL_\\\\x0D");
+    EXPECT_EQ(logName(L"SDL_\r"), "SDL_\\x0D");
+    EXPECT_NE(logName(L"SDL_\\x0D"), logName(L"SDL_\r"));
+    EXPECT_EQ(logName(L"SDL_\\u202E"), "SDL_\\\\u202E");
+}
+
+TEST(SdlEnvironmentTest, BidirectionalControlsInALoggedNameAreEscaped)
+{
+    for (const unsigned code : {0x200EU, 0x200FU, 0x202AU, 0x202BU, 0x202CU, 0x202DU, 0x202EU, 0x2066U, 0x2067U, 0x2068U, 0x2069U})
+    {
+        const std::wstring name = std::wstring(L"SDL_a") + static_cast<wchar_t>(code) + L"b";
+        EXPECT_EQ(logName(name), std::format("SDL_a\\u{:04X}b", code)) << std::hex << code;
+    }
+    // The characters either side of those ranges are not controls.
+    EXPECT_EQ(logName(L"SDL_‍‰⁥⁪"), "SDL_\xE2\x80\x8D\xE2\x80\xB0\xE2\x81\xA5\xE2\x81\xAA");
+}
+
+TEST(SdlEnvironmentTest, AtMostThirtyTwoNamesAreLoggedThenAndNMore)
+{
+    std::vector<std::wstring> names;
+    names.reserve(MAX_LOGGED_NAMES + 5);
+    for (std::size_t index = 0; index < MAX_LOGGED_NAMES; ++index)
+    {
+        names.push_back(L"SDL_N" + std::to_wstring(index));
+    }
+    EXPECT_EQ(MAX_LOGGED_NAMES, 32U);
+    EXPECT_EQ(loggedNames({}), std::vector<std::string>{});
+    // Exactly the limit: all of them, no "and more".
+    const std::vector<std::string> all = loggedNames(names);
+    ASSERT_EQ(all.size(), MAX_LOGGED_NAMES);
+    EXPECT_EQ(all.front(), "SDL_N0");
+    EXPECT_EQ(all.back(), "SDL_N31");
+
+    for (std::size_t index = 0; index < 5; ++index)
+    {
+        names.push_back(L"SDL_M" + std::to_wstring(index));
+    }
+    const std::vector<std::string> capped = loggedNames(names);
+    ASSERT_EQ(capped.size(), MAX_LOGGED_NAMES + 1);
+    EXPECT_EQ(capped[MAX_LOGGED_NAMES - 1], "SDL_N31");
+    EXPECT_EQ(capped.back(), "and 5 more");
+}
+
 TEST(SdlEnvironmentTest, ALoggedNameIsCutAtItsLimitWithoutSplittingACharacter)
 {
     const std::wstring longName = L"SDL_" + std::wstring(500, L'A');
@@ -310,7 +388,8 @@ TEST(SdlEnvironmentTest, ALoggedNameIsCutAtItsLimitWithoutSplittingACharacter)
     EXPECT_EQ(logName(std::wstring(MAX_LOGGED_NAME, L'B')), std::string(MAX_LOGGED_NAME, 'B'));
 }
 
-/// This process's environment: its SDL variables saved before each test and put back after, and three planted ones.
+/// This process's environment: its SDL variables saved before each test and put back after, and three planted ones
+/// (through the CRT, in this process only, each cleared in TearDown).
 /// The planted names are SDL's form, "SDL_" and "SDL<digits>_" as SDL3_DYNAMIC_API is, one in mixed case, but no
 /// variable SDL reads (no *_LIBRARY, *DRIVER or SDL3_DYNAMIC_API):
 /// a test must never plant one that makes SDL load a library, since SDL's dynamic API reads SDL3_DYNAMIC_API at the
@@ -339,18 +418,23 @@ class SdlEnvironmentProcessTest : public ::testing::Test
             }
             FreeEnvironmentStringsW(strings);
         }
-        ASSERT_NE(SetEnvironmentVariableW(PLANTED, L"C:\\Users\\Public\\planted.dll"), FALSE);
-        ASSERT_NE(SetEnvironmentVariableW(PLANTED_DIGITS, L"C:\\Users\\Public\\planted.dll"), FALSE);
-        ASSERT_NE(SetEnvironmentVariableW(PLANTED_MIXED_CASE, L"1"), FALSE);
-        ASSERT_NE(SetEnvironmentVariableW(KEPT, L"1"), FALSE);
+        // Through the CRT, which sets the block too (what SetEnvironmentVariableW alone would not do to the CRT's copy),
+        // so the check on the CRT's copy after the scrub proves something (#4114). In this process only: nothing here
+        // touches the registry, HKCU\Environment or a child's environment.
+        ASSERT_EQ(_wputenv_s(PLANTED, L"C:\\Users\\Public\\planted.dll"), 0);
+        ASSERT_EQ(_wputenv_s(PLANTED_DIGITS, L"C:\\Users\\Public\\planted.dll"), 0);
+        ASSERT_EQ(_wputenv_s(PLANTED_MIXED_CASE, L"1"), 0);
+        ASSERT_EQ(_wputenv_s(KEPT, L"1"), 0);
     }
 
     void TearDown() override
     {
-        SetEnvironmentVariableW(PLANTED, nullptr);
-        SetEnvironmentVariableW(PLANTED_DIGITS, nullptr);
-        SetEnvironmentVariableW(PLANTED_MIXED_CASE, nullptr);
-        SetEnvironmentVariableW(KEPT, nullptr);
+        // Everything planted comes out of both copies, as it went in, whether or not the test's scrub already did it.
+        for (const wchar_t* const name : {PLANTED, PLANTED_DIGITS, PLANTED_MIXED_CASE, KEPT})
+        {
+            static_cast<void>(_wputenv_s(name, L""));
+            SetEnvironmentVariableW(name, nullptr);
+        }
         // Through the CRT, which sets the block too: the scrub cleared the CRT's copy as well.
         for (const auto& [name, value] : m_Saved)
         {
@@ -365,13 +449,28 @@ class SdlEnvironmentProcessTest : public ::testing::Test
         return GetEnvironmentVariableW(name, nullptr, 0) > 0;
     }
 
+    /// Whether the C runtime's copy has @p name.
+    [[nodiscard]] static bool crtHas(const wchar_t* name)
+    {
+        std::size_t size = 0;
+        return _wgetenv_s(&size, nullptr, 0, name) == 0 && size > 0;
+    }
+
   private:
     std::vector<std::pair<std::wstring, std::wstring>> m_Saved;
 };
 
 TEST_F(SdlEnvironmentProcessTest, System32OnlyRemovesEverySdlVariableBeforeSdlCanReadOne)
 {
+    // Planted in both copies, so the CRT checks below are about the scrub and not about what was never there.
+    ASSERT_TRUE(isSet(PLANTED));
+    ASSERT_TRUE(crtHas(PLANTED));
+    ASSERT_TRUE(crtHas(PLANTED_DIGITS));
+    ASSERT_TRUE(crtHas(PLANTED_MIXED_CASE));
+    ASSERT_TRUE(crtHas(KEPT));
+
     const std::vector<std::wstring> removed = removeForThisProcess(true);
+    EXPECT_TRUE(stillSetInThisProcess().empty());
 
     EXPECT_NE(std::ranges::find(removed, std::wstring(PLANTED)), removed.end());
     EXPECT_NE(std::ranges::find(removed, std::wstring(PLANTED_DIGITS)), removed.end());
@@ -379,10 +478,11 @@ TEST_F(SdlEnvironmentProcessTest, System32OnlyRemovesEverySdlVariableBeforeSdlCa
     EXPECT_FALSE(isSet(PLANTED_DIGITS));
     EXPECT_FALSE(isSet(PLANTED_MIXED_CASE));
     EXPECT_NE(std::ranges::find(removed, std::wstring(PLANTED_MIXED_CASE)), removed.end());
-    std::size_t crtSize = 1;
-    EXPECT_EQ(_wgetenv_s(&crtSize, nullptr, 0, PLANTED), 0);
-    EXPECT_EQ(crtSize, 0U); // The CRT's copy too
+    EXPECT_FALSE(crtHas(PLANTED)); // The CRT's copy too
+    EXPECT_FALSE(crtHas(PLANTED_DIGITS));
+    EXPECT_FALSE(crtHas(PLANTED_MIXED_CASE));
     EXPECT_TRUE(isSet(KEPT));
+    EXPECT_TRUE(crtHas(KEPT));
 
     // Nothing of SDL's is left, so SDL may now be called. A fresh SDL environment, built from the process's as
     // SDL_GetHint()'s fallback builds its own at first use (which may already exist in this test process), has no
@@ -412,6 +512,8 @@ TEST_F(SdlEnvironmentProcessTest, OtherwiseTheyStay)
     EXPECT_TRUE(isSet(PLANTED_DIGITS));
     EXPECT_TRUE(isSet(PLANTED_MIXED_CASE));
     EXPECT_TRUE(isSet(KEPT));
+    EXPECT_TRUE(crtHas(PLANTED));
+    EXPECT_TRUE(stillSetInThisProcess().empty());
 }
 
 } // namespace

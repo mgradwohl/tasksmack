@@ -19,8 +19,9 @@ TaskSmack is). So:
         folder, since it always runs elevated;
       - TaskSmack.exe's WinMain (BRANCH): a conditional with a System32-only branch,
         "? LOAD_LIBRARY_SEARCH_SYSTEM32 :", the one it takes elevated (DllSearchPolicy.h), and then,
-        as its very next statement, SdlEnvironment::removeForThisProcess( (#4103): an elevated
-        TaskSmack drops the SDL variables that name a DLL SDL loads by full path (SDL3_DYNAMIC_API,
+        as its very next statement, SdlEnvironment::removeForThisProcess( (#4103), passed
+        system32OnlyForThisProcess() and not another value, with SetDefaultDllDirectories a statement of
+        its own (nothing but whitespace between its ")" and ";", #4114): an elevated TaskSmack drops the SDL variables that name a DLL SDL loads by full path (SDL3_DYNAMIC_API,
         read at SDL's first call, and SDL_OPENGL_LIBRARY) before anything can make an SDL call.
     That restricts what third-party code (SDL, the GL loaders) and the DLLs it loads find by name;
     the linker's /DEPENDENTLOADFLAG:0x800 covers the imports (cmake/CompilerOptions.cmake).
@@ -63,6 +64,8 @@ SET_DEFAULT_DIRS = re.compile(r"SetDefaultDllDirectories\s*\(")
 # What TaskSmack.exe's WinMain (BRANCH) must call right after SetDefaultDllDirectories, qualified or not (#4103).
 SDL_SCRUB = "SdlEnvironment::removeForThisProcess("
 SDL_SCRUB_CALL = re.compile(r"(?:\w+\s*::\s*)*SdlEnvironment\s*::\s*removeForThisProcess\s*\(")
+# What that call must be passed: the rule WinMain's SetDefaultDllDirectories uses (#4114).
+SCRUB_ARGUMENT = "system32OnlyForThisProcess()"
 NAMESPACE_ALIAS = re.compile(r"namespace\s+\w+\s*=[^;]*;")
 LEADING_SPACE = re.compile(r"\s*")
 
@@ -142,12 +145,24 @@ def check_entry_point(text: str, name: str, function: str, rule: str) -> list[st
     if rule == BRANCH:
         close = call.end() - 1 + len(arguments) + 1
         statement_end = body.find(";", close)
-        following = LEADING_SPACE.match(body, statement_end + 1).end() if statement_end >= 0 else len(body)
-        if statement_end < 0 or SDL_SCRUB_CALL.match(body, following) is None:
+        # Nothing but whitespace between the call's ")" and its ";": no "SetDefaultDllDirectories(...), SDL_SetHint(...);" (#4114)
+        if statement_end < 0 or body[close + 1 : statement_end].strip() != "":
+            return [
+                f"{name}:{line}: {function}()'s SetDefaultDllDirectories call must be a statement of its own: only "
+                "whitespace between its closing parenthesis and its ';' (#4114)"
+            ]
+        following = LEADING_SPACE.match(body, statement_end + 1).end()
+        scrub = SDL_SCRUB_CALL.match(body, following)
+        if scrub is None:
             return [
                 f"{name}:{line}: {function}()'s next statement after SetDefaultDllDirectories must be "
                 f"{SDL_SCRUB}...): an elevated TaskSmack removes the SDL variables (SDL3_DYNAMIC_API, read at SDL's "
                 "first call, SDL_OPENGL_LIBRARY) that name a DLL SDL loads by full path, before any SDL call (#4103)"
+            ]
+        if SCRUB_ARGUMENT not in call_arguments(body, scrub.end() - 1):
+            return [
+                f"{name}:{line}: {function}()'s {SDL_SCRUB}...) must be passed {SCRUB_ARGUMENT}, the rule "
+                "SetDefaultDllDirectories uses, not another value (#4114)"
             ]
     return []
 
