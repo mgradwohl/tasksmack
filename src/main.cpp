@@ -928,7 +928,7 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
         }
         OutputDebugStringW((L"TaskSmack: SDL environment variables still set, not starting: " + names + L"\n").c_str());
         MessageBoxW(nullptr,
-                    L"TaskSmack could not clear an inherited SDL setting and will not start elevated.",
+                    L"TaskSmack will not start: it couldn't clear the SDL settings it inherited (or couldn't read its environment).",
                     L"TaskSmack",
                     MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return EXIT_FAILURE;
