@@ -870,8 +870,32 @@ std::optional<bool> ownerRejected(HANDLE /*handle*/)
     return false;
 }
 
-// Not there yet: made in its held parent, then checked and held itself; a hand-off's own check still refuses it (it is
-// this account's, not handed over).
+// pathIsInside(): whole components, so a sibling that only shares a prefix is outside; case doesn't matter, as on
+// NTFS; and a trailing separator on either path changes nothing (#4106 review).
+TEST(ElevatedRestartOwnConfigDirTest, PathIsInsideComparesWholeComponents)
+{
+    const std::filesystem::path profile(LR"(C:\Users\pat)");
+    EXPECT_TRUE(pathIsInside(LR"(C:\Users\pat\AppData\Roaming\TaskSmack)", profile));
+    EXPECT_FALSE(pathIsInside(LR"(C:\Users\patrick\AppData\Roaming\TaskSmack)", profile)) << "a sibling with the same prefix";
+    EXPECT_FALSE(pathIsInside(LR"(C:\Users\patrick)", profile));
+    EXPECT_TRUE(pathIsInside(LR"(c:\users\PAT\AppData\Roaming\TaskSmack)", profile)) << "case is ignored";
+    EXPECT_TRUE(pathIsInside(LR"(C:\Users\pat\AppData\Roaming\TaskSmack)", LR"(C:\Users\pat\)")) << "a trailing separator";
+    EXPECT_TRUE(pathIsInside(LR"(C:\Users\pat\AppData\Roaming\TaskSmack\)", profile)) << "a trailing separator on the child";
+    EXPECT_FALSE(pathIsInside(profile, profile)) << "strictly inside: the profile itself isn't";
+    EXPECT_FALSE(pathIsInside(LR"(C:\Users\pat\)", profile)) << "nor with a trailing separator";
+    EXPECT_FALSE(pathIsInside(LR"(D:\Users\pat\AppData)", profile)) << "another drive";
+}
+
+// The real owner check, on a folder this test's own account made: its owner is the token user, so it is accepted.
+TEST(ElevatedRestartOwnConfigDirTest, TheRealOwnerCheckAcceptsAFolderThisAccountMade)
+{
+    const ScratchFolder scratch;
+    const UniqueHandle folder(openToPin(scratch.configDir().native()));
+    ASSERT_TRUE(folder) << GetLastError();
+    EXPECT_EQ(ownerIsOwnAccountOrAdministrators(folder.get()), std::optional<bool>(true));
+}
+
+// Not there yet: made in its held parent, then checked and held itself, and held again once it is there.
 TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderIsMadeInItsHeldParentAndHeld)
 {
     const ScratchFolder scratch;

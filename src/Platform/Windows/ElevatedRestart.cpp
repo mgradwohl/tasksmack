@@ -404,15 +404,12 @@ std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::p
     return checkConfigDir(dir, *root);
 }
 
-namespace
+bool pathIsInside(const std::filesystem::path& child, const std::filesystem::path& ancestor)
 {
-
-/// Whether @p child sits strictly inside @p ancestor, comparing whole components, case-insensitively as NTFS does: a
-/// redirected AppData under another profile is not inside the token's own.
-[[nodiscard]] bool pathIsInside(const std::filesystem::path& child, const std::filesystem::path& ancestor)
-{
-    const std::filesystem::path c = child.lexically_normal();
-    const std::filesystem::path a = ancestor.lexically_normal();
+    // Both in the form a handed-over folder's path is kept (absolute, normal, no trailing separator), so a profile
+    // folder named with a trailing '\' ("C:\Users\pat\") still contains its own AppData.
+    const std::filesystem::path c = handedOverFolderPath(child);
+    const std::filesystem::path a = handedOverFolderPath(ancestor);
     if (!sameComponent(c.root_name().native(), a.root_name().native()))
     {
         return false;
@@ -427,6 +424,9 @@ namespace
     }
     return childPart != c.end(); // strictly below: at least one component more
 }
+
+namespace
+{
 
 /// @p handle's owner, acceptable to @p ownerAcceptable, or the error why not.
 [[nodiscard]] std::expected<void, std::string>

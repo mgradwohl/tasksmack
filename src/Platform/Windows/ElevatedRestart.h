@@ -150,6 +150,11 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
 /// source; nullopt when it can't be read. The folder the own config folder must sit inside (#4106).
 [[nodiscard]] std::optional<std::filesystem::path> currentUserProfileDirectory();
 
+/// Whether @p child sits strictly inside @p ancestor, comparing whole components (so "C:\Users\patrick" isn't inside
+/// "C:\Users\pat"), case-insensitively as NTFS does, after both are normalized as handedOverFolderPath() keeps a path
+/// (a trailing separator doesn't matter). A redirected AppData under another profile is not inside the token's own.
+[[nodiscard]] bool pathIsInside(const std::filesystem::path& child, const std::filesystem::path& ancestor);
+
 /// Whether @p ownerAcceptable returns true for a handle's owner: the real one is ownerIsOwnAccountOrAdministrators.
 using OwnerAcceptableFn = std::optional<bool> (*)(HANDLE);
 
