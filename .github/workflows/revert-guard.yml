@@ -15,8 +15,15 @@ on:
 permissions: {}
 
 # A label added and a push made a moment apart: only the newest run for the PR matters.
+# An event that can't change the verdict (#4128) gets a group of its own (its run id), so it neither cancels the
+# PR's real run nor waits on it, and its job is skipped below: any label but ci:revert-ok added or removed, and an
+# edit that leaves the description alone. A PR opened with four labels used to start five runs and cancel four.
 concurrency:
-  group: revert-guard-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}
+  group: >-
+    revert-guard-${{ github.event.pull_request.number || github.event.merge_group.head_sha }}${{
+      (((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+        github.event.label.name != 'ci:revert-ok') ||
+       (github.event.action == 'edited' && !github.event.changes.body)) && format('-ignored-{0}', github.run_id) || '' }}
   cancel-in-progress: true
 
 jobs:
@@ -31,7 +38,12 @@ jobs:
   # workflow rather than a job in ci.yml, whose other jobs those events shouldn't start.
   revert-guard:
     name: Revert guard (advisory)
-    if: github.event_name == 'pull_request' || github.event_name == 'merge_group'
+    # Skipped for an event that can't change the verdict (#4128; the concurrency group above says which).
+    if: >-
+      (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
+      !(((github.event.action == 'labeled' || github.event.action == 'unlabeled') &&
+         github.event.label.name != 'ci:revert-ok') ||
+        (github.event.action == 'edited' && !github.event.changes.body))
     runs-on: ubuntu-26.04
     timeout-minutes: 10
     permissions:
