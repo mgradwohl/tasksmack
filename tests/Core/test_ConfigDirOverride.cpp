@@ -2,20 +2,30 @@
 /// @brief The TASKSMACK_CONFIG_DIR parser and resolver (#1596)
 
 #include "Core/ConfigDirOverride.h"
+#include "Core/Utf8Path.h"
 #include "Mocks/HandedOverTestFolder.h"
 #include "Platform/IHandedOverFolder.h"
 
 #include <SDL3/SDL_stdinc.h>
 #include <gtest/gtest.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
 #include <chrono>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <format>
+#include <map>
 #include <memory>
 #include <optional>
+#include <sstream>
 #include <string>
+#include <string_view>
 #include <system_error>
+#include <utility>
+#include <vector>
 
 namespace Core::ConfigDirOverride
 {
@@ -234,6 +244,246 @@ TEST(ConfigDirOverrideDeathTest, AnElevatedSessionIgnoresTheTestHook)
 TEST(ConfigDirOverrideTest, NothingIsIgnoredUnlessTheSessionIsElevated)
 {
     EXPECT_FALSE(testHookIgnored());
+}
+
+// ========== readHandedOverFiles() (#4094): the user themes of a hand-off, read through the folder held ==========
+
+/// A handed-over folder whose listing and reads a test sets: @p listing is what listFiles() answers (or @p listError,
+/// when set), and each name in @p reads what readFile() answers for it; a name it doesn't hold reads as not there.
+/// Records what was asked for, so a test can tell what was read.
+class ScriptedHandedOverFolder final : public Platform::IHandedOverFolder
+{
+  public:
+    using ReadResult = std::expected<std::optional<std::string>, std::string>;
+
+    ScriptedHandedOverFolder(std::filesystem::path path,
+                             std::vector<std::filesystem::path> listing,
+                             std::map<std::filesystem::path, ReadResult> reads,
+                             std::optional<std::string> listError = std::nullopt)
+        : m_Path(std::move(path)), m_Listing(std::move(listing)), m_Reads(std::move(reads)), m_ListError(std::move(listError))
+    {}
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept override
+    {
+        return m_Path;
+    }
+
+    [[nodiscard]] std::expected<void*, std::string> openLockFile(const std::filesystem::path& /*name*/) const override
+    {
+        return std::unexpected(std::string("a scripted folder holds no lock"));
+    }
+
+    [[nodiscard]] ReadResult readFile(const std::filesystem::path& relative) const override
+    {
+        m_Read.push_back(relative);
+        const auto it = m_Reads.find(relative);
+        return it != m_Reads.end() ? it->second : ReadResult(std::optional<std::string>{});
+    }
+
+    [[nodiscard]] std::expected<void, std::string> replaceFile(const std::filesystem::path& /*name*/,
+                                                               std::string_view /*contents*/) const override
+    {
+        return std::unexpected(std::string("a scripted folder is read-only"));
+    }
+
+    [[nodiscard]] std::expected<void, std::string> createFolder(const std::filesystem::path& /*name*/) const override
+    {
+        return std::unexpected(std::string("a scripted folder is read-only"));
+    }
+
+    [[nodiscard]] std::expected<std::vector<std::filesystem::path>, std::string> listFiles(const std::filesystem::path& name) const override
+    {
+        m_Listed.push_back(name);
+        if (m_ListError.has_value())
+        {
+            return std::unexpected(*m_ListError);
+        }
+        return m_Listing;
+    }
+
+    /// The names readFile() was asked for, in order.
+    [[nodiscard]] const std::vector<std::filesystem::path>& read() const noexcept
+    {
+        return m_Read;
+    }
+
+    /// The folders listFiles() was asked for, in order.
+    [[nodiscard]] const std::vector<std::filesystem::path>& listed() const noexcept
+    {
+        return m_Listed;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+    std::vector<std::filesystem::path> m_Listing;
+    std::map<std::filesystem::path, ReadResult> m_Reads;
+    std::optional<std::string> m_ListError;
+    mutable std::vector<std::filesystem::path> m_Read;
+    mutable std::vector<std::filesystem::path> m_Listed;
+};
+
+/// Hands @p folder over for the test's length, with spdlog's default logger captured, and puts both back after.
+class ReadHandedOverFilesTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_Previous = active();
+        m_PreviousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("handed-over-files-test", std::make_shared<spdlog::sinks::ostream_sink_st>(m_Log)));
+    }
+
+    void TearDown() override
+    {
+        spdlog::set_default_logger(m_PreviousLogger);
+        setActiveForTesting(m_Previous);
+    }
+
+    /// The folder handed over, as main.cpp hands one over: absolute, held by the test.
+    [[nodiscard]] static std::filesystem::path handedDir()
+    {
+        return Platform::handedOverFolderPath(std::filesystem::temp_directory_path() / "handed-over-files");
+    }
+
+    /// What was logged so far.
+    [[nodiscard]] std::string log() const
+    {
+        return m_Log.str();
+    }
+
+  private:
+    std::optional<std::filesystem::path> m_Previous;
+    std::shared_ptr<spdlog::logger> m_PreviousLogger;
+    std::ostringstream m_Log;
+};
+
+TEST_F(ReadHandedOverFilesTest, NothingHandedOverReadsNothingThroughAHeldFolder)
+{
+    setActiveForTesting(std::nullopt);
+    EXPECT_FALSE(readHandedOverFiles("themes", ".toml").has_value()) << "read by path then, if at all";
+
+    setActiveForTesting(handedDir());
+    EXPECT_FALSE(readHandedOverFiles("themes", ".toml").has_value()) << "a test hook's folder is no hand-off";
+
+    markLessPrivilegedFolder();
+    EXPECT_FALSE(readHandedOverFiles("themes", ".toml").has_value()) << "a root session for a user holds no folder";
+}
+
+TEST_F(ReadHandedOverFilesTest, AHandOffWhoseFolderIsNoLongerHeldFailsClosed)
+{
+    auto folder = std::make_shared<ScriptedHandedOverFolder>(handedDir(),
+                                                             std::vector<std::filesystem::path>{"mine.toml"},
+                                                             std::map<std::filesystem::path, ScriptedHandedOverFolder::ReadResult>{});
+    adoptHandedOver(handedDir(), folder);
+    folder.reset();
+
+    const auto files = readHandedOverFiles("themes", ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_FALSE(files->has_value()) << "read by path instead";
+    EXPECT_TRUE(files->error().contains("isn't held")) << files->error();
+
+    adoptHandedOver(handedDir());
+    const auto neverHeld = readHandedOverFiles("themes", ".toml");
+    ASSERT_TRUE(neverHeld.has_value());
+    EXPECT_FALSE(neverHeld->has_value()) << "handed over with no held folder at all";
+}
+
+TEST_F(ReadHandedOverFilesTest, OnlyFilesWithTheExtensionAreReadInTheOrderListed)
+{
+    const std::filesystem::path themes = "themes";
+    const auto folder = std::make_shared<ScriptedHandedOverFolder>(
+        handedDir(),
+        std::vector<std::filesystem::path>{"b.toml", "notes.txt", "a.toml", "backup.toml.bak", "toml", ".toml", "c.tom"},
+        std::map<std::filesystem::path, ScriptedHandedOverFolder::ReadResult>{
+            {themes / "a.toml", std::optional<std::string>("[meta]\nname = \"A\"\n")},
+            {themes / "b.toml", std::optional<std::string>("[meta]\nname = \"B\"\n")},
+        });
+    adoptHandedOver(handedDir(), folder);
+
+    const auto files = readHandedOverFiles(themes, ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_TRUE(files->has_value()) << files->error();
+    ASSERT_EQ((*files)->size(), 2U);
+    EXPECT_EQ((**files)[0].path, handedDir() / themes / "b.toml") << "the full path, for what is logged and shown";
+    EXPECT_EQ((**files)[0].text, "[meta]\nname = \"B\"\n");
+    EXPECT_EQ((**files)[1].path, handedDir() / themes / "a.toml");
+    EXPECT_EQ((**files)[1].text, "[meta]\nname = \"A\"\n");
+    EXPECT_EQ(folder->listed(), std::vector<std::filesystem::path>{themes});
+    EXPECT_EQ(folder->read(), (std::vector<std::filesystem::path>{themes / "b.toml", themes / "a.toml"})) << "nothing else is even opened";
+}
+
+TEST_F(ReadHandedOverFilesTest, AnEmptyFolderIsNoFiles)
+{
+    const auto folder = std::make_shared<ScriptedHandedOverFolder>(
+        handedDir(), std::vector<std::filesystem::path>{}, std::map<std::filesystem::path, ScriptedHandedOverFolder::ReadResult>{});
+    adoptHandedOver(handedDir(), folder);
+
+    const auto files = readHandedOverFiles("themes", ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_TRUE(files->has_value()) << files->error();
+    EXPECT_TRUE((*files)->empty());
+}
+
+// The folder on disk, through HandedOverTestFolder: a themes folder that isn't there is no themes, not an error.
+TEST_F(ReadHandedOverFilesTest, AMissingFolderIsNoFiles)
+{
+    const std::filesystem::path dir = Platform::handedOverFolderPath(
+        std::filesystem::temp_directory_path() /
+        std::format("tasksmack-handed-over-missing-{}", std::chrono::steady_clock::now().time_since_epoch().count()));
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const auto folder = std::make_shared<TestSupport::HandedOverTestFolder>(dir);
+    adoptHandedOver(dir, folder);
+
+    const auto files = readHandedOverFiles("themes", ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_TRUE(files->has_value()) << files->error();
+    EXPECT_TRUE((*files)->empty());
+    std::filesystem::remove_all(dir, ec);
+}
+
+TEST_F(ReadHandedOverFilesTest, AFolderThatCantBeListedIsAnError)
+{
+    const auto folder = std::make_shared<ScriptedHandedOverFolder>(handedDir(),
+                                                                   std::vector<std::filesystem::path>{},
+                                                                   std::map<std::filesystem::path, ScriptedHandedOverFolder::ReadResult>{},
+                                                                   std::string("themes is a link, junction or mount point"));
+    adoptHandedOver(handedDir(), folder);
+
+    const auto files = readHandedOverFiles("themes", ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_FALSE(files->has_value());
+    EXPECT_EQ(files->error(), "themes is a link, junction or mount point") << "the folder's own reason";
+}
+
+// A file the held folder refuses (a link, a hard link, one too large) is skipped, saying which and why; the rest are
+// still read. One gone since the listing is skipped quietly.
+TEST_F(ReadHandedOverFilesTest, AFileThatCantBeReadIsSkippedAndLoggedAndTheRestAreRead)
+{
+    const std::filesystem::path themes = "themes";
+    const auto folder =
+        std::make_shared<ScriptedHandedOverFolder>(handedDir(),
+                                                   std::vector<std::filesystem::path>{"gone.toml", "linked.toml", "mine.toml"},
+                                                   std::map<std::filesystem::path, ScriptedHandedOverFolder::ReadResult>{
+                                                       {themes / "linked.toml", std::unexpected(std::string("it is hard-linked"))},
+                                                       {themes / "mine.toml", std::optional<std::string>("[meta]\nname = \"Mine\"\n")},
+                                                   });
+    adoptHandedOver(handedDir(), folder);
+
+    const auto files = readHandedOverFiles(themes, ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_TRUE(files->has_value()) << files->error();
+    ASSERT_EQ((*files)->size(), 1U);
+    EXPECT_EQ((**files)[0].path, handedDir() / themes / "mine.toml");
+
+    const std::string logged = log();
+    EXPECT_TRUE(logged.contains("Skipping")) << logged;
+    EXPECT_TRUE(logged.contains(Core::pathToUtf8(handedDir() / themes / "linked.toml"))) << logged;
+    EXPECT_TRUE(logged.contains("it is hard-linked")) << logged;
+    EXPECT_FALSE(logged.contains("gone.toml")) << "a file gone since the listing isn't worth a warning: " << logged;
 }
 
 } // namespace

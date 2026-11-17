@@ -3,6 +3,7 @@
 // a reparse point after the pin, an open whose final path is elsewhere); the opens themselves run for real in a
 // folder of this test's own under the temp folder.
 
+#include "Core/ConfigDirOverride.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -17,6 +18,7 @@
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -240,8 +242,8 @@ class HeldScratchFolder
     std::filesystem::path m_Path;
 };
 
-/// @p scratch held with every real call, as checkConfigDir() holds a folder.
-[[nodiscard]] PinnedFolder holdReally(const HeldScratchFolder& scratch, PinnedFolderFunctions functions = {})
+/// A handle on @p scratch opened as checkConfigDir() opens the folder it holds.
+[[nodiscard]] UniqueHandle heldHandleOf(const HeldScratchFolder& scratch)
 {
     UniqueHandle held(CreateFileW(scratch.path().c_str(),
                                   FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | READ_CONTROL,
@@ -251,7 +253,13 @@ class HeldScratchFolder
                                   FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
                                   nullptr));
     EXPECT_TRUE(held) << GetLastError();
-    return {scratch.path(), std::move(held), functions};
+    return held;
+}
+
+/// @p scratch held with every real call, as checkConfigDir() holds a folder.
+[[nodiscard]] PinnedFolder holdReally(const HeldScratchFolder& scratch, PinnedFolderFunctions functions = {})
+{
+    return {scratch.path(), heldHandleOf(scratch), functions};
 }
 
 /// The names of the entries directly in @p folder, sorted.
@@ -568,6 +576,141 @@ TEST(PinnedFolderTest, AConfigHeldOpenWithShareDeleteIsStillReplaced)
     const auto replaced = folder.replaceFile(L"config.toml", "x = 2\n");
     ASSERT_TRUE(replaced.has_value()) << replaced.error();
     EXPECT_EQ(contentsOf(scratch.path() / L"config.toml"), "x = 2\n");
+}
+
+// ========== readHandedOverFiles() through the real held folder (#4094) ==========
+
+/// @p folder handed over to Core::ConfigDirOverride for the scope's length, as main.cpp hands over the folder it
+/// checked and holds; what active() was is put back after.
+class ScopedHandOff
+{
+  public:
+    explicit ScopedHandOff(const std::shared_ptr<const PinnedFolder>& folder) : m_Previous(Core::ConfigDirOverride::active())
+    {
+        Core::ConfigDirOverride::adoptHandedOver(folder->path(), folder);
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: what escapes it ends the run, as a failed test should
+    ~ScopedHandOff()
+    {
+        Core::ConfigDirOverride::setActiveForTesting(m_Previous);
+    }
+    ScopedHandOff(const ScopedHandOff&) = delete;
+    ScopedHandOff& operator=(const ScopedHandOff&) = delete;
+    ScopedHandOff(ScopedHandOff&&) = delete;
+    ScopedHandOff& operator=(ScopedHandOff&&) = delete;
+
+  private:
+    std::optional<std::filesystem::path> m_Previous;
+};
+
+/// The names of @p files, relative to @p folder.
+[[nodiscard]] std::vector<std::wstring> namesOf(const std::vector<Core::ConfigDirOverride::HandedOverFile>& files,
+                                                const std::filesystem::path& folder)
+{
+    std::vector<std::wstring> names;
+    names.reserve(files.size());
+    for (const auto& file : files)
+    {
+        names.push_back(file.path.lexically_relative(folder).native());
+    }
+    return names;
+}
+
+// The user themes of a hand-off: only the plain .toml files in its themes folder are read, through the held folder. A
+// folder named like a theme, a junction named like one, and a file hard-linked from outside are skipped; a junction
+// needs no privilege, so this runs unelevated.
+TEST(PinnedFolderTest, HandedOverThemesAreThePlainTomlFilesOfTheHeldFolder)
+{
+    const TargetFolder target;
+    std::ofstream(target.path() / L"elsewhere.toml", std::ios::binary) << "[meta]\nname = \"Elsewhere\"\n";
+    const HeldScratchFolder scratch;
+    const std::filesystem::path themes = scratch.path() / L"themes";
+    std::filesystem::create_directory(themes);
+    std::ofstream(themes / L"mine.toml", std::ios::binary) << "[meta]\nname = \"Mine\"\n";
+    std::ofstream(themes / L"other.toml", std::ios::binary) << "[meta]\nname = \"Other\"\n";
+    std::ofstream(themes / L"notes.txt", std::ios::binary) << "not a theme\n";
+    std::filesystem::create_directory(themes / L"folder.toml");
+    ASSERT_NE(CreateHardLinkW((themes / L"planted.toml").c_str(), (target.path() / L"elsewhere.toml").c_str(), nullptr), FALSE)
+        << GetLastError();
+    std::filesystem::create_directory(themes / L"junction.toml");
+    if (const auto why = makeMountPoint(themes / L"junction.toml", target.path()); why.has_value())
+    {
+        GTEST_SKIP() << "can't make a mount point here: " << *why;
+    }
+    {
+        const auto folder = std::make_shared<const PinnedFolder>(scratch.path(), heldHandleOf(scratch));
+        const ScopedHandOff handOff(folder);
+        const auto files = Core::ConfigDirOverride::readHandedOverFiles(L"themes", ".toml");
+        ASSERT_TRUE(files.has_value()) << "a hand-off reads through its held folder";
+        ASSERT_TRUE(files->has_value()) << files->error();
+        EXPECT_EQ(namesOf(**files, scratch.path()), (std::vector<std::wstring>{LR"(themes\mine.toml)", LR"(themes\other.toml)"}));
+        ASSERT_EQ((*files)->size(), 2U);
+        EXPECT_EQ((**files)[0].text, "[meta]\nname = \"Mine\"\n");
+        EXPECT_EQ((**files)[1].text, "[meta]\nname = \"Other\"\n");
+    }
+    removeMountPoint(themes / L"junction.toml");
+}
+
+TEST(PinnedFolderTest, HandedOverThemesFolderThatIsMissingOrEmptyIsNoThemes)
+{
+    const HeldScratchFolder scratch;
+    const auto folder = std::make_shared<const PinnedFolder>(scratch.path(), heldHandleOf(scratch));
+    const ScopedHandOff handOff(folder);
+
+    const auto missing = Core::ConfigDirOverride::readHandedOverFiles(L"themes", ".toml");
+    ASSERT_TRUE(missing.has_value());
+    ASSERT_TRUE(missing->has_value()) << missing->error();
+    EXPECT_TRUE((*missing)->empty());
+
+    std::filesystem::create_directory(scratch.path() / L"themes");
+    const auto empty = Core::ConfigDirOverride::readHandedOverFiles(L"themes", ".toml");
+    ASSERT_TRUE(empty.has_value());
+    ASSERT_TRUE(empty->has_value()) << empty->error();
+    EXPECT_TRUE((*empty)->empty());
+}
+
+// The themes folder itself a junction to a folder elsewhere: nothing is listed through it, and the hand-off says so.
+TEST(PinnedFolderTest, HandedOverThemesFolderThatIsAJunctionIsAnError)
+{
+    const TargetFolder target;
+    std::ofstream(target.path() / L"elsewhere.toml", std::ios::binary) << "[meta]\nname = \"Elsewhere\"\n";
+    const HeldScratchFolder scratch;
+    std::filesystem::create_directory(scratch.path() / L"themes");
+    if (const auto why = makeMountPoint(scratch.path() / L"themes", target.path()); why.has_value())
+    {
+        GTEST_SKIP() << "can't make a mount point here: " << *why;
+    }
+    {
+        const auto folder = std::make_shared<const PinnedFolder>(scratch.path(), heldHandleOf(scratch));
+        const ScopedHandOff handOff(folder);
+        const auto files = Core::ConfigDirOverride::readHandedOverFiles(L"themes", ".toml");
+        ASSERT_TRUE(files.has_value());
+        EXPECT_FALSE(files->has_value()) << "listed through the junction";
+    }
+    removeMountPoint(scratch.path() / L"themes");
+}
+
+// PinnedFolder reads at most 16 MiB of a file: a larger theme is skipped, and the others are still read.
+TEST(PinnedFolderTest, HandedOverThemeLargerThanTaskSmackReadsIsSkipped)
+{
+    const HeldScratchFolder scratch;
+    const std::filesystem::path themes = scratch.path() / L"themes";
+    std::filesystem::create_directory(themes);
+    std::ofstream(themes / L"mine.toml", std::ios::binary) << "[meta]\nname = \"Mine\"\n";
+    {
+        std::ofstream huge(themes / L"huge.toml", std::ios::binary);
+        const std::string megabyte(std::size_t{1024} * 1024, '#');
+        for (int i = 0; i < 17; ++i)
+        {
+            huge << megabyte;
+        }
+    }
+    const auto folder = std::make_shared<const PinnedFolder>(scratch.path(), heldHandleOf(scratch));
+    const ScopedHandOff handOff(folder);
+    const auto files = Core::ConfigDirOverride::readHandedOverFiles(L"themes", ".toml");
+    ASSERT_TRUE(files.has_value());
+    ASSERT_TRUE(files->has_value()) << files->error();
+    EXPECT_EQ(namesOf(**files, scratch.path()), std::vector<std::wstring>{LR"(themes\mine.toml)"});
 }
 
 } // namespace

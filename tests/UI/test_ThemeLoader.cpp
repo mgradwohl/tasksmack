@@ -1,3 +1,4 @@
+#include "Core/Utf8Path.h"
 #include "UI/ColorContrast.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
@@ -2198,6 +2199,117 @@ TEST(ThemeLoaderTest, SelectionPrimaryFromTheThemeIsRaisedWhenTooFaint)
     {
         EXPECT_GE(ColorContrast::contrastRatio(scheme.selectionPrimary, row), ColorContrast::SELECTION_PRIMARY_CONTRAST_MIN);
     }
+}
+
+// ========== loadThemeInfoFromString (a hand-off's user themes, read through the folder held, #3774, #4094) ==========
+
+/// spdlog's default logger captured for the test's length, so a test can read what was logged.
+class ThemeInfoFromStringTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_PreviousLogger = spdlog::default_logger();
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("theme-info-from-string-test", std::make_shared<spdlog::sinks::ostream_sink_st>(m_Log)));
+    }
+
+    void TearDown() override
+    {
+        spdlog::set_default_logger(m_PreviousLogger);
+    }
+
+    [[nodiscard]] std::string log() const
+    {
+        return m_Log.str();
+    }
+
+  private:
+    std::ostringstream m_Log;
+    std::shared_ptr<spdlog::logger> m_PreviousLogger;
+};
+
+TEST_F(ThemeInfoFromStringTest, AValidThemeIsNamedByItsMetaAndIdentifiedByItsFile)
+{
+    const std::filesystem::path path = std::filesystem::path("handed-over") / "themes" / "my-theme.toml";
+    const auto info = ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"My Theme\"\ndescription = \"From a hand-off\"\n", path);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->id, "my-theme") << "the file's stem";
+    EXPECT_EQ(info->name, "My Theme");
+    EXPECT_EQ(info->description, "From a hand-off");
+    EXPECT_EQ(info->path, path) << "the file it came from, though nothing is opened";
+}
+
+TEST_F(ThemeInfoFromStringTest, AnIdIsReadFromANonAsciiFileNameAsUtf8)
+{
+    const auto info = ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Th\xC3\xA8me\"\n", std::filesystem::path(u8"thème.toml"));
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->id, "th\xC3\xA8me");
+    EXPECT_EQ(info->name, "Th\xC3\xA8me");
+}
+
+TEST_F(ThemeInfoFromStringTest, MissingMetaFieldsFallBackToTheFilesId)
+{
+    const auto noMeta = ThemeLoader::loadThemeInfoFromString(k_FullThemeTomlBody, "no-meta.toml");
+    ASSERT_TRUE(noMeta.has_value());
+    EXPECT_EQ(noMeta->name, "no-meta");
+    EXPECT_TRUE(noMeta->description.empty());
+
+    const auto noName = ThemeLoader::loadThemeInfoFromString("[meta]\ndescription = \"Unnamed\"\n", "no-name.toml");
+    ASSERT_TRUE(noName.has_value());
+    EXPECT_EQ(noName->name, "no-name");
+    EXPECT_EQ(noName->description, "Unnamed");
+
+    const auto noDescription = ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Mine\"\n", "no-description.toml");
+    ASSERT_TRUE(noDescription.has_value());
+    EXPECT_EQ(noDescription->name, "Mine");
+    EXPECT_TRUE(noDescription->description.empty());
+
+    const auto empty = ThemeLoader::loadThemeInfoFromString("", "empty.toml");
+    ASSERT_TRUE(empty.has_value()) << "an empty file is valid TOML";
+    EXPECT_EQ(empty->name, "empty");
+
+    // A [meta] that isn't a table, or a name that isn't a string, is no name at all.
+    const auto metaNotATable = ThemeLoader::loadThemeInfoFromString("meta = 3\n", "meta-not-a-table.toml");
+    ASSERT_TRUE(metaNotATable.has_value());
+    EXPECT_EQ(metaNotATable->name, "meta-not-a-table");
+    const auto nameNotAString = ThemeLoader::loadThemeInfoFromString("[meta]\nname = 7\n", "name-not-a-string.toml");
+    ASSERT_TRUE(nameNotAString.has_value());
+    EXPECT_EQ(nameNotAString->name, "name-not-a-string");
+    EXPECT_TRUE(log().empty()) << log();
+}
+
+// Invalid TOML is no theme, and the failure names the file the text came from, so a user can find it.
+TEST_F(ThemeInfoFromStringTest, InvalidTomlIsNoThemeAndTheMessageNamesItsFile)
+{
+    const std::filesystem::path path = std::filesystem::path("handed-over") / "themes" / "broken.toml";
+    EXPECT_FALSE(ThemeLoader::loadThemeInfoFromString("[meta\nname = \"Broken\"\n", path).has_value());
+    const std::string logged = log();
+    EXPECT_TRUE(logged.contains("Failed to parse theme")) << logged;
+    EXPECT_TRUE(logged.contains(Core::pathToUtf8(path))) << logged;
+}
+
+TEST_F(ThemeInfoFromStringTest, MatchesLoadThemeInfoOnTheSameText)
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack_theme_info_from_string";
+    std::error_code ec;
+    std::filesystem::create_directories(dir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::string toml = "[meta]\nname = \"Same Either Way\"\ndescription = \"Both readers\"\n";
+    const std::filesystem::path path = dir / "same.toml";
+    {
+        std::ofstream file(path, std::ios::binary | std::ios::trunc);
+        file << toml;
+    }
+    const auto fromFile = ThemeLoader::loadThemeInfo(path);
+    const auto fromString = ThemeLoader::loadThemeInfoFromString(toml, path);
+    std::filesystem::remove_all(dir, ec);
+    ASSERT_TRUE(fromFile.has_value());
+    ASSERT_TRUE(fromString.has_value());
+    EXPECT_EQ(fromString->id, fromFile->id);
+    EXPECT_EQ(fromString->name, fromFile->name);
+    EXPECT_EQ(fromString->description, fromFile->description);
+    EXPECT_EQ(fromString->path, fromFile->path);
 }
 
 } // namespace

@@ -11,10 +11,18 @@
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <implot.h>
+#include <spdlog/logger.h>
+#include <spdlog/sinks/ostream_sink.h>
+#include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <cstddef>
 #include <filesystem>
+#include <memory>
+#include <sstream>
 #include <string>
+#include <string_view>
+#include <vector>
 
 namespace UI
 {
@@ -302,6 +310,100 @@ TEST_F(ThemeRealTest, PushRegularFontSelectsTheBodyFontsSizeNotTheFramesStarting
 
     theme.setFontPointSize(original);
     static_cast<void>(theme.applyPendingStyleChanges());
+}
+
+/// The first discovered theme with id @p id, or null.
+[[nodiscard]] const DiscoveredTheme* findTheme(std::string_view id)
+{
+    const auto& themes = Theme::get().discoveredThemes();
+    const auto it = std::ranges::find(themes, id, &DiscoveredTheme::id);
+    return it != themes.end() ? &*it : nullptr;
+}
+
+/// spdlog's default logger captured while it lives; the previous one is put back after.
+class ScopedLogCapture
+{
+  public:
+    ScopedLogCapture() : m_Previous(spdlog::default_logger())
+    {
+        spdlog::set_default_logger(
+            std::make_shared<spdlog::logger>("theme-real-test", std::make_shared<spdlog::sinks::ostream_sink_st>(m_Log)));
+    }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - a test fixture: what escapes it ends the run, as a failed test should
+    ~ScopedLogCapture()
+    {
+        spdlog::set_default_logger(m_Previous);
+    }
+    ScopedLogCapture(const ScopedLogCapture&) = delete;
+    ScopedLogCapture& operator=(const ScopedLogCapture&) = delete;
+    ScopedLogCapture(ScopedLogCapture&&) = delete;
+    ScopedLogCapture& operator=(ScopedLogCapture&&) = delete;
+
+    [[nodiscard]] std::string text() const
+    {
+        return m_Log.str();
+    }
+
+  private:
+    std::ostringstream m_Log;
+    std::shared_ptr<spdlog::logger> m_Previous;
+};
+
+// #4094: a hand-off's user themes arrive already read, through the folder held (#3774). Each good one is offered beside
+// the bundled ones, and a bad one is skipped, saying which file and why. The ids are this test's own, so no bundled
+// theme is replaced for the tests after it.
+TEST_F(ThemeRealTest, ThemesFromSourcesAreOfferedAndABadOneIsSkippedWithItsReason)
+{
+    const std::size_t bundled = Theme::get().discoveredThemes().size();
+    const std::filesystem::path themesDir = std::filesystem::path("handed-over") / "themes";
+    const std::filesystem::path broken = themesDir / "handoff-4094-broken.toml";
+    const std::vector<Theme::ThemeSource> sources{
+        {.path = themesDir / "handoff-4094-zebra.toml", .text = "[meta]\nname = \"Hand-off Zebra\"\ndescription = \"Last\"\n"},
+        {.path = broken, .text = "[meta\nname = \"Broken\"\n"},
+        {.path = themesDir / "handoff-4094-aardvark.toml", .text = "[meta]\nname = \"Hand-off Aardvark\"\n[charts]\ncpu = \"#336699\"\n"},
+    };
+    const ScopedLogCapture log;
+    Theme::get().loadThemes(sources, themesDir);
+
+    EXPECT_EQ(Theme::get().discoveredThemes().size(), bundled + 2) << "the two good ones, added to the bundled";
+    const DiscoveredTheme* const zebra = findTheme("handoff-4094-zebra");
+    const DiscoveredTheme* const aardvark = findTheme("handoff-4094-aardvark");
+    ASSERT_NE(zebra, nullptr);
+    ASSERT_NE(aardvark, nullptr);
+    EXPECT_EQ(zebra->name, "Hand-off Zebra");
+    EXPECT_EQ(zebra->description, "Last");
+    EXPECT_EQ(zebra->path, themesDir / "handoff-4094-zebra.toml") << "the file each came from";
+    EXPECT_EQ(aardvark->name, "Hand-off Aardvark");
+    EXPECT_EQ(findTheme("handoff-4094-broken"), nullptr) << "a theme that doesn't parse isn't offered";
+
+    // Its colours are the source's, read from the text, never from a file.
+    Theme::get().setThemeById("handoff-4094-aardvark");
+    static_cast<void>(Theme::get().applyPendingStyleChanges());
+    ASSERT_EQ(Theme::get().currentThemeId(), "handoff-4094-aardvark");
+    EXPECT_NEAR(Theme::get().scheme().chartCpu.x, 0x33 / 255.0F, 0.01F);
+    EXPECT_NEAR(Theme::get().scheme().chartCpu.y, 0x66 / 255.0F, 0.01F);
+    EXPECT_NEAR(Theme::get().scheme().chartCpu.z, 0x99 / 255.0F, 0.01F);
+
+    const std::string logged = log.text();
+    EXPECT_TRUE(logged.contains("Failed to parse theme")) << logged;
+    EXPECT_TRUE(logged.contains("handoff-4094-broken.toml")) << "the skipped file is named: " << logged;
+    Theme::get().setThemeById("mocha");
+    static_cast<void>(Theme::get().applyPendingStyleChanges());
+}
+
+TEST_F(ThemeRealTest, NoGoodThemeFromSourcesKeepsTheThemesLoaded)
+{
+    const std::size_t bundled = Theme::get().discoveredThemes().size();
+    const std::filesystem::path themesDir = std::filesystem::path("handed-over") / "themes";
+    const ScopedLogCapture log;
+    Theme::get().loadThemes(std::vector<Theme::ThemeSource>{}, themesDir);
+    EXPECT_EQ(Theme::get().discoveredThemes().size(), bundled) << "an empty themes folder changes nothing";
+
+    Theme::get().loadThemes(std::vector<Theme::ThemeSource>{{.path = themesDir / "handoff-4094-bad.toml", .text = "=\n"}}, themesDir);
+    EXPECT_EQ(Theme::get().discoveredThemes().size(), bundled);
+    EXPECT_EQ(findTheme("handoff-4094-bad"), nullptr);
+    EXPECT_TRUE(log.text().contains("handoff-4094-bad.toml")) << log.text();
+    EXPECT_TRUE(log.text().contains("Failed to load any themes from")) << log.text();
 }
 
 } // namespace
