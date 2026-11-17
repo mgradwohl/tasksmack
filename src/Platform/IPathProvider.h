@@ -23,7 +23,7 @@ class IPathProvider
 
     /// Get the user's configuration directory.
     /// Linux: ~/.config/tasksmack or $XDG_CONFIG_HOME/tasksmack
-    /// Windows: %APPDATA%/TaskSmack
+    /// Windows: the roaming AppData known folder (usually %APPDATA%)/TaskSmack
     [[nodiscard]] virtual std::filesystem::path getUserConfigDir() const = 0;
 };
 
