@@ -43,6 +43,7 @@
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
 #include "Platform/Linux/RootCapabilities.h"
+#include "Platform/Linux/SdlEnvironment.h"
 #include "Platform/Linux/SessionUser.h"
 
 #include <system_error>
@@ -386,6 +387,20 @@ auto runApp(const App::LaunchOptions& launch) -> int
             spdlog::info("Config directory (the launching user's, handed over): {}", Core::pathToUtf8(*configDir));
         }
     }
+#ifdef __linux__
+    // Removed in main(), before any SDL call (#4111). Names only: a value may be a path the user would rather not log.
+    if (const auto& sdlRemoved = Platform::SdlEnvironment::removedFromThisProcess(); !sdlRemoved.empty())
+    {
+        std::string names;
+        for (const std::string& name : sdlRemoved)
+        {
+            names += names.empty() ? name : ", " + name;
+        }
+        spdlog::warn("Ignoring the SDL environment variables {}: TaskSmack runs as root for a user, and takes no SDL "
+                     "setting from the environment they started it with",
+                     names);
+    }
+#endif
     if (Core::ConfigDirOverride::testHookIgnored())
     {
         spdlog::warn("{} is set but ignored: TaskSmack runs as administrator, and takes no folder from an environment the "
@@ -782,6 +797,12 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog initialization may theoretically throw; acceptable at program start
 auto main(int argc, char** argv) -> int
 {
+#ifdef __linux__
+    // First, before any SDL call (#4111): run as root for a user (sudo -E, an env_keep list), the environment is the
+    // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
+    // SDL variable goes. The rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
+    Platform::SdlEnvironment::removeForThisProcess(Platform::SessionUser::invokingUserHome().has_value());
+#endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
     return runAppGuarded(App::parseLaunchOptions(arguments));
