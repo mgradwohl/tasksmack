@@ -15,6 +15,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 
 /// The pure parts of LinuxProcessActions::createDump() (#807): the core file's name, the gcore command
 /// that writes it, and what is said when it can't. gdb's gcore attaches to the process with ptrace,
@@ -217,6 +218,16 @@ inline constexpr int DETACH_WAIT_MS = 2000;
 [[nodiscard]] inline std::optional<std::string> rootOnlyFolderRefusal(const std::filesystem::path& directory,
                                                                       const std::function<int(const char*, struct stat*)>& lstatOf)
 {
+    // "." and ".." are refused as given, before anything is normalized: normalizing drops "name/.." pairs the kernel
+    // still resolves through name, a link (/proc/<pid>/cwd/..) included, so the folder checked wouldn't be the one
+    // gcore writes in (the #4177 review).
+    for (const std::filesystem::path& part : directory)
+    {
+        if (part == "." || part == "..")
+        {
+            return std::format("{} has a \"{}\" in it", directory.string(), part.string());
+        }
+    }
     const std::filesystem::path normal = directory.lexically_normal();
     if (!normal.is_absolute())
     {
@@ -259,6 +270,27 @@ inline constexpr int DETACH_WAIT_MS = 2000;
         {
             return refusal;
         }
+    }
+    return std::nullopt;
+}
+
+/// FUSE's statfs f_type (linux/magic.h's FUSE_SUPER_MAGIC).
+inline constexpr long FUSE_FILESYSTEM_TYPE = 0x65735546;
+
+/// Run as root (#4176): why the filesystem the dump folder is on may be one a user controls, or nullopt. A filesystem
+/// a user mounted (udisks: a disk image they built, nosuid,nodev) or a FUSE one can report root as every entry's owner
+/// and hold links the user planted, so rootOnlyFolderRefusal()'s ownership is no proof there (the #4177 review).
+/// @p vfsFlags is statvfs()'s f_flag, @p fsType statfs()'s f_type.
+[[nodiscard]] inline std::optional<std::string>
+userMountRefusal(const std::filesystem::path& directory, unsigned long vfsFlags, long fsType)
+{
+    if (fsType == FUSE_FILESYSTEM_TYPE)
+    {
+        return std::format("{} is on a FUSE filesystem, which a user may run", directory.string());
+    }
+    if ((vfsFlags & (ST_NOSUID | ST_NODEV)) != 0)
+    {
+        return std::format("{} is on a filesystem mounted nosuid or nodev, as a user's own mounts are", directory.string());
     }
     return std::nullopt;
 }

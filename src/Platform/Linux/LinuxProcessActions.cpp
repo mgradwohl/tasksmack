@@ -57,6 +57,7 @@
 #include <spawn.h>
 #include <sys/poll.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/types.h> // NOLINT(misc-include-cleaner) - pid_t; clang-tidy 23 maps it to no header
 // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG, WIFEXITED and WEXITSTATUS, which tidy maps elsewhere (see their uses)
@@ -781,7 +782,14 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     // can be planted in it, nor the folder swapped. Not root, it writes as this account, into its own files.
     if (::geteuid() == 0)
     {
-        if (const std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat))
+        std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat);
+        if (struct statvfs vfs = {}; !refusal.has_value() && ::statvfs(directory.c_str(), &vfs) == 0)
+        {
+            struct statfs fs = {};
+            refusal = LinuxCoreDump::userMountRefusal(
+                directory, vfs.f_flag, ::statfs(directory.c_str(), &fs) == 0 ? static_cast<long>(fs.f_type) : 0);
+        }
+        if (refusal.has_value())
         {
             spdlog::warn("Not dumping PID {}: {}", target.pid, *refusal);
             return std::unexpected(std::format("TaskSmack runs as root, so a dump goes only into a folder only root may change, "
@@ -829,12 +837,28 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     // gcore writes "<prefix>.<pid>"; the prefix marks it partial until it is renamed into place.
     const std::filesystem::path prefix = file.string() + ".partial";
     const std::filesystem::path written = LinuxCoreDump::gcoreOutputFile(prefix, target.pid);
+    // gdb's file, made first by this process: owner-only from the start (#4175), so no one opens it mid-write and keeps
+    // reading, and the name reserved (O_EXCL, O_NOFOLLOW) against a link planted where gdb writes by path (#4176). gdb
+    // writes into it (fopen "w" truncates an empty file, and bfd doesn't remove one first).
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int partial = ::open(written.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (partial < 0)
+        {
+            const int error = errno;
+            releaseName();
+            return std::unexpected(
+                std::format("Couldn't make the dump's working file {}: {}", written.string(), std::system_category().message(error)));
+        }
+        ::close(partial);
+    }
     const bool wasStopped = processIsStopped(syscalls(), target.pid);
     const std::int32_t tracerBefore = syscalls().tracerPid(target.pid).value_or(0);
     spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
     const ToolRun run = runCancellable(syscalls(), LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
     if (run.spawnError)
     {
+        std::filesystem::remove(written, ec);
         releaseName();
         return std::unexpected(std::format("Couldn't start {}: {}", gcore, run.spawnError.message()));
     }
@@ -862,7 +886,8 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::info("Dump of PID {} cancelled", target.pid);
         return std::unexpected(std::string(LinuxCoreDump::CANCELLED_MESSAGE));
     }
-    if (run.exitStatus != 0 || !std::filesystem::exists(written, ec))
+    // The working file was made empty above (#4176): a core is one gdb wrote into, not merely one that exists.
+    if (run.exitStatus != 0 || !std::filesystem::exists(written, ec) || std::filesystem::file_size(written, ec) == 0 || ec)
     {
         std::filesystem::remove(written, ec);
         releaseName();
@@ -870,10 +895,10 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
     }
-    // Owner-only before it's published (#4175): gdb made it with the umask (usually 0644), and it holds the whole of
-    // the process's memory. By path: run as root, the folder is one only root may change (above); not root, it's this
-    // account's own file.
-    if (::chmod(written.c_str(), S_IRUSR | S_IWUSR) != 0)
+    // Still the plain file made above (a shared folder's member could have swapped a link in), and owner-only (#4175)
+    // before it's published.
+    if (struct stat finished = {};
+        ::lstat(written.c_str(), &finished) != 0 || !S_ISREG(finished.st_mode) || ::chmod(written.c_str(), S_IRUSR | S_IWUSR) != 0)
     {
         const int error = errno;
         std::filesystem::remove(written, ec);

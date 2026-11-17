@@ -3308,11 +3308,12 @@ TEST(LinuxProcessActionsDumpTest, ADumpSaysWhenItsFileCantBeCreatedOrNamed)
     const TestSupport::ScopedTempDir dumps("tasksmack_dump_name_out");
     const std::stop_source stop;
 
-    // gcore leaves a directory where the core should be: it can't be renamed over the reserved file.
-    LinuxProcessActions dirWriter(fakeDumpTools(work.path, "mkdir \"$2.$3\"\n"), syscallsWithPtrace(&ptraceAllowed));
+    // gcore leaves a directory where its working file was (#4176: TaskSmack makes that file first): not the plain file
+    // made, so it isn't published.
+    LinuxProcessActions dirWriter(fakeDumpTools(work.path, "rm -f \"$2.$3\" && mkdir \"$2.$3\"\n"), syscallsWithPtrace(&ptraceAllowed));
     const ProcessDumpResult unnamed = dirWriter.createDump(ownTarget(), dumps.path, stop.get_token());
     ASSERT_FALSE(unnamed.has_value());
-    EXPECT_TRUE(unnamed.error().starts_with("Couldn't name the dump file")) << unnamed.error();
+    EXPECT_TRUE(unnamed.error().contains("couldn't write a dump")) << unnamed.error() << ": no core was written into it";
     EXPECT_TRUE(filesIn(dumps.path).empty());
 
     if (::geteuid() == 0)

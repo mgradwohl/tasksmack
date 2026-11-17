@@ -16,6 +16,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 
 namespace Platform
 {
@@ -181,6 +182,21 @@ TEST(LinuxCoreDumpTest, ARootSessionsDumpFolderIsOneOnlyRootMayChange)
     EXPECT_TRUE(rootOnlyFolderRefusal("root/dumps", lstatOf).has_value()) << "relative";
     EXPECT_TRUE(rootOnlyFolderRefusal("/root/../tmp", lstatOf).has_value()) << "\"..\"";
     EXPECT_TRUE(rootOnlyFolderRefusal("/nowhere", lstatOf).has_value()) << "can't be read";
+    // A ".." as given is refused before normalizing, which would drop "link/.." and never look at the link the kernel
+    // follows (/proc/<pid>/cwd/.., the #4177 review); "." too.
+    EXPECT_TRUE(rootOnlyFolderRefusal("/var/link/..", lstatOf)->contains("\"..\"")) << "only /var would be checked";
+    EXPECT_TRUE(rootOnlyFolderRefusal("/root/./dumps", lstatOf)->contains("\".\""));
+}
+
+// #4176: a user's own mount (udisks: nosuid,nodev) or a FUSE filesystem can report root as every owner (the #4177
+// review): a root session's dump folder isn't on one.
+TEST(LinuxCoreDumpTest, ARootSessionsDumpFolderIsntOnAUsersMount)
+{
+    using Platform::LinuxCoreDump::userMountRefusal;
+    EXPECT_EQ(userMountRefusal("/root", 0, 0xEF53), std::nullopt) << "ext4, mounted at boot";
+    EXPECT_TRUE(userMountRefusal("/media/u/img/dumps", ST_NOSUID | ST_NODEV, 0xEF53).has_value());
+    EXPECT_TRUE(userMountRefusal("/media/u/img/dumps", ST_NODEV, 0xEF53).has_value());
+    EXPECT_TRUE(userMountRefusal("/run/user/1000/fuse", 0, Platform::LinuxCoreDump::FUSE_FILESYSTEM_TYPE)->contains("FUSE"));
 }
 
 } // namespace Platform
