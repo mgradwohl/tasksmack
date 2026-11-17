@@ -71,8 +71,10 @@ bundle per file instead (with attestations from v0.9.1), and earlier releases ha
 | Approvers | [mgradwohl](https://github.com/mgradwohl) |
 
 - **Committers and reviewers.** mgradwohl owns the repository and is its only committer and reviewer. AI coding
-  agents working for the maintainer open pull requests; they push nothing to `main` directly. Branch protection
-  on `main` requires the CI checks to pass, allows no force-pushes, and applies to administrators too. An agent may merge a pull request it opened only
+  agents working for the maintainer open pull requests; they push nothing to `main` directly. A repository ruleset
+  on `main` and every `release/*` branch requires a pull request, the CI checks to pass and a linear history, and
+  allows no force-pushes and no deleting the branch; it has no bypass list, so it applies to the owner and to
+  administrators too. An agent may merge a pull request it opened only
   once CI is green and every review thread on it is resolved. It never merges with administrator override,
   never force-pushes, and needs the maintainer's go-ahead to merge anyone else's pull request or take any
   other shared or hard-to-reverse action. These rules are in
