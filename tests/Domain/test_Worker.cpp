@@ -1113,6 +1113,25 @@ TEST(WorkerTest, CloseCancelsAndDropsWithoutWaitingForTheJobInFlight)
     EXPECT_EQ(ran.ids(), (std::vector<int>{1}));
 }
 
+// threadExited() (#4149): a closed worker's thread ends by itself, and the owner waits for that before destroying it,
+// so the destructor's join never waits on the owner's thread.
+TEST(WorkerTest, ThreadExitedSaysWhenAClosedWorkersThreadHasReturned)
+{
+    TestWorker worker(options(1, Admission::Refuse),
+                      [](TestJob& /*job*/, const std::stop_token& /*stop*/, TestWorker::JobContext& out) { out.finish(1.0); });
+    EXPECT_FALSE(worker.threadExited()) << "no thread has run yet";
+    EXPECT_EQ(worker.submit({.id = 1}), SubmitResult::Queued);
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_FALSE(worker.threadExited()) << "an idle worker's thread waits for work";
+    EXPECT_EQ(worker.close(), 0U);
+    const auto deadline = std::chrono::steady_clock::now() + WAIT;
+    while (!worker.threadExited() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::yield();
+    }
+    EXPECT_TRUE(worker.threadExited()) << "close() ends the thread without a join";
+}
+
 TEST(WorkerTest, AWorkerNeverSubmittedToStartsNoThreadAndStopsCleanly)
 {
     TestWorker worker(options(1, Admission::Refuse),
