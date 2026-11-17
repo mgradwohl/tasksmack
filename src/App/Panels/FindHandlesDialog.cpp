@@ -186,8 +186,10 @@ void runFindHandlesSearch(std::span<const Domain::HandleSearch::SearchProcess> p
 
 FindHandlesDialog::~FindHandlesDialog()
 {
-    // The worker stops between processes (or inside a password prompt) and is joined before the readers go.
+    // The worker stops between processes (or inside a password prompt) and is joined before the readers go; so are
+    // the retired ones, whose threads have ended or are ending.
     m_Worker.reset();
+    m_Retired.clear();
 }
 
 FindHandlesDialog::Capabilities FindHandlesDialog::capabilitiesOf(const Platform::IProcessOpenFilesReader* openFiles,
@@ -234,8 +236,25 @@ bool FindHandlesDialog::workerRunning() const noexcept
     return m_Worker != nullptr && m_Worker->state() == Domain::WorkerState::Running;
 }
 
+std::size_t FindHandlesDialog::retiredWorkers() const noexcept
+{
+    return m_Retired.size();
+}
+
+std::size_t FindHandlesDialog::workersRetired() const noexcept
+{
+    return m_WorkersRetired;
+}
+
+void FindHandlesDialog::reapRetiredWorkers() noexcept
+{
+    // A retired worker is closed, and its thread ends by itself; destroying it once it has returned joins at once.
+    std::erase_if(m_Retired, [](const std::unique_ptr<SearchWorker>& worker) { return worker->threadExited(); });
+}
+
 void FindHandlesDialog::retireIdleWorker() noexcept
 {
+    reapRetiredWorkers();
     // Submits come from this thread only, so a worker with nothing queued or in flight has no job coming; its last
     // generation is published before the job returns, and latest() stays readable after close().
     if (workerRunning() && !jobActive())
@@ -287,13 +306,17 @@ void FindHandlesDialog::startSearch(std::vector<Domain::HandleSearch::SearchProc
     {
         return; // no memory even to show it begin: the search doesn't, and the last results stay
     }
-    // A failed worker takes no more work: the next search gets a new one.
-    if (m_Worker != nullptr && m_Worker->state() != Domain::WorkerState::Running)
-    {
-        m_Worker.reset();
-    }
+    reapRetiredWorkers();
     try
     {
+        // A closed or failed worker takes no more work: the next search gets a new one. The old one is set aside,
+        // not destroyed, since its destructor would join its thread here, on the UI thread (#4149); it is destroyed
+        // once the thread has returned. When even setting it aside fails (no memory), the search can't start.
+        if (m_Worker != nullptr && m_Worker->state() != Domain::WorkerState::Running)
+        {
+            m_Retired.push_back(std::move(m_Worker)); // not moved from when it throws
+            ++m_WorkersRetired;
+        }
         if (m_Worker == nullptr)
         {
             m_Worker = std::make_unique<SearchWorker>(

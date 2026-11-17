@@ -50,6 +50,9 @@ struct LeadingButton
     /// until it is done. Cancel stays enabled.
     bool busy = false;
     bool* pressed = nullptr; ///< Set to true on the frame the button is pressed; may be null.
+    /// The confirm button alone is disabled: there is nothing to confirm until the leading button is used (the
+    /// dump confirm with no folder, #4141). The leading button and Cancel stay enabled.
+    bool confirmDisabled = false;
 };
 
 /// The same modal for a change that is not one of the ProcessActions, its confirm button labelled

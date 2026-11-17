@@ -205,6 +205,37 @@ TEST_F(InstanceLockTest, AsRootAnExistingLockFileIsHandedOver)
     EXPECT_TRUE(lock.error().starts_with("couldn't give " + lockPath.string())) << lock.error();
 }
 
+// #4156: run as root for a user, the lock's folder is never made, nor the lock opened, through a link of theirs.
+TEST_F(InstanceLockTest, RunAsRootForAUserALinkOfTheUsersOnTheWayIsRefused)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root, this test's own link is root's, which a root-for-a-user walk may follow";
+    }
+    const std::filesystem::path real = m_Dir / "real";
+    std::filesystem::create_directory(real);
+    std::filesystem::create_directory_symlink(real, m_Dir / "link");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    const InstanceLock lock(m_Dir / "link" / "tasksmack" / "tasksmack.lock", InstanceLock::Testing{.effectiveUid = 0});
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+    EXPECT_NE(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().contains("is a link of a user's")) << lock.error();
+    EXPECT_FALSE(std::filesystem::exists(real / "tasksmack")) << "nothing made through the link";
+}
+
+// A hard link planted as the lock (where fs.protected_hardlinks is off) is refused, never locked or handed over (#4166).
+TEST_F(InstanceLockTest, ALockFileWithAnotherNameIsRefused)
+{
+    const std::filesystem::path other = m_Dir / "other";
+    std::ofstream(other) << "someone else's";
+    std::filesystem::create_hard_link(other, m_Dir / "tasksmack.lock");
+    const InstanceLock lock(m_Dir / "tasksmack.lock", InstanceLock::Testing{.effectiveUid = 0});
+    EXPECT_NE(lock.status(), InstanceLock::Status::Acquired);
+    EXPECT_TRUE(lock.error().contains("isn't a plain file of its own")) << lock.error();
+}
+
 // Not root: nothing is handed over, and nothing to report.
 TEST_F(InstanceLockTest, NotRootNothingIsHandedOver)
 {
