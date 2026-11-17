@@ -66,7 +66,8 @@ std::filesystem::path LinuxPathProvider::getExecutableDir() const
 std::filesystem::path LinuxPathProvider::getUserConfigDir() const
 {
     // The same directory as config.toml (UserConfig), by the same rules (#2438): $XDG_CONFIG_HOME/tasksmack
-    // unless it's relative or climbs with "..", else ~/.config/tasksmack from $HOME or the passwd entry.
+    // unless it's relative or climbs with "..", or, run as root for a user, lies outside their home (#4153),
+    // else ~/.config/tasksmack from $HOME or the passwd entry.
     // Plain getenv, as UserConfig reads it: with file capabilities (setcap, as the elevation notice
     // suggests) secure_getenv hid both variables and sent the themes to the working directory. The
     // working directory is still the last resort, and an empty path if even that fails (PathService
