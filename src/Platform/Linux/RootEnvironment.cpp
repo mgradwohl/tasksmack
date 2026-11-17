@@ -3,7 +3,10 @@
 #include "SessionUser.h"
 
 #include <algorithm>
+#include <array>
+#include <charconv>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <functional>
@@ -11,11 +14,14 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 #include <vector>
 
+#include <fcntl.h>
 #include <pwd.h>
 #include <sys/stat.h>
+#include <sys/types.h>
 #include <unistd.h> // environ
 
 namespace Platform::RootEnvironment
@@ -42,6 +48,138 @@ std::optional<std::string> rootPasswdHome()
         return std::nullopt;
     }
     return std::string(entry.pw_dir);
+}
+
+/// The uid that started this root session, from what sudo, pkexec or doas set (SUDO_UID, PKEXEC_UID, DOAS_USER), or
+/// nullopt (su names no one).
+std::optional<uid_t> invokingUid()
+{
+    for (const char* name : {"SUDO_UID", "PKEXEC_UID"})
+    {
+        // NOLINTNEXTLINE(concurrency-mt-unsafe) - first thing in main(), before any thread
+        if (const char* text = std::getenv(name); text != nullptr && *text != '\0')
+        {
+            std::uint32_t uid = 0;
+            const std::string_view view(text);
+            if (std::from_chars(view.data(), view.data() + view.size(), uid).ptr == view.data() + view.size() && uid != 0)
+            {
+                return static_cast<uid_t>(uid);
+            }
+        }
+    }
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - as above
+    if (const char* doasUser = std::getenv("DOAS_USER"); doasUser != nullptr && *doasUser != '\0')
+    {
+        passwd entry{};
+        passwd* found = nullptr;
+        std::vector<char> buffer(16384);
+        if (::getpwnam_r(doasUser, &entry, buffer.data(), buffer.size(), &found) == 0 && found != nullptr && entry.pw_uid != 0)
+        {
+            return entry.pw_uid;
+        }
+    }
+    return std::nullopt;
+}
+
+/// Whether the kernel's login uid (/proc/self/loginuid, set at login and not changeable by the user) agrees that
+/// @p uid started this session: a SUDO_UID forged under su -p (#4186) names someone else. An unset login uid
+/// (4294967295: no PAM login, as in containers) doesn't refuse.
+bool loginUidAllows(uid_t uid)
+{
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int file = ::open("/proc/self/loginuid", O_RDONLY | O_CLOEXEC);
+    if (file < 0)
+    {
+        return true;
+    }
+    std::array<char, 16> text{};
+    const auto got = ::read(file, text.data(), text.size() - 1);
+    ::close(file);
+    if (got <= 0)
+    {
+        return true;
+    }
+    std::uint32_t login = 0;
+    const char* end = text.data() + got;
+    if (std::from_chars(text.data(), end, login).ec != std::errc{})
+    {
+        return false;
+    }
+    constexpr std::uint32_t UNSET = 4294967295U;
+    return login == UNSET || login == static_cast<std::uint32_t>(uid);
+}
+
+/// root's own copy of the invoking user's Xauthority (the second #4187 review): the file XAUTHORITY names, or their
+/// ~/.Xauthority from their passwd entry, opened without following a link and used only if it's a plain file of
+/// theirs (and the login uid agrees whose), so no other account's cookie can be read and sent to a display the user chose; copied 0600 into
+/// root's runtime folder or /run/tasksmack, both root's alone. Nullopt when there's no such file, or no user known.
+std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& rootRuntimeDir)
+{
+    const std::optional<uid_t> uid = invokingUid();
+    if (!uid.has_value() || !loginUidAllows(*uid))
+    {
+        return std::nullopt;
+    }
+    std::string source;
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - first thing in main(), before any thread
+    if (const char* named = std::getenv("XAUTHORITY"); named != nullptr && *named != '\0')
+    {
+        source = named;
+    }
+    else
+    {
+        passwd entry{};
+        passwd* found = nullptr;
+        std::vector<char> buffer(16384);
+        if (::getpwuid_r(*uid, &entry, buffer.data(), buffer.size(), &found) != 0 || found == nullptr || entry.pw_dir == nullptr)
+        {
+            return std::nullopt;
+        }
+        source = std::string(entry.pw_dir) + "/.Xauthority";
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int in = ::open(source.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
+    if (in < 0)
+    {
+        return std::nullopt;
+    }
+    std::string contents;
+    constexpr long long MOST_BYTES = 1LL << 20; // an Xauthority is a few hundred bytes
+    struct stat info = {};
+    if (::fstat(in, &info) == 0 && S_ISREG(info.st_mode) && info.st_uid == *uid && info.st_size <= MOST_BYTES)
+    {
+        std::array<char, 4096> chunk{};
+        for (auto got = ::read(in, chunk.data(), chunk.size()); got > 0; got = ::read(in, chunk.data(), chunk.size()))
+        {
+            contents.append(chunk.data(), static_cast<std::size_t>(got));
+        }
+    }
+    ::close(in);
+    if (contents.empty())
+    {
+        return std::nullopt;
+    }
+    const std::string folder = rootRuntimeDir.value_or("/run/tasksmack");
+    if (!rootRuntimeDir.has_value())
+    {
+        static_cast<void>(::mkdir(folder.c_str(), S_IRWXU));
+        struct stat made = {};
+        if (::lstat(folder.c_str(), &made) != 0 || !S_ISDIR(made.st_mode) || made.st_uid != 0 || (made.st_mode & (S_IRWXG | S_IRWXO)) != 0)
+        {
+            return std::nullopt;
+        }
+    }
+    const std::string copy = folder + "/tasksmack-xauthority";
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int out = ::open(copy.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    if (out < 0)
+    {
+        return std::nullopt;
+    }
+    const bool written = ::fchmod(out, S_IRUSR | S_IWUSR) == 0 &&
+                         ::write(out, contents.data(), contents.size()) == static_cast<decltype(::write(out, nullptr, 0))>(contents.size());
+    ::close(out);
+    return written ? std::optional(copy) : std::nullopt;
 }
 
 } // namespace
@@ -102,9 +240,11 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
         }
     }
     // Set, or, when that fails, unset: nothing of the user's is left by a failure (the #4187 review).
+    // Unset first (every copy: a crafted environ can hold a name twice, and setenv replaces only the first), then set.
     const auto setOrUnset = [&ops](const std::string& name, const std::optional<std::string>& value)
     {
-        if (!value.has_value() || !ops.set(name, *value))
+        static_cast<void>(ops.unset(name));
+        if (value.has_value() && !ops.set(name, *value))
         {
             static_cast<void>(ops.unset(name));
         }
@@ -117,10 +257,9 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
     }
     setOrUnset("XDG_RUNTIME_DIR", root.runtimeDir);
     setOrUnset("XDG_DATA_DIRS", std::string(ROOT_DATA_DIRS));
-    if (values.contains("DISPLAY") && !values.contains("XAUTHORITY") && root.userXauthority.has_value())
-    {
-        setOrUnset("XAUTHORITY", root.userXauthority);
-    }
+    // Never a file the user names: root's own copy of the invoking user's (applyToThisProcess()), or none (the second
+    // #4187 review: a user-named Xauthority sent another account's cookie to a display the user chose).
+    setOrUnset("XAUTHORITY", values.contains("DISPLAY") ? root.xauthority : std::nullopt);
     setOrUnset("PATH", std::string(ROOT_PATH));
     setOrUnset("HOME", root.home);
     return removed;
@@ -132,22 +271,23 @@ void applyToThisProcess(bool apply)
     {
         return;
     }
-    RootValues root{.home = rootPasswdHome(), .runtimeDir = std::nullopt, .userXauthority = std::nullopt};
+    RootValues root{.home = rootPasswdHome(), .runtimeDir = std::nullopt, .xauthority = std::nullopt};
     // root's own runtime folder, only if it's root's and no one else's to write.
     if (struct stat runtime = {}; ::lstat("/run/user/0", &runtime) == 0 && S_ISDIR(runtime.st_mode) && runtime.st_uid == 0 &&
                                   (runtime.st_mode & (S_IRWXG | S_IRWXO)) == 0)
     {
         root.runtimeDir = "/run/user/0";
     }
-    // The invoking user's ~/.Xauthority, from their passwd entry, never HOME (the #4187 review).
-    if (const std::optional<std::string> userHome = SessionUser::invokingUserHome(); userHome.has_value())
+    // The user's own values, for the programs started as them (SessionUser::userSideValues()).
+    for (const char* name : {"PATH", "XDG_DATA_DIRS", "XAUTHORITY"})
     {
-        const std::string candidate = *userHome + "/.Xauthority";
-        if (struct stat file = {}; ::stat(candidate.c_str(), &file) == 0 && S_ISREG(file.st_mode))
+        // NOLINTNEXTLINE(concurrency-mt-unsafe) - first thing in main(), before any thread
+        if (const char* value = std::getenv(name); value != nullptr)
         {
-            root.userXauthority = candidate;
+            SessionUser::userSideValues()[name] = value;
         }
     }
+    root.xauthority = rootXauthorityCopy(root.runtimeDir);
     removedNames() = applyTo(
         environ,
         root,

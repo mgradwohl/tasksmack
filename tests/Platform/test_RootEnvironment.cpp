@@ -104,31 +104,39 @@ TEST(RootEnvironmentTest, EverythingElseGoesAndRootsValuesReplaceTheUsers)
     Recorder recorder;
     const std::vector<std::string> removed =
         applyTo(environment.data(),
-                RootValues{.home = "/root", .runtimeDir = "/run/user/0", .userXauthority = "/home/me/.Xauthority"},
+                RootValues{.home = "/root", .runtimeDir = "/run/user/0", .xauthority = "/run/user/0/tasksmack-xauthority"},
                 recorder.operations());
     EXPECT_EQ(removed, (std::vector<std::string>{"GTK_MODULES", "PYTHONPATH", "NOVALUE"}));
-    EXPECT_EQ(recorder.unset, removed) << "nothing kept (DISPLAY, LC_ALL, SUDO_UID) is ever unset";
+    for (const char* kept : {"DISPLAY", "LC_ALL", "SUDO_UID"})
+    {
+        EXPECT_EQ(std::ranges::find(recorder.unset, kept), recorder.unset.end()) << kept << " is kept, never unset";
+    }
     EXPECT_EQ(recorder.set.at("PATH"), std::string(ROOT_PATH)) << "#4159: never the user's PATH";
     EXPECT_EQ(recorder.set.at("HOME"), "/root");
     EXPECT_EQ(recorder.set.at("XDG_DATA_DIRS"), std::string(ROOT_DATA_DIRS)) << "the #4187 review: Vulkan layers, schemas";
     EXPECT_EQ(recorder.set.at("WAYLAND_DISPLAY"), "/run/user/1000/wayland-0") << "the user's socket, by its absolute path";
     EXPECT_EQ(recorder.set.at("XDG_RUNTIME_DIR"), "/run/user/0") << "root's own, where dconf and the like write";
-    EXPECT_EQ(recorder.set.at("XAUTHORITY"), "/home/me/.Xauthority") << "HOME is root's now, so X11 auth says whose";
+    EXPECT_EQ(recorder.set.at("XAUTHORITY"), "/run/user/0/tasksmack-xauthority")
+        << "root's own copy of the user's cookie, never a file the user names (the second #4187 review)";
 }
 
 TEST(RootEnvironmentTest, UnknownRootValuesAndAFailedSetUnsetRatherThanKeepTheUsers)
 {
-    const std::array<const char*, 4> environment{"HOME=/home/me", "XDG_RUNTIME_DIR=/run/user/1000", "XAUTHORITY=/x", nullptr};
+    const std::array<const char*, 5> environment{"DISPLAY=:0", "HOME=/home/me", "XDG_RUNTIME_DIR=/run/user/1000", "XAUTHORITY=/x", nullptr};
     Recorder recorder;
     recorder.failSet = "PATH";
-    const std::vector<std::string> removed = applyTo(
-        environment.data(), RootValues{.home = std::nullopt, .runtimeDir = std::nullopt, .userXauthority = "/u"}, recorder.operations());
+    const std::vector<std::string> removed =
+        applyTo(environment.data(),
+                RootValues{.home = std::nullopt, .runtimeDir = std::nullopt, .xauthority = std::nullopt},
+                recorder.operations());
     EXPECT_TRUE(removed.empty());
-    for (const char* name : {"XDG_RUNTIME_DIR", "HOME", "PATH"})
+    for (const char* name : {"XDG_RUNTIME_DIR", "HOME", "PATH", "XAUTHORITY"})
     {
         EXPECT_NE(std::ranges::find(recorder.unset, name), recorder.unset.end()) << name << " unset, not left the user's";
     }
-    EXPECT_FALSE(recorder.set.contains("XAUTHORITY")) << "one already set is left as it is";
+    EXPECT_FALSE(recorder.set.contains("XAUTHORITY")) << "with DISPLAY set, a user-named Xauthority goes when root has no copy";
+    // Every replaced name is unset before it's set: no duplicate entry survives.
+    EXPECT_NE(std::ranges::find(recorder.unset, "XDG_DATA_DIRS"), recorder.unset.end());
 }
 
 TEST(RootEnvironmentTest, OnlyAPlainOrZoneinfoTimeZoneIsKept)

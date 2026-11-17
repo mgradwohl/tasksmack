@@ -71,9 +71,9 @@ struct Operations
 /// What applyTo() sets in root's place, worked out outside it (the process's, or a test's).
 struct RootValues
 {
-    std::optional<std::string> home;           ///< root's passwd home; HOME is unset when unknown
-    std::optional<std::string> runtimeDir;     ///< root's own runtime folder (/run/user/0), if it's root's; else unset
-    std::optional<std::string> userXauthority; ///< the invoking user's ~/.Xauthority, from their passwd entry, if it's there
+    std::optional<std::string> home;       ///< root's passwd home; HOME is unset when unknown
+    std::optional<std::string> runtimeDir; ///< root's own runtime folder (/run/user/0), if it's root's; else unset
+    std::optional<std::string> xauthority; ///< root's own copy of the invoking user's Xauthority (applyToThisProcess()); else unset
 };
 
 /// The value XDG_DATA_DIRS gets (the XDG default): the user's could list a folder of theirs, where the Vulkan loader
@@ -88,9 +88,9 @@ inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share"
 /// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
 /// #4179, and the review of #4187): every name not kept, and a TZ that isn't safe, is unset (collected first); a
 /// relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's (or is
-/// unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY is the user's ~/.Xauthority when DISPLAY is set and it
-/// wasn't; PATH becomes ROOT_PATH and HOME root's. A value that can't be set is unset instead, so nothing of the
-/// user's is left by a failure. @return The names removed (a failed unset is left out), in order.
+/// unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH
+/// becomes ROOT_PATH and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value that can't be set is unset
+/// instead, so nothing of the user's is left by a failure. @return The names removed (a failed unset is left out), in order.
 [[nodiscard]] std::vector<std::string> applyTo(const char* const* environment, const RootValues& root, const Operations& ops);
 
 /// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment,
