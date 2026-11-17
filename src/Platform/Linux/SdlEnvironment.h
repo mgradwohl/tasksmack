@@ -17,6 +17,7 @@
 
 #ifdef __linux__
 
+#include <array>
 #include <functional>
 #include <string>
 #include <string_view>
@@ -29,8 +30,37 @@ namespace Platform::SdlEnvironment
 /// names). Exact case, as Linux compares environment variable names.
 [[nodiscard]] bool isSdlVariable(std::string_view name) noexcept;
 
-/// The names of the SDL variables in @p environment ("NAME=value" strings, null-terminated, as environ is), in order.
-/// An entry with no '=' is taken whole as a name.
+/// The variables of the libraries SDL's OpenGL/EGL window pulls in that name a library or a directory of them to load
+/// (#4151): Mesa's driver and GBM backend paths, libglvnd's vendor files (JSON naming the .so) and vendor name,
+/// libdecor's plugins (Wayland decorations), and the Vulkan loader's drivers and layers. Under sudo, uid and euid are
+/// both 0, so neither glibc's secure mode nor the libraries' own getuid() != geteuid() checks drop them. A fixed list:
+/// unlike SDL's hints, these names don't change from release to release.
+inline constexpr std::array<std::string_view, 15> LOADER_VARIABLES = {
+    "LIBGL_DRIVERS_PATH",
+    "LIBGL_DRIVERS_DIR",
+    "EGL_DRIVERS_PATH",
+    "GBM_BACKENDS_PATH",
+    "MESA_LOADER_DRIVER_OVERRIDE",
+    "__EGL_VENDOR_LIBRARY_FILENAMES",
+    "__EGL_VENDOR_LIBRARY_DIRS",
+    "__GLX_VENDOR_LIBRARY_NAME",
+    "LIBDECOR_PLUGIN_DIR",
+    "VK_ICD_FILENAMES",
+    "VK_DRIVER_FILES",
+    "VK_ADD_DRIVER_FILES",
+    "VK_LAYER_PATH",
+    "VK_ADD_LAYER_PATH",
+    "VK_IMPLICIT_LAYER_PATH",
+};
+
+/// libglvnd's per-screen vendor override, __GLX_FORCE_VENDOR_LIBRARY_<n>, matched by its prefix.
+inline constexpr std::string_view FORCE_VENDOR_PREFIX = "__GLX_FORCE_VENDOR_LIBRARY_";
+
+/// Whether @p name is one of LOADER_VARIABLES, or starts with FORCE_VENDOR_PREFIX. Exact case.
+[[nodiscard]] bool isLoaderVariable(std::string_view name) noexcept;
+
+/// The names of the SDL variables, and the loader variables (#4151), in @p environment ("NAME=value" strings, null-terminated, as environ
+/// is), in order. An entry with no '=' is taken whole as a name.
 [[nodiscard]] std::vector<std::string> sdlVariableNames(const char* const* environment);
 
 /// Removes each SDL variable in @p environment with @p unset. @return The names removed (a failed unset is left out).

@@ -1,5 +1,6 @@
 #include "SdlEnvironment.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <functional>
 #include <string>
@@ -38,6 +39,11 @@ bool isSdlVariable(std::string_view name) noexcept
     return rest.starts_with('_');
 }
 
+bool isLoaderVariable(std::string_view name) noexcept
+{
+    return name.starts_with(FORCE_VENDOR_PREFIX) || std::ranges::find(LOADER_VARIABLES, name) != LOADER_VARIABLES.end();
+}
+
 std::vector<std::string> sdlVariableNames(const char* const* environment)
 {
     std::vector<std::string> names;
@@ -50,7 +56,7 @@ std::vector<std::string> sdlVariableNames(const char* const* environment)
     {
         const std::string_view text(*entry);
         const std::string_view name = text.substr(0, text.find('='));
-        if (isSdlVariable(name))
+        if (isSdlVariable(name) || isLoaderVariable(name))
         {
             names.emplace_back(name);
         }

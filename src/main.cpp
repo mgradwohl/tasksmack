@@ -469,8 +469,8 @@ auto runApp(const App::LaunchOptions& launch) -> int
         {
             names += names.empty() ? name : ", " + name;
         }
-        spdlog::warn("Ignoring the SDL environment variables {}: TaskSmack runs as root for a user, and takes no SDL "
-                     "setting from the environment they started it with",
+        spdlog::warn("Ignoring the SDL and graphics-loader environment variables {}: TaskSmack runs as root for a user, "
+                     "and takes no SDL setting or library path from the environment they started it with (#4151)",
                      names);
     }
 #endif
