@@ -7,6 +7,9 @@
 //     --handoff: DllSearchPolicy::system32OnlyForThisProcess()): TEMP is that side's, so a junction to \RPC Control and an
 //     object-manager link named tasksmack-debug.log could point the truncation at any file. The log goes to
 //     %ProgramData%\TaskSmack\Logs instead, %ProgramData% read from its known folder, never the environment.
+//   - Linux, any root session (#4150): sudo -E, su -m and doas keep the user's TMPDIR, so a link there
+//     could point the truncation at any file root can write. The log goes to /run/tasksmack instead, opened as
+//     open()'s comment says.
 //
 // How that elevated log is opened, so a less-privileged user can neither read it, own it, nor send it elsewhere, with
 // no race (the review of #4138):
@@ -79,10 +82,17 @@ using OwnerTrustedFn = std::function<std::optional<bool>(void* /*handle*/)>;
 [[nodiscard]] std::wstring systemFinalPath(void* handle);
 #endif
 
+/// Where a Linux root session keeps its log (#4150): the folder /run/tasksmack is made in. /run, not /var/log: it is
+/// root:root 0755 on every systemd distribution, where Ubuntu's /var/log is root:syslog 0775, which the owner check
+/// refuses (the #4165 review); and a tmpfs, cleared at boot, as a per-run debug log in the temp folder was.
+inline constexpr std::string_view LINUX_LOG_PARENT = "/run";
+
 /// The calls open() makes: the system's, or a test's.
 struct Functions
 {
     std::function<std::filesystem::path()> tempFolder = &systemTempFolder;
+    /// Linux, less privileged (#4150): the folder the log's own folder, tasksmack, is made in.
+    std::filesystem::path linuxLogParent = std::filesystem::path(LINUX_LOG_PARENT);
     std::function<std::optional<std::filesystem::path>()> programDataFolder = &systemProgramDataFolder;
     /// The security the elevated log's folders and file are made with (SDDL). A test's may leave out the owner, which
     /// only an elevated token may set to Administrators, and add its own account, which only a test needs.
@@ -101,9 +111,11 @@ struct Opened
     spdlog::sink_ptr sink;
 };
 
-/// tasksmack-debug.log, emptied, as this file's header says: in the temp folder by its path, or, on Windows with
-/// @p lessPrivilegedEnvironment, in %ProgramData%\TaskSmack\Logs, made for Administrators and SYSTEM only. The error
-/// says why it wasn't opened.
+/// tasksmack-debug.log, emptied, as this file's header says: in the temp folder by its path, or, with
+/// @p lessPrivilegedEnvironment, on Windows in %ProgramData%\TaskSmack\Logs, made for Administrators and SYSTEM only,
+/// and on Linux in /run/tasksmack (#4150): that folder made, or taken, only when the process's own user owns it
+/// and it's a plain folder, mode 0700, every step relative to the folder above it with O_NOFOLLOW, and the file made
+/// fresh (O_EXCL) after any old one is removed. The error says why it wasn't opened.
 [[nodiscard]] std::expected<Opened, std::string> open(bool lessPrivilegedEnvironment, const Functions& functions = {});
 
 #ifdef _WIN32

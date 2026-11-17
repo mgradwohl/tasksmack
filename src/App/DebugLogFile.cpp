@@ -34,6 +34,20 @@
 #include <memory>
 #include <mutex>
 #include <string_view>
+#else
+#include <spdlog/details/log_msg.h>
+#include <spdlog/sinks/base_sink.h>
+
+#include <cerrno>
+#include <cstddef>
+#include <format>
+#include <memory>
+#include <mutex>
+#include <system_error>
+
+#include <fcntl.h>
+#include <sys/stat.h>
+#include <unistd.h>
 #endif
 
 namespace App::DebugLogFile
@@ -144,6 +158,152 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
 }
 #endif
 
+#ifndef _WIN32
+/// A descriptor closed with its owner.
+class OwnedFd
+{
+  public:
+    explicit OwnedFd(int fd) noexcept : m_Fd(fd)
+    {}
+    OwnedFd(const OwnedFd&) = delete;
+    OwnedFd& operator=(const OwnedFd&) = delete;
+    OwnedFd(OwnedFd&& other) noexcept : m_Fd(std::exchange(other.m_Fd, -1))
+    {}
+    OwnedFd& operator=(OwnedFd&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            m_Fd = std::exchange(other.m_Fd, -1);
+        }
+        return *this;
+    }
+    ~OwnedFd()
+    {
+        reset();
+    }
+    [[nodiscard]] int get() const noexcept
+    {
+        return m_Fd;
+    }
+    [[nodiscard]] bool valid() const noexcept
+    {
+        return m_Fd >= 0;
+    }
+
+  private:
+    void reset() noexcept
+    {
+        if (m_Fd >= 0)
+        {
+            ::close(m_Fd);
+            m_Fd = -1;
+        }
+    }
+    int m_Fd = -1;
+};
+
+[[nodiscard]] std::string errnoText(int error)
+{
+    return std::system_category().message(error);
+}
+
+/// The log written through the descriptor checked when it was opened (#4150), never reopened by its path.
+class FdFileSink final : public spdlog::sinks::base_sink<std::mutex>
+{
+  public:
+    explicit FdFileSink(OwnedFd file) : m_File(std::move(file))
+    {}
+
+  protected:
+    void sink_it_(const spdlog::details::log_msg& msg) override
+    {
+        spdlog::memory_buf_t formatted;
+        formatter_->format(msg, formatted);
+        const char* data = formatted.data();
+        std::size_t left = formatted.size();
+        while (left > 0)
+        {
+            const auto written = ::write(m_File.get(), data, left); // ssize_t
+            if (written < 0 && errno == EINTR)
+            {
+                continue;
+            }
+            if (written <= 0)
+            {
+                return; // best effort, as spdlog's file sink: a full disk loses lines, never the app
+            }
+            data += written;
+            left -= static_cast<std::size_t>(written);
+        }
+    }
+
+    void flush_() override
+    {}
+
+  private:
+    OwnedFd m_File;
+};
+
+/// Whether @p info is a plain folder that the process's own user owns and no one else may write.
+[[nodiscard]] bool ownedOnlyByUs(const struct stat& info) noexcept
+{
+    return S_ISDIR(info.st_mode) && info.st_uid == ::geteuid() && (info.st_mode & (S_IWGRP | S_IWOTH)) == 0;
+}
+
+/// A Linux session run as root for a user (#4150): the log in <parent>/tasksmack, as open()'s comment says.
+[[nodiscard]] std::expected<Opened, std::string> openRootLog(const Functions& functions)
+{
+    const std::filesystem::path& parent = functions.linuxLogParent;
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const OwnedFd parentFd(::open(parent.c_str(), O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    struct stat info = {};
+    if (!parentFd.valid())
+    {
+        return std::unexpected(std::format("{} can't be opened: {}", parent.string(), errnoText(errno)));
+    }
+    if (::fstat(parentFd.get(), &info) != 0 || !ownedOnlyByUs(info))
+    {
+        return std::unexpected(std::format("{} isn't a folder only this user may change", parent.string()));
+    }
+    constexpr const char* FOLDER = "tasksmack";
+    if (::mkdirat(parentFd.get(), FOLDER, S_IRWXU) != 0 && errno != EEXIST)
+    {
+        return std::unexpected(std::format("{}/{} can't be made: {}", parent.string(), FOLDER, errnoText(errno)));
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    const OwnedFd folderFd(::openat(parentFd.get(), FOLDER, O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC));
+    if (!folderFd.valid())
+    {
+        return std::unexpected(std::format("{}/{} isn't a plain folder: {}", parent.string(), FOLDER, errnoText(errno)));
+    }
+    if (::fstat(folderFd.get(), &info) != 0 || !S_ISDIR(info.st_mode) || info.st_uid != ::geteuid())
+    {
+        return std::unexpected(std::format("{}/{} isn't this user's own folder", parent.string(), FOLDER));
+    }
+    if ((info.st_mode & (S_IRWXG | S_IRWXO)) != 0 && ::fchmod(folderFd.get(), S_IRWXU) != 0)
+    {
+        return std::unexpected(std::format("{}/{} can't be made private: {}", parent.string(), FOLDER, errnoText(errno)));
+    }
+    const std::string fileName(FILE_NAME);
+    // Any old log goes, a link or a planted file included; the new one is made fresh, so none is reused.
+    if (::unlinkat(folderFd.get(), fileName.c_str(), 0) != 0 && errno != ENOENT)
+    {
+        return std::unexpected(std::format("the old {} can't be removed: {}", fileName, errnoText(errno)));
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    OwnedFd file(::openat(folderFd.get(), fileName.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR));
+    if (!file.valid())
+    {
+        return std::unexpected(std::format("{} can't be made fresh: {}", fileName, errnoText(errno)));
+    }
+    return Opened{
+        .path = parent / FOLDER / FILE_NAME,
+        .sink = std::make_shared<FdFileSink>(std::move(file)),
+    };
+}
+#endif
+
 } // namespace
 
 std::filesystem::path systemTempFolder()
@@ -200,16 +360,18 @@ std::expected<void, std::string> secureFolder(const std::filesystem::path& folde
 }
 #endif
 
-std::expected<Opened, std::string> open([[maybe_unused]] bool lessPrivilegedEnvironment, const Functions& functions)
+std::expected<Opened, std::string> open(bool lessPrivilegedEnvironment, const Functions& functions)
 {
     try
     {
-#ifdef _WIN32
         if (lessPrivilegedEnvironment)
         {
+#ifdef _WIN32
             return openElevated(functions);
-        }
+#else
+            return openRootLog(functions);
 #endif
+        }
         // Opened by its native path (UTF-16 on Windows, SPDLOG_WCHAR_FILENAMES), never a narrowed one, so a temp folder
         // with any characters works with or without the manifest (#1648).
         std::filesystem::path path = functions.tempFolder() / FILE_NAME;

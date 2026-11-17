@@ -4,6 +4,7 @@
 
 #include "Platform/Windows/HandleRelativeFile.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Support/Junction.h"
 
 #include <gtest/gtest.h>
 
@@ -393,9 +394,24 @@ TEST(HandleRelativeFileTest, AHeldFolderOpensCreatesMovesAsideAndDeletesForReal)
     EXPECT_TRUE(entriesOf(scratch.path()).empty()) << "deleted when its handle closed";
 }
 
-TEST(HandleRelativeFileTest, AFolderByPathIsAReparsePointItselfNeverWhatItNames)
+// A junction is opened itself, never the folder it names, so isPlainFolder() refuses it; so is a file.
+TEST(HandleRelativeFileTest, AFolderByPathOpensAJunctionItselfNeverWhatItNames)
 {
     const ScratchFolder scratch;
+    const std::filesystem::path target = scratch.path() / L"target";
+    const std::filesystem::path link = scratch.path() / L"link";
+    std::filesystem::create_directory(target);
+    std::filesystem::create_directory(link);
+    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
+    {
+        auto junction = openFolderByPath(link);
+        ASSERT_TRUE(junction.has_value()) << junction.error();
+        EXPECT_EQ(isPlainFolder(junction->get()), std::optional(false)) << "the junction itself, a reparse point";
+        EXPECT_EQ(finalPathOf(junction->get()), std::optional(link.native())) << "not the folder it names";
+    }
+    ASSERT_TRUE(TestSupport::removeJunction(link)) << "an empty folder again, so removing it removes nothing behind it";
+
     std::ofstream(scratch.path() / L"file.txt", std::ios::binary) << "x\n";
     auto file = openFolderByPath(scratch.path() / L"file.txt");
     ASSERT_TRUE(file.has_value()) << file.error();
@@ -457,7 +473,6 @@ TEST(HandleRelativeFileTest, AChildFolderIsMadeTakenOverOrMovedAside)
 
 TEST(HandleRelativeFileTest, AChildFolderThatCantBeMadeSaysWhich)
 {
-    createCall() = CreateCall{};
     const auto security = securityDescriptorFrom(TEST_SECURITY);
     // No parent: NtCreateFile refuses a relative name without a RootDirectory.
     const auto refused = secureChildFolder(nullptr, L"TaskSmack", security.get(), "the test folder");

@@ -4,6 +4,7 @@
 // folder of this test's own under the temp folder.
 
 #include "Core/ConfigDirOverride.h"
+#include "Platform/Windows/HandleRelativeFile.h" // finalPathOf()
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -67,17 +68,22 @@ struct FakeFolder
 }
 
 NTSTATUS NTAPI fakeNtCreateFile(PHANDLE handle,
-                                ACCESS_MASK /*access*/,
+                                ACCESS_MASK access,
                                 POBJECT_ATTRIBUTES attributes,
                                 PIO_STATUS_BLOCK /*status*/,
                                 PLARGE_INTEGER /*allocationSize*/,
                                 ULONG /*fileAttributes*/,
                                 ULONG /*share*/,
                                 ULONG /*disposition*/,
-                                ULONG /*options*/,
+                                ULONG options,
                                 PVOID /*eaBuffer*/,
                                 ULONG /*eaLength*/)
 {
+    // Every open asks for synchronous I/O (ReadFile and WriteFile on it wait), which openRelative() sets only when the
+    // access includes SYNCHRONIZE: PinnedFolder::openIn() always adds it (#4143).
+    EXPECT_NE(access & SYNCHRONIZE, 0U) << "every open asks for SYNCHRONIZE";
+    EXPECT_NE(options & FILE_SYNCHRONOUS_IO_NONALERT, 0U) << "so every handle is synchronous";
+    EXPECT_NE(options & FILE_OPEN_REPARSE_POINT, 0U) << "and a link is opened itself, never followed";
     ++fake().creates;
     fake().lastRoot = attributes->RootDirectory;
     fake().lastName.assign(attributes->ObjectName->Buffer, attributes->ObjectName->Length / sizeof(wchar_t));

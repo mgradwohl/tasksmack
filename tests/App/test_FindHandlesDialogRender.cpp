@@ -240,6 +240,49 @@ TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenASearchIsDoneAndANew
     EXPECT_FALSE(m_Dialog->workerRunning());
 }
 
+// #4149: a new search after a retire sets the closed worker aside rather than destroying it, since its destructor
+// would join the worker's thread on the UI thread (#2731). It is destroyed from a later frame, once the thread has
+// returned, so the join waits on nothing.
+TEST_F(FindHandlesDialogRenderTest, ANewSearchAfterARetireSetsTheClosedWorkerAsideInsteadOfJoiningItHere)
+{
+    auto files = std::make_unique<HeldOpenFiles>();
+    HeldOpenFiles& mock = *files;
+    mock.release();
+    m_Dialog->setReaders(std::move(files), nullptr, {.openFiles = true, .modules = false, .authorize = false});
+
+    const auto framesUntilRetired = [this]
+    {
+        for (int i = 0; i < MAX_FRAMES && (m_Dialog->workerRunning() || m_Dialog->searching()); ++i)
+        {
+            static_cast<void>(frame());
+            std::this_thread::sleep_for(10ms);
+        }
+    };
+
+    search("report");
+    framesUntilRetired();
+    ASSERT_FALSE(m_Dialog->workerRunning()) << "the first search is done and its worker closed";
+    EXPECT_EQ(m_Dialog->workersRetired(), 0U);
+
+    const int firstReads = mock.reads();
+    search("again");
+    EXPECT_EQ(m_Dialog->workersRetired(), 1U) << "the closed worker was set aside, not destroyed in the search";
+    for (int i = 0; i < MAX_FRAMES && mock.reads() == firstReads; ++i)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_GT(mock.reads(), firstReads) << "the new search runs on a new worker";
+
+    framesUntilRetired();
+    for (int i = 0; i < MAX_FRAMES && m_Dialog->retiredWorkers() > 0; ++i)
+    {
+        static_cast<void>(frame());
+        std::this_thread::sleep_for(10ms);
+    }
+    EXPECT_EQ(m_Dialog->retiredWorkers(), 0U) << "the set-aside worker is destroyed once its thread has returned";
+}
+
 // #3893: a search that ends while the dialog is closed still frees its thread, without the dialog being reopened.
 TEST_F(FindHandlesDialogRenderTest, TheWorkersThreadEndsWhenTheSearchFinishesWithTheDialogClosed)
 {
