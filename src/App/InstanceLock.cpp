@@ -106,6 +106,14 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
         m_Error = std::system_category().message(errno);
         return;
     }
+    // Only a plain file with no other name: a hard link to another file (where fs.protected_hardlinks is off) planted as
+    // the lock would otherwise be locked, and handed to the user below (the #4166 review).
+    if (struct stat lockInfo = {}; ::fstat(fd, &lockInfo) != 0 || !S_ISREG(lockInfo.st_mode) || lockInfo.st_nlink != 1)
+    {
+        ::close(fd);
+        m_Error = lockPath.string() + " isn't a plain file of its own (another name links to it); not using it as the lock";
+        return;
+    }
     int result = ::flock(fd, LOCK_EX | LOCK_NB);
     while (result != 0 && errno == EINTR)
     {

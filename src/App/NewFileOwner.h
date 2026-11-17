@@ -143,41 +143,48 @@ struct OpenedDirectory
     std::string handOverError;
 };
 
-/// @p dir opened as a folder (O_RDONLY | O_DIRECTORY), made first where it's missing (#4152). Walked one component at a
-/// time from "/" (or the working directory, for a relative @p dir) with openat(O_NOFOLLOW), so nothing is resolved by
-/// path after it was checked: a link swapped in between steps isn't followed. A link on the way is followed only when
-/// root owns it (/home on some systems) or @p lessPrivileged is false; one of a user's, when run as root for a user
-/// (#3759), refuses. Each folder made (mkdirat, 0777 less the umask) is given, through its own descriptor, to the
-/// owner of the deepest folder that already existed, when @p effectiveUid is root's and that folder isn't
-/// (ownerForNewFiles()'s rule, #2121); @p failChown stands in for a refused fchown, for tests. @return The folder,
-/// or why it couldn't be opened or made.
+/// @p dir opened as a folder (O_PATH | O_DIRECTORY, for openat() and fstat()), made first where it's missing (#4152).
+/// Walked one component at a time from "/" (or the working directory, for a relative @p dir) with openat(O_NOFOLLOW),
+/// so nothing is resolved by path after it was checked, and each step needs only search permission. A link on the way
+/// is followed when @p lessPrivileged is false; run as root for a user (#3759), only when root owns both it and the
+/// folder holding it, which no one else may write (/home on some systems), and otherwise refuses. A ".." refuses. Each
+/// folder this walk made (mkdirat, 0777 less the umask), and that is still that empty folder, is given through its own
+/// descriptor to the owner of the deepest folder that already existed, when @p effectiveUid is root's and that folder
+/// isn't (ownerForNewFiles()'s rule, #2121); @p failChown stands in for a refused fchown, for tests. @return The
+/// folder, or why it couldn't be opened or made.
 [[nodiscard]] inline std::expected<OpenedDirectory, std::string>
 openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_t effectiveUid, bool failChown = false)
 {
-    const std::filesystem::path normal = dir.lexically_normal();
+    // ".." is refused before anything is normalized: dropping it lexically could check a folder other than the one the
+    // kernel would resolve through a link before it (the #4166 review).
+    for (const std::filesystem::path& part : dir)
+    {
+        if (part == "..")
+        {
+            return std::unexpected(dir.string() + " climbs with \"..\", which TaskSmack doesn't walk");
+        }
+    }
+    // O_PATH: each step needs only search permission on the folder above it, as a by-path open does, not read.
+    constexpr int WALK = O_PATH | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC;
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    DirectoryFd at(::open(normal.is_absolute() ? "/" : ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    DirectoryFd at(::open(dir.is_absolute() ? "/" : ".", O_PATH | O_DIRECTORY | O_CLOEXEC));
     if (at.get() < 0)
     {
         return std::unexpected(std::system_category().message(errno));
     }
-    std::filesystem::path walked = normal.is_absolute() ? std::filesystem::path("/") : std::filesystem::path();
+    std::filesystem::path walked = dir.is_absolute() ? std::filesystem::path("/") : std::filesystem::path();
     std::optional<FileOwner> owner;
     bool ownerKnown = false;
     std::string handOverError;
-    for (const std::filesystem::path& part : normal.relative_path())
+    for (const std::filesystem::path& part : dir.relative_path())
     {
         if (part.empty() || part == ".")
         {
             continue;
         }
-        if (part == "..")
-        {
-            return std::unexpected(normal.string() + " climbs with \"..\", which TaskSmack doesn't walk");
-        }
         walked /= part;
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-        int next = ::openat(at.get(), part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
+        int next = ::openat(at.get(), part.c_str(), WALK);
         if (next < 0 && errno == ENOENT)
         {
             if (!ownerKnown)
@@ -190,13 +197,19 @@ openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_
                 }
                 ownerKnown = true;
             }
-            if (::mkdirat(at.get(), part.c_str(), S_IRWXU | S_IRWXG | S_IRWXO) != 0 && errno != EEXIST)
+            const bool madeHere = ::mkdirat(at.get(), part.c_str(), S_IRWXU | S_IRWXG | S_IRWXO) == 0;
+            if (!madeHere && errno != EEXIST)
             {
                 return std::unexpected(walked.string() + " can't be made: " + std::system_category().message(errno));
             }
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-            next = ::openat(at.get(), part.c_str(), O_RDONLY | O_DIRECTORY | O_NOFOLLOW | O_CLOEXEC);
-            if (next >= 0 && owner.has_value() && (failChown || ::fchown(next, owner->uid, owner->gid) != 0) && handOverError.empty())
+            next = ::openat(at.get(), part.c_str(), WALK);
+            // Given to its user only when this walk made it and it's still that folder: this process's, and empty (two
+            // links, no subfolders). A folder renamed in its place (EEXIST, or a swap after mkdirat) is left as it is.
+            struct stat made = {};
+            if (next >= 0 && madeHere && owner.has_value() && ::fstat(next, &made) == 0 && made.st_uid == ::geteuid() &&
+                made.st_nlink == 2 && (failChown || ::fchownat(next, "", owner->uid, owner->gid, AT_EMPTY_PATH) != 0) &&
+                handOverError.empty())
             {
                 handOverError =
                     "couldn't give " + walked.string() + " to its user: " + std::system_category().message(failChown ? EPERM : errno);
@@ -210,12 +223,20 @@ openDirectoryForUser(const std::filesystem::path& dir, bool lessPrivileged, uid_
             {
                 return std::unexpected(walked.string() + " isn't a folder");
             }
-            if (lessPrivileged && entry.st_uid != 0)
+            if (lessPrivileged)
             {
-                return std::unexpected(walked.string() + " is a link of a user's, which TaskSmack run as root doesn't create through");
+                // Run as root for a user, a link is followed only when root owns it and so does the folder holding it,
+                // which no one else may write: the user can neither place a link of root's there nor swap one in after
+                // this check (the #4166 review). A link in a folder of theirs is refused, root's or not.
+                struct stat holder = {};
+                if (entry.st_uid != 0 || ::fstat(at.get(), &holder) != 0 || holder.st_uid != 0 ||
+                    (holder.st_mode & (S_IWGRP | S_IWOTH)) != 0)
+                {
+                    return std::unexpected(walked.string() + " is a link of a user's, which TaskSmack run as root doesn't create through");
+                }
             }
             // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
-            next = ::openat(at.get(), part.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC); // root's own link, or ours
+            next = ::openat(at.get(), part.c_str(), O_PATH | O_DIRECTORY | O_CLOEXEC); // root's own link, or ours
         }
         if (next < 0)
         {

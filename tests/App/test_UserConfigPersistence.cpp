@@ -2853,6 +2853,10 @@ TEST(NewFileOwnerTest, CreateDirectoriesForUserRefusesAUsersLinkAndMakesTheRest)
 // says so.
 TEST(NewFileOwnerTest, OpenDirectoryForUserWalksByDescriptorMakesTheRestAndSaysWhatFailed)
 {
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root, this test's own links are root's, which a root-for-a-user walk may follow";
+    }
     const std::filesystem::path root = std::filesystem::temp_directory_path() / ("tasksmack-opendir-" + std::to_string(::getpid()));
     std::filesystem::remove_all(root);
     std::filesystem::create_directories(root / "real");
@@ -2884,6 +2888,20 @@ TEST(NewFileOwnerTest, OpenDirectoryForUserWalksByDescriptorMakesTheRestAndSaysW
     ASSERT_TRUE(unchowned.has_value()) << unchowned.error();
     EXPECT_TRUE(unchowned->handOverError.contains("couldn't give")) << unchowned->handOverError;
     EXPECT_TRUE(std::filesystem::is_directory(root / "real" / "f")) << "still made, and usable";
+
+    // ".." refuses before anything is normalized (the #4166 review).
+    auto climbs = NewFileOwner::openDirectoryForUser(root / "link" / ".." / "g", true, 0);
+    ASSERT_FALSE(climbs.has_value());
+    EXPECT_TRUE(climbs.error().contains("climbs")) << climbs.error();
+    EXPECT_FALSE(std::filesystem::exists(root / "g"));
+
+    // Search permission alone is enough on the way (O_PATH), as it is for a path: no read permission needed.
+    std::filesystem::create_directories(root / "searchOnly" / "sub");
+    std::filesystem::permissions(root / "searchOnly", std::filesystem::perms(0111));
+    auto through = NewFileOwner::openDirectoryForUser(root / "searchOnly" / "sub" / "h", false, ::geteuid());
+    std::filesystem::permissions(root / "searchOnly", std::filesystem::perms(0755));
+    ASSERT_TRUE(through.has_value()) << through.error();
+    EXPECT_TRUE(std::filesystem::is_directory(root / "searchOnly" / "sub" / "h"));
 
     std::filesystem::remove_all(root);
 }
