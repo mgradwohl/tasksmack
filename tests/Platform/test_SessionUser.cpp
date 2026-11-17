@@ -269,28 +269,58 @@ TEST(SessionUserTest, AnotherUsersEnvironmentIsDecidedWithNoLookup)
             return std::nullopt;
         };
     };
-    constexpr std::optional<std::uint32_t> NO_LOGIN = std::nullopt;
-    // #4154: sudo, pkexec and doas name the user; plain su keeps their login uid. No passwd lookup of that user.
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"SUDO_UID", "1000"}}), NO_LOGIN));
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"PKEXEC_UID", "1000"}}), NO_LOGIN));
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"DOAS_USER", "alice"}}), NO_LOGIN));
-    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"HOME", "/root"}}), 1000U)) << "plain su: HOME root's, the login alice's";
+    // #4154: sudo, pkexec and doas name the user; plain su has a user's process above it. No passwd lookup.
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, false, envOf({{"SUDO_UID", "1000"}}), false));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, false, envOf({{"PKEXEC_UID", "1000"}}), false));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, false, envOf({{"DOAS_USER", "alice"}}), false));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, false, envOf({{"HOME", "/root"}}), true)) << "plain su";
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, false, envOf({{"SUDO_UID", "0"}}), true)) << "sudo SUDO_UID=0 TaskSmack";
     // Only sudo and pkexec set these: even a malformed one counts (the #4170 review).
     for (const char* odd : {"+1000", " 1000", "1000 ", "-1", "x", "99999999999"})
     {
-        EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, envOf({{"SUDO_UID", odd}}), NO_LOGIN)) << odd;
+        EXPECT_TRUE(environmentMayBeAnotherUsers(0, false, false, envOf({{"SUDO_UID", odd}}), false)) << odd;
     }
-    // #4171: secure execution (setuid, setgid, the FAQ's file capabilities) whatever the effective uid.
-    EXPECT_TRUE(environmentMayBeAnotherUsers(1000, true, envOf({}), NO_LOGIN));
-    // Root's own session: a root login (login uid 0), a service or a container (unset), HOME anything (#4170 review:
-    // release.yml's upgrade check runs as root with HOME a scratch folder).
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, envOf({{"HOME", "/root"}}), 0U));
+    // sudo -u bob: not root, but a SUDO_UID that isn't this uid.
+    EXPECT_TRUE(environmentMayBeAnotherUsers(1001, false, false, envOf({{"SUDO_UID", "1000"}}), false));
+    // #4171: secure execution (setuid, setgid, the FAQ's file capabilities), and capabilities held another way.
+    EXPECT_TRUE(environmentMayBeAnotherUsers(1000, true, false, envOf({}), false));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(0, true, false, envOf({}), false));
+    EXPECT_TRUE(environmentMayBeAnotherUsers(1000, false, true, envOf({}), false)) << "ambient capabilities";
+    // Root's own session: a root login, a service, cron, a container (release.yml's upgrade check: root, HOME a scratch
+    // folder, SDL_VIDEODRIVER=offscreen, nothing above it but root).
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, false, envOf({{"HOME", "/root"}}), false));
     EXPECT_FALSE(
-        environmentMayBeAnotherUsers(0, false, envOf({{"HOME", "/tmp/upgrade-home"}, {"SDL_VIDEODRIVER", "offscreen"}}), NO_LOGIN));
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, envOf({{"SUDO_UID", "0"}, {"DOAS_USER", "root"}, {"PKEXEC_UID", ""}}), NO_LOGIN));
-    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, envOf({}), NO_LOGIN));
-    // Not root and not secure execution: the user's own session.
-    EXPECT_FALSE(environmentMayBeAnotherUsers(1000, false, envOf({{"SUDO_UID", "1000"}}), 1000U));
+        environmentMayBeAnotherUsers(0, false, false, envOf({{"HOME", "/tmp/upgrade-home"}, {"SDL_VIDEODRIVER", "offscreen"}}), false));
+    EXPECT_FALSE(
+        environmentMayBeAnotherUsers(0, false, false, envOf({{"SUDO_UID", "0"}, {"DOAS_USER", "root"}, {"PKEXEC_UID", ""}}), false));
+    EXPECT_FALSE(environmentMayBeAnotherUsers(0, false, true, envOf({}), false)) << "root holds capabilities anyway";
+    // A user's own session.
+    EXPECT_FALSE(environmentMayBeAnotherUsers(1000, false, false, envOf({{"SUDO_UID", "1000"}, {"DOAS_USER", "x"}}), true));
+}
+
+TEST(SessionUserTest, AUserAboveIsFoundUpTheProcessTree)
+{
+    using Platform::SessionUser::aUserIsAbove;
+    using Platform::SessionUser::ProcessIds;
+    const auto tree = [](std::map<int, ProcessIds> table)
+    {
+        return [table = std::move(table)](int pid) -> std::optional<ProcessIds>
+        {
+            if (const auto found = table.find(pid); found != table.end())
+            {
+                return found->second;
+            }
+            return std::nullopt;
+        };
+    };
+    // su: TaskSmack (root) <- su (real uid alice, effective root) <- bash (alice) <- init.
+    EXPECT_TRUE(aUserIsAbove(400, tree({{400, {300, 0, 0}}, {300, {200, 1000, 0}}, {200, {1, 1000, 1000}}})));
+    // A root login, a service or a container: only root above, up to pid 1.
+    EXPECT_FALSE(aUserIsAbove(400, tree({{400, {300, 0, 0}}, {300, {200, 0, 0}}, {200, {1, 0, 0}}})));
+    // TaskSmack itself isn't counted, and an ancestor that can't be read ends the walk.
+    EXPECT_FALSE(aUserIsAbove(400, tree({{400, {300, 1000, 1000}}})));
+    // A loop in a fake table ends.
+    EXPECT_FALSE(aUserIsAbove(400, tree({{400, {300, 0, 0}}, {300, {400, 0, 0}}})));
 }
 
 } // namespace Platform::SessionUser

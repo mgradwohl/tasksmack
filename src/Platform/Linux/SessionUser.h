@@ -19,6 +19,7 @@
 #include <fstream>
 #include <functional>
 #include <optional>
+#include <sstream>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -221,54 +222,127 @@ invokingUserSession(uid_t effectiveUid,
     return {.otherAccount = true, .account = self.has_value() && !self->name.empty() ? self->name : std::string("root")};
 }
 
-/// The login uid the kernel's audit keeps for this process (/proc/self/loginuid): set at login (pam_loginuid) and kept
-/// across su, sudo and doas, so a root process started from a user's login reads theirs. Nullopt when unset
-/// (4294967295: a service, a container, a kernel without audit) or unreadable.
-[[nodiscard]] inline std::optional<std::uint32_t> processLoginUid()
+/// A process's parent and real and effective uids, as /proc/<pid>/status gives them.
+struct ProcessIds
 {
-    std::ifstream in("/proc/self/loginuid");
-    std::uint64_t value = 0;
-    if (!(in >> value) || value >= 4294967295ULL)
+    int parent = 0;
+    std::uint32_t realUid = 0;
+    std::uint32_t effectiveUid = 0;
+};
+
+/// /proc/<@p pid>/status's PPid and Uid lines, or nullopt when it can't be read (the process is gone).
+[[nodiscard]] inline std::optional<ProcessIds> processIds(int pid)
+{
+    std::ifstream in("/proc/" + std::to_string(pid) + "/status");
+    std::optional<int> parent;
+    std::optional<std::pair<std::uint32_t, std::uint32_t>> uids;
+    for (std::string line; std::getline(in, line);)
+    {
+        std::istringstream fields(line);
+        std::string key;
+        fields >> key;
+        if (key == "PPid:")
+        {
+            int value = 0;
+            if (fields >> value)
+            {
+                parent = value;
+            }
+        }
+        else if (key == "Uid:")
+        {
+            std::uint32_t real = 0;
+            std::uint32_t effective = 0;
+            if (fields >> real >> effective)
+            {
+                uids = std::pair(real, effective);
+            }
+        }
+    }
+    if (!parent.has_value() || !uids.has_value())
     {
         return std::nullopt;
     }
-    return static_cast<std::uint32_t>(value);
+    return ProcessIds{.parent = *parent, .realUid = uids->first, .effectiveUid = uids->second};
+}
+
+/// Whether a process above @p self, up to pid 1, runs as someone other than root (real or effective uid not 0), from
+/// @p ids (processIds(), or a test's). su, sudo, doas and pkexec are run by a user, so a root process they start has
+/// that user above it, whatever its environment says; a root login, a service, cron, wsl -u root and a container's
+/// processes have only root above them. An ancestor that can't be read ends the walk (nothing more is known).
+[[nodiscard]] inline bool aUserIsAbove(int self, const std::function<std::optional<ProcessIds>(int)>& ids)
+{
+    constexpr int MAX_HOPS = 64; // a chain this long is no shell's; and a loop can't keep the walk going
+    std::optional<ProcessIds> at = ids(self);
+    for (int hop = 0; hop < MAX_HOPS && at.has_value() && at->parent > 1; ++hop)
+    {
+        at = ids(at->parent);
+        if (at.has_value() && (at->realUid != 0 || at->effectiveUid != 0))
+        {
+            return true;
+        }
+    }
+    return false;
 }
 
 /// Whether this process's environment may be another, less-privileged user's (#4154), so it ignores the test hooks that
 /// write files (#4104) and the SDL and loader variables (#4111, #4151). No passwd lookup, and no signal the user's own
 /// environment can set to turn it off:
-///   - @p secureExecution, the kernel's AT_SECURE: setuid, setgid or file capabilities (the FAQ's setcap, #4171), where
-///     the environment is the invoking user's whatever the effective uid;
-///   - root (@p effectiveUid 0) and something naming the user who started it: any SUDO_UID or PKEXEC_UID but "0", a
-///     DOAS_USER but root, or @p loginUid (processLoginUid()) a user's, which plain su keeps.
-/// Root's own session (a root login, a service, a container) is unaffected. Not HOME: a root job may set its own (the
-/// #4170 review: release.yml's upgrade check runs as root with HOME a scratch folder).
+///   - @p secureExecution, the kernel's AT_SECURE: setuid, setgid or file capabilities (the FAQ's setcap, #4171);
+///   - not root but holding capabilities (@p holdsCapabilities: ambient ones, which set no AT_SECURE);
+///   - a SUDO_UID or PKEXEC_UID that isn't this effective uid (sudo -u another user too), even a malformed one: only
+///     sudo and pkexec set them;
+///   - root with a DOAS_USER but root;
+///   - root with a user's process above it (@p aUserAbove: aUserIsAbove()), which su, and sudo with SUDO_UID=0 given
+///     on its command line, can't hide.
+/// Root's own session (a root login, a service, cron, a container) is unaffected. Not HOME (release.yml's upgrade check
+/// runs as root with HOME a scratch folder), nor the login uid (unset on WSL, and a user's inside a container they
+/// started): the reviews of #4170.
 [[nodiscard]] inline bool environmentMayBeAnotherUsers(uid_t effectiveUid,
                                                        bool secureExecution,
+                                                       bool holdsCapabilities,
                                                        const std::function<std::optional<std::string>(std::string_view)>& env,
-                                                       std::optional<std::uint32_t> loginUid)
+                                                       bool aUserAbove)
 {
-    if (secureExecution)
+    if (secureExecution || (effectiveUid != 0 && holdsCapabilities))
     {
         return true;
+    }
+    const std::string self = std::to_string(effectiveUid);
+    for (const char* name : {"SUDO_UID", "PKEXEC_UID"})
+    {
+        if (const std::optional<std::string> text = env(name); text.has_value() && !text->empty() && *text != self)
+        {
+            return true;
+        }
     }
     if (effectiveUid != 0)
     {
         return false;
     }
-    for (const char* name : {"SUDO_UID", "PKEXEC_UID"})
-    {
-        if (const std::optional<std::string> text = env(name); text.has_value() && !text->empty() && *text != "0")
-        {
-            return true; // even a malformed one: only sudo and pkexec set them (the #4170 review)
-        }
-    }
     if (const std::optional<std::string> doasUser = env("DOAS_USER"); doasUser.has_value() && !doasUser->empty() && *doasUser != "root")
     {
         return true;
     }
-    return loginUid.has_value() && *loginUid != 0;
+    return aUserAbove;
+}
+
+/// Whether this process, not root, holds any effective or permitted capability (/proc/self/status CapEff, CapPrm).
+[[nodiscard]] inline bool processHoldsCapabilities()
+{
+    std::ifstream in("/proc/self/status");
+    for (std::string line; std::getline(in, line);)
+    {
+        if (line.starts_with("CapEff:") || line.starts_with("CapPrm:"))
+        {
+            const std::string_view hex = std::string_view(line).substr(line.find_first_not_of(" \t", 7));
+            if (hex.find_first_not_of('0') != std::string_view::npos)
+            {
+                return true;
+            }
+        }
+    }
+    return false;
 }
 
 /// This process's invoking user (invokingUser() for its effective uid, environment and passwd database), looked up
