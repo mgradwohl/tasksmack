@@ -31,6 +31,10 @@
 //     DACL is never written to.
 //   - Anything that fails a check is refused: the log goes to the debugger and the console only, and says why there.
 //
+// The handle-relative opens, the move aside, the delete through a handle and the folder takeover are
+// Platform::Windows' (Platform/Windows/HandleRelativeFile.h, #4143), shared with the handed-over config folder
+// (PinnedFolder); this file says which folders and file they make, and with what security.
+//
 // The folders, their security, the owner trust and the final-path read are seams, so test_DebugLogFile.cpp drives each case in a temp
 // folder of its own, with junctions and hard links any user can make.
 

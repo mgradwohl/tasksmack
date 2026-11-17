@@ -390,6 +390,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/DllSearchPolicy.cpp # where WinMain lets a DLL loaded by name come from (#3897)
     src/Platform/Windows/SdlEnvironment.cpp # the SDL variables an elevated WinMain removes first (#4103)
     src/Platform/Windows/PinnedFolder.cpp # the handed-over config folder, opened only relative to its held handle (#3774)
+    src/Platform/Windows/HandleRelativeFile.cpp # opens, renames and deletes relative to a held folder handle: PinnedFolder and the elevated log (#4143)
     src/Platform/Windows/WindowsProcessDump.cpp
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
