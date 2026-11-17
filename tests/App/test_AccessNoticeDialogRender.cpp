@@ -5,12 +5,15 @@
 
 #include "App/AccessChoice.h"
 #include "App/AccessNoticeDialog.h"
+#include "App/Panels/AuthorizeWording.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h> // GetTopMostPopupModal(), ImHashStr(), ActivateItemByID(): the modal and its controls
 
+#include <cstddef>
 #include <string>
+#include <string_view>
 
 namespace App
 {
@@ -108,6 +111,51 @@ class AccessNoticeDialogRenderTest : public ::testing::Test
         ImGui::ActivateItemByID(ImHashStr(label, 0, modal->ID));
     }
 
+    /// Hovers the modal's item @p label, with no tooltip delay, until the mouse is over it; the text two frames drew then
+    /// (the tooltip among it). Empty when no point of the modal hovers it.
+    std::string hoverText(const char* label)
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.HoverStationaryDelay = 0.0F;
+        style.HoverDelayShort = 0.0F;
+        style.HoverDelayNormal = 0.0F;
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        if (modal == nullptr)
+        {
+            ADD_FAILURE() << "no modal open";
+            return {};
+        }
+        const ImGuiID id = ImHashStr(label, 0, modal->ID);
+        const ImVec2 origin = modal->Pos;
+        const ImVec2 size = modal->Size;
+        for (int row = 0; row < 60; ++row)
+        {
+            for (int column = 0; column < 30; ++column)
+            {
+                ImGui::GetIO().AddMousePosEvent(origin.x + (size.x * (static_cast<float>(column) + 0.5F) / 30.0F),
+                                                origin.y + (size.y * (static_cast<float>(row) + 0.5F) / 60.0F));
+                std::string text = runFrame().text;
+                if (GImGui->HoveredId == id)
+                {
+                    text += runFrame().text;
+                    return text;
+                }
+            }
+        }
+        return {};
+    }
+
+    /// How many times @p needle is in @p text.
+    static std::size_t occurrences(std::string_view text, std::string_view needle)
+    {
+        std::size_t count = 0;
+        for (std::size_t at = text.find(needle); at != std::string_view::npos; at = text.find(needle, at + needle.size()))
+        {
+            ++count;
+        }
+        return count;
+    }
+
     static constexpr int SETTLE_FRAMES = 6;
     AccessNoticeDialog::State m_State;
 
@@ -203,6 +251,27 @@ TEST_F(WindowsAccessNoticeDialogRenderTest, AStandardUserIsToldAnAdministratorsP
     const Frame opened = open();
     EXPECT_TRUE(opened.text.contains("name and password")) << opened.text;
     EXPECT_TRUE(opened.text.contains("Restart as administrator...")) << "the option stays for a standard user";
+}
+
+// #4108: the Restart button's tooltip names the prompt the notice's own note names.
+TEST_F(WindowsAccessNoticeDialogRenderTest, TheRestartTooltipSaysApprovalForAnAdministratorWhoApproves)
+{
+    m_State.credentials = false;
+    ASSERT_TRUE(open().open);
+    const std::string text = hoverText(AccessNoticeDialog::RESTART_LABEL);
+    ASSERT_FALSE(text.empty()) << "the Restart button was never hovered";
+    // The notice's own note says it once a frame; the tooltip adds to that.
+    EXPECT_GT(occurrences(text, AuthorizeWording::WINDOWS_WORDING.promptTooltip), 2U) << text;
+    EXPECT_FALSE(text.contains("name and password")) << text;
+}
+
+TEST_F(WindowsAccessNoticeDialogRenderTest, TheRestartTooltipSaysNameAndPasswordForAStandardUser)
+{
+    m_State.credentials = true;
+    ASSERT_TRUE(open().open);
+    const std::string text = hoverText(AccessNoticeDialog::RESTART_LABEL);
+    ASSERT_FALSE(text.empty()) << "the Restart button was never hovered";
+    EXPECT_TRUE(text.contains(AuthorizeWording::WINDOWS_WORDING.credentialsPromptTooltip)) << text;
 }
 
 TEST_F(WindowsAccessNoticeDialogRenderTest, RestartAsksForItAndTheNoticeStaysUp)

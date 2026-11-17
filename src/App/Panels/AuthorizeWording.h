@@ -39,11 +39,12 @@ inline constexpr const char* IO_PRIORITY_TOOLTIP = TASKSMACK_AUTHORIZE_ASKS ", t
 /// The constants above are its retry and read words, and tests/App/test_AccessChoice.cpp holds them equal.
 struct PlatformWording
 {
-    const char* launch;        ///< The notice's Administrator option
-    const char* retry;         ///< Beside a refused action
-    const char* read;          ///< Beside a refused read
-    const char* switchSession; ///< The status-bar chip's switch, mid-session
-    const char* promptTooltip; ///< Names the prompt the choice raises
+    const char* launch;                   ///< The notice's Administrator option
+    const char* retry;                    ///< Beside a refused action
+    const char* read;                     ///< Beside a refused read
+    const char* switchSession;            ///< The status-bar chip's switch, mid-session
+    const char* promptTooltip;            ///< Names the prompt the choice raises, for a user who approves it (UAC consent)
+    const char* credentialsPromptTooltip; ///< The same, for a standard user, who gives an administrator's name and password (#4108)
 };
 
 inline constexpr PlatformWording WINDOWS_WORDING{
@@ -52,7 +53,15 @@ inline constexpr PlatformWording WINDOWS_WORDING{
     .read = "Read as administrator",
     .switchSession = "Restart as administrator...",
     .promptTooltip = "Windows asks for approval (UAC)",
+    .credentialsPromptTooltip = "Windows asks for an administrator's name and password (UAC)",
 };
+
+/// The Restart as administrator... tooltip's prompt line (#4108): the credentials one when @p credentials, as the
+/// startup notice's own note picks (AccessNoticeDialog::State::credentials), else the consent one.
+[[nodiscard]] constexpr const char* promptTooltipFor(bool credentials) noexcept
+{
+    return credentials ? WINDOWS_WORDING.credentialsPromptTooltip : WINDOWS_WORDING.promptTooltip;
+}
 
 } // namespace App::AuthorizeWording
 

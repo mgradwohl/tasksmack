@@ -231,7 +231,7 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
         // No helper to read them (#3669): the restart, which opens the elevation notice. Never disabled by a press:
         // the notice can be closed and the button pressed again.
         label = RestartAsAdministrator::LABEL;
-        tooltip = RestartAsAdministrator::TOOLTIP;
+        tooltip = RestartAsAdministrator::tooltip();
         note = SystemInfo::RESTART_NOTE;
         clickedFlag = &restartStaysEnabled;
         break;

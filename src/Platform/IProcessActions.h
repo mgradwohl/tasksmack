@@ -387,6 +387,10 @@ struct ProcessActionCapabilities
     /// as root (euid 0), as runProgram() decides it; false elsewhere. Run new task's tooltip says which it will do, from
     /// this rather than from the capability set, which a root container or a non-root process with capabilities splits.
     bool runsProgramsAsRootDirectly = false;
+    /// runProgram() as administrator: the prompt asks for an administrator's name and password, and the program runs
+    /// as that administrator (Windows, #4108: a standard user, whose runas verb has no consent prompt to give), not for
+    /// the user's own approval. Read once, at construction.
+    bool runAsAdministratorAsksCredentials = false;
     /// setEfficiencyMode(): Efficiency mode on or off, as Task Manager's (#3071; Windows: EcoQoS power
     /// throttling and the Idle priority class; Linux: nice 19 and a low cgroup cpu.weight, #3202).
     bool canSetEfficiencyMode = false;
