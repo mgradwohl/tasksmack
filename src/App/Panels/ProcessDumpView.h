@@ -92,12 +92,29 @@ inline constexpr std::uint64_t DUMP_SIZE_OVERHEAD_DIVISOR = 4; ///< A quarter mo
 [[nodiscard]] std::string
 lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory, bool canChooseFolder = true);
 
+/// Whether this session has no default dump folder (#4141): on Windows, elevated or restarted with --handoff
+/// (DllSearchPolicy::system32OnlyForThisProcess(), the rule main.cpp's lessPrivilegedEnvironment() uses, #4104). Its
+/// %TEMP% is then the less-privileged side's: a junction or another TEMP could steer the dump elsewhere, and anything
+/// running as that user could read the memory of a process only an administrator may open. Read once, then kept.
+/// False on Linux.
+[[nodiscard]] bool noDefaultDumpFolder() noexcept;
+
+/// What the confirm says while it has no folder, in a session with no default one (noDefaultDumpFolder()).
+inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
+    "Choose a folder with Save dump to...: as administrator, TaskSmack doesn't save dumps in your temp folder, where "
+    "programs running as you could read them.";
+
 /// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
-/// do. Empty when there is none; the platform then refuses the dump and says so.
+/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one. Empty when there is
+/// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
+[[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
+/// defaultDumpDirectory(bool) with this session's noDefaultDumpFolder().
 [[nodiscard]] std::filesystem::path defaultDumpDirectory();
 
 /// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
-/// folder, else defaultDumpDirectory(). Asks the file system: on the confirm's worker, never the UI thread.
+/// folder, else defaultDumpDirectory(@p noDefault). Asks the file system: on the confirm's worker, never the UI thread.
+[[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault);
+/// dumpDirectory(std::string_view, bool) with this session's noDefaultDumpFolder().
 [[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered);
 /// The dump folder to use from @p stored (UserSettings::dumpFolder): in a session whose config folder an elevated
 /// restart was handed (@p handedOver, #2728) only @p chosenThisSession, the one this session's user picked with
@@ -125,12 +142,14 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 /// What the dump does and where it goes, for the confirm dialog; then @p warning (lowSpaceWarning(),
 /// or why the folder dialog failed) when there is one. @p dumpsFromSnapshot
 /// (ProcessActionCapabilities::dumpsFromSnapshot) says how long the process pauses: while a snapshot
-/// is taken (Windows), or for the whole write (Linux's gcore, #2241).
+/// is taken (Windows), or for the whole write (Linux's gcore, #2241). An empty @p directory is "the temporary
+/// folder", or "the folder you choose" where @p noDefaultFolder (#4141).
 [[nodiscard]] std::string confirmQuestion(std::string_view processName,
                                           std::int32_t pid,
                                           const std::filesystem::path& directory,
                                           bool dumpsFromSnapshot,
-                                          std::string_view warning = {});
+                                          std::string_view warning = {},
+                                          bool noDefaultFolder = false);
 /// "Writing a dump file of notepad.exe (PID 1234)... 12 s", while it runs.
 [[nodiscard]] std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed);
 
@@ -200,6 +219,21 @@ class ProcessDumpView
         m_FolderDialog = std::move(dialog);
     }
 
+    /// Whether this view has no default folder (#4141): DumpDetail::noDefaultDumpFolder() for the default view,
+    /// false for the tests' unless they set it here. Then a confirm with no folder can't be confirmed until one is
+    /// chosen with "Save dump to..." (needsFolder()).
+    void setNoDefaultFolder(bool noDefault) noexcept
+    {
+        m_NoDefaultFolder = noDefault;
+    }
+
+    /// Whether the confirm has no folder to write to and must wait for "Save dump to..." (#4141): it has none, and
+    /// this view has no default one. Its Create dump file button is disabled meanwhile.
+    [[nodiscard]] bool needsFolder() const noexcept
+    {
+        return m_NoDefaultFolder && m_Directory.empty();
+    }
+
     /// Whether "Save dump to..." is offered with @p actions: the platform's folder dialog, or the fallback.
     [[nodiscard]] bool canChooseFolder(Platform::IProcessActions* actions) const;
     /// Cancels a dump in flight and waits for it, and for a folder dialog still up (shutdown()).
@@ -252,8 +286,8 @@ class ProcessDumpView
 
     /// The confirm was accepted: starts the dump on a worker, through @p actions (null: the result says
     /// actions are unavailable, and nothing starts). @p actions must outlive the dump: see the file
-    /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up or its
-    /// folder is being checked.
+    /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up, its
+    /// folder is being checked, or it has no folder yet (needsFolder()).
     void confirm(Platform::IProcessActions* actions);
 
     /// The confirm was cancelled or dismissed: nothing starts.
@@ -405,6 +439,7 @@ class ProcessDumpView
     bool m_CheckWanted = false;       // a folder check was asked for and not started yet
     bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
+    bool m_NoDefaultFolder = false;   // no default folder: the user must choose one (setNoDefaultFolder(), #4141)
 };
 
 } // namespace App

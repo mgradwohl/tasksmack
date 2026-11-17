@@ -86,7 +86,26 @@ TEST(ProcessDumpViewTest, TheDefaultInterfaceRefusesADumpAsUnsupported)
 
 TEST(ProcessDumpViewTest, TheDefaultFolderIsTheTempFolder)
 {
-    EXPECT_EQ(DumpDetail::defaultDumpDirectory(), std::filesystem::temp_directory_path());
+    EXPECT_EQ(DumpDetail::defaultDumpDirectory(false), std::filesystem::temp_directory_path());
+    EXPECT_EQ(DumpDetail::dumpDirectory("", false), std::filesystem::temp_directory_path());
+    // This session's: the temp folder unless it has no default (elevated on Windows, #4141).
+    EXPECT_EQ(DumpDetail::defaultDumpDirectory(),
+              DumpDetail::noDefaultDumpFolder() ? std::filesystem::path{} : std::filesystem::temp_directory_path());
+}
+
+// #4141: elevated, %TEMP% is the less-privileged side's (redirectable, and readable unelevated): no default folder.
+TEST(ProcessDumpViewTest, ASessionWithNoDefaultFolderHasNone)
+{
+    EXPECT_EQ(DumpDetail::defaultDumpDirectory(true), std::filesystem::path{});
+    EXPECT_EQ(DumpDetail::dumpDirectory("", true), std::filesystem::path{}) << "nothing remembered: none";
+    const std::filesystem::path temp = std::filesystem::temp_directory_path();
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp / "tasksmack-no-such-dump-folder-4141"), true), std::filesystem::path{})
+        << "gone: none, not the temp folder";
+    // A folder that exists is still used: one chosen with Save dump to... in this session (trustedDumpFolder()).
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp), true), temp);
+#ifndef _WIN32
+    EXPECT_FALSE(DumpDetail::noDefaultDumpFolder()) << "Windows only";
+#endif
 }
 
 // --- Confirm --------------------------------------------------------------------------------------
@@ -507,6 +526,64 @@ TEST(ProcessDumpViewTest, AChosenFolderBecomesTheConfirmsAndIsRemembered)
     view.confirm(&mock);
     ASSERT_TRUE(view.takeFinished(true));
     EXPECT_EQ(mock.lastDumpDirectory(), otherFolder());
+}
+
+// #4141: with no default folder (elevated), the confirm asks for one, and can't be confirmed until Save dump to...
+// chooses it.
+TEST(ProcessDumpViewTest, WithNoDefaultFolderTheConfirmWaitsForSaveDumpTo)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setFolderChoice(std::optional<std::filesystem::path>(otherFolder()));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(view.directory(), std::filesystem::path{}) << "never the temp folder";
+    EXPECT_TRUE(view.needsFolder());
+    EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    EXPECT_TRUE(view.confirmQuestion().contains("the folder you choose")) << view.confirmQuestion();
+    EXPECT_FALSE(view.confirmQuestion().contains("the temporary folder")) << view.confirmQuestion();
+
+    view.confirm(&mock); // its button is disabled: nothing starts
+    EXPECT_FALSE(view.busy());
+    EXPECT_TRUE(view.confirmPending());
+    EXPECT_EQ(mock.createDumpCount(), 0);
+
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_FALSE(view.needsFolder());
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    EXPECT_TRUE(view.confirmQuestion().contains(otherFolder().string())) << view.confirmQuestion();
+
+    mock.setDumpResult(
+        Platform::ProcessDump{.file = otherFolder() / "lsass.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.createDumpCount(), 1);
+    EXPECT_EQ(mock.lastDumpDirectory(), otherFolder());
+}
+
+// #4141: unelevated, nothing changes: the confirm names the temp folder and can be confirmed at once.
+TEST(ProcessDumpViewTest, WithADefaultFolderTheConfirmUsesTheTempFolder)
+{
+    const std::filesystem::path temp = std::filesystem::temp_directory_path();
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(false);
+    view.requestInRememberedFolder(TARGET, "notepad.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(view.directory(), temp);
+    EXPECT_FALSE(view.needsFolder());
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+
+    mock.setDumpResult(
+        Platform::ProcessDump{.file = temp / "notepad.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.lastDumpDirectory(), temp);
 }
 
 TEST(ProcessDumpViewTest, ACancelledFolderDialogChangesNothing)
@@ -1157,9 +1234,12 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsCheckedOnTheWorker)
         std::string remembered;
         std::filesystem::path expected;
     };
-    for (const Case& test : {Case{.remembered = Core::pathToUtf8(folder.path()), .expected = folder.path()},
-                             Case{.remembered = Core::pathToUtf8(folder.path() / "gone"), .expected = DumpDetail::defaultDumpDirectory()},
-                             Case{.remembered = {}, .expected = DumpDetail::defaultDumpDirectory()}})
+    const std::filesystem::path fallback = DumpDetail::defaultDumpDirectory(false); // a test's view has a default folder
+    for (const Case& test : {
+             Case{.remembered = Core::pathToUtf8(folder.path()), .expected = folder.path()},
+             Case{.remembered = Core::pathToUtf8(folder.path() / "gone"), .expected = fallback},
+             Case{.remembered = {}, .expected = fallback},
+         })
     {
         SCOPED_TRACE(test.remembered);
         TestMocks::MockProcessActions mock;
@@ -1179,7 +1259,7 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsCheckedOnTheWorker)
     view.requestInRememberedFolder(TARGET, "big.exe", Core::pathToUtf8(folder.path() / "gone"), nullptr);
     EXPECT_TRUE(view.checkingFolder());
     ASSERT_TRUE(view.takeConfirmCheck(nullptr, true));
-    EXPECT_EQ(view.directory(), DumpDetail::defaultDumpDirectory());
+    EXPECT_EQ(view.directory(), DumpDetail::defaultDumpDirectory(false)) << "a test's view has a default folder";
 }
 
 TEST(ProcessDumpViewTest, TheRememberedFolderIsTheConfigsAsWritten)

@@ -20,6 +20,10 @@
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
+#ifdef _WIN32
+#include "Platform/Windows/DllSearchPolicy.h"
+#endif
+
 #include <SDL3/SDL_video.h>
 #include <imgui.h>
 #include <spdlog/spdlog.h>
@@ -61,14 +65,34 @@ std::string lowSpaceWarning(const Platform::DumpSpace& space, const std::filesys
                        canChooseFolder ? "choose another folder with Save dump to..., or free some space." : "free some space first.");
 }
 
-std::filesystem::path defaultDumpDirectory()
+bool noDefaultDumpFolder() noexcept
 {
+#ifdef _WIN32
+    // The token and the command line don't change while TaskSmack runs: read once, not at every confirm.
+    static const bool noDefault = Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
+    return noDefault;
+#else
+    return false;
+#endif
+}
+
+std::filesystem::path defaultDumpDirectory(bool noDefault)
+{
+    if (noDefault)
+    {
+        return {}; // the less-privileged side's %TEMP% (#4141): the user chooses a folder instead
+    }
     std::error_code error;
     const std::filesystem::path directory = std::filesystem::temp_directory_path(error);
     return error ? std::filesystem::path{} : directory;
 }
 
-std::filesystem::path dumpDirectory(std::string_view remembered)
+std::filesystem::path defaultDumpDirectory()
+{
+    return defaultDumpDirectory(noDefaultDumpFolder());
+}
+
+std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault)
 {
     if (!remembered.empty())
     {
@@ -79,7 +103,12 @@ std::filesystem::path dumpDirectory(std::string_view remembered)
             return directory;
         }
     }
-    return defaultDumpDirectory();
+    return defaultDumpDirectory(noDefault);
+}
+
+std::filesystem::path dumpDirectory(std::string_view remembered)
+{
+    return dumpDirectory(remembered, noDefaultDumpFolder());
 }
 
 namespace
@@ -136,7 +165,8 @@ std::string confirmQuestion(std::string_view processName,
                             std::int32_t pid,
                             const std::filesystem::path& directory,
                             bool dumpsFromSnapshot,
-                            std::string_view warning)
+                            std::string_view warning,
+                            bool noDefaultFolder)
 {
     // Windows takes a snapshot first (#2001); Linux's gcore stops the process for the whole write (#2241).
     const std::string_view pause = dumpsFromSnapshot ? "The process pauses while a snapshot of it is taken; where none can be, it may "
@@ -147,7 +177,8 @@ std::string confirmQuestion(std::string_view processName,
                                        "all the memory the process uses. {}",
                                        processName,
                                        pid,
-                                       directory.empty() ? std::string("the temporary folder") : Core::pathToUtf8(directory),
+                                       directory.empty() ? std::string(noDefaultFolder ? "the folder you choose" : "the temporary folder")
+                                                         : Core::pathToUtf8(directory),
                                        pause);
     if (!warning.empty())
     {
@@ -256,6 +287,7 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 ProcessDumpView::ProcessDumpView() : ProcessDumpView(&DumpDetail::rememberDumpDirectory)
 {
     m_FolderDialog = &DumpDetail::sdlFolderDialog;
+    m_NoDefaultFolder = DumpDetail::noDefaultDumpFolder(); // elevated on Windows: no %TEMP% default (#4141)
 }
 
 bool ProcessDumpView::canChooseFolder(Platform::IProcessActions* actions) const
@@ -303,6 +335,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_Result = std::move(other.m_Result);
         m_OpenFolder = std::move(other.m_OpenFolder);
         m_DismissAfterOpen = other.m_DismissAfterOpen;
+        m_NoDefaultFolder = other.m_NoDefaultFolder;
     }
     return *this;
 }
@@ -384,10 +417,17 @@ void ProcessDumpView::startCheckIfDue()
     // the target, folder and remembered folder; it shares only its result with this view, and the
     // actions, which outlive it (see the header). A check that throws is a failure, built on the worker.
     if (auto failed = m_ConfirmCheck.start(
-            [actions = m_CheckActions, target = m_Target, directory = m_Directory, resolve = m_CheckResolve, remembered = m_CheckRemembered]
-            -> DumpDetail::ConfirmCheck
+            [actions = m_CheckActions,
+             target = m_Target,
+             directory = m_Directory,
+             resolve = m_CheckResolve,
+             remembered = m_CheckRemembered,
+             noDefault = m_NoDefaultFolder] -> DumpDetail::ConfirmCheck
             {
-                DumpDetail::ConfirmFacts facts{.directory = resolve ? DumpDetail::dumpDirectory(remembered) : directory, .space = {}};
+                DumpDetail::ConfirmFacts facts{
+                    .directory = resolve ? DumpDetail::dumpDirectory(remembered, noDefault) : directory,
+                    .space = {},
+                };
                 if (actions != nullptr)
                 {
                     facts.space = actions->dumpSpace(target, facts.directory);
@@ -435,6 +475,14 @@ void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProc
 void ProcessDumpView::rebuildQuestion()
 {
     std::string warning = checkingFolder() ? std::string(DumpDetail::CHECKING_FOLDER_TEXT) : m_SpaceWarning;
+    if (!checkingFolder() && needsFolder())
+    {
+        if (!warning.empty())
+        {
+            warning += "\n\n";
+        }
+        warning += DumpDetail::NO_DEFAULT_FOLDER_TEXT; // no %TEMP% default as administrator (#4141)
+    }
     if (!m_FolderFailure.empty())
     {
         if (!warning.empty())
@@ -443,7 +491,8 @@ void ProcessDumpView::rebuildQuestion()
         }
         warning += m_FolderFailure;
     }
-    m_ConfirmQuestion = DumpDetail::confirmQuestion(m_ProcessName, m_Target.pid, m_Directory, m_DumpsFromSnapshot, warning);
+    m_ConfirmQuestion =
+        DumpDetail::confirmQuestion(m_ProcessName, m_Target.pid, m_Directory, m_DumpsFromSnapshot, warning, m_NoDefaultFolder);
 }
 
 void ProcessDumpView::chooseFolder(Platform::IProcessActions* actions, void* ownerWindow)
@@ -519,9 +568,9 @@ bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool 
 
 void ProcessDumpView::confirm(Platform::IProcessActions* actions)
 {
-    if (!m_ConfirmPending || choosingFolder() || checkingFolder())
+    if (!m_ConfirmPending || choosingFolder() || checkingFolder() || needsFolder())
     {
-        return;
+        return; // no folder yet: never the less-privileged side's %TEMP% (#4141)
     }
     m_ConfirmPending = false;
     m_ShowConfirm = false;
@@ -639,6 +688,7 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
             .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
             .busy = choosingFolder() || checkingFolder(),
             .pressed = &choosePressed,
+            .confirmDisabled = needsFolder(), // until a folder is chosen (#4141)
         };
         // The shared confirm dialog under an ID of its own: the panel's own confirm (Kill, Suspend...)
         // is submitted every frame too, and must never see this one open as its own.
