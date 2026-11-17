@@ -1,6 +1,7 @@
 #include "ElevationNoticeLayer.h"
 
 #include "App/AccessNoticeDialog.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/UserConfig.h"
 #include "Core/Application.h"
 #include "Core/ApplicationEvents.h"
@@ -50,6 +51,8 @@ ElevationNoticeLayer::ElevationNoticeLayer(std::shared_ptr<Platform::IElevatedRe
     {
         m_AccessState.restart = AccessNoticeDialog::Restart::Ready;
         m_AccessState.credentials = m_Restart->prompt() == Platform::AdministratorPrompt::Credentials;
+        // The per-item Restart as administrator... buttons' tooltips name the same prompt, read once here (#4108).
+        RestartAsAdministrator::setCredentials(m_AccessState.credentials);
     }
 }
 

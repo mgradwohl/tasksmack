@@ -6,6 +6,7 @@
 #include "App/AccessChoice.h"
 #include "App/AccessNoticeDialog.h"
 #include "App/ElevationNoticeLayer.h"
+#include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Platform/IElevatedRestart.h"
@@ -194,6 +195,25 @@ TEST_F(ElevationNoticeLayerTest, ADeclinedPromptStaysStandardAndSaysSo)
     EXPECT_TRUE(m_Open);
     EXPECT_TRUE(text.contains("didn't restart TaskSmack")) << text;
     EXPECT_TRUE(text.contains("name and password")) << "a standard user's prompt: " << text;
+}
+
+// #4108: the per-item Restart as administrator... buttons' tooltip names the prompt the notice's note does, read once
+// from the restart when the layer is built.
+TEST_F(ElevationNoticeLayerTest, ThePerItemRestartButtonsTooltipFollowsThePrompt)
+{
+    const auto credentials = std::make_shared<FakeRestart>(
+        Platform::AdministratorPrompt::Credentials,
+        Platform::ElevatedRestartResult{.outcome = Platform::ElevatedRestartResult::Outcome::Started, .detail = {}});
+    makeLayer(credentials);
+    EXPECT_STREQ(RestartAsAdministrator::tooltip(), RestartAsAdministrator::CREDENTIALS_TOOLTIP);
+
+    const auto consent = std::make_shared<FakeRestart>(
+        Platform::AdministratorPrompt::Consent,
+        Platform::ElevatedRestartResult{.outcome = Platform::ElevatedRestartResult::Outcome::Started, .detail = {}});
+    makeLayer(consent);
+    EXPECT_STREQ(RestartAsAdministrator::tooltip(), RestartAsAdministrator::TOOLTIP);
+
+    RestartAsAdministrator::setCredentials(false); // as it was
 }
 
 TEST_F(ElevationNoticeLayerTest, AFailedRestartStaysStandardAndSaysWhy)

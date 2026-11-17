@@ -186,6 +186,56 @@ class RunTaskDialogTest : public ::testing::Test
         return run;
     }
 
+    /// One frame with the dialog drawn, and the text it drew.
+    static std::string frameText(RunTaskDialog& dialog)
+    {
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImGui::GetIO().DisplaySize);
+        ImGui::Begin("host", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        static_cast<void>(dialog.render());
+        std::string text = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+        return text;
+    }
+
+    /// Hovers the open dialog's item @p label, with no tooltip delay, until the mouse is over it; the text two frames drew
+    /// then (the tooltip among it). Empty when no point of the modal hovers it.
+    static std::string hoverText(RunTaskDialog& dialog, const char* label)
+    {
+        ImGuiStyle& style = ImGui::GetStyle();
+        style.HoverStationaryDelay = 0.0F;
+        style.HoverDelayShort = 0.0F;
+        style.HoverDelayNormal = 0.0F;
+        const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
+        if (modal == nullptr)
+        {
+            ADD_FAILURE() << "no modal open";
+            return {};
+        }
+        const ImGuiID id = ImHashStr(label, 0, modal->ID);
+        const ImVec2 origin = modal->Pos;
+        const ImVec2 size = modal->Size;
+        for (int row = 0; row < 60; ++row)
+        {
+            for (int column = 0; column < 30; ++column)
+            {
+                ImGui::GetIO().AddMousePosEvent(origin.x + (size.x * (static_cast<float>(column) + 0.5F) / 30.0F),
+                                                origin.y + (size.y * (static_cast<float>(row) + 0.5F) / 60.0F));
+                std::string text = frameText(dialog);
+                if (GImGui->HoveredId == id)
+                {
+                    text += frameText(dialog);
+                    return text;
+                }
+            }
+        }
+        return {};
+    }
+
     /// Presses the dialog's item labelled @p label (in the modal's ID scope; a filled button, the primary
     /// action, has its own "##filled" ID under it), then draws frames until the dialog acts on it.
     static std::optional<Platform::RunProgramRequest> press(RunTaskDialog& dialog, const char* label, bool filled = false)
@@ -283,6 +333,37 @@ TEST_F(RunTaskDialogTest, TheAdministratorTickIsOfferedOnlyWhereItCanWork)
     EXPECT_FALSE(run.value_or(Platform::RunProgramRequest{.commandLine = {}, .asAdministrator = true}).asAdministrator);
 }
 
+#ifdef _WIN32
+// #4108: the tick's tooltip says whether Windows asks for the user's own consent or for an administrator's name and
+// password, and then runs the program as that administrator.
+TEST_F(RunTaskDialogTest, TheAdministratorTickSaysConsentForAnAdministratorWhoApproves)
+{
+    RunTaskDialog dialog([](const std::function<void(std::string)>&) {});
+    dialog.open({"notepad"}, true, false, /*asksCredentials=*/false);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog)); // the modal is up from its second frame
+    const std::string text = hoverText(dialog, "Run as administrator");
+    ASSERT_FALSE(text.empty()) << "the tick was never hovered";
+    EXPECT_TRUE(text.contains(RunTaskDialog::administratorTooltip(false, false))) << text;
+    EXPECT_TRUE(text.contains("your consent")) << text;
+    EXPECT_FALSE(text.contains("name and password")) << text;
+}
+
+TEST_F(RunTaskDialogTest, TheAdministratorTickSaysNameAndPasswordForAStandardUser)
+{
+    RunTaskDialog dialog([](const std::function<void(std::string)>&) {});
+    dialog.open({"notepad"}, true, false, /*asksCredentials=*/true);
+    static_cast<void>(frame(dialog));
+    static_cast<void>(frame(dialog)); // the modal is up from its second frame
+    const std::string text = hoverText(dialog, "Run as administrator");
+    ASSERT_FALSE(text.empty()) << "the tick was never hovered";
+    EXPECT_TRUE(text.contains(RunTaskDialog::administratorTooltip(false, true))) << text;
+    EXPECT_TRUE(text.contains("administrator's name and password")) << text;
+    EXPECT_TRUE(text.contains("runs as that administrator")) << text;
+    EXPECT_FALSE(text.contains("your consent")) << text;
+}
+#endif
+
 // #3186: the arrow beside the command line lists the recent commands; picking one fills the line in.
 TEST_F(RunTaskDialogTest, PickingARecentCommandFillsTheLineIn)
 {
@@ -377,6 +458,12 @@ TEST(RunTaskTooltipTest, TheAdministratorTickSaysWhetherAPasswordComes)
     const std::string_view elevated = RunTaskDialog::administratorTooltip(true);
 #ifdef _WIN32
     EXPECT_EQ(standard, elevated) << "Windows offers the tick only when TaskSmack isn't elevated";
+    // #4108: a standard user's prompt asks for another account's credentials, and the program runs as that account.
+    const std::string_view credentials = RunTaskDialog::administratorTooltip(false, true);
+    EXPECT_NE(standard, credentials);
+    EXPECT_TRUE(standard.contains("consent")) << standard;
+    EXPECT_TRUE(credentials.contains("name and password")) << credentials;
+    EXPECT_TRUE(credentials.contains("runs as that administrator")) << credentials;
 #else
     EXPECT_TRUE(standard.contains("password first")) << standard;
     EXPECT_FALSE(elevated.contains("password first")) << elevated;
