@@ -114,14 +114,34 @@ void logThrough(const spdlog::sink_ptr& sink, const std::string& line)
 
 /// open()'s calls on @p scratch: its Temp and ProgramData folders, and, on Windows, security this unelevated test can
 /// set and still work in (Authenticated Users too, and no owner: only an elevated token may make Administrators one).
+/// The folders' owner is trusted, as an Administrators-owned folder TaskSmack made is, so a second run takes TaskSmack
+/// and Logs over in place and the stale-log delete under them runs whether or not the test is elevated; the tests of the
+/// move-aside path use the real owner check instead (realOwnerCheckIn()).
 [[nodiscard]] App::DebugLogFile::Functions functionsIn(const ScratchFolder& scratch)
 {
-    return {
+    App::DebugLogFile::Functions functions{
         .tempFolder = [temp = scratch.temp()] { return temp; },
         .programDataFolder = [programData = scratch.programData()] { return std::optional(programData); },
         .folderSecurity = "D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;AU)",
     };
+#ifdef _WIN32
+    functions.ownerTrusted = [](void* /*handle*/)
+    {
+        return std::optional(true);
+    };
+#endif
+    return functions;
 }
+
+#ifdef _WIN32
+/// functionsIn(), with the real owner check (Administrators or SYSTEM): for the move-aside tests.
+[[nodiscard]] App::DebugLogFile::Functions realOwnerCheckIn(const ScratchFolder& scratch)
+{
+    App::DebugLogFile::Functions functions = functionsIn(scratch);
+    functions.ownerTrusted = {};
+    return functions;
+}
+#endif
 
 // Not less privileged: the temp folder's tasksmack-debug.log by its path, emptied, as before #4105; nothing in ProgramData.
 TEST(DebugLogFileTest, AnOwnEnvironmentOpensTheTempFoldersLogByItsPath)
@@ -320,6 +340,8 @@ TEST(DebugLogFileTest, TheElevatedLogIsWrittenInProgramDataAndReplacedEachRun)
     EXPECT_FALSE(text.contains("the last run")) << "replaced, not appended: " << text;
     EXPECT_LT(text.find("this run"), text.find("and more")) << "written in order";
     EXPECT_FALSE(std::filesystem::exists(scratch.temp() / App::DebugLogFile::FILE_NAME)) << "nothing in TEMP";
+    EXPECT_FALSE(hasUntrustedSibling(scratch.programData() / "TaskSmack")) << "taken over in place, not moved aside";
+    EXPECT_FALSE(hasUntrustedSibling(App::DebugLogFile::elevatedLogFolder(scratch.programData()))) << "the stale-log delete ran in Logs";
 }
 
 // Finding 1: a log file a user planted, with a DACL of their own, is replaced, not reused: the run's log is a fresh file
@@ -355,6 +377,8 @@ TEST(DebugLogFileTest, APlantedLogFileWithItsOwnDaclIsReplaced)
     EXPECT_TRUE(fileDacl.contains(";BA)")) << "replaced with the secured DACL: " << fileDacl;
     EXPECT_TRUE(fileDacl.contains(";SY)")) << fileDacl;
     EXPECT_TRUE(contentsOf(log).contains("this run")) << "replaced, not the planted bytes";
+    EXPECT_FALSE(hasUntrustedSibling(scratch.programData() / "TaskSmack")) << "taken over in place, not moved aside";
+    EXPECT_FALSE(hasUntrustedSibling(App::DebugLogFile::elevatedLogFolder(scratch.programData()))) << "the stale-log delete ran in Logs";
 }
 
 TEST(DebugLogFileTest, AnUnknownProgramDataFolderOpensNothing)
@@ -470,7 +494,9 @@ TEST(DebugLogFileTest, ATaskSmackFolderThatIsAJunctionIsMovedAside)
     // Take the junction out of the path before any cleanup, so remove_all can't follow it into the target.
     for (std::filesystem::directory_iterator it(scratch.programData()), end; it != end; ++it)
     {
-        if (it->path().filename().wstring().contains(L".untrusted-") && std::filesystem::is_symlink(it->path()))
+        // MSVC's is_symlink() is false for a junction: the reparse attribute is what tells.
+        if (it->path().filename().wstring().contains(L".untrusted-") &&
+            (GetFileAttributesW(it->path().c_str()) & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
         {
             removeJunction(it->path());
         }
@@ -484,6 +510,22 @@ TEST(DebugLogFileTest, ATaskSmackFolderThatIsAJunctionIsMovedAside)
     EXPECT_EQ(daclOf(target), daclBefore) << "the folder behind the junction isn't secured either";
 }
 
+// A plain file planted at %ProgramData%\TaskSmack: opened for DELETE whatever it is, moved aside, a fresh folder made in
+// its place, and the log written. The file itself keeps its bytes in the moved-aside entry.
+TEST(DebugLogFileTest, AFilePlantedAsTheTaskSmackFolderIsMovedAside)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path taskSmack = scratch.programData() / "TaskSmack";
+    std::ofstream(taskSmack, std::ios::binary) << "a file where the folder goes\n";
+    auto opened = App::DebugLogFile::open(true, realOwnerCheckIn(scratch));
+    ASSERT_TRUE(opened.has_value()) << opened.error();
+    logThrough(opened->sink, "this run");
+    opened->sink.reset();
+    EXPECT_TRUE(std::filesystem::is_directory(taskSmack)) << "a fresh folder in its place";
+    EXPECT_TRUE(
+        contentsOf(App::DebugLogFile::elevatedLogFolder(scratch.programData()) / App::DebugLogFile::FILE_NAME).contains("this run"));
+    EXPECT_TRUE(hasUntrustedSibling(taskSmack)) << "the planted file moved aside, not deleted or written";
+}
 // An Administrators-owned folder this run can open for WRITE_DAC is taken over in place: its DACL is reset and its
 // contents kept. Only an elevated run can make a folder Administrators-owned, so it is skipped otherwise.
 TEST(DebugLogFileTest, AnAdministratorsOwnedFolderIsTakenOverInPlace)
@@ -519,7 +561,7 @@ TEST(DebugLogFileTest, AnAdminTaskSmackWithAUserOwnedLogsTakesOverAndRemakesLogs
     {
         GTEST_SKIP() << "this token can't own TaskSmack as Administrators (not elevated)";
     }
-    auto opened = App::DebugLogFile::open(true, functionsIn(scratch));
+    auto opened = App::DebugLogFile::open(true, realOwnerCheckIn(scratch));
     ASSERT_TRUE(opened.has_value()) << opened.error();
     logThrough(opened->sink, "this run");
     opened->sink.reset();
@@ -546,6 +588,8 @@ TEST(DebugLogFileTest, AHardLinkedLogIsReplacedAndTheOtherFileKept)
     opened->sink.reset();
     EXPECT_EQ(contentsOf(victim), "a file the user may not change\n") << "the other hard link is untouched";
     EXPECT_TRUE(contentsOf(log).contains("this run")) << "a fresh file, not the planted one";
+    EXPECT_FALSE(hasUntrustedSibling(scratch.programData() / "TaskSmack")) << "taken over in place, not moved aside";
+    EXPECT_FALSE(hasUntrustedSibling(App::DebugLogFile::elevatedLogFolder(scratch.programData()))) << "the stale-log delete ran in Logs";
 }
 
 #endif // _WIN32

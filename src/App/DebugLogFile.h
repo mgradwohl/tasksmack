@@ -19,17 +19,19 @@
 //     (SetKernelObjectSecurity, which doesn't propagate to children). Anything else -- a user-owned folder, a protected
 //     DACL this process can't open for WRITE_DAC, a junction or a planted file -- is moved aside (a random
 //     TaskSmack.untrusted-<n>) through a handle opened for DELETE alone, granted by the parent folder's
-//     FILE_DELETE_CHILD, and a fresh one is made in its place. Each folder is held open, without FILE_SHARE_DELETE,
-//     until the file is. The in-place takeover is not claimed to be unraceable: a user who has full control of an
-//     Administrators-owned folder and keeps a WRITE_DAC handle on it can still change its DACL while it is held, but the
-//     worst that does is get the log refused, since the log file below carries its own ADMIN_SECURITY and is never reused.
+//     FILE_DELETE_CHILD, and a fresh one is made in its place, or refused when it can't be (a user can block the move by
+//     holding the entry, or a file inside it, open without FILE_SHARE_DELETE, or by holding an oplock on it). Each folder
+//     is held open, without FILE_SHARE_DELETE, until the file is. The in-place takeover is not claimed to be unraceable:
+//     a handle a user opened on an Administrators-owned folder before its DACL was reset can still add or change entries
+//     in it while it is held, or remove the log after the run; it can't read the log or redirect it, since the log file
+//     below carries its own ADMIN_SECURITY and is never reused.
 //   - The log file: any existing one is opened without following a link and deleted through that handle (POSIX
 //     semantics, or delete-on-close), then a new one is created with CREATE-only disposition and ADMIN_SECURITY. A file
 //     that can't be made fresh (a race re-made it) is refused. It is never reused, so a planted file with the user's own
 //     DACL is never written to.
 //   - Anything that fails a check is refused: the log goes to the debugger and the console only, and says why there.
 //
-// The folders, their security and the final-path read are seams, so test_DebugLogFile.cpp drives each case in a temp
+// The folders, their security, the owner trust and the final-path read are seams, so test_DebugLogFile.cpp drives each case in a temp
 // folder of its own, with junctions and hard links any user can make.
 
 #include <spdlog/common.h>
@@ -66,6 +68,10 @@ inline constexpr std::string_view ADMIN_SECURITY = "O:BAD:P(A;OICI;FA;;;BA)(A;OI
 /// A handle's final path (GetFinalPathNameByHandleW), or empty when it can't be read: a seam the tests drive to steer
 /// the reported path of the opened log.
 using FinalPathFn = std::function<std::wstring(void* /*handle*/)>;
+/// Whether an existing folder's owner (read through @p handle) is one this code trusts to take over in place: unset,
+/// Administrators or SYSTEM. A seam, so a test can run the take-over-in-place path, and the stale-log delete under it,
+/// without an elevated token. nullopt when the owner can't be read.
+using OwnerTrustedFn = std::function<std::optional<bool>(void* /*handle*/)>;
 [[nodiscard]] std::wstring systemFinalPath(void* handle);
 #endif
 
@@ -79,6 +85,8 @@ struct Functions
     std::string folderSecurity = std::string(ADMIN_SECURITY);
 #ifdef _WIN32
     FinalPathFn finalPath = &systemFinalPath;
+    /// Unset: Administrators or SYSTEM, read from the folder.
+    OwnerTrustedFn ownerTrusted{}; // NOLINT(readability-redundant-member-init) - designated initializers leave it out
 #endif
 };
 

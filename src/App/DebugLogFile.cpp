@@ -226,14 +226,15 @@ enum class OpenKind : std::uint8_t
 
 /// Renames the entry @p handle holds (opened with DELETE) aside, out of the way, through that handle (RootDirectory
 /// @p parent): a fresh one can then be made under @p name. Any entry can be moved this way, a junction or a planted
-/// file included, which only takes it out of the path. The moved-aside name has a random suffix and is retried a few
-/// times, so one left from a crashed run doesn't block it. False when it can't be moved.
-[[nodiscard]] bool renameAside(HANDLE handle, HANDLE parent, std::wstring_view name)
+/// file included, which only takes it out of the path. The moved-aside name has a random suffix, tried again only when
+/// that name is taken, so one left from a crashed run doesn't block it. The NTSTATUS when it can't be moved.
+[[nodiscard]] std::expected<void, NTSTATUS> renameAside(HANDLE handle, HANDLE parent, std::wstring_view name)
 {
     if (ntSetInformationFile() == nullptr)
     {
-        return false; // LCOV_EXCL_LINE
+        return std::unexpected(STATUS_NO_ENTRY_POINT); // LCOV_EXCL_LINE
     }
+    NTSTATUS result = STATUS_OBJECT_NAME_COLLISION;
     std::random_device random;
     for (int attempt = 0; attempt < 8; ++attempt)
     {
@@ -245,12 +246,17 @@ enum class OpenKind : std::uint8_t
         rename->FileNameLength = static_cast<DWORD>(moved.size() * sizeof(wchar_t));
         std::ranges::copy(moved, static_cast<wchar_t*>(rename->FileName));
         IO_STATUS_BLOCK status{};
-        if (ntSetInformationFile()(handle, &status, rename, static_cast<ULONG>(bytes), FILE_RENAME_INFORMATION_CLASS) >= 0)
+        result = ntSetInformationFile()(handle, &status, rename, static_cast<ULONG>(bytes), FILE_RENAME_INFORMATION_CLASS);
+        if (result >= 0)
         {
-            return true;
+            return {};
+        }
+        if (result != STATUS_OBJECT_NAME_COLLISION)
+        {
+            break; // held open, an oplock, access: another name won't help
         }
     }
-    return false;
+    return std::unexpected(result);
 }
 
 /// Marks the file @p handle holds for deletion (opened with DELETE), through that handle: POSIX semantics where the
@@ -291,8 +297,11 @@ enum class OpenKind : std::uint8_t
 /// process can't open for WRITE_DAC, a junction or a planted file -- is moved aside (renameAside()) through a handle
 /// opened for DELETE alone, which the parent's FILE_DELETE_CHILD grants even when the entry's own DACL grants this
 /// process nothing, and a fresh one is made in its place. @p display names it for the error.
-[[nodiscard]] std::expected<OwnedHandle, std::string>
-secureChild(HANDLE parent, const std::wstring& name, PSECURITY_DESCRIPTOR descriptor, const std::string& display)
+[[nodiscard]] std::expected<OwnedHandle, std::string> secureChild(HANDLE parent,
+                                                                  const std::wstring& name,
+                                                                  PSECURITY_DESCRIPTOR descriptor,
+                                                                  const std::string& display,
+                                                                  const OwnerTrustedFn& ownerTrusted)
 {
     constexpr ACCESS_MASK HELD = READ_CONTROL | WRITE_DAC | FILE_LIST_DIRECTORY | SYNCHRONIZE | FILE_READ_ATTRIBUTES;
     for (int attempt = 0; attempt < 8; ++attempt)
@@ -311,7 +320,7 @@ secureChild(HANDLE parent, const std::wstring& name, PSECURITY_DESCRIPTOR descri
         // and its DACL reset; the open for WRITE_DAC is tried separately so a protected DACL doesn't stop the removal below.
         if (auto dacl = openRelative(parent, name, HELD, NT_FILE_OPEN, OpenKind::Directory, nullptr);
             dacl.has_value() && isPlainFolder(dacl->get()) == std::optional(true) &&
-            ownerIsAdminOrSystem(dacl->get()) == std::optional(true))
+            (ownerTrusted ? ownerTrusted(dacl->get()) : ownerIsAdminOrSystem(dacl->get())) == std::optional(true))
         {
             if (SetKernelObjectSecurity(dacl->get(), DACL_SECURITY_INFORMATION, descriptor) == FALSE)
             {
@@ -326,9 +335,9 @@ secureChild(HANDLE parent, const std::wstring& name, PSECURITY_DESCRIPTOR descri
         {
             return std::unexpected(std::format("the existing {} can't be opened to move aside: {}", display, ntText(removable.error())));
         }
-        if (!renameAside(removable->get(), parent, name))
+        if (const auto moved = renameAside(removable->get(), parent, name); !moved.has_value())
         {
-            return std::unexpected(std::format("the existing {} can't be moved aside", display));
+            return std::unexpected(std::format("the existing {} can't be moved aside: {}", display, ntText(moved.error())));
         }
     }
     return std::unexpected(std::format("{} can't be secured: it keeps being replaced", display));
@@ -386,13 +395,14 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
     {
         return std::unexpected(std::format("{} isn't a plain folder", Core::pathToUtf8(*programData)));
     }
-    auto taskSmack = secureChild(root.get(), L"TaskSmack", descriptor.get(), Core::pathToUtf8(*programData / "TaskSmack"));
+    auto taskSmack =
+        secureChild(root.get(), L"TaskSmack", descriptor.get(), Core::pathToUtf8(*programData / "TaskSmack"), functions.ownerTrusted);
     if (!taskSmack.has_value())
     {
         return std::unexpected(std::move(taskSmack.error()));
     }
     const std::filesystem::path logs = elevatedLogFolder(*programData);
-    auto logsHandle = secureChild(taskSmack->get(), L"Logs", descriptor.get(), Core::pathToUtf8(logs));
+    auto logsHandle = secureChild(taskSmack->get(), L"Logs", descriptor.get(), Core::pathToUtf8(logs), functions.ownerTrusted);
     if (!logsHandle.has_value())
     {
         return std::unexpected(std::move(logsHandle.error()));
@@ -506,7 +516,7 @@ std::expected<void, std::string> secureFolder(const std::filesystem::path& folde
     {
         return std::unexpected(std::format("{} can't be opened: {}", Core::pathToUtf8(folder.parent_path()), lastError()));
     }
-    auto held = secureChild(parent.get(), folder.filename().native(), descriptor.get(), Core::pathToUtf8(folder));
+    auto held = secureChild(parent.get(), folder.filename().native(), descriptor.get(), Core::pathToUtf8(folder), {});
     if (!held.has_value())
     {
         return std::unexpected(std::move(held.error()));
