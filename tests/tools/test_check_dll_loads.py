@@ -202,9 +202,10 @@ class CheckTreeTest(unittest.TestCase):
     def test_the_repositorys_main_fails_without_its_sdl_scrub(self) -> None:
         relative = Path("src/main.cpp")
         original = (REPO / relative).read_text(encoding="utf-8")
-        old = "SdlEnvironment::removeForThisProcess("
+        # The Windows scrub by its full name: the Linux main() makes its own call, Platform::SdlEnvironment's (#4111).
+        old = "Windows::SdlEnvironment::removeForThisProcess("
         self.assertEqual(original.count(old), 1, old)
-        mutated = original.replace(old, "SdlEnvironment::removedFromThisProcess(")
+        mutated = original.replace(old, "Windows::SdlEnvironment::removedFromThisProcess(")
         self.assertEqual(len(checker.check_entry_point(mutated, relative.as_posix(), "WinMain", checker.BRANCH)), 1)
 
     def test_scans_sources_under_src(self) -> None:

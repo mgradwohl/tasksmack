@@ -482,6 +482,16 @@ TEST(TaskManagerReplacementServiceTest, ADismissedPromptOrARefusalIsTheResult)
     EXPECT_NE(refused.errorMessage.find("refused"), std::string::npos) << refused.errorMessage;
 }
 
+TEST(TaskManagerReplacementServiceTest, ReadSaysWhetherThisCopyWritesTheKeyItself)
+{
+    // #4109: the view drops "Windows asks first" for a copy that writes the key itself.
+    const auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    EXPECT_FALSE(TaskManagerReplacementService(setupReading(registry)).read().writesDirectly) << "through the helper";
+    TaskManagerReplacementSetup setup = setupReading(registry);
+    setup.direct = registry;
+    EXPECT_TRUE(TaskManagerReplacementService(std::move(setup)).read().writesDirectly) << "elevated";
+}
+
 TEST(TaskManagerReplacementServiceTest, AnElevatedCopyWritesTheRegistryItself)
 {
     auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();

@@ -46,6 +46,9 @@ struct RunProgramFunctions
     /// Whether TaskSmack's own token is elevated (isProcessElevated()), asked once, at construction. Null
     /// reads as not elevated.
     bool (*isElevated)() = nullptr;
+    /// Whether the runas verb's prompt asks for an administrator's name and password (a standard user's token,
+    /// ElevatedRestart::promptFor()) rather than approval, asked once, at construction (#4108). Null reads as approval.
+    bool (*asksCredentials)() = nullptr;
 };
 
 /// The real calls.
