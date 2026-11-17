@@ -594,4 +594,118 @@ TEST(DebugLogFileTest, AHardLinkedLogIsReplacedAndTheOtherFileKept)
 
 #endif // _WIN32
 
+#ifndef _WIN32
+// Linux, run as root for a user (#4150): the log in <parent>/tasksmack, made by and for the process's own user (root
+// there, this test's user here), never through a link, and never the temp folder the user's TMPDIR names.
+
+/// functionsIn(), with the Linux log's parent a plain 0755 folder of this test's.
+[[nodiscard]] App::DebugLogFile::Functions linuxRootFunctionsIn(const ScratchFolder& scratch)
+{
+    App::DebugLogFile::Functions functions = functionsIn(scratch);
+    functions.linuxLogParent = scratch.root() / "Log";
+    std::filesystem::create_directories(functions.linuxLogParent);
+    std::filesystem::permissions(functions.linuxLogParent, std::filesystem::perms(0755));
+    return functions;
+}
+
+TEST(DebugLogFileTest, ALinuxRootSessionsLogIsMadeFreshInAPrivateFolderNotTheTempFolder)
+{
+    const ScratchFolder scratch;
+    const App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    const std::filesystem::path folder = functions.linuxLogParent / "tasksmack";
+    const auto first = App::DebugLogFile::open(true, functions);
+    ASSERT_TRUE(first.has_value()) << first.error();
+    EXPECT_EQ(first->path, folder / App::DebugLogFile::FILE_NAME);
+    logThrough(first->sink, "the first run");
+    EXPECT_EQ(std::filesystem::status(folder).permissions() & std::filesystem::perms::all, std::filesystem::perms::owner_all);
+    EXPECT_EQ(std::filesystem::status(first->path).permissions() & std::filesystem::perms::all,
+              std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    EXPECT_TRUE(std::filesystem::is_empty(scratch.temp())) << "nothing in the temp folder TMPDIR names";
+    const auto second = App::DebugLogFile::open(true, functions);
+    ASSERT_TRUE(second.has_value()) << second.error();
+    logThrough(second->sink, "the second run");
+    const std::string text = contentsOf(second->path);
+    EXPECT_TRUE(text.contains("the second run")) << text;
+    EXPECT_FALSE(text.contains("the first run")) << "a fresh file each run";
+}
+
+TEST(DebugLogFileTest, ALinkPlantedAsTheLinuxLogIsReplacedNotFollowed)
+{
+    const ScratchFolder scratch;
+    const App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    const std::filesystem::path folder = functions.linuxLogParent / "tasksmack";
+    std::filesystem::create_directory(folder);
+    std::filesystem::permissions(folder, std::filesystem::perms::owner_all);
+    const std::filesystem::path victim = scratch.root() / "victim";
+    std::ofstream(victim, std::ios::binary) << "not the log's\n";
+    std::filesystem::create_symlink(victim, folder / App::DebugLogFile::FILE_NAME);
+    const auto opened = App::DebugLogFile::open(true, functions);
+    ASSERT_TRUE(opened.has_value()) << opened.error();
+    logThrough(opened->sink, "this run");
+    EXPECT_EQ(contentsOf(victim), "not the log's\n") << "the link's target is never truncated or written";
+    EXPECT_FALSE(std::filesystem::is_symlink(opened->path));
+    EXPECT_TRUE(contentsOf(opened->path).contains("this run"));
+}
+
+TEST(DebugLogFileTest, ALinkAsTheLinuxLogFolderIsRefused)
+{
+    const ScratchFolder scratch;
+    const App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    const std::filesystem::path elsewhere = scratch.root() / "elsewhere";
+    std::filesystem::create_directory(elsewhere);
+    std::filesystem::create_directory_symlink(elsewhere, functions.linuxLogParent / "tasksmack");
+    const auto opened = App::DebugLogFile::open(true, functions);
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_TRUE(opened.error().contains("isn't a plain folder")) << opened.error();
+    EXPECT_TRUE(std::filesystem::is_empty(elsewhere)) << "nothing made through the link";
+}
+
+TEST(DebugLogFileTest, ALinuxLogParentOthersMayWriteIsRefused)
+{
+    const ScratchFolder scratch;
+    const App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    std::filesystem::permissions(functions.linuxLogParent, std::filesystem::perms(0777));
+    const auto opened = App::DebugLogFile::open(true, functions);
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_TRUE(opened.error().contains("only this user may change")) << opened.error();
+    EXPECT_FALSE(std::filesystem::exists(functions.linuxLogParent / "tasksmack"));
+}
+
+TEST(DebugLogFileTest, AGroupWritableLinuxLogParentIsRefusedAndTheTempFolderIsNeverAsked)
+{
+    // Ubuntu's /var/log is root:syslog 0775 (the #4165 review): a parent a group may write is refused, which is why the
+    // log's parent is /run.
+    const ScratchFolder scratch;
+    App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    std::filesystem::permissions(functions.linuxLogParent, std::filesystem::perms(0775));
+    bool tempAsked = false;
+    functions.tempFolder = [&tempAsked, temp = scratch.temp()]
+    {
+        tempAsked = true;
+        return temp;
+    };
+    const auto opened = App::DebugLogFile::open(true, functions);
+    ASSERT_FALSE(opened.has_value());
+    EXPECT_TRUE(opened.error().contains("only this user may change")) << opened.error();
+    EXPECT_FALSE(tempAsked) << "a root session's log is never in the temp folder";
+}
+
+TEST(DebugLogFileTest, TheLinuxLogParentIsRun)
+{
+    EXPECT_EQ(App::DebugLogFile::LINUX_LOG_PARENT, "/run");
+}
+
+TEST(DebugLogFileTest, AnExistingLinuxLogFolderOthersCouldReadIsMadePrivate)
+{
+    const ScratchFolder scratch;
+    const App::DebugLogFile::Functions functions = linuxRootFunctionsIn(scratch);
+    const std::filesystem::path folder = functions.linuxLogParent / "tasksmack";
+    std::filesystem::create_directory(folder);
+    std::filesystem::permissions(folder, std::filesystem::perms(0755));
+    const auto opened = App::DebugLogFile::open(true, functions);
+    ASSERT_TRUE(opened.has_value()) << opened.error();
+    EXPECT_EQ(std::filesystem::status(folder).permissions() & std::filesystem::perms::all, std::filesystem::perms::owner_all);
+}
+#endif
+
 } // namespace
