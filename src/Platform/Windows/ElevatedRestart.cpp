@@ -1,6 +1,7 @@
 #include "ElevatedRestart.h"
 
 #include "Platform/IElevatedRestart.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WinString.h"
@@ -33,6 +34,20 @@ namespace Platform::Windows::ElevatedRestart
 
 namespace
 {
+
+/// Known folder @p id's path; nullopt when it can't be read.
+[[nodiscard]] std::optional<std::filesystem::path> knownFolder(REFKNOWNFOLDERID id)
+{
+    wchar_t* path = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(id, 0, nullptr, &path);
+    // Freed whether or not the call succeeded, as SHGetKnownFolderPath's contract asks.
+    const std::unique_ptr<wchar_t, decltype(&::CoTaskMemFree)> owned(path, &::CoTaskMemFree);
+    if (FAILED(result) || owned == nullptr || owned.get()[0] == L'\0')
+    {
+        return std::nullopt;
+    }
+    return std::filesystem::path(owned.get());
+}
 
 /// @p text as one CommandLineToArgvW argument: in quotes, with the backslashes before the closing quote
 /// doubled, so a directory that ends in one ("C:\") isn't read as an escaped quote. A path holds no quotes.
@@ -379,15 +394,58 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
 
 std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::path& dir)
 {
-    wchar_t* profiles = nullptr;
-    if (FAILED(SHGetKnownFolderPath(FOLDERID_UserProfiles, 0, nullptr, &profiles)))
+    const auto root = knownFolder(FOLDERID_UserProfiles);
+    if (!root.has_value())
     {
-        CoTaskMemFree(profiles);
         return std::unexpected(std::string("the user profiles folder isn't known"));
     }
-    const std::filesystem::path root(profiles);
-    CoTaskMemFree(profiles);
-    return checkConfigDir(dir, root);
+    return checkConfigDir(dir, *root);
+}
+
+std::expected<UniqueHandle, std::string>
+checkOwnConfigDir(const std::filesystem::path& dir, const std::filesystem::path& profilesRoot, ConfigDirFunctions functions)
+{
+    // Whoever owns it (see the header): the rest of checkConfigDir()'s checks stand.
+    functions.ownerIsPrivileged = [](HANDLE /*handle*/) -> std::optional<bool>
+    {
+        return false;
+    };
+    if (functions.getFileAttributes(dir.c_str()) == INVALID_FILE_ATTRIBUTES)
+    {
+        // Not there yet: made in its parent, checked and held as the folder itself is, relative to that handle.
+        auto parent = checkConfigDir(dir.parent_path(), profilesRoot, functions);
+        if (!parent.has_value())
+        {
+            return std::unexpected(std::format("it isn't there, and its parent can't be held to make it in: {}", parent.error()));
+        }
+        const PinnedFolder held(dir.parent_path(), std::move(*parent));
+        if (const auto made = held.createFolder(dir.filename()); !made.has_value())
+        {
+            return std::unexpected(std::format("{}: it can't be made: {}", WinString::wideToUtf8(dir.native()), made.error()));
+        }
+    }
+    return checkConfigDir(dir, profilesRoot, functions);
+}
+
+OwnConfigDir holdOwnConfigDir()
+{
+    const auto roaming = knownFolder(FOLDERID_RoamingAppData);
+    if (!roaming.has_value())
+    {
+        return {.path = {}, .held = std::unexpected(std::string("the roaming AppData folder isn't known"))};
+    }
+    const std::filesystem::path dir = handedOverFolderPath(*roaming / L"TaskSmack");
+    const auto root = knownFolder(FOLDERID_UserProfiles);
+    if (!root.has_value())
+    {
+        return {.path = dir, .held = std::unexpected(std::string("the user profiles folder isn't known"))};
+    }
+    auto pinned = checkOwnConfigDir(dir, *root);
+    if (!pinned.has_value())
+    {
+        return {.path = dir, .held = std::unexpected(std::move(pinned.error()))};
+    }
+    return {.path = dir, .held = std::make_shared<PinnedFolder>(dir, std::move(*pinned))};
 }
 
 } // namespace Platform::Windows::ElevatedRestart

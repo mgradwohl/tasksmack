@@ -16,6 +16,9 @@
 #include "UI/FontPointSize.h"
 #include "UI/Format.h"
 #include "UI/Theme.h"
+#ifdef _WIN32
+#include "Support/Junction.h"
+#endif
 
 #include <gtest/gtest.h>
 #include <toml++/toml.hpp>
@@ -2664,6 +2667,37 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+#ifdef _WIN32
+// #4106: Windows' links are reparse points. A junction on the way to the less-privileged side's config folder (here
+// its parent, which symlink_status() of the folder itself doesn't see) sends no save, and no folder's creation, behind it.
+TEST_F(UserConfigSaveLoadFixture, ALessPrivilegedFolderIsNeverWrittenThroughAJunction)
+{
+    const auto target = m_TempDir / "elsewhere";
+    std::filesystem::create_directories(target / "cfg");
+    const auto link = m_TempDir / "linked";
+    std::filesystem::create_directory(link);
+    const auto made = TestSupport::makeJunction(link, target);
+    ASSERT_FALSE(made.has_value()) << *made;
+
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    for (const std::filesystem::path& through : {link / "cfg" / "config.toml", link / "new" / "config.toml"})
+    {
+        config.resetConfigPathForTesting(through);
+        config.load();
+        config.settings().themeId = "mocha";
+        config.save();
+    }
+    config.resetConfigPathForTesting(m_ConfigPath);
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+    EXPECT_TRUE(TestSupport::removeJunction(link));
+
+    EXPECT_FALSE(std::filesystem::exists(target / "cfg" / "config.toml")) << "not written behind the junction";
+    EXPECT_FALSE(std::filesystem::exists(target / "new")) << "no folder made behind the junction";
+}
+#endif
 // #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as
 // the staging file is named) can't leave the write going on with nothing held.
 TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWrite)

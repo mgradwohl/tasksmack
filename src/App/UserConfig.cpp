@@ -81,6 +81,34 @@ namespace App
 namespace
 {
 
+#ifdef _WIN32
+/// The first folder or file on @p path, from the drive down, that is a reparse point (a junction, a mount point, a
+/// symbolic link), as far as the path exists; nullopt when there is none (#4106). What isn't there yet is made later,
+/// below a folder this has seen to be plain.
+[[nodiscard]] std::optional<std::filesystem::path> reparsePointOnPath(const std::filesystem::path& path)
+{
+    std::filesystem::path at = path.root_path();
+    for (const std::filesystem::path& part : path.relative_path())
+    {
+        if (part.empty())
+        {
+            continue;
+        }
+        at /= part;
+        const DWORD attributes = GetFileAttributesW(at.c_str());
+        if (attributes == INVALID_FILE_ATTRIBUTES)
+        {
+            break;
+        }
+        if ((attributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            return at;
+        }
+    }
+    return std::nullopt;
+}
+#endif
+
 // NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
@@ -1057,6 +1085,20 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         if (const std::optional<std::filesystem::path> link = NewFileOwner::userOwnedLinkOnPath(configDir); link.has_value())
         {
             spdlog::error("Not saving settings: {} is a link of a user's, which TaskSmack run as root doesn't write through",
+                          Core::pathToUtf8(*link));
+            return false;
+        }
+    }
+#endif
+#ifdef _WIN32
+    // Windows' links are reparse points (#4106): a junction or mount point on the way to the less-privileged side's
+    // folder, which symlink_status() of the folder itself doesn't see, or a config.toml that is one, could send the save,
+    // and the folder's creation, elsewhere. Checked before anything is made.
+    if (handedOver)
+    {
+        if (const std::optional<std::filesystem::path> link = reparsePointOnPath(m_ConfigPath); link.has_value())
+        {
+            spdlog::error("Not saving settings: {} is a junction or link, which an elevated TaskSmack doesn't write through",
                           Core::pathToUtf8(*link));
             return false;
         }

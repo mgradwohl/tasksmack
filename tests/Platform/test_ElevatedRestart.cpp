@@ -9,6 +9,7 @@
 #include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Support/Junction.h"
 
 #include <gtest/gtest.h>
 
@@ -855,6 +856,63 @@ TEST(ElevatedRestartConfigDirTest, TheRealHoldKeepsTheFolderFromBeingRemoved)
     const DWORD error = GetLastError();
     EXPECT_FALSE(forDelete) << "the held folder opened for deletion";
     EXPECT_EQ(error, static_cast<DWORD>(ERROR_SHARING_VIOLATION));
+}
+
+// #4106: an elevated session's own folder (FOLDERID_RoamingAppData\TaskSmack) that isn't there yet is made in its held
+// parent, then checked and held itself, whoever owns it: an elevated TaskSmack's folder is owned by Administrators.
+std::optional<bool> adminOwned(HANDLE /*handle*/)
+{
+    return true;
+}
+
+TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderIsMadeInItsHeldParentAndHeld)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path own = scratch.configDir() / L"Own";
+    ASSERT_FALSE(std::filesystem::exists(own));
+    const ConfigDirFunctions administrators{.ownerIsPrivileged = &adminOwned};
+    const auto held = checkOwnConfigDir(own, scratch.root(), administrators);
+    ASSERT_TRUE(held.has_value()) << held.error();
+    EXPECT_TRUE(std::filesystem::is_directory(own));
+    const auto again = checkOwnConfigDir(own, scratch.root(), administrators);
+    EXPECT_TRUE(again.has_value()) << "there now, and held again: " << (again.has_value() ? std::string() : again.error());
+    EXPECT_FALSE(checkConfigDir(own, scratch.root(), administrators).has_value()) << "a hand-off's own check still refuses it";
+}
+
+// #4106's scenario: %APPDATA%\TaskSmack a junction to a folder the user may not change (C:\Program Files\Foo). Refused,
+// and nothing is made or written behind it.
+TEST(ElevatedRestartOwnConfigDirTest, AnOwnFolderThatIsAJunctionIsRefused)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path target = scratch.root() / L"ProgramFilesFoo";
+    std::filesystem::create_directory(target);
+    const std::filesystem::path own = scratch.configDir() / L"Own";
+    std::filesystem::create_directory(own);
+    const auto made = TestSupport::makeJunction(own, target);
+    ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
+    const auto held = checkOwnConfigDir(own, scratch.root());
+    EXPECT_TRUE(TestSupport::removeJunction(own)) << GetLastError();
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
+    EXPECT_TRUE(std::filesystem::is_empty(target));
+}
+
+// Its parent a junction, with the own folder not there yet: refused before anything is made behind the junction.
+TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderUnderAJunctionIsNotMade)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path target = scratch.root() / L"ProgramFiles";
+    std::filesystem::create_directory(target);
+    const std::filesystem::path parent = scratch.configDir() / L"Roaming";
+    std::filesystem::create_directory(parent);
+    const auto made = TestSupport::makeJunction(parent, target);
+    ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
+    const auto held = checkOwnConfigDir(parent / L"TaskSmack", scratch.root());
+    EXPECT_TRUE(TestSupport::removeJunction(parent)) << GetLastError();
+    ASSERT_FALSE(held.has_value());
+    EXPECT_TRUE(held.error().contains("its parent can't be held")) << held.error();
+    EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
+    EXPECT_TRUE(std::filesystem::is_empty(target)) << "no TaskSmack folder made behind the junction";
 }
 
 } // namespace

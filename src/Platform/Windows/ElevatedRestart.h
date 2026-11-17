@@ -29,6 +29,7 @@
 // clang-format on
 
 #include "Platform/IElevatedRestart.h"
+#include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -36,6 +37,7 @@
 #include <cstdint>
 #include <expected>
 #include <filesystem>
+#include <memory>
 #include <optional>
 #include <string>
 
@@ -139,6 +141,26 @@ checkConfigDir(const std::filesystem::path& dir, const std::filesystem::path& pr
 
 /// checkConfigDir() against this machine's user profiles folder (FOLDERID_UserProfiles).
 [[nodiscard]] std::expected<UniqueHandle, std::string> checkConfigDir(const std::filesystem::path& dir);
+
+/// The account's own config folder @p dir (FOLDERID_RoamingAppData\TaskSmack) for an elevated session that took no
+/// hand-off (#4106), held as a handed-over one is: its environment and its known folders are the less-privileged side's
+/// (HKCU), so a junction there could send the save, the lock and the themes folder anywhere. Not there yet (a first
+/// elevated run), it is made in its parent, which is checked and held as checkConfigDir() holds a folder, and only
+/// relative to that handle, so nothing is made behind a junction. Then checkConfigDir() itself, but whoever owns it:
+/// an elevated TaskSmack that made the folder made it owned by Administrators, an elevated token's default owner, and
+/// it is TaskSmack's own folder, not one a command line named. The handle is the caller's to hold.
+[[nodiscard]] std::expected<UniqueHandle, std::string>
+checkOwnConfigDir(const std::filesystem::path& dir, const std::filesystem::path& profilesRoot, ConfigDirFunctions functions = {});
+
+/// The account's own config folder, FOLDERID_RoamingAppData\TaskSmack (UserConfig's, when nothing overrides it), checked
+/// and held by checkOwnConfigDir() against this machine's user profiles folder (#4106). The folder's path, and the
+/// folder held or why not.
+struct OwnConfigDir
+{
+    std::filesystem::path path; ///< Empty when the known folder can't be read
+    std::expected<std::shared_ptr<IHandedOverFolder>, std::string> held;
+};
+[[nodiscard]] OwnConfigDir holdOwnConfigDir();
 
 /// The IElevatedRestart a Standard TaskSmack is given (Platform::makeElevatedRestart()).
 class WindowsElevatedRestart final : public IElevatedRestart
