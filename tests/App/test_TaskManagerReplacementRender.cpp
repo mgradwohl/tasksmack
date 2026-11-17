@@ -180,6 +180,8 @@ TEST_F(TaskManagerReplacementRenderTest, TheNoteSaysWindowsAsksFirstOnlyWhenTheC
     EXPECT_TRUE(held.contains("opens TaskSmack instead")) << held;
     EXPECT_TRUE(held.contains("without Save")) << held;
 
+    EXPECT_EQ(TaskManagerReplacementText::noteText(TaskManagerReplacementView{}), TaskManagerReplacementText::NOTE_RIGHTS_ASKED);
+    EXPECT_EQ(TaskManagerReplacementText::noteText(direct), TaskManagerReplacementText::NOTE_RIGHTS_HELD);
     EXPECT_TRUE(TaskManagerReplacementText::noteText(TaskManagerReplacementView{}).contains("Windows asks first"))
         << "before the first read it asks first";
 }

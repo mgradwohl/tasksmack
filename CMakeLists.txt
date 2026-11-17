@@ -195,6 +195,7 @@ set(TASKSMACK_SOURCES
     src/UI/IconTextureCache.cpp
     src/App/AboutDialog.cpp
     src/App/AboutLayer.cpp
+    src/App/DebugLogFile.cpp # tasksmack-debug.log: TEMP's, or %ProgramData%\TaskSmack\Logs when elevated (#4105)
     src/App/DemoLayer.cpp
     src/App/DemoOverride.cpp
     src/App/AccessNoticeDialog.cpp

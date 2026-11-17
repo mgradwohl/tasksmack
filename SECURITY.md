@@ -45,7 +45,9 @@ answers a fixed set of requests.
   for a DLL loaded by name in System32 only. TaskSmack does too when it is elevated through UAC or started by
   Restart as administrator, whichever account approved it, and it then also removes every `SDL_` variable, and
   `SDL3_DYNAMIC_API`, from its environment before SDL starts, so SDL loads no DLL a variable names, such as
-  `SDL_OPENGL_LIBRARY`; otherwise it also looks in its own folder, where a
+  `SDL_OPENGL_LIBRARY`. It also writes its debug log to `%ProgramData%\TaskSmack\Logs`, which only Administrators
+  and SYSTEM may change, never through a junction, link or hard link, instead of the user's temp folder (#4105).
+  Otherwise TaskSmack also looks for a DLL in its own folder, where a
   software OpenGL can go on a PC with no GPU driver. One case is left: an account with no UAC split token (the
   built-in Administrator, SYSTEM, or an administrator with UAC turned off) starting a copy itself, not through
   Restart as administrator, from a folder another account can write to. Run TaskSmack that way only from a folder

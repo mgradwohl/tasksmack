@@ -6,6 +6,7 @@
 #endif
 
 #include "App/AboutLayer.h"
+#include "App/DebugLogFile.h"
 #include "App/DemoLayer.h"
 #include "App/DemoOverride.h"
 #include "App/ElevationNoticeLayer.h"
@@ -31,7 +32,6 @@
 #include "Core/EnvUtils.h"
 #include "Core/Event.h"
 #include "Core/LocaleSetup.h"
-#include "Core/LogFileSink.h"
 #include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Platform/IElevatedRestart.h"
@@ -403,35 +403,40 @@ auto runApp(const App::LaunchOptions& launch) -> int
 #endif
     sinks.push_back(std::make_shared<spdlog::sinks::stdout_color_sink_mt>());
 
-    std::filesystem::path logPath;
-    try
+    // tasksmack-debug.log: the temp folder's, or, elevated or handed off, where TEMP is the less-privileged side's (#4105),
+    // %ProgramData%\TaskSmack\Logs, which only administrators may change (App/DebugLogFile.h). The same rule as the DLL
+    // search order and SDL's variables (#3897, #4103): lessPrivilegedEnvironment() (#4104). Linux's twin is #4150.
+#ifdef _WIN32
+    const bool adminOnlyLog = lessPrivilegedEnvironment();
+#else
+    constexpr bool adminOnlyLog = false;
+#endif
+    const auto logFile = App::DebugLogFile::open(adminOnlyLog);
+    if (logFile.has_value())
     {
-        logPath = std::filesystem::temp_directory_path() / "tasksmack-debug.log";
-        // Opened by its native path (UTF-16 on Windows, SPDLOG_WCHAR_FILENAMES), never a narrowed
-        // one, so a %TEMP% with any characters works with or without the manifest (#1648).
-        sinks.push_back(Core::makeLogFileSink(logPath, true));
+        sinks.push_back(logFile->sink);
     }
-    catch (const std::exception& e)
+    else
     {
-        // Best-effort: keep the console (and MSVC) sinks. Clear logPath so the message below
-        // cannot name a file that nothing is writing to.
-        logPath.clear();
-        std::println(stderr, "Failed to initialize file logging: {}", e.what());
-    }
-    catch (...)
-    {
-        logPath.clear();
-        std::println(stderr, "Failed to initialize file logging (unknown error)");
+        // Best-effort: keep the console (and MSVC) sinks, and say why below once they are the logger's.
+        std::println(stderr, "Failed to initialize file logging: {}", logFile.error());
     }
 
     spdlog::set_default_logger(std::make_shared<spdlog::logger>("TaskSmack", sinks.begin(), sinks.end()));
 
-    if (!logPath.empty())
+    if (logFile.has_value())
     {
         // pathToUtf8(), not string(): std::filesystem::path::string() performs a narrowing
-        // conversion that can throw for a path the active code page cannot represent, and this
-        // sits outside the try block above.
-        spdlog::info("Debug log file: {}", Core::pathToUtf8(logPath));
+        // conversion that can throw for a path the active code page cannot represent.
+        spdlog::info("Debug log file: {}", Core::pathToUtf8(logFile->path));
+    }
+    else if (adminOnlyLog)
+    {
+        spdlog::warn(
+            "No debug log file: TaskSmack runs as administrator, and {} in its administrators-only folder couldn't be opened safely: "
+            "{}. This log goes to the debugger and the console only",
+            App::DebugLogFile::FILE_NAME,
+            logFile.error());
     }
 
     // Logged here rather than when it is read (UserConfig::get() above), so it reaches the log file.

@@ -740,6 +740,7 @@ set(COMMON_TEST_SOURCES
     App/test_UserConfigPersistence.cpp
     App/test_NonAsciiRoundTrips.cpp
     App/test_InstanceLock.cpp
+    App/test_DebugLogFile.cpp
     App/test_PanelTabs.cpp
     App/test_MainTabBarViewRender.cpp
     App/test_TabLabel.cpp
@@ -1141,6 +1142,7 @@ add_executable(TaskSmackTests
     # App layer
     ${CMAKE_SOURCE_DIR}/src/App/UserConfig.cpp
     ${CMAKE_SOURCE_DIR}/src/App/InstanceLock.cpp
+    ${CMAKE_SOURCE_DIR}/src/App/DebugLogFile.cpp
     # Synthetic scenario (#1413): the env-var parser, composition helpers and history preload
     ${CMAKE_SOURCE_DIR}/src/App/SyntheticScenario.cpp
     # Startup-selection test hook (#1559): the platform name comparisons test_SelectOverride.cpp exercises
