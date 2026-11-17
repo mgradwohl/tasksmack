@@ -22,6 +22,8 @@
 
 #ifdef _WIN32
 #include "Platform/Windows/DllSearchPolicy.h"
+#elif defined(__linux__)
+#include <unistd.h> // geteuid(): a root session has no default dump folder (#4163)
 #endif
 
 #include <SDL3/SDL_video.h>
@@ -71,6 +73,11 @@ bool noDefaultDumpFolder() noexcept
     // The token and the command line don't change while TaskSmack runs: read once, not at every confirm.
     static const bool noDefault = Platform::Windows::DllSearchPolicy::system32OnlyForThisProcess();
     return noDefault;
+#elif defined(__linux__)
+    // Any root process (#4163): sudo -E, su and doas keep the user's TMPDIR, so a dump's default folder there is theirs
+    // to point anywhere, and root writes the dump. As a root session's debug log (#4150), not only one sudo names.
+    static const bool noDefault = ::geteuid() == 0;
+    return noDefault;
 #else
     return false;
 #endif
@@ -119,13 +126,16 @@ std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::str
 std::string rememberedDumpFolder()
 {
     const std::string& stored = UserConfig::get().settings().dumpFolder;
-    const bool handedOver = Core::ConfigDirOverride::handedOver();
+    // A handed-over settings folder's (#2728), or any root session's on Linux (#4163): su and doas set no SUDO_UID, so
+    // their config.toml, and its [dumps] folder, can be the user's without the folder being handed over (the #4174
+    // review). Only a folder chosen with Save dump to... in this session is used then.
+    const bool handedOver = Core::ConfigDirOverride::handedOver() || noDefaultDumpFolder();
     if (handedOver && !stored.empty() && stored != folderChosenThisSession())
     {
         static bool logged = false; // once a session, not at every dump
         if (!std::exchange(logged, true))
         {
-            spdlog::info("Not writing dumps to {}: it came from a handed-over settings folder (#2728); {}",
+            spdlog::info("Not writing dumps to {}: it came from settings this session doesn't trust (#2728, #4163); {}",
                          stored,
                          noDefaultDumpFolder() ? "no folder until Save dump to... chooses one (#4141)"
                                                : "using this account's default unless Save dump to... chooses another");
