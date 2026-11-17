@@ -8,6 +8,7 @@
 #include <algorithm>
 #include <filesystem>
 #include <functional>
+#include <iterator>
 #include <optional>
 #include <string>
 
@@ -79,10 +80,34 @@ struct ConfigDirectoryChoice
     return {.directory = fallback, .warning = {}};
 }
 
+/// Whether @p dir, lexically normalized, is @p home or inside it, component by component ("/home/u2" isn't inside
+/// "/home/u"). Purely lexical, as the rest of this file.
+[[nodiscard]] inline auto isInside(const std::filesystem::path& dir, const std::filesystem::path& home) -> bool
+{
+    const std::filesystem::path normalDir = dir.lexically_normal();
+    const std::filesystem::path normalHome = home.lexically_normal();
+    auto homePart = normalHome.begin();
+    auto dirPart = normalDir.begin();
+    for (; homePart != normalHome.end(); ++homePart, ++dirPart)
+    {
+        if (homePart->empty() && std::next(homePart) == normalHome.end())
+        {
+            break; // a trailing separator ("/home/u/") ends the home
+        }
+        if (dirPart == normalDir.end() || *dirPart != *homePart)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /// configDirectoryFrom() for a TaskSmack run as root for a user (#3580): @p invokingUserHome is the home directory of the
 /// user sudo or pkexec names (SessionUser::invokingUserHome()), nullopt otherwise. Such a session keeps that user's
-/// settings, not root's. When $HOME is theirs (sudo -E) the environment decides as usual; otherwise (pkexec, and sudo,
-/// set HOME to root's) it's their home's .config/tasksmack, and the environment's XDG_CONFIG_HOME, root's, is ignored.
+/// settings, not root's. When $HOME is theirs (sudo -E) their XDG_CONFIG_HOME is used only inside their home (#4153):
+/// root writes the config, the lock and the themes there, so a folder anywhere else (/etc) is passed over, with a
+/// warning, for their home's .config/tasksmack. Otherwise (pkexec, and sudo, set HOME to root's) it's their home's
+/// .config/tasksmack, and the environment's XDG_CONFIG_HOME, root's, is ignored.
 [[nodiscard]] inline auto configDirectoryFor(const std::optional<std::string>& xdgConfigHome,
                                              const std::optional<std::string>& home,
                                              const std::function<std::optional<std::filesystem::path>()>& passwdHome,
@@ -92,6 +117,15 @@ struct ConfigDirectoryChoice
     if (invokingUserHome.has_value() && home != invokingUserHome)
     {
         return configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
+    }
+    if (invokingUserHome.has_value() && xdgConfigHome.has_value() && !isInside(*xdgConfigHome, *invokingUserHome))
+    {
+        ConfigDirectoryChoice choice = configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
+        choice.warning = "Ignoring XDG_CONFIG_HOME " + *xdgConfigHome +
+                         ": TaskSmack runs as root for a user, and keeps "
+                         "their settings only inside their home; using " +
+                         choice.directory.string();
+        return choice;
     }
     return configDirectoryFrom(xdgConfigHome, home, passwdHome, currentPath);
 }
