@@ -59,6 +59,9 @@ MAIN_CALL = (
     "    SetDefaultDllDirectories(system32Only() ? LOAD_LIBRARY_SEARCH_SYSTEM32\n"
     "                                            : LOAD_LIBRARY_SEARCH_APPLICATION_DIR | LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
 )
+# What TaskSmack.exe's WinMain must call next, before any SDL call (#4103)
+SDL_SCRUB = "    Platform::Windows::SdlEnvironment::removeForThisProcess(system32Only());\n"
+MAIN_START = MAIN_CALL + SDL_SCRUB
 HELPER_CALL = "    SetDefaultDllDirectories(LOAD_LIBRARY_SEARCH_SYSTEM32);\n"
 
 
@@ -77,11 +80,11 @@ def check_helper(text: str) -> list[str]:
 
 class CheckEntryPointTest(unittest.TestCase):
     def test_main_with_its_system32_branch_first_passes(self) -> None:
-        body = "    // First, before anything loads a DLL.\n" + MAIN_CALL + "    return run();\n"
+        body = "    // First, before anything loads a DLL.\n" + MAIN_START + "    return run();\n"
         self.assertEqual(check_main(entry_point("WinMain", body)), [])
 
     def test_trailing_return_type_passes(self) -> None:
-        text = "auto WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) -> int\n{\n" + MAIN_CALL + "}\n"
+        text = "auto WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int) -> int\n{\n" + MAIN_START + "}\n"
         self.assertEqual(check_main(text), [])
 
     def test_helper_with_exactly_system32_after_an_alias_passes(self) -> None:
@@ -129,6 +132,33 @@ class CheckEntryPointTest(unittest.TestCase):
             with self.subTest(flags=flags):
                 self.assertEqual(len(check_main(entry_point("WinMain", f"    SetDefaultDllDirectories({flags});\n"))), 1)
 
+    def test_main_must_remove_the_sdl_variables_next(self) -> None:
+        # #4103: right after SetDefaultDllDirectories, before anything can make an SDL call.
+        for body in (
+            MAIN_CALL + "    return run();\n",
+            MAIN_CALL + "    SDL_SetHint(SDL_HINT_VIDEO_DRIVER, \"windows\");\n" + SDL_SCRUB,
+            MAIN_CALL + "    // " + SDL_SCRUB.lstrip(),
+            MAIN_CALL + "    SdlEnvironment::removedFromThisProcess();\n",
+            MAIN_CALL + "    static_cast<void>(0), SdlEnvironment::removeForThisProcess(x);\n",
+        ):
+            with self.subTest(body=body):
+                errors = check_main(entry_point("WinMain", body))
+                self.assertEqual(len(errors), 1, errors)
+                self.assertIn("SdlEnvironment::removeForThisProcess(", errors[0])
+                self.assertIn("#4103", errors[0])
+
+    def test_the_sdl_scrub_may_be_qualified_or_not_after_comments(self) -> None:
+        for scrub in (
+            "    SdlEnvironment::removeForThisProcess(true);\n",
+            "    // Next, before any SDL call.\n    /* why */ Platform::Windows::SdlEnvironment::removeForThisProcess(x);\n",
+        ):
+            with self.subTest(scrub=scrub):
+                self.assertEqual(check_main(entry_point("WinMain", MAIN_CALL + scrub)), [])
+
+    def test_the_helper_needs_no_sdl_scrub(self) -> None:
+        # TaskSmackHelper.exe makes no SDL call.
+        self.assertEqual(check_helper(entry_point("wWinMain", HELPER_CALL + "    return run();\n")), [])
+
     def test_only_a_declaration_or_another_name_fails(self) -> None:
         for text in ("int WINAPI WinMain(HINSTANCE, HINSTANCE, LPSTR, int);\n", entry_point("wWinMain", MAIN_CALL)):
             with self.subTest(text=text):
@@ -144,7 +174,7 @@ class CheckTreeTest(unittest.TestCase):
         for relative, function, rule in checker.ENTRY_POINTS:
             path = self.root / relative
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(entry_point(function, MAIN_CALL if rule == checker.BRANCH else HELPER_CALL), encoding="utf-8")
+            path.write_text(entry_point(function, MAIN_START if rule == checker.BRANCH else HELPER_CALL), encoding="utf-8")
 
     def test_each_entry_point_has_its_own_rule(self) -> None:
         # The helper's own folder is never searched; the app keeps the branch it takes elevated.
@@ -168,6 +198,14 @@ class CheckTreeTest(unittest.TestCase):
                 self.assertEqual(original.count(old), 1, old)
                 mutated = original.replace(old, new)
                 self.assertEqual(len(checker.check_entry_point(mutated, relative.as_posix(), function, rule)), 1)
+
+    def test_the_repositorys_main_fails_without_its_sdl_scrub(self) -> None:
+        relative = Path("src/main.cpp")
+        original = (REPO / relative).read_text(encoding="utf-8")
+        old = "SdlEnvironment::removeForThisProcess("
+        self.assertEqual(original.count(old), 1, old)
+        mutated = original.replace(old, "SdlEnvironment::removedFromThisProcess(")
+        self.assertEqual(len(checker.check_entry_point(mutated, relative.as_posix(), "WinMain", checker.BRANCH)), 1)
 
     def test_scans_sources_under_src(self) -> None:
         self.write_entry_points()
