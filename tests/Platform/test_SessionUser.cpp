@@ -340,6 +340,27 @@ TEST(SessionUserTest, OnlyAnInvokerAboveTheProcessIsTrusted)
     EXPECT_TRUE(uidIsAbove(400, 1000, ids));
     EXPECT_FALSE(uidIsAbove(400, 1001, ids)) << "su -p with SUDO_UID=1001: no process of 1001's above";
     EXPECT_FALSE(uidIsAbove(400, 1000, [](int) -> std::optional<ProcessIds> { return std::nullopt; })) << "nothing known";
+    // #4193 review: an administrator (1000) su'd into user 2000's shell, whose .bashrc forged SUDO_UID=1000, then su -p.
+    const std::map<int, ProcessIds> suInto{
+        {400, {300, 0, 0}}, {300, {250, 2000, 0}}, {250, {200, 2000, 2000}}, {200, {150, 1000, 0}}, {150, {1, 1000, 1000}}};
+    const auto suIds = [&suInto](int pid) -> std::optional<ProcessIds>
+    {
+        if (const auto found = suInto.find(pid); found != suInto.end())
+        {
+            return found->second;
+        }
+        return std::nullopt;
+    };
+    EXPECT_FALSE(uidIsAbove(400, 1000, suIds)) << "only the nearest user counts: 2000's shell started this";
+    EXPECT_TRUE(uidIsAbove(400, 2000, suIds));
+    // A setuid-to-1000 helper run by 2000 (effective 1000 only) isn't 1000.
+    EXPECT_FALSE(uidIsAbove(400,
+                            1000,
+                            [](int pid) -> std::optional<ProcessIds>
+                            {
+                                return pid == 400 ? std::optional(ProcessIds{.parent = 300, .realUid = 0, .effectiveUid = 0})
+                                                  : std::optional(ProcessIds{.parent = 1, .realUid = 2000, .effectiveUid = 1000});
+                            }));
     // TaskSmack itself isn't counted.
     EXPECT_FALSE(uidIsAbove(
         400,

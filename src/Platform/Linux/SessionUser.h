@@ -307,27 +307,34 @@ struct ProcessIds
     return false;
 }
 
-/// Whether a process above @p self, up to pid 1, runs as @p uid (real or effective), from @p ids (processIds(), or a
-/// test's): the user who ran sudo, doas or pkexec is above the root process it starts, whatever that process's
-/// environment says (#4186). An ancestor that can't be read ends the walk.
-[[nodiscard]] inline bool uidIsAbove(int self, uid_t uid, const std::function<std::optional<ProcessIds>(int)>& ids)
+/// The real uid of the nearest process above @p self that isn't root's, up to pid 1, from @p ids (processIds(), or a
+/// test's), or nullopt when there's none or an ancestor can't be read. The user who ran sudo, doas, su or pkexec is
+/// that process (sudo's and su's front process keeps their real uid), so a root process it starts finds them first.
+[[nodiscard]] inline std::optional<std::uint32_t> nearestUserAbove(int self, const std::function<std::optional<ProcessIds>(int)>& ids)
 {
     constexpr int MAX_HOPS = 64; // as aUserIsAbove()
-    const auto wanted = static_cast<std::uint32_t>(uid);
     std::optional<ProcessIds> at = ids(self);
     for (int hop = 0; hop < MAX_HOPS && at.has_value() && at->parent > 0; ++hop)
     {
         at = ids(at->parent);
-        if (at.has_value() && (at->realUid == wanted || at->effectiveUid == wanted))
+        if (at.has_value() && at->realUid != 0)
         {
-            return true;
+            return at->realUid;
         }
     }
-    return false;
+    return std::nullopt;
+}
+
+/// Whether @p uid is the user who started @p self (#4186): nearestUserAbove(), by real uid only. Any ancestor of theirs
+/// further up isn't enough: a user's shell an administrator reached with su, or a setuid helper, sits between (the
+/// #4193 review).
+[[nodiscard]] inline bool uidIsAbove(int self, uid_t uid, const std::function<std::optional<ProcessIds>(int)>& ids)
+{
+    return nearestUserAbove(self, ids) == static_cast<std::uint32_t>(uid);
 }
 
 /// @p value of the environment variable @p name as a root session may trust it (#4186): a SUDO_UID or PKEXEC_UID naming
-/// a user only when @p isAbove says that user runs a process above this one, as sudo's and pkexec's caller does; under
+/// a user only when @p isAbove says that user is the nearest one above this process, as sudo's and pkexec's caller is; under
 /// su -p or doas keepenv the environment is the user's own, and could name anyone. Nullopt then. Any other variable,
 /// and a value invokingUser() refuses anyway (malformed, or root), is @p value unchanged.
 [[nodiscard]] inline std::optional<std::string>
