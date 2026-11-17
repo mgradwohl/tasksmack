@@ -122,10 +122,16 @@ def call_arguments(text: str, open_paren: int) -> str:
     return text[open_paren + 1 :]
 
 
+def blank_literals(text: str) -> str:
+    """@p text with each string and character literal blanked, same length, so a word or brace inside one is neither
+    code nor a match."""
+    return TOKENS.sub(lambda match: " " * len(match.group(0)), text)
+
+
 def matching_brace(text: str, open_brace: int) -> int:
     """The index of the brace closing the one at @p open_brace (or the end of @p text, if unbalanced). String and
     character literals are skipped, so a brace in one doesn't count."""
-    blanked = TOKENS.sub(lambda match: " " * len(match.group(0)), text)
+    blanked = blank_literals(text)
     depth = 0
     for index in range(open_brace, len(blanked)):
         if blanked[index] == "{":
@@ -166,13 +172,15 @@ def check_fail_closed(body: str, position: int) -> str | None:
             "the statement after the SDL scrub must be the fail-closed check, 'if (... "
             "stillSetInThisProcess() ... !x.empty())' returning a failure (#4169)"
         )
-    condition = call_arguments(body, guard.end() - 1)
+    # Searched with literals blanked: a word inside a string ("will not return") is not code (#4169)
+    code = blank_literals(body)
+    condition = call_arguments(code, guard.end() - 1)
     if STILL_SET_CALL.search(condition) is None or NOT_EMPTY.search(condition) is None:
         return "the check after the SDL scrub must test !<names>.empty() of SdlEnvironment::stillSetInThisProcess() (#4169)"
-    open_brace = LEADING_SPACE.match(body, guard.end() + len(condition) + 1).end()
-    if not body.startswith("{", open_brace):
+    open_brace = LEADING_SPACE.match(code, guard.end() + len(condition) + 1).end()
+    if not code.startswith("{", open_brace):
         return "the check after the SDL scrub must have a braced block that returns (#4169)"
-    if RETURN.search(body[open_brace : matching_brace(body, open_brace) + 1]) is None:
+    if RETURN.search(code[open_brace : matching_brace(code, open_brace) + 1]) is None:
         return "the check after the SDL scrub must return a failure when a name is still set (#4169)"
     return None
 

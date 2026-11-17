@@ -274,6 +274,8 @@ class CheckEntryPointTest(unittest.TestCase):
             ("no braces", scrub + FAIL_CLOSED.replace("    {\n", "").replace("    }\n", "")),
             ("no return", scrub + FAIL_CLOSED.replace("return EXIT_FAILURE;", "log();")),
             ("a return after the block", scrub + FAIL_CLOSED.replace("        return EXIT_FAILURE;\n", "") + "    return EXIT_FAILURE;\n"),
+            ("a string says return", scrub + FAIL_CLOSED.replace("return EXIT_FAILURE;", 'log("will not return");')),
+            ("a string names the check", scrub + '    if (log("stillSetInThisProcess() !x.empty()")) { return 1; }\n'),
             ("a comment only", scrub + "    // if (!stillSetInThisProcess().empty()) { return 1; }\n    return run();\n"),
         ):
             with self.subTest(name=name):
@@ -292,6 +294,14 @@ class CheckEntryPointTest(unittest.TestCase):
         for body in (
             MAIN_CALL + SDL_SCRUB + FAIL_CLOSED + SDL_SCRUB + "    return run();\n",
             MAIN_CALL + SDL_SCRUB + FAIL_CLOSED + "    helper();\n    return run();\n" + SDL_SCRUB,
+            # Inside the check's own init: it passes the check's shape, only the count catches it
+            MAIN_CALL
+            + SDL_SCRUB
+            + FAIL_CLOSED.replace(
+                "const auto& stillSet = Platform::Windows::SdlEnvironment::stillSetInThisProcess()",
+                "const auto& stillSet = (Platform::Windows::SdlEnvironment::removeForThisProcess(x), "
+                "Platform::Windows::SdlEnvironment::stillSetInThisProcess())",
+            ),
         ):
             with self.subTest(body=body):
                 errors = check_main(entry_point("WinMain", body))

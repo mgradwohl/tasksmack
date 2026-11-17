@@ -122,8 +122,8 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only);
 /// (logging isn't up; it says so in a message box and OutputDebugStringW). Also holds UNREADABLE_BLOCK if the
 /// environment block couldn't be read. Reachable only if the OS refuses a removal, a removal reports success but takes
 /// a different entry (two names that compare equal), or more than eight entries answer to one name; not through
-/// HKCU\Environment, whose names compare case-insensitively. An unreadable block refuses to start too, and so does
-/// --handoff without elevation, which also scrubs.
+/// HKCU\Environment, whose names compare case-insensitively. An unreadable block refuses to start too. The refusal
+/// applies under --handoff without elevation too, which also scrubs.
 [[nodiscard]] const std::vector<std::wstring>& stillSetInThisProcess() noexcept;
 
 } // namespace Platform::Windows::SdlEnvironment
