@@ -199,7 +199,8 @@ constexpr std::size_t MAX_BUILD_TEXT_BYTES = 256;
     struct passwd pwBuf = {};
     struct passwd* pwResult = nullptr;
     std::array<char, 1024> buffer{};
-    if (getpwuid_r(getuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
+    // The effective uid's: root's in a root session, whatever the real uid (the #4182 review).
+    if (getpwuid_r(geteuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
     {
         return std::filesystem::path(pwResult->pw_dir);
     }

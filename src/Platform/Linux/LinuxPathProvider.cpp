@@ -34,7 +34,8 @@ namespace
 /// LDAP/SSSD entry (#2498).
 [[nodiscard]] std::optional<std::filesystem::path> passwdHome()
 {
-    return lookUpHomeDirectory(::getuid(), ::getpwuid_r).transform([](const std::string& home) { return std::filesystem::path(home); });
+    // The effective uid's, as UserConfig's (the #4182 review).
+    return lookUpHomeDirectory(::geteuid(), ::getpwuid_r).transform([](const std::string& home) { return std::filesystem::path(home); });
 }
 
 } // namespace

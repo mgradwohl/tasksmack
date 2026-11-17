@@ -187,6 +187,16 @@ TEST(UserConfigHelpersTest, RootRunForAUserUsesThatUsersConfigWhenHomeIsRoots)
     EXPECT_TRUE(suChoice.warning.contains("Ignoring XDG_CONFIG_HOME and HOME")) << suChoice.warning;
     EXPECT_EQ(configDirectoryFor(std::nullopt, std::nullopt, rootsPasswd, "/cwd", std::nullopt, true).warning, "")
         << "nothing set, nothing to say";
+    EXPECT_EQ(configDirectoryFor(std::nullopt, "/root", rootsPasswd, "/cwd", std::nullopt, true).warning, "")
+        << "plain su: HOME is root's own, the same folder, nothing to say";
+    EXPECT_FALSE(configDirectoryFor(std::nullopt, "/home/u", rootsPasswd, "/cwd", std::nullopt, true).warning.empty()) << "HOME alone";
+    // Root's passwd entry unreadable: /root, never the working directory su kept (the #4182 review).
+    const auto unreadablePasswd = []
+    {
+        return std::optional<std::filesystem::path>{};
+    };
+    EXPECT_EQ(configDirectoryFor("/etc", "/home/u", unreadablePasswd, "/home/u/cwd", std::nullopt, true).directory,
+              std::filesystem::path("/root/.config/tasksmack"));
     // A known invoking user still wins (sudo): their home's, as before.
     EXPECT_EQ(configDirectoryFor("/etc", "/root", rootsPasswd, "/cwd", "/home/u", true).directory,
               std::filesystem::path("/home/u/.config/tasksmack"));
