@@ -31,7 +31,7 @@ namespace
 class ViewFakeIconSource final : public Platform::IProcessIconSource
 {
   public:
-    [[nodiscard]] std::string executablePath(std::int32_t pid) override
+    [[nodiscard]] std::string executablePath(std::int32_t pid, std::uint64_t /*startTimeTicks*/) override
     {
         return pid == 1 ? "/bin/withicon" : "/bin/without";
     }

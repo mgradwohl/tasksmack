@@ -51,10 +51,15 @@ template<typename Handle> [[nodiscard]] Handle fakeHandle(std::uintptr_t value)
     return fakeHandle<HDC>(0x50);
 }
 
+/// The start time the row recorded for its process, and the creation time the fake process reports by default.
+constexpr std::uint64_t START_TICKS = 133'000'000'000'000'000;
+
 /// What the fakes answer and what they were asked. Reset per test.
 struct FakeIconApi
 {
     bool openSucceeds = true;
+    std::uint64_t processStartTicks = START_TICKS; ///< The creation time the open process reports
+    bool timesSucceed = true;
     std::wstring imagePath = L"C:\\Program Files\\App\\app.exe";
     DWORD imagePathNeeds = 0; ///< A buffer at least this large is needed; 0: any
     HRESULT extractResult = S_OK;
@@ -104,6 +109,18 @@ BOOL WINAPI fakeQueryImageName(HANDLE process, DWORD /*flags*/, LPWSTR buffer, P
     }
     std::memcpy(buffer, api().imagePath.c_str(), needed * sizeof(wchar_t));
     *size = needed - 1;
+    return TRUE;
+}
+
+BOOL WINAPI fakeGetProcessTimes(HANDLE process, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+{
+    EXPECT_EQ(process, processHandle());
+    if (!api().timesSucceed)
+    {
+        return FALSE;
+    }
+    creation->dwLowDateTime = static_cast<DWORD>(api().processStartTicks & 0xFFFFFFFFU);
+    creation->dwHighDateTime = static_cast<DWORD>(api().processStartTicks >> 32U);
     return TRUE;
 }
 
@@ -203,6 +220,7 @@ BOOL WINAPI fakeDeleteObject(HGDIOBJ object)
     return Windows::ProcessIconFunctions{
         .openProcess = &fakeOpenProcess,
         .queryFullProcessImageName = &fakeQueryImageName,
+        .getProcessTimes = &fakeGetProcessTimes,
         .closeHandle = &fakeCloseHandle,
         .extractIcon = &fakeExtractIcon,
         .destroyIcon = &fakeDestroyIcon,
@@ -367,15 +385,33 @@ TEST_F(WindowsProcessIconSourceTest, RefusesAnEmptyPathOrAnUnreasonableSizeWitho
 
 TEST_F(WindowsProcessIconSourceTest, ReadsAProcesssExecutableAndClosesIt)
 {
-    EXPECT_EQ(m_Source.executablePath(1234), "C:\\Program Files\\App\\app.exe");
+    EXPECT_EQ(m_Source.executablePath(1234, START_TICKS), "C:\\Program Files\\App\\app.exe");
     EXPECT_EQ(api().processesOpened, 1);
     EXPECT_EQ(api().processesClosed, 1);
+}
+
+// #4183: the PID names another process now, so its path (and icon) must not land on this row.
+TEST_F(WindowsProcessIconSourceTest, AReusedPidHasNoPathAndItsHandleIsClosed)
+{
+    api().processStartTicks = START_TICKS + 1;
+    EXPECT_EQ(m_Source.executablePath(1234, START_TICKS), "");
+    EXPECT_EQ(api().processesOpened, 1);
+    EXPECT_EQ(api().processesClosed, 1);
+    EXPECT_TRUE(api().pathBufferSizes.empty()) << "the image path is never read";
+}
+
+TEST_F(WindowsProcessIconSourceTest, AnUnconfirmableProcessHasNoPath)
+{
+    EXPECT_EQ(m_Source.executablePath(1234, 0), "") << "an unknown start time is refused, as the actions refuse it";
+    api().timesSucceed = false;
+    EXPECT_EQ(m_Source.executablePath(1234, START_TICKS), "");
+    EXPECT_TRUE(api().pathBufferSizes.empty());
 }
 
 TEST_F(WindowsProcessIconSourceTest, RetriesALongPathWithTheLongPathBuffer)
 {
     api().imagePathNeeds = 1000;
-    EXPECT_EQ(m_Source.executablePath(1234), "C:\\Program Files\\App\\app.exe");
+    EXPECT_EQ(m_Source.executablePath(1234, START_TICKS), "C:\\Program Files\\App\\app.exe");
     EXPECT_EQ(api().pathBufferSizes, (std::vector<DWORD>{MAX_PATH, 32768}));
     EXPECT_EQ(api().processesClosed, 1);
 }
@@ -383,13 +419,13 @@ TEST_F(WindowsProcessIconSourceTest, RetriesALongPathWithTheLongPathBuffer)
 TEST_F(WindowsProcessIconSourceTest, AProcessThatCantBeOpenedOrReadHasNoPath)
 {
     api().openSucceeds = false;
-    EXPECT_EQ(m_Source.executablePath(1234), "");
-    EXPECT_EQ(m_Source.executablePath(0), ""); // The Idle "process": not even opened
+    EXPECT_EQ(m_Source.executablePath(1234, START_TICKS), "");
+    EXPECT_EQ(m_Source.executablePath(0, START_TICKS), ""); // The Idle "process": not even opened
     EXPECT_EQ(api().processesOpened, 0);
 
     api().openSucceeds = true;
     api().imagePathNeeds = 40000; // Longer than any buffer offered
-    EXPECT_EQ(m_Source.executablePath(1234), "");
+    EXPECT_EQ(m_Source.executablePath(1234, START_TICKS), "");
     EXPECT_EQ(api().processesClosed, 1);
 }
 

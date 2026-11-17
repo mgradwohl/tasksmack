@@ -39,6 +39,7 @@ struct ProcessIconFunctions
 {
     using OpenProcessFn = HANDLE(WINAPI*)(DWORD, BOOL, DWORD);
     using QueryFullProcessImageNameFn = BOOL(WINAPI*)(HANDLE, DWORD, LPWSTR, PDWORD);
+    using GetProcessTimesFn = BOOL(WINAPI*)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME);
     using CloseHandleFn = BOOL(WINAPI*)(HANDLE);
     using ExtractIconFn = HRESULT(WINAPI*)(LPCWSTR, int, UINT, HICON*, HICON*, UINT);
     using DestroyIconFn = BOOL(WINAPI*)(HICON);
@@ -51,6 +52,7 @@ struct ProcessIconFunctions
 
     OpenProcessFn openProcess = nullptr;
     QueryFullProcessImageNameFn queryFullProcessImageName = nullptr;
+    GetProcessTimesFn getProcessTimes = nullptr; ///< The open process's creation time, to confirm it is the row's (#4183)
     CloseHandleFn closeHandle = nullptr;
     ExtractIconFn extractIcon = nullptr; ///< SHDefExtractIconW
     DestroyIconFn destroyIcon = nullptr;
@@ -73,7 +75,7 @@ class WindowsProcessIconSource final : public IProcessIconSource
   public:
     explicit WindowsProcessIconSource(Windows::ProcessIconFunctions fns = Windows::ProcessIconFunctions::system());
 
-    [[nodiscard]] std::string executablePath(std::int32_t pid) override;
+    [[nodiscard]] std::string executablePath(std::int32_t pid, std::uint64_t startTimeTicks) override;
     [[nodiscard]] std::optional<IconPixels> loadIcon(std::string_view executablePath, std::string_view processName, int sizePx) override;
     [[nodiscard]] bool caseInsensitivePaths() const noexcept override
     {

@@ -985,6 +985,7 @@ WindowsProcessProbeFunctions WindowsProcessProbe::systemFunctions()
         .process =
             {
                 .openProcess = &OpenProcess,
+                .getProcessTimes = &GetProcessTimes,
                 .getPriorityClass = &GetPriorityClass,
                 .queryFullProcessImageNameW = &QueryFullProcessImageNameW,
                 .ntQueryInformationProcess = getNtQueryInformationProcessFn(),
@@ -1386,7 +1387,26 @@ bool WindowsProcessProbe::getProcessDetails(uint32_t pid,
     // A handle is only needed to refresh TTL-cached details. Non-cacheable entries
     // (startTimeTicks == 0) are kernel pseudo-processes like Idle that OpenProcess can never
     // access, and TTL backoff cannot be remembered for them — skip the attempt entirely.
-    const Windows::UniqueHandle hProcess(canCache ? m_Fns.process.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) : nullptr);
+    // Opened by PID, so confirmed to be this row's process by its creation time (#4183): a PID reused since the
+    // snapshot is another process, whose command line, owner, path and package must not land on this row. A
+    // mismatch is handled as a refused open. The handle pins the process, so the later reads and the
+    // PROCESS_QUERY_INFORMATION retry stay on it.
+    Windows::UniqueHandle hProcess;
+    if (canCache && m_Fns.process.getProcessTimes != nullptr)
+    {
+        const Windows::ProcessIdentityFunctions identity{
+            .openProcess = m_Fns.process.openProcess,
+            .getProcessTimes = m_Fns.process.getProcessTimes,
+            .closeHandle = &::CloseHandle,
+            .getExitCodeProcess = nullptr,
+        };
+        auto verified = Windows::openProcessVerified(
+            identity, ProcessTarget{.pid = counters.pid, .startTimeTicks = counters.startTimeTicks}, PROCESS_QUERY_LIMITED_INFORMATION);
+        if (verified.has_value())
+        {
+            hProcess.reset(verified->release());
+        }
+    }
     if (!hProcess.valid())
     {
         // Can't access this process (protected, another user's, a service). A process's protection and
