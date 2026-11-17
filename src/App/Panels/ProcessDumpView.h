@@ -95,17 +95,24 @@ lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& d
 /// Whether this session has no default dump folder (#4141): on Windows, elevated or restarted with --handoff
 /// (DllSearchPolicy::system32OnlyForThisProcess(), the rule main.cpp's lessPrivilegedEnvironment() uses, #4104). Its
 /// %TEMP% is then the less-privileged side's: a junction or another TEMP could steer the dump elsewhere, and anything
-/// running as that user could read the memory of a process only an administrator may open. Read once, then kept.
-/// False on Linux.
+/// running as that user could read the memory of a process only an administrator may open. On Linux, any root
+/// session (#4163): its default is then root's own folder instead (Platform::RootDumpFolder, #4181). Read once, then kept.
 [[nodiscard]] bool noDefaultDumpFolder() noexcept;
 
 /// What the confirm says while it has no folder, in a session with no default one (noDefaultDumpFolder()).
+#ifdef __linux__
+inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
+    "Choose a folder with Save dump to...: as root, TaskSmack couldn't make its own dump folder (TaskSmack-dumps in "
+    "root's home), and your temp folder can be redirected by programs running as you. Choose one only root may change.";
+#else
 inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
     "Choose a folder with Save dump to...: as administrator, TaskSmack has no default folder, because your temp folder "
     "can be redirected and read by programs running as you. Choose one only administrators can open.";
+#endif
 
 /// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
-/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one. Empty when there is
+/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one, except root on Linux, whose
+/// default is its own (Platform::RootDumpFolder::rootDumpFolder(), #4181). Empty when there is
 /// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
 [[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
 

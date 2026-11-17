@@ -357,6 +357,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxPublicIp.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
+    src/Platform/Linux/RootDumpFolder.cpp # a root session's own default dump folder (#4181)
     src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/LinuxGPUProbe.cpp
     src/Platform/Linux/AccelNpuProbe.cpp
