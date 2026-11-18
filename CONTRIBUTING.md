@@ -1420,6 +1420,12 @@ So:
   placement to the scheduler, as before. On a CPU with one class of core, nothing changes. If the
   classes can't be read (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning
   says so.
+- **Not in a virtual machine** (#4237). In a Hyper-V, VMware, VirtualBox or other guest
+  (`Win32_ComputerSystem` reports a hypervisor and a virtual machine's maker or model; a physical host
+  with Hyper-V, VBS or WSL2 on is not a guest), every vCPU may report one `EfficiencyClass` whatever
+  cores the host has. So `bench.ps1` can't tell whether the host is hybrid: with one class there, it
+  records the classes as unknown (`hybrid: null`), doesn't pin, and warns. Compare Windows runs from
+  bare metal, or treat a guest's numbers as noisy. Several classes in a guest are used as read.
 - **Never fewer than four CPUs** (#3413). The `*_Concurrent_PublicationWait` benchmarks run up to
   four threads (the measuring thread, a writer and two readers) that spin on each other. On one
   CPU each hand-off waits for a scheduler time slice, so they barely progress and a full run never

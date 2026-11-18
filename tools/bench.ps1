@@ -774,6 +774,28 @@ function Format-AffinityMask {
     return '0x{0:x}' -f [uint64]$Mask
 }
 
+function Test-BenchVirtualMachine {
+    # Whether Win32_ComputerSystem's $ComputerSystem (Manufacturer, Model, HypervisorPresent) is a
+    # virtual machine's (#4237). HypervisorPresent alone is not enough: a physical Windows host
+    # with Hyper-V, Virtualization-based Security or WSL2 on is the hypervisor's root partition and
+    # reports it too, yet sees the real cores. So it also needs a virtual machine's maker or model.
+    # $null (the class could not be read) is not a virtual machine.
+    param([AllowNull()]$ComputerSystem)
+    if ($null -eq $ComputerSystem -or -not $ComputerSystem.HypervisorPresent) { return $false }
+    return "$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)" -match 'Virtual|VMware|innotek|QEMU|KVM|Xen|Parallels|Bochs|Hyper-V|Google Compute Engine|Amazon EC2|OpenStack|Standard PC'
+}
+
+function Get-BenchComputerSystem {
+    # Win32_ComputerSystem's Manufacturer, Model and HypervisorPresent, or $null outside Windows or
+    # when they cannot be read. One CIM query, read only.
+    if (-not $IsWindows) { return $null }
+    try { return Get-CimInstance -ClassName Win32_ComputerSystem -Property Manufacturer, Model, HypervisorPresent -ErrorAction Stop }
+    catch {
+        Write-Verbose "Reading Win32_ComputerSystem failed: $_"
+        return $null
+    }
+}
+
 function Select-BenchCore {
     # Where the run goes (#3163), from the physical cores (ConvertFrom-ProcessorCoreBuffer's
     # shape, or $null when they could not be read), the -Core choice ('' when not given) and the
@@ -793,11 +815,21 @@ function Select-BenchCore {
     # (#3413): it still keeps the run off the efficiency cores (#3163), and a multi-threaded
     # benchmark gets a CPU per thread. With fewer than that the run is not pinned. On a CPU of one
     # class it changes nothing.
-    param([AllowNull()][object[]]$Cores, [AllowEmptyString()][string]$Requested, [AllowNull()]$AllowedMask)
+    # In a virtual machine (#4237) a guest's vCPUs may all report one EfficiencyClass whatever cores
+    # the host has, so one class there is "unknown", not "not hybrid": Hybrid is $null, the run is
+    # not pinned, and a warning says so unless -Core any was asked for. Several classes in a guest
+    # are believed. Kept in step with bench-manifest.py (#4194).
+    param([AllowNull()][object[]]$Cores, [AllowEmptyString()][string]$Requested, [AllowNull()]$AllowedMask, [bool]$VirtualMachine = $false)
     $known = $null -ne $Cores -and $Cores.Count -gt 0
     $hybrid = if ($known) { @($Cores | ForEach-Object { $_.EfficiencyClass } | Sort-Object -Unique).Count -gt 1 } else { $null }
+    $guestOfUnknownHost = $known -and $VirtualMachine -and -not $hybrid
+    if ($guestOfUnknownHost) { $hybrid = $null }
     $mode = if ($Requested) { $Requested } elseif ($hybrid) { 'performance' } else { 'any' }
     $choice = [pscustomobject]@{ Core = $mode; CoreClass = 'any'; Hybrid = $hybrid; LogicalCpus = $null; Mask = $null; Warning = $null }
+    if ($guestOfUnknownHost) {
+        if ($Requested -ne 'any') { $choice.Warning = 'This is a virtual machine and every vCPU reports one EfficiencyClass, so whether the host is a hybrid CPU is unknown and the run is not pinned. If the host is hybrid it may land on efficiency cores; compare runs from bare metal.' }
+        return $choice
+    }
     if ($mode -ne 'performance') {
         if (-not $known -and -not $Requested) { $choice.Warning = 'The processor cores could not be read, so the run is not pinned (-Core any). On a hybrid CPU it may land on efficiency cores.' }
         return $choice
@@ -1163,7 +1195,7 @@ Write-Host "Binary: $benchBin"
 $loadSampleMs = $script:LoadSampleMilliseconds
 if ($env:TASKSMACK_BENCH_LOAD_SAMPLE_MS -match '^[0-9]+$') { $loadSampleMs = [int]$env:TASKSMACK_BENCH_LOAD_SAMPLE_MS }
 $processMask = Get-ProcessAffinityMask
-$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask
+$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask -VirtualMachine (Test-BenchVirtualMachine (Get-BenchComputerSystem))
 $runMask = if ($null -ne $coreChoice.Mask) { $coreChoice.Mask } else { $processMask }
 
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
