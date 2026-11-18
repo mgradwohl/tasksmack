@@ -1728,11 +1728,17 @@ On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it che
 checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
 alone in `-Launches` more separate launches (default 4, 5 in all), each a `bench.ps1` run of its own with the
 same preset, binary, `-Core` and arguments plus the plan's filter, so each is pinned, redacted and given a
-manifest like any run. A launch whose manifest records a different core class from the full run's (its
-pinning failed, say) stops it with exit 2 before anything is combined. It then combines them and checks the
-median across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or
-low coverage, 2 unusable input). The flagged names, the launches and the combined run go to
-`<result>.across-launches\` next to the result; `-BudgetSeconds` (default 600) bounds the launches as on CI.
+manifest like any run. The plan, the launches, the budget and the combine are `bench-across-launches.py run`
+(#4198), the command `bench.sh --baseline` and CI use, so the exit codes and the budget are theirs: a launch
+whose manifest records a different core class from the full run's (its pinning failed, say) stops it with exit
+2 before anything is combined, and a launch that fails or writes no result with exit 3. (The launch command
+is `tools/bench-ps1-launch.py`, which hands the plan's filter to `bench.ps1` in a file, since `pwsh -File`
+would split it at its first `:`.) It then checks the median across launches at the same thresholds, and exits
+with that check's code (0 passed, 1 regressions, low coverage or flags that stand, 2 unusable input or a launch
+on another core class, 3 a failed launch). The flagged names, the combined run and the launches (in folders
+numbered 2 to `-Launches` + 1) go to `<result>.across-launches\` next to the result; `-BudgetSeconds`
+(default 600) bounds the launches as on CI, and a launch still running at it is stopped, with the flags
+standing.
 The checks run as `python -I -X utf8`. `-CheckArgs` refuses the options the script sets itself
 (`--baseline`, `--current`, `--current-manifest`, `--regressions-out`) and any abbreviation of them, since
 the checker's argparse accepts unique prefixes. No Windows CI job runs the benchmarks, so this is for local

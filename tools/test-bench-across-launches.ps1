@@ -99,7 +99,8 @@ shutil.copyfile(canned, out)
         return [pscustomobject]@{ Name = $Name; Exit = $code; Output = $text; Launched = $launched; Result = $result; Work = $work; Canned = $canned }
     }
     function Get-LaunchManifests([string]$Work) {
-        @(Get-ChildItem -LiteralPath $Work -Directory -Filter 'launch-*' | Sort-Object Name | ForEach-Object {
+        # The helper's folders: the launch numbers, 2 to Launches + 1 (not launch-N, #4198).
+        @(Get-ChildItem -LiteralPath $Work -Directory | Where-Object { $_.Name -match '^\d+$' } | Sort-Object { [int]$_.Name } | ForEach-Object {
                 $manifest = @(Get-ChildItem -LiteralPath $_.FullName -Filter '*.manifest.json' -File)
                 Assert-True ($manifest.Count -eq 1) "One manifest in $($_.FullName)"
                 Get-Content -LiteralPath $manifest[0].FullName -Raw | ConvertFrom-Json
@@ -128,7 +129,7 @@ shutil.copyfile(canned, out)
     Assert-True (@($noisyRow[0].tasksmack_launch_real_times).Count -eq 5) 'noise: five launch times'
     Assert-True (@($combined.benchmarks | Where-Object { $_.run_name -ceq 'BM_Steady' }).Count -eq 4) 'noise: BM_Steady kept as the full run had it'
     # A launch's output is redacted like any run's.
-    $launchResult = @(Get-ChildItem -LiteralPath (Join-Path $noise.Work 'launch-2') -Filter '*.json' -File | Where-Object { $_.Name -notlike '*.manifest.json' })
+    $launchResult = @(Get-ChildItem -LiteralPath (Join-Path $noise.Work '2') -Filter '*.json' -File | Where-Object { $_.Name -notlike '*.manifest.json' })
     Assert-True ((Get-Content -LiteralPath $launchResult[0].FullName -Raw | ConvertFrom-Json).context.host_name -ceq 'redacted') 'noise: launch result not redacted'
 
     # Flagged names as real ones are (#3547): a ":" (iterations:1000), "/", "|", "[", a space and a CJK
@@ -140,7 +141,7 @@ shutil.copyfile(canned, out)
     $oddTimes = @{ BM_Steady = 100.0 }
     foreach ($oddName in $oddNames) { $oddTimes[$oddName] = 10.0 }
     Write-Run $oddBaseline $oddTimes
-    $argsFilesBefore = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'tasksmack-bench-args-*.json' -File -ErrorAction SilentlyContinue | ForEach-Object Name)
+    $argsFilesBefore = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'tasksmack-bench-*args-*.json' -File -ErrorAction SilentlyContinue | ForEach-Object Name)
     $odd = Invoke-Scenario 'odd' @(20.0, 10.0, 10.5, 9.8, 10.2) -BaselinePath $oddBaseline -Noisy $oddNames
     Assert-True ($odd.Exit -eq 0) "odd names: exit $($odd.Exit)`n$($odd.Output)"
     Assert-True ($odd.Launched -eq 5) "odd names: $($odd.Launched) launches, not 5`n$($odd.Output)"
@@ -161,7 +162,7 @@ shutil.copyfile(canned, out)
         Assert-True (@($oddCombined.benchmarks | Where-Object { $_.run_name -ceq $oddName -and $_.real_time -eq 10.2 }).Count -eq 1) "odd names: $oddName not combined to 10.2 ns"
     }
     # The launches' argument files are temporary and removed.
-    $leftBehind = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'tasksmack-bench-args-*.json' -File -ErrorAction SilentlyContinue | Where-Object { $argsFilesBefore -notcontains $_.Name })
+    $leftBehind = @(Get-ChildItem -LiteralPath ([IO.Path]::GetTempPath()) -Filter 'tasksmack-bench-*args-*.json' -File -ErrorAction SilentlyContinue | Where-Object { $argsFilesBefore -notcontains $_.Name })
     Assert-True ($leftBehind.Count -eq 0) "odd names: argument files left behind: $(($leftBehind | ForEach-Object Name) -join ', ')"
 
     # -ExtraArgsFile is for those launches alone: with benchmark arguments of its own it is a usage error.
@@ -179,7 +180,7 @@ shutil.copyfile(canned, out)
     # Nothing flagged: one launch, no re-measurement.
     $clean = Invoke-Scenario 'clean' @(10.5)
     Assert-True ($clean.Exit -eq 0 -and $clean.Launched -eq 1) "clean: exit $($clean.Exit), $($clean.Launched) launches`n$($clean.Output)"
-    Assert-True (@(Get-ChildItem -LiteralPath $clean.Work -Directory -Filter 'launch-*').Count -eq 0) 'clean: a launch directory'
+    Assert-True (@(Get-ChildItem -LiteralPath $clean.Work -Directory | Where-Object { $_.Name -match '^\d+$' }).Count -eq 0) 'clean: a launch directory'
 
     # Over budget: plan refuses, the flag stands as a regression, and nothing is re-run.
     $budget = Invoke-Scenario 'budget' @(20.0) -More @('-BudgetSeconds', '0')
@@ -192,7 +193,8 @@ shutil.copyfile(canned, out)
     $two = Invoke-Scenario 'two' @(20.0, 10.0, 10.0) -More @('-Launches', '2')
     Assert-True ($two.Exit -eq 0 -and $two.Launched -eq 3) "two: exit $($two.Exit), $($two.Launched) launches`n$($two.Output)"
 
-    # A launch that fails (no canned run for launch 3: the stub exits 3) ends the script with its exit code.
+    # A launch that fails (no canned run for launch 3: the stub exits 3) ends the script with exit 3, the
+    # helper's code for a failed launch, as bench.sh and CI (#4198).
     $failed = Invoke-Scenario 'failed' @(20.0, 10.0)
     Assert-True ($failed.Exit -eq 3 -and $failed.Launched -eq 3) "failed: exit $($failed.Exit), $($failed.Launched) launches`n$($failed.Output)"
 
@@ -208,7 +210,7 @@ shutil.copyfile(canned, out)
 
     # In process: bench.ps1's functions for -Baseline.
     $benchAst = [System.Management.Automation.Language.Parser]::ParseFile($benchScript, [ref]$null, [ref]$null)
-    foreach ($functionName in 'Get-ReservedCheckOption', 'Get-ManifestCoreClass', 'Invoke-AcrossLaunches') {
+    foreach ($functionName in 'Get-ReservedCheckOption', 'Invoke-AcrossLaunches') {
         $function = $benchAst.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -ceq $functionName }, $false)
         Assert-True ($null -ne $function) "bench.ps1 has no $functionName"
         . ([scriptblock]::Create($function.Extent.Text))
@@ -235,12 +237,32 @@ shutil.copyfile(canned, out)
         Assert-True ("$got" -ceq "$($case.Owned)") "Get-ReservedCheckOption '$($case.Arg)': '$got', not '$($case.Owned)'"
     }
 
-    # Invoke-AcrossLaunches with a launcher that writes canned runs and manifests, for two flagged names,
-    # one outside every Windows code page's ASCII range (a CJK character): the checker and the helper
-    # run in UTF-8 mode, so it prints through the pipe and the filter comes back as it was written.
+    # Invoke-AcrossLaunches over a fake launch command (#4198), for two flagged names, one outside every
+    # Windows code page's ASCII range (a CJK character): the checker and the helper run in UTF-8 mode, so
+    # it prints through the pipe and the filter comes back as it was written. The command is what
+    # bench-across-launches.py run starts: it gets --benchmark_filter=<the plan's> last and
+    # TASKSMACK_BENCH_OUT_DIR, copies a canned run there with a manifest of the core class
+    # FAKE_CLASS_<launch number> (1 unless set), notes the filter and the folder it ran in, and prints
+    # RESULT=. FAKE_EXIT_<n> makes launch n fail with that code.
     [Console]::OutputEncoding = [Text.UTF8Encoding]::new($false)
     $wide = "BM_B<$([char]0x540D)>/threads:2"
-    $names = @('BM_A/size:8', $wide)
+    $fakeScript = Join-Path $root 'fake-launch.py'
+    Set-Content -LiteralPath $fakeScript -Encoding utf8 -Value @'
+import json, os, shutil, sys
+out_dir = os.environ["TASKSMACK_BENCH_OUT_DIR"]
+number = os.path.basename(out_dir)
+with open(os.environ["FAKE_SEEN"], "a", encoding="utf-8") as seen:
+    seen.write(json.dumps([number, sys.argv[-1]], ensure_ascii=False) + "\n")
+code = int(os.environ.get(f"FAKE_EXIT_{number}", "0"))
+if code:
+    sys.exit(code)
+result = os.path.join(out_dir, "run.json")
+shutil.copyfile(os.environ["FAKE_RUN"], result)
+core_class = os.environ.get(f"FAKE_CLASS_{number}", "1")
+with open(os.path.join(out_dir, "run.manifest.json"), "w", encoding="utf-8") as stream:
+    json.dump({"placement": {"core": "performance", "core_class": core_class if not core_class.isdigit() else int(core_class)}}, stream)
+print("RESULT=" + result)
+'@
     function New-Direct([string]$Name) {
         $directory = Join-Path $root $Name
         New-Item -ItemType Directory -Path $directory | Out-Null
@@ -250,39 +272,79 @@ shutil.copyfile(canned, out)
         Write-Run $base @{ 'BM_A/size:8' = 10.0; $wide = 10.0; BM_Steady = 100.0 }
         $manifest = Join-Path $directory 'first.manifest.json'
         @{ placement = @{ core = 'performance'; core_class = 1 } } | ConvertTo-Json | Set-Content -LiteralPath $manifest -Encoding utf8
-        return [pscustomobject]@{ First = $first; Baseline = $base; Manifest = $manifest; Work = (Join-Path $directory 'work') }
+        $launched = Join-Path $directory 'launched.json'
+        Write-Run $launched @{ 'BM_A/size:8' = 10.0; $wide = 11.0 }
+        $seenFile = Join-Path $directory 'seen.txt'
+        [Environment]::SetEnvironmentVariable('FAKE_RUN', $launched)
+        [Environment]::SetEnvironmentVariable('FAKE_SEEN', $seenFile)
+        return [pscustomobject]@{ First = $first; Baseline = $base; Manifest = $manifest; Work = (Join-Path $directory 'work'); Seen = $seenFile }
     }
-    $seen = [Collections.Generic.List[string]]::new()
-    # The core class each launch's manifest records, by launch directory name.
-    $classes = @{}
-    $fake = {
-        param([string]$Filter, [string]$Directory)
-        $seen.Add($Filter)
-        $path = Join-Path $Directory 'run.json'
-        Write-Run $path @{ 'BM_A/size:8' = 10.0; $wide = 11.0 }
-        $class = if ($classes.ContainsKey((Split-Path -Leaf $Directory))) { $classes[(Split-Path -Leaf $Directory)] } else { 1 }
-        @{ placement = @{ core = 'performance'; core_class = $class } } | ConvertTo-Json | Set-Content -LiteralPath ([IO.Path]::ChangeExtension($path, '.manifest.json')) -Encoding utf8
-        [pscustomobject]@{ ExitCode = 0; Result = $path }
+    function Get-Seen($Direct) {
+        if (Test-Path -LiteralPath $Direct.Seen) { @(Get-Content -LiteralPath $Direct.Seen -Encoding utf8 | ForEach-Object { , @($_ | ConvertFrom-Json) }) } else { @() }
     }
+    $fakeCommand = @($python, '-I', '-X', 'utf8', $fakeScript)
     $direct = New-Direct 'direct'
     $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $direct.Baseline -First $direct.First `
-        -FirstManifest $direct.Manifest -WorkDirectory $direct.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -Launch $fake 6>$null
+        -FirstManifest $direct.Manifest -WorkDirectory $direct.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -LaunchCommand $fakeCommand 6>$null
     Assert-True ($code -eq 0) "direct: exit $code"
-    Assert-True ($seen.Count -eq 4 -and @($seen | Select-Object -Unique).Count -eq 1) "direct: filters $($seen -join ' ; ')"
-    Assert-True ($seen[0] -ceq "^(BM_A/size:8|$wide)$") "direct: filter $($seen[0])"
-    Assert-True (@($names | Where-Object { $_ -notmatch $seen[0] }).Count -eq 0 -and 'BM_Steady' -notmatch $seen[0]) 'direct: the filter matches the flagged names only'
+    $seen = Get-Seen $direct
+    $expectedFilter = "--benchmark_filter=^(BM_A/size:8|$wide)$"
+    Assert-True ($seen.Count -eq 4) "direct: $($seen.Count) launches"
+    Assert-True ((@($seen | ForEach-Object { $_[0] }) -join ',') -ceq '2,3,4,5') "direct: launch folders $((@($seen | ForEach-Object { $_[0] })) -join ',')"
+    Assert-True (@($seen | Where-Object { $_[1] -cne $expectedFilter }).Count -eq 0) "direct: filters $((@($seen | ForEach-Object { $_[1] })) -join ' ; ')"
     $combinedDirect = Get-Content -LiteralPath (Join-Path $direct.Work 'combined.json') -Raw -Encoding utf8 | ConvertFrom-Json
     Assert-True (@($combinedDirect.benchmarks | Where-Object { $_.run_name -ceq $wide -and $_.real_time -eq 11.0 }).Count -eq 1) 'direct: the wide name combined'
 
-    # A launch on another core class (launch 3 ran unpinned) is refused before anything is combined.
-    $seen.Clear()
-    $classes['launch-3'] = 'any'
+    # A launch on another core class (launch 4 ran unpinned) is refused before anything is combined, exit 2.
+    [Environment]::SetEnvironmentVariable('FAKE_CLASS_4', 'any')
     $mixed = New-Direct 'mixed'
     $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $mixed.Baseline -First $mixed.First `
-        -FirstManifest $mixed.Manifest -WorkDirectory $mixed.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -Launch $fake 6>$null 2>$null
+        -FirstManifest $mixed.Manifest -WorkDirectory $mixed.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -LaunchCommand $fakeCommand 6>$null 2>$null
+    [Environment]::SetEnvironmentVariable('FAKE_CLASS_4', $null)
     Assert-True ($code -eq 2) "mixed core classes: exit $code"
-    Assert-True ($seen.Count -eq 2) "mixed core classes: $($seen.Count) launches, not 2 (it stops at the mismatch)"
+    Assert-True ((Get-Seen $mixed).Count -eq 3) "mixed core classes: $((Get-Seen $mixed).Count) launches, not 3 (it stops at the mismatch)"
     Assert-True (-not (Test-Path -LiteralPath (Join-Path $mixed.Work 'combined.json'))) 'mixed core classes: combined anyway'
+
+    # A failed launch is exit 3, whatever code the launch itself exited with (#4198).
+    [Environment]::SetEnvironmentVariable('FAKE_EXIT_3', '7')
+    $broken = New-Direct 'broken'
+    $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $broken.Baseline -First $broken.First `
+        -FirstManifest $broken.Manifest -WorkDirectory $broken.Work -Launches 4 -BudgetSeconds 600 -CheckArgs @() -LaunchCommand $fakeCommand 6>$null 2>$null
+    [Environment]::SetEnvironmentVariable('FAKE_EXIT_3', $null)
+    Assert-True ($code -eq 3) "failed launch: exit $code, not 3"
+    Assert-True ((Get-Seen $broken).Count -eq 2) "failed launch: $((Get-Seen $broken).Count) launches, not 2"
+
+    # Over budget: the helper's plan refuses before any launch, and the flags stand (exit 1).
+    $tight = New-Direct 'tight'
+    $code = Invoke-AcrossLaunches -Python $python -ToolsDirectory $PSScriptRoot -Baseline $tight.Baseline -First $tight.First `
+        -FirstManifest $tight.Manifest -WorkDirectory $tight.Work -Launches 4 -BudgetSeconds 0 -CheckArgs @() -LaunchCommand $fakeCommand 6>$null 2>$null
+    Assert-True ($code -eq 1 -and @(Get-Seen $tight).Count -eq 0) "over budget: exit $code, $(@(Get-Seen $tight).Count) launches"
+
+    # The launch command bench.ps1 builds (tools/bench-ps1-launch.py): the filter, last, joins the caller's
+    # arguments in a file for the command, which removes it afterwards.
+    $launchShim = Join-Path $PSScriptRoot 'bench-ps1-launch.py'
+    $baseArgs = Join-Path $root 'shim-base.json'
+    [IO.File]::WriteAllText($baseArgs, '["--benchmark_filter=BM_","--benchmark_min_time=0.01s"]', [Text.UTF8Encoding]::new($false))
+    $echo = Join-Path $root 'echo-args.py'
+    Set-Content -LiteralPath $echo -Encoding utf8 -Value @'
+import json, os, sys
+assert sys.argv[-2] == "-ExtraArgsFile"
+data = json.load(open(sys.argv[-1], encoding="utf-8"))
+print("ARGS=" + json.dumps(data, ensure_ascii=False))
+print("FILE=" + sys.argv[-1])
+sys.exit(int(os.environ.get("ECHO_EXIT", "0")))
+'@
+    $shimFilter = "--benchmark_filter=^(BM_X/iterations:1000|BM_B<$([char]0x540D)>)`$"
+    $shimOut = @(& $python -I -X utf8 $launchShim $baseArgs $python -I -X utf8 $echo 'preset' $shimFilter)
+    Assert-True ($LASTEXITCODE -eq 0) "launch shim: exit $LASTEXITCODE"
+    $shimArgs = ([string]($shimOut | Where-Object { "$_" -like 'ARGS=*' } | Select-Object -First 1)).Substring(5) | ConvertFrom-Json
+    Assert-True ((@($shimArgs) -join '|') -ceq "--benchmark_filter=BM_|--benchmark_min_time=0.01s|$shimFilter") "launch shim: arguments $(@($shimArgs) -join ' ; ')"
+    $shimFile = ([string]($shimOut | Where-Object { "$_" -like 'FILE=*' } | Select-Object -First 1)).Substring(5)
+    Assert-True (-not (Test-Path -LiteralPath $shimFile)) 'launch shim: the argument file was left behind'
+    [Environment]::SetEnvironmentVariable('ECHO_EXIT', '5')
+    $null = & $python -I -X utf8 $launchShim $baseArgs $python -I -X utf8 $echo 'preset' $shimFilter
+    [Environment]::SetEnvironmentVariable('ECHO_EXIT', $null)
+    Assert-True ($LASTEXITCODE -eq 5) "launch shim: the command's exit 5 became $LASTEXITCODE"
 
     Write-Host 'bench.ps1 -Baseline (across launches) tests passed'
 }
