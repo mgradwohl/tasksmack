@@ -296,8 +296,11 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     {
         GTEST_SKIP() << "the filesystem uid can't be switched to " << account << " here";
     }
-    // The folder nobody may pass through, so only the files' own modes decide (the #4286 review).
-    std::filesystem::permissions(dir, std::filesystem::perms::owner_all | std::filesystem::perms::others_exec);
+    // A folder every account may pass through but not list, so only the files' own modes decide (the #4286 review). Group
+    // execute too: setfsuid() leaves root's supplementary groups (group 0 among them), so the kernel judges a root-group
+    // folder by its group bits, not its other bits; without g+x it refused the account its own file (the #4286 CI run).
+    std::filesystem::permissions(
+        dir, std::filesystem::perms::owner_all | std::filesystem::perms::group_exec | std::filesystem::perms::others_exec);
     const std::filesystem::path rootOnly = dir / "root-only";
     std::ofstream(rootOnly) << "secret";
     std::filesystem::permissions(rootOnly, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
