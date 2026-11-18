@@ -1215,8 +1215,8 @@ TEST_F(SignatureBindingTest, AFindWithTheCallersKeyAnswersAsAFindThatMakesItAndR
     const std::optional<SignatureCheck> withoutKey = worker.find("C:\\app.exe", renamed, &made);
     ASSERT_TRUE(withKey.has_value());
     ASSERT_TRUE(withoutKey.has_value());
-    EXPECT_EQ(withKey->signer, "Signer of C:\\renamed.exe");
-    EXPECT_EQ(withKey->signer, withoutKey->signer);
+    EXPECT_EQ(withKey.value_or(SignatureCheck{}).signer, "Signer of C:\\renamed.exe");
+    EXPECT_EQ(withKey.value_or(SignatureCheck{}).signer, withoutKey.value_or(SignatureCheck{}).signer);
     EXPECT_EQ(keyed, "Publisher of C:\\renamed.exe");
     EXPECT_EQ(keyed, made);
     EXPECT_EQ(worker.pathCount(), 1U) << "the same entry: no second request";
