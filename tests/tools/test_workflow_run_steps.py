@@ -2178,7 +2178,18 @@ class WingetRehearsalTests(unittest.TestCase):
         self.assertEqual(holders, publish)
         self.assertEqual(len([line for line in self.job("publish-winget") if "WINGETCREATE submit" in line]), 1)
         condition = "".join(self.job("publish-winget")).split("if: >-")[1].split("runs-on:")[0]
-        self.assertIn("github.event_name == 'push'", condition)
+        self.assertIn("!(github.event_name == 'workflow_dispatch' && inputs.dry_run)", condition)
+        self.assertNotIn("github.event_name == 'push'", condition, "a dry_run=false retry must reach WinGet (#4448)")
+        self.assertIn("needs.create-release.outputs.latest == 'true'", condition, "still guarded by Latest only")
+
+    def test_a_dry_run_never_shares_the_publish_concurrency_group(self):
+        """#4447: the shared group keeps one pending job, so a dry run's create-release could cancel a tag run's."""
+        text = "\n".join(self.job("create-release"))
+        group = re.search(r"(?m)^      group: (.+)$", text.split("    concurrency:\n", 1)[1]).group(1)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.dry_run", group)
+        self.assertIn("format('release-publish-dry-{0}-{1}', github.ref, inputs.dry_run)", group)
+        self.assertTrue(group.endswith("|| 'release-publish' }}"), group)
+        self.assertIn("cancel-in-progress: false", text)
 
     def test_create_release_waits_for_the_rehearsal(self):
         lines = self.job("create-release")
