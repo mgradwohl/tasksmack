@@ -1,6 +1,7 @@
 #include "SdlEnvironment.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <functional>
 #include <string>
@@ -77,6 +78,11 @@ std::vector<std::string> removeSdlVariables(const char* const* environment, cons
     return removed;
 }
 
+bool keepGtkOut(const std::function<bool(const std::string&, const std::string&)>& set)
+{
+    return set(std::string(NO_LIBDECOR_VARIABLE), std::string(NO_LIBDECOR_VALUE));
+}
+
 void removeForThisProcess(bool remove)
 {
     if (!remove)
@@ -89,6 +95,18 @@ void removeForThisProcess(bool remove)
                                             // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - first thing in main(), before any thread; unsetenv is provided by <cstdlib>
                                             return ::unsetenv(name.c_str()) == 0;
                                         });
+    // After the scrub, which removed any SDL variable the user's environment set, this one included. A failed setenv
+    // (ENOMEM) leaves libdecor allowed: stop rather than run GTK with this session's privileges (#4254).
+    if (!keepGtkOut(
+            [](const std::string& name, const std::string& value)
+            {
+                // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - first thing in main(), before any thread; setenv is in <cstdlib>
+                return ::setenv(name.c_str(), value.c_str(), 1) == 0;
+            }))
+    {
+        std::fputs("TaskSmack: couldn't keep GTK out of a session whose environment may be another user's; not starting\n", stderr);
+        std::_Exit(1);
+    }
 }
 
 const std::vector<std::string>& removedFromThisProcess() noexcept

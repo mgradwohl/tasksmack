@@ -946,6 +946,8 @@ auto main(int argc, char** argv) -> int
     // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
     // SDL variable goes, and the graphics loaders' (LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_FILENAMES, ..., #4151). The
     // rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
+    // It also keeps libdecor, and with it GTK, out of the process (#4254): GTK loads the modules the user's own
+    // settings.ini names, and a setcap session (no root, so no allow-list below) would run them with its capabilities.
     Platform::SdlEnvironment::removeForThisProcess(lessPrivilegedEnvironment()); // #4154: no lookup needed
     // Root with an environment that may be a user's keeps only an allow-list (#4158, #4159, #4179): GTK's modules,
     // PATH, PYTHONPATH and whatever else a list of bad names would miss. After the SDL scrub, which a setcap session

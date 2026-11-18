@@ -385,8 +385,16 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         // decorations on native Wayland only (#745). VideoBackend::initialize() above must run
         // before this check. Decision logic lives in the pure, unit-tested
         // VideoBackend::shouldUseBorderlessTitleBar().
+        // A session whose environment may be another user's runs without libdecor (#4254: main() sets
+        // SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0, which keeps GTK out of the process), and GNOME's compositor draws no
+        // frame of its own: native decorations would leave the window frameless there, so the custom title bar is used.
+        const bool libdecorAllowed = SDL_GetHintBoolean(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, true);
+        if (m_Spec.ForceNativeDecorationsOnWayland && !libdecorAllowed && VideoBackend::isWayland())
+        {
+            spdlog::info("Using TaskSmack's own title bar, not native decorations: libdecor is off in this session (#4254)");
+        }
         windowSpec.Borderless =
-            VideoBackend::shouldUseBorderlessTitleBar(m_Spec.ForceNativeDecorationsOnWayland, VideoBackend::isWayland());
+            VideoBackend::shouldUseBorderlessTitleBar(m_Spec.ForceNativeDecorationsOnWayland && libdecorAllowed, VideoBackend::isWayland());
 
         m_Window = std::make_unique<Window>(windowSpec);
     }

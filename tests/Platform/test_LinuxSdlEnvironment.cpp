@@ -37,7 +37,13 @@ TEST(LinuxSdlEnvironmentTest, TheGraphicsLoaderVariablesAreRemovedTooInExactCase
                              "__GLX_FORCE_VENDOR_LIBRARY_0",
                              "LIBDECOR_PLUGIN_DIR",
                              "VK_ICD_FILENAMES",
-                             "GBM_BACKENDS_PATH"})
+                             "GBM_BACKENDS_PATH",
+                             // #4254: GTK's and GLib's modules.
+                             "GTK_MODULES",
+                             "GTK_PATH",
+                             "GIO_EXTRA_MODULES",
+                             "GDK_PIXBUF_MODULE_FILE",
+                             "GSETTINGS_BACKEND"})
     {
         EXPECT_TRUE(isLoaderVariable(name)) << name;
     }
@@ -112,4 +118,22 @@ TEST(LinuxSdlEnvironmentTest, NotAsRootForAUserNothingIsRemoved)
 }
 
 } // namespace
+TEST(LinuxSdlEnvironmentTest, AScrubbedSessionKeepsLibdecorAndGtkOut)
+{
+    // #4254: with libdecor off, SDL never loads the GTK plugin, whose GTK reads the user's settings.ini modules too.
+    std::string name;
+    std::string value;
+    EXPECT_TRUE(keepGtkOut(
+        [&](const std::string& n, const std::string& v)
+        {
+            name = n;
+            value = v;
+            return true;
+        }));
+    EXPECT_EQ(name, "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR");
+    EXPECT_EQ(value, "0");
+    EXPECT_TRUE(isSdlVariable(name)) << "so the scrub removes a user's own value first";
+    EXPECT_FALSE(keepGtkOut([](const std::string&, const std::string&) { return false; }));
+}
+
 } // namespace Platform::SdlEnvironment
