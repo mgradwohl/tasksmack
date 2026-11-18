@@ -155,6 +155,8 @@ CASES = [
     ("bench.ps1 and bench.sh", ["tools/bench.ps1", "tools/bench.sh"], SAFE),
     ("the shared common.sh", ["tools/profile-perf.sh", "tools/common.sh"], SAFE),
     ("the shared common.ps1", ["tools/profile-etw.ps1", "tools/common.ps1"], SAFE),
+    ("cmake-cache.ps1, read only by bench.ps1 and the ETW scripts", ["tools/cmake-cache.ps1", "tools/test-cmake-cache.ps1"],
+     DEV_TOOLS_ONLY),
     ("CI's own baseline", ["perf-data/linux-ci-baseline.json"], SAFE),
     ("the dev tool test runner", ["tools/run-dev-tool-tests.py"], SAFE),
     ("a near-miss name", ["tools/profile-perf.sh.orig"], SAFE),

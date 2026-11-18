@@ -3136,11 +3136,11 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
     - `Developer tool checks (Linux)` (Ubuntu): the Python tool tests that read those files, plus the three automation tests.
     - `Developer tool checks (Windows)` (windows-2025): the pwsh ones (`tools/test-*.ps1`).
 
-    `tools/run-dev-tool-tests.py linux|windows` runs the classifier's `DEV_TOOL_TESTS` the way their ctest entries do: one at a time, with `TASKSMACK_TEST_BASH` or `TASKSMACK_TEST_PYTHON` set. Run it locally to check a change the same way. `CI Success` requires both jobs to pass whenever `dev_tools_only` is true. On the list: `profile-perf.sh`, `profile-heap.sh`, `analyze-perf.sh`, `time-trace.sh`, `pgo.sh`/`pgo.ps1`, `measure-idle.sh`/`measure-idle.ps1` with their samplers and summary readers, `ui-compare.sh` and its report, `bench.ps1`, the ETW capture and analysis scripts and their `.wprp` profiles, and `perf-data/win-baseline*.json`.
+    `tools/run-dev-tool-tests.py linux|windows` runs the classifier's `DEV_TOOL_TESTS` the way their ctest entries do: one at a time, with `TASKSMACK_TEST_BASH` or `TASKSMACK_TEST_PYTHON` set. Run it locally to check a change the same way. `CI Success` requires both jobs to pass whenever `dev_tools_only` is true. On the list: `profile-perf.sh`, `profile-heap.sh`, `analyze-perf.sh`, `time-trace.sh`, `pgo.sh`/`pgo.ps1`, `measure-idle.sh`/`measure-idle.ps1` with their samplers and summary readers, `ui-compare.sh` and its report, `bench.ps1` and the `cmake-cache.ps1` reader it shares with the ETW scripts, the ETW capture and analysis scripts and their `.wprp` profiles, and `perf-data/win-baseline*.json`.
 
     Never on the list:
     - anything a workflow reads;
-    - the scripts Heavy Checks runs (`bench.sh`, `bench-manifest.py`, `bench-across-launches.py`, `check-benchmark-regression.py`, `merge-benchmark-baselines.py`, `ninja-build-profile.py`, `wayland-matrix.sh`), and the helpers they share (`common.sh`, `common.ps1`, `cmake-cache.ps1`);
+    - the scripts Heavy Checks runs (`bench.sh`, `bench-manifest.py`, `bench-across-launches.py`, `check-benchmark-regression.py`, `merge-benchmark-baselines.py`, `ninja-build-profile.py`, `wayland-matrix.sh`), and the helpers the build and CI scripts share with them (`common.sh`, `common.ps1`);
     - CI's own baseline (`perf-data/linux-ci-*`).
 
     A change that also touches a source, CMake or a test's ctest entry gets every job. `tests/tools/test_ci_change_classifier.py` fails when a listed file is missing, when a workflow or anything a C++ job runs names one, or when a tool test names one without the classifier's `DEV_TOOL_TESTS` running it.

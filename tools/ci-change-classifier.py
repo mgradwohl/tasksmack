@@ -154,7 +154,7 @@ AUTOMATION = {
 # AUTOMATION. Never here: anything a workflow, the build, a pre-commit or CI checker, coverage, release,
 # signing or packaging reads, and the scripts Heavy Checks runs (bench.sh, bench-manifest.py,
 # bench-across-launches.py, check-benchmark-regression.py, merge-benchmark-baselines.py, wayland-matrix.sh,
-# ninja-build-profile.py) or that these share with them (common.sh, common.ps1, cmake-cache.ps1).
+# ninja-build-profile.py), and the helpers the build and CI scripts share with these (common.sh, common.ps1).
 _LOCAL = "a local developer script; no workflow, build or C++ test runs it, only its own tool test"
 DEV_TOOLS = {
     # Linux
@@ -181,6 +181,10 @@ DEV_TOOLS = {
     "tools/measure-idle.ps1": f"{_LOCAL} (test-measure-idle.ps1).",
     "tools/idle-sample.ps1": f"{_LOCAL} (test-measure-idle.ps1), measure-idle.ps1's sampler.",
     "tools/resize-perf-summary.ps1": f"{_LOCAL} (test-resize-perf-summary.ps1), measure-idle.ps1's reader.",
+    "tools/cmake-cache.ps1": (
+        "the CMakeCache.txt reader only bench.ps1 and profile-etw-common.ps1 dot-source; no build or CI script "
+        "reads it (bench-manifest.py names it in a comment), only its test (test-cmake-cache.ps1)."
+    ),
     "perf-data/win-baseline.json": "bench.ps1's local baseline; no workflow reads it (CI's is linux-ci-baseline.json).",
     "perf-data/win-baseline.manifest.json": "win-baseline.json's manifest, read only by a local comparison.",
     # Their tests: what each runs is in DEV_TOOL_TESTS.
@@ -192,6 +196,8 @@ DEV_TOOLS = {
     "tests/tools/test_resize_perf_summary_awk.py": "resize-perf-summary.awk's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_ui_compare_report.py": "ui-compare-report.py's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-bench.ps1": "bench.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-bench-across-launches.ps1": "bench.ps1 -Baseline's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-cmake-cache.ps1": "cmake-cache.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-profile-etw.ps1": "profile-etw.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-profile-etw-resize.ps1": "profile-etw-resize.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-analyze-etw.ps1": "analyze-etw.ps1's tool test, run by ctest and by dev-tools-checks.",
@@ -224,7 +230,6 @@ DEV_TOOL_TESTS = {
         "tools/test-analyze-etw.ps1",
         "tools/test-measure-idle.ps1",
         "tools/test-resize-perf-summary.ps1",
-        # cmake-cache.ps1's test: it dot-sources profile-etw-common.ps1, so it reads a developer tool.
         "tools/test-cmake-cache.ps1",
     ),
 }
