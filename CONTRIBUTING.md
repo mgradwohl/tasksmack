@@ -2804,13 +2804,13 @@ The scripts' banners say which kind each phase builds.
 1. **Build an instrumented binary** (`pgo-generate`/`win-pgo-generate` preset) with `-fprofile-instr-generate`
 2. **Run the training workloads** to collect branch-count data into `.profraw` files (one per process, `%p`):
    - the benchmark suite (`TaskSmackBenchmarks`), for the Domain and Platform hot paths;
-   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, six of its main tabs (not Connections or Users), drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
+   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, six of its main tabs (not Connections), drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
 3. **Merge** the `.profraw` files into a single `.profdata` with `llvm-profdata`
 4. **Build the optimized binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
 
 ### The UI training workload
 
-`TaskSmackUiTraining` (`src/Training/`) builds the same panels `ShellLayer` does and trains six of its tabs (not Connections or Users), on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
+`TaskSmackUiTraining` (`src/Training/`) builds the same panels `ShellLayer` does and trains six of its tabs (not Connections), on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
 
 - renders every workload below, in order, each for its share of the frames (default 1800 frames, paced at 60 fps: about 30 s per run, so about a minute for both probe sets);
 - starts from the default settings in a fresh temporary `TASKSMACK_CONFIG_DIR`, removed at exit, so it never reads or writes your `config.toml`;
