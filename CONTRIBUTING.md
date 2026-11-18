@@ -1441,6 +1441,12 @@ So:
   than four, as `bench.ps1` does. `--core any` leaves placement to the scheduler. Without those
   sysfs files, or without `taskset` (util-linux), the run isn't pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
   classes ranked from 0 (the slowest) as Windows numbers its `EfficiencyClass`.
+- **Not in a virtual machine** (#4194). Under WSL2 or another hypervisor (`/proc/cpuinfo`'s flags
+  include `hypervisor`), every vCPU reports the same `cpu_capacity` and no cpufreq, whatever cores
+  the host has. So `bench.sh` can't tell whether the host is hybrid, or where its run lands: it
+  records the classes as unknown (`"hybrid": null`), doesn't pin, and warns. On a hybrid host such
+  a run may land on efficiency cores, so compare Linux runs from bare metal, or treat WSL2 numbers
+  as noisy.
 
 Pinning isn't enough when the machine is busy: in #3112 the same binary pinned to the same core
 was 30-50% slower with a build and clangd running (38-78% system CPU) than at 7-63%. For an A/B
