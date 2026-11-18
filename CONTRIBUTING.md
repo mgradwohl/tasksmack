@@ -1868,9 +1868,11 @@ refuses the other's options (#4212), and a failed capture ends with an error, no
 writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
 it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
 a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
-prints the real compile flags of one of the profiled binary's `src/` files (`src/main.cpp` for the
-app), read from the build's `compile_commands.json` with `python3`, and logs that file's full
-compile command. Every preset exports `compile_commands.json`. If the file or `python3` is missing,
+prints the real compile flags of one of the profiled binary's own files (`src/main.cpp` for the
+app, a `benchmarks/` file for bench mode), read from the build's `compile_commands.json` with
+`python3`, and logs that file's full compile command and `COMPILE_SOURCE`. If none of its own files
+is there, it says the flags are a sample from another target (#4215). The capture's sample count
+comes from `perf report --stats`, which stays quick on a large trace (#4224). Every preset exports `compile_commands.json`. If the file or `python3` is missing,
 the run says so and logs the cache entries alone.
 
 App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log

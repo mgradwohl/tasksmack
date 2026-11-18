@@ -307,6 +307,7 @@ COMPILE_DB="${BUILD_DIR}/compile_commands.json"
 COMPILE_TU=""
 COMPILE_COMMAND=""
 COMPILE_FLAGS=""
+COMPILE_SOURCE="" # own: a file of the profiled binary; other: another target's, a sample only (#4215)
 COMPILE_NOTE=""
 if [[ ! -f "${COMPILE_DB}" ]]; then
     COMPILE_NOTE="no ${COMPILE_DB}; reconfigure the preset to get the full compile command"
@@ -328,12 +329,13 @@ def from_target(e):
     return f"/{target}.dir/" in e.get("output", "")
 
 def rank(e):
-    # The binary's own main.cpp first, then any of its src/ files, then any src/ file.
+    # The binary's own main.cpp first, then any of its own files (benchmarks/ for TaskSmackBenchmarks, #4215),
+    # then a src/ file of another target, which is only a sample of the build's flags.
     if from_target(e) and e["file"].endswith("/src/main.cpp"):
         return 0
     return 1 if from_target(e) else 2
 
-candidates = sorted((e for e in entries if is_src(e)), key=rank)
+candidates = sorted((e for e in entries if from_target(e) or is_src(e)), key=rank)
 if not candidates:
     sys.exit(1)
 entry = candidates[0]
@@ -354,12 +356,14 @@ while i < len(args):
 print(entry["file"])
 print(shlex.join(args))
 print(" ".join(flags))
+print("own" if from_target(entry) else "other")
 PY
 )"
     if [[ -n "${COMPILE_INFO}" ]]; then
         COMPILE_TU="$(sed -n 1p <<<"${COMPILE_INFO}")"
         COMPILE_COMMAND="$(sed -n 2p <<<"${COMPILE_INFO}")"
         COMPILE_FLAGS="$(sed -n 3p <<<"${COMPILE_INFO}")"
+        COMPILE_SOURCE="$(sed -n 4p <<<"${COMPILE_INFO}")"
     else
         COMPILE_NOTE="no src/ translation unit found in ${COMPILE_DB}"
     fi
@@ -427,7 +431,11 @@ info "CXX flags:  ${CXX_FLAGS:-<unknown>} (CMAKE_CXX_FLAGS* cache entries only)"
 info "Compiler:   ${CXX_COMPILER:-<unknown>}"
 if [[ -n "${COMPILE_FLAGS}" ]]; then
     info "Compiled:   ${COMPILE_FLAGS}"
-    info "            (from ${COMPILE_TU#"${REPO_ROOT}/"}; full command in the log)"
+    if [[ "${COMPILE_SOURCE}" == "own" ]]; then
+        info "            (from ${COMPILE_TU#"${REPO_ROOT}/"}; full command in the log)"
+    else
+        info "            (a sample from another target: ${COMPILE_TU#"${REPO_ROOT}/"}; $(basename "${BINARY}")'s own files weren't found in compile_commands.json)"
+    fi
 else
     echo "NOTE: ${COMPILE_NOTE}; only the CMAKE_CXX_FLAGS* cache entries above are known, which miss" >&2
     echo "      add_compile_options()/target_compile_options() flags such as -march or -stdlib." >&2
@@ -460,6 +468,7 @@ PERF_VERSION="$(perf --version 2>/dev/null || echo unknown)"
     echo "CXX_COMPILER=${CXX_COMPILER}"
     if [[ -n "${COMPILE_FLAGS}" ]]; then
         echo "COMPILE_TU=${COMPILE_TU}"
+        echo "COMPILE_SOURCE=${COMPILE_SOURCE}"
         echo "COMPILE_FLAGS=${COMPILE_FLAGS}"
         echo "COMPILE_COMMAND=${COMPILE_COMMAND}"
     else
@@ -687,18 +696,21 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
     # unexpected error) rather than only on the success path -- die() calls exit
     # immediately, so an `rm -f` placed after the check it guards would never run.
     trap 'rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"; remove_config_dir' EXIT
-    # Separate stdout/stderr into files rather than piping into `wc -l` with stderr
-    # discarded: under `set -e`+`pipefail`, a genuine `perf script` failure (not just an
-    # empty trace) would otherwise abort the script right here with no diagnostic at all,
-    # since the failure surfaces as this command's own exit status, not as sample count 0.
-    # -G (hide call graph) makes this an accurate one-line-per-sample count: without it,
-    # DWARF call-graph output emits one line per stack frame, so `wc -l` on the default
-    # output counts frames, not samples (confirmed: 38855 frame-lines vs. 11810 actual
-    # samples on the same trace, per perf record's own reported count).
-    if ! perf script -G -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
-        die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
+    # The count from perf report --stats, which reads the file's event headers without resolving a symbol or
+    # walking a stack, so it stays quick on a large trace (#4224): its "SAMPLE events:" line. Separate
+    # stdout/stderr files rather than a pipe: under `set -e`+`pipefail` a real perf failure would stop the
+    # script here with no diagnostic. A perf whose --stats has no such line falls back to counting
+    # `perf script -G` lines, one per sample (-G hides the call graph's one line per frame).
+    if ! perf report --stats -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
+        die "perf report --stats failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
     fi
-    SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
+    SAMPLE_COUNT="$(awk '/SAMPLE events:/ { print $NF; exit }' "${PERF_SCRIPT_OUT}")"
+    if [[ ! "${SAMPLE_COUNT}" =~ ^[0-9]+$ ]]; then
+        if ! perf script -G -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
+            die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
+        fi
+        SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
+    fi
     if [[ "${SAMPLE_COUNT}" -eq 0 ]]; then
         die "perf captured zero samples (event=${PERF_EVENT}). The trace at ${DATA_FILE} is empty and unusable. This usually means the workload exited before perf attached, or ran too briefly at 997 Hz to catch anything -- try a longer-running workload or a lower -F rate."
     fi

@@ -30,7 +30,8 @@ STUB_BENCHMARKS = textwrap.dedent(
 )
 
 # perf: counts only cpu-clock (as WSL2), records its record arguments, writes -o's file, and exits
-# $STUB_PERF_RECORD_EXIT from record; `script -G` prints $STUB_PERF_SAMPLES lines.
+# $STUB_PERF_RECORD_EXIT from record; `report --stats` says $STUB_PERF_SAMPLES (unless STUB_PERF_NO_STATS),
+# and `script -G` prints that many lines.
 STUB_PERF = textwrap.dedent(
     """\
     #!/usr/bin/env bash
@@ -48,6 +49,10 @@ STUB_PERF = textwrap.dedent(
             exit "${STUB_PERF_RECORD_EXIT:-0}" ;;
         script)
             for ((i = 0; i < ${STUB_PERF_SAMPLES:-3}; i++)); do echo "sample $i"; done ;;
+        report)
+            # --stats: perf's "SAMPLE events:" line, unless STUB_PERF_NO_STATS (an older perf's output).
+            [[ -z "${STUB_PERF_NO_STATS:-}" ]] && echo "           SAMPLE events:  ${STUB_PERF_SAMPLES:-3}"
+            exit 0 ;;
     esac
     exit 0
     """
@@ -122,6 +127,41 @@ class ProfilePerfBenchTest(unittest.TestCase):
         self.assertIn("the capture failed (exit 3)", result.stderr)
         self.assertNotIn("Capture complete", result.stdout)
         self.assertNotIn("Next steps", result.stdout)
+
+    def test_the_sample_count_comes_from_report_stats_with_a_script_fallback(self):
+        # #4224: perf script over a large trace is slow; perf report --stats reads the headers.
+        result = self.bench(env={"STUB_PERF_SAMPLES": "42"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Captured 42 samples.", result.stdout + result.stderr)
+        result = self.bench(env={"STUB_PERF_SAMPLES": "7", "STUB_PERF_NO_STATS": "1"})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Captured 7 samples.", result.stdout + result.stderr)
+        result = self.bench(env={"STUB_PERF_SAMPLES": "0"})
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("zero samples", result.stderr)
+
+    def write_compile_db(self, entries):
+        import json
+        (self.root / "build" / "profile" / "compile_commands.json").write_text(json.dumps(entries), encoding="utf-8")
+
+    def test_the_compiled_flags_come_from_the_profiled_binary_or_say_they_dont(self):
+        # #4215: bench mode used to take the first src/ file of any target (the helper's, say) as "what was profiled".
+        root = str(self.root)
+        helper = {"file": f"{root}/src/Helper/main.cpp", "output": "src/CMakeFiles/TaskSmackHelper.dir/main.cpp.o",
+                  "arguments": ["clang++", "-O2", "-DHELPER", "-c", f"{root}/src/Helper/main.cpp"]}
+        bench = {"file": f"{root}/benchmarks/bench_ProcessModel.cpp",
+                 "output": "benchmarks/CMakeFiles/TaskSmackBenchmarks.dir/bench_ProcessModel.cpp.o",
+                 "arguments": ["clang++", "-O2", "-g", "-DBENCH", "-c", f"{root}/benchmarks/bench_ProcessModel.cpp"]}
+        self.write_compile_db([helper, bench])
+        result = self.bench()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("-DBENCH", result.stdout + result.stderr)
+        log = next((self.root / "perf-data").glob("perf-bench-*[0-9].log")).read_text(encoding="utf-8")
+        self.assertIn("COMPILE_SOURCE=own", log)
+        self.write_compile_db([helper])
+        result = self.bench()
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("a sample from another target", result.stdout + result.stderr)
 
     def test_several_matches_warn(self):
         result = self.bench("--bench-filter", "Several")
