@@ -179,38 +179,52 @@ findMemoryCompressionProcess(std::span<const std::byte> buffer, std::optional<st
 }
 
 /// @p query(data, bytes, &returned) into @p buffer, which grows on STATUS_INFO_LENGTH_MISMATCH or
-/// STATUS_BUFFER_TOO_SMALL (to at least @p initialBytes) and is never shrunk. The bytes written, or nullopt
-/// when the call fails.
+/// STATUS_BUFFER_TOO_SMALL (to at least @p initialBytes, and never past PROCESS_SNAPSHOT_MAX_BYTES), and is never
+/// shrunk while calls succeed. The bytes written, or nullopt when the call fails: @p buffer is then put back to the
+/// size it had (#4277), so failures in a row can't each start bigger.
 template<typename Query>
 [[nodiscard]] std::optional<std::size_t> queryGrowingInto(std::vector<std::byte>& buffer, std::size_t initialBytes, const Query& query)
 {
-    constexpr std::size_t MAX_BYTES = std::size_t{64} * 1024 * 1024;
     if (buffer.size() < initialBytes)
     {
         buffer.resize(initialBytes);
     }
-    for (int attempt = 0; attempt < 6; ++attempt)
+    const std::size_t keptBytes = buffer.size();
+    const auto failed = [&buffer, keptBytes] -> std::optional<std::size_t>
+    {
+        if (buffer.size() != keptBytes)
+        {
+            std::vector<std::byte>(keptBytes).swap(buffer); // The size it grew to goes, and its memory with it
+        }
+        return std::nullopt;
+    };
+    constexpr int ATTEMPTS = 6;
+    for (int attempt = 0; attempt < ATTEMPTS; ++attempt)
     {
         ULONG returned = 0;
         const LONG status = query(buffer.data(), static_cast<ULONG>(buffer.size()), &returned);
+        if ((status == STATUS_INFO_LENGTH_MISMATCH_VALUE || status == STATUS_BUFFER_TOO_SMALL_VALUE) && attempt + 1 == ATTEMPTS)
+        {
+            break; // Out of tries: no buffer is grown for a try that won't come
+        }
         if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE || status == STATUS_BUFFER_TOO_SMALL_VALUE)
         {
             // The list can grow between calls: take what it asked for plus headroom, at least double.
-            const std::size_t next = Windows::grownProcessSnapshotBytes(buffer.size(), returned);
-            if (next > MAX_BYTES)
+            const std::optional<std::size_t> next = Windows::grownProcessSnapshotBytes(buffer.size(), returned);
+            if (!next.has_value())
             {
-                return std::nullopt;
+                return failed();
             }
-            buffer.resize(next);
+            buffer.resize(*next);
             continue;
         }
         if (status < 0)
         {
-            return std::nullopt;
+            return failed();
         }
         return std::min<std::size_t>(returned, buffer.size());
     }
-    return std::nullopt;
+    return failed();
 }
 
 /// NtQuerySystemInformation(@p infoClass) through @p query into @p buffer, which grows on

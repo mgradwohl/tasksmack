@@ -234,8 +234,9 @@ struct FakeWin
     static inline LONG timeStatus = 0;  // ...and SystemTimeOfDayInformation's
     static inline int mismatches = 0;   // answer STATUS_INFO_LENGTH_MISMATCH this many times first
     static inline int processQueries = 0;
-    static inline std::int32_t deniedTid = 0;  // OpenThread refuses this one
-    static inline std::int32_t unnamedTid = 0; // its description is empty
+    static inline std::vector<ULONG> processLengths; // the buffer size each process-list query was given (#4277)
+    static inline std::int32_t deniedTid = 0;        // OpenThread refuses this one
+    static inline std::int32_t unnamedTid = 0;       // its description is empty
     static inline std::int32_t suspendedTid = 0;
     static inline std::int32_t reusedTid = 0;                        // its TID now names a newer thread than the snapshot's
     static inline std::int32_t otherProcessTid = 0;                  // its TID now names a thread of another process
@@ -252,6 +253,7 @@ struct FakeWin
         timeStatus = 0;
         mismatches = 0;
         processQueries = 0;
+        processLengths.clear();
         deniedTid = 0;
         unnamedTid = 0;
         suspendedTid = 0;
@@ -278,6 +280,7 @@ struct FakeWin
             return 0;
         }
         ++processQueries;
+        processLengths.push_back(length);
         if (mismatches > 0 || length < snapshot.size())
         {
             --mismatches;
@@ -485,6 +488,66 @@ TEST_F(WindowsProcessThreadsReaderTest, TheFirstReadFitsADesktopSnapshotAndALate
     EXPECT_EQ(again.status, ThreadsReadStatus::Ok);
     EXPECT_EQ(again.threads.size(), 4U);
     EXPECT_EQ(FakeWin::processQueries, 1) << "the next read starts from the size the first one learned";
+}
+
+// #4277 review: a snapshot that never fits fails each read after 4 tries, never grows the buffer past the ceiling,
+// and leaves no bigger buffer behind, so read after failed read on one reader starts from the same size.
+TEST_F(WindowsProcessThreadsReaderTest, ASnapshotThatNeverFitsFailsEachReadWithinTheCeilingAndKeepsNoBiggerBuffer)
+{
+    ProcessThreadFunctions functions = FakeWin::functions();
+    functions.ntQuerySystemInformation = [](ULONG /*infoClass*/, PVOID /*buffer*/, ULONG length, PULONG returned) -> LONG
+    {
+        FakeWin::processLengths.push_back(length);
+        *returned = length + 1; // Always a byte more than the buffer: the list outgrows every retry
+        return static_cast<LONG>(0xC0000004L);
+    };
+    WindowsProcessThreadsReader reader(functions);
+    for (int read = 0; read < 4; ++read)
+    {
+        FakeWin::processLengths.clear();
+        EXPECT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::Failed);
+        ASSERT_EQ(FakeWin::processLengths.size(), 4U) << "read " << read;
+        EXPECT_EQ(FakeWin::processLengths.front(), PROCESS_SNAPSHOT_INITIAL_BYTES) << "read " << read << " starts where none worked";
+        EXPECT_LE(std::ranges::max(FakeWin::processLengths), PROCESS_SNAPSHOT_MAX_BYTES);
+    }
+
+    // A kernel asking for more than the ceiling: failed at once, with no buffer grown for it.
+    functions.ntQuerySystemInformation = [](ULONG /*infoClass*/, PVOID /*buffer*/, ULONG length, PULONG returned) -> LONG
+    {
+        FakeWin::processLengths.push_back(length);
+        *returned = static_cast<ULONG>(PROCESS_SNAPSHOT_MAX_BYTES + 1);
+        return static_cast<LONG>(0xC0000004L);
+    };
+    WindowsProcessThreadsReader tooBig(functions);
+    FakeWin::processLengths.clear();
+    EXPECT_EQ(tooBig.readThreads(TARGET).status, ThreadsReadStatus::Failed);
+    EXPECT_EQ(tooBig.readThreads(TARGET).status, ThreadsReadStatus::Failed);
+    EXPECT_EQ(FakeWin::processLengths, (std::vector<ULONG>{PROCESS_SNAPSHOT_INITIAL_BYTES, PROCESS_SNAPSHOT_INITIAL_BYTES}));
+}
+
+// A read that worked keeps its size; a failed one after it goes back to that size, not the one it grew to.
+TEST_F(WindowsProcessThreadsReaderTest, AFailedReadGoesBackToTheSizeTheLastGoodReadLeft)
+{
+    const std::size_t entries = FakeWin::snapshot.size();
+    FakeWin::snapshot.resize(PROCESS_SNAPSHOT_INITIAL_BYTES + (std::size_t{512} * 1024));
+    WindowsProcessThreadsReader reader(FakeWin::functions());
+    ASSERT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::Ok);
+    ASSERT_EQ(FakeWin::processLengths.size(), 2U);
+    const ULONG learned = FakeWin::processLengths.back();
+
+    FakeWin::processLengths.clear();
+    FakeWin::mismatches = 10; // Every try falls short: the read fails, its buffer grown on each
+    EXPECT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::Failed);
+    EXPECT_EQ(FakeWin::processLengths.front(), learned);
+    EXPECT_GT(FakeWin::processLengths.back(), learned);
+
+    FakeWin::processLengths.clear();
+    FakeWin::mismatches = 0;
+    FakeWin::snapshot.resize(entries);
+    const ThreadsReadResult again = reader.readThreads(TARGET);
+    EXPECT_EQ(again.status, ThreadsReadStatus::Ok);
+    EXPECT_EQ(again.threads.size(), 4U);
+    EXPECT_EQ(FakeWin::processLengths, (std::vector<ULONG>{learned})) << "back at the size that worked, in one query";
 }
 
 TEST_F(WindowsProcessThreadsReaderTest, AFailedQueryIsFailedAndAnUnreadableBootTimeIsUnknown)

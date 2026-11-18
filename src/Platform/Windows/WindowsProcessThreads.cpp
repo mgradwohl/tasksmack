@@ -17,10 +17,12 @@
 #include <format>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
 #include <string_view>
 #include <utility>
+#include <vector>
 
 namespace Platform::Windows
 {
@@ -117,6 +119,7 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
     {
         m_Snapshot.resize(PROCESS_SNAPSHOT_INITIAL_BYTES); // Kept between reads, so the first one alone can start short (#4277)
     }
+    const std::size_t keptBytes = m_Snapshot.size(); // The size the last read that worked left, or the first
     LONG status = STATUS_INFO_LENGTH_MISMATCH_VALUE;
     ULONG written = 0;
     for (int attempt = 0; attempt < MAX_SNAPSHOT_ATTEMPTS && status == STATUS_INFO_LENGTH_MISMATCH_VALUE; ++attempt)
@@ -124,13 +127,25 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
         written = 0;
         const auto size = static_cast<ULONG>(std::min<std::size_t>(m_Snapshot.size(), std::numeric_limits<ULONG>::max()));
         status = m_Api.ntQuerySystemInformation(SYSTEM_PROCESS_INFORMATION_CLASS, m_Snapshot.data(), size, &written);
-        if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE)
+        if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE && attempt + 1 < MAX_SNAPSHOT_ATTEMPTS)
         {
-            m_Snapshot.resize(grownProcessSnapshotBytes(m_Snapshot.size(), written));
+            // Only for a try still to come, and never past PROCESS_SNAPSHOT_MAX_BYTES: the read fails instead (#4277)
+            const std::optional<std::size_t> grown = grownProcessSnapshotBytes(m_Snapshot.size(), written);
+            if (!grown.has_value())
+            {
+                break;
+            }
+            m_Snapshot.resize(*grown);
         }
     }
     if (status < 0)
     {
+        if (m_Snapshot.size() != keptBytes)
+        {
+            // A failed read keeps no size it grew to (#4277): the next starts from the last one that worked. Swapped,
+            // so the memory goes too.
+            std::vector<std::byte>(keptBytes).swap(m_Snapshot);
+        }
         return failure(ThreadsReadStatus::Failed,
                        std::format("NtQuerySystemInformation failed: NTSTATUS 0x{:08X}", static_cast<std::uint32_t>(status)));
     }

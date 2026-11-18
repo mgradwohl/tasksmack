@@ -1127,6 +1127,7 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
     {
         m_SnapshotBuffer.resize(Windows::PROCESS_SNAPSHOT_INITIAL_BYTES);
     }
+    const std::size_t keptBytes = m_SnapshotBuffer.size(); // The size the last sample that worked left, or the first
 
     // One bulk kernel snapshot provides PIDs, names, CPU times, memory, I/O, and handle/thread
     // counts for every process — replacing per-process OpenProcess + query calls per sample.
@@ -1138,16 +1139,28 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         // Fallback saturates at ULONG max; the kernel simply reports the buffer as too small.
         const auto bufferSize = Domain::Numeric::narrowOr<ULONG>(m_SnapshotBuffer.size(), std::numeric_limits<ULONG>::max());
         status = queryFn(SystemProcessInformation, m_SnapshotBuffer.data(), bufferSize, &returnedBytes);
-        if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
+        if (status != STATUS_INFO_LENGTH_MISMATCH_NT || attempt + 1 == MAX_SNAPSHOT_ATTEMPTS)
+        {
+            break; // Read, failed, or out of tries: no buffer is grown for a try that won't come
+        }
+        // Snapshot didn't fit; grow with headroom because the process list can change between calls. Never past
+        // PROCESS_SNAPSHOT_MAX_BYTES: the sample fails instead (#4277).
+        const std::optional<std::size_t> grown = Windows::grownProcessSnapshotBytes(m_SnapshotBuffer.size(), returnedBytes);
+        if (!grown.has_value())
         {
             break;
         }
-        // Snapshot didn't fit; grow with headroom because the process list can change between calls.
-        m_SnapshotBuffer.resize(Windows::grownProcessSnapshotBytes(m_SnapshotBuffer.size(), returnedBytes));
+        m_SnapshotBuffer.resize(*grown);
     }
 
     if (status < 0)
     {
+        if (m_SnapshotBuffer.size() != keptBytes)
+        {
+            // A failed sample keeps no size it grew to (#4277): the next starts from the last one that worked, so
+            // failures in a row can't each start bigger. Swapped, so the memory goes too.
+            std::vector<std::byte>(keptBytes).swap(m_SnapshotBuffer);
+        }
         spdlog::error("NtQuerySystemInformation(SystemProcessInformation) failed: status=0x{:08X}", static_cast<std::uint32_t>(status));
         return results;
     }
