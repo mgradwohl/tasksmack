@@ -24,6 +24,7 @@
 #include <sddl.h>   // ConvertSidToStringSidW, ConvertStringSidToSidW
 // clang-format on
 
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
@@ -133,12 +134,12 @@ constexpr std::string_view TEST_FOLDER_SECURITY = "D:P(A;OICI;FA;;;BA)(A;OICI;FA
     return narrow;
 }
 
-/// newFileReaders() of the descriptor @p sddl describes, for a token whose default owner is trusted where @p defaultOwnerTrusted.
-[[nodiscard]] DumpFolderAccess readersOf(std::string_view sddl, bool defaultOwnerTrusted = true)
+/// folderReaders() of the descriptor @p sddl describes.
+[[nodiscard]] DumpFolderAccess readersOf(std::string_view sddl)
 {
     const OwnedSecurityDescriptor descriptor = securityDescriptorFrom(sddl);
     EXPECT_NE(descriptor, nullptr) << sddl;
-    return newFileReaders(descriptor.get(), defaultOwnerTrusted);
+    return folderReaders(descriptor.get());
 }
 /// Folder @p folder made with the security descriptor @p sddl.
 [[nodiscard]] bool makeFolderWith(const std::filesystem::path& folder, std::string_view sddl)
@@ -273,57 +274,52 @@ TEST(WindowsDumpFolderTest, TheFileIsMadeInTheHeldFolderAndACancelLeavesNone)
 
 TEST(WindowsDumpFolderTest, AnAllowlistTrustsOnlyAdministratorsSystemAndTrustedInstaller)
 {
-    // Administrators, SYSTEM and TrustedInstaller only; CREATOR OWNER too when a new file's owner is Administrators.
+    // Administrators, SYSTEM and TrustedInstaller only; CREATOR OWNER in an inherit-only ACE (whoever makes a subfolder).
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)"), DumpFolderAccess::AdministratorsOnly);
     EXPECT_EQ(readersOf(std::format("O:SYD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;{})", TRUSTED_INSTALLER)), DumpFolderAccess::AdministratorsOnly);
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;GA;;;CO)"), DumpFolderAccess::AdministratorsOnly);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;GA;;;CO)", false), DumpFolderAccess::ReadableByUser)
-        << "CREATOR OWNER is the user when the token's default owner is";
-    // A new file's own owner is the token's default owner, who always gets READ_CONTROL and WRITE_DAC: an
-    // administrators-only folder is flagged when that isn't Administrators or SYSTEM.
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", false), DumpFolderAccess::ReadableByUser);
-    // Inherited control of a new file (WRITE_DAC, WRITE_OWNER) lets its holder grant itself a read; so does inherited
-    // execute, which maps the file.
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;WD;;;BU)"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;WO;;;BU)"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;FX;;;BU)"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;GX;;;BU)"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;GA;;;CO)(A;OIIO;WD;;;CO)"), DumpFolderAccess::AdministratorsOnly)
-        << "CREATOR OWNER is the trusted owner";
-    // An object ACE: any inherited read or control is flagged, whatever its SID.
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(OA;OIIO;WD;bf967aba-0de6-11d0-a285-00aa003049e2;;BA)"), DumpFolderAccess::ReadableByUser);
-    // Any other SID with an inherited read: the well-known groups, an unknown user (the one who didn't type the
-    // credentials), and inherit-only ACEs, which still reach a new file.
+    // Any other SID that can list the folder, open its files (traverse) or read it: the well-known groups, and an
+    // unknown user (the one who didn't type the credentials).
     for (const std::string_view sid : {"BU", "WD", "AU", "IU", "BG", "S-1-5-21-1000000001-1000000002-1000000003-1001"})
     {
-        EXPECT_EQ(readersOf(std::format("O:BAD:P(A;OICI;FA;;;BA)(A;OI;FR;;;{})", sid)), DumpFolderAccess::ReadableByUser) << sid;
+        EXPECT_EQ(readersOf(std::format("O:BAD:P(A;OICI;FA;;;BA)(A;;FR;;;{})", sid)), DumpFolderAccess::ReadableByUser) << sid;
     }
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;GR;;;AU)"), DumpFolderAccess::ReadableByUser);
-    // The list right is the read right's bit: flagged too, conservatively.
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICI;0x1;;;BU)"), DumpFolderAccess::ReadableByUser);
-    // Not inherited by a new file, no read, or a deny: not flagged for reading.
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;FR;;;BU)"), DumpFolderAccess::AdministratorsOnly);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;CI;FR;;;BU)"), DumpFolderAccess::AdministratorsOnly);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;FW;;;BU)"), DumpFolderAccess::AdministratorsOnly);
-    EXPECT_EQ(readersOf("O:BAD:P(D;OICI;FA;;;BU)(A;OICI;FA;;;BA)"), DumpFolderAccess::AdministratorsOnly);
-    // Control of the folder itself (WRITE_DAC, WRITE_OWNER or GENERIC_ALL) for anyone else: they could grant themselves a read.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x1;;;BU)"), DumpFolderAccess::ReadableByUser) << "FILE_LIST_DIRECTORY";
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x20;;;BU)"), DumpFolderAccess::ReadableByUser) << "FILE_TRAVERSE";
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GR;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GX;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GA;;;BU)"), DumpFolderAccess::ReadableByUser);
+    // Control of the folder itself (WRITE_DAC, WRITE_OWNER) for anyone else: they could grant themselves the rest.
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;WD;;;BU)"), DumpFolderAccess::ReadableByUser);
     EXPECT_EQ(readersOf(std::format("O:BAD:P(A;OICI;FA;;;BA)(A;;WO;;;{})", OTHER_USER)), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;CI;GA;;;BU)"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;CIIO;WD;;;BU)"), DumpFolderAccess::AdministratorsOnly)
-        << "subfolders only, not this one";
+    // A container-inherit ACE reaches the folders made in it, inherit-only or not.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;CIIO;FR;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;CIIO;WD;;;BU)"), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;GR;;;AU)"), DumpFolderAccess::ReadableByUser);
+    // An object ACE: any such right, on the folder or its subfolders, is flagged whatever its SID.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(OA;CIIO;WD;bf967aba-0de6-11d0-a285-00aa003049e2;;BA)"), DumpFolderAccess::ReadableByUser);
+    // What the hint doesn't measure, now the dump file is admin-only (#4188): what only files inherit (the other files
+    // made there; never TaskSmack's own), rights that neither list, traverse, read nor control, and denies.
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;FR;;;BU)"), DumpFolderAccess::AdministratorsOnly);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;WD;;;BU)"), DumpFolderAccess::AdministratorsOnly);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;FW;;;BU)"), DumpFolderAccess::AdministratorsOnly);
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x2;;;BU)"), DumpFolderAccess::AdministratorsOnly) << "FILE_ADD_FILE alone";
+    EXPECT_EQ(readersOf("O:BAD:P(D;OICI;FA;;;BU)(A;OICI;FA;;;BA)"), DumpFolderAccess::AdministratorsOnly);
     // An owner other than Administrators or SYSTEM, even with an administrators-only DACL.
     EXPECT_EQ(readersOf(std::format("O:{}D:P(A;OICI;FA;;;BA)", OTHER_USER)), DumpFolderAccess::ReadableByUser);
     EXPECT_EQ(readersOf(std::format("O:{}D:P(A;OICI;FA;;;BA)", TRUSTED_INSTALLER)), DumpFolderAccess::ReadableByUser);
-    // No DACL at all: everyone has every access. No allow ACE a new file inherits: its DACL is the token's, unread.
+    // No DACL at all: everyone has every access. An empty DACL, or one with no inheritable ACE, grants no one else
+    // anything. Unknown is only an unreadable descriptor.
     EXPECT_EQ(readersOf("O:BAD:NO_ACCESS_CONTROL"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;;FA;;;BA)(A;CI;FA;;;SY)"), DumpFolderAccess::Unknown);
-    EXPECT_EQ(readersOf("O:BAD:P"), DumpFolderAccess::Unknown);
-    EXPECT_EQ(newFileReaders(nullptr, true), DumpFolderAccess::Unknown);
+    EXPECT_EQ(readersOf("O:BAD:P(A;;FA;;;BA)(A;CI;FA;;;SY)"), DumpFolderAccess::AdministratorsOnly);
+    EXPECT_EQ(readersOf("O:BAD:P"), DumpFolderAccess::AdministratorsOnly);
+    EXPECT_EQ(readersOf("D:P(A;;FA;;;BA)"), DumpFolderAccess::Unknown) << "no owner to read";
+    EXPECT_EQ(folderReaders(nullptr), DumpFolderAccess::Unknown);
 }
 
-// An allow ACE type the check doesn't read (a compound ACE here) fails closed: Unknown, never AdministratorsOnly.
-TEST(WindowsDumpFolderTest, AnAllowAceTypeItDoesntReadIsUnknown)
+// An allow ACE type the check doesn't read (a compound ACE here) fails toward the hint: ReadableByUser, never
+// AdministratorsOnly. Unknown stays for a descriptor that can't be read.
+TEST(WindowsDumpFolderTest, AnAllowAceTypeItDoesntReadIsFlagged)
 {
     const auto users = sidFrom("BU");
     const auto admins = sidFrom("BA");
@@ -337,7 +333,7 @@ TEST(WindowsDumpFolderTest, AnAllowAceTypeItDoesntReadIsUnknown)
     allowed->Header.AceType = ACCESS_ALLOWED_COMPOUND_ACE_TYPE;
     allowed->Header.AceFlags = OBJECT_INHERIT_ACE;
     allowed->Header.AceSize = static_cast<WORD>(aceSize);
-    allowed->Mask = FILE_GENERIC_WRITE; // no read: still Unknown, as the type isn't read at all
+    allowed->Mask = FILE_GENERIC_WRITE; // nothing the hint measures: still flagged, as the type isn't read at all
     ASSERT_NE(CopySid(sidSize, &allowed->SidStart, users.get()), FALSE);
     std::vector<BYTE> aclBuffer(sizeof(ACL) + aceSize + 64);
     auto* acl = reinterpret_cast<PACL>(aclBuffer.data()); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
@@ -347,7 +343,7 @@ TEST(WindowsDumpFolderTest, AnAllowAceTypeItDoesntReadIsUnknown)
     ASSERT_NE(InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION), FALSE);
     ASSERT_NE(SetSecurityDescriptorOwner(&descriptor, admins.get(), FALSE), FALSE);
     ASSERT_NE(SetSecurityDescriptorDacl(&descriptor, TRUE, acl, FALSE), FALSE);
-    EXPECT_EQ(newFileReaders(&descriptor, true), DumpFolderAccess::Unknown);
+    EXPECT_EQ(folderReaders(&descriptor), DumpFolderAccess::ReadableByUser);
 }
 // The reviewer's case (#4164): a standard user elevates with an administrator's credentials and picks their own
 // Documents. The folder's ACEs name only SYSTEM, Administrators and that user, whom no denylist would know.
@@ -385,7 +381,7 @@ TEST(WindowsDumpFolderTest, TheCheckReadsARealFoldersOwnerAndDacl)
     const std::string me = ownSidText();
     ASSERT_FALSE(me.empty());
     const std::string adminsOnlyDacl = "D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)";
-    const std::string usersReadDacl = "D:P(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)";
+    const std::string usersReadDacl = "D:P(A;OICI;FA;;;BA)(A;OICI;FR;;;BU)"; // Users may list it
     const std::filesystem::path adminsOnly = scratch.path() / L"admins-only";
     const std::filesystem::path usersRead = scratch.path() / L"users-read";
     ASSERT_TRUE(makeFolderWith(adminsOnly, std::format("O:{0}D:P(A;;FA;;;{0})(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)", me))) << GetLastError();
@@ -393,10 +389,10 @@ TEST(WindowsDumpFolderTest, TheCheckReadsARealFoldersOwnerAndDacl)
 
     auto heldAdmins = openHeldDumpFolder(adminsOnly);
     ASSERT_TRUE(heldAdmins.has_value()) << heldAdmins.error();
-    EXPECT_EQ(heldFolderReaders(heldAdmins->get(), true), DumpFolderAccess::ReadableByUser) << "owned by this account";
+    EXPECT_EQ(heldFolderReaders(heldAdmins->get()), DumpFolderAccess::ReadableByUser) << "owned by this account";
     auto heldUsers = openHeldDumpFolder(usersRead);
     ASSERT_TRUE(heldUsers.has_value()) << heldUsers.error();
-    EXPECT_EQ(heldFolderReaders(heldUsers->get(), true), DumpFolderAccess::ReadableByUser);
+    EXPECT_EQ(heldFolderReaders(heldUsers->get()), DumpFolderAccess::ReadableByUser);
     EXPECT_EQ(checkDumpFolder(usersRead).access, DumpFolderAccess::ReadableByUser);
     EXPECT_TRUE(checkDumpFolder(usersRead).problem.empty());
 
@@ -503,13 +499,37 @@ constexpr std::wstring_view SYSTEM_SID = L"S-1-5-18";
 constexpr std::wstring_view AUTHENTICATED_USERS_SID = L"S-1-5-11";
 
 /// makeAdminDumpFolder()'s options for this unelevated test (TEST_FOLDER_SECURITY), trusting a folder there already as
-/// an Administrators-owned one TaskSmack made would be, so a second call takes it over in place.
+/// an Administrators-owned one TaskSmack made would be, so a second call takes it over in place, and the scratch
+/// "ProgramData", which this account owns, as the real one's SYSTEM owner is.
 [[nodiscard]] AdminDumpFolderOptions testFolderOptions()
 {
     return {
         .folderSecurity = std::string(TEST_FOLDER_SECURITY),
         .ownerTrusted = [](HANDLE /*folder*/) { return std::optional(true); },
+        .rootOwnerTrusted = [](HANDLE /*folder*/) { return std::optional(true); },
     };
+}
+
+/// Sets the DACL of @p path to the one @p sddl describes, unprotected (so it also inherits from its parent); false when
+/// Windows refuses.
+[[nodiscard]] bool setUnprotectedDaclOf(const std::filesystem::path& path, std::string_view sddl)
+{
+    const OwnedSecurityDescriptor descriptor = securityDescriptorFrom(sddl);
+    BOOL present = FALSE;
+    BOOL defaulted = FALSE;
+    PACL dacl = nullptr;
+    if (descriptor == nullptr || GetSecurityDescriptorDacl(descriptor.get(), &present, &dacl, &defaulted) == FALSE || dacl == nullptr)
+    {
+        return false;
+    }
+    std::wstring name = path.native(); // SetNamedSecurityInfoW takes a non-const name
+    return SetNamedSecurityInfoW(name.data(),
+                                 SE_FILE_OBJECT,
+                                 DACL_SECURITY_INFORMATION | UNPROTECTED_DACL_SECURITY_INFORMATION,
+                                 nullptr,
+                                 nullptr,
+                                 dacl,
+                                 nullptr) == ERROR_SUCCESS;
 }
 } // namespace
 
@@ -535,9 +555,9 @@ TEST(WindowsDumpFolderTest, TheDumpFileAndDefaultFolderAreAdministratorsAndSyste
         EXPECT_EQ(ace.flags, 0) << "a file's ACEs: not inherited, nothing to pass on";
     }
 
+    // The folder check reads only the folder's own owner and DACL, never the token's default owner: the default folder
+    // passes, so its confirm has no hint, whoever runs it.
     EXPECT_EQ(readersOf(ADMIN_DUMP_FOLDER_SECURITY), DumpFolderAccess::AdministratorsOnly) << "no warning for the default folder";
-    EXPECT_EQ(readersOf(ADMIN_DUMP_FOLDER_SECURITY, false), DumpFolderAccess::ReadableByUser)
-        << "unless a new file would be owned by the user, which an elevated token's isn't";
 }
 
 // #4188: a held folder's dump file gets the security it is given, not the folder's: read back from a real file made in
@@ -606,9 +626,20 @@ TEST(WindowsDumpFolderTest, TheDefaultFolderIsMadeUnderProgramDataWithItsOwnSecu
     EXPECT_TRUE(openHeldDumpFolder(*made).has_value());
     EXPECT_EQ(checkDumpFolder(*made).access, DumpFolderAccess::ReadableByUser);
 
+    // Taken over in place: a DACL widened since, unprotected and with a Users read, is reset to the given one.
+    ASSERT_TRUE(setUnprotectedDaclOf(*made, "D:(A;OICI;FA;;;AU)(A;;FR;;;BU)"));
+    EXPECT_FALSE(readSecurityOf(*made).daclProtected);
     const auto again = makeAdminDumpFolder(programData, testFolderOptions());
     ASSERT_TRUE(again.has_value()) << again.error();
     EXPECT_EQ(*again, *made);
+    {
+        const ReadSecurity reset = readSecurityOf(*again);
+        EXPECT_TRUE(reset.daclProtected) << "the takeover protects its DACL again";
+        ASSERT_EQ(reset.aces.size(), 3U) << "the Users read is gone";
+        EXPECT_EQ(reset.aces[0].sid, ADMINISTRATORS_SID);
+        EXPECT_EQ(reset.aces[1].sid, SYSTEM_SID);
+        EXPECT_EQ(reset.aces[2].sid, AUTHENTICATED_USERS_SID);
+    }
 
     // A junction where Dumps should be: not a plain folder, so moved aside even though its owner is trusted, and a fresh
     // folder made; nothing is written where it points.
@@ -658,5 +689,28 @@ TEST(WindowsDumpFolderTest, TheDefaultFolderIsRefusedWithoutAPlainProgramData)
     EXPECT_TRUE(refused.error().contains("isn't a plain folder")) << refused.error();
     EXPECT_TRUE(isEmptyFolder(real));
     ASSERT_TRUE(TestSupport::removeJunction(link));
+}
+
+// #4188 review: %ProgramData% is the trust root, so its owner must be SYSTEM, TrustedInstaller or Administrators. A
+// scratch one this account owns is refused by the real check, and nothing is made in it.
+TEST(WindowsDumpFolderTest, TheDefaultFolderIsRefusedUnderAProgramDataOwnedByAUser)
+{
+    const ScratchFolder scratch;
+    AdminDumpFolderOptions realRootCheck = testFolderOptions();
+    realRootCheck.rootOwnerTrusted = {};
+    const auto refused = makeAdminDumpFolder(scratch.path(), realRootCheck);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(refused.error().contains("isn't owned by SYSTEM, TrustedInstaller or Administrators")) << refused.error();
+    EXPECT_TRUE(isEmptyFolder(scratch.path()));
+
+    const auto ownScratch = openFolderByPath(scratch.path(), READ_CONTROL);
+    ASSERT_TRUE(ownScratch.has_value()) << ownScratch.error();
+    EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(ownScratch->get()), std::optional(false));
+    // The Windows folder is TrustedInstaller's: trusted. Read only, never written.
+    std::array<wchar_t, MAX_PATH> windows{};
+    ASSERT_NE(GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size())), 0U);
+    const auto windowsFolder = openFolderByPath(std::filesystem::path(windows.data()), READ_CONTROL);
+    ASSERT_TRUE(windowsFolder.has_value()) << windowsFolder.error();
+    EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(windowsFolder->get()), std::optional(true));
 }
 } // namespace Platform::Windows

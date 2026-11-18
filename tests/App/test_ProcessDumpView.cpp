@@ -631,6 +631,7 @@ TEST(ProcessDumpViewTest, TheElevatedDefaultFolderIsUsedWithNoWarningAndAPickedO
     EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::FOLDER_ACCESS_UNKNOWN_TEXT)) << view.confirmQuestion();
     EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
     EXPECT_TRUE(view.confirmQuestion().contains(own.string())) << view.confirmQuestion();
+    EXPECT_TRUE(view.resultFolderOpensOnlyElevated()) << "its result names it, with Copy, instead of Open folder";
 
     // The admin picks a folder programs running as them can open: it is checked, and the hint shows.
     mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::ReadableByUser, .problem = {}});
@@ -641,6 +642,7 @@ TEST(ProcessDumpViewTest, TheElevatedDefaultFolderIsUsedWithNoWarningAndAPickedO
     EXPECT_EQ(mock.lastFolderAccessDirectory(), otherFolder());
     EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::FOLDER_READABLE_TEXT)) << view.confirmQuestion();
     EXPECT_EQ(asked.load(), 1) << "a chosen folder isn't resolved again";
+    EXPECT_FALSE(view.resultFolderOpensOnlyElevated()) << "Explorer, as the user, can open this one";
 
     mock.setDumpResult(
         Platform::ProcessDump{.file = otherFolder() / "lsass.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
@@ -665,6 +667,26 @@ TEST(ProcessDumpViewTest, WhenTheElevatedDefaultCantBeMadeTheConfirmWaitsForAFol
     EXPECT_EQ(mock.createDumpCount(), 0);
 }
 
+#ifdef _WIN32
+// #4188 review: a hand-off session that isn't elevated can't make an admin-only file or folder, so the confirm says that,
+// not that TaskSmack couldn't make its folder as administrator.
+TEST(ProcessDumpViewTest, AHandOffSessionThatIsntElevatedSaysWhyItHasNoFolder)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.setNoDefaultFolderText(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT);
+    view.setDefaultFolder([](bool /*noDefault*/) { return std::filesystem::path{}; });
+    view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_TRUE(view.needsFolder());
+    EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    EXPECT_TRUE(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT.contains("--handoff"));
+}
+#endif
+
 // The warnings say the dump file itself is admin-only, and that the hint is about the folder (#4188).
 TEST(ProcessDumpViewTest, TheFolderHintSaysTheFileItselfIsAdministratorsOnly)
 {
@@ -674,6 +696,9 @@ TEST(ProcessDumpViewTest, TheFolderHintSaysTheFileItselfIsAdministratorsOnly)
         EXPECT_TRUE(text.contains("this folder")) << text;
     }
     EXPECT_TRUE(DumpDetail::FOLDER_READABLE_TEXT.contains("OneDrive"));
+    EXPECT_TRUE(DumpDetail::FOLDER_READABLE_TEXT.contains("sync error")) << "OneDrive can't read an admin-only dump";
+    EXPECT_FALSE(DumpDetail::FOLDER_READABLE_TEXT.contains("upload"));
+    EXPECT_TRUE(DumpDetail::FOLDER_ACCESS_UNKNOWN_TEXT.contains("couldn't read this folder's permissions"));
 }
 
 TEST(ProcessDumpViewTest, AChosenFolderBecomesTheConfirmsAndIsRemembered)

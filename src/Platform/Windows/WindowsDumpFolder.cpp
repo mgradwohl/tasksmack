@@ -17,11 +17,13 @@
 #include <sddl.h>    // ConvertStringSidToSidW
 // clang-format on
 
+#include <algorithm>
 #include <expected>
 #include <filesystem>
 #include <format>
 #include <memory>
 #include <optional>
+#include <span>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -64,8 +66,8 @@ constexpr std::wstring_view TRUSTED_INSTALLER_SID = L"S-1-5-80-956008885-3418522
     return trustedInstaller != nullptr && EqualSid(sid, trustedInstaller.get()) != FALSE;
 }
 
-/// Whether @p sid is one newFileReaders() trusts (WindowsDumpFolder.h): Administrators, SYSTEM or TrustedInstaller, and
-/// CREATOR OWNER where @p creatorOwnerTrusted (an inherited ACE, once a new file's owner is known to be trusted).
+/// Whether @p sid is one folderReaders() trusts (WindowsDumpFolder.h): Administrators, SYSTEM or TrustedInstaller, and
+/// CREATOR OWNER where @p creatorOwnerTrusted (an inherit-only ACE, whose CREATOR OWNER is whoever makes a subfolder).
 [[nodiscard]] bool trustedSid(PSID sid, bool creatorOwnerTrusted)
 {
     return IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(sid, WinLocalSystemSid) != FALSE ||
@@ -78,10 +80,11 @@ constexpr std::wstring_view TRUSTED_INSTALLER_SID = L"S-1-5-80-956008885-3418522
     return IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(owner, WinLocalSystemSid) != FALSE;
 }
 
-/// The access bits that let a new file be read (executing it maps it, which reads it), and those that let a DACL or owner
-/// be changed.
-constexpr ACCESS_MASK READ_RIGHTS = FILE_READ_DATA | FILE_EXECUTE | GENERIC_READ | GENERIC_EXECUTE | GENERIC_ALL;
-constexpr ACCESS_MASK CONTROL_RIGHTS = WRITE_DAC | WRITE_OWNER | GENERIC_ALL;
+/// The access bits on a folder that the hint flags (#4188): a listing (FILE_LIST_DIRECTORY, which is FILE_READ_DATA), a
+/// traverse to the files in it (FILE_TRAVERSE, which is FILE_EXECUTE), their generic forms, and a change of its DACL or
+/// owner.
+constexpr ACCESS_MASK FOLDER_RIGHTS =
+    FILE_LIST_DIRECTORY | FILE_TRAVERSE | GENERIC_READ | GENERIC_EXECUTE | GENERIC_ALL | WRITE_DAC | WRITE_OWNER;
 
 } // namespace
 
@@ -151,7 +154,7 @@ std::expected<UniqueHandle, std::string> openHeldDumpFolder(const std::filesyste
     return std::move(*held);
 }
 
-DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwnerTrusted)
+DumpFolderAccess folderReaders(PSECURITY_DESCRIPTOR descriptor)
 {
     BOOL present = FALSE;
     BOOL defaulted = FALSE;
@@ -164,12 +167,6 @@ DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwn
     {
         return DumpFolderAccess::ReadableByUser; // no DACL: everyone has every access
     }
-    if (!defaultOwnerTrusted)
-    {
-        // A new file's owner is the token's default owner, who always gets READ_CONTROL and WRITE_DAC on it: whatever the
-        // folder's ACEs, that owner can grant itself a read.
-        return DumpFolderAccess::ReadableByUser;
-    }
     PSID owner = nullptr;
     BOOL ownerDefaulted = FALSE;
     if (GetSecurityDescriptorOwner(descriptor, &owner, &ownerDefaulted) == FALSE || owner == nullptr)
@@ -178,9 +175,8 @@ DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwn
     }
     if (!trustedOwner(owner))
     {
-        return DumpFolderAccess::ReadableByUser; // its owner can rewrite the DACL new files inherit
+        return DumpFolderAccess::ReadableByUser; // its owner can rewrite the DACL
     }
-    bool inherited = false; // whether any allow ACE reaches a new file
     for (DWORD index = 0; index < dacl->AceCount; ++index)
     {
         void* ace = nullptr;
@@ -189,8 +185,8 @@ DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwn
             return DumpFolderAccess::Unknown;
         }
         const auto* header = static_cast<const ACE_HEADER*>(ace);
-        const bool objectInherit = (header->AceFlags & OBJECT_INHERIT_ACE) != 0;
         const bool onFolder = (header->AceFlags & INHERIT_ONLY_ACE) == 0;
+        const bool toSubfolders = (header->AceFlags & CONTAINER_INHERIT_ACE) != 0;
         switch (header->AceType)
         {
         case ACCESS_ALLOWED_ACE_TYPE:
@@ -198,26 +194,28 @@ DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwn
         {
             auto* allowed = static_cast<ACCESS_ALLOWED_ACE*>(ace);
             PSID sid = &allowed->SidStart;
-            inherited = inherited || objectInherit;
-            // Inherited by a new file: a read, or a WRITE_DAC or WRITE_OWNER that would let its holder grant itself one.
-            if (objectInherit && (allowed->Mask & (READ_RIGHTS | CONTROL_RIGHTS)) != 0 && !trustedSid(sid, true))
+            if ((allowed->Mask & FOLDER_RIGHTS) == 0)
+            {
+                break;
+            }
+            // On the folder itself: a listing, a traverse to its files, or a change of who may. CREATOR OWNER there
+            // grants its owner nothing more; in an inherit-only ACE it is whoever makes the subfolder.
+            if (onFolder && !trustedSid(sid, false))
             {
                 return DumpFolderAccess::ReadableByUser;
             }
-            if (onFolder && (allowed->Mask & CONTROL_RIGHTS) != 0 && !trustedSid(sid, false))
+            if (toSubfolders && !trustedSid(sid, !onFolder))
             {
-                return DumpFolderAccess::ReadableByUser; // can change who may read what is made there
+                return DumpFolderAccess::ReadableByUser; // reaches the folders made in it
             }
             break;
         }
         case ACCESS_ALLOWED_OBJECT_ACE_TYPE:
         case ACCESS_ALLOWED_CALLBACK_OBJECT_ACE_TYPE:
         {
-            // Rare on files; its SID's place depends on its flags, so any read or control it grants is flagged.
+            // Rare on files; its SID's place depends on its flags, so any such right it grants is flagged.
             const auto* allowed = static_cast<const ACCESS_ALLOWED_OBJECT_ACE*>(ace);
-            inherited = inherited || objectInherit;
-            if ((objectInherit && (allowed->Mask & (READ_RIGHTS | CONTROL_RIGHTS)) != 0) ||
-                (onFolder && (allowed->Mask & CONTROL_RIGHTS) != 0))
+            if ((onFolder || toSubfolders) && (allowed->Mask & FOLDER_RIGHTS) != 0)
             {
                 return DumpFolderAccess::ReadableByUser;
             }
@@ -237,14 +235,13 @@ DumpFolderAccess newFileReaders(PSECURITY_DESCRIPTOR descriptor, bool defaultOwn
         case SYSTEM_ALARM_CALLBACK_OBJECT_ACE_TYPE:
             break; // a deny grants nothing; an audit or alarm ACE neither
         default:
-            return DumpFolderAccess::Unknown; // an allow type this doesn't read (a compound ACE, say): fail closed
+            return DumpFolderAccess::ReadableByUser; // an allow type this doesn't read (a compound ACE, say): warn
         }
     }
-    // No allow ACE reaches a new file: it gets the token's default DACL, which isn't read here.
-    return inherited ? DumpFolderAccess::AdministratorsOnly : DumpFolderAccess::Unknown;
+    return DumpFolderAccess::AdministratorsOnly;
 }
 
-DumpFolderAccess heldFolderReaders(HANDLE folder, bool defaultOwnerTrusted)
+DumpFolderAccess heldFolderReaders(HANDLE folder)
 {
     PSECURITY_DESCRIPTOR descriptor = nullptr;
     if (GetSecurityInfo(folder,
@@ -259,35 +256,7 @@ DumpFolderAccess heldFolderReaders(HANDLE folder, bool defaultOwnerTrusted)
         return DumpFolderAccess::Unknown;
     }
     const std::unique_ptr<void, decltype(&::LocalFree)> owned(descriptor, &::LocalFree);
-    return newFileReaders(descriptor, defaultOwnerTrusted);
-}
-
-std::optional<bool> defaultOwnerIsAdministratorsOrSystem()
-{
-    HANDLE rawToken = nullptr;
-    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken) == FALSE)
-    {
-        return std::nullopt;
-    }
-    const UniqueHandle token(rawToken);
-    DWORD size = 0;
-    static_cast<void>(GetTokenInformation(token.get(), TokenOwner, nullptr, 0, &size));
-    if (size == 0)
-    {
-        return std::nullopt;
-    }
-    std::vector<BYTE> buffer(size);
-    if (GetTokenInformation(token.get(), TokenOwner, buffer.data(), size, &size) == FALSE)
-    {
-        return std::nullopt;
-    }
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GetTokenInformation fills a TOKEN_OWNER
-    const PSID owner = reinterpret_cast<const TOKEN_OWNER*>(buffer.data())->Owner;
-    if (owner == nullptr || IsValidSid(owner) == FALSE)
-    {
-        return std::nullopt;
-    }
-    return trustedOwner(owner);
+    return folderReaders(descriptor);
 }
 
 DumpFolderCheck checkDumpFolder(const std::filesystem::path& folder)
@@ -297,12 +266,53 @@ DumpFolderCheck checkDumpFolder(const std::filesystem::path& folder)
     {
         return {.access = DumpFolderAccess::Refused, .problem = held.error()};
     }
-    const std::optional<bool> defaultOwnerTrusted = defaultOwnerIsAdministratorsOrSystem();
-    if (!defaultOwnerTrusted.has_value())
+    return {.access = heldFolderReaders(held->get()), .problem = {}};
+}
+
+bool tokenCanOwnAsAdministrators()
+{
+    HANDLE rawToken = nullptr;
+    if (OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &rawToken) == FALSE)
     {
-        return {.access = DumpFolderAccess::Unknown, .problem = {}};
+        return false;
     }
-    return {.access = heldFolderReaders(held->get(), *defaultOwnerTrusted), .problem = {}};
+    const UniqueHandle token(rawToken);
+    DWORD size = 0;
+    static_cast<void>(GetTokenInformation(token.get(), TokenGroups, nullptr, 0, &size));
+    if (size == 0)
+    {
+        return false;
+    }
+    std::vector<BYTE> buffer(size);
+    if (GetTokenInformation(token.get(), TokenGroups, buffer.data(), size, &size) == FALSE)
+    {
+        return false;
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - GetTokenInformation fills a TOKEN_GROUPS
+    const auto* groups = reinterpret_cast<const TOKEN_GROUPS*>(buffer.data());
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-array-to-pointer-decay) - a counted ANYSIZE_ARRAY
+    const std::span<const SID_AND_ATTRIBUTES> entries(groups->Groups, groups->GroupCount);
+    constexpr DWORD OWNER_USABLE = SE_GROUP_ENABLED | SE_GROUP_OWNER;
+    return std::ranges::any_of(entries,
+                               [](const SID_AND_ATTRIBUTES& group)
+                               {
+                                   return (group.Attributes & OWNER_USABLE) == OWNER_USABLE &&
+                                          (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0 &&
+                                          IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid) != FALSE;
+                               });
+}
+
+std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle)
+{
+    PSID owner = nullptr;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    const DWORD read = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor);
+    const std::unique_ptr<void, decltype(&::LocalFree)> owned(descriptor, &::LocalFree);
+    if (read != ERROR_SUCCESS || owner == nullptr)
+    {
+        return std::nullopt;
+    }
+    return trustedOwner(owner) || isTrustedInstaller(owner);
 }
 
 std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std::filesystem::path& programData,
@@ -319,7 +329,7 @@ std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std:
         return std::unexpected(std::string("the dump folder's security can't be built"));
     }
     // %ProgramData% by its path, once: a system folder SYSTEM owns, the trust root, as the elevated log opens it (#4105).
-    const auto root = openFolderByPath(programData);
+    const auto root = openFolderByPath(programData, READ_CONTROL);
     if (!root.has_value())
     {
         return std::unexpected(std::format("{} can't be opened: {}", shownRoot, root.error()));
@@ -327,6 +337,12 @@ std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std:
     if (isPlainFolder(root->get()) != std::optional(true))
     {
         return std::unexpected(std::format("{} isn't a plain folder", shownRoot));
+    }
+    const std::optional<bool> rootTrusted =
+        options.rootOwnerTrusted ? options.rootOwnerTrusted(root->get()) : ownerIsSystemOrAdministratorsOrTrustedInstaller(root->get());
+    if (rootTrusted != std::optional(true))
+    {
+        return std::unexpected(std::format("{} isn't owned by SYSTEM, TrustedInstaller or Administrators", shownRoot));
     }
     const std::filesystem::path taskSmackPath = programData / L"TaskSmack";
     auto taskSmack =

@@ -2558,15 +2558,25 @@ TEST(WindowsProcessDumpTest, AHeldFoldersDumpIsAdministratorsOnlyOrNotMade)
     WindowsProcessActions held(functions);
 
     const ProcessDumpResult result = held.createDump(child.target(), real, std::stop_token{});
-    if (result.has_value())
+    if (Windows::tokenCanOwnAsAdministrators())
     {
+        ASSERT_TRUE(result.has_value()) << result.error();
         EXPECT_EQ(securityTextOf(result->file, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION), L"O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)");
     }
     else
     {
-        EXPECT_FALSE(result.error().empty());
+        // As a hand-off session that isn't elevated (#4188 review): STATUS_INVALID_OWNER, said in the user's terms.
+        ASSERT_FALSE(result.has_value());
+        EXPECT_TRUE(result.error().contains(DumpMath::HANDOFF_OWNER_TEXT)) << result.error();
+        EXPECT_FALSE(result.error().contains("1307")) << result.error();
         EXPECT_TRUE(folder.empty()) << "refused before anything was written: " << result.error();
     }
+}
+
+TEST(WindowsProcessDumpTest, AnOwnerTheTokenCantSetIsSaidAsAHandOffLimit)
+{
+    EXPECT_EQ(DumpMath::createFileFailureMessage(DumpMath::ERROR_CODE_INVALID_OWNER, "C:\\Dumps"), DumpMath::HANDOFF_OWNER_TEXT);
+    EXPECT_TRUE(DumpMath::HANDOFF_OWNER_TEXT.contains("--handoff"));
 }
 TEST(WindowsProcessDumpTest, AnInvalidOrGoneOrReusedPidWritesNothing)
 {

@@ -360,7 +360,15 @@ ProcessDumpView::ProcessDumpView() : ProcessDumpView(&DumpDetail::rememberDumpDi
 {
     m_FolderDialog = &DumpDetail::sdlFolderDialog;
     m_NoDefaultFolder = DumpDetail::noDefaultDumpFolder(); // elevated on Windows: no %TEMP% default (#4141)
-    m_DefaultFolder = &DumpDetail::defaultDumpDirectory;   // elevated on Windows: TaskSmack's admin-only folder (#4188)
+#ifdef _WIN32
+    if (m_NoDefaultFolder && !Platform::Windows::tokenCanOwnAsAdministrators())
+    {
+        // A hand-off session that isn't elevated: no admin-only file or folder can be made (#4188), so the confirm says
+        // why rather than that TaskSmack's own folder couldn't be made as administrator.
+        m_NoDefaultFolderText = DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT;
+    }
+#endif
+    m_DefaultFolder = &DumpDetail::defaultDumpDirectory; // elevated on Windows: TaskSmack's admin-only folder (#4188)
 }
 
 bool ProcessDumpView::canChooseFolder(Platform::IProcessActions* actions) const
@@ -411,6 +419,8 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_DismissAfterOpen = other.m_DismissAfterOpen;
         m_NoDefaultFolder = other.m_NoDefaultFolder;
         m_FolderRefused = other.m_FolderRefused;
+        m_FolderAdminOnly = other.m_FolderAdminOnly;
+        m_NoDefaultFolderText = other.m_NoDefaultFolderText;
     }
     return *this;
 }
@@ -459,6 +469,7 @@ void ProcessDumpView::openConfirm(const Platform::ProcessTarget& target,
     m_FolderFailure.clear();
     m_SpaceWarning.clear();
     m_FolderRefused = false;
+    m_FolderAdminOnly = false;
     // Whether the platform dumps from a snapshot: the pause the confirm promises (#2241).
     m_DumpsFromSnapshot = actions != nullptr && actions->actionCapabilities().dumpsFromSnapshot;
     // Built once here, not every frame the dialog is up.
@@ -547,6 +558,7 @@ void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProc
         // Who can read a dump there first (#4164), then whether it fits.
         m_SpaceWarning = DumpDetail::folderAccessWarning(check->folder);
         m_FolderRefused = check->folder.access == Platform::DumpFolderAccess::Refused; // until another is chosen
+        m_FolderAdminOnly = check->folder.access == Platform::DumpFolderAccess::AdministratorsOnly;
         if (const std::string space = DumpDetail::lowSpaceWarning(check->space, m_Directory, canChooseFolder(actions)); !space.empty())
         {
             m_SpaceWarning += m_SpaceWarning.empty() ? "" : "\n\n";
@@ -557,6 +569,7 @@ void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProc
     {
         // The dump is still offered: the warning is a forecast, and the dump says why if it fails.
         m_FolderRefused = false;
+        m_FolderAdminOnly = false;
         m_SpaceWarning = std::format("Couldn't check the free space on the folder's drive: {}", check.error());
     }
     rebuildQuestion();
@@ -571,7 +584,7 @@ void ProcessDumpView::rebuildQuestion()
         {
             warning += "\n\n";
         }
-        warning += DumpDetail::NO_DEFAULT_FOLDER_TEXT; // no %TEMP% default as administrator (#4141), nor our own (#4188)
+        warning += m_NoDefaultFolderText; // no %TEMP% default as administrator (#4141), nor our own (#4188)
     }
     if (!m_FolderFailure.empty())
     {
@@ -891,12 +904,18 @@ void ProcessDumpView::renderProgressDialog()
         {
             ImGui::TextColored(scheme.textMuted, "%s", result.note.c_str());
         }
+        if (resultFolderOpensOnlyElevated())
+        {
+            // An unelevated Explorer can't open an admin-only folder, and its "Continue" would add the user to the
+            // folder's DACL: name it, with Copy, instead of opening it (#4188).
+            WithheldOpenNotice::draw(Core::pathToUtf8(result.file.parent_path()), DumpDetail::ADMIN_ONLY_FOLDER_TEXT);
+        }
         WithheldOpenNotice::draw(m_OpenFolder.withheld()); // the folder an elevated TaskSmack didn't open (#3658)
     }
     ImGui::PopTextWrapPos();
 
     UI::Widgets::DialogFooterAction pressed = UI::Widgets::DialogFooterAction::None;
-    if (result.ok)
+    if (result.ok && !resultFolderOpensOnlyElevated())
     {
         // Disabled while an earlier "Open folder" is still being opened (#3155).
         const UI::Widgets::DialogFooterButton openButton{
@@ -914,11 +933,12 @@ void ProcessDumpView::renderProgressDialog()
         const UI::Widgets::DialogFooterButton closeButton{.label = "Close", .fills = nullptr, .tooltip = nullptr, .disabled = false};
         pressed = UI::Widgets::dialogFooter(closeButton, {}, UI::Widgets::footerButtonWidth({closeButton.label}, DUMP_BUTTON_MIN_EM));
     }
+    const bool canOpen = result.ok && !resultFolderOpensOnlyElevated(); // its footer has Open folder and Close
     if (escaped)
     {
-        pressed = result.ok ? UI::Widgets::DialogFooterAction::Secondary : UI::Widgets::DialogFooterAction::Primary;
+        pressed = canOpen ? UI::Widgets::DialogFooterAction::Secondary : UI::Widgets::DialogFooterAction::Primary;
     }
-    if (pressed == UI::Widgets::DialogFooterAction::Primary && result.ok)
+    if (pressed == UI::Widgets::DialogFooterAction::Primary && canOpen)
     {
         // ShellExecuteW or xdg-open, on the worker: never on the UI thread (#3155).
         // The result stays, its Open folder disabled, until the open is done (render() takes it in): closed
@@ -926,8 +946,7 @@ void ProcessDumpView::renderProgressDialog()
         m_DismissAfterOpen =
             m_OpenFolder.start(BackgroundOpen::openPath(result.file.parent_path()), Core::pathToUtf8(result.file.parent_path()));
     }
-    if (pressed == UI::Widgets::DialogFooterAction::Secondary ||
-        (pressed == UI::Widgets::DialogFooterAction::Primary && !result.ok)) // Close
+    if (pressed == UI::Widgets::DialogFooterAction::Secondary || (pressed == UI::Widgets::DialogFooterAction::Primary && !canOpen)) // Close
     {
         m_DismissAfterOpen = false;
         dismissResult();

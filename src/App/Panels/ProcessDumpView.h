@@ -113,6 +113,19 @@ inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
     "root's home), and your temp folder can be redirected by programs running as you. Choose one only root may change.";
 #endif
 
+#ifdef _WIN32
+/// What the confirm says instead in a hand-off session that isn't elevated (#4188): its token can't make Administrators
+/// the owner of a dump file or of TaskSmack's own folder, so no folder would do.
+inline constexpr std::string_view HANDOFF_NO_DEFAULT_FOLDER_TEXT =
+    "As a hand-off session TaskSmack makes dumps owned by Administrators, which this account can't do: restart TaskSmack as "
+    "administrator, or without --handoff.";
+#endif
+
+/// What the result says, with the folder and a Copy button, in place of Open folder when the dump's folder is for
+/// administrators only (#4188): Explorer, running as the signed-in user, can't open it.
+inline constexpr std::string_view ADMIN_ONLY_FOLDER_TEXT =
+    "This folder is for administrators only: open it from Explorer or a debugger running as administrator.";
+
 /// The folder a confirm with nothing remembered uses, for @p noDefault (noDefaultDumpFolder()): defaultDumpDirectory(),
 /// or a test's.
 using DefaultFolderFn = std::function<std::filesystem::path(bool noDefault)>;
@@ -183,11 +196,11 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 /// folder passes the check, so it never shows there.
 inline constexpr std::string_view FOLDER_READABLE_TEXT =
     "The dump file itself is for administrators only, but programs running as you can open this folder: they can see "
-    "what is in it and read its other files, and a synced folder such as OneDrive may try to upload the dump. Choose one "
-    "only administrators can open.";
-/// What the confirm says when who can open its folder couldn't be told (#4164).
+    "what is in it and read its other files. A synced folder such as OneDrive can't read the dump, so it reports a sync "
+    "error for it. Choose one only administrators can open.";
+/// What the confirm says when its folder's permissions couldn't be read (#4164, #4188).
 inline constexpr std::string_view FOLDER_ACCESS_UNKNOWN_TEXT =
-    "The dump file itself is for administrators only, but TaskSmack couldn't tell who can open this folder, so programs "
+    "The dump file itself is for administrators only, but TaskSmack couldn't read this folder's permissions, so programs "
     "running as you may be able to see what is in it and read its other files. Choose one only administrators can open.";
 
 /// The confirm's warning for @p check (#4164): FOLDER_READABLE_TEXT, FOLDER_ACCESS_UNKNOWN_TEXT, or why the dump would
@@ -277,6 +290,21 @@ class ProcessDumpView
     void setDefaultFolder(DumpDetail::DefaultFolderFn defaultFolder)
     {
         m_DefaultFolder = std::move(defaultFolder);
+    }
+
+    /// What the confirm says while it waits for a folder (#4141): DumpDetail::NO_DEFAULT_FOLDER_TEXT, or, in a hand-off
+    /// session that isn't elevated, DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT (#4188). The default constructor picks it;
+    /// tests set it here.
+    void setNoDefaultFolderText(std::string_view text) noexcept
+    {
+        m_NoDefaultFolderText = text;
+    }
+
+    /// Whether the dump's folder passed the folder check as AdministratorsOnly (#4188), such as TaskSmack's own default:
+    /// the result then names it, with Copy, instead of offering Open folder, which an unelevated Explorer can't do.
+    [[nodiscard]] bool resultFolderOpensOnlyElevated() const noexcept
+    {
+        return m_FolderAdminOnly;
     }
 
     /// Whether the confirm has no folder to write to and must wait for "Save dump to..." (#4141): it has none, and
@@ -502,6 +530,8 @@ class ProcessDumpView
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
     bool m_NoDefaultFolder = false;   // no temp-folder default (setNoDefaultFolder(), #4141)
     bool m_FolderRefused = false;     // the confirm's folder is one the dump would refuse (folderRefused(), #4164)
+    bool m_FolderAdminOnly = false;   // the confirm's folder is for administrators only (resultFolderOpensOnlyElevated())
+    std::string_view m_NoDefaultFolderText = DumpDetail::NO_DEFAULT_FOLDER_TEXT; // setNoDefaultFolderText()
 };
 
 } // namespace App

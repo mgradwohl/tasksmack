@@ -26,6 +26,7 @@ inline constexpr std::uint32_t ERROR_CODE_INVALID_PARAMETER = 87;
 inline constexpr std::uint32_t ERROR_CODE_DISK_FULL = 112;
 inline constexpr std::uint32_t ERROR_CODE_PARTIAL_COPY = 299;
 inline constexpr std::uint32_t ERROR_CODE_CANCELLED = 1223;
+inline constexpr std::uint32_t ERROR_CODE_INVALID_OWNER = 1307; ///< ERROR_INVALID_OWNER: an owner this token may not set
 inline constexpr std::uint32_t ERROR_CODE_COMMITMENT_LIMIT = 1455;
 
 /// How many names dumpFileName() tries in turn when the one before exists already.
@@ -136,6 +137,12 @@ struct DumpTime
     return std::format("Failed to open process {}: error {}", pid, error);
 }
 
+/// Why an admin-only dump file (#4188) can't be made by a hand-off session that isn't elevated: its token can't make
+/// Administrators a file's owner (ERROR_INVALID_OWNER).
+inline constexpr std::string_view HANDOFF_OWNER_TEXT =
+    "As a hand-off session TaskSmack makes dumps owned by Administrators, which this account can't do: restart TaskSmack as "
+    "administrator, or without --handoff.";
+
 /// Why the dump file could not be created in @p directory (UTF-8).
 [[nodiscard]] inline std::string createFileFailureMessage(std::uint32_t error, std::string_view directory)
 {
@@ -146,6 +153,8 @@ struct DumpTime
     case ERROR_CODE_PATH_NOT_FOUND:
     case ERROR_CODE_FILE_NOT_FOUND:
         return std::format("The folder {} doesn't exist", directory);
+    case ERROR_CODE_INVALID_OWNER:
+        return std::string(HANDOFF_OWNER_TEXT); // a hand-off session that isn't elevated (#4188)
     default:
         break;
     }
