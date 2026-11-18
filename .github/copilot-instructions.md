@@ -22,6 +22,8 @@ TaskSmack intentionally keeps docs scoped to avoid duplication and drift:
 - **Agent guidance:** [AGENTS.md](../AGENTS.md) (canonical shared rules for every agent: workflow, merge authority, PR/issue rules), and [copilot-instructions.md](copilot-instructions.md) (this file: Copilot's project detail)
     - Primarily for agents, but still useful to contributors. Where this file and AGENTS.md disagree, AGENTS.md wins.
 - **Review checklist (canonical):** [skills/code-review/SKILL.md](skills/code-review/SKILL.md)
+- **Modern C++23 (canonical):** [docs/dev/cpp23.md](../docs/dev/cpp23.md)
+    - Which C++23 features both toolchains support, and how the project uses the language.
 - **Security policy:** [SECURITY.md](../SECURITY.md)
     - Responsible disclosure and reporting instructions.
 - **Changelog:** [CHANGELOG.md](../CHANGELOG.md)
@@ -172,11 +174,13 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ```
 
 ### Modern C++23 Features (Prefer)
-Prefer these when the modern form preserves behavior and improves clarity; don't rewrite code that needs the older form (see the C++23 section of [skills/code-review/SKILL.md](skills/code-review/SKILL.md)).
+Prefer these when the modern form preserves behavior and improves clarity; don't rewrite code that needs the older form (see the C++23 section of [skills/code-review/SKILL.md](skills/code-review/SKILL.md)). [docs/dev/cpp23.md](../docs/dev/cpp23.md) is the full guidance, with the list of C++23 library features both toolchains support.
 - `std::string::contains()`, `std::string::starts_with()` over `find()` used purely as a containment/prefix check (not when the position is needed)
 - `std::ranges` and `std::views` over raw loops with no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns)
 - `std::format` or `std::print` for type-safe formatting
-- `std::jthread` with `std::stop_token` for background threads
+- `Domain::Worker` for a background thread, or `App::BackgroundTask` for a one-shot call from a view; a raw `std::jthread` needs a stated reason (#3343)
+- `std::expected` for a result that can fail with a reason and `std::optional` for an absent value, over `bool` plus out-parameters or a sentinel
+- `std::from_chars` for parsing numbers, over `std::stoi`/`strtol`/`sscanf`
 - prefer a C++23 standard library feature over a third-party function that does the same (e.g., `std::format` over `fmt::format`)
 - prefer modern C++ 23 types to improve code clarity, safety, or performance (e.g., `std::span` for array views, `std::optional` for optional values) over legacy types
 - prefer range-based for loops and standard algorithms from `<algorithm>` over traditional for loops for better readability and safety
@@ -190,6 +194,7 @@ Prefer these when the modern form preserves behavior and improves clarity; don't
 ### Modern C++23 Features (Avoid)
 - avoid using `using namespace ...` in header files; prefer fully qualified names or selective `using` declarations in implementation files
 - avoid using std library features that are deprecated
+- avoid C++23 library features that libc++ lacks in shared or Linux code (`std::generator`, `std::stacktrace`, `std::move_only_function`, `std::atomic<std::shared_ptr>`, `views::chunk`, `views::slide`): they compile on Windows only
 - try to avoid c-style arrays, char, malloc/free, raw pointers
 - try to avoid casts (`static_cast`, `reinterpret_cast`, etc.), this isn't always possible because ImGui/ImPlot don't use the same base types as the data that Linux and Windows APIs provide, do your best, and any time a cast is necessary make sure to use the most appropriate cast for the situation and avoid C-style casts and comment why the cast is safe and necessary
 
@@ -257,7 +262,7 @@ Prefer these when the modern form preserves behavior and improves clarity; don't
 - Framework: Google Test in `tests/` mirroring `src/` structure
 - Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, the Process Details readers (`IProcessEnvironmentReader`, `IProcessConnectionsReader`, `IProcessModulesReader`, `IProcessSecurityReader`, `IProcessOpenFilesReader`), and the Services/Startup probes and actions
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
-- Define mocks outside anonymous namespace when using `std::make_unique`
+- Define a mock or fake used by one test file in that file's anonymous namespace; shared ones go in `tests/Mocks/`
 - `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a
   `.cpp` calling `ImGui::`/`ImPlot::` can be added to its "Source files under test" list and run
   headless. There is no display or GL context in CI, so anything needing a real SDL window, OpenGL
@@ -341,7 +346,7 @@ pwsh tools/coverage.ps1    # Windows; both write coverage/index.html
 - ❌ Computing CPU% in Platform probes (belongs in Domain)
 - ❌ Calling probes from UI thread (use Domain models)
 - ❌ `EXPECT_EQ` on floats (use `EXPECT_DOUBLE_EQ`)
-- ❌ Mocks inside anonymous namespace with `make_unique`
+- ❌ The same mock or fake class name defined at namespace scope in two test files (use an anonymous namespace, or `tests/Mocks/`)
 - ❌ Using `using namespace std` in headers
 - ❌ Ignoring clang-tidy warnings (CI's Linux and Windows debug jobs run clang-tidy on the files a PR affects and fail the gate on any finding — run `tools/clang-tidy.sh` / `tools/clang-tidy.ps1` locally before pushing)
 - ❌ Committing without running clang-format
