@@ -54,7 +54,7 @@ void ProcessMemoryMapView::render(bool hasMemoryMap)
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
-        Detail::drawAuthenticateToReadButton(*this);
+        Detail::drawAuthenticateToReadButton(*this, "memory_map");
         return;
     }
     if (m_Truncated)

@@ -274,7 +274,8 @@ TEST_F(ProcessConnectionsViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonA
 
     const ImGuiWindow* details = ImGui::FindWindowByName("Details");
     ASSERT_NE(details, nullptr);
-    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, details->ID));
+    // The button is in its section's ID scope (#4268).
+    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, ImHashStr("connections", 0, details->ID)));
     static_cast<void>(renderAndCapture(view, true)); // the frame the press lands in
     EXPECT_TRUE(view.update(&reader, TARGET, 1.0F / 60.0F));
     view.finishPendingRead(TARGET);

@@ -108,7 +108,7 @@ void ProcessOpenFilesView::render(bool hasOpenFiles)
         }
         mutedWrapped(text);
         // Another user's process: an administrator can read it (#2309).
-        Detail::drawAuthenticateToReadButton(*this);
+        Detail::drawAuthenticateToReadButton(*this, "open_files");
         return;
     }
     if (m_Truncated)
