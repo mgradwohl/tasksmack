@@ -220,6 +220,7 @@ if ($SkipTrace -and $Mode -ne 'app') { throw '-SkipTrace is supported in app mod
 if ($Mode -ne 'app' -and ($IncludeStartup -or $UseUserConfig -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
     throw '-WarmupSeconds, -IncludeStartup and -UseUserConfig apply to app mode only.'
 }
+Assert-BenchmarkOption -Mode $Mode -Role $Role -Bound $PSBoundParameters -Repetitions $BenchmarkRepetitions -MinTime $BenchmarkMinTime
 
 $timestampGiven = -not [string]::IsNullOrEmpty($Timestamp)
 if (-not $timestampGiven) {
