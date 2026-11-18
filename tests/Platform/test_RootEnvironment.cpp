@@ -157,12 +157,27 @@ TEST(RootEnvironmentTest, OnlyALocaleNameNotAPathIsKept)
     {
         EXPECT_FALSE(isSafeLocale(value)) << value;
     }
-    const std::array<const char*, 5> environment{
-        "LANG=en_US.UTF-8", "LC_ALL=/home/alice/loc", "LANGUAGE=../x", "TASKSMACK_LOCALE=.evil", nullptr};
+    EXPECT_FALSE(isSafeLocale(" .evil")) << "trimmed first, as the override reader trims it";
+    EXPECT_TRUE(isLocaleVariable("TERM"));
+    EXPECT_TRUE(isLocaleVariable("COLORTERM"));
+    const std::array<const char*, 9> environment{"LANG=en_US.UTF-8",
+                                                 "LC_ALL=/home/alice/loc",
+                                                 "LANGUAGE=../x",
+                                                 "TASKSMACK_LOCALE=.evil",
+                                                 "LC_CTYPE=/x",
+                                                 "TERM=/home/alice/t",
+                                                 "LC_TIME=en%x",
+                                                 "LC_ALL=C",
+                                                 nullptr};
     Recorder recorder;
-    EXPECT_EQ(applyTo(environment.data(), RootValues{}, recorder.operations()),
-              (std::vector<std::string>{"LC_ALL", "LANGUAGE", "TASKSMACK_LOCALE"}))
-        << "a plain LANG stays";
+    const std::vector<std::string> removed = applyTo(environment.data(), RootValues{}, recorder.operations());
+    for (const char* name : {"LC_ALL", "LANGUAGE", "TASKSMACK_LOCALE", "LC_CTYPE", "TERM", "LC_TIME"})
+    {
+        EXPECT_NE(std::ranges::find(recorder.unset, name), recorder.unset.end()) << name << " is unset";
+    }
+    EXPECT_EQ(std::ranges::find(recorder.unset, "LANG"), recorder.unset.end()) << "a plain LANG stays";
+    EXPECT_NE(std::ranges::find(removed, "LC_ALL"), removed.end())
+        << "a safe LC_ALL beside an unsafe one: the name is unset, every copy (unsetenv)";
 }
 
 TEST(RootEnvironmentTest, OnlyAPlainOrZoneinfoTimeZoneIsKept)
