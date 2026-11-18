@@ -145,8 +145,10 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD", help="commit with the change (default: HEAD)")
     parser.add_argument("--platform", required=True, choices=("linux", "windows"))
     args = parser.parse_args()
-    # The workflow compares the first line with "ALL"; never emit CRLF, even on Windows.
-    sys.stdout.reconfigure(newline="\n")
+    # The workflow compares the first line with "ALL"; never emit CRLF, even on Windows. UTF-8 whatever the console's
+    # code page, so a non-ASCII path is written as itself even without -X utf8 (#4331).
+    sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     other_platform = "src/Platform/Windows/" if args.platform == "linux" else "src/Platform/Linux/"
 
