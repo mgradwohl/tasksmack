@@ -83,6 +83,15 @@ function Get-ProcessIntegrityLevel {
     return ConvertTo-IntegrityLevelName ([TaskSmackProfile.TokenInfo]::IntegrityRid($ProcessId))
 }
 
+function Get-DefaultProfilePreset {
+    # app: win-release, the build users run (#1186). bench: win-profile, which has -g and frame
+    # pointers and builds the benchmarks, so ETW samples resolve to functions; win-benchmark has
+    # no debug info (#4235).
+    param([Parameter(Mandatory = $true)][string]$Mode)
+    if ($Mode -eq 'app') { return 'win-release' }
+    return 'win-profile'
+}
+
 function Resolve-BenchmarkFilterMatches {
     # Classify the output of `TaskSmackBenchmarks.exe --benchmark_filter=<f> --benchmark_list_tests=true`
     # (#874), mirroring profile-perf.sh: no match is an error -- the capture would only measure
@@ -154,6 +163,7 @@ function Get-CaptureArtifactPath {
         Trace       = Join-Path $Directory "$Prefix-$Timestamp.etl"
         ChildLog    = Join-Path $Directory "$Prefix-child-$Timestamp.log"
         LauncherLog = Join-Path $Directory "$Prefix-launch-$Timestamp.log"
+        AppLog      = Join-Path $Directory "$Prefix-app-$Timestamp.log"
         BenchJson   = Join-Path $Directory "$Prefix-$Timestamp.json"
         Manifest    = Join-Path $Directory "$Prefix-$Timestamp.manifest.json"
         Control     = Join-Path $Directory "$Prefix-control-$Timestamp"
@@ -345,6 +355,36 @@ function New-ProfileConfigDirectory {
     return $path
 }
 
+function Test-BenchmarkMinTime {
+    # True when $Value is a --benchmark_min_time Google Benchmark accepts: seconds ('0.5s', or a
+    # bare number) or an iteration count ('10x'). Zero is neither a duration nor a count.
+    param([AllowEmptyString()][string]$Value)
+    if ($Value -match '^(?<n>[0-9]+(\.[0-9]+)?)s?$') { return [double]::Parse($Matches.n, [cultureinfo]::InvariantCulture) -gt 0 }
+    if ($Value -match '^(?<n>[0-9]+)x$') { return [int64]::Parse($Matches.n, [cultureinfo]::InvariantCulture) -gt 0 }
+    return $false
+}
+
+function Assert-BenchmarkOption {
+    # Bench options belong to bench mode, and their values must be ones the benchmark binary takes
+    # (#4238). $Bound is the script's $PSBoundParameters. Only the orchestrator, the user's own
+    # invocation, is checked for stray options: it hands them to its children by value.
+    param(
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Bound,
+        [Parameter(Mandatory = $true)][int]$Repetitions,
+        [AllowEmptyString()][string]$MinTime
+    )
+    if ($Mode -eq 'app') {
+        if ($Role -ne 'Orchestrator') { return }
+        $stray = @($Bound.Keys | Where-Object { $_ -like 'Benchmark*' } | Sort-Object | ForEach-Object { "-$_" })
+        if ($stray.Count -gt 0) { throw "$($stray -join ', ') apply to bench mode only; app mode runs TaskSmack, not the benchmarks." }
+        return
+    }
+    if ($Repetitions -lt 1) { throw "-BenchmarkRepetitions must be 1 or more (got $Repetitions)." }
+    if (-not (Test-BenchmarkMinTime $MinTime)) { throw "-BenchmarkMinTime '$MinTime' is not a Google Benchmark minimum time: use seconds such as 0.5s, or an iteration count such as 10x." }
+}
+
 function Format-AppExitFailure {
     # The failure text for an app that exited when it should not have: the "already running" exit
     # code gets its own explanation (#2250); any other code gets $Otherwise.
@@ -375,6 +415,10 @@ function Invoke-AppCapture {
     # The app runs with TASKSMACK_CONFIG_DIR set to a fresh temporary directory, removed once it has
     # exited (#2250), unless -UseUserConfig asks for the config it would use on its own. An app that
     # exits with the "already running" code fails the capture with that reason.
+    #
+    # TEMP and TMP point at a private folder too (#4229), so the app's tasksmack-debug.log, which it
+    # opens with truncation, is not the user's own %TEMP%\tasksmack-debug.log. Once the app is gone
+    # that log is copied to -AppLogPath (the capture's artifacts), when one is given.
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][scriptblock]$StartTrace,
@@ -385,7 +429,8 @@ function Invoke-AppCapture {
         [int]$MainWindowTimeoutSeconds = 60,
         [int]$InteractiveTimeoutSeconds = 14400,
         [ValidateSet('Normal', 'Hidden')][string]$WindowStyle = 'Normal',
-        [switch]$UseUserConfig
+        [switch]$UseUserConfig,
+        [string]$AppLogPath
     )
     Initialize-TokenInfoType # before the trace starts, so the compile is not recorded in it
     $result = [ordered]@{
@@ -399,6 +444,8 @@ function Invoke-AppCapture {
         WarmupSeconds  = if ($IncludeStartup) { 0 } else { $WarmupSeconds }
         MainWindowSeen = $null
         ConfigDirectory = $null
+        TempDirectory  = $null
+        AppLog         = $null
         StartUtc       = (Get-Date).ToUniversalTime().ToString('o')
         TraceStartUtc  = $null
         TraceStopUtc   = $null
@@ -406,6 +453,7 @@ function Invoke-AppCapture {
     }
     $proc = $null
     $configDir = $null
+    $appTemp = $null
     $traceRunning = $false
     $completed = $false
     # Dot-sourced (. $stopTraceNow), so it updates $traceRunning in this scope.
@@ -425,15 +473,24 @@ function Invoke-AppCapture {
         if (-not $UseUserConfig) { $configDir = New-ProfileConfigDirectory }
         $result.ConfigDirectory = if ($configDir) { $configDir } else { 'the user config (-UseUserConfig)' }
         Write-Host "Config directory: $($result.ConfigDirectory)"
+        $appTemp = Join-Path $(if ($configDir) { $configDir } else { New-ProfileConfigDirectory }) 'temp'
+        New-Item -ItemType Directory -Force -Path $appTemp | Out-Null
+        $result.TempDirectory = $appTemp
         if ($IncludeStartup) { . $startTraceNow }
         # The app inherits this process's environment; restored at once, so nothing else sees it.
         $savedConfigDir = $env:TASKSMACK_CONFIG_DIR
+        $savedTemp = $env:TEMP
+        $savedTmp = $env:TMP
         try {
             if ($configDir) { $env:TASKSMACK_CONFIG_DIR = $configDir }
+            $env:TEMP = $appTemp
+            $env:TMP = $appTemp
             $proc = Start-Process -FilePath $BinaryPath -PassThru -WindowStyle $WindowStyle
         }
         finally {
             $env:TASKSMACK_CONFIG_DIR = $savedConfigDir
+            $env:TEMP = $savedTemp
+            $env:TMP = $savedTmp
         }
         $null = $proc.Handle # keep a handle so ExitCode is available after exit
         $result.Pid = $proc.Id
@@ -502,8 +559,18 @@ function Invoke-AppCapture {
         }
         # The run's own config directory goes once the app is gone; one still running keeps it (and
         # its lock) until it closes, so it is left for the temp folder's own cleanup then.
-        if ($configDir -and ($null -eq $proc -or $proc.HasExited)) {
-            Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue
+        $appGone = $null -eq $proc -or $proc.HasExited
+        if ($appGone -and $AppLogPath -and $appTemp) {
+            $appLog = Join-Path $appTemp 'tasksmack-debug.log'
+            if (Test-Path -LiteralPath $appLog) {
+                try { Copy-Item -LiteralPath $appLog -Destination $AppLogPath -Force; $result.AppLog = $AppLogPath }
+                catch { Write-Warning "Could not keep the app's log at ${AppLogPath}: $($_.Exception.Message)" }
+            }
+        }
+        if ($appGone -and $appTemp) {
+            # Without a config directory of its own (-UseUserConfig) the private temp folder's parent is the root.
+            $root = if ($configDir) { $configDir } else { Split-Path -Parent $appTemp }
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     if ($proc.HasExited) { $result.ExitCode = $proc.ExitCode }

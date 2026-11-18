@@ -13,7 +13,11 @@
 # Modes:
 #   app   — launch TaskSmack, let it start up and warm up, then attach perf and record its
 #           steady state until it exits (or for --duration seconds). Default preset: profile.
-#   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: benchmark.
+#   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: profile (-O2 -g,
+#           frame pointers kept: it builds the benchmarks too), as profile-etw.ps1's win-profile (#4222).
+#           Default filter: BM_ProcessModel_Refresh$ alone, as profile-etw.ps1's (#4223): one benchmark, since
+#           several together skew the percentages. A survey of the probes and models, for a first look:
+#             --bench-filter 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 #
 # App-mode options:
 #   --warmup <seconds>   Once TaskSmack's main loop is running, wait this long before perf
@@ -112,7 +116,8 @@ DURATION_SECONDS=0
 INCLUDE_STARTUP=0
 USE_USER_CONFIG=0
 APP_OPTION_GIVEN=""
-BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
+BENCH_FILTER='BM_ProcessModel_Refresh$' # one benchmark (#4223); the survey filter is in the help
+BENCH_OPTION_GIVEN=""
 BENCH_REPS=5
 BENCH_MIN_TIME="0.5s"
 CALL_GRAPH=""
@@ -121,9 +126,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --preset)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; PRESET="$2";        shift 2 ;;
         --skip-build)   SKIP_BUILD=1;        shift   ;;
-        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  shift 2 ;;
-        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    shift 2 ;;
-        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; shift 2 ;;
+        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; BENCH_OPTION_GIVEN="$1"; shift 2 ;;
         --warmup)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; WARMUP_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --duration)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --include-startup) INCLUDE_STARTUP=1; APP_OPTION_GIVEN="$1"; shift ;;
@@ -138,6 +143,13 @@ if [[ -n "${CALL_GRAPH}" && ! "${CALL_GRAPH}" =~ ^(fp|lbr|dwarf(,[1-9][0-9]*)?)$
     echo "ERROR: --call-graph takes fp, lbr, dwarf or dwarf,<stack bytes>, not '${CALL_GRAPH}'" >&2
     exit 1
 fi
+# Each mode refuses the other's options (#4212): an app capture used to run with a --bench-filter ignored.
+if [[ "${MODE}" = "app" && -n "${BENCH_OPTION_GIVEN}" ]]; then
+    echo "ERROR: ${BENCH_OPTION_GIVEN} applies to bench mode only" >&2
+    exit 1
+fi
+[[ "${BENCH_REPS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: --bench-reps must be a whole number of 1 or more" >&2; exit 1; }
+[[ "${BENCH_MIN_TIME}" =~ ^[0-9]+(\.[0-9]+)?(s|x)$ ]] || { echo "ERROR: --bench-min-time takes Google Benchmark's form: seconds (0.5s) or iterations (100x)" >&2; exit 1; }
 if [[ "${MODE}" != "app" && -n "${APP_OPTION_GIVEN}" ]]; then
     echo "ERROR: ${APP_OPTION_GIVEN} applies to app mode only" >&2
     exit 1
@@ -154,7 +166,7 @@ fi
 
 # Default preset depends on mode
 if [[ -z "${PRESET}" ]]; then
-    PRESET=$([ "${MODE}" = "app" ] && echo "profile" || echo "benchmark")
+    PRESET="profile" # both modes (#4222): frame pointers and -g; benchmark (-O3, no -g) is for timing
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -295,6 +307,7 @@ COMPILE_DB="${BUILD_DIR}/compile_commands.json"
 COMPILE_TU=""
 COMPILE_COMMAND=""
 COMPILE_FLAGS=""
+COMPILE_SOURCE="" # own: a file of the profiled binary; other: another target's, a sample only (#4215)
 COMPILE_NOTE=""
 if [[ ! -f "${COMPILE_DB}" ]]; then
     COMPILE_NOTE="no ${COMPILE_DB}; reconfigure the preset to get the full compile command"
@@ -316,12 +329,13 @@ def from_target(e):
     return f"/{target}.dir/" in e.get("output", "")
 
 def rank(e):
-    # The binary's own main.cpp first, then any of its src/ files, then any src/ file.
+    # The binary's own main.cpp first, then any of its own files (benchmarks/ for TaskSmackBenchmarks, #4215),
+    # then a src/ file of another target, which is only a sample of the build's flags.
     if from_target(e) and e["file"].endswith("/src/main.cpp"):
         return 0
     return 1 if from_target(e) else 2
 
-candidates = sorted((e for e in entries if is_src(e)), key=rank)
+candidates = sorted((e for e in entries if from_target(e) or is_src(e)), key=rank)
 if not candidates:
     sys.exit(1)
 entry = candidates[0]
@@ -342,12 +356,14 @@ while i < len(args):
 print(entry["file"])
 print(shlex.join(args))
 print(" ".join(flags))
+print("own" if from_target(entry) else "other")
 PY
 )"
     if [[ -n "${COMPILE_INFO}" ]]; then
         COMPILE_TU="$(sed -n 1p <<<"${COMPILE_INFO}")"
         COMPILE_COMMAND="$(sed -n 2p <<<"${COMPILE_INFO}")"
         COMPILE_FLAGS="$(sed -n 3p <<<"${COMPILE_INFO}")"
+        COMPILE_SOURCE="$(sed -n 4p <<<"${COMPILE_INFO}")"
     else
         COMPILE_NOTE="no src/ translation unit found in ${COMPILE_DB}"
     fi
@@ -415,7 +431,11 @@ info "CXX flags:  ${CXX_FLAGS:-<unknown>} (CMAKE_CXX_FLAGS* cache entries only)"
 info "Compiler:   ${CXX_COMPILER:-<unknown>}"
 if [[ -n "${COMPILE_FLAGS}" ]]; then
     info "Compiled:   ${COMPILE_FLAGS}"
-    info "            (from ${COMPILE_TU#"${REPO_ROOT}/"}; full command in the log)"
+    if [[ "${COMPILE_SOURCE}" == "own" ]]; then
+        info "            (from ${COMPILE_TU#"${REPO_ROOT}/"}; full command in the log)"
+    else
+        info "            (a sample from another target: ${COMPILE_TU#"${REPO_ROOT}/"}; $(basename "${BINARY}")'s own files weren't found in compile_commands.json)"
+    fi
 else
     echo "NOTE: ${COMPILE_NOTE}; only the CMAKE_CXX_FLAGS* cache entries above are known, which miss" >&2
     echo "      add_compile_options()/target_compile_options() flags such as -march or -stdlib." >&2
@@ -448,6 +468,7 @@ PERF_VERSION="$(perf --version 2>/dev/null || echo unknown)"
     echo "CXX_COMPILER=${CXX_COMPILER}"
     if [[ -n "${COMPILE_FLAGS}" ]]; then
         echo "COMPILE_TU=${COMPILE_TU}"
+        echo "COMPILE_SOURCE=${COMPILE_SOURCE}"
         echo "COMPILE_FLAGS=${COMPILE_FLAGS}"
         echo "COMPILE_COMMAND=${COMPILE_COMMAND}"
     else
@@ -675,18 +696,21 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
     # unexpected error) rather than only on the success path -- die() calls exit
     # immediately, so an `rm -f` placed after the check it guards would never run.
     trap 'rm -f "${PERF_SCRIPT_OUT}" "${PERF_SCRIPT_ERR}"; remove_config_dir' EXIT
-    # Separate stdout/stderr into files rather than piping into `wc -l` with stderr
-    # discarded: under `set -e`+`pipefail`, a genuine `perf script` failure (not just an
-    # empty trace) would otherwise abort the script right here with no diagnostic at all,
-    # since the failure surfaces as this command's own exit status, not as sample count 0.
-    # -G (hide call graph) makes this an accurate one-line-per-sample count: without it,
-    # DWARF call-graph output emits one line per stack frame, so `wc -l` on the default
-    # output counts frames, not samples (confirmed: 38855 frame-lines vs. 11810 actual
-    # samples on the same trace, per perf record's own reported count).
-    if ! perf script -G -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
-        die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
+    # The count from perf report --stats, which reads the file's event headers without resolving a symbol or
+    # walking a stack, so it stays quick on a large trace (#4224): its "SAMPLE events:" line. Separate
+    # stdout/stderr files rather than a pipe: under `set -e`+`pipefail` a real perf failure would stop the
+    # script here with no diagnostic. A perf whose --stats has no such line falls back to counting
+    # `perf script -G` lines, one per sample (-G hides the call graph's one line per frame).
+    if ! perf report --stats -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
+        die "perf report --stats failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
     fi
-    SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
+    SAMPLE_COUNT="$(awk '/SAMPLE events:/ { print $NF; exit }' "${PERF_SCRIPT_OUT}")"
+    if [[ ! "${SAMPLE_COUNT}" =~ ^[0-9]+$ ]]; then
+        if ! perf script -G -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
+            die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
+        fi
+        SAMPLE_COUNT="$(wc -l < "${PERF_SCRIPT_OUT}")"
+    fi
     if [[ "${SAMPLE_COUNT}" -eq 0 ]]; then
         die "perf captured zero samples (event=${PERF_EVENT}). The trace at ${DATA_FILE} is empty and unusable. This usually means the workload exited before perf attached, or ran too briefly at 997 Hz to catch anything -- try a longer-running workload or a lower -F rate."
     fi
@@ -694,6 +718,13 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
 fi
 
 # ── done ──────────────────────────────────────────────────────────────────────
+# A failed capture says so (#4211): it used to print "Capture complete" and "Next steps" and exit non-zero.
+if [[ "${PERF_EXIT_CODE}" -ne 0 ]]; then
+    echo "ERROR: the capture failed (exit ${PERF_EXIT_CODE}); ${DATA_FILE} may be partial or empty. See ${LOG_FILE}${APP_LOG:+, and the output of TaskSmack itself in ${APP_LOG}}." >&2
+    echo "PERF_DATA=${DATA_FILE}"
+    echo "LOG=${LOG_FILE}"
+    exit "${PERF_EXIT_CODE}"
+fi
 print_step "Capture complete"
 echo ""
 echo "PERF_DATA=${DATA_FILE}"

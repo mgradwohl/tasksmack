@@ -12,7 +12,7 @@
 #
 # Training (phase 1) runs two workloads on the instrumented build:
 #   1. the benchmark suite (TaskSmackBenchmarks), for the Domain/Platform hot paths;
-#   2. the headless UI training driver (TaskSmackUiTraining, #880): the real panels, every main tab,
+#   2. the headless UI training driver (TaskSmackUiTraining, #880): the real panels, six main tabs (not Connections or Users, UiTrainingPlan.h),
 #      by the weights in src/Training/UiTrainingPlan.h, once on the real probes and once on the
 #      synthetic large-UI machine (#1413). No window, no input: it never takes a process action.
 #
@@ -139,7 +139,7 @@ phase_generate() {
         die "UI training binary not found: ${UI_TRAINING_BIN}"
     fi
 
-    # Every main tab, by the weights in src/Training/UiTrainingPlan.h, for a fixed number of frames;
+    # The six main tabs the plan trains (not Connections or Users), by the weights in src/Training/UiTrainingPlan.h, for a fixed number of frames;
     # once per probe set (TASKSMACK_SYNTHETIC is read once per process). Each run writes its own
     # .profraw (%p) when it exits.
     local probes
@@ -245,16 +245,24 @@ main() {
             echo "  Profile data        : profiles/tasksmack.profdata"
             echo "  Optimized binary    : build/pgo-use/bin/TaskSmack"
             ;;
+        -h|--help|help)
+            usage
+            exit 0 # help asked for is a success (#4216), as the other scripts' -h
+            ;;
         *)
+            usage
+            exit 1
+            ;;
+    esac
+}
+
+usage() {
             echo "Usage: $0 [generate|merge|use|baseline|all]"
             echo "  generate  – instrumented build + collect profile data (benchmarks + headless UI training)"
             echo "  merge     – merge *.profraw files into tasksmack.profdata"
             echo "  use       – build PGO-optimized binary from tasksmack.profdata"
             echo "  baseline  – build pgo-use's flags without profile data, to compare against"
             echo "  all       – run generate, merge and use in order (default)"
-            exit 1
-            ;;
-    esac
 }
 
 main "$@"

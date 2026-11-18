@@ -109,7 +109,7 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
         ImGui::TextWrapped("%s", text.c_str());
         ImGui::PopStyleColor();
         // Another user's process: an administrator can read it (#2309).
-        Detail::drawAuthenticateToReadButton(*this);
+        Detail::drawAuthenticateToReadButton(*this, "environment");
         return;
     }
     if (m_Truncated)
