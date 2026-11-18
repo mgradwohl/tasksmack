@@ -24,6 +24,10 @@ constexpr std::string_view LABEL = "Command Line: ";
 /// U+65E5, three bytes in UTF-8.
 constexpr std::string_view WIDE_CHARACTER = "\xE6\x97\xA5";
 constexpr std::string_view END_MARKER = "<end>";
+/// How long longValue() is, well past the buffer.
+constexpr std::size_t LONG_VALUE_BYTES = std::size_t{10} * 1024;
+/// A command line of a normal length.
+constexpr const char* NORMAL_COMMAND = R"(C:\Windows\System32\svchost.exe -k netsvcs)";
 
 /// About 10 KB of value whose WIDE_CHARACTER starts one byte before ImGui's temp buffer runs out, once
 /// LABEL is in front of it, so a cut at the buffer's size splits it.
@@ -33,7 +37,7 @@ std::string longValue(std::size_t tempBufferBytes)
     const std::size_t characterAt = tempBufferBytes - 2 - LABEL.size();
     std::string value(characterAt, 'a');
     value.append(WIDE_CHARACTER);
-    value.append(10U * 1024U - value.size(), 'b');
+    value.append(LONG_VALUE_BYTES - value.size(), 'b');
     value.append(END_MARKER);
     return value;
 }
@@ -136,8 +140,8 @@ TEST_F(LabelledTextRenderTest, EveryVariantDrawsALongValueWhole)
 
 TEST_F(LabelledTextRenderTest, NormalTextDrawsAsTheFormattedCallDid)
 {
-    const std::string formatted = runFrame([] { ImGui::Text("Command: %s", "C:\\Windows\\System32\\svchost.exe -k netsvcs"); });
-    const std::string labelled = runFrame([] { labelledText("Command: ", "C:\\Windows\\System32\\svchost.exe -k netsvcs"); });
+    const std::string formatted = runFrame([] { ImGui::Text("Command: %s", NORMAL_COMMAND); });
+    const std::string labelled = runFrame([] { labelledText("Command: ", NORMAL_COMMAND); });
     EXPECT_EQ(labelled, formatted);
     EXPECT_EQ(runFrame([] { labelledText({}, ""); }), runFrame([] { ImGui::Text("%s", ""); }));
 }

@@ -45,34 +45,42 @@ namespace Detail
     return static_cast<int>(utf8PrefixLength(text, static_cast<std::size_t>(std::numeric_limits<int>::max())));
 }
 
+/// @p prefix, @p value and @p suffix joined in the scratch buffer, which is null-terminated.
+[[nodiscard]] inline const std::string& joined(std::string_view prefix, std::string_view value, std::string_view suffix)
+{
+    std::string& scratch = labelledTextScratch();
+    static_cast<void>(joinLabelledText(scratch, prefix, value, suffix));
+    return scratch;
+}
+
 } // namespace Detail
 
 /// ImGui::Text() of @p prefix, @p value and @p suffix, with no limit on the value's length.
 inline void labelledText(std::string_view prefix, std::string_view value, std::string_view suffix = {})
 {
-    const std::string_view text = joinLabelledText(Detail::labelledTextScratch(), prefix, value, suffix);
-    ImGui::Text("%.*s", Detail::imguiTextLength(text), text.data());
+    const std::string& text = Detail::joined(prefix, value, suffix);
+    ImGui::Text("%.*s", Detail::imguiTextLength(text), text.c_str());
 }
 
 /// ImGui::TextColored() of @p prefix, @p value and @p suffix, with no limit on the value's length.
 inline void labelledTextColored(const ImVec4& color, std::string_view prefix, std::string_view value, std::string_view suffix = {})
 {
-    const std::string_view text = joinLabelledText(Detail::labelledTextScratch(), prefix, value, suffix);
-    ImGui::TextColored(color, "%.*s", Detail::imguiTextLength(text), text.data());
+    const std::string& text = Detail::joined(prefix, value, suffix);
+    ImGui::TextColored(color, "%.*s", Detail::imguiTextLength(text), text.c_str());
 }
 
 /// ImGui::TextDisabled() of @p prefix, @p value and @p suffix, with no limit on the value's length.
 inline void labelledTextDisabled(std::string_view prefix, std::string_view value, std::string_view suffix = {})
 {
-    const std::string_view text = joinLabelledText(Detail::labelledTextScratch(), prefix, value, suffix);
-    ImGui::TextDisabled("%.*s", Detail::imguiTextLength(text), text.data());
+    const std::string& text = Detail::joined(prefix, value, suffix);
+    ImGui::TextDisabled("%.*s", Detail::imguiTextLength(text), text.c_str());
 }
 
 /// ImGui::TextWrapped() of @p prefix, @p value and @p suffix, with no limit on the value's length.
 inline void labelledTextWrapped(std::string_view prefix, std::string_view value, std::string_view suffix = {})
 {
-    const std::string_view text = joinLabelledText(Detail::labelledTextScratch(), prefix, value, suffix);
-    ImGui::TextWrapped("%.*s", Detail::imguiTextLength(text), text.data());
+    const std::string& text = Detail::joined(prefix, value, suffix);
+    ImGui::TextWrapped("%.*s", Detail::imguiTextLength(text), text.c_str());
 }
 
 } // namespace UI::Widgets
