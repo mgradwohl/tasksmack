@@ -7,6 +7,7 @@
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcAddress.h"
+#include "WindowsProcessSnapshotSize.h"
 #include "WindowsProcessThreadsMath.h"
 
 #include <algorithm>
@@ -30,8 +31,6 @@ namespace
 
 /// STATUS_INFO_LENGTH_MISMATCH: the snapshot didn't fit (NTSTATUS is signed, hence the cast).
 constexpr LONG STATUS_INFO_LENGTH_MISMATCH_VALUE = static_cast<LONG>(0xC0000004L);
-constexpr std::size_t SNAPSHOT_INITIAL_BYTES = std::size_t{512} * 1024;
-constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = std::size_t{64} * 1024;
 /// Tries at a snapshot that fits before giving up: the process list grows between the calls.
 constexpr int MAX_SNAPSHOT_ATTEMPTS = 4;
 
@@ -116,7 +115,7 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
 
     if (m_Snapshot.empty())
     {
-        m_Snapshot.resize(SNAPSHOT_INITIAL_BYTES);
+        m_Snapshot.resize(PROCESS_SNAPSHOT_INITIAL_BYTES); // Kept between reads, so the first one alone can start short (#4277)
     }
     LONG status = STATUS_INFO_LENGTH_MISMATCH_VALUE;
     ULONG written = 0;
@@ -127,7 +126,7 @@ ThreadsReadResult WindowsProcessThreadsReader::readThreads(const ProcessTarget& 
         status = m_Api.ntQuerySystemInformation(SYSTEM_PROCESS_INFORMATION_CLASS, m_Snapshot.data(), size, &written);
         if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE)
         {
-            m_Snapshot.resize(std::max<std::size_t>(m_Snapshot.size(), written) + SNAPSHOT_HEADROOM_BYTES);
+            m_Snapshot.resize(grownProcessSnapshotBytes(m_Snapshot.size(), written));
         }
     }
     if (status < 0)

@@ -20,6 +20,7 @@
 #include "Platform/Windows/WindowsProcessMachineMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
+#include "Platform/Windows/WindowsProcessSnapshotSize.h"
 
 #include <gtest/gtest.h>
 
@@ -191,6 +192,8 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     int tableFillsTooSmall = 0; // Fills that report the table grew meanwhile
     int table6Calls = 0;
     bool failSnapshot = false;
+    std::size_t snapshotPaddingBytes = 0; ///< Written after the last entry (whose link is 0): a bigger snapshot (#4277)
+    int snapshotQueries = 0;
     // The detail caches' clock: still unless a test moves it, so no TTL runs out between two
     // enumerate() calls however slowly the test runs (#2054).
     std::chrono::steady_clock::time_point now;
@@ -211,6 +214,7 @@ HANDLE newHandle()
 
 LONG NTAPI fakeNtQuerySystemInformation(ULONG /*infoClass*/, PVOID buffer, ULONG length, PULONG returnLength)
 {
+    ++fake().snapshotQueries;
     if (fake().failSnapshot)
     {
         return STATUS_ACCESS_DENIED_NT;
@@ -221,7 +225,7 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG /*infoClass*/, PVOID buffer, ULONG
                                   ((p.name.size() + 1) * sizeof(wchar_t));
         return (bytes + 7U) & ~std::size_t{7};
     };
-    std::size_t needed = 0;
+    std::size_t needed = fake().snapshotPaddingBytes;
     for (const FakeProcess& p : fake().processes)
     {
         needed += entrySize(p);
@@ -1542,6 +1546,38 @@ TEST_F(WindowsProcessProbeSeamTest, WithoutTheMachineReadsTheArchitectureIsUnrea
     functions.system.nativeMachine = nullptr;
     fake().processMachine = MachineMath::MACHINE_I386;
     EXPECT_EQ(find(WindowsProcessProbe(functions).enumerate()).architecture, "x86");
+}
+
+// #4277: the first sample's query fits a desktop's 618 KiB snapshot, and one past the first buffer is queried twice
+// only on the first sample: the probe keeps the buffer it grew.
+TEST_F(WindowsProcessProbeSeamTest, TheFirstSampleFitsADesktopSnapshotAndLaterSamplesKeepTheSizeLearned)
+{
+    fake().snapshotPaddingBytes = std::size_t{618} * 1024;
+    WindowsProcessProbe desktop(fakeFunctions());
+    EXPECT_EQ(find(desktop.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotQueries, 1) << "a 618 KiB snapshot fits the first buffer";
+
+    fake().snapshotPaddingBytes = Windows::PROCESS_SNAPSHOT_INITIAL_BYTES + (std::size_t{512} * 1024);
+    fake().snapshotQueries = 0;
+    WindowsProcessProbe bigger(fakeFunctions());
+    EXPECT_EQ(find(bigger.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotQueries, 2) << "a snapshot past the first buffer grows it once";
+    fake().snapshotQueries = 0;
+    EXPECT_EQ(find(bigger.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotQueries, 1) << "the next sample starts from the size the first one learned";
+}
+
+TEST_F(WindowsProcessProbeSeamTest, ASnapshotThatNeverFitsIsGivenUpOnNotLoopedOn)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.system.ntQuerySystemInformation = [](ULONG /*infoClass*/, PVOID /*buffer*/, ULONG length, PULONG returnLength) -> LONG
+    {
+        ++fake().snapshotQueries;
+        *returnLength = length + 1; // Always a byte more than the buffer: the list outgrows every retry
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
+    };
+    EXPECT_TRUE(WindowsProcessProbe(functions).enumerate().empty());
+    EXPECT_EQ(fake().snapshotQueries, 6);
 }
 
 TEST_F(WindowsProcessProbeSeamTest, AFailedSnapshotEnumeratesNothing)

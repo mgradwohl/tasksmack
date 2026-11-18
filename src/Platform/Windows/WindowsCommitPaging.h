@@ -11,6 +11,7 @@
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsDevicePaths.h"
 #include "Platform/Windows/WindowsNtQuery.h"
+#include "Platform/Windows/WindowsProcessSnapshotSize.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -49,8 +50,8 @@ inline constexpr LONG STATUS_INFO_LENGTH_MISMATCH_VALUE = static_cast<LONG>(0xC0
 /// buffer the request names is too small (#3483); grown the same way.
 inline constexpr LONG STATUS_BUFFER_TOO_SMALL_VALUE = static_cast<LONG>(0xC0000023L);
 /// The first buffer for a SystemProcessInformation snapshot: every process with its threads, which grows
-/// it when they don't fit.
-inline constexpr std::size_t PROCESS_INFORMATION_INITIAL_BYTES = std::size_t{512} * 1024;
+/// it when they don't fit. The size every reader of the whole snapshot starts from (#4277).
+inline constexpr std::size_t PROCESS_INFORMATION_INITIAL_BYTES = Windows::PROCESS_SNAPSHOT_INITIAL_BYTES;
 
 /// The calls readCommitPaging() makes. Defaults to the real ones; tests substitute fakes.
 struct Functions
@@ -195,7 +196,7 @@ template<typename Query>
         if (status == STATUS_INFO_LENGTH_MISMATCH_VALUE || status == STATUS_BUFFER_TOO_SMALL_VALUE)
         {
             // The list can grow between calls: take what it asked for plus headroom, at least double.
-            const std::size_t next = std::max<std::size_t>(buffer.size() * 2, static_cast<std::size_t>(returned) + (returned / 4));
+            const std::size_t next = Windows::grownProcessSnapshotBytes(buffer.size(), returned);
             if (next > MAX_BYTES)
             {
                 return std::nullopt;

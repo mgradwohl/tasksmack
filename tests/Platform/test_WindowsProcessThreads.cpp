@@ -5,6 +5,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
+#include "Platform/Windows/WindowsProcessSnapshotSize.h"
 #include "Platform/Windows/WindowsProcessThreads.h"
 #include "Platform/Windows/WindowsProcessThreadsMath.h"
 
@@ -464,6 +465,27 @@ TEST_F(WindowsProcessThreadsReaderTest, TheSnapshotGrowsUntilItFits)
     const ThreadsReadResult result = reader.readThreads(TARGET);
     EXPECT_EQ(result.status, ThreadsReadStatus::Failed);
     EXPECT_EQ(FakeWin::processQueries, 4);
+}
+
+// #4277: a desktop's 618 KiB snapshot fits the first buffer, and a bigger one is queried twice only on the first
+// read: the reader keeps the size it learned.
+TEST_F(WindowsProcessThreadsReaderTest, TheFirstReadFitsADesktopSnapshotAndALaterReadKeepsTheSizeLearned)
+{
+    FakeWin::snapshot.resize(std::size_t{618} * 1024); // The entries, then padding past the last one (its link is 0)
+    WindowsProcessThreadsReader desktop(FakeWin::functions());
+    EXPECT_EQ(desktop.readThreads(TARGET).status, ThreadsReadStatus::Ok);
+    EXPECT_EQ(FakeWin::processQueries, 1) << "a 618 KiB snapshot fits the first buffer";
+
+    FakeWin::snapshot.resize(PROCESS_SNAPSHOT_INITIAL_BYTES + (std::size_t{512} * 1024));
+    FakeWin::processQueries = 0;
+    WindowsProcessThreadsReader bigger(FakeWin::functions());
+    EXPECT_EQ(bigger.readThreads(TARGET).status, ThreadsReadStatus::Ok);
+    EXPECT_EQ(FakeWin::processQueries, 2) << "a snapshot past the first buffer grows it once";
+    FakeWin::processQueries = 0;
+    const ThreadsReadResult again = bigger.readThreads(TARGET);
+    EXPECT_EQ(again.status, ThreadsReadStatus::Ok);
+    EXPECT_EQ(again.threads.size(), 4U);
+    EXPECT_EQ(FakeWin::processQueries, 1) << "the next read starts from the size the first one learned";
 }
 
 TEST_F(WindowsProcessThreadsReaderTest, AFailedQueryIsFailedAndAnUnreadableBootTimeIsUnknown)

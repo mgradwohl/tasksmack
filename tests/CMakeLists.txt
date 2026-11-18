@@ -896,6 +896,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
+    Platform/WindowsMath/test_WindowsProcessSnapshotSize.cpp  # the first SystemProcessInformation buffer and its growth (#4277)
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupImpact.cpp  # the WDI StartupInfo sign-in measurements (#3073)
     Platform/WindowsMath/test_WindowsScheduledTasksMath.cpp  # scheduled tasks' triggers, owners and wording (#3424)
