@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -311,6 +312,21 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     std::ofstream(nobodys) << "cookie";
     ASSERT_EQ(::chown(nobodys.c_str(), account, static_cast<gid_t>(-1)), 0);
     std::filesystem::permissions(nobodys, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    // Whether the kernel lets that account open its own file here at all, with only the filesystem uid switched. CI's
+    // root pass refused it (the #4286 run) for a reason the test can't see; then the switch is untestable here, and the
+    // errno says why. When the kernel allows it, openAsUser() must too, or the test fails.
+    static_cast<void>(::setfsuid(account));
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int direct = ::open(nobodys.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+    const int directError = errno;
+    static_cast<void>(::setfsuid(0));
+    if (direct < 0)
+    {
+        std::filesystem::remove_all(dir);
+        GTEST_SKIP() << "with the filesystem uid " << account
+                     << ", the kernel refuses its own 0600 file here: " << std::system_category().message(directError);
+    }
+    ::close(direct);
     const int own = openAsUser(nobodys.string(), account);
     ASSERT_GE(own, 0) << "that account may read its own 0600 file";
     EXPECT_EQ(readOwnedFile(own, account, MOST_XAUTHORITY_BYTES), "cookie");
