@@ -696,14 +696,20 @@ TEST(WindowsDumpFolderTest, TheDefaultFolderIsRefusedWithoutAPlainProgramData)
 TEST(WindowsDumpFolderTest, TheDefaultFolderIsRefusedUnderAProgramDataOwnedByAUser)
 {
     const ScratchFolder scratch;
+    // Owned by this account explicitly, which any token may set: an elevated runner's own folders would otherwise be
+    // owned by Administrators (its default owner), which the check trusts.
+    const std::string me = ownSidText();
+    ASSERT_FALSE(me.empty());
+    const std::filesystem::path userOwned = scratch.path() / L"ProgramData";
+    ASSERT_TRUE(makeFolderWith(userOwned, std::format("O:{0}D:P(A;OICI;FA;;;{0})", me))) << GetLastError();
     AdminDumpFolderOptions realRootCheck = testFolderOptions();
     realRootCheck.rootOwnerTrusted = {};
-    const auto refused = makeAdminDumpFolder(scratch.path(), realRootCheck);
+    const auto refused = makeAdminDumpFolder(userOwned, realRootCheck);
     ASSERT_FALSE(refused.has_value());
     EXPECT_TRUE(refused.error().contains("isn't owned by SYSTEM, TrustedInstaller or Administrators")) << refused.error();
-    EXPECT_TRUE(isEmptyFolder(scratch.path()));
+    EXPECT_TRUE(isEmptyFolder(userOwned));
 
-    const auto ownScratch = openFolderByPath(scratch.path(), READ_CONTROL);
+    const auto ownScratch = openFolderByPath(userOwned, READ_CONTROL);
     ASSERT_TRUE(ownScratch.has_value()) << ownScratch.error();
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(ownScratch->get()), std::optional(false));
     // The Windows folder is TrustedInstaller's: trusted. Read only, never written.
