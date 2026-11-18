@@ -1549,12 +1549,18 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
     {
         // The process, not only its path (#4021): its check binds to the file its image was mapped from.
         const WindowsSignature::ImageProcess process{.pid = counters.pid, .startTimeTicks = counters.startTimeTicks};
-        if (!cache.signatureRequested)
+        if (!cache.signatureRequested || cache.signatureKey.empty())
         {
-            m_Signatures->request(cache.image.path, process);
-            cache.signatureRequested = true;
-            // Asked for again every sample until it is in (#4059), so the worker's key is made once, here (#4276)
-            cache.signatureKey = WindowsSignature::SignatureWorker::keyFor(cache.image.path, process);
+            // Asked for again every sample until it is in (#4059), so the worker's key is made once, here (#4276). In
+            // this order, so a throw anywhere (the key, or the request, allocating) leaves the next sample to try the
+            // whole of it again: the key is made and kept first, the check asked for next, and the flag set last.
+            std::string key = WindowsSignature::SignatureWorker::keyFor(cache.image.path, process);
+            cache.signatureKey = std::move(key);
+            if (!cache.signatureRequested)
+            {
+                m_Signatures->request(cache.image.path, process);
+                cache.signatureRequested = true;
+            }
         }
         // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
         cache.signature = m_Signatures->find(cache.image.path, process, cache.signatureKey, &cache.image.publisher);

@@ -1223,6 +1223,35 @@ TEST_F(SignatureBindingTest, AFindWithTheCallersKeyAnswersAsAFindThatMakesItAndR
     EXPECT_EQ(checksOf("C:\\renamed.exe"), 1);
 }
 
+// #4280 review: an empty key (a caller whose key was never made) is never looked up or filed. Two processes asking
+// with one can't share an entry: each is filed under, and answered from, the key find() makes for it.
+TEST_F(SignatureBindingTest, AFindWithAnEmptyKeyIsAnsweredUnderTheKeyFindMakesNotUnderTheEmptyOne)
+{
+    setStamp("C:\\app.exe", 1);
+    setStamp("C:\\renamed.exe", 2);
+    bindTo(7, "C:\\renamed.exe");
+    bindTo(8, "C:\\app.exe");
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess renamed{.pid = 7, .startTimeTicks = 100};
+    const ImageProcess runsTheFileThere{.pid = 8, .startTimeTicks = 200};
+    const std::string empty;
+    worker.beginSample();
+    EXPECT_FALSE(worker.find("C:\\app.exe", renamed, empty).has_value());
+    EXPECT_FALSE(worker.find("C:\\app.exe", runsTheFileThere, empty).has_value());
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.pathCount(), 2U) << "one entry a process, none under the empty key";
+
+    std::string publisher;
+    EXPECT_EQ(worker.find("C:\\app.exe", renamed, empty, &publisher).value_or(SignatureCheck{}).signer, "Signer of C:\\renamed.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\renamed.exe");
+    EXPECT_EQ(worker.find("C:\\app.exe", runsTheFileThere, empty, &publisher).value_or(SignatureCheck{}).signer, "Signer of C:\\app.exe");
+    EXPECT_EQ(publisher, "Publisher of C:\\app.exe") << "each process's own answer";
+    EXPECT_EQ(worker.find("C:\\app.exe", renamed, SignatureWorker::keyFor("C:\\app.exe", renamed)).value_or(SignatureCheck{}).signer,
+              "Signer of C:\\renamed.exe")
+        << "the same entry the made key names";
+    EXPECT_EQ(worker.pathCount(), 2U);
+}
+
 // The publisher the probe reads once the worker has ended (#3862) goes through the same binding: the bound file's,
 // none when it can't be bound, and the path's only with no binding to make (no openProcessImage, or no process).
 TEST_F(SignatureBindingTest, ThePublisherReadWithoutTheWorkerIsTheBoundFilesToo)

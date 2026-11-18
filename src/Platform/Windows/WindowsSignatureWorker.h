@@ -198,10 +198,15 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     }
 
     /// As find(@p path, @p process), with @p key, keyFor(@p path, @p process), made by the caller once (#4276). The
-    /// table copies it only when the path is requested again.
+    /// table copies it only when the path is requested again. An empty @p key is never looked up or filed (keyFor()
+    /// never makes one): the key is made here instead, as find(@p path, @p process) makes it.
     [[nodiscard]] std::optional<SignatureCheck>
     find(std::string_view path, const ImageProcess& process, const std::string& key, std::string* publisher = nullptr)
     {
+        if (key.empty())
+        {
+            return findFor(path, process, publisher);
+        }
         const std::scoped_lock lock(m_Mutex);
         return findLocked(path, process, key, publisher, [this, &key] { return copyKeyLocked(key); });
     }
