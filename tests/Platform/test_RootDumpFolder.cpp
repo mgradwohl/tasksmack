@@ -112,5 +112,39 @@ TEST_F(RootDumpFolderTest, AParentThatIsALinkIsRefused)
     EXPECT_TRUE(makePrivateFolder(link, FOLDER_NAME, ::geteuid()).has_value());
 }
 
+TEST_F(RootDumpFolderTest, TheFolderIsMadeInTheHomeWithoutItsTrailingSlashAndOnlyIfTakenByTheRefusalCheck)
+{
+    // #4262: the seam rootDumpFolder() uses with root's home, 0 and rootDumpRefusal(); a scratch home here.
+    const auto takes = [](const std::filesystem::path&) -> std::optional<std::string>
+    {
+        return std::nullopt;
+    };
+    EXPECT_EQ(rootDumpFolderIn(m_Parent.string() + "//", ::geteuid(), takes), m_Parent / FOLDER_NAME)
+        << "the trailing slashes go, so O_NOFOLLOW still refuses a home that is a link";
+    EXPECT_EQ(modeOf(m_Parent / FOLDER_NAME) & 0777, S_IRWXU);
+    const auto refuses = [](const std::filesystem::path&) -> std::optional<std::string>
+    {
+        return "a nodev mount";
+    };
+    EXPECT_EQ(rootDumpFolderIn(m_Parent.string(), ::geteuid(), refuses), std::filesystem::path{}) << "fail closed";
+    EXPECT_EQ(rootDumpFolderIn(m_Parent.string(), ::geteuid() + 1, takes), std::filesystem::path{}) << "not the owner's home";
+}
+
+/// As root only (CI's root pass, root_test_filter): rootDumpRefusal(), the real check, refuses a home under a folder
+/// anyone may write (/tmp), so no default is offered there.
+TEST(RootDumpFolderRootTest, ARootHomeUnderAFolderOthersMayWriteGetsNoDefault)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root";
+    }
+    const std::filesystem::path home = std::filesystem::temp_directory_path() / ("tasksmack-root-home-4262-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(home);
+    std::filesystem::permissions(home, std::filesystem::perms::owner_all);
+    EXPECT_EQ(rootDumpFolderIn(home.string() + "/", 0, &rootDumpRefusal), std::filesystem::path{});
+    std::error_code error;
+    std::filesystem::remove_all(home, error);
+}
+
 } // namespace
 } // namespace Platform::RootDumpFolder

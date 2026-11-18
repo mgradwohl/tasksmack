@@ -860,23 +860,11 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     const std::int32_t tracerBefore = syscalls().tracerPid(target.pid).value_or(0);
     spdlog::info("Writing a dump of PID {} with {} to {}", target.pid, gcore, file.string());
     // Under umask 077, so a file gdb makes anew (one swapped out of a shared folder: bfd recreates a non-empty one) is
-    // owner-only too (the second #4177 review). Process-wide for the run, which only narrows what anything else makes.
-    struct UmaskScope
-    {
-        mode_t previous = ::umask(S_IRWXG | S_IRWXO);
-        UmaskScope() = default;
-        UmaskScope(const UmaskScope&) = delete;
-        UmaskScope& operator=(const UmaskScope&) = delete;
-        UmaskScope(UmaskScope&&) = delete;
-        UmaskScope& operator=(UmaskScope&&) = delete;
-        ~UmaskScope()
-        {
-            ::umask(previous);
-        }
-    };
+    // owner-only too (the second #4177 review). Process-wide for the run, which only narrows what anything else makes;
+    // counted, so two dumps at once (the Processes panel's and Process Details') neither undo nor keep it (#4258).
     const ToolRun run = [&]
     {
-        const UmaskScope ownerOnly;
+        const LinuxCoreDump::OwnerOnlyUmask ownerOnly;
         return runCancellable(syscalls(), LinuxCoreDump::gcoreArgv(gcore, prefix.string(), target.pid), stopToken);
     }();
     if (run.spawnError)
