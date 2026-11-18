@@ -8,6 +8,7 @@
 #include <cerrno>
 #include <filesystem>
 #include <format>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -111,6 +112,33 @@ std::optional<std::string> rootDumpRefusal(const std::filesystem::path& director
     return LinuxCoreDump::userMountRefusal(directory, vfs.f_flag, static_cast<long>(fs.f_type));
 }
 
+std::filesystem::path
+rootDumpFolderIn(std::string homeText, uid_t owner, const std::function<std::optional<std::string>(const std::filesystem::path&)>& refusal)
+{
+    // Without a trailing "/": one would make open() follow a link the O_NOFOLLOW check is there to refuse.
+    while (homeText.size() > 1 && homeText.ends_with('/'))
+    {
+        homeText.pop_back();
+    }
+    const std::filesystem::path home(homeText);
+    std::filesystem::path folder = home / FOLDER_NAME;
+    std::optional<std::string> refused = makePrivateFolder(home, FOLDER_NAME, owner);
+    if (!refused.has_value())
+    {
+        refused = refusal(folder);
+    }
+    if (refused.has_value())
+    {
+        static std::atomic_flag warned; // once a session, not at every confirm
+        if (!warned.test_and_set())
+        {
+            spdlog::warn("No default dump folder: {} (#4181)", *refused);
+        }
+        return {};
+    }
+    return folder;
+}
+
 std::filesystem::path rootDumpFolder()
 {
     passwd entry{};
@@ -122,29 +150,7 @@ std::filesystem::path rootDumpFolder()
         spdlog::warn("No default dump folder: root's home isn't in the passwd database (#4181)");
         return {};
     }
-    // Without a trailing "/": one would make open() follow a link the O_NOFOLLOW check is there to refuse.
-    std::string homeText(entry.pw_dir);
-    while (homeText.size() > 1 && homeText.ends_with('/'))
-    {
-        homeText.pop_back();
-    }
-    const std::filesystem::path home(homeText);
-    std::filesystem::path folder = home / FOLDER_NAME;
-    std::optional<std::string> refusal = makePrivateFolder(home, FOLDER_NAME, 0);
-    if (!refusal.has_value())
-    {
-        refusal = rootDumpRefusal(folder);
-    }
-    if (refusal.has_value())
-    {
-        static std::atomic_flag warned; // once a session, not at every confirm
-        if (!warned.test_and_set())
-        {
-            spdlog::warn("No default dump folder: {} (#4181)", *refusal);
-        }
-        return {};
-    }
-    return folder;
+    return rootDumpFolderIn(entry.pw_dir, 0, &rootDumpRefusal);
 }
 
 } // namespace Platform::RootDumpFolder

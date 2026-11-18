@@ -21,6 +21,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform::SdlEnvironment
@@ -34,9 +35,10 @@ namespace Platform::SdlEnvironment
 /// (#4151): Mesa's driver and GBM backend paths, libglvnd's vendor files (JSON naming the .so) and vendor name,
 /// libdecor's plugins (Wayland decorations), and the Vulkan loader's drivers and layers. Under sudo, uid and euid are
 /// both 0, so neither glibc's secure mode nor the libraries' own getuid() != geteuid() checks drop them. A fixed list:
-/// unlike SDL's hints, these names don't change from release to release. A list can't name every library's variables;
-/// GTK's, through libdecor's GTK plugin, and PATH are #4158 and #4159.
-inline constexpr std::array<std::string_view, 21> LOADER_VARIABLES = {
+/// unlike SDL's hints, these names don't change from release to release. A list can't name every library's variables,
+/// and GTK also reads the user's own settings.ini, so GTK is kept out of the process instead (PRIVILEGED_SESSION_SETTINGS, #4254); its
+/// module and path variables are listed too, for any other GLib reader.
+inline constexpr std::array<std::string_view, 36> LOADER_VARIABLES = {
     "LIBGL_DRIVERS_PATH",
     "LIBGL_DRIVERS_DIR",
     "EGL_DRIVERS_PATH",
@@ -60,6 +62,42 @@ inline constexpr std::array<std::string_view, 21> LOADER_VARIABLES = {
     "GCONV_PATH",
     "XLOCALEDIR",
     "XLOCALELIBDIR",
+    // GTK's and GLib's modules (#4254): what a setcap session's GTK would dlopen(), and the folders it looks in.
+    "GTK_MODULES",
+    "GTK3_MODULES",
+    "GTK_PATH",
+    "GTK_EXE_PREFIX",
+    "GTK_DATA_PREFIX",
+    "GTK_IM_MODULE",
+    "GTK_IM_MODULE_FILE",
+    "GIO_EXTRA_MODULES",
+    "GIO_MODULE_DIR",
+    "GDK_PIXBUF_MODULEDIR",
+    "GDK_PIXBUF_MODULE_FILE",
+    "GSETTINGS_BACKEND",
+    "GSETTINGS_SCHEMA_DIR",
+    // Mesa's shader cache folders (#4285): llvmpipe maps the machine code it finds there executable.
+    "MESA_SHADER_CACHE_DIR",
+    "MESA_GLSL_CACHE_DIR",
+};
+
+/// What a session whose environment may be another user's sets, after both of main()'s scrubs (#4254, #4285), so no
+/// library loads code from what that user controls, their own files included:
+/// - SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0: SDL's Wayland window talks to the compositor itself (xdg-shell) and never
+///   loads libdecor, whose GTK plugin runs gtk_init_check(). GTK loads the modules its environment and the user's own
+///   ~/.config/gtk-3.0/settings.ini (gtk-modules=) name, and its setuid check compares uids and gids only, so a setcap
+///   session (cap_sys_ptrace, the FAQ's install) would run them with its capabilities. TaskSmack draws its own title
+///   bar there (Application). cmake/Dependencies.cmake makes sure SDL loads libdecor, so that the hint applies.
+/// - SDL_ENABLE_GTK=0: SDL itself never initialises GTK either (SDL_CanUseGtk()).
+/// - MESA_SHADER_CACHE_DISABLE=true, MESA_GLSL_CACHE_DISABLE=1 (older Mesa): Mesa's shader cache is the user's
+///   (their HOME or XDG_CACHE_HOME), and llvmpipe maps the machine code it finds there executable (#4285).
+inline constexpr std::array<std::pair<std::string_view, std::string_view>, 4> PRIVILEGED_SESSION_SETTINGS = {
+    {
+        {"SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR", "0"},
+        {"SDL_ENABLE_GTK", "0"},
+        {"MESA_SHADER_CACHE_DISABLE", "true"},
+        {"MESA_GLSL_CACHE_DISABLE", "1"},
+    },
 };
 
 /// libglvnd's per-screen vendor override, __GLX_FORCE_VENDOR_LIBRARY_<n>, matched by its prefix.
@@ -77,9 +115,17 @@ inline constexpr std::string_view FORCE_VENDOR_PREFIX = "__GLX_FORCE_VENDOR_LIBR
 [[nodiscard]] std::vector<std::string> removeSdlVariables(const char* const* environment,
                                                           const std::function<bool(const std::string&)>& unset);
 
-/// main()'s call, before any SDL call: when @p remove, removes every SDL variable from this process's environment.
-/// Not thread-safe (unsetenv), so first thing in main().
+/// Sets each of PRIVILEGED_SESSION_SETTINGS with @p set (#4254, #4285). @return Whether every one was set.
+[[nodiscard]] bool keepPrivilegedLoadersOut(const std::function<bool(const std::string&, const std::string&)>& set);
+
+/// main()'s call, before any SDL call: when @p remove, removes every SDL and loader variable from this process's
+/// environment. Not thread-safe (unsetenv), so first thing in main().
 void removeForThisProcess(bool remove);
+
+/// main()'s call after this scrub and RootEnvironment's allow-list (which would drop them): when @p apply,
+/// keepPrivilegedLoadersOut() on this process's environment, and TaskSmack stops if one can't be set. Not
+/// thread-safe (setenv).
+void keepPrivilegedLoadersOutOfThisProcess(bool apply);
 
 /// The names removeForThisProcess() removed, for runApp() to log.
 [[nodiscard]] const std::vector<std::string>& removedFromThisProcess() noexcept;

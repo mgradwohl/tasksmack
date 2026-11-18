@@ -103,9 +103,12 @@ TEST(ProcessDumpViewTest, ASessionWithNoDefaultFolderHasNone)
     EXPECT_EQ(DumpDetail::tempDumpDirectory(false), std::filesystem::temp_directory_path());
     EXPECT_EQ(DumpDetail::tempDumpDirectory(true), std::filesystem::path{});
 #ifdef __linux__
-    // Run as root, the default is root's own folder (#4181), not none: only a non-root view forced to no default has none.
-    EXPECT_EQ(DumpDetail::defaultDumpDirectory(true),
-              ::geteuid() == 0 ? Platform::RootDumpFolder::rootDumpFolder() : std::filesystem::path{});
+    // Not as root: there defaultDumpDirectory(true) would make root's real folder, and comparing it with itself proved
+    // nothing (#4262). rootDumpFolderIn() is tested on a scratch home instead (test_RootDumpFolder.cpp).
+    if (::geteuid() != 0)
+    {
+        EXPECT_EQ(DumpDetail::defaultDumpDirectory(true), std::filesystem::path{}) << "a non-root view forced to no default";
+    }
 #endif
     const DumpDetail::DefaultFolderFn none = &DumpDetail::tempDumpDirectory;
     EXPECT_EQ(DumpDetail::dumpDirectory("", true, none), std::filesystem::path{}) << "nothing remembered: none";

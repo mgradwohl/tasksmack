@@ -178,6 +178,7 @@ class RootTestFilterTests(unittest.TestCase):
         "SessionUserRootTest.*",
         "RootCapabilitiesRootTest.*",
         "LinuxProcessActionsRootTest.*",
+        "RootDumpFolderRootTest.*",  # rootDumpRefusal() fails closed on a home under /tmp (#4262)
         "RootEnvironmentRootTest.*",  # the real openAsUser() as root (#4255)
     )
 
