@@ -103,7 +103,7 @@ inline constexpr long long MOST_XAUTHORITY_BYTES = 1LL << 20;
 inline constexpr std::array<std::string_view, 3> USER_SIDE_NAMES = {"PATH", "XDG_DATA_DIRS", "XAUTHORITY"};
 
 /// Opens @p path read-only as @p uid would (#4187): setfsuid/setfsgid to them and their primary group for the open,
-/// then back to the ids this process had, without following a final link (O_NOFOLLOW) or blocking on a FIFO
+/// then back to the effective ids, without following a final link (O_NOFOLLOW) or blocking on a FIFO
 /// (O_NONBLOCK). -1 when it can't; TaskSmack stops if the ids can't be put back. Not thread-safe (setfsuid).
 [[nodiscard]] int openAsUser(const std::string& path, uid_t uid);
 
@@ -113,8 +113,8 @@ inline constexpr std::array<std::string_view, 3> USER_SIDE_NAMES = {"PATH", "XDG
 /// Whether @p folder is a folder (not a link) @p owner owns that no group or other may open (0700 or tighter).
 [[nodiscard]] bool isPrivateFolderOf(const std::string& folder, uid_t owner);
 
-/// Each of USER_SIDE_NAMES' values from @p env, an unset one as nullopt (#4259): a user who had no XAUTHORITY gets none,
-/// never root's private copy.
+/// Each of USER_SIDE_NAMES' values from @p env that is set, and XAUTHORITY as nullopt when it isn't (#4259): a user who had
+/// none gets none, never root's private copy. An unset PATH or XDG_DATA_DIRS is left out, so the child gets the process's.
 [[nodiscard]] std::map<std::string, std::optional<std::string>, std::less<>>
 userSideValuesFrom(const std::function<std::optional<std::string>(std::string_view)>& env);
 

@@ -19,6 +19,7 @@
 #include <vector>
 
 #include <fcntl.h>
+#include <pwd.h>
 #include <sys/fsuid.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -255,6 +256,7 @@ TEST(RootEnvironmentTest, AnUnsetUserSideValueIsRecordedSoThatChildGetsNone)
     EXPECT_EQ(values.at("PATH"), "/usr/bin");
     ASSERT_TRUE(values.contains("XAUTHORITY"));
     EXPECT_EQ(values.at("XAUTHORITY"), std::nullopt);
+    EXPECT_FALSE(values.contains("XDG_DATA_DIRS")) << "an unset one other than XAUTHORITY falls back to the process's";
     auto& live = SessionUser::userSideValues();
     const auto saved = live;
     live = values;
@@ -271,12 +273,33 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     }
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("tasksmack-xauth-root-" + std::to_string(::getpid()));
     std::filesystem::create_directories(dir);
+    constexpr uid_t NOBODY = 65534;
+    if (::getpwuid(NOBODY) == nullptr)
+    {
+        GTEST_SKIP() << "no passwd entry for uid 65534";
+    }
+    // The folder nobody may pass through, so only the files' own modes decide (the #4286 review).
+    std::filesystem::permissions(dir, std::filesystem::perms::owner_all | std::filesystem::perms::others_exec);
     const std::filesystem::path rootOnly = dir / "root-only";
     std::ofstream(rootOnly) << "secret";
     std::filesystem::permissions(rootOnly, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-    constexpr uid_t NOBODY = 65534;
+    const int asRoot = openAsUser(rootOnly.string(), 0);
+    EXPECT_GE(asRoot, 0) << "root may: so a -1 below comes from the switch";
+    if (asRoot >= 0)
+    {
+        ::close(asRoot);
+    }
     EXPECT_EQ(openAsUser(rootOnly.string(), NOBODY), -1) << "nobody may not read root's 0600 file";
+    const std::filesystem::path nobodys = dir / "nobodys";
+    std::ofstream(nobodys) << "cookie";
+    ASSERT_EQ(::chown(nobodys.c_str(), NOBODY, static_cast<gid_t>(-1)), 0);
+    std::filesystem::permissions(nobodys, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    const int own = openAsUser(nobodys.string(), NOBODY);
+    ASSERT_GE(own, 0) << "nobody may read its own 0600 file";
+    EXPECT_EQ(readOwnedFile(own, NOBODY, MOST_XAUTHORITY_BYTES), "cookie");
+    ::close(own);
     EXPECT_EQ(::setfsuid(static_cast<uid_t>(-1)), 0) << "root's filesystem uid is back";
+    EXPECT_EQ(::setfsgid(static_cast<gid_t>(-1)), 0) << "and its group";
     std::error_code error;
     std::filesystem::remove_all(dir, error);
 }

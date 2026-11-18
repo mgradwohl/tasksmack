@@ -186,9 +186,10 @@ int openAsUser(const std::string& path, uid_t uid)
     {
         return -1;
     }
-    // The ids this process had, put back after the open: root's in a root session, a test's own otherwise (#4255).
-    const int previousGid = ::setfsgid(static_cast<gid_t>(-1));
-    const int previousUid = ::setfsuid(static_cast<uid_t>(-1));
+    // Put back after the open: the effective ids, which the filesystem ids follow unless something set them (#4255): root's
+    // in a root session, a test's own otherwise.
+    const auto previousGid = static_cast<int>(::getegid());
+    const auto previousUid = static_cast<int>(::geteuid());
     static_cast<void>(::setfsgid(entry.pw_gid));
     static_cast<void>(::setfsuid(uid));
     const bool switched = ::setfsuid(static_cast<uid_t>(-1)) == static_cast<int>(uid);
@@ -196,7 +197,7 @@ int openAsUser(const std::string& path, uid_t uid)
     const int file = switched ? ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) : -1;
     static_cast<void>(::setfsuid(static_cast<uid_t>(previousUid)));
     static_cast<void>(::setfsgid(static_cast<gid_t>(previousGid)));
-    if (::setfsuid(static_cast<uid_t>(-1)) != previousUid)
+    if (::setfsuid(static_cast<uid_t>(-1)) != previousUid || ::setfsgid(static_cast<gid_t>(-1)) != previousGid)
     {
         if (file >= 0)
         {
@@ -241,7 +242,13 @@ userSideValuesFrom(const std::function<std::optional<std::string>(std::string_vi
     std::map<std::string, std::optional<std::string>, std::less<>> values;
     for (const std::string_view name : USER_SIDE_NAMES)
     {
-        values.emplace(name, env(name));
+        std::optional<std::string> value = env(name);
+        // Only XAUTHORITY is recorded unset (#4259): its process value is root's private copy. An unset PATH or
+        // XDG_DATA_DIRS isn't recorded, so the child gets the process's own, root's secure path, as before (the #4286 review).
+        if (value.has_value() || name == "XAUTHORITY")
+        {
+            values.emplace(name, std::move(value));
+        }
     }
     return values;
 }
