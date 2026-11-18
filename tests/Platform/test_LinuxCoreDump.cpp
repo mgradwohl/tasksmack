@@ -11,6 +11,7 @@
 #include <ctime>
 #include <filesystem>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <vector>
@@ -197,6 +198,30 @@ TEST(LinuxCoreDumpTest, ARootSessionsDumpFolderIsntOnAUsersMount)
     EXPECT_TRUE(userMountRefusal("/media/u/img/dumps", ST_NOSUID | ST_NODEV, 0xEF53).has_value());
     EXPECT_TRUE(userMountRefusal("/media/u/img/dumps", ST_NODEV, 0xEF53).has_value());
     EXPECT_TRUE(userMountRefusal("/run/user/1000/fuse", 0, Platform::LinuxCoreDump::FUSE_FILESYSTEM_TYPE)->contains("FUSE"));
+}
+
+/// The process's umask, read without changing it.
+[[nodiscard]] static mode_t currentUmask()
+{
+    const mode_t mask = ::umask(0);
+    ::umask(mask);
+    return mask;
+}
+
+TEST(LinuxCoreDumpTest, OverlappingDumpsKeepTheOwnerOnlyUmaskUntilTheLastOneEnds)
+{
+    // #4258: A saved 022, B saved 077, A restored 022 while B's gcore ran, then B restored 077 for good.
+    const mode_t before = ::umask(S_IWGRP | S_IWOTH); // 022
+    {
+        auto first = std::make_unique<LinuxCoreDump::OwnerOnlyUmask>();
+        EXPECT_EQ(currentUmask(), static_cast<mode_t>(S_IRWXG | S_IRWXO));
+        auto second = std::make_unique<LinuxCoreDump::OwnerOnlyUmask>();
+        first.reset();
+        EXPECT_EQ(currentUmask(), static_cast<mode_t>(S_IRWXG | S_IRWXO)) << "the second dump still runs under 077";
+        second.reset();
+        EXPECT_EQ(currentUmask(), static_cast<mode_t>(S_IWGRP | S_IWOTH)) << "the last one out puts 022 back";
+    }
+    ::umask(before);
 }
 
 } // namespace Platform

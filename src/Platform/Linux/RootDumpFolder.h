@@ -1,6 +1,7 @@
 #pragma once
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -25,6 +26,12 @@ inline constexpr std::string_view FOLDER_NAME = "TaskSmack-dumps";
 /// what it is and isn't a user's (LinuxCoreDump::userMountRefusal(); fail closed). createDump()'s check, and
 /// rootDumpFolder()'s, so the default offered is one Create will take (the #4190 review).
 [[nodiscard]] std::optional<std::string> rootDumpRefusal(const std::filesystem::path& directory);
+
+/// @p homeText without a trailing "/", then FOLDER_NAME made there for @p owner (makePrivateFolder()), if @p refusal takes
+/// it (rootDumpRefusal() for root's). Empty, with a warning once a session, when either refuses (#4262's seam: a test
+/// gives a scratch home and its own refusal; rootDumpFolder() gives root's home, 0 and rootDumpRefusal()).
+[[nodiscard]] std::filesystem::path
+rootDumpFolderIn(std::string homeText, uid_t owner, const std::function<std::optional<std::string>(const std::filesystem::path&)>& refusal);
 
 /// Root's default dump folder, made when it isn't there yet (makePrivateFolder() in root's passwd home, never HOME,
 /// which sudo -E keeps the user's), and only if rootDumpRefusal() takes it. Empty when it can't be made or isn't taken

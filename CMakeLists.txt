@@ -713,6 +713,7 @@ elseif(WIN32)
         src/Platform/Windows/CpuBaseClock.h
         src/Platform/Windows/WindowsHandles.h
         src/Platform/Windows/WindowsNtQuery.h
+        src/Platform/Windows/WindowsProcessSnapshotSize.h
         src/Platform/Windows/WindowsDiskProbe.h
         src/Platform/Windows/WindowsBatteryInfo.h
         src/Platform/Windows/WindowsPowerProbe.h

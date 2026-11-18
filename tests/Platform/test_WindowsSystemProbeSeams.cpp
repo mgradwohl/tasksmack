@@ -12,6 +12,7 @@
 #include "Platform/SystemTypes.h"
 #include "Platform/Windows/ProcessorPerformanceCounter.h" // IWYU pragma: keep (destroys the null counter)
 #include "Platform/Windows/WindowsCommitPaging.h"
+#include "Platform/Windows/WindowsProcessSnapshotSize.h"
 #include "Platform/Windows/WindowsSystemProbe.h"
 #include "Platform/Windows/WindowsSystemProbeMath.h"
 
@@ -888,6 +889,43 @@ TEST_F(WindowsSystemProbeSeamsTest, SessionProcessListGrowsOnBufferTooSmall)
     ASSERT_TRUE(process.has_value());
     EXPECT_EQ(process.value_or(WindowsCommitPaging::MemoryCompressionProcess{}).workingSet, 300ULL << 20U);
     EXPECT_EQ(process.value_or(WindowsCommitPaging::MemoryCompressionProcess{.sessionId = 1}).sessionId, 0U);
+}
+
+namespace
+{
+/// The buffer size each never-fitting query below was given (#4277).
+std::vector<ULONG>& growingQueryLengths()
+{
+    static std::vector<ULONG> lengths;
+    return lengths;
+}
+} // namespace
+
+// #4277 review: the snapshot readers' shared growth rule bounds WindowsCommitPaging's queries too. A list that never
+// fits fails each query after 6 tries within the ceiling, and the kept buffer goes back to its size before the call,
+// so query after failed query on one buffer starts from the same size.
+TEST_F(WindowsSystemProbeSeamsTest, AProcessListThatNeverFitsFailsEachQueryWithinTheCeilingAndKeepsNoBiggerBuffer)
+{
+    const auto neverFits = [](ULONG /*infoClass*/, PVOID /*buffer*/, ULONG length, PULONG returned) -> LONG
+    {
+        growingQueryLengths().push_back(length);
+        *returned = length + 1;
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
+    };
+    std::vector<std::byte> buffer;
+    for (int query = 0; query < 3; ++query)
+    {
+        growingQueryLengths().clear();
+        EXPECT_FALSE(WindowsCommitPaging::querySystemInformationInto(neverFits,
+                                                                     WindowsCommitPaging::SYSTEM_PROCESS_INFORMATION_CLASS,
+                                                                     buffer,
+                                                                     WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES)
+                         .has_value());
+        ASSERT_EQ(growingQueryLengths().size(), 6U) << "query " << query;
+        EXPECT_EQ(growingQueryLengths().front(), WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES) << "query " << query;
+        EXPECT_LE(std::ranges::max(growingQueryLengths()), Windows::PROCESS_SNAPSHOT_MAX_BYTES);
+        EXPECT_EQ(buffer.size(), WindowsCommitPaging::PROCESS_INFORMATION_INITIAL_BYTES) << "no bigger buffer kept";
+    }
 }
 
 TEST_F(WindowsSystemProbeSeamsTest, WithoutNtQuerySystemInformationExTheOneGroupQueryIsUsed)
