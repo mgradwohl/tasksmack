@@ -555,7 +555,7 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
         )
         self.assertEqual(code, 1, output)  # compared: the E-core run's slowdowns are regressions
         self.assertIn("WARNING: the runs used different core classes", output)
-        self.assertIn("baseline run was pinned to EfficiencyClass 1 and the current run pinned to EfficiencyClass 0", output)
+        self.assertIn("baseline run was pinned to core class 1 and the current run pinned to core class 0", output)
         self.assertIn("Core placement: MISMATCH", output)
 
     def test_the_same_core_class_is_compared(self):
@@ -609,7 +609,7 @@ class CheckBenchmarkRegressionTest(unittest.TestCase):
             current_manifest=self.manifest(1),
         )
         self.assertEqual(code, 0, output)
-        self.assertIn("Core placement: both runs pinned to EfficiencyClass 1", output)
+        self.assertIn("Core placement: both runs pinned to core class 1", output)
 
     def test_an_invalid_manifest_is_a_usage_error(self):
         cases = {

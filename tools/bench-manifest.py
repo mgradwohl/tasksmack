@@ -604,6 +604,34 @@ def cpu_classes(root: Path = SYSFS_CPU_ROOT) -> dict[int, int] | None:
     return None
 
 
+CPUINFO = Path("/proc/cpuinfo")
+
+
+def in_virtual_machine(cpuinfo: Path = CPUINFO) -> bool:
+    """Whether this kernel runs under a hypervisor (WSL2, Hyper-V, KVM, VMware): /proc/cpuinfo's flags
+    include "hypervisor". Its vCPUs then all report one cpu_capacity and no cpufreq, whatever cores
+    the host has, so a hybrid host can't be told from the guest, nor where a run lands on it."""
+    try:
+        text = cpuinfo.read_text(encoding="ascii", errors="replace")
+    except OSError:
+        return False
+    return any(line.startswith("flags") and "hypervisor" in line.split() for line in text.splitlines())
+
+
+def guest_classes(classes: dict[int, int] | None, virtual: bool) -> tuple[dict[int, int] | None, str | None]:
+    """@p classes as select_core() may trust them: in a virtual machine (@p virtual) one class for every
+    vCPU says nothing about the host's cores, so they are unknown (None) and a warning says why.
+    Otherwise @p classes, and no warning."""
+    if virtual and classes and len(set(classes.values())) == 1:
+        return None, (
+            "This runs in a virtual machine (WSL2 or another hypervisor): every vCPU reports the same class, "
+            "so whether the host is a hybrid CPU, and which of its cores the run lands on, can't be told from here. "
+            "The run is not pinned; on a hybrid host it may land on efficiency cores. Benchmark on bare metal "
+            "to compare runs (CONTRIBUTING.md, \"Benchmarking on a Hybrid CPU or a Shared Desktop\")."
+        )
+    return classes, None
+
+
 def smt_siblings(cpu: int, root: Path = SYSFS_CPU_ROOT) -> set[int]:
     """The logical CPUs sharing @p cpu's core (itself included), from topology/thread_siblings_list."""
     try:
@@ -707,6 +735,11 @@ def sysfs_cpu_root() -> Path:
     return Path(os.environ.get("TASKSMACK_BENCH_SYSFS_CPU") or SYSFS_CPU_ROOT)
 
 
+def cpuinfo_path() -> Path:
+    """/proc/cpuinfo; the script tests point TASKSMACK_BENCH_CPUINFO at a fake one."""
+    return Path(os.environ.get("TASKSMACK_BENCH_CPUINFO") or CPUINFO)
+
+
 def proc_stat() -> Path:
     return Path(os.environ.get("TASKSMACK_BENCH_PROC_STAT") or PROC_STAT)
 
@@ -723,7 +756,10 @@ def write_placement(requested: str, out: Path) -> int:
     ("1,10,11"; nothing for none)."""
     allowed = os.sched_getaffinity(0) if hasattr(os, "sched_getaffinity") else None
     root = sysfs_cpu_root()
-    choice = select_core(cpu_classes(root), requested, allowed, smt_siblings(0, root))
+    classes, vm_warning = guest_classes(cpu_classes(root), in_virtual_machine(cpuinfo_path()))
+    choice = select_core(classes, requested, allowed, smt_siblings(0, root))
+    if vm_warning:
+        choice["warning"] = vm_warning
     cpus = choice["logical_cpus"]
     cpu_list = ",".join(str(cpu) for cpu in cpus) if cpus is not None else ""
     if cpus is not None and shutil.which("taskset") is None:

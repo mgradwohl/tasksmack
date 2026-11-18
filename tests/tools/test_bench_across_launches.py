@@ -24,7 +24,8 @@ CHECKER = TOOLS / "check-benchmark-regression.py"
 
 
 def launch(timings: dict[str, float], unit: str = "ns", repetitions: int = 3, iterations: int = 1000) -> dict:
-    """A bench.sh-shaped run: each benchmark's repetitions, then its mean, median, stddev and cv."""
+    """A bench.sh-shaped run: each benchmark's repetitions, then its mean, median, stddev and cv. One
+    repetition has no aggregates, as Google Benchmark writes it."""
     benchmarks = []
     for name, time in timings.items():
         for index in range(repetitions):
@@ -32,7 +33,7 @@ def launch(timings: dict[str, float], unit: str = "ns", repetitions: int = 3, it
                 {"name": name, "run_name": name, "run_type": "iteration", "repetition_index": index,
                  "iterations": iterations, "real_time": time, "cpu_time": time, "time_unit": unit}
             )
-        for aggregate in ("mean", "median", "stddev", "cv"):
+        for aggregate in ("mean", "median", "stddev", "cv") if repetitions > 1 else ():
             value = time if aggregate in ("mean", "median") else 0.01
             benchmarks.append(
                 {"name": f"{name}_{aggregate}", "run_name": name, "run_type": "aggregate", "aggregate_name": aggregate,
@@ -170,6 +171,17 @@ class BenchAcrossLaunchesTest(unittest.TestCase):
                 self.assertEqual(code, 2)
                 self.assertIn("BM_A: no usable median in launch 3", err)
                 self.assertIsNone(combined, "nothing for the gate to pass on")
+
+    def test_a_one_repetition_run_uses_its_one_row_as_the_median(self) -> None:
+        # The #4194 audit: --benchmark_repetitions=1 writes no aggregates, and combine failed with exit 2,
+        # "no usable median in launch 1", instead of measuring.
+        first = launch({"BM_A": 150.0}, repetitions=1)
+        others = [launch({"BM_A": t}, repetitions=1) for t in (101.0, 99.0, 160.0, 100.0)]
+        code, out, err, combined = self.combine(first, others, ["BM_A"], baseline=launch({"BM_A": 100.0}, repetitions=1))
+        self.assertEqual(code, 0, err)
+        rows_a = [e for e in combined["benchmarks"] if e["run_name"] == "BM_A"]
+        self.assertEqual(rows_a[0]["real_time"], 101.0, "median of 150, 101, 99, 160, 100")
+        self.assertEqual(rows_a[0]["tasksmack_launch_real_times"], [150.0, 101.0, 99.0, 160.0, 100.0])
 
     def test_exclude_first_takes_the_medians_from_the_second_runner_alone(self) -> None:
         # #3623: the first runner was a slower CPU, slow in every launch; the second runner's launches decide.

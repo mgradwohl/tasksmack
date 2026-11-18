@@ -45,6 +45,7 @@
 #   TASKSMACK_BENCH_OUT_DIR  output directory (default perf-data/)
 #   TASKSMACK_BENCH_SYSFS_CPU  the CPUs' sysfs directory (default /sys/devices/system/cpu)
 #   TASKSMACK_BENCH_PROC_STAT  the file the load is read from (default /proc/stat)
+#   TASKSMACK_BENCH_CPUINFO    the file a virtual machine is told from (default /proc/cpuinfo)
 #   TASKSMACK_BENCH_LOAD_SAMPLE_MS  how long each load sample lasts (default 500)
 #
 # Exits with the benchmark binary's own exit code if it fails or crashes; any partial output is
