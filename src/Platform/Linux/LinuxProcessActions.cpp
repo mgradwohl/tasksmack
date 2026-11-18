@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <charconv>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -348,6 +349,47 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     return link.string();
 }
 
+/// The real uid on /proc/<pid>/status's "Uid:" line (#4271): readable by anyone, dumpable or not.
+[[nodiscard]] std::optional<uid_t> processRealUidFromProc(std::int32_t pid)
+{
+    const std::optional<std::string> status = readSmallFile(std::format("/proc/{}/status", pid));
+    if (!status.has_value())
+    {
+        return std::nullopt;
+    }
+    const std::size_t at = status->find("\nUid:");
+    if (at == std::string::npos)
+    {
+        return std::nullopt;
+    }
+    std::string_view rest = std::string_view(*status).substr(at + 5);
+    while (!rest.empty() && (rest.front() == ' ' || rest.front() == '\t'))
+    {
+        rest.remove_prefix(1);
+    }
+    uid_t uid = 0;
+    const auto [end, error] = std::from_chars(rest.data(), rest.data() + rest.size(), uid);
+    if (error != std::errc{} || end == rest.data())
+    {
+        return std::nullopt;
+    }
+    return uid;
+}
+
+/// Why the executable of @p pid couldn't be read when the kernel refused it (EACCES/EPERM, #4271): another user's
+/// process, or one of this user's own that the kernel protects from inspection (not dumpable: ssh-agent, gpg-agent,
+/// a set-id program, a sandbox helper), which an Administrator session (CAP_SYS_PTRACE) can read.
+[[nodiscard]] std::string_view refusedExecutableMessage(const LinuxProcessSyscalls& syscalls, std::int32_t pid)
+{
+    const std::optional<uid_t> owner = syscalls.processRealUid(pid);
+    if (owner.has_value() && *owner == ::geteuid())
+    {
+        return "Its executable can't be read: this process of yours is protected from inspection (TaskSmack (Administrator) "
+               "can read it)";
+    }
+    return "Its executable can't be read: it belongs to another user";
+}
+
 /// org.freedesktop.FileManager1.ShowItems([uri], "") on this user's session bus: Nautilus, Dolphin,
 /// Nemo, Caja, Thunar and PCManFM answer it with the file selected (#3064). False when there is no
 /// session bus or nothing answers in time.
@@ -412,6 +454,10 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     if (syscalls.executableLink == nullptr)
     {
         syscalls.executableLink = &executableLinkFromProc;
+    }
+    if (syscalls.processRealUid == nullptr)
+    {
+        syscalls.processRealUid = &processRealUidFromProc;
     }
     if (syscalls.showItemInFileManager == nullptr)
     {
@@ -611,7 +657,7 @@ std::expected<std::string, std::string> LinuxProcessActions::imageSha256(const P
     {
         if (refused)
         {
-            return std::unexpected(std::string("Its executable can't be read: it belongs to another user"));
+            return std::unexpected(std::string(refusedExecutableMessage(syscalls(), target.pid)));
         }
         return std::unexpected(std::format("Its executable can't be read: {}", digest.error()));
     }
@@ -659,7 +705,7 @@ ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& t
         }
         if (link.error() == EACCES || link.error() == EPERM)
         {
-            return ProcessActionResult::error("Its executable can't be read: it belongs to another user");
+            return ProcessActionResult::error(std::string(refusedExecutableMessage(syscalls(), target.pid)));
         }
         return ProcessActionResult::error(std::format("Its executable can't be read: {}", std::system_category().message(link.error())));
     }
