@@ -69,6 +69,7 @@ STUB_APP = textwrap.dedent(
     """\
     #!/usr/bin/env bash
     mode="${STUB_APP_MODE:-clean}"
+    [[ -n "${STUB_APP_ENV:-}" ]] && printf '%s\n%s\n' "${TMPDIR:-}" "${TASKSMACK_CONFIG_DIR:-}" > "$STUB_APP_ENV"
     [[ "$mode" == silent ]] && exit 0
     echo "Entering main loop"
     case "$mode" in
@@ -176,6 +177,23 @@ class ProfileHeapDurationTest(unittest.TestCase):
         log = next((self.root / "perf-data").glob("heaptrack-app-*[0-9].log")).read_text(encoding="utf-8")
         self.assertIn("DURATION_SECONDS=1", log)
         self.assertIn("END_REASON=closed cleanly", log)
+
+    def test_the_app_gets_its_own_temp_folder_so_the_users_debug_log_is_left_alone(self):
+        # #4209: TaskSmack's debug log is <temp folder>/tasksmack-debug.log, opened emptied; with the inherited
+        # temp folder, a capture wiped the debug log of the user's own running TaskSmack.
+        seen = self.root / "app-env.txt"
+        outer = self.root / "outer-tmp"
+        outer.mkdir()
+        result = subprocess.run(
+            [BASH, str(self.root / "tools" / "profile-heap.sh"), "app", "--preset", "profile", "--skip-build", "--duration", "1"],
+            capture_output=True, text=True, cwd=self.root, check=False, timeout=60,
+            env={**self.env, "STUB_APP_MODE": "clean", "STUB_APP_ENV": str(seen), "TMPDIR": str(outer)},
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        tmpdir, config = seen.read_text(encoding="utf-8").splitlines()
+        self.assertTrue(config.startswith(str(outer)), config)
+        self.assertEqual(tmpdir, config + "/tmp", "the capture's own temp folder, inside its config folder")
+        self.assertFalse(Path(config).exists(), "removed afterwards")
 
     def test_an_app_that_exits_before_the_duration_fails_the_run(self):
         result = self.profile("early", "--duration", "5")

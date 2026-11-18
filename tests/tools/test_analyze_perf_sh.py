@@ -50,6 +50,18 @@ KERNEL_ONLY = """\
 """
 
 
+def with_call_graphs(entries: int, graph_lines: int = 30) -> str:
+    """A -g report of @p entries TaskSmack functions, each followed by @p graph_lines call-graph lines."""
+    out = []
+    for i in range(entries):
+        out.append(f"     {50.0 - i:.2f}%  TaskSmackBenchm  TaskSmackBenchmarks  [.] Domain::Fn{i:02d}\n")
+        out.append("            |\n")
+        out.append(f"            ---Domain::Fn{i:02d}\n")
+        out.extend(f"               |--{1.0:.2f}%--Caller{i:02d}_{j}\n" for j in range(graph_lines))
+        out.append("\n")
+    return "".join(out)
+
+
 class AnalyzePerfTest(unittest.TestCase):
     def setUp(self):
         self.root = Path(tempfile.mkdtemp(prefix="analyze_perf_"))
@@ -108,6 +120,19 @@ class AnalyzePerfTest(unittest.TestCase):
         result = self.analyze(PARTIAL)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("WARNING: 1 of TaskSmack's 2 sampled functions are unresolved addresses.", result.stderr)
+
+    def test_top_n_lists_n_functions_and_the_report_keeps_their_whole_call_graphs(self):
+        # #4208: the report was cut to TOP*10+50 lines, and Top N read from it: with call graphs a Top 20
+        # listed a handful, and the report ended mid-graph.
+        result = self.analyze(with_call_graphs(30), "--top", "20")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        top = result.stdout.split("Top 20 functions (self CPU):", 1)[1]
+        listed = [line for line in top.splitlines() if "Domain::Fn" in line]
+        self.assertEqual(len(listed), 20, result.stdout)
+        report = next(self.data.parent.glob("*-report.txt")).read_text(encoding="utf-8")
+        self.assertIn("Domain::Fn19", report)
+        self.assertIn("Caller19_29", report, "the 20th entry's whole call graph")
+        self.assertNotIn("Domain::Fn20", report, "and no 21st entry")
 
     def test_no_user_space_rows_says_so(self):
         result = self.analyze(KERNEL_ONLY)
