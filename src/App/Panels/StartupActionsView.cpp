@@ -6,6 +6,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/SessionAccount.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -249,7 +250,7 @@ void StartupActionsView::renderActionBar(const Platform::StartupEntry* selected)
     }
     else if (!reason.empty())
     {
-        ImGui::TextColored(scheme.textMuted, ICON_FA_CIRCLE_INFO "  %s", reason.c_str());
+        UI::Widgets::labelledTextColored(scheme.textMuted, ICON_FA_CIRCLE_INFO "  ", reason);
     }
     else
     {
@@ -295,7 +296,7 @@ void StartupActionsView::renderAccountNote() const
     }
     const auto& scheme = UI::Theme::get().scheme();
     ImGui::PushStyleColor(ImGuiCol_Text, scheme.textWarning);
-    ImGui::TextWrapped(ICON_FA_CIRCLE_INFO "  %s", m_AccountNote.c_str());
+    UI::Widgets::labelledTextWrapped(ICON_FA_CIRCLE_INFO "  ", m_AccountNote);
     ImGui::PopStyleColor();
 }
 

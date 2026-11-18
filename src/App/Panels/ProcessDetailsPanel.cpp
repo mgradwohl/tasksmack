@@ -56,6 +56,7 @@
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/TabContent.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
@@ -752,9 +753,9 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
 {
     const auto& theme = UI::Theme::get();
 
-    // Note: ImGui requires null-terminated const char*; .c_str() is the correct approach here.
-    const char* titleCommand = !proc.command.empty() ? proc.command.c_str() : proc.name.c_str();
-    ImGui::TextWrapped("Command Line: %s", titleCommand);
+    // Drawn whole however long it is: a prefixed "%s" would stop at ImGui's 3 KB buffer (#4306).
+    const std::string& titleCommand = !proc.command.empty() ? proc.command : proc.name;
+    UI::Widgets::labelledTextWrapped("Command Line: ", titleCommand);
     // Beside the command line, which names the executable, rather than as a row of the Identity card:
     // the card is full with a Publisher, and the line's value is wider than a card's (#1675).
     m_Views->m_CrashHistoryView.render(proc.name);

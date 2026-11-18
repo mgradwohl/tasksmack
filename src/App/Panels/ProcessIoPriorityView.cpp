@@ -12,6 +12,7 @@
 #include "RestartAsAdministratorButton.h"
 #include "UI/ChromeWidgets.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -179,7 +180,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     {
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0.0F);
-        ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_Error.c_str());
+        UI::Widgets::labelledTextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  ", m_Error);
         ImGui::PopTextWrapPos();
         // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3669).
         static_cast<void>(drawRefusalOffer(
@@ -189,7 +190,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     {
         ImGui::Spacing();
         ImGui::PushTextWrapPos(0.0F);
-        ImGui::TextColored(theme.scheme().textMuted, ICON_FA_CIRCLE_INFO "  %s", m_ReadError.c_str());
+        UI::Widgets::labelledTextColored(theme.scheme().textMuted, ICON_FA_CIRCLE_INFO "  ", m_ReadError);
         ImGui::PopTextWrapPos();
         // A refused read with no helper leaves Apply disabled: the restart is the way on (#3669).
         if (readRefusalOffersRestart(actions != nullptr && canAuthorizeInteractively))
