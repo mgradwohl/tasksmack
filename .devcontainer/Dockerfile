@@ -2,7 +2,7 @@
 # tools/setup-dev.sh installs (LLVM 23, CMake, Ninja, Python 3.14, the GUI and systemd/libbpf/libcurl headers, xvfb).
 # One script for a workstation, a container and the docs, so the three can't drift.
 # By digest (#3828), as release.yml's containers: each build starts from the same image. Renovate refreshes it by PR.
-FROM ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96
+FROM ubuntu:26.04@sha256:d66b366dac61b575bee2aef07e9c26e8070096fbe84a3d4d3eb0da069b5d76db
 
 ARG DEBIAN_FRONTEND=noninteractive
 ARG USERNAME=dev
