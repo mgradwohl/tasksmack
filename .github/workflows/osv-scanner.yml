@@ -1,11 +1,14 @@
 name: OSV Dependency Scan
 
-# Scans C++ FetchContent dependencies (via Syft SBOM) and Python requirements.txt
-# against the OSV vulnerability database (https://osv.dev).
+# Scans the C/C++ FetchContent dependencies and the Python requirements*.txt against the OSV
+# vulnerability database (https://osv.dev).
 #
-# Dependabot covers GitHub Actions and pip; this workflow fills the gap for C++ deps.
-# Syft's cmake cataloger reads FetchContent_Declare entries from CMakeLists.txt and
-# emits them into an SPDX-JSON SBOM without requiring a build.
+# Dependabot covers GitHub Actions and pip; this workflow fills the gap for C++ deps. Syft has
+# no CMake or FetchContent cataloger (#4438): its SBOM of the source tree holds the Actions and
+# the Python tooling only. tools/cpp-deps-sbom.py adds every FetchContent_Declare() pin (name,
+# version, commit, purl, licence) to it, checks that none is missing, and asks OSV about each
+# pinned commit, which is how OSV indexes C/C++ projects. A vulnerable pin fails generate-sbom
+# and so "OSV Scan Required", unless osv-scanner.toml ignores it with a reason and a date.
 #
 # This only flags known CVEs against the currently pinned versions; it doesn't check whether
 # newer (non-vulnerable) releases are available. That's the Renovate workflow's job
@@ -85,6 +88,8 @@ jobs:
               - 'tests/CMakeLists.txt'
               - 'benchmarks/CMakeLists.txt'
               - 'requirements*.txt'
+              - 'osv-scanner.toml'
+              - 'tools/cpp-deps-sbom.py'
               - '.github/workflows/osv-scanner.yml'
 
       - name: Normalize output
@@ -96,8 +101,8 @@ jobs:
             echo "relevant=true" >> "$GITHUB_OUTPUT"
           fi
 
-  # Generate an SPDX-JSON SBOM from the source tree so the scanner can see
-  # C++ FetchContent dependencies detected by Syft's cmake cataloger.
+  # Generate an SPDX-JSON SBOM from the source tree, add the C/C++ FetchContent dependencies to it
+  # (Syft can't see them, #4438), and scan their pinned commits against OSV.
   generate-sbom:
     name: Generate SBOM from source
     needs: detect-relevant-changes
@@ -117,6 +122,19 @@ jobs:
           format: spdx-json
           upload-artifact: false
           upload-release-assets: false
+
+      - name: Add the C/C++ dependencies to the SBOM
+        # Every FetchContent_Declare() pin, from the CMake files themselves (#4438). A pin in a shape the
+        # script can't read, or in a CMake file it doesn't read, fails here rather than going unscanned.
+        run: |
+          python3 -I tools/cpp-deps-sbom.py merge --sbom sbom.spdx.json
+          python3 -I tools/cpp-deps-sbom.py check --sbom sbom.spdx.json
+          python3 -I tools/cpp-deps-sbom.py list
+
+      - name: Scan the C/C++ dependencies' pinned commits against OSV
+        # osv-scanner matches the SBOM's packages by ecosystem and version, and a pkg:github purl is in no
+        # OSV ecosystem, so the pinned commits are queried here, as OSV's GIT ranges index them (#4438).
+        run: python3 -I tools/cpp-deps-sbom.py osv --sbom sbom.spdx.json
 
       - name: Upload SBOM artifact
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
@@ -180,7 +198,7 @@ jobs:
             exit 0
           fi
           if [[ "$SBOM_RESULT" != 'success' ]]; then
-            echo "SBOM generation did not succeed: $SBOM_RESULT" >&2
+            echo "SBOM generation or the C/C++ dependency scan did not succeed: $SBOM_RESULT" >&2
             exit 1
           fi
           if [[ "$SCAN_RESULT" != 'success' ]]; then

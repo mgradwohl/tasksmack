@@ -2852,6 +2852,13 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Add the C/C++ dependencies to the source SBOM
+        # Syft has no CMake or FetchContent cataloger, so its document lists the Actions and the Python
+        # tooling but none of the libraries compiled into the binaries (#4438). This adds each
+        # FetchContent_Declare() pin (version, commit, pkg:github purl, licence; the test and benchmark
+        # ones marked as such) and the Linux build's pkg-config libraries.
+        run: python3 -I tools/cpp-deps-sbom.py merge --sbom "$RUNNER_TEMP/sbom.spdx.json"
+
       - name: Download packages (every OS and architecture)
         # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/; with signing
         # on, the Windows .zips are sign-windows' signed ones (windows-unsigned-* never matches). Package
@@ -2919,6 +2926,13 @@ jobs:
         env:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
         run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
+
+      - name: Check the source SBOM lists every pinned C/C++ dependency
+        # Before SHA256SUMS and signing: the staged file must list every FetchContent_Declare() at its pinned
+        # commit, and nothing no CMake file declares, so the published SBOM can't drift from the pins (#4438).
+        env:
+          VERSION_LABEL: ${{ steps.version.outputs.label }}
+        run: python3 -I tools/cpp-deps-sbom.py check --sbom "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
 
       - name: Write SHA256SUMS
         # One `sha256sum`-format line per release file ("<sha256>  <name>": two spaces, LF endings, sorted
