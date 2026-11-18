@@ -35,7 +35,6 @@
 #include <spdlog/details/log_msg.h>
 #include <spdlog/sinks/base_sink.h>
 
-#include <format>
 #include <memory>
 #include <mutex>
 #include <string_view>
