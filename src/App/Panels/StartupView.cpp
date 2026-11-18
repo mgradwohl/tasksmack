@@ -13,6 +13,7 @@
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -135,15 +136,15 @@ void renderStartupTooltip(const Platform::StartupEntry& entry)
     }
     if (!entry.command.empty())
     {
-        ImGui::Text("Command: %s", entry.command.c_str());
+        UI::Widgets::labelledText("Command: ", entry.command);
     }
     if (!entry.executablePath.empty())
     {
-        ImGui::Text("Program: %s", entry.executablePath.c_str());
+        UI::Widgets::labelledText("Program: ", entry.executablePath);
     }
     if (!entry.sourcePath.empty())
     {
-        ImGui::Text("Shortcut: %s", entry.sourcePath.c_str());
+        UI::Widgets::labelledText("Shortcut: ", entry.sourcePath);
     }
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();

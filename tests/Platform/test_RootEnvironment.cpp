@@ -139,6 +139,47 @@ TEST(RootEnvironmentTest, UnknownRootValuesAndAFailedSetUnsetRatherThanKeepTheUs
     EXPECT_NE(std::ranges::find(recorder.unset, "XDG_DATA_DIRS"), recorder.unset.end());
 }
 
+TEST(RootEnvironmentTest, OnlyALocaleNameNotAPathIsKept)
+{
+    // #4256: as sudo's env_check, a locale value with "/" or "%", or starting with ".", goes; glibc could take it as a
+    // path to locale data the user chose.
+    for (const char* name : {"LANG", "LANGUAGE", "LC_ALL", "LC_MESSAGES", "TASKSMACK_LOCALE"})
+    {
+        EXPECT_TRUE(isLocaleVariable(name)) << name;
+    }
+    EXPECT_FALSE(isLocaleVariable("LANGS"));
+    EXPECT_FALSE(isLocaleVariable("TASKSMACK_DEMO"));
+    for (const char* value : {"en_US.UTF-8", "C.UTF-8", "C", "de_DE@euro", "en_GB:en", ""})
+    {
+        EXPECT_TRUE(isSafeLocale(value)) << value;
+    }
+    for (const char* value : {"/home/alice/loc", "../../home/alice/loc", ".hidden", "en_US%2F", "C/../x"})
+    {
+        EXPECT_FALSE(isSafeLocale(value)) << value;
+    }
+    EXPECT_FALSE(isSafeLocale(" .evil")) << "trimmed first, as the override reader trims it";
+    EXPECT_TRUE(isLocaleVariable("TERM"));
+    EXPECT_TRUE(isLocaleVariable("COLORTERM"));
+    const std::array<const char*, 9> environment{"LANG=en_US.UTF-8",
+                                                 "LC_ALL=/home/alice/loc",
+                                                 "LANGUAGE=../x",
+                                                 "TASKSMACK_LOCALE=.evil",
+                                                 "LC_CTYPE=/x",
+                                                 "TERM=/home/alice/t",
+                                                 "LC_TIME=en%x",
+                                                 "LC_ALL=C",
+                                                 nullptr};
+    Recorder recorder;
+    const std::vector<std::string> removed = applyTo(environment.data(), RootValues{}, recorder.operations());
+    for (const char* name : {"LC_ALL", "LANGUAGE", "TASKSMACK_LOCALE", "LC_CTYPE", "TERM", "LC_TIME"})
+    {
+        EXPECT_NE(std::ranges::find(recorder.unset, name), recorder.unset.end()) << name << " is unset";
+    }
+    EXPECT_EQ(std::ranges::find(recorder.unset, "LANG"), recorder.unset.end()) << "a plain LANG stays";
+    EXPECT_NE(std::ranges::find(removed, "LC_ALL"), removed.end())
+        << "a safe LC_ALL beside an unsafe one: the name is unset, every copy (unsetenv)";
+}
+
 TEST(RootEnvironmentTest, OnlyAPlainOrZoneinfoTimeZoneIsKept)
 {
     for (const char* tz : {"UTC", "Europe/Paris", ":Europe/Paris", "/usr/share/zoneinfo/UTC", ":/usr/share/zoneinfo/Asia/Tokyo"})

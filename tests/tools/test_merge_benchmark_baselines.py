@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests for tools/merge-benchmark-baselines.py: each benchmark from the capture whose median is the slowest (#3395)."""
+"""Tests for tools/merge-benchmark-baselines.py: the median per runner class, then the slowest class (#3395, #4197)."""
 
 import contextlib
 import importlib.util
@@ -49,6 +49,49 @@ class MergeBenchmarkBaselinesTest(unittest.TestCase):
             merged["context"]["tasksmack_merged_from"],
             [{"capture": "a", "mhz_per_cpu": 2600, "benchmarks": 1}, {"capture": "b", "mhz_per_cpu": 3240, "benchmarks": 1}],
         )
+
+    def test_a_single_slow_launch_on_a_class_does_not_win(self) -> None:
+        # Three captures on one class: 100, 105 and a 400 outlier. The class median (105) is the baseline, not 400.
+        captures = [(f"c{i}", capture(3240, {"BM_A": (t, "ns")})) for i, t in enumerate((100.0, 400.0, 105.0))]
+        merged = merge_benchmark_baselines.merge(captures)
+        medians = [e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"]
+        self.assertEqual(medians, [105.0])
+        self.assertEqual(merged["context"]["tasksmack_merged_from"][2]["benchmarks"], 1, "supplied by the median capture")
+
+    def test_the_slowest_class_median_wins_across_classes(self) -> None:
+        slow_class = [capture(2600, {"BM_A": (t, "ns")}) for t in (200.0, 900.0, 210.0)]
+        fast_class = [capture(3240, {"BM_A": (t, "ns")}) for t in (100.0, 110.0, 120.0)]
+        merged = merge_benchmark_baselines.merge([(f"c{i}", c) for i, c in enumerate(slow_class + fast_class)])
+        medians = [e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"]
+        self.assertEqual(medians, [210.0])
+
+    def test_an_even_count_takes_the_lower_middle_and_ties_the_first_capture(self) -> None:
+        merged = merge_benchmark_baselines.merge(
+            [("a", capture(3240, {"BM_A": (100.0, "ns")})), ("b", capture(3240, {"BM_A": (300.0, "ns")}))]
+        )
+        self.assertEqual([e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"], [100.0])
+        tied = merge_benchmark_baselines.merge(
+            [("a", capture(2600, {"BM_A": (5.0, "ns")})), ("b", capture(3240, {"BM_A": (5.0, "ns")}))]
+        )
+        self.assertEqual([s["benchmarks"] for s in tied["context"]["tasksmack_merged_from"]], [1, 0])
+
+    def test_a_single_launch_is_copied_unchanged(self) -> None:
+        only = capture(3240, {"BM_A": (7.0, "ns")})
+        merged = merge_benchmark_baselines.merge([("only", only)])
+        self.assertEqual(merged["benchmarks"], only["benchmarks"])
+
+    def test_captures_without_a_cpu_class_stay_separate_classes(self) -> None:
+        a, b = capture(0, {"BM_A": (5.0, "ns")}), capture(0, {"BM_A": (9.0, "ns")})
+        del a["context"]["mhz_per_cpu"], b["context"]["mhz_per_cpu"]
+        merged = merge_benchmark_baselines.merge([("a", a), ("b", b)])
+        self.assertEqual([e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"], [9.0])
+
+    def test_a_benchmark_missing_from_some_launches_of_a_class_uses_the_others(self) -> None:
+        full = [capture(3240, {"BM_A": (t, "ns"), "BM_B": (t, "ns")}) for t in (10.0, 50.0)]
+        partial = capture(3240, {"BM_A": (30.0, "ns")})
+        merged = merge_benchmark_baselines.merge([("x", full[0]), ("y", full[1]), ("z", partial)])
+        medians = {e["run_name"]: e["real_time"] for e in merged["benchmarks"] if e.get("aggregate_name") == "median"}
+        self.assertEqual(medians, {"BM_A": 30.0, "BM_B": 10.0})
 
     def test_a_benchmark_skipped_or_missing_in_one_capture_comes_from_another(self) -> None:
         first = capture(2600, {"BM_A": (5.0, "ns")}, skipped=("BM_B",))

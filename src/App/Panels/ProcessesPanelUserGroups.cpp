@@ -15,6 +15,7 @@
 #include "Platform/IUserSessions.h"
 #include "UI/CellText.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -78,9 +79,9 @@ void ProcessesPanel::renderSessionsReadFailure() const
     {
         return;
     }
-    ImGui::TextColored(UI::Theme::get().scheme().textMuted,
-                       ICON_FA_TRIANGLE_EXCLAMATION "  Signed-in sessions couldn't be read: %s",
-                       m_SessionsPublication->detail.c_str());
+    UI::Widgets::labelledTextColored(UI::Theme::get().scheme().textMuted,
+                                     ICON_FA_TRIANGLE_EXCLAMATION "  Signed-in sessions couldn't be read: ",
+                                     m_SessionsPublication->detail);
 }
 
 void ProcessesPanel::renderSessionMenu()

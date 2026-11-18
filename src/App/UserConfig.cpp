@@ -60,8 +60,8 @@
 #include "App/NewFileOwner.h"
 #include "Platform/ConfigDirectory.h"
 #include "Platform/Linux/SessionUser.h"
+#include "Platform/Linux/UserNameLookup.h"
 
-#include <array>
 #include <cerrno>
 #include <functional>
 #include <vector>
@@ -194,18 +194,14 @@ constexpr std::size_t MAX_BUILD_TEXT_BYTES = 256;
     return std::string(value);
 }
 
-/// This user's home directory from the passwd entry (thread-safe getpwuid_r), for when $HOME is unset.
+/// This user's home directory from the passwd entry, for when $HOME is unset: the effective uid's (root's in a root
+/// session, whatever the real uid, the #4182 review). The same lookup as LinuxPathProvider, whose buffer grows on ERANGE
+/// (#4270): a fixed 1 KiB one failed on a large LDAP or SSSD entry, so config.toml and the lock fell back to the working
+/// directory while the themes went to ~/.config.
 [[nodiscard]] auto passwdHomeDirectory() -> std::optional<std::filesystem::path>
 {
-    struct passwd pwBuf = {};
-    struct passwd* pwResult = nullptr;
-    std::array<char, 1024> buffer{};
-    // The effective uid's: root's in a root session, whatever the real uid (the #4182 review).
-    if (getpwuid_r(geteuid(), &pwBuf, buffer.data(), buffer.size(), &pwResult) == 0 && pwResult != nullptr)
-    {
-        return std::filesystem::path(pwResult->pw_dir);
-    }
-    return std::nullopt;
+    return Platform::lookUpHomeDirectory(::geteuid(), ::getpwuid_r)
+        .transform([](const std::string& home) { return std::filesystem::path(home); });
 }
 #endif
 

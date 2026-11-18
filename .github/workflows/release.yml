@@ -2805,10 +2805,12 @@ jobs:
     timeout-minutes: 15
     # One release publishes at a time, whatever its tag (#3277): "Publish release" compares the tag with the
     # published ones, so two tags' runs (v0.9.3 and v0.10.0) reading before either publishes would both take
-    # Latest. The workflow's own group is per ref and doesn't serialise them; a run waiting here is queued,
-    # not cancelled.
+    # Latest. The workflow's own group is per ref and doesn't serialise them. The group holds one running and one
+    # pending job, and a third one queued cancels the pending one, so a dry run, which publishes nothing and
+    # needs no serialising, gets a group of its own per ref (#4447): it can never cancel a tag run's pending
+    # create-release, and a dry run on a ref still queues behind the one before it.
     concurrency:
-      group: release-publish
+      group: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && format('release-publish-dry-{0}-{1}', github.ref, inputs.dry_run) || 'release-publish' }}
       cancel-in-progress: false
     outputs:
       # `sha256sum` of every file in dist/ (the release's files, SHA256SUMS and SHA256SUMS.bundle), for
@@ -3663,7 +3665,8 @@ jobs:
     # release-process.md, "Publishing to WinGet"). Only an update: the package's first version (v0.11.0's) is
     # submitted by hand, and until it's merged this job passes with a notice and submits nothing.
     #
-    # When: a tag run only, once the release is published and verify-published-release has checked what users
+    # When: a real release only (a tag push, or a dry_run=false dispatch against a tag that retries one, #4448),
+    # once the release is published and verify-published-release has checked what users
     # download, and only for a release "Publish release" made Latest (#3277): a patch to an older line, such as a
     # v0.9.x after v0.10.0, would make winget's newest version go backwards, and a pre-release never takes
     # Latest. A dry run publishes nothing, so create-release's `latest` is empty and this is skipped.
@@ -3683,7 +3686,7 @@ jobs:
     # daily that it merges.
     needs: [create-release, verify-published-release]
     if: >-
-      ${{ !cancelled() && github.event_name == 'push' && needs.create-release.result == 'success' &&
+      ${{ !cancelled() && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && needs.create-release.result == 'success' &&
       needs.verify-published-release.result == 'success' && needs.create-release.outputs.latest == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 20

@@ -6,6 +6,7 @@
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "RefusalOffer.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -386,7 +387,7 @@ void ProcessPriorityView::renderNiceControl(Platform::IProcessActions* actions,
     {
         const auto& theme = UI::Theme::get();
         ImGui::Spacing();
-        ImGui::TextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  %s", m_Error.c_str());
+        UI::Widgets::labelledTextColored(theme.scheme().textError, ICON_FA_CIRCLE_EXCLAMATION "  ", m_Error);
         // A permission refusal an administrator could redo (#2308), or with no helper, the restart instead (#3669).
         static_cast<void>(drawRefusalOffer(
             refusalOffer(), [this] { retryAuthorized(); }, RefusalOfferButton{.retryTooltip = AuthorizeWording::PRIORITY_TOOLTIP}));
