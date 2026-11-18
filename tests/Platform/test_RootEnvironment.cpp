@@ -271,7 +271,9 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     {
         GTEST_SKIP() << "needs root";
     }
-    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("tasksmack-xauth-root-" + std::to_string(::getpid()));
+    // Under /tmp itself, not temp_directory_path(): CI's TMPDIR is under /home/runner, which nobody can't pass through, so
+    // every open as nobody would fail there for a reason that isn't the file's (the #4286 CI run).
+    const std::filesystem::path dir = std::filesystem::path("/tmp") / ("tasksmack-xauth-root-" + std::to_string(::getpid()));
     std::filesystem::create_directories(dir);
     constexpr uid_t NOBODY = 65534;
     if (::getpwuid(NOBODY) == nullptr)
