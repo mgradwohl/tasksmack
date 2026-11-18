@@ -45,8 +45,11 @@ The full scheme is in [docs/dev/labels.md](docs/dev/labels.md). The rules agents
   `pri:low`. Agents default new milestone items to `pri:medium`, a `sev:high` bug to `pri:high`, and a cycle's
   stage-1 CI, infra, build and dependency issues to `pri:high` (docs/dev/release-process.md). They may
   suggest a change in a comment, but never change one the maintainer set.
-- **Queue order:** CI, infra and tooling, then bugs, then refactors, then `parity` features, then new features.
-  Priority orders the work within each step and never moves a feature ahead of a refactor or a bug.
+- **Queue order (2026-11-18):** dependency-bot PRs, then CI, then tooling, then security and bugs, then perf, then
+  testing, then docs, then refactors, `parity` features and new features. `sev:high`/`sev:medium` puts an item in
+  the security-and-bugs step whatever its kind, and `pri:*` orders the work within each step. The order picks the
+  next item: work already in flight finishes first. Docs the release candidate needs go when their dependency is
+  ready, and perf measurements wait for a quiet machine. docs/dev/labels.md has the detail.
 - **Leave `good first issue` and `help wanted` to outside contributors:** don't pick them up, plan them or put
   them on a milestone.
 - **New or deleted labels need the maintainer.** A new one must fit a family in docs/dev/labels.md.
