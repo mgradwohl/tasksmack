@@ -24,6 +24,10 @@
 #                        stops the capture and closes TaskSmack).
 #   --include-startup    Launch TaskSmack under perf as before, so startup is profiled too, until
 #                        you close it. --warmup is ignored; --duration cannot be combined with it.
+#   --call-graph <mode>  How perf unwinds stacks: fp, dwarf, dwarf,<stack bytes> or lbr. Default: fp when
+#                        the build keeps frame pointers (-fno-omit-frame-pointer, as the profile preset
+#                        does), else dwarf,16384 (#4210). fp copies no stack per sample, so files stay
+#                        small and deep stacks aren't cut; dwarf works on builds without frame pointers.
 #   --user-config        Run TaskSmack with the config it would use on its own (your config.toml,
 #                        or an inherited TASKSMACK_CONFIG_DIR). By default every app capture gets a
 #                        fresh, empty TASKSMACK_CONFIG_DIR, removed afterwards (#2250): TaskSmack
@@ -111,6 +115,7 @@ APP_OPTION_GIVEN=""
 BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 BENCH_REPS=5
 BENCH_MIN_TIME="0.5s"
+CALL_GRAPH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -123,11 +128,16 @@ while [[ $# -gt 0 ]]; do
         --duration)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --include-startup) INCLUDE_STARTUP=1; APP_OPTION_GIVEN="$1"; shift ;;
         --user-config)  USE_USER_CONFIG=1; APP_OPTION_GIVEN="$1"; shift ;;
+        --call-graph)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; CALL_GRAPH="$2"; shift 2 ;;
         -h|--help)      sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 
+if [[ -n "${CALL_GRAPH}" && ! "${CALL_GRAPH}" =~ ^(fp|lbr|dwarf(,[1-9][0-9]*)?)$ ]]; then
+    echo "ERROR: --call-graph takes fp, lbr, dwarf or dwarf,<stack bytes>, not '${CALL_GRAPH}'" >&2
+    exit 1
+fi
 if [[ "${MODE}" != "app" && -n "${APP_OPTION_GIVEN}" ]]; then
     echo "ERROR: ${APP_OPTION_GIVEN} applies to app mode only" >&2
     exit 1
@@ -388,6 +398,11 @@ if [[ "${MODE}" = "app" ]]; then
         trap remove_config_dir EXIT
         # Exported for TaskSmack only: perf and the other tools run here ignore it.
         export TASKSMACK_CONFIG_DIR="${CONFIG_DIR}"
+        # And its own temp folder (#4209): TaskSmack's debug log is <temp folder>/tasksmack-debug.log, opened
+        # emptied, whatever the config folder, so with the inherited one a capture wiped the debug log of the
+        # user's own running TaskSmack, and both wrote to one file. Removed with the config folder.
+        mkdir -p -- "${CONFIG_DIR}/tmp"
+        export TMPDIR="${CONFIG_DIR}/tmp"
     fi
 fi
 
@@ -412,8 +427,20 @@ if [[ "${MODE}" = "app" ]]; then
     info "Config dir: ${CONFIG_DIR:-the user config (--user-config)}"
 fi
 
+if [[ -z "${CALL_GRAPH}" ]]; then
+    if [[ " ${COMPILE_FLAGS} ${CXX_FLAGS} " == *" -fno-omit-frame-pointer "* ]]; then
+        CALL_GRAPH="fp"
+    else
+        CALL_GRAPH="dwarf,16384"
+    fi
+fi
+info "Call graph: ${CALL_GRAPH}"
+PERF_VERSION="$(perf --version 2>/dev/null || echo unknown)"
+
 {
     echo "PROFILE_MODE=${MODE}"
+    echo "PERF_VERSION=${PERF_VERSION}"
+    echo "PERF_CALL_GRAPH=${CALL_GRAPH}"
     echo "PRESET=${PRESET}"
     echo "BUILD_DIR=${BUILD_DIR}"
     echo "BUILD_TYPE=${BUILD_TYPE}"
@@ -441,11 +468,12 @@ fi
 # perf record flags:
 #   -e            — sampling event; see detect_perf_event() above
 #   -F 997        — sample at ~997 Hz (prime to avoid aliasing with timer interrupts)
-#   -g            — capture call graphs
-#   --call-graph dwarf — use DWARF unwinding (more accurate than fp for inlined frames;
-#                         requires -g in build flags; falls back gracefully on older kernels)
+#   --call-graph  — how stacks are unwound (#4210): frame pointers when the build keeps them (the
+#                   profile preset does), so no stack is copied per sample and deep ImGui stacks
+#                   aren't cut; else DWARF with a 16 KB stack copy (.eh_frame; -g isn't needed for
+#                   unwinding). Inline frames come from debug info when the report is made, either way.
 #   -o            — output file
-PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 -g --call-graph dwarf -o "${DATA_FILE}")
+PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 --call-graph "${CALL_GRAPH}" -o "${DATA_FILE}")
 
 PERF_EXIT_CODE=0
 # Every app capture keeps TaskSmack's own stdout/stderr here, apart from perf's messages.
