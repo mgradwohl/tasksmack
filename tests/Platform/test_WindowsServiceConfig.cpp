@@ -108,11 +108,14 @@ BOOL WINAPI fakeCloseServiceHandle(SC_HANDLE handle)
     return TRUE;
 }
 
-constexpr ServiceConfigFunctions FAKE_API{
+const ServiceConfigFunctions FAKE_API{
+    // not constexpr: the advapi32 pointers below are imports
     .openService = &fakeOpenService,
     .queryServiceConfig = &fakeQueryServiceConfig,
     .queryServiceConfig2 = &fakeQueryServiceConfig2,
     .closeServiceHandle = &fakeCloseServiceHandle,
+    .openSCManager = &::OpenSCManagerW, // not used by readServiceConfig()
+    .enumServicesStatusEx = &::EnumServicesStatusExW,
 };
 
 class WindowsServiceConfigTest : public ::testing::Test

@@ -95,17 +95,24 @@ lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& d
 /// Whether this session has no default dump folder (#4141): on Windows, elevated or restarted with --handoff
 /// (DllSearchPolicy::system32OnlyForThisProcess(), the rule main.cpp's lessPrivilegedEnvironment() uses, #4104). Its
 /// %TEMP% is then the less-privileged side's: a junction or another TEMP could steer the dump elsewhere, and anything
-/// running as that user could read the memory of a process only an administrator may open. Read once, then kept.
-/// False on Linux.
+/// running as that user could read the memory of a process only an administrator may open. On Linux, any root
+/// session (#4163): its default is then root's own folder instead (Platform::RootDumpFolder, #4181). Read once, then kept.
 [[nodiscard]] bool noDefaultDumpFolder() noexcept;
 
 /// What the confirm says while it has no folder, in a session with no default one (noDefaultDumpFolder()).
+#ifdef __linux__
+inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
+    "Choose a folder with Save dump to...: as root, TaskSmack couldn't make its own dump folder (TaskSmack-dumps in "
+    "root's home), and your temp folder can be redirected by programs running as you. Choose one only root may change.";
+#else
 inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
     "Choose a folder with Save dump to...: as administrator, TaskSmack has no default folder, because your temp folder "
     "can be redirected and read by programs running as you. Choose one only administrators can open.";
+#endif
 
 /// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
-/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one. Empty when there is
+/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one, except root on Linux, whose
+/// default is its own (Platform::RootDumpFolder::rootDumpFolder(), #4181). Empty when there is
 /// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
 [[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
 
@@ -149,15 +156,30 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 /// "Writing a dump file of notepad.exe (PID 1234)... 12 s", while it runs.
 [[nodiscard]] std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed);
 
+/// What the confirm says when programs running as the signed-in user could read a dump in its folder (#4164): an
+/// elevated session's folder, read by IProcessActions::dumpFolderAccess(). A warning, not a refusal: the administrator
+/// chose the folder, and may keep it or choose another with Save dump to....
+inline constexpr std::string_view FOLDER_READABLE_TEXT =
+    "Programs running as you can read files in this folder. Choose one only administrators can open.";
+/// What the confirm says when who can read its folder couldn't be told (#4164).
+inline constexpr std::string_view FOLDER_ACCESS_UNKNOWN_TEXT =
+    "TaskSmack couldn't tell who can open files made in this folder, so programs running as you may be able to read the "
+    "dump. Choose one only administrators can open.";
+
+/// The confirm's warning for @p check (#4164): FOLDER_READABLE_TEXT, FOLDER_ACCESS_UNKNOWN_TEXT, or why the dump would
+/// refuse the folder; empty when only administrators can read a new file there, or when it wasn't checked.
+[[nodiscard]] std::string folderAccessWarning(const Platform::DumpFolderCheck& check);
 /// What the confirm says, in place of a space warning, while its folder and drive are read (#3155).
 inline constexpr std::string_view CHECKING_FOLDER_TEXT = "Checking the folder and the free space on its drive...";
 
 /// What the confirm's worker read for its folder (#3155): the folder (the remembered one, or the
-/// default where it is gone), the drive's free space and the process's private bytes.
+/// default where it is gone), the drive's free space and the process's private bytes, and who can read a dump there
+/// (#4164; checked only in an elevated session).
 struct ConfirmFacts
 {
     std::filesystem::path directory;
     Platform::DumpSpace space;
+    Platform::DumpFolderCheck folder;
 };
 /// The confirm worker's answer: its facts, or why it couldn't read them (it threw, or had no thread).
 using ConfirmCheck = std::expected<ConfirmFacts, std::string>;
@@ -231,6 +253,13 @@ class ProcessDumpView
         return m_NoDefaultFolder && m_Directory.empty();
     }
 
+    /// Whether the confirm's folder is one the dump would refuse (#4164: Platform::DumpFolderAccess::Refused, a junction or
+    /// link as administrator): its Create dump file button is disabled until another is chosen with "Save dump to...".
+    [[nodiscard]] bool folderRefused() const noexcept
+    {
+        return m_FolderRefused;
+    }
+
     /// Whether "Save dump to..." is offered with @p actions: the platform's folder dialog, or the fallback.
     [[nodiscard]] bool canChooseFolder(Platform::IProcessActions* actions) const;
     /// Cancels a dump in flight and waits for it, and for a folder dialog still up (shutdown()).
@@ -284,7 +313,7 @@ class ProcessDumpView
     /// The confirm was accepted: starts the dump on a worker, through @p actions (null: the result says
     /// actions are unavailable, and nothing starts). @p actions must outlive the dump: see the file
     /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up, its
-    /// folder is being checked, or it has no folder yet (needsFolder()).
+    /// folder is being checked, it has no folder yet (needsFolder()), or its folder would be refused (folderRefused()).
     void confirm(Platform::IProcessActions* actions);
 
     /// The confirm was cancelled or dismissed: nothing starts.
@@ -401,7 +430,7 @@ class ProcessDumpView
     std::filesystem::path m_Directory;
     std::string m_ConfirmTitle;
     std::string m_ConfirmQuestion;
-    std::string m_SpaceWarning;  // lowSpaceWarning() for m_Directory; empty when none
+    std::string m_SpaceWarning;  // folderAccessWarning() and lowSpaceWarning() for m_Directory; empty when none
     std::string m_FolderFailure; // why the folder dialog couldn't be shown; empty when it could
 
     // The confirm's folder check (#3155): on a worker, one at a time. A check asked for while one runs
@@ -437,6 +466,7 @@ class ProcessDumpView
     bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
     bool m_NoDefaultFolder = false;   // no default folder: the user must choose one (setNoDefaultFolder(), #4141)
+    bool m_FolderRefused = false;     // the confirm's folder is one the dump would refuse (folderRefused(), #4164)
 };
 
 } // namespace App

@@ -329,6 +329,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/DetachedSpawn.cpp
     src/Platform/Linux/RootCapabilities.cpp # an Administrator session keeps only the capabilities it uses (#3621)
     src/Platform/Linux/SdlEnvironment.cpp # a session run as root for a user takes no SDL variable (#4111)
+    src/Platform/Linux/RootEnvironment.cpp # a root session with a user's environment keeps an allow-list (#4158, #4159, #4179)
     src/Platform/Linux/LinuxProcessEnvironmentReader.cpp
     src/Platform/Linux/LinuxProcessConnectionsReader.cpp
     src/Platform/Linux/LinuxSystemConnectionsReader.cpp # the Connections tab (#3066)
@@ -357,6 +358,7 @@ set(PLATFORM_SOURCES_LINUX
     src/Platform/Linux/LinuxPublicIp.cpp
     src/Platform/Linux/LinuxDiskProbe.cpp
     src/Platform/Linux/LinuxPathProvider.cpp
+    src/Platform/Linux/RootDumpFolder.cpp # a root session's own default dump folder (#4181)
     src/Platform/Linux/LinuxPowerProbe.cpp
     src/Platform/Linux/LinuxGPUProbe.cpp
     src/Platform/Linux/AccelNpuProbe.cpp
@@ -392,6 +394,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/PinnedFolder.cpp # the handed-over config folder, opened only relative to its held handle (#3774)
     src/Platform/Windows/HandleRelativeFile.cpp # opens, renames and deletes relative to a held folder handle: PinnedFolder and the elevated log (#4143)
     src/Platform/Windows/WindowsProcessDump.cpp
+    src/Platform/Windows/WindowsDumpFolder.cpp # an elevated dump's folder: held, checked, and who can read it (#4164)
     src/Platform/Windows/WindowsProcessMachine.cpp # the machine a process runs as: dumps and the Architecture column (#2394)
     src/Platform/Windows/WindowsProcessIdentity.cpp
     src/Platform/Windows/WindowsWaitChain.cpp # Analyze wait chain: GetThreadWaitChain on each thread (#3084)
@@ -678,6 +681,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsTaskManagerReplacement.h
         src/Platform/Windows/WindowsTaskManagerInstall.h
         src/Platform/Windows/WindowsProcessDump.h
+        src/Platform/Windows/WindowsDumpFolder.h
         src/Platform/Windows/WindowsProcessIdentity.h
         src/Platform/Windows/WindowsWaitChain.h
         src/Platform/Windows/WindowsWaitChainMath.h

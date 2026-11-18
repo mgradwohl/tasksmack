@@ -225,7 +225,8 @@ SessionAccount readSessionAccount()
 {
     // An Administrator session (#3580) runs as root for the user who started it: root's per-user startup isn't theirs
     // (#3682).
-    return SessionUser::sessionAccount(::geteuid(), &SessionUser::processVariable, &SessionUser::processAccount); // looked up once (#3773)
+    return SessionUser::sessionAccount(
+        ::geteuid(), &SessionUser::trustedProcessVariable, &SessionUser::processAccount); // looked up once (#3773)
 }
 
 std::shared_ptr<IElevatedRestart> makeElevatedRestart(void* /*ownerWindow*/)

@@ -18,6 +18,7 @@
 #include <filesystem>
 #include <fstream>
 #include <functional>
+#include <map>
 #include <optional>
 #include <sstream>
 #include <string>
@@ -155,6 +156,25 @@ invokingUserSession(uid_t effectiveUid,
     return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
 }
 
+/// The user's own values of the variables a root session replaced for itself (RootEnvironment: PATH, XDG_DATA_DIRS,
+/// XAUTHORITY; the second #4187 review), kept for the programs it starts as that user, which run as them, so their own
+/// values are safe there and needed (snap and Flatpak handlers, their ~/.local/bin, their Xauthority).
+[[nodiscard]] inline std::map<std::string, std::string, std::less<>>& userSideValues()
+{
+    static std::map<std::string, std::string, std::less<>> values;
+    return values;
+}
+
+/// processVariable(), or the user's own value of a variable a root session replaced (userSideValues()).
+[[nodiscard]] inline std::optional<std::string> userSideVariable(std::string_view name)
+{
+    if (const auto found = userSideValues().find(name); found != userSideValues().end())
+    {
+        return found->second;
+    }
+    return processVariable(name);
+}
+
 /// Every group @p name is in, with @p gid (its primary group) among them, as a login sets them (getgrouplist());
 /// empty when the database can't say.
 [[nodiscard]] inline std::vector<gid_t> userGroups(const std::string& name, gid_t gid)
@@ -287,6 +307,85 @@ struct ProcessIds
     return false;
 }
 
+/// The real uid of the nearest process above @p self that isn't root's, up to pid 1, from @p ids (processIds(), or a
+/// test's), or nullopt when there's none or an ancestor can't be read. The user who ran sudo, doas, su or pkexec is
+/// that process (sudo's and su's front process keeps their real uid), so a root process it starts finds them first.
+[[nodiscard]] inline std::optional<std::uint32_t> nearestUserAbove(int self, const std::function<std::optional<ProcessIds>(int)>& ids)
+{
+    constexpr int MAX_HOPS = 64; // as aUserIsAbove()
+    std::optional<ProcessIds> at = ids(self);
+    for (int hop = 0; hop < MAX_HOPS && at.has_value() && at->parent > 0; ++hop)
+    {
+        at = ids(at->parent);
+        if (at.has_value() && at->realUid != 0)
+        {
+            return at->realUid;
+        }
+    }
+    return std::nullopt;
+}
+
+/// Whether @p uid is the user who started @p self (#4186): nearestUserAbove(), by real uid only. Any ancestor of theirs
+/// further up isn't enough: a user's shell an administrator reached with su, or a setuid helper, sits between (the
+/// #4193 review).
+[[nodiscard]] inline bool uidIsAbove(int self, uid_t uid, const std::function<std::optional<ProcessIds>(int)>& ids)
+{
+    return nearestUserAbove(self, ids) == static_cast<std::uint32_t>(uid);
+}
+
+/// @p value of the environment variable @p name as a root session may trust it (#4186): a SUDO_UID or PKEXEC_UID naming
+/// a user only when @p isAbove says that user is the nearest one above this process, as sudo's and pkexec's caller is; under
+/// su -p or doas keepenv the environment is the user's own, and could name anyone. Nullopt then. Any other variable,
+/// and a value invokingUser() refuses anyway (malformed, or root), is @p value unchanged.
+[[nodiscard]] inline std::optional<std::string>
+invokerVariable(std::string_view name, std::optional<std::string> value, const std::function<bool(uid_t)>& isAbove)
+{
+    if ((name != "SUDO_UID" && name != "PKEXEC_UID") || !value.has_value() || value->empty())
+    {
+        return value;
+    }
+    std::uint32_t uid = 0;
+    if (std::from_chars(value->data(), value->data() + value->size(), uid).ptr != value->data() + value->size() || uid == 0)
+    {
+        return value;
+    }
+    return isAbove(static_cast<uid_t>(uid)) ? std::move(value) : std::nullopt;
+}
+
+/// Whether this root process may trust a SUDO_UID or PKEXEC_UID naming @p uid: invokerVariable()'s check, against this
+/// process's ancestors (uidIsAbove() over /proc).
+[[nodiscard]] inline bool invokerIsAboveThisProcess(uid_t uid)
+{
+    return uidIsAbove(::getpid(), uid, &processIds);
+}
+
+/// processVariable(), with SUDO_UID and PKEXEC_UID as invokerVariable() trusts them, worked out once at first use
+/// (startup: the config folder asks), while the process that ran sudo or pkexec is still there to see.
+[[nodiscard]] inline std::optional<std::string> trustedProcessVariable(std::string_view name)
+{
+    if (name == "SUDO_UID")
+    {
+        static const std::optional<std::string> sudoUid = invokerVariable(name, processVariable(name), &invokerIsAboveThisProcess);
+        return sudoUid;
+    }
+    if (name == "PKEXEC_UID")
+    {
+        static const std::optional<std::string> pkexecUid = invokerVariable(name, processVariable(name), &invokerIsAboveThisProcess);
+        return pkexecUid;
+    }
+    return processVariable(name);
+}
+
+/// userSideVariable(), with SUDO_UID and PKEXEC_UID from trustedProcessVariable().
+[[nodiscard]] inline std::optional<std::string> trustedUserSideVariable(std::string_view name)
+{
+    if (name == "SUDO_UID" || name == "PKEXEC_UID")
+    {
+        return trustedProcessVariable(name);
+    }
+    return userSideVariable(name);
+}
+
 /// Whether this process's environment may be another, less-privileged user's (#4154), so it ignores the test hooks that
 /// write files (#4104) and the SDL and loader variables (#4111, #4151). No passwd lookup, and no signal the user's own
 /// environment can set to turn it off:
@@ -369,7 +468,7 @@ struct ProcessIds
 /// whole life, as the settings folder chosen from it is. Thread-safe (a function-local static).
 [[nodiscard]] inline const std::optional<InvokingUser>& processInvokingUser()
 {
-    static const std::optional<InvokingUser> invoking = invokingUser(::geteuid(), &processVariable, &systemAccount);
+    static const std::optional<InvokingUser> invoking = invokingUser(::geteuid(), &trustedProcessVariable, &systemAccount);
     return invoking;
 }
 
@@ -400,7 +499,7 @@ struct ProcessIds
 [[nodiscard]] inline std::optional<DetachedSpawn::RunAs> invokingUserSession()
 {
     return invokingUserSession(
-        ::geteuid(), &processVariable, &processAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
+        ::geteuid(), &trustedUserSideVariable, &processAccount, [](const std::string& path) { return ::access(path.c_str(), F_OK) == 0; });
 }
 
 } // namespace Platform::SessionUser
