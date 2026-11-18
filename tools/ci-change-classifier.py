@@ -170,6 +170,7 @@ DEV_TOOLS = {
     "tools/ui-compare-report.py": f"{_LOCAL} (test_ui_compare_report.py), ui-compare.sh's report.",
     # Windows
     "tools/bench.ps1": f"{_LOCAL} (test-bench.ps1, test-bench-across-launches.ps1); CI benchmarks run bench.sh.",
+    "tools/bench-ps1-launch.py": f"{_LOCAL}: bench.ps1 -Baseline's further launch (#4198), test-bench-across-launches.ps1's.",
     "tools/profile-etw.ps1": f"{_LOCAL} (test-profile-etw.ps1).",
     "tools/profile-etw-common.ps1": f"{_LOCAL}, shared by the ETW capture scripts (test-profile-etw*.ps1).",
     "tools/profile-etw-resize.ps1": f"{_LOCAL} (test-profile-etw-resize.ps1).",
