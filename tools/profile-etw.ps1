@@ -237,6 +237,7 @@ function Use-CaptureTimestamp {
     $script:tracePath = $paths.Trace
     $script:childLogPath = $paths.ChildLog
     $script:launcherLogPath = $paths.LauncherLog
+    $script:appLogPath = $paths.AppLog
     $script:benchJsonPath = $paths.BenchJson
     $script:manifestPath = $paths.Manifest
     $script:controlDir = $paths.Control
@@ -313,7 +314,7 @@ function Invoke-ProfileTarget {
         $windowStyle = if ($TargetPath) { 'Hidden' } else { 'Normal' }
         return Invoke-AppCapture -BinaryPath $binaryPath -StartTrace $StartTrace -StopTrace $StopTrace `
             -DurationSeconds $DurationSeconds -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup `
-            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle -UseUserConfig:$UseUserConfig
+            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle -UseUserConfig:$UseUserConfig -AppLogPath $appLogPath
     }
     $result = [ordered]@{
         Binary         = $binaryPath
