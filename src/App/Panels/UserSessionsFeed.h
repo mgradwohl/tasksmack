@@ -93,13 +93,14 @@ class UserSessionsFeed
     }
 
     /// A session menu's items: each platform's own (#3076), Lock on Linux, Disconnect on Windows, Sign out on
-    /// both; none before start() and after stop().
+    /// both; none before start() and after stop(). Busy while an action runs (#4260).
     [[nodiscard]] SessionMenu sessionMenu() const
     {
         return SessionMenu{
             .lock = canAct(Platform::SessionAction::Lock),
             .disconnect = canAct(Platform::SessionAction::Disconnect),
             .signOut = canAct(Platform::SessionAction::SignOut),
+            .busy = m_Actions.has_value() && m_Actions->busy(),
         };
     }
 

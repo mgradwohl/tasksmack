@@ -13,33 +13,37 @@ namespace App
 SessionMenuChoice renderSessionMenuItems(SessionMenu menu, const Platform::UserSession& session)
 {
     SessionMenuChoice choice;
-    if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock"))
+    // While an action runs a second one is refused (#4260), so the items are greyed, with the reason.
+    const bool enabled = !menu.busy;
+    if (menu.lock && ImGui::MenuItem(ICON_FA_LOCK "  Lock", nullptr, false, enabled))
     {
         choice.lock = session;
     }
     if (menu.lock)
     {
-        ImGui::SetItemTooltip("Lock the session's screen; its user signs back in to unlock it");
+        ImGui::SetItemTooltip(enabled ? "Lock the session's screen; its user signs back in to unlock it"
+                                      : SessionActionControl::BUSY_TEXT.data());
     }
     // Windows' Disconnect, in Lock's place (#3076): the session stays signed in, its programs running.
     const bool disconnected = session.state == "disconnected";
-    if (menu.disconnect && ImGui::MenuItem(ICON_FA_LINK_SLASH "  Disconnect...", nullptr, false, !disconnected))
+    if (menu.disconnect && ImGui::MenuItem(ICON_FA_LINK_SLASH "  Disconnect...", nullptr, false, enabled && !disconnected))
     {
         choice.disconnect = session;
     }
     if (menu.disconnect)
     {
-        ImGui::SetItemTooltip(disconnected ? "The session is already disconnected"
-                                           : "Detach the session from its screen; its programs keep running until its user "
-                                             "signs back in");
+        const char* const idle = disconnected ? "The session is already disconnected"
+                                              : "Detach the session from its screen; its programs keep running until its user "
+                                                "signs back in";
+        ImGui::SetItemTooltip(enabled ? idle : SessionActionControl::BUSY_TEXT.data());
     }
-    if (menu.signOut && ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out..."))
+    if (menu.signOut && ImGui::MenuItem(ICON_FA_RIGHT_FROM_BRACKET "  Sign out...", nullptr, false, enabled))
     {
         choice.signOut = session;
     }
     if (menu.signOut)
     {
-        ImGui::SetItemTooltip("End the session and every program in it");
+        ImGui::SetItemTooltip(enabled ? "End the session and every program in it" : SessionActionControl::BUSY_TEXT.data());
     }
     return choice;
 }

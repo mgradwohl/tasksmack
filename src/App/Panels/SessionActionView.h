@@ -19,6 +19,7 @@ struct SessionMenu
     bool lock = false;       ///< Linux
     bool disconnect = false; ///< Windows
     bool signOut = false;
+    bool busy = false; ///< An action is running: the items are greyed until it finishes (#4260)
 
     [[nodiscard]] bool any() const noexcept
     {
@@ -40,7 +41,7 @@ struct SessionMenuChoice
 };
 
 /// Inside an open popup: the items @p menu allows for @p session, Lock, Disconnect... (greyed for a session
-/// already disconnected) and Sign out..., each with its tooltip. What was chosen, if anything.
+/// already disconnected, and all three greyed while @p menu is busy) and Sign out..., each with its tooltip. What was chosen, if anything.
 [[nodiscard]] SessionMenuChoice renderSessionMenuItems(SessionMenu menu, const Platform::UserSession& session);
 
 /// Hands @p choice to @p actions: Lock runs at once; Sign out and Disconnect open their confirm.
