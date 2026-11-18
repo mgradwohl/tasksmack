@@ -1763,9 +1763,13 @@ It's for CI alone, deliberately: a baseline recorded on a developer machine, com
 class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
 (`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
 (`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
-takes each benchmark from whichever capture, over several classes, read it slowest
+takes each benchmark's median per runner class, then the slowest class
 (`tools/merge-benchmark-baselines.py`): a run on any captured class can only look like an improvement,
-never a false regression (#682), and the threshold still applies to every benchmark. Its context's
+never a false regression (#682), and the threshold still applies to every benchmark. Captures on the same
+class (same `mhz_per_cpu`) are reduced to the median of their medians first, so one slow launch is an
+outlier the median ignores and the baseline doesn't drift slow (#4197); an even count takes the lower
+middle, so the baseline is always one real capture's entry. It is the same fix as elsewhere in the
+benchmarks (medians across launches, #3476), not an exclusion. Its context's
 `tasksmack_merged_from` lists the captures and how many benchmarks each supplied. Classes don't slow every
 benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
@@ -1797,8 +1801,8 @@ gate should treat as the new normal):
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
    If every benchmark shifted by roughly the same percentage in the same direction, that's very
    likely a runner-class difference, not a real change.
-4. Merge the captures, each benchmark from the capture slowest at it, labelled by run id, and commit the
-   result in its own PR (not bundled with unrelated changes):
+4. Merge the captures (per benchmark, the median per runner class, then the slowest class), labelled by
+   run id, and commit the result in its own PR (not bundled with unrelated changes):
    ```bash
    python3 tools/merge-benchmark-baselines.py --output perf-data/linux-ci-baseline.json \
        <run-id>=/tmp/benchmark-results/<run-id>/perf-data/benchmark-current.json ...
