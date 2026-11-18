@@ -651,6 +651,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
     UI/test_CellText.cpp
+    UI/test_LabelledText.cpp # a label and a value from outside, drawn whole past ImGui's 3 KB buffer (#4306)
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp
