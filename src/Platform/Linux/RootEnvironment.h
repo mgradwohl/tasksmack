@@ -85,6 +85,13 @@ inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share"
 /// parses the file TZ names (sudo's env_check drops the rest).
 [[nodiscard]] bool isSafeTimeZone(std::string_view value) noexcept;
 
+/// Whether @p name is a locale variable whose value is checked (#4256): LANG, LANGUAGE, LC_* and TASKSMACK_LOCALE.
+[[nodiscard]] bool isLocaleVariable(std::string_view name) noexcept;
+
+/// Whether a locale variable's @p value is kept, as sudo's env_check decides (#4256): never one with "/" or "%", nor one
+/// starting with ".", which setlocale() and newlocale() could take as a path to locale data the user chose.
+[[nodiscard]] bool isSafeLocale(std::string_view value) noexcept;
+
 /// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
 /// #4179, and the review of #4187): every name not kept, and a TZ that isn't safe, is unset (collected first); a
 /// relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's (or is

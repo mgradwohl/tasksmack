@@ -224,6 +224,16 @@ bool isKept(std::string_view name) noexcept
            std::ranges::any_of(KEPT_PREFIXES, [name](std::string_view prefix) { return name.starts_with(prefix); });
 }
 
+bool isLocaleVariable(std::string_view name) noexcept
+{
+    return name == "LANG" || name == "LANGUAGE" || name.starts_with("LC_") || name == "TASKSMACK_LOCALE";
+}
+
+bool isSafeLocale(std::string_view value) noexcept
+{
+    return !value.contains('/') && !value.contains('%') && !value.starts_with('.');
+}
+
 bool isSafeTimeZone(std::string_view value) noexcept
 {
     if (value.starts_with(':'))
@@ -255,7 +265,7 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
             {
                 continue;
             }
-            if (!isKept(name) || (name == "TZ" && !isSafeTimeZone(value)))
+            if (!isKept(name) || (name == "TZ" && !isSafeTimeZone(value)) || (isLocaleVariable(name) && !isSafeLocale(value)))
             {
                 names.emplace_back(name);
             }
