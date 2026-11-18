@@ -11,6 +11,7 @@
 // process is dumped live, as before, and the result says why.
 
 #include "Platform/IProcessActions.h"
+#include "WindowsDumpFolder.h"     // ADMIN_DUMP_FILE_SECURITY (#4188)
 #include "WindowsProcessMachine.h" // processMachine(), ProcessMachineFn: moved out for the probe's Architecture column (#2394)
 
 // clang-format off
@@ -29,6 +30,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 
 namespace Platform::Windows
 {
@@ -65,6 +67,10 @@ struct DumpSource
     /// (#4164; WindowsDumpFolder.h): an elevated session's, where the folder may be the less-privileged user's. A
     /// junction or link for the folder, or on its path, is refused. False: the file is created by its path, as before.
     bool holdFolder = false;
+    /// The security (SDDL) a held folder's dump file is made with (#4188): ADMIN_DUMP_FILE_SECURITY, owned by
+    /// Administrators and readable by Administrators and SYSTEM only, whatever the folder's own DACL. A test's leaves out
+    /// the owner, which only an elevated token may set. A file that can't be made with it isn't made: the dump is refused.
+    std::string_view fileSecurity = ADMIN_DUMP_FILE_SECURITY;
 };
 
 /// Writes a full-memory dump of @p process into a new file in @p directory: Task Manager's dump type

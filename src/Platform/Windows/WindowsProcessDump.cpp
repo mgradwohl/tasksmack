@@ -33,6 +33,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace Platform::Windows
@@ -239,11 +240,19 @@ struct NewFile
 
 /// createDumpFile() in an elevated session (#4164): @p directory opened and held by openHeldDumpFolder(), and the file
 /// made relative to that handle with FILE_CREATE, so nothing on the folder's path is looked up again and no link is
-/// followed. Opened for DELETE too, so a failed dump is deleted through its own handle.
-[[nodiscard]] NewFile createDumpFileInHeldFolder(const std::filesystem::path& directory, std::string_view image, std::int32_t pid)
+/// followed. Opened for DELETE too, so a failed dump is deleted through its own handle. Made with @p security
+/// (DumpSource::fileSecurity, #4188): its own protected DACL, nothing inherited from the folder.
+[[nodiscard]] NewFile
+createDumpFileInHeldFolder(const std::filesystem::path& directory, std::string_view image, std::int32_t pid, std::string_view security)
 {
     NewFile file;
     file.heldFolder = true;
+    const OwnedSecurityDescriptor descriptor = securityDescriptorFrom(security);
+    if (descriptor == nullptr)
+    {
+        file.refusal = "Can't create a dump file: its security can't be built";
+        return file;
+    }
     auto folder = openHeldDumpFolder(directory);
     if (!folder.has_value())
     {
@@ -263,7 +272,7 @@ struct NewFile
                                        .share = 0,
                                        .disposition = FILE_CREATE,
                                        .kind = EntryKind::File,
-                                       .security = nullptr, // the folder's inheritable ACEs, as a file made by path gets
+                                       .security = descriptor.get(), // admin-only, never the folder's ACEs (#4188)
                                    });
         if (opened.has_value())
         {
@@ -335,7 +344,7 @@ ProcessDumpResult writeProcessDump(
     }
 
     const std::string directoryText = WinString::wideToUtf8(directory.wstring());
-    NewFile file = source.holdFolder ? createDumpFileInHeldFolder(directory, imageName(process), pid)
+    NewFile file = source.holdFolder ? createDumpFileInHeldFolder(directory, imageName(process), pid, source.fileSecurity)
                                      : createDumpFile(directory, imageName(process), pid);
     if (!file.handle)
     {
