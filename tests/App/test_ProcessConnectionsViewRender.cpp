@@ -42,21 +42,30 @@ constexpr float WINDOW_HEIGHT = 800.0F;
 {
     const auto tcp4 = [](std::uint8_t lastOctet, std::uint16_t localPort, std::uint16_t remotePort, ConnectionState state)
     {
-        return ProcessConnection{.protocol = ConnectionProtocol::Tcp,
-                                 .family = ConnectionFamily::IPv4,
-                                 .local = {.address = {10, 0, 0, 5}, .port = localPort},
-                                 .remote = {.address = {93, 184, 216, lastOctet}, .port = remotePort},
-                                 .state = state};
+        return ProcessConnection{
+            .protocol = ConnectionProtocol::Tcp,
+            .family = ConnectionFamily::IPv4,
+            .local = {.address = {10, 0, 0, 5}, .port = localPort},
+            .remote = {.address = {93, 184, 216, lastOctet}, .port = remotePort},
+            .state = state,
+        };
     };
-    return {.status = Platform::ConnectionsReadStatus::Ok,
-            .connections = {tcp4(34, 55026, 443, ConnectionState::Established),
-                            ProcessConnection{.protocol = ConnectionProtocol::Tcp,
-                                              .family = ConnectionFamily::IPv6,
-                                              .local = {.address = {}, .port = 22},
-                                              .remote = {},
-                                              .state = ConnectionState::Listen},
-                            tcp4(35, 55027, 80, ConnectionState::CloseWait)},
-            .detail = {}};
+    return {
+        .status = Platform::ConnectionsReadStatus::Ok,
+        .connections =
+            {
+                tcp4(34, 55026, 443, ConnectionState::Established),
+                ProcessConnection{
+                    .protocol = ConnectionProtocol::Tcp,
+                    .family = ConnectionFamily::IPv6,
+                    .local = {.address = {}, .port = 22},
+                    .remote = {},
+                    .state = ConnectionState::Listen,
+                },
+                tcp4(35, 55027, 80, ConnectionState::CloseWait),
+            },
+        .detail = {},
+    };
 }
 
 class ProcessConnectionsViewRenderTest : public ::testing::Test
@@ -234,17 +243,19 @@ TEST_F(ProcessConnectionsViewRenderTest, DrawsTheCountHeadersAndEveryRow)
 
 TEST_F(ProcessConnectionsViewRenderTest, FailedReadsDrawTheirStatusInsteadOfAnEmptyTable)
 {
-    for (const auto status : {Platform::ConnectionsReadStatus::PermissionDenied,
-                              Platform::ConnectionsReadStatus::ProcessExited,
-                              Platform::ConnectionsReadStatus::IdentityUnknown,
-                              Platform::ConnectionsReadStatus::Failed})
+    for (const auto status : {
+             Platform::ConnectionsReadStatus::PermissionDenied,
+             Platform::ConnectionsReadStatus::ProcessExited,
+             Platform::ConnectionsReadStatus::IdentityUnknown,
+             Platform::ConnectionsReadStatus::Failed,
+         })
     {
         ProcessConnectionsView view;
         TestMocks::MockProcessConnectionsReader reader;
         reader.setResult({.status = status, .connections = {}, .detail = {}});
         openAndRead(view, reader);
         const std::string text = renderAndCapture(view, true);
-        EXPECT_TRUE(text.contains(std::string(Detail::connectionsStatusText(status))));
+        EXPECT_TRUE(text.contains(Detail::connectionsStatusText(status)));
         EXPECT_FALSE(text.contains("LOCAL ADDRESS"));
     }
 
@@ -325,16 +336,34 @@ TEST_F(ProcessConnectionsViewRenderTest, LongIPv6EndpointsKeepTheirPortsInANarro
     // #1942: five sockets on one temporary IPv6 address, told apart only by their local ports. Cut at
     // the end, every row read "[2605:59ca:2160:bf10:6129:8032:850a:".
     const std::array<std::uint8_t, 16> local{
-        0x26, 0x05, 0x59, 0xca, 0x21, 0x60, 0xbf, 0x10, 0x61, 0x29, 0x80, 0x32, 0x85, 0x0a, 0x4a, 0x31};
+        0x26,
+        0x05,
+        0x59,
+        0xca,
+        0x21,
+        0x60,
+        0xbf,
+        0x10,
+        0x61,
+        0x29,
+        0x80,
+        0x32,
+        0x85,
+        0x0a,
+        0x4a,
+        0x31,
+    };
     const std::array<std::uint8_t, 16> remote{0x26, 0x07, 0x6b, 0xc0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x10};
     Platform::ConnectionsReadResult result{.status = Platform::ConnectionsReadStatus::Ok, .connections = {}, .detail = {}};
     for (std::uint16_t port = 50747; port < 50752; ++port)
     {
-        result.connections.push_back(ProcessConnection{.protocol = ConnectionProtocol::Tcp,
-                                                       .family = ConnectionFamily::IPv6,
-                                                       .local = {.address = local, .port = port},
-                                                       .remote = {.address = remote, .port = 443},
-                                                       .state = ConnectionState::Established});
+        result.connections.push_back(ProcessConnection{
+            .protocol = ConnectionProtocol::Tcp,
+            .family = ConnectionFamily::IPv6,
+            .local = {.address = local, .port = port},
+            .remote = {.address = remote, .port = 443},
+            .state = ConnectionState::Established,
+        });
     }
     ProcessConnectionsView view;
     view.applyResult(result);
