@@ -1763,9 +1763,13 @@ It's for CI alone, deliberately: a baseline recorded on a developer machine, com
 class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
 (`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
 (`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
-takes each benchmark from whichever capture, over several classes, read it slowest
+takes each benchmark's median per runner class, then the slowest class
 (`tools/merge-benchmark-baselines.py`): a run on any captured class can only look like an improvement,
-never a false regression (#682), and the threshold still applies to every benchmark. Its context's
+never a false regression (#682), and the threshold still applies to every benchmark. Captures on the same
+class (same `mhz_per_cpu`) are reduced to the median of their medians first, so one slow launch is an
+outlier the median ignores and the baseline doesn't drift slow (#4197); an even count takes the lower
+middle, so the baseline is always one real capture's entry. It is the same fix as elsewhere in the
+benchmarks (medians across launches, #3476), not an exclusion. Its context's
 `tasksmack_merged_from` lists the captures and how many benchmarks each supplied. Classes don't slow every
 benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
@@ -1797,8 +1801,8 @@ gate should treat as the new normal):
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
    If every benchmark shifted by roughly the same percentage in the same direction, that's very
    likely a runner-class difference, not a real change.
-4. Merge the captures, each benchmark from the capture slowest at it, labelled by run id, and commit the
-   result in its own PR (not bundled with unrelated changes):
+4. Merge the captures (per benchmark, the median per runner class, then the slowest class), labelled by
+   run id, and commit the result in its own PR (not bundled with unrelated changes):
    ```bash
    python3 tools/merge-benchmark-baselines.py --output perf-data/linux-ci-baseline.json \
        <run-id>=/tmp/benchmark-results/<run-id>/perf-data/benchmark-current.json ...
@@ -1819,27 +1823,37 @@ gate should treat as the new normal):
 | `BM_ProcessModel_*` | Process enumeration and snapshot computation |
 | `BM_ProcessModel_MemoryGrowth` | Memory growth over repeated refresh cycles |
 | `BM_ProcessProbe_Enumerate` | Raw OS API performance |
+| `BM_ProcessProbe_RefreshExtras` | The rest of `ProcessModel::refresh()` besides `enumerate()`: total CPU time, per-connection network reading, package energy and capabilities, on the real probe |
 | `BM_ProcessProbe_EnumerateSynthetic*` | `LinuxProcessProbe::enumerate()` over a synthetic 5,000-process /proc (Linux only), so runs compare like for like: steady state, and a pass that also rebuilds the socket inode-to-PID map from its fd walk (`...Rebuild`) |
 | `BM_SystemModel_*` | System metric sampling and history accessor performance |
 | `BM_SystemModel_MemoryGrowth` | Memory growth over repeated `refresh()` calls exercising the full probe read, delta computation, and history append path |
 | `BM_SystemProbe_Sample` | Raw OS system probe API performance |
 | `BM_DiskProbe_Read` | Raw OS disk I/O counter read |
+| `BM_WindowsSystemProbe_SampleSwitches` | `BM_SystemProbe_Sample` with the context switches a whole `read()` makes (Windows only, #3713) |
+| `BM_WindowsMemoryCompression_*` | The two reads `WindowsSystemProbe` makes for compressed memory: the whole process snapshot that finds the Memory Compression process, and its session list alone (Windows only, #3483) |
+| `BM_WindowsNetwork_*` | The Windows interface reads: `GetIfTable2` with every row's counters, the list without counters at a rescan, and `GetIfEntry2` on each counted row each sample (Windows only, #3713) |
 | `BM_ProcessTree_*`, `BM_ProcessFilter_Indices` | Building the Processes table's tree-view rows, and the filter pass over Windows-like command lines |
 | `BM_ProcessRowMeter_*` | One headless ImGui frame of the Processes table with and without the inline meters (#1528) |
 | `BM_ProcessIcons_*` | One headless ImGui frame of the Processes table's name column with and without process icons (#1800) |
 | `BM_ProcessDetailsHistory_*` | Process Details' per-process history append and trim at a full window (#1179) |
 | `BM_PDHGPUProbe_*`, `BM_PDHInstanceCache_*` | The PDH per-process GPU counter read and its instance-name cache (Windows only) |
+| `BM_WindowsProcessProbe_{SnapshotQuery,SnapshotReplay,ParseWarmCache,EnumerateAtInterval,HungWindowScan,Detail_*}` | `WindowsProcessProbe::enumerate()` split into its phases: the snapshot query alone (`SnapshotQuery`), the parse over a fixed replayed snapshot (`ParseWarmCache`, `SnapshotReplay`), `enumerate()` with the detail caches aged by 0, 1000 or 60000 ms a call (`EnumerateAtInterval`), the Not responding window walk (`HungWindowScan`), and each per-process detail read alone (`Detail_*`: `OpenProcess`, owner, image path, command line, publisher, process type, priority class, affinity) (Windows only, #2982) |
+| `BM_WindowsProcessProbe_Churn_*` | `enumerate()` and `ProcessModel::refresh()` while processes start and exit, with new or already-checked images, and the time each system call in a sample takes (Windows only, #2982) |
+| `BM_WindowsProcessProbe_FirstEnumerate`, `BM_WindowsProcessProbe_SecondEnumerate` | A new probe's first `enumerate()` as the sampler's start hook makes it, and its second, the first to ask for app names (Windows only, #3714) |
+| `BM_WindowsSignature_*` | The Signature column: the signature worker's cost per sample (`Worker_Churn`, `Worker_FirstSample`, `Worker_Saturated`, with a fake check), and the real `WinVerifyTrust` check of a catalog-signed file, an embedded-signed file, a cached answer, and every distinct image of the running processes (`VerifyCatalog`, `VerifyEmbedded`, `CacheHit`, `FirstSampleBurst`) (Windows only) |
 | `BM_Format_*` | UI formatting functions |
 | `BM_NetlinkSocketStats_*` | Netlink INET_DIAG socket query performance (Linux only) |
 | `BM_StorageModel_*` | Storage probe/model sampling, history accessor, and per-disk snapshot performance |
 | `BM_StorageModel_MemoryGrowth` | Memory growth over repeated `sample()` cycles |
 | `BM_GPUProbe_*`, `BM_GPUModel_*` | GPU probe enumeration, counter reads, model refresh, and history accessor performance (skipped on a machine with no GPU, #1420; the mock-probe `BM_GPUModel_History_Publish`/`BM_GPUModel_Concurrent_PublicationWait` below always run) |
 | `BM_GPUModel_MemoryGrowth` | Memory growth over repeated GPU `refresh()` cycles |
+| `BM_ToSingleLine/*` | `Domain::toSingleLine` on one browser-style command line, as typed and with a newline in it (#1624) |
+| `BM_ProcessModel_Snapshot_NamesAndCommands/*` | One `ProcessModel` refresh over 1,000 and 5,000 processes with realistic names and command lines, which the snapshot build sanitizes each time (#1624) |
 | `BM_Numeric_*` | Micro-benchmarks for `toDouble`, `clampPercentToFloat`, `narrowOr`, and mixed process-table workload |
 | `BM_ChartWidgets_*` | `UI::Widgets` chart helpers: `computeAlpha` smoothing, `tailAlignedSpan` history-window selection, and the `formatAxisLocalized`/`formatAxisBytesPerSec` axis-label formatters — the layer the Windows ETW app-trace (perf-plan-574 / issue #574) flagged as expensive but that previously had no Linux-runnable coverage |
 | `BM_ChartGeometry_*` | One whole headless ImGui+ImPlot frame (`NewFrame()` through `Render()`, no window or GL) of the real `ChartWidgets.h` charts with fixed data: the stacked CPU chart at full history, the same chart over the default window in a 480 px window (where its point budget follows the plot width, #843), the per-core grid (16 cores, and 64 narrow ones whose point budget follows the plot width, #1411), the memory chart, and an uncached min/max-reduced 18k-sample line. Reports `vertices`/`indices`/`draw_lists`/`draw_cmds` counters; the same scenes (`benchmarks/ChartGeometryScenes.h`) are held to a vertex/index budget by `tests/UI/test_ChartGeometryBudget.cpp`, which gates every PR (#1421) |
 | `BM_*_FullHistory/*`, `BM_*_Cardinality/*` | Domain model `publish()`/`publication()` fed from `tests/Mocks` probes at the limits: history held at 300/3k/18k samples (18k = 1800 s at 100 ms), and many cores, interfaces, disks or processes (#1422) |
-| `BM_SystemModel_Concurrent_PublicationWait/*`, `BM_GPUModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread, with optional extra reader threads: the exclusive lock's hold time before #868, a pointer swap since (#1422, #868) |
+| `BM_SystemModel_Concurrent_PublicationWait/*`, `BM_StorageModel_Concurrent_PublicationWait/*`, `BM_GPUModel_Concurrent_PublicationWait/*` | How long a UI-style `publication()` call waits when it lands on a publish in another thread, with optional extra reader threads: the exclusive lock's hold time before #868, a pointer swap since (#1422, #868) |
 
 ### Memory Tracking
 
@@ -2794,13 +2808,13 @@ The scripts' banners say which kind each phase builds.
 1. **Build an instrumented binary** (`pgo-generate`/`win-pgo-generate` preset) with `-fprofile-instr-generate`
 2. **Run the training workloads** to collect branch-count data into `.profraw` files (one per process, `%p`):
    - the benchmark suite (`TaskSmackBenchmarks`), for the Domain and Platform hot paths;
-   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, six of its main tabs (not Connections or Users), drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
+   - the **headless UI training driver** (`TaskSmackUiTraining`, #880), for the rendering paths: TaskSmack's real panels, six of its main tabs (not Connections), drawn by ImGui/ImPlot for a fixed number of frames with no window and no GPU, once on the real probes and once on the synthetic large-UI machine (#1413).
 3. **Merge** the `.profraw` files into a single `.profdata` with `llvm-profdata`
 4. **Build the optimized binary** (`pgo-use`/`win-pgo-use` preset) with `-fprofile-instr-use=<path>.profdata`
 
 ### The UI training workload
 
-`TaskSmackUiTraining` (`src/Training/`) builds the same panels `ShellLayer` does and trains six of its tabs (not Connections or Users), on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
+`TaskSmackUiTraining` (`src/Training/`) builds the same panels `ShellLayer` does and trains six of its tabs (not Connections), on the app's own object files (the `TaskSmackApp` object library, so its profile is for exactly the code `TaskSmack` links), and draws them in the same tab bar. It is a separate executable: the shipping app has no training switch. Each run:
 
 - renders every workload below, in order, each for its share of the frames (default 1800 frames, paced at 60 fps: about 30 s per run, so about a minute for both probe sets);
 - starts from the default settings in a fresh temporary `TASKSMACK_CONFIG_DIR`, removed at exit, so it never reads or writes your `config.toml`;
@@ -2963,6 +2977,12 @@ Supported generators:
 Packages are created in `dist/`. The NSIS run also copies the uninstaller it built to `Uninstall.exe` beside
 CPack's `project.nsi` in `dist/_CPack_Packages/<system>/NSIS/` (`cmake/CPackProjectConfig.cmake.in`), so a
 release can sign it; see [Windows code signing](#windows-code-signing).
+
+The installer is a Unicode (UTF-8/UTF-16) NSIS target: `CPACK_NSIS_DEFINES` starts with `Unicode true`, so makensis
+raises no warning 7998 (ANSI target) and non-ASCII paths and registry values aren't narrowed to the code page (#4300).
+It has no "Add to PATH" option: a GUI app doesn't need to be on `PATH`, and the old option rewrote a `PATH` entry
+outside the ANSI code page with `?`. The uninstaller CPack generates still removes a `PATH` entry an older
+installer added, so an upgraded or removed install leaves none behind.
 
 What a package contains, and what it depends on (#1398):
 
@@ -3180,7 +3200,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch product or test code: `src/Domain`, `src/UI`, `src/Platform`, `src/App`, `src/Core`, `src/main.cpp`, `tests`, or the benchmarks, their baseline and tools). On a push, the coverage jobs run for any of those, and `benchmark-regression` only when the push touched what the benchmarks measure (`src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory`, the benchmarks, their baseline and tools); the `push-scope` job decides, and every other event runs it as before (#3834). So a merge that drops the Linux floor fails main on that merge, not the next nightly run. The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch product or test code: `src/Domain`, `src/UI`, `src/Platform`, `src/App`, `src/Core`, `src/main.cpp`, `tests`, or the benchmarks, their baseline and tools). On a push, the coverage jobs run for any of those, and `benchmark-regression` only when the push touched what the benchmarks measure (`src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory`, the App headers and `tests/Mocks` the benchmarks include, the build settings `CMakePresets.json`, `cmake/CompilerOptions.cmake` and `tools/common.sh`, the benchmarks, their baseline and tools; `tests/tools/test_heavy_checks_push_scope.py` derives the includes from `benchmarks/*.cpp` and fails if the scope misses one, #4195); the `push-scope` job decides, and every other event runs it as before (#3834). So a merge that drops the Linux floor fails main on that merge, not the next nightly run. The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
 - **`devcontainer.yml`**: Builds the dev container's image (`.devcontainer/Dockerfile`, from `tools/setup-dev.sh`) and, inside it, runs `tools/check-prereqs.sh` and configures the debug preset, whenever the image's inputs change (#136).
 - **`renovate-docs-sri.yml`**: On Renovate's docs-site PRs, regenerates `docs/index.html`'s `integrity=` hashes and `docs/cdn-integrity.json` (`tools/docs-sri.py --update`) and pushes them back with `RENOVATE_TOKEN`, so CI runs on the fixed commit (#3661).
 

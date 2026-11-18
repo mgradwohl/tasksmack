@@ -170,6 +170,7 @@ DEV_TOOLS = {
     "tools/ui-compare-report.py": f"{_LOCAL} (test_ui_compare_report.py), ui-compare.sh's report.",
     # Windows
     "tools/bench.ps1": f"{_LOCAL} (test-bench.ps1, test-bench-across-launches.ps1); CI benchmarks run bench.sh.",
+    "tools/bench-ps1-launch.py": f"{_LOCAL}: bench.ps1 -Baseline's further launch (#4198), test-bench-across-launches.ps1's.",
     "tools/profile-etw.ps1": f"{_LOCAL} (test-profile-etw.ps1).",
     "tools/profile-etw-common.ps1": f"{_LOCAL}, shared by the ETW capture scripts (test-profile-etw*.ps1).",
     "tools/profile-etw-resize.ps1": f"{_LOCAL} (test-profile-etw-resize.ps1).",
@@ -188,6 +189,7 @@ DEV_TOOLS = {
     "perf-data/win-baseline.json": "bench.ps1's local baseline; no workflow reads it (CI's is linux-ci-baseline.json).",
     "perf-data/win-baseline.manifest.json": "win-baseline.json's manifest, read only by a local comparison.",
     # Their tests: what each runs is in DEV_TOOL_TESTS.
+    "tests/tools/test_heavy_checks_push_scope.py": "Heavy Checks' push-scope test (#4195), run by ctest and by dev-tools-checks.",
     "tests/tools/test_profile_perf_sh.py": "profile-perf.sh's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_pgo_sh.py": "pgo.sh's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_profile_heap_sh.py": "profile-heap.sh's tool test, run by ctest and by dev-tools-checks.",
@@ -196,6 +198,7 @@ DEV_TOOLS = {
     "tests/tools/test_resize_perf_summary_awk.py": "resize-perf-summary.awk's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_ui_compare_report.py": "ui-compare-report.py's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_ui_compare_sh.py": "ui-compare.sh's tool test, run by ctest and by dev-tools-checks.",
+    "tests/tools/test_benchmark_baselines.py": "win-baseline.json's tool test (#4207), run by ctest and by dev-tools-checks.",
     "tools/test-bench.ps1": "bench.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-bench-across-launches.ps1": "bench.ps1 -Baseline's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-cmake-cache.ps1": "cmake-cache.ps1's tool test, run by ctest and by dev-tools-checks.",
@@ -216,6 +219,7 @@ DEV_TOOL_TESTS = {
         "tests/tools/test_ci_change_classifier.py",
         "tests/tools/test_workflow_run_steps.py",
         "tests/tools/test_check_cache_prune_triggers.py",
+        "tests/tools/test_heavy_checks_push_scope.py",
         "tests/tools/test_profile_perf_sh.py",
         "tests/tools/test_pgo_sh.py",
         "tests/tools/test_profile_heap_sh.py",
@@ -224,6 +228,7 @@ DEV_TOOL_TESTS = {
         "tests/tools/test_resize_perf_summary_awk.py",
         "tests/tools/test_ui_compare_report.py",
         "tests/tools/test_ui_compare_sh.py",
+        "tests/tools/test_benchmark_baselines.py",
     ),
     "windows": (
         "tools/test-bench.ps1",
