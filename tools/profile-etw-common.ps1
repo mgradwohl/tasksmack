@@ -345,6 +345,36 @@ function New-ProfileConfigDirectory {
     return $path
 }
 
+function Test-BenchmarkMinTime {
+    # True when $Value is a --benchmark_min_time Google Benchmark accepts: seconds ('0.5s', or a
+    # bare number) or an iteration count ('10x'). Zero is neither a duration nor a count.
+    param([AllowEmptyString()][string]$Value)
+    if ($Value -match '^(?<n>[0-9]+(\.[0-9]+)?)s?$') { return [double]::Parse($Matches.n, [cultureinfo]::InvariantCulture) -gt 0 }
+    if ($Value -match '^(?<n>[0-9]+)x$') { return [int64]::Parse($Matches.n, [cultureinfo]::InvariantCulture) -gt 0 }
+    return $false
+}
+
+function Assert-BenchmarkOption {
+    # Bench options belong to bench mode, and their values must be ones the benchmark binary takes
+    # (#4238). $Bound is the script's $PSBoundParameters. Only the orchestrator, the user's own
+    # invocation, is checked for stray options: it hands them to its children by value.
+    param(
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Role,
+        [Parameter(Mandatory = $true)][System.Collections.IDictionary]$Bound,
+        [Parameter(Mandatory = $true)][int]$Repetitions,
+        [AllowEmptyString()][string]$MinTime
+    )
+    if ($Mode -eq 'app') {
+        if ($Role -ne 'Orchestrator') { return }
+        $stray = @($Bound.Keys | Where-Object { $_ -like 'Benchmark*' } | Sort-Object | ForEach-Object { "-$_" })
+        if ($stray.Count -gt 0) { throw "$($stray -join ', ') apply to bench mode only; app mode runs TaskSmack, not the benchmarks." }
+        return
+    }
+    if ($Repetitions -lt 1) { throw "-BenchmarkRepetitions must be 1 or more (got $Repetitions)." }
+    if (-not (Test-BenchmarkMinTime $MinTime)) { throw "-BenchmarkMinTime '$MinTime' is not a Google Benchmark minimum time: use seconds such as 0.5s, or an iteration count such as 10x." }
+}
+
 function Format-AppExitFailure {
     # The failure text for an app that exited when it should not have: the "already running" exit
     # code gets its own explanation (#2250); any other code gets $Otherwise.
