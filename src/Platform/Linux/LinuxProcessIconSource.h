@@ -32,7 +32,7 @@ class LinuxProcessIconSource final : public IProcessIconSource
     /// Test seam: these directories, and processes under @p procRoot instead of /proc.
     LinuxProcessIconSource(DesktopEntryIcons::SearchDirs dirs, std::filesystem::path procRoot);
 
-    [[nodiscard]] std::string executablePath(std::int32_t pid) override;
+    [[nodiscard]] std::string executablePath(std::int32_t pid, std::uint64_t startTimeTicks) override;
     [[nodiscard]] std::optional<IconPixels> loadIcon(std::string_view executablePath, std::string_view processName, int sizePx) override;
     [[nodiscard]] bool caseInsensitivePaths() const noexcept override
     {

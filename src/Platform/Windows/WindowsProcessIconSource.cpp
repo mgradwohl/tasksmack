@@ -1,5 +1,6 @@
 #include "WindowsProcessIconSource.h"
 
+#include "Platform/IProcessActions.h"
 #include "Platform/IProcessIconSource.h"
 
 // clang-format off
@@ -118,6 +119,7 @@ ProcessIconFunctions ProcessIconFunctions::system() noexcept
     return ProcessIconFunctions{
         .openProcess = &::OpenProcess,
         .queryFullProcessImageName = &::QueryFullProcessImageNameW,
+        .getProcessTimes = &::GetProcessTimes,
         .closeHandle = &::CloseHandle,
         .extractIcon = &::SHDefExtractIconW,
         .destroyIcon = &::DestroyIcon,
@@ -135,19 +137,28 @@ ProcessIconFunctions ProcessIconFunctions::system() noexcept
 WindowsProcessIconSource::WindowsProcessIconSource(Windows::ProcessIconFunctions fns) : m_Fns(fns)
 {}
 
-std::string WindowsProcessIconSource::executablePath(std::int32_t pid)
+std::string WindowsProcessIconSource::executablePath(std::int32_t pid, std::uint64_t startTimeTicks)
 {
     if (pid <= 0)
     {
         return {}; // The Idle "process" and the like: no executable
     }
-    const TableOwned process(m_Fns.openProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, static_cast<DWORD>(pid)), m_Fns.closeHandle);
-    if (process.get() == nullptr)
+    // Opened by PID, so confirmed to be the process the row recorded: a reused PID would give the new process's
+    // path, and its icon on this row (#4183). An unknown start time is refused, as the actions refuse it.
+    const Windows::ProcessIdentityFunctions identity{
+        .openProcess = m_Fns.openProcess,
+        .getProcessTimes = m_Fns.getProcessTimes,
+        .closeHandle = m_Fns.closeHandle,
+        .getExitCodeProcess = nullptr,
+    };
+    const auto process = Windows::openProcessVerified(
+        identity, ProcessTarget{.pid = pid, .startTimeTicks = startTimeTicks}, PROCESS_QUERY_LIMITED_INFORMATION);
+    if (!process.has_value())
     {
         return {};
     }
 
-    const std::optional<std::wstring> path = Windows::processImagePath(process.get(), m_Fns.queryFullProcessImageName);
+    const std::optional<std::wstring> path = Windows::processImagePath(process->get(), m_Fns.queryFullProcessImageName);
     return path.has_value() ? WinString::wideToUtf8(*path) : std::string{};
 }
 

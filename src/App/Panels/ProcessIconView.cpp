@@ -77,7 +77,7 @@ ImTextureID ProcessIconView::textureFor(const Domain::ProcessSnapshot& proc)
     {
         return ImTextureID_Invalid;
     }
-    return textureOf(m_Cache->lookup(proc.uniqueKey, proc.pid, proc.name, m_IconSizePx));
+    return textureOf(m_Cache->lookup(proc.uniqueKey, proc.pid, proc.name, m_IconSizePx, proc.startTimeTicks));
 }
 
 ImTextureID ProcessIconView::textureForFile(std::uint64_t fileKey, std::string_view path, std::string_view name)

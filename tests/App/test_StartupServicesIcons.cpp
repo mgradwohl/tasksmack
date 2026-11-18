@@ -49,7 +49,7 @@ class RecordingIconSource final : public Platform::IProcessIconSource
     explicit RecordingIconSource(std::shared_ptr<SourceLog> log) : m_Log(std::move(log))
     {}
 
-    [[nodiscard]] std::string executablePath(std::int32_t /*pid*/) override
+    [[nodiscard]] std::string executablePath(std::int32_t /*pid*/, std::uint64_t /*startTimeTicks*/) override
     {
         return {};
     }

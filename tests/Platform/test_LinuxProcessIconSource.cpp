@@ -99,10 +99,10 @@ TEST(LinuxProcessIconSourceTest, ReadsTheExecutableLinkWithoutItsDeletedMark)
     std::filesystem::create_symlink("/usr/bin/app", dir.path / "proc/43/exe");
 
     LinuxProcessIconSource source(DesktopEntryIcons::SearchDirs{}, dir.path / "proc");
-    EXPECT_EQ(source.executablePath(42), "/usr/bin/upgraded");
-    EXPECT_EQ(source.executablePath(43), "/usr/bin/app");
-    EXPECT_EQ(source.executablePath(44), ""); // No such process
-    EXPECT_EQ(source.executablePath(0), "");
+    EXPECT_EQ(source.executablePath(42, 0), "/usr/bin/upgraded");
+    EXPECT_EQ(source.executablePath(43, 0), "/usr/bin/app");
+    EXPECT_EQ(source.executablePath(44, 0), ""); // No such process
+    EXPECT_EQ(source.executablePath(0, 0), "");
 }
 
 } // namespace

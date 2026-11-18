@@ -62,7 +62,7 @@ class FakeIconSource final : public Platform::IProcessIconSource
     explicit FakeIconSource(std::shared_ptr<FakeIconSourceState> state) : m_State(std::move(state))
     {}
 
-    [[nodiscard]] std::string executablePath(std::int32_t pid) override
+    [[nodiscard]] std::string executablePath(std::int32_t pid, std::uint64_t /*startTimeTicks*/) override
     {
         ++m_State->pathReads;
         const auto it = m_State->paths.find(pid);

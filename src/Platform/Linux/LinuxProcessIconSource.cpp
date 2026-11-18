@@ -39,7 +39,7 @@ LinuxProcessIconSource::LinuxProcessIconSource(DesktopEntryIcons::SearchDirs dir
     : m_Dirs(std::move(dirs)), m_ProcRoot(std::move(procRoot))
 {}
 
-std::string LinuxProcessIconSource::executablePath(std::int32_t pid)
+std::string LinuxProcessIconSource::executablePath(std::int32_t pid, std::uint64_t /*startTimeTicks*/)
 {
     if (pid <= 0)
     {
