@@ -1607,6 +1607,59 @@ class RealSystemOnArm64Tests(unittest.TestCase):
         self.assertLess(run.index("$x64Skips = @{"), run.index("$unexpected = "))
 
 
+class ReleaseConfigurationBuiltBeforeTheTagTests(unittest.TestCase):
+    """#4349: the Windows benchmarks and the ARM64 release builds compile in nightly CI, not first on the tag."""
+
+    REUSABLE = WORKFLOWS / "reusable-build-test.yml"
+    ARM64 = WORKFLOWS / "arm64.yml"
+    NIGHTLY_ONLY = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+
+    def job_block(self, workflow: Path, job: str) -> str:
+        text = workflow.read_text(encoding="utf-8")
+        return text.split(f"\n  {job}:\n", 1)[1].split("\n\n", 1)[0]
+
+    def test_the_windows_benchmark_step_builds_the_target_without_running_it(self):
+        step = find_step(self.REUSABLE, "Build benchmarks (Windows)")
+        for part in ("runner.os == 'Windows'", "inputs.build_benchmarks", "steps.build-windows.outcome == 'success'"):
+            self.assertIn(part, step.condition)
+        self.assertIn("-DTASKSMACK_BUILD_BENCHMARKS=ON", step.run)
+        self.assertIn("--target TaskSmackBenchmarks", step.run)
+        self.assertNotIn("TaskSmackBenchmarks.exe", step.run)
+
+    def test_the_windows_release_nightly_turns_the_benchmark_build_on(self):
+        block = self.job_block(WORKFLOWS / "ci.yml", "build-windows-release")
+        self.assertIn(self.NIGHTLY_ONLY, block)
+        self.assertIn("build_type: release", block)
+        self.assertIn("build_benchmarks: true", block)
+
+
+    def test_arm64_release_legs_run_on_the_schedule_and_manual_runs_only(self):
+        for job, os_name in (("build-linux-arm64-release", "ubuntu-26.04-arm"), ("build-windows-arm64-release", "windows-11-arm")):
+            with self.subTest(job=job):
+                block = self.job_block(self.ARM64, job)
+                self.assertIn("needs.detect.outputs.run == 'true'", block)
+                self.assertIn(self.NIGHTLY_ONLY, block)
+                self.assertNotIn("pull_request", block)
+                self.assertIn(f"os: {os_name}", block)
+                self.assertIn("build_type: release", block)
+                self.assertIn("build_benchmarks: true", block)
+
+    def test_the_windows_arm64_release_leg_builds_without_running_tests(self):
+        self.assertIn("run_tests: false", self.job_block(self.ARM64, "build-windows-arm64-release"))
+        self.assertNotIn("run_tests", self.job_block(self.ARM64, "build-linux-arm64-release"))
+        for name in ("Test (Windows)", "Test (Windows ARM64)", "Real-system tests (Windows)", "Software OpenGL for the display tests (Windows)"):
+            with self.subTest(step=name):
+                self.assertIn("inputs.run_tests", find_step(self.REUSABLE, name).condition)
+
+    def test_the_debug_arm64_legs_and_their_names_are_unchanged(self):
+        text = self.ARM64.read_text(encoding="utf-8")
+        for job in ("build-linux-arm64", "build-windows-arm64"):
+            block = self.job_block(self.ARM64, job)
+            self.assertIn("build_type: debug", block)
+            self.assertNotIn("build_benchmarks", block)
+        self.assertIn("name: ARM64\n", text)
+
+
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
     whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
