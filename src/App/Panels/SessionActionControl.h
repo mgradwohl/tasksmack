@@ -25,6 +25,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <utility>
 
 namespace App
@@ -189,6 +190,9 @@ class SessionActionControl
 
     static constexpr float RESULT_SECONDS = 6.0F;
 
+    /// The result line, and the session menu's tooltip, while an action runs and another is asked for (#4260).
+    static constexpr std::string_view BUSY_TEXT = "Another session action is still running";
+
   private:
     struct Retry
     {
@@ -200,6 +204,7 @@ class SessionActionControl
     {
         if (busy())
         {
+            refuseWhileBusy();
             return;
         }
         m_Pending = session;
@@ -210,7 +215,12 @@ class SessionActionControl
 
     void start(const Platform::UserSession& session, Platform::SessionAction action, bool allowInteractive)
     {
-        if (busy() || m_Sessions == nullptr)
+        if (busy())
+        {
+            refuseWhileBusy();
+            return;
+        }
+        if (m_Sessions == nullptr)
         {
             return;
         }
@@ -227,6 +237,14 @@ class SessionActionControl
         {
             finish(*failed);
         }
+    }
+
+    /// A second action asked for while one runs (#4260): the menu greys its items, so this is the backstop, and
+    /// it says so rather than dropping the click.
+    void refuseWhileBusy()
+    {
+        m_Result = {.ok = false, .text = std::string(BUSY_TEXT)};
+        m_ResultSecondsLeft = RESULT_SECONDS;
     }
 
     void finish(const Platform::ServiceActionResult& result)

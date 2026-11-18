@@ -17,6 +17,7 @@
 #include "Platform/BrokeredUserSessions.h" // Windows only (#3784)
 #include "Platform/IPrivilegedBroker.h"
 #endif
+#include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
 #ifdef _WIN32
 #include "Support/RestartOffered.h"
@@ -24,11 +25,14 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <stop_token>
 #include <string>
+#include <string_view>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -239,6 +243,82 @@ TEST(SessionActionTest, DisconnectAsksFirstAndSaysWhatHappensToTheSession)
     EXPECT_STREQ(sessionActionWords(SessionAction::Lock).done, "Locked");
     EXPECT_STREQ(sessionActionWords(SessionAction::Disconnect).title, "Disconnect");
     EXPECT_STREQ(sessionActionWords(SessionAction::SignOut).title, "Sign out");
+}
+
+/// Sessions whose actions wait until released: an action stays running while a test asks for another (#4260).
+class HeldSessions final : public Platform::IUserSessions
+{
+  public:
+    [[nodiscard]] bool hasSessions() const override
+    {
+        return true;
+    }
+    [[nodiscard]] Platform::UserSessionsRead read() override
+    {
+        return {.status = Platform::UserSessionsStatus::Ok, .sessions = {}, .detail = {}};
+    }
+    [[nodiscard]] bool canAct(SessionAction /*action*/) const override
+    {
+        return true;
+    }
+    [[nodiscard]] Platform::ServiceActionResult
+    act(std::string_view /*id*/, SessionAction /*action*/, bool /*allowInteractive*/, const std::stop_token& stopToken) override
+    {
+        while (!m_Released.load() && !stopToken.stop_requested())
+        {
+            std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+        return Platform::ServiceActionResult::succeeded();
+    }
+    void release()
+    {
+        m_Released = true;
+    }
+
+  private:
+    std::atomic<bool> m_Released{false};
+};
+
+// #4260: while an action runs, the menu is busy, and a second request says why it wasn't taken.
+TEST(SessionActionTest, AnotherActionWhileOneRunsIsRefusedWithAResultLine)
+{
+    const auto held = std::make_shared<HeldSessions>();
+    SessionActionControl control(held);
+    control.lock(session("2", "alice", 1000));
+    ASSERT_TRUE(control.busy());
+
+    control.requestSignOut(session("3", "bob", 1001));
+    EXPECT_FALSE(control.pending().has_value());
+    EXPECT_FALSE(control.showConfirm());
+    EXPECT_FALSE(control.result().ok);
+    EXPECT_EQ(control.result().text, "Another session action is still running");
+
+    control.requestDisconnect(session("3", "bob", 1001));
+    EXPECT_FALSE(control.pending().has_value());
+    control.lock(session("3", "bob", 1001)); // start() refuses too
+    EXPECT_EQ(control.result().text, "Another session action is still running");
+
+    held->release();
+    control.update(0.0F, true);
+    EXPECT_TRUE(control.result().ok);
+    EXPECT_EQ(control.result().text, "Locked alice's session");
+}
+
+TEST(UserSessionsFeedTest, TheSessionMenuIsBusyWhileAnActionRuns)
+{
+    const auto held = std::make_shared<HeldSessions>();
+    UserSessionsFeed feed([held] { return std::shared_ptr<Platform::IUserSessions>(held); });
+    EXPECT_FALSE(feed.sessionMenu().busy);
+    feed.start();
+    ASSERT_NE(feed.actions(), nullptr);
+    EXPECT_FALSE(feed.sessionMenu().busy);
+    feed.actions()->lock(session("2", "alice", 1000));
+    EXPECT_TRUE(feed.sessionMenu().busy);
+    EXPECT_TRUE(feed.sessionMenu().any());
+    held->release();
+    feed.actions()->update(0.0F, true);
+    EXPECT_FALSE(feed.sessionMenu().busy);
+    feed.stop();
 }
 
 // #3804: with PC\alice and CORP\alice signed in, both confirmations name the account as DOMAIN\user.
