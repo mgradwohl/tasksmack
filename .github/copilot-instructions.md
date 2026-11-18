@@ -262,7 +262,7 @@ Prefer these when the modern form preserves behavior and improves clarity; don't
 - Framework: Google Test in `tests/` mirroring `src/` structure
 - Mocks: `tests/Mocks/MockProbes.h` for `IProcessProbe`, `ISystemProbe`, `IPowerProbe`, `IProcessActions`, the Process Details readers (`IProcessEnvironmentReader`, `IProcessConnectionsReader`, `IProcessModulesReader`, `IProcessSecurityReader`, `IProcessOpenFilesReader`), and the Services/Startup probes and actions
 - Use `EXPECT_DOUBLE_EQ` for floats, not `EXPECT_EQ`
-- Define a mock or fake used by one test file in that file's anonymous namespace; shared ones go in `tests/Mocks/`
+- Define a mock or fake used by one test file in that file's anonymous namespace; shared ones go in `tests/Mocks/`; a `friend struct FooTestAccessor` stays in the namespace its production class names
 - `TaskSmackTests` links the real ImGui and ImPlot libraries (`imgui_lib`, `implot_lib`), so a
   `.cpp` calling `ImGui::`/`ImPlot::` can be added to its "Source files under test" list and run
   headless. There is no display or GL context in CI, so anything needing a real SDL window, OpenGL

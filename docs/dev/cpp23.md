@@ -154,7 +154,9 @@ Update this page in the same PR as the bump.
 
 - **A fake or mock used by one test file goes in that file's anonymous namespace.** It then has internal linkage, so
   two test files can't define the same name differently in one binary. One that several files share goes in
-  `tests/Mocks/`.
+  `tests/Mocks/`. `std::make_unique` and `std::make_shared` work with either. The exception is a test accessor that
+  a production class befriends (`friend struct FooTestAccessor;`): it is defined in the namespace that declaration
+  names, or the friendship doesn't apply.
 - Wait on the state you observe, never on a sleep; give time-dependent code a clock parameter.
 - Restore what you change (environment variables, the config directory) with a scope guard, not at the end of the body.
 - A skip that hides a missing prerequisite needs a `TASKSMACK_REQUIRE_*` switch that CI sets.

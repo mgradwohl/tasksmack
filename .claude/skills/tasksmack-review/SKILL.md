@@ -96,6 +96,7 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - Flag `EXPECT_EQ` on floating-point values (use `EXPECT_DOUBLE_EQ`).
 - A mock or fake used by one test file goes in that file's anonymous namespace, and one that several share goes in
   `tests/Mocks/`. Flag the same class name defined at namespace scope in two test files: one binary, two definitions.
+  A `friend struct FooTestAccessor` is the exception: it is defined in the namespace its production class names.
 - **On-display UI tests:** they derive from `TestSupport::ScratchConfigDirTest` (`tests/App/ScratchConfigDir.h`,
   #2932), so each test gets its own empty config dir. Flag a test that reads or writes the shared config, or that
   only passes because an earlier `--gtest_repeat` run saved a layout.
