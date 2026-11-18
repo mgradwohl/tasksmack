@@ -386,7 +386,7 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         // before this check. Decision logic lives in the pure, unit-tested
         // VideoBackend::shouldUseBorderlessTitleBar().
         // A session whose environment may be another user's runs without libdecor (#4254: main() sets
-        // SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0, which keeps GTK out of the process), and GNOME's compositor draws no
+        // SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0 after its scrubs, which keeps GTK out of the process), and GNOME's compositor draws no
         // frame of its own: native decorations would leave the window frameless there, so the custom title bar is used.
         const bool libdecorAllowed = SDL_GetHintBoolean(SDL_HINT_VIDEO_WAYLAND_ALLOW_LIBDECOR, true);
         if (m_Spec.ForceNativeDecorationsOnWayland && !libdecorAllowed && VideoBackend::isWayland())

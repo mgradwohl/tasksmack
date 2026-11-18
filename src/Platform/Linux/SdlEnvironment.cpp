@@ -78,9 +78,14 @@ std::vector<std::string> removeSdlVariables(const char* const* environment, cons
     return removed;
 }
 
-bool keepGtkOut(const std::function<bool(const std::string&, const std::string&)>& set)
+bool keepPrivilegedLoadersOut(const std::function<bool(const std::string&, const std::string&)>& set)
 {
-    return set(std::string(NO_LIBDECOR_VARIABLE), std::string(NO_LIBDECOR_VALUE));
+    bool all = true;
+    for (const auto& [name, value] : PRIVILEGED_SESSION_SETTINGS)
+    {
+        all = set(std::string(name), std::string(value)) && all;
+    }
+    return all;
 }
 
 void removeForThisProcess(bool remove)
@@ -95,16 +100,25 @@ void removeForThisProcess(bool remove)
                                             // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - first thing in main(), before any thread; unsetenv is provided by <cstdlib>
                                             return ::unsetenv(name.c_str()) == 0;
                                         });
-    // After the scrub, which removed any SDL variable the user's environment set, this one included. A failed setenv
-    // (ENOMEM) leaves libdecor allowed: stop rather than run GTK with this session's privileges (#4254).
-    if (!keepGtkOut(
+}
+
+void keepPrivilegedLoadersOutOfThisProcess(bool apply)
+{
+    if (!apply)
+    {
+        return;
+    }
+    // A failed setenv (ENOMEM) would leave GTK or the shader cache allowed: stop rather than run with them (#4254).
+    if (!keepPrivilegedLoadersOut(
             [](const std::string& name, const std::string& value)
             {
                 // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - first thing in main(), before any thread; setenv is in <cstdlib>
                 return ::setenv(name.c_str(), value.c_str(), 1) == 0;
             }))
     {
-        std::fputs("TaskSmack: couldn't keep GTK out of a session whose environment may be another user's; not starting\n", stderr);
+        std::fputs("TaskSmack: couldn't keep GTK and the shader cache out of a session whose environment may be another "
+                   "user's; not starting\n",
+                   stderr);
         std::_Exit(1);
     }
 }

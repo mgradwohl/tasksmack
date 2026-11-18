@@ -946,13 +946,15 @@ auto main(int argc, char** argv) -> int
     // user's, and SDL_OPENGL_LIBRARY, SDL3_DYNAMIC_API and the like name a library SDL would dlopen() as root, so every
     // SDL variable goes, and the graphics loaders' (LIBGL_DRIVERS_PATH, __EGL_VENDOR_LIBRARY_FILENAMES, ..., #4151). The
     // rule #4090 uses. Logged once logging is up (runApp()). SdlEnvironment.h has why all of them.
-    // It also keeps libdecor, and with it GTK, out of the process (#4254): GTK loads the modules the user's own
-    // settings.ini names, and a setcap session (no root, so no allow-list below) would run them with its capabilities.
     Platform::SdlEnvironment::removeForThisProcess(lessPrivilegedEnvironment()); // #4154: no lookup needed
     // Root with an environment that may be a user's keeps only an allow-list (#4158, #4159, #4179): GTK's modules,
     // PATH, PYTHONPATH and whatever else a list of bad names would miss. After the SDL scrub, which a setcap session
     // (not root) still needs on its own. Logged in runApp().
     Platform::RootEnvironment::applyToThisProcess(::geteuid() == 0 && lessPrivilegedEnvironment());
+    // Last, so neither pass above drops it (the #4284 review): no libdecor, so no GTK in the process, and no Mesa shader
+    // cache (#4254, #4285). GTK loads the modules the user's own settings.ini names, and llvmpipe runs the user's cached
+    // machine code; a setcap session would run either with its capabilities.
+    Platform::SdlEnvironment::keepPrivilegedLoadersOutOfThisProcess(lessPrivilegedEnvironment());
 #endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
