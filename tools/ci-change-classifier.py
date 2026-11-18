@@ -177,7 +177,7 @@ DEV_TOOLS = {
     "tools/analyze-etw-common.ps1": f"{_LOCAL}, shared by the ETW analysis (test-analyze-etw.ps1).",
     "tools/TaskSmackCPU.wprp": "the ETW CPU recording profile, read only by profile-etw.ps1.",
     "tools/TaskSmackResize.wprp": "the ETW resize recording profile, read only by profile-etw-resize.ps1.",
-    "tools/pgo.ps1": f"{_LOCAL}; CMakeLists.txt names it only in a comment.",
+    "tools/pgo.ps1": f"{_LOCAL} (test-pgo.ps1); CMakeLists.txt names it only in a comment.",
     "tools/measure-idle.ps1": f"{_LOCAL} (test-measure-idle.ps1).",
     "tools/idle-sample.ps1": f"{_LOCAL} (test-measure-idle.ps1), measure-idle.ps1's sampler.",
     "tools/resize-perf-summary.ps1": f"{_LOCAL} (test-resize-perf-summary.ps1), measure-idle.ps1's reader.",
@@ -204,6 +204,7 @@ DEV_TOOLS = {
     "tools/test-analyze-etw.ps1": "analyze-etw.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-measure-idle.ps1": "measure-idle.ps1's and idle-sample.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-resize-perf-summary.ps1": "resize-perf-summary.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-pgo.ps1": "pgo.ps1's tool test, run by ctest and by dev-tools-checks.",
 }
 
 # The tool tests the dev-tools-checks jobs run, by runner, in ctest's registrations' way (tests/CMakeLists.txt):
@@ -233,6 +234,7 @@ DEV_TOOL_TESTS = {
         "tools/test-measure-idle.ps1",
         "tools/test-resize-perf-summary.ps1",
         "tools/test-cmake-cache.ps1",
+        "tools/test-pgo.ps1",
     ),
 }
 
