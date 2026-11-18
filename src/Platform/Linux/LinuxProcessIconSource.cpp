@@ -73,8 +73,7 @@ std::string LinuxProcessIconSource::executablePath(std::int32_t pid, std::uint64
     }
     // Unreadable for another user's process without CAP_SYS_PTRACE, and for kernel threads: the
     // icon is then looked up by the process's name alone.
-    constexpr std::size_t MOST_PATH_BYTES = 4096; // Linux's PATH_MAX
-    std::array<char, MOST_PATH_BYTES> buffer{};
+    std::array<char, 4096> buffer{}; // Linux's PATH_MAX
     const auto length = ::readlinkat(dir.get(), "exe", buffer.data(), buffer.size());
     if (length <= 0 || static_cast<std::size_t>(length) >= buffer.size())
     {
