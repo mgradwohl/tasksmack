@@ -63,10 +63,15 @@ ConnectionsReadResult WindowsProcessConnectionsReader::readConnections(const Pro
         }
     };
 
-    // Any table that cannot be read fails the whole read rather than showing a partial list.
+    // Any table that cannot be read fails the whole read rather than showing a partial list. A family this machine
+    // doesn't run (ERROR_NOT_SUPPORTED: IPv6 removed) has no sockets, as the Connections tab reads it (#4266).
     for (const SocketTable table : SOCKET_TABLES)
     {
         SocketTableCopy copy = copySocketTable(tables, table, buffer);
+        if (!copy.ok && copy.error == ERROR_NOT_SUPPORTED)
+        {
+            continue;
+        }
         if (!copy.ok)
         {
             return failure(ConnectionsReadStatus::Failed, std::move(copy.detail));

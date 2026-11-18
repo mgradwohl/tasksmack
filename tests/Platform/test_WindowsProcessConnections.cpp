@@ -3,8 +3,8 @@
 /// calls: MIB states mapped, IPv4/IPv6 addresses kept in network byte order and ports converted from
 /// it, rows kept only for the target PID, a reused PID, an unknown start time, a denied or failed open,
 /// an exited process, a table that grows between the size query and the copy (and one that never stops
-/// growing), a table that fails, and the handle closed exactly once. Plus one read of this test process
-/// through the real calls, finding loopback sockets it opened.
+/// growing), a table that fails, a family the machine doesn't run (#4266), and the handle closed exactly once. Plus one read of this test
+/// process through the real calls, finding loopback sockets it opened.
 
 #include "Platform/Factory.h"
 #include "Platform/IProcessActions.h"
@@ -464,6 +464,31 @@ TEST_F(WindowsProcessConnectionsTest, AFailedTableFailsTheReadWithTheReason)
     EXPECT_FALSE(result.detail.empty());
     EXPECT_TRUE(result.connections.empty());
     EXPECT_EQ(fake().udp4.calls, 0); // stopped at the first failure
+}
+
+// #4266: a family this machine doesn't run (IPv6 removed: its tables answer ERROR_NOT_SUPPORTED) has no sockets, as
+// the Connections tab reads it, so the IPv4 rows still come back rather than an error.
+TEST_F(WindowsProcessConnectionsTest, AnUnsupportedFamilysTablesReadAsEmpty)
+{
+    fake().tcp6.error = ERROR_NOT_SUPPORTED;
+    fake().udp6.error = ERROR_NOT_SUPPORTED;
+    const ConnectionsReadResult result = m_Reader.readConnections(TARGET);
+    ASSERT_EQ(result.status, ConnectionsReadStatus::Ok) << result.detail;
+    EXPECT_TRUE(result.detail.empty());
+    ASSERT_EQ(result.connections.size(), 3U); // 2 TCP4, 1 UDP4
+    EXPECT_NE(findLocal(result, ConnectionProtocol::Tcp, 55026), nullptr);
+    EXPECT_NE(findLocal(result, ConnectionProtocol::Tcp, 8080), nullptr);
+    EXPECT_NE(findLocal(result, ConnectionProtocol::Udp, 5353), nullptr);
+    EXPECT_TRUE(std::ranges::none_of(result.connections,
+                                     [](const ProcessConnection& connection) { return connection.family == ConnectionFamily::IPv6; }));
+    EXPECT_EQ(fake().udp6.calls, 1); // asked once, not retried
+
+    // Every table unsupported: no sockets, not a failure.
+    fake().tcp4.error = ERROR_NOT_SUPPORTED;
+    fake().udp4.error = ERROR_NOT_SUPPORTED;
+    const ConnectionsReadResult none = m_Reader.readConnections(TARGET);
+    EXPECT_EQ(none.status, ConnectionsReadStatus::Ok);
+    EXPECT_TRUE(none.connections.empty());
 }
 
 TEST_F(WindowsProcessConnectionsTest, ARowWithStateZeroIsListedAsUnknown)
