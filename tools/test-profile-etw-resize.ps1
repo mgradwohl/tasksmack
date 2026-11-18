@@ -132,8 +132,11 @@ try {
     $env:TASKSMACK_TRACE_RESIZE_PERF = 'prior-trace'
     $env:TASKSMACK_LOG_LEVEL = 'prior-level'
     $env:TASKSMACK_CONFIG_DIR = 'prior-config'
+    $priorTemp = $env:TEMP
+    $priorTmp = $env:TMP
     Assert-Throws { Invoke-ResizeCapture -Phase App -RunDirectory $run } 'simulated launch failure'
     Assert-True ($env:TASKSMACK_TRACE_RESIZE_PERF -eq 'prior-trace' -and $env:TASKSMACK_LOG_LEVEL -eq 'prior-level' -and $env:TASKSMACK_CONFIG_DIR -eq 'prior-config') 'Environment not restored'
+    Assert-True ($env:TEMP -eq $priorTemp -and $env:TMP -eq $priorTmp) 'TEMP/TMP not restored after a failed launch (#4229)'
     $env:TASKSMACK_CONFIG_DIR = $null
     Assert-True ((Get-Content (Join-Path $run 'app.json') -Raw | ConvertFrom-Json).State -eq 'failed') 'App failure not preserved'
 
@@ -145,6 +148,10 @@ try {
         Assert-True ($env:TASKSMACK_LOG_LEVEL -eq 'info') 'Trace logs suppressed'
         # #2250: the run's own config directory, never the user's.
         Assert-True ($env:TASKSMACK_CONFIG_DIR -eq (Join-Path $WorkingDirectory 'config')) "Config not isolated: '$env:TASKSMACK_CONFIG_DIR'"
+        # #4229: the run's own TEMP/TMP, so the app's tasksmack-debug.log is not the user's.
+        $expectedTemp = Join-Path $WorkingDirectory 'temp'
+        Assert-True ($env:TEMP -eq $expectedTemp -and $env:TMP -eq $expectedTemp) "TEMP/TMP not the run's: '$env:TEMP' / '$env:TMP'"
+        Assert-True (Test-Path -LiteralPath $expectedTemp -PathType Container) 'The run temp folder was not created before launch'
         @(
             'ResizePerfAnchor: pid=42 uiTid=7 clock=QPC frequency=10000000'
             'ResizePerfWallSummary: loops=10'
@@ -162,6 +169,7 @@ try {
     }
     Invoke-ResizeCapture -Phase App -RunDirectory $run
     Assert-True ((Get-Content (Join-Path $run 'app.json') -Raw | ConvertFrom-Json).Pid -eq 42) 'App PID lost'
+    Assert-True ($env:TEMP -eq $priorTemp -and $env:TMP -eq $priorTmp) "TEMP/TMP not restored after a launch: '$env:TEMP' / '$env:TMP'"
     Assert-True ((Get-Content (Join-Path $run 'stderr.log') -Raw).Contains('retained stderr')) 'Separate stderr lost'
     Write-ResizeCaptureJson (Join-Path $run 'collector.json') @{
         State = 'saved'; StartUtc = $startUtc; StopRequestedUtc = [DateTimeOffset]::UtcNow.AddSeconds(1).ToString('o')

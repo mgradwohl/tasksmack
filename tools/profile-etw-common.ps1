@@ -154,6 +154,7 @@ function Get-CaptureArtifactPath {
         Trace       = Join-Path $Directory "$Prefix-$Timestamp.etl"
         ChildLog    = Join-Path $Directory "$Prefix-child-$Timestamp.log"
         LauncherLog = Join-Path $Directory "$Prefix-launch-$Timestamp.log"
+        AppLog      = Join-Path $Directory "$Prefix-app-$Timestamp.log"
         BenchJson   = Join-Path $Directory "$Prefix-$Timestamp.json"
         Manifest    = Join-Path $Directory "$Prefix-$Timestamp.manifest.json"
         Control     = Join-Path $Directory "$Prefix-control-$Timestamp"
@@ -375,6 +376,10 @@ function Invoke-AppCapture {
     # The app runs with TASKSMACK_CONFIG_DIR set to a fresh temporary directory, removed once it has
     # exited (#2250), unless -UseUserConfig asks for the config it would use on its own. An app that
     # exits with the "already running" code fails the capture with that reason.
+    #
+    # TEMP and TMP point at a private folder too (#4229), so the app's tasksmack-debug.log, which it
+    # opens with truncation, is not the user's own %TEMP%\tasksmack-debug.log. Once the app is gone
+    # that log is copied to -AppLogPath (the capture's artifacts), when one is given.
     param(
         [Parameter(Mandatory = $true)][string]$BinaryPath,
         [Parameter(Mandatory = $true)][scriptblock]$StartTrace,
@@ -385,7 +390,8 @@ function Invoke-AppCapture {
         [int]$MainWindowTimeoutSeconds = 60,
         [int]$InteractiveTimeoutSeconds = 14400,
         [ValidateSet('Normal', 'Hidden')][string]$WindowStyle = 'Normal',
-        [switch]$UseUserConfig
+        [switch]$UseUserConfig,
+        [string]$AppLogPath
     )
     Initialize-TokenInfoType # before the trace starts, so the compile is not recorded in it
     $result = [ordered]@{
@@ -399,6 +405,8 @@ function Invoke-AppCapture {
         WarmupSeconds  = if ($IncludeStartup) { 0 } else { $WarmupSeconds }
         MainWindowSeen = $null
         ConfigDirectory = $null
+        TempDirectory  = $null
+        AppLog         = $null
         StartUtc       = (Get-Date).ToUniversalTime().ToString('o')
         TraceStartUtc  = $null
         TraceStopUtc   = $null
@@ -406,6 +414,7 @@ function Invoke-AppCapture {
     }
     $proc = $null
     $configDir = $null
+    $appTemp = $null
     $traceRunning = $false
     $completed = $false
     # Dot-sourced (. $stopTraceNow), so it updates $traceRunning in this scope.
@@ -425,15 +434,24 @@ function Invoke-AppCapture {
         if (-not $UseUserConfig) { $configDir = New-ProfileConfigDirectory }
         $result.ConfigDirectory = if ($configDir) { $configDir } else { 'the user config (-UseUserConfig)' }
         Write-Host "Config directory: $($result.ConfigDirectory)"
+        $appTemp = Join-Path $(if ($configDir) { $configDir } else { New-ProfileConfigDirectory }) 'temp'
+        New-Item -ItemType Directory -Force -Path $appTemp | Out-Null
+        $result.TempDirectory = $appTemp
         if ($IncludeStartup) { . $startTraceNow }
         # The app inherits this process's environment; restored at once, so nothing else sees it.
         $savedConfigDir = $env:TASKSMACK_CONFIG_DIR
+        $savedTemp = $env:TEMP
+        $savedTmp = $env:TMP
         try {
             if ($configDir) { $env:TASKSMACK_CONFIG_DIR = $configDir }
+            $env:TEMP = $appTemp
+            $env:TMP = $appTemp
             $proc = Start-Process -FilePath $BinaryPath -PassThru -WindowStyle $WindowStyle
         }
         finally {
             $env:TASKSMACK_CONFIG_DIR = $savedConfigDir
+            $env:TEMP = $savedTemp
+            $env:TMP = $savedTmp
         }
         $null = $proc.Handle # keep a handle so ExitCode is available after exit
         $result.Pid = $proc.Id
@@ -502,8 +520,18 @@ function Invoke-AppCapture {
         }
         # The run's own config directory goes once the app is gone; one still running keeps it (and
         # its lock) until it closes, so it is left for the temp folder's own cleanup then.
-        if ($configDir -and ($null -eq $proc -or $proc.HasExited)) {
-            Remove-Item -LiteralPath $configDir -Recurse -Force -ErrorAction SilentlyContinue
+        $appGone = $null -eq $proc -or $proc.HasExited
+        if ($appGone -and $AppLogPath -and $appTemp) {
+            $appLog = Join-Path $appTemp 'tasksmack-debug.log'
+            if (Test-Path -LiteralPath $appLog) {
+                try { Copy-Item -LiteralPath $appLog -Destination $AppLogPath -Force; $result.AppLog = $AppLogPath }
+                catch { Write-Warning "Could not keep the app's log at ${AppLogPath}: $($_.Exception.Message)" }
+            }
+        }
+        if ($appGone -and $appTemp) {
+            # Without a config directory of its own (-UseUserConfig) the private temp folder's parent is the root.
+            $root = if ($configDir) { $configDir } else { Split-Path -Parent $appTemp }
+            Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
     if ($proc.HasExited) { $result.ExitCode = $proc.ExitCode }
