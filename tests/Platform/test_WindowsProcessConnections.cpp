@@ -10,6 +10,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/Windows/WindowsProcessConnections.h"
+#include "Platform/Windows/WindowsSocketTables.h"
 
 #include <gtest/gtest.h>
 
