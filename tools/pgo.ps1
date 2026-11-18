@@ -242,6 +242,15 @@ function Invoke-Baseline {
 
 # ── main ──────────────────────────────────────────────────────────────────────
 
+function Write-PgoUsage {
+    Write-Host 'Usage: pwsh tools/pgo.ps1 [generate|merge|use|baseline|all]'
+    Write-Host '  generate  – instrumented build + collect profile data (benchmarks + headless UI training)'
+    Write-Host '  merge     – merge *.profraw files into tasksmack.profdata'
+    Write-Host '  use       – build PGO-optimized binary from tasksmack.profdata'
+    Write-Host "  baseline  – build win-pgo-use's flags without profile data, to compare against"
+    Write-Host '  all       – run generate, merge and use in order (default)'
+}
+
 $cmd = if ($args.Count -gt 0) { $args[0] } else { 'all' }
 
 # The win-pgo-* presets derive the compiler paths from LLVM_ROOT; set it from the installed LLVM when
@@ -267,13 +276,13 @@ switch ($cmd) {
         Write-Host "  Profile data        : profiles\tasksmack.profdata"
         Write-Host "  Optimized binary    : build\win-pgo-use\bin\TaskSmack.exe"
     }
+    { $_ -in @('-h', '--help', '-help', 'help', '-?') } {
+        # An explicit help request succeeds (#4239); only an unknown command exits 1.
+        Write-PgoUsage
+        exit 0
+    }
     default {
-        Write-Host 'Usage: pwsh tools/pgo.ps1 [generate|merge|use|baseline|all]'
-        Write-Host '  generate  – instrumented build + collect profile data (benchmarks + headless UI training)'
-        Write-Host '  merge     – merge *.profraw files into tasksmack.profdata'
-        Write-Host '  use       – build PGO-optimized binary from tasksmack.profdata'
-        Write-Host "  baseline  – build win-pgo-use's flags without profile data, to compare against"
-        Write-Host '  all       – run generate, merge and use in order (default)'
+        Write-PgoUsage
         exit 1
     }
 }
