@@ -59,10 +59,12 @@
 #   ./tools/bench.sh --core any               # not pinned, even on a hybrid CPU
 #   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
 #
-#   ./tools/bench.sh --baseline perf-data/linux-baseline.json   # and check it, across launches
+#   ./tools/bench.sh --baseline <a run of main>.json   # and check it, across launches
 #
-# Compare a run against the baseline yourself (one launch's medians, which a noisy launch can fail):
-#   python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
+# There is no committed local Linux baseline (#4199): check a branch against a run of main on the same
+# machine (CONTRIBUTING.md, "Running Benchmarks"). Compare two runs yourself (one launch's medians, which a
+# noisy launch can fail):
+#   python3 tools/check-benchmark-regression.py --baseline <a run of main>.json \
 #       --current perf-data/benchmark-<timestamp>.json
 
 set -euo pipefail
@@ -383,8 +385,8 @@ if [[ -n "${BASELINE}" ]]; then
         echo "Checked against ${BASELINE}: failed (exit ${CHECK_EXIT})"
     fi
 else
-    echo "Compare against a baseline across launches with --baseline, or on this run alone:"
-    echo "  python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current ${OUT_FILE}"
+    echo "Compare against a run of main across launches with --baseline <that run's .json>, or on this run alone:"
+    echo "  python3 tools/check-benchmark-regression.py --baseline <a run of main>.json --current ${OUT_FILE}"
 fi
 # Machine-readable result path, printed once the run succeeded (as the profile-* scripts print
 # TRACE=), even when a --baseline check then fails: heavy-checks.yml reads it instead of guessing from
