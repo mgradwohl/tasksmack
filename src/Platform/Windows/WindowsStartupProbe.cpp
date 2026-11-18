@@ -2,6 +2,7 @@
 
 #include "Domain/SamplingConfig.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
 
 #include <spdlog/spdlog.h>
 
@@ -35,6 +36,7 @@
 #include "ComScope.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
+#include "WindowsNativeIds.h"
 #include "WindowsScheduledTasks.h"
 #include "WindowsScheduledTasksMath.h"
 #include "WindowsStartupImpact.h"
@@ -302,14 +304,15 @@ constexpr std::uintmax_t MAX_MANIFEST_BYTES = std::uintmax_t{8} * 1024U * 1024U;
     return approved;
 }
 
-/// A REG_SZ/REG_EXPAND_SZ value's text, without the terminator(s) the data may or may not carry.
+/// A REG_SZ/REG_EXPAND_SZ value's text, up to its first NUL: Windows reads the value as a NUL-terminated string,
+/// so anything after one (a terminator, or text hidden past one) is never run (#4307).
 [[nodiscard]] std::wstring registryString(std::span<const std::uint8_t> data)
 {
     std::wstring text(data.size() / sizeof(wchar_t), L'\0');
     std::memcpy(text.data(), data.data(), text.size() * sizeof(wchar_t));
-    while (!text.empty() && text.back() == L'\0')
+    if (const std::size_t nul = text.find(L'\0'); nul != std::wstring::npos)
     {
-        text.pop_back();
+        text.resize(nul);
     }
     return text;
 }
@@ -719,6 +722,11 @@ struct WindowsStartupProbe::Impl
     std::unordered_map<std::wstring, CachedVersionStrings> versionStrings; ///< By lower-cased path.
     /// By lower-cased package full name, which names the version: an update reads the new manifest.
     std::unordered_map<std::wstring, ResolvedPackage> packages;
+    /// Where each enumerate() publishes its entries' exact identities, for WindowsStartupActions (#4304); null: none.
+    std::shared_ptr<Windows::StartupIdTable> ids;
+    /// The entries' identities during one enumerate(), one per entry in its order: each reader adds one with each
+    /// entry it lists.
+    std::vector<Windows::StartupNativeKey> keys;
 
     /// @p value, or the string its "ms-resource:" reference names in package @p fullName's resources;
     /// empty when that can't be loaded.
@@ -886,7 +894,7 @@ struct WindowsStartupProbe::Impl
                           {
                               return;
                           }
-                          const std::string familyUtf8 = WinString::wideToUtf8(family);
+                          const std::string familyUtf8 = WinString::wideToDisplayUtf8(family);
                           const std::string_view packageName = Windows::StartupMath::packageNameOfFamily(familyUtf8);
                           const std::vector<std::wstring> fullNames = packageFullNames(family);
                           for (const PackagedTaskRecord& record : records)
@@ -915,6 +923,7 @@ struct WindowsStartupProbe::Impl
                                   continue; // not installed, or no longer declared: Task Manager doesn't list it either
                               }
                               entries.push_back(makePackagedEntry(*package, *task, record, familyUtf8));
+                              keys.push_back({.location = StartupLocation::PackagedApp, .name = record.taskId, .packageFamily = family});
                           }
                       });
         // Packages no longer installed (or updated to a new version) need no cached manifest.
@@ -928,7 +937,7 @@ struct WindowsStartupProbe::Impl
     {
         StartupEntry entry;
         entry.name = task.name;
-        entry.registrationName = WinString::wideToUtf8(record.taskId); // the task key's name, as written
+        entry.registrationName = WinString::wideToDisplayUtf8(record.taskId); // the task key's name, a NUL shown (#4307)
         entry.packageFamily = family;
         entry.publisher = package.publisher;
         entry.location = StartupLocation::PackagedApp;
@@ -1017,13 +1026,14 @@ struct WindowsStartupProbe::Impl
                                  return; // the unnamed default value is not an entry
                              }
                              StartupEntry entry;
-                             entry.registrationName = WinString::wideToUtf8(name);
+                             entry.registrationName = WinString::wideToDisplayUtf8(name); // a NUL shown, not cut at (#4307)
                              entry.command = WinString::wideToUtf8(registryString(data));
                              entry.location = source.location;
                              entry.scope = Windows::StartupMath::scopeOf(source.location);
                              applyApproved(entry, approved, name);
                              resolveTarget(entry, entry.registrationName, seenPaths);
                              entries.push_back(std::move(entry));
+                             keys.push_back({.location = source.location, .name = name, .packageFamily = {}});
                          });
         }
     }
@@ -1117,6 +1127,7 @@ struct WindowsStartupProbe::Impl
             {
                 entry.publisher = task.author;
             }
+            keys.push_back({.location = entry.location, .name = task.nativePath, .packageFamily = {}});
             entries.push_back(std::move(entry));
         }
     }
@@ -1169,19 +1180,24 @@ struct WindowsStartupProbe::Impl
             // A shortcut is named without its extension when its program can't name it.
             resolveTarget(entry, WinString::wideToUtf8(isShortcut ? file.stem().wstring() : fileName), seenPaths);
             entries.push_back(std::move(entry));
+            keys.push_back({.location = location, .name = fileName, .packageFamily = {}});
         }
     }
 };
 
-WindowsStartupProbe::WindowsStartupProbe() : WindowsStartupProbe(Windows::StartupProbeFunctions{}, &Windows::makeTaskSchedulerApi)
+WindowsStartupProbe::WindowsStartupProbe()
+    : WindowsStartupProbe(
+          Windows::StartupProbeFunctions{}, &Windows::makeTaskSchedulerApi, [] { return Clock::now(); }, Windows::sharedStartupIds())
 {}
 
 WindowsStartupProbe::WindowsStartupProbe(const Windows::StartupProbeFunctions& functions,
                                          Windows::ScheduledTaskApiFactory scheduledTasks,
-                                         NowFunction now)
+                                         NowFunction now,
+                                         std::shared_ptr<Windows::StartupIdTable> ids)
     : m_Impl(std::make_unique<Impl>())
 {
     m_Impl->api = functions;
+    m_Impl->ids = std::move(ids);
     m_Impl->makeScheduledTasks = std::move(scheduledTasks);
     m_Impl->now = now ? std::move(now) : NowFunction([] { return Clock::now(); });
 }
@@ -1215,6 +1231,7 @@ std::vector<StartupEntry> WindowsStartupProbe::enumerate()
 {
     std::vector<StartupEntry> entries;
     std::unordered_set<std::wstring> seenPaths;
+    m_Impl->keys.clear();
     m_Impl->readRunKeys(entries, seenPaths);
 
     const ComScope com;
@@ -1235,6 +1252,18 @@ std::vector<StartupEntry> WindowsStartupProbe::enumerate()
 
     // Executables no longer started need no cached publisher.
     std::erase_if(m_Impl->versionStrings, [&seenPaths](const auto& cached) { return !seenPaths.contains(cached.first); });
+
+    // Each entry's id for its exact identity (#4304): the actions switch what it maps to, never what the entry's
+    // display text would convert back to.
+    if (m_Impl->ids && m_Impl->keys.size() == entries.size())
+    {
+        const std::vector<NativeId> ids = m_Impl->ids->publish(m_Impl->keys);
+        for (std::size_t index = 0; index < entries.size(); ++index)
+        {
+            entries[index].nativeId = ids[index];
+        }
+    }
+    m_Impl->keys.clear();
     return entries;
 }
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IServiceProbe.h"
+#include "WindowsNativeIds.h"
 #include "WindowsServiceConfig.h"
 
 #include <memory>
@@ -27,8 +28,10 @@ class WindowsServiceProbe : public IServiceProbe
 {
   public:
     WindowsServiceProbe();
-    /// A probe whose Service Control Manager calls are `api`'s, for tests with fakes.
-    explicit WindowsServiceProbe(const Windows::ServiceConfigFunctions& api);
+    /// A probe whose Service Control Manager calls are `api`'s, for tests with fakes. Each enumerate() publishes the
+    /// services' exact names into @p ids (#4304), and sets each ServiceInfo::nativeId from it; null publishes none.
+    explicit WindowsServiceProbe(const Windows::ServiceConfigFunctions& api,
+                                 std::shared_ptr<Windows::ServiceIdTable> ids = Windows::sharedServiceIds());
     ~WindowsServiceProbe() override;
 
     WindowsServiceProbe(const WindowsServiceProbe&) = delete;

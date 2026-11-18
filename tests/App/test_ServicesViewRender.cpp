@@ -75,19 +75,23 @@ class IdleServiceActions final : public Platform::IServiceActions
     {
         return {.canStart = true, .canStop = true, .canRestart = true, .canSetStartType = true, .elevated = true};
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& /*service*/,
+                                                      const std::stop_token& /*stopToken*/) override
     {
         return Platform::ServiceActionResult::succeeded();
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& /*service*/,
+                                                     const std::stop_token& /*stopToken*/) override
     {
         return Platform::ServiceActionResult::succeeded();
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& /*service*/,
+                                                        const std::stop_token& /*stopToken*/) override
     {
         return Platform::ServiceActionResult::succeeded();
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& /*service*/,
+                                                             Platform::ServiceStartType /*type*/) override
     {
         return Platform::ServiceActionResult::succeeded();
     }

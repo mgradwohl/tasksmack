@@ -22,6 +22,7 @@
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemProbe.h"
+#include "Platform/NativeId.h"
 #include "Platform/PowerTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SystemTypes.h"
@@ -2099,25 +2100,33 @@ class MockServiceActions : public Platform::IServiceActions
         return m_LastName;
     }
 
+    /// The id the last action was asked for by (#4304): ServiceActionsView passes the listed one back.
+    [[nodiscard]] Platform::NativeId lastNativeId() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_LastNativeId;
+    }
+
     [[nodiscard]] Platform::ServiceActionCapabilities capabilities() const override
     {
         return m_Capabilities;
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view name, const std::stop_token& stopToken) override
+    [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& service, const std::stop_token& stopToken) override
     {
-        return answer(name, stopToken, starts);
+        return answer(service, stopToken, starts);
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override
+    [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& service, const std::stop_token& stopToken) override
     {
-        return answer(name, stopToken, stops);
+        return answer(service, stopToken, stops);
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override
+    [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& service, const std::stop_token& stopToken) override
     {
-        return answer(name, stopToken, restarts);
+        return answer(service, stopToken, restarts);
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view name, Platform::ServiceStartType /*type*/) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& service,
+                                                             Platform::ServiceStartType /*type*/) override
     {
-        return answer(name, std::stop_token{}, startTypes);
+        return answer(service, std::stop_token{}, startTypes);
     }
 
     CallSignal starts;
@@ -2127,11 +2136,13 @@ class MockServiceActions : public Platform::IServiceActions
     std::atomic<bool> sawStop{false}; ///< A blocked action ended because its stop token was stopped.
 
   private:
-    [[nodiscard]] Platform::ServiceActionResult answer(std::string_view name, const std::stop_token& stopToken, CallSignal& calls)
+    [[nodiscard]] Platform::ServiceActionResult
+    answer(const Platform::ServiceTarget& service, const std::stop_token& stopToken, CallSignal& calls)
     {
         {
             const std::scoped_lock lock(m_Mutex);
-            m_LastName = name;
+            m_LastName = service.name;
+            m_LastNativeId = service.nativeId;
         }
         calls.bump();
         if (m_Block && stopToken.stop_possible())
@@ -2156,6 +2167,7 @@ class MockServiceActions : public Platform::IServiceActions
     std::condition_variable_any m_Wake;
     Platform::ServiceActionResult m_Result = Platform::ServiceActionResult::succeeded();
     std::string m_LastName;
+    Platform::NativeId m_LastNativeId = Platform::NativeId::None;
 };
 
 /// Startup actions that never touch the registry or a Startup folder: setEnabled() answers setResult()'s
@@ -2193,6 +2205,13 @@ class MockStartupActions : public Platform::IStartupActions
         return m_LastName;
     }
 
+    /// The id the last action was asked for by (#4304): StartupActionsView passes the listed one back.
+    [[nodiscard]] Platform::NativeId lastNativeId() const
+    {
+        const std::scoped_lock lock(m_Mutex);
+        return m_LastNativeId;
+    }
+
     [[nodiscard]] Platform::StartupActionCapabilities capabilities() const override
     {
         return m_Capabilities;
@@ -2202,6 +2221,7 @@ class MockStartupActions : public Platform::IStartupActions
         {
             const std::scoped_lock lock(m_Mutex);
             m_LastName = entry.name;
+            m_LastNativeId = entry.nativeId;
         }
         (enabled ? enables : disables).bump();
         std::unique_lock lock(m_Mutex);
@@ -2225,6 +2245,7 @@ class MockStartupActions : public Platform::IStartupActions
     bool m_Released = false;
     Platform::StartupActionResult m_Result = Platform::StartupActionResult::succeeded();
     std::string m_LastName;
+    Platform::NativeId m_LastNativeId = Platform::NativeId::None;
 };
 
 } // namespace TestMocks

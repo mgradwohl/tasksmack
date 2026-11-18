@@ -6,6 +6,7 @@
 
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -86,7 +87,9 @@ struct ServicesViewState
 
     std::string unavailableHeading; ///< The empty state's heading when the list can't be read.
 
-    std::string selectedName;      ///< The selected row's service (#1577); empty when none.
+    std::string selectedName; ///< The selected row's service (#1577); empty when none.
+    /// The selected row's id (#4304): None when it was selected by name alone.
+    Platform::NativeId selectedNativeId = Platform::NativeId::None;
     bool scrollToSelected = false; ///< Scroll the selected row into view on the next draw (#1886)
 };
 

@@ -7,6 +7,7 @@
 #include "Domain/ServiceModel.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/FrameOutline.h"
@@ -137,6 +138,14 @@ void rebuildRowsIfStale(const Domain::ServicePublication& publication, ServicesV
     state.rowsFilter = state.filter;
     state.rowsColumn = state.sortColumn;
     state.rowsAscending = state.ascending;
+}
+
+/// Whether @p service is the selected row: by name, and by id too once a row was picked (#4304), so of two services
+/// shown by the same name only the one picked is. A selection by name alone (Show in Services) has no id.
+[[nodiscard]] bool isSelectedService(const Platform::ServiceInfo& service, const ServicesViewState& state)
+{
+    return service.name == state.selectedName &&
+           (state.selectedNativeId == Platform::NativeId::None || service.nativeId == state.selectedNativeId);
 }
 
 } // namespace
@@ -329,7 +338,8 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
         const Platform::ServiceInfo* selected = nullptr;
         if (!state.selectedName.empty())
         {
-            const auto found = std::ranges::find(publication->services, state.selectedName, &Platform::ServiceInfo::name);
+            const auto found = std::ranges::find_if(
+                publication->services, [&state](const Platform::ServiceInfo& service) { return isSelectedService(service, state); });
             selected = (found != publication->services.end()) ? &*found : nullptr;
         }
         actions->renderActionBar(selected);
@@ -380,7 +390,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     {
         for (std::size_t row = 0; row < state.rows.size(); ++row)
         {
-            if (publication->services[state.rows[row]].name == state.selectedName)
+            if (isSelectedService(publication->services[state.rows[row]], state))
             {
                 scrollToRow = static_cast<int>(row);
                 clipper.IncludeItemByIndex(scrollToRow);
@@ -398,6 +408,8 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
             // Keyed by the service, not the row: a re-sort or a new sample must not move an open row
             // menu onto another service.
             ImGui::PushID(service.name.c_str());
+            // And by its id (#4304): two services shown by the same name are two rows.
+            ImGui::PushID(static_cast<int>(static_cast<std::uint32_t>(service.nativeId)));
 
             ImGui::TableNextColumn();
             if (icons != nullptr)
@@ -407,10 +419,11 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
             }
             // The selectable spans the row with no label of its own: the name is drawn after it, cut
             // short with an ellipsis when the column is too narrow (#1920).
-            if (ImGui::Selectable("##row", state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
+            if (ImGui::Selectable("##row", isSelectedService(service, state), ImGuiSelectableFlags_SpanAllColumns) ||
                 ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {
                 state.selectedName = service.name;
+                state.selectedNativeId = service.nativeId;
             }
             if (row == scrollToRow)
             {
@@ -447,6 +460,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
                 renderServiceTooltip(service);
             }
 
+            ImGui::PopID();
             ImGui::PopID();
         }
     }
