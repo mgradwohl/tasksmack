@@ -3,15 +3,25 @@
 /// an allow-list, with root's PATH and HOME. Tested on a fake environment; the process's own is left alone.
 
 #include "Platform/Linux/RootEnvironment.h"
+#include "Platform/Linux/SessionUser.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
 #include <array>
+#include <filesystem>
+#include <fstream>
 #include <map>
 #include <optional>
 #include <string>
+#include <string_view>
+#include <system_error>
 #include <vector>
+
+#include <fcntl.h>
+#include <sys/fsuid.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 namespace Platform::RootEnvironment
 {
@@ -152,6 +162,123 @@ TEST(RootEnvironmentTest, OnlyAPlainOrZoneinfoTimeZoneIsKept)
     const std::array<const char*, 2> environment{"TZ=/home/u/f", nullptr};
     Recorder recorder;
     EXPECT_EQ(applyTo(environment.data(), RootValues{}, recorder.operations()), (std::vector<std::string>{"TZ"}));
+}
+
+/// A scratch folder of this test's own, removed afterwards.
+class XauthorityCopyTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        m_Dir = std::filesystem::temp_directory_path() / ("tasksmack-xauthority-4255-" + std::to_string(::getpid()) + "-" +
+                                                          ::testing::UnitTest::GetInstance()->current_test_info()->name());
+        std::filesystem::remove_all(m_Dir);
+        ASSERT_TRUE(std::filesystem::create_directory(m_Dir));
+    }
+    void TearDown() override
+    {
+        std::error_code error;
+        std::filesystem::remove_all(m_Dir, error);
+    }
+    [[nodiscard]] std::filesystem::path write(const char* name, const std::string& text) const
+    {
+        const std::filesystem::path path = m_Dir / name;
+        std::ofstream(path) << text;
+        return path;
+    }
+    std::filesystem::path m_Dir;
+};
+
+TEST_F(XauthorityCopyTest, OnlyARegularFileOfTheOwnersWithinTheLimitIsRead)
+{
+    // #4255: the checks that keep root from copying another account's cookie (the second #4187 review).
+    const std::filesystem::path cookie = write("cookie", "MIT-MAGIC-COOKIE-1 0123");
+    const int fd = ::open(cookie.c_str(), O_RDONLY | O_CLOEXEC);
+    ASSERT_GE(fd, 0);
+    EXPECT_EQ(readOwnedFile(fd, ::geteuid(), MOST_XAUTHORITY_BYTES), "MIT-MAGIC-COOKIE-1 0123");
+    EXPECT_EQ(readOwnedFile(fd, ::geteuid() + 1, MOST_XAUTHORITY_BYTES), std::nullopt) << "another uid's file";
+    EXPECT_EQ(readOwnedFile(fd, ::geteuid(), 4), std::nullopt) << "over the limit";
+    ::close(fd);
+    const int folder = ::open(m_Dir.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+    ASSERT_GE(folder, 0);
+    EXPECT_EQ(readOwnedFile(folder, ::geteuid(), MOST_XAUTHORITY_BYTES), std::nullopt) << "a folder";
+    ::close(folder);
+    const std::filesystem::path fifo = m_Dir / "fifo";
+    ASSERT_EQ(::mkfifo(fifo.c_str(), S_IRUSR | S_IWUSR), 0);
+    const int pipe = ::open(fifo.c_str(), O_RDONLY | O_NONBLOCK | O_CLOEXEC);
+    ASSERT_GE(pipe, 0);
+    EXPECT_EQ(readOwnedFile(pipe, ::geteuid(), MOST_XAUTHORITY_BYTES), std::nullopt) << "a FIFO";
+    ::close(pipe);
+}
+
+TEST_F(XauthorityCopyTest, OpenAsUserRefusesALinkAndNeverBlocksOnAFifo)
+{
+    // The real openAsUser(), as this test's own uid: setfsuid to it and back is allowed unprivileged.
+    const std::filesystem::path cookie = write("cookie", "x");
+    const int file = openAsUser(cookie.string(), ::geteuid());
+    EXPECT_GE(file, 0);
+    if (file >= 0)
+    {
+        ::close(file);
+    }
+    std::filesystem::create_symlink(cookie, m_Dir / "link");
+    EXPECT_EQ(openAsUser((m_Dir / "link").string(), ::geteuid()), -1) << "a link is never followed";
+    const std::filesystem::path fifo = m_Dir / "fifo";
+    ASSERT_EQ(::mkfifo(fifo.c_str(), S_IRUSR | S_IWUSR), 0);
+    const int pipe = openAsUser(fifo.string(), ::geteuid()); // returns at once: O_NONBLOCK
+    EXPECT_GE(pipe, 0);
+    if (pipe >= 0)
+    {
+        ::close(pipe);
+    }
+    EXPECT_EQ(::setfsuid(static_cast<uid_t>(-1)), static_cast<int>(::geteuid())) << "the ids are put back";
+}
+
+TEST_F(XauthorityCopyTest, TheCopysFolderMustBeTheOwnersAndPrivate)
+{
+    std::filesystem::permissions(m_Dir, std::filesystem::perms::owner_all);
+    EXPECT_TRUE(isPrivateFolderOf(m_Dir.string(), ::geteuid()));
+    EXPECT_FALSE(isPrivateFolderOf(m_Dir.string(), ::geteuid() + 1)) << "someone else's";
+    std::filesystem::permissions(m_Dir, std::filesystem::perms::owner_all | std::filesystem::perms::group_read);
+    EXPECT_FALSE(isPrivateFolderOf(m_Dir.string(), ::geteuid())) << "the group may read it";
+    std::filesystem::permissions(m_Dir, std::filesystem::perms::owner_all);
+    std::filesystem::create_directory_symlink(m_Dir, m_Dir.string() + "-link");
+    EXPECT_FALSE(isPrivateFolderOf(m_Dir.string() + "-link", ::geteuid())) << "a link to it";
+    std::filesystem::remove(m_Dir.string() + "-link");
+}
+
+TEST(RootEnvironmentTest, AnUnsetUserSideValueIsRecordedSoThatChildGetsNone)
+{
+    // #4259: after ssh -X or startx, then sudo, XAUTHORITY was unset on the user side; the child got root's private copy.
+    const auto values = userSideValuesFrom([](std::string_view name) -> std::optional<std::string>
+                                           { return name == "PATH" ? std::optional<std::string>("/usr/bin") : std::nullopt; });
+    EXPECT_EQ(values.at("PATH"), "/usr/bin");
+    ASSERT_TRUE(values.contains("XAUTHORITY"));
+    EXPECT_EQ(values.at("XAUTHORITY"), std::nullopt);
+    auto& live = SessionUser::userSideValues();
+    const auto saved = live;
+    live = values;
+    EXPECT_EQ(SessionUser::userSideVariable("XAUTHORITY"), std::nullopt) << "not the process's own (root's copy)";
+    live = saved;
+}
+
+/// As root only (CI's root pass, tools/common.sh root_test_filter): the real setfsuid switch to another account.
+TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root";
+    }
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("tasksmack-xauth-root-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const std::filesystem::path rootOnly = dir / "root-only";
+    std::ofstream(rootOnly) << "secret";
+    std::filesystem::permissions(rootOnly, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
+    constexpr uid_t NOBODY = 65534;
+    EXPECT_EQ(openAsUser(rootOnly.string(), NOBODY), -1) << "nobody may not read root's 0600 file";
+    EXPECT_EQ(::setfsuid(static_cast<uid_t>(-1)), 0) << "root's filesystem uid is back";
+    std::error_code error;
+    std::filesystem::remove_all(dir, error);
 }
 
 } // namespace

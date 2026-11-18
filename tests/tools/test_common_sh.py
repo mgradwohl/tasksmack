@@ -178,6 +178,7 @@ class RootTestFilterTests(unittest.TestCase):
         "SessionUserRootTest.*",
         "RootCapabilitiesRootTest.*",
         "LinuxProcessActionsRootTest.*",
+        "RootEnvironmentRootTest.*",  # the real openAsUser() as root (#4255)
     )
 
     def test_the_filter_names_every_root_suite(self):

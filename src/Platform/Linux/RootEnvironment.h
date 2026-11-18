@@ -24,6 +24,8 @@
 #include <string_view>
 #include <vector>
 
+#include <sys/types.h>
+
 namespace Platform::RootEnvironment
 {
 
@@ -92,6 +94,29 @@ inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share"
 /// becomes ROOT_PATH and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value that can't be set is unset
 /// instead, so nothing of the user's is left by a failure. @return The names removed (a failed unset is left out), in order.
 [[nodiscard]] std::vector<std::string> applyTo(const char* const* environment, const RootValues& root, const Operations& ops);
+
+/// The most an Xauthority file may hold to be copied: a few hundred bytes is usual.
+inline constexpr long long MOST_XAUTHORITY_BYTES = 1LL << 20;
+
+/// The variables a root session replaces for itself whose user values the programs started as the user get back
+/// (SessionUser::userSideValues(), the second #4187 review).
+inline constexpr std::array<std::string_view, 3> USER_SIDE_NAMES = {"PATH", "XDG_DATA_DIRS", "XAUTHORITY"};
+
+/// Opens @p path read-only as @p uid would (#4187): setfsuid/setfsgid to them and their primary group for the open,
+/// then back to the ids this process had, without following a final link (O_NOFOLLOW) or blocking on a FIFO
+/// (O_NONBLOCK). -1 when it can't; TaskSmack stops if the ids can't be put back. Not thread-safe (setfsuid).
+[[nodiscard]] int openAsUser(const std::string& path, uid_t uid);
+
+/// @p fd's whole contents when it is a regular file @p owner owns of at most @p mostBytes (#4255), else nullopt.
+[[nodiscard]] std::optional<std::string> readOwnedFile(int fd, uid_t owner, long long mostBytes);
+
+/// Whether @p folder is a folder (not a link) @p owner owns that no group or other may open (0700 or tighter).
+[[nodiscard]] bool isPrivateFolderOf(const std::string& folder, uid_t owner);
+
+/// Each of USER_SIDE_NAMES' values from @p env, an unset one as nullopt (#4259): a user who had no XAUTHORITY gets none,
+/// never root's private copy.
+[[nodiscard]] std::map<std::string, std::optional<std::string>, std::less<>>
+userSideValuesFrom(const std::function<std::optional<std::string>(std::string_view)>& env);
 
 /// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment,
 /// then checks it: a PATH that isn't ROOT_PATH ends TaskSmack (fail closed). Not thread-safe (setenv, unsetenv).
