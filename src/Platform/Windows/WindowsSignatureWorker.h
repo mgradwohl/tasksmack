@@ -189,6 +189,28 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
         return findFor(path, process, publisher);
     }
 
+    /// The key the table files the image @p process runs from @p path under (#4021). A caller that asks for one
+    /// image every sample until it is answered (the probe, #4059) makes it once and passes it to find(), so a
+    /// sample makes no key (#4276): each one folds the path's case into a copy and formats the process into it.
+    [[nodiscard]] static std::string keyFor(std::string_view path, const ImageProcess& process)
+    {
+        return imageKey(path, process);
+    }
+
+    /// As find(@p path, @p process), with @p key, keyFor(@p path, @p process), made by the caller once (#4276). The
+    /// table copies it only when the path is requested again. An empty @p key is never looked up or filed (keyFor()
+    /// never makes one): the key is made here instead, as find(@p path, @p process) makes it.
+    [[nodiscard]] std::optional<SignatureCheck>
+    find(std::string_view path, const ImageProcess& process, const std::string& key, std::string* publisher = nullptr)
+    {
+        if (key.empty())
+        {
+            return findFor(path, process, publisher);
+        }
+        const std::scoped_lock lock(m_Mutex);
+        return findLocked(path, process, key, publisher, [this, &key] { return copyKeyLocked(key); });
+    }
+
     /// Whether the worker has ended (#3862): no thread could be started, or a drain failed. It stays ended, and
     /// answers every path Unknown with the reason (logged once, by this call or the next request() or find()),
     /// but reads no publisher with those answers: the caller reads that itself.
@@ -242,13 +264,25 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     {
         std::string key = imageKey(path, process);
         const std::scoped_lock lock(m_Mutex);
+        return findLocked(path, process, key, publisher, [&key] { return std::move(key); });
+    }
+
+    /// find() under m_Mutex, for the path's table key @p key. @p tableKey() gives the table a key of its own, called
+    /// only when the path is requested again.
+    template<typename TableKey>
+    [[nodiscard]] std::optional<SignatureCheck> findLocked(std::string_view path,
+                                                           const std::optional<ImageProcess>& process,
+                                                           const std::string& key,
+                                                           std::string* publisher,
+                                                           TableKey&& tableKey)
+    {
         // Before the answer: a worker that failed with paths queued answers them here, since a path already
         // in the table never reaches request() again (#3343).
         static_cast<void>(workerEndedLocked());
         const auto found = m_Paths.find(key);
         if (found == m_Paths.end())
         {
-            requestLocked(path, std::move(key), Asker::LaterSample, process);
+            requestLocked(path, std::forward<TableKey>(tableKey)(), Asker::LaterSample, process);
             return std::nullopt;
         }
         found->second.askedInSample = m_Sample; // still in the probe's list (#4059)
@@ -309,6 +343,13 @@ template<typename Faults = NoSignatureWorkerFaults> class BasicSignatureWorker
     {
         m_Faults.makingKey();
         return imageKey(path, process);
+    }
+
+    /// A copy of a caller's key (find() with keyFor()'s) under m_Mutex, through the same fault hook as keyLocked().
+    [[nodiscard]] std::string copyKeyLocked(const std::string& key)
+    {
+        m_Faults.makingKey();
+        return key;
     }
 
     /// request() under m_Mutex.

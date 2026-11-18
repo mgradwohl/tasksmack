@@ -3,11 +3,13 @@
 /// environment before its first SDL call, so none of the user's names a library SDL loads as root. Tested on a fake
 /// environment; the process's own is left alone.
 
+#include "Platform/Linux/RootEnvironment.h"
 #include "Platform/Linux/SdlEnvironment.h"
 
 #include <gtest/gtest.h>
 
 #include <array>
+#include <map>
 #include <string>
 #include <vector>
 
@@ -37,7 +39,14 @@ TEST(LinuxSdlEnvironmentTest, TheGraphicsLoaderVariablesAreRemovedTooInExactCase
                              "__GLX_FORCE_VENDOR_LIBRARY_0",
                              "LIBDECOR_PLUGIN_DIR",
                              "VK_ICD_FILENAMES",
-                             "GBM_BACKENDS_PATH"})
+                             "GBM_BACKENDS_PATH",
+                             // #4254: GTK's and GLib's modules.
+                             "GTK_MODULES",
+                             "GTK_PATH",
+                             "GIO_EXTRA_MODULES",
+                             "GDK_PIXBUF_MODULE_FILE",
+                             "GSETTINGS_BACKEND",
+                             "MESA_SHADER_CACHE_DIR"})
     {
         EXPECT_TRUE(isLoaderVariable(name)) << name;
     }
@@ -112,4 +121,47 @@ TEST(LinuxSdlEnvironmentTest, NotAsRootForAUserNothingIsRemoved)
 }
 
 } // namespace
+TEST(LinuxSdlEnvironmentTest, APrivilegedSessionKeepsLibdecorGtkAndTheShaderCacheOut)
+{
+    // #4254, #4285: no libdecor (so no GTK plugin), SDL's own GTK off, and no Mesa shader cache.
+    std::map<std::string, std::string> set;
+    EXPECT_TRUE(keepPrivilegedLoadersOut(
+        [&set](const std::string& name, const std::string& value)
+        {
+            set[name] = value;
+            return true;
+        }));
+    EXPECT_EQ(set,
+              (std::map<std::string, std::string>{{"SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR", "0"},
+                                                  {"SDL_ENABLE_GTK", "0"},
+                                                  {"MESA_SHADER_CACHE_DISABLE", "true"},
+                                                  {"MESA_GLSL_CACHE_DISABLE", "1"}}));
+    EXPECT_FALSE(keepPrivilegedLoadersOut([](const std::string&, const std::string&) { return false; }))
+        << "a failed set is reported, and main() then stops";
+}
+
+TEST(LinuxSdlEnvironmentTest, AUsersOwnValuesForThemAreScrubbedFirstAndTheAllowListWouldDropThem)
+{
+    // The #4284 review: the settings go last, after the SDL scrub (which removes a user's "1") and after
+    // RootEnvironment's allow-list, which keeps none of them and would otherwise undo them as root.
+    const std::array<const char*, 5> environment{
+        "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=1", "SDL_ENABLE_GTK=1", "MESA_SHADER_CACHE_DIR=/home/me/cache", "DISPLAY=:0", nullptr};
+    std::map<std::string, std::string> live{
+        {"SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR", "1"}, {"SDL_ENABLE_GTK", "1"}, {"MESA_SHADER_CACHE_DIR", "/home/me/cache"}, {"DISPLAY", ":0"}};
+    static_cast<void>(removeSdlVariables(environment.data(), [&live](const std::string& name) { return live.erase(name) == 1; }));
+    EXPECT_EQ(live, (std::map<std::string, std::string>{{"DISPLAY", ":0"}}));
+    for (const auto& [name, value] : PRIVILEGED_SESSION_SETTINGS)
+    {
+        EXPECT_FALSE(Platform::RootEnvironment::isKept(name)) << name << ": so it must be set after the allow-list";
+    }
+    EXPECT_TRUE(keepPrivilegedLoadersOut(
+        [&live](const std::string& name, const std::string& value)
+        {
+            live[name] = value;
+            return true;
+        }));
+    EXPECT_EQ(live.at("SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR"), "0");
+    EXPECT_FALSE(live.contains("MESA_SHADER_CACHE_DIR"));
+}
+
 } // namespace Platform::SdlEnvironment

@@ -31,23 +31,26 @@
     tools/check-benchmark-regression.py at its default thresholds plus any -CheckArgs. When it flags
     regressions, the flagged benchmarks alone run again in -Launches more separate launches of the
     binary (each a bench.ps1 run of its own with the same preset, binary, -Core and arguments, and a
-    --benchmark_filter from tools/bench-across-launches.py plan), each one's median across all the
-    launches' medians replaces its row in a copy of the run (bench-across-launches.py combine), and
-    that copy is checked again at the same thresholds and coverage. This is the maintainer's decision
+    --benchmark_filter from tools/bench-across-launches.py run, the command bench.sh --baseline and
+    heavy-checks.yml use too), each one's median across all the launches' medians replaces its row in
+    a copy of the run, and that copy is checked again at the same thresholds and coverage. This is the maintainer's decision
     on #3448 (2026-11-05), as heavy-checks.yml does on Linux (#3476): not best-of-N, and no threshold
     changes, so a benchmark slow in most launches still fails. The launches, the flagged names and the
-    combined run go to <result>.across-launches\ next to the result. The script then exits with the
-    check's exit code: 0 passed, 1 regressions or low coverage, 2 an unusable input. A coverage loss
-    alone has nothing to re-measure and fails as it is. A further launch whose manifest records a
-    different core class from the full run's (say, its pinning failed) is exit 2, with nothing
-    combined. Needs Python (-Python), which runs as python -I -X utf8.
+    combined run go to <result>.across-launches\ next to the result, each launch in a folder named by
+    its number (2 to -Launches + 1). The script then exits with the code of run or of the last check:
+    0 passed, 1 regressions, low coverage, or flags that stand (nothing to re-measure, over budget or
+    out of time), 2 an unusable input or a launch on a different core class from the full run's (say,
+    its pinning failed) with nothing combined, 3 a launch that failed or wrote no result. A coverage
+    loss alone has nothing to re-measure and fails as it is. Needs Python (-Python), which runs as
+    python -I -X utf8.
 .PARAMETER Launches
     With -Baseline: how many more launches the flagged benchmarks get, 5 in all with the full run.
     Defaults to 4, as heavy-checks.yml.
 .PARAMETER BudgetSeconds
-    With -Baseline: the time the further launches may take. tools/bench-across-launches.py plan
-    estimates them from the full run's own timings and refuses past it, and no launch starts once it
-    is spent; either way the flags stand as regressions. Defaults to 600, as heavy-checks.yml.
+    With -Baseline: the time the further launches may take. tools/bench-across-launches.py run
+    estimates them from the full run's own timings and refuses past it, no launch starts once it is
+    spent, and one still running at it is stopped; each way the flags stand as regressions. Defaults
+    to 600, as heavy-checks.yml.
 .PARAMETER CheckArgs
     With -Baseline: more arguments for both checks. From PowerShell pass an array,
     & tools/bench.ps1 -Baseline <file> -CheckArgs @('--threshold', '40'). "pwsh -File" can't bind an
@@ -135,7 +138,7 @@ param(
 
     [string]$Python,
 
-    # The benchmark arguments of a -Baseline further launch (#3547): see Invoke-AcrossLaunches' caller.
+    # The benchmark arguments of a -Baseline further launch (#3547): see Invoke-AcrossLaunches' caller and tools/bench-ps1-launch.py.
     [Parameter(DontShow)]
     [string]$ExtraArgsFile,
 
@@ -774,6 +777,35 @@ function Format-AffinityMask {
     return '0x{0:x}' -f [uint64]$Mask
 }
 
+function Test-BenchVirtualMachine {
+    # Whether Win32_ComputerSystem's $ComputerSystem (Manufacturer, Model, HypervisorPresent) is a
+    # virtual machine's (#4237). HypervisorPresent alone is not enough: a physical Windows host
+    # with Hyper-V, Virtualization-based Security or WSL2 on is the hypervisor's root partition and
+    # reports it too, yet sees the real cores. So it also needs a virtual machine's maker or model.
+    # $null (the class could not be read) is not a virtual machine.
+    param([AllowNull()]$ComputerSystem)
+    if ($null -eq $ComputerSystem -or -not $ComputerSystem.HypervisorPresent) { return $false }
+    return "$($ComputerSystem.Manufacturer) $($ComputerSystem.Model)" -match 'Virtual|VMware|innotek|QEMU|KVM|Xen|Parallels|Bochs|Hyper-V|Google Compute Engine|Amazon EC2|OpenStack|Standard PC'
+}
+
+function Get-BenchComputerSystem {
+    # Win32_ComputerSystem's Manufacturer, Model and HypervisorPresent, or $null outside Windows or
+    # when they cannot be read. One CIM query, read only.
+    if (-not $IsWindows) { return $null }
+    try { return Get-CimInstance -ClassName Win32_ComputerSystem -Property Manufacturer, Model, HypervisorPresent -ErrorAction Stop }
+    catch {
+        Write-Verbose "Reading Win32_ComputerSystem failed: $_"
+        return $null
+    }
+}
+
+function Test-BenchHostIsVirtualMachine {
+    # Whether this machine is a virtual machine. TASKSMACK_BENCH_VM (1 or 0) overrides the check, for
+    # the tests, like bench.sh's TASKSMACK_BENCH_CPUINFO.
+    if ($env:TASKSMACK_BENCH_VM -match '^[01]$') { return $env:TASKSMACK_BENCH_VM -eq '1' }
+    return [bool](Test-BenchVirtualMachine (Get-BenchComputerSystem))
+}
+
 function Select-BenchCore {
     # Where the run goes (#3163), from the physical cores (ConvertFrom-ProcessorCoreBuffer's
     # shape, or $null when they could not be read), the -Core choice ('' when not given) and the
@@ -793,11 +825,21 @@ function Select-BenchCore {
     # (#3413): it still keeps the run off the efficiency cores (#3163), and a multi-threaded
     # benchmark gets a CPU per thread. With fewer than that the run is not pinned. On a CPU of one
     # class it changes nothing.
-    param([AllowNull()][object[]]$Cores, [AllowEmptyString()][string]$Requested, [AllowNull()]$AllowedMask)
+    # In a virtual machine (#4237) a guest's vCPUs may all report one EfficiencyClass whatever cores
+    # the host has, so one class there is "unknown", not "not hybrid": Hybrid is $null, the run is
+    # not pinned, and a warning says so unless -Core any was asked for. Several classes in a guest
+    # are believed. Kept in step with bench-manifest.py (#4194).
+    param([AllowNull()][object[]]$Cores, [AllowEmptyString()][string]$Requested, [AllowNull()]$AllowedMask, [bool]$VirtualMachine = $false)
     $known = $null -ne $Cores -and $Cores.Count -gt 0
     $hybrid = if ($known) { @($Cores | ForEach-Object { $_.EfficiencyClass } | Sort-Object -Unique).Count -gt 1 } else { $null }
+    $guestOfUnknownHost = $known -and $VirtualMachine -and -not $hybrid
+    if ($guestOfUnknownHost) { $hybrid = $null }
     $mode = if ($Requested) { $Requested } elseif ($hybrid) { 'performance' } else { 'any' }
     $choice = [pscustomobject]@{ Core = $mode; CoreClass = 'any'; Hybrid = $hybrid; LogicalCpus = $null; Mask = $null; Warning = $null }
+    if ($guestOfUnknownHost) {
+        if ($Requested -ne 'any') { $choice.Warning = 'This is a virtual machine and every vCPU reports one EfficiencyClass, so whether the host is a hybrid CPU is unknown and the run is not pinned. If the host is hybrid it may land on efficiency cores; compare runs from bare metal.' }
+        return $choice
+    }
     if ($mode -ne 'performance') {
         if (-not $known -and -not $Requested) { $choice.Warning = 'The processor cores could not be read, so the run is not pinned (-Core any). On a hybrid CPU it may land on efficiency cores.' }
         return $choice
@@ -1008,24 +1050,18 @@ function Invoke-ResultRedaction {
     $json | ConvertTo-Json -Depth 100 | Set-Content -LiteralPath $outFile -Encoding utf8
 }
 
-function Get-ManifestCoreClass {
-    # The core class a bench.ps1 manifest records, as text: the pinned EfficiencyClass, "any" when not
-    # pinned, or "(none)" when it records no placement. Throws when the manifest does not parse.
-    param([string]$Path)
-    $manifest = Get-Content -LiteralPath $Path -Raw | ConvertFrom-Json
-    $placement = if ($manifest.PSObject.Properties['placement']) { $manifest.placement } else { $null }
-    if ($null -eq $placement -or -not $placement.PSObject.Properties['core_class'] -or $null -eq $placement.core_class) { return '(none)' }
-    return [string]$placement.core_class
-}
-
 function Invoke-AcrossLaunches {
-    # -Baseline (#3448): check $First against $Baseline and, when it flags regressions, measure the
+    # -Baseline (#3448, #4198): check $First against $Baseline and, when it flags regressions, measure the
     # flagged benchmarks across launches and check the median across them, as heavy-checks.yml's
-    # "Re-measure flagged benchmarks across launches" does on Linux (#3476), with the same
-    # tools/bench-across-launches.py. $Launch runs one further launch: it gets the filter and a
-    # directory of its own and returns @{ ExitCode; Result }. Returns the exit code the script ends
-    # with: the last check's (0 passed, 1 regressions or low coverage, 2 unusable input), 1 when the
-    # flags stand (over budget, or nothing to re-measure), or a failed launch's own exit code.
+    # "Re-measure flagged benchmarks across launches" does on Linux (#3476) and bench.sh --baseline does
+    # (#3912): the plan, the launches, the budget, the core-class check and the combine are all
+    # tools/bench-across-launches.py run, so the budget, the exit codes and the work folders
+    # (<WorkDirectory>\<launch number>) are theirs. $LaunchCommand is one further launch: run appends
+    # --benchmark_filter=<the plan's filter> to it and sets TASKSMACK_BENCH_OUT_DIR to the launch's own
+    # folder; its last RESULT= line names its result. Returns the exit code the script ends with: the last
+    # check's (0 passed, 1 regressions or low coverage, 2 unusable input), run's own when it does not
+    # finish (1 the flags stand: nothing to re-measure, over budget or out of time; 2 unusable input or a
+    # launch on another core class; 3 a launch failed or wrote no result).
     param(
         [string]$Python,
         [string]$ToolsDirectory,
@@ -1036,19 +1072,18 @@ function Invoke-AcrossLaunches {
         [int]$Launches,
         [double]$BudgetSeconds,
         [string[]]$CheckArgs,
-        [scriptblock]$Launch
+        [string[]]$LaunchCommand
     )
     $checker = Join-Path $ToolsDirectory 'check-benchmark-regression.py'
     $helper = Join-Path $ToolsDirectory 'bench-across-launches.py'
     New-Item -ItemType Directory -Path $WorkDirectory -Force | Out-Null
     $regressions = Join-Path $WorkDirectory 'regressions.json'
+    $combined = Join-Path $WorkDirectory 'combined.json'
     $nativeExit = { if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE } }
     # Python in isolated UTF-8 mode, as CONTRIBUTING.md asks of wrappers: a benchmark name outside the
     # console code page would otherwise fail to print through the pipe PowerShell reads.
     $pythonArgs = @('-I', '-X', 'utf8')
-    # The full run's core class, which every further launch must share (#3163): one that ran elsewhere
-    # (say, its pinning failed and it ran unpinned) would mix cores in one median.
-    $firstClass = if ($FirstManifest -and (Test-Path -LiteralPath $FirstManifest -PathType Leaf)) { Get-ManifestCoreClass $FirstManifest } else { $null }
+    $hasManifest = $FirstManifest -and (Test-Path -LiteralPath $FirstManifest -PathType Leaf)
 
     Write-Host ""
     Write-Host "Checking against $Baseline"
@@ -1058,60 +1093,18 @@ function Invoke-AcrossLaunches {
     # Only flagged regressions are re-measured; a pass, or a usage error, stands.
     if ($checked -ne 1) { return $checked }
 
-    # The budget runs from here. plan refuses (exit 1) when there is nothing to re-measure (a coverage
-    # loss alone) or the estimate is over budget, and says which.
-    $clock = [Diagnostics.Stopwatch]::StartNew()
+    # The full run's core class, which every further launch must share (#3163), is checked by run.
+    $firstManifestArgs = if ($hasManifest) { @('--first-manifest', $FirstManifest) } else { @() }
     Write-Host ""
-    $planOut = @(& $Python @pythonArgs $helper plan --current $First --regressions $regressions --launches $Launches --budget-seconds $BudgetSeconds)
-    $planned = & $nativeExit
-    if ($planned -ne 0) {
-        if ($planned -eq 1) { Write-Host "The flags stand as regressions." }
-        return $planned
-    }
-    $filter = [string]$planOut[-1]
-
-    $results = [Collections.Generic.List[string]]::new()
-    $total = $Launches + 1
-    for ($index = 2; $index -le $total; $index++) {
-        if ($clock.Elapsed.TotalSeconds -ge $BudgetSeconds) {
-            Write-Host "Out of time: launch $index of $total not started, past the $($BudgetSeconds)s budget. The flags stand as regressions."
-            return 1
-        }
-        $directory = Join-Path $WorkDirectory "launch-$index"
-        New-Item -ItemType Directory -Path $directory -Force | Out-Null
-        Write-Host ""
-        Write-Host "Launch $index of ${total}: --benchmark_filter=$filter"
-        $launched = & $Launch $filter $directory
-        if ($launched.ExitCode -ne 0) {
-            Write-Error -Message "Launch $index failed (exit $($launched.ExitCode))." -ErrorAction Continue
-            return $launched.ExitCode
-        }
-        if (-not $launched.Result -or -not (Test-Path -LiteralPath $launched.Result -PathType Leaf)) {
-            Write-Error -Message "Launch $index's result not found (RESULT=$($launched.Result))." -ErrorAction Continue
-            return 2
-        }
-        if ($null -ne $firstClass) {
-            $launchManifest = [IO.Path]::ChangeExtension($launched.Result, '.manifest.json')
-            $launchClass = if (Test-Path -LiteralPath $launchManifest -PathType Leaf) { Get-ManifestCoreClass $launchManifest } else { '(no manifest)' }
-            if ($launchClass -cne $firstClass) {
-                Write-Error -Message "Launch $index ran on core class $launchClass, not the full run's $firstClass ($launchManifest), so its times can't share a median with the full run's. Nothing is combined." -ErrorAction Continue
-                return 2
-            }
-        }
-        $results.Add($launched.Result)
-    }
-
-    # A flagged benchmark with no usable median in some launch fails here (exit 2), not quietly.
-    $combined = Join-Path $WorkDirectory 'combined.json'
-    Write-Host ""
-    & $Python @pythonArgs $helper combine --first $First --regressions $regressions --baseline $Baseline --output $combined @results | Out-Host
-    $combinedExit = & $nativeExit
-    if ($combinedExit -ne 0) { return $combinedExit }
+    & $Python @pythonArgs $helper run --current $First --regressions $regressions --baseline $Baseline --output $combined `
+        --work-dir $WorkDirectory @firstManifestArgs --launches $Launches --budget-seconds $BudgetSeconds -- @LaunchCommand | Out-Host
+    $ran = & $nativeExit
+    if ($ran -ne 0) { return $ran }
 
     # The same check on the combined run, with the full run's manifest (the core-class check).
-    $manifestArgs = if ($FirstManifest -and (Test-Path -LiteralPath $FirstManifest -PathType Leaf)) { @('--current-manifest', $FirstManifest) } else { @() }
+    $manifestArgs = if ($hasManifest) { @('--current-manifest', $FirstManifest) } else { @() }
     Write-Host ""
-    Write-Host "Checking the median across $total launches against $Baseline"
+    Write-Host "Checking the median across $($Launches + 1) launches against $Baseline"
     & $Python @pythonArgs $checker @CheckArgs --baseline $Baseline --current $combined @manifestArgs | Out-Host
     return (& $nativeExit)
 }
@@ -1163,7 +1156,7 @@ Write-Host "Binary: $benchBin"
 $loadSampleMs = $script:LoadSampleMilliseconds
 if ($env:TASKSMACK_BENCH_LOAD_SAMPLE_MS -match '^[0-9]+$') { $loadSampleMs = [int]$env:TASKSMACK_BENCH_LOAD_SAMPLE_MS }
 $processMask = Get-ProcessAffinityMask
-$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask
+$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask -VirtualMachine (Test-BenchHostIsVirtualMachine)
 $runMask = if ($null -ne $coreChoice.Mask) { $coreChoice.Mask } else { $processMask }
 
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
@@ -1264,39 +1257,36 @@ if ($manifestError) {
     throw "Writing the provenance manifest '$manifestFile' failed: $manifestError"
 }
 
-# -Baseline (#3448): the check, with any flagged benchmark measured across launches. Each further
-# launch is this script again in a process of its own, with the same preset, binary, -Core and
-# arguments plus the plan's --benchmark_filter (Google Benchmark takes the last one), so it is pinned,
-# sampled, redacted and given a manifest the same way. Its output is shown and its RESULT= line read.
+# -Baseline (#3448, #4198): the check, with any flagged benchmark measured across launches by
+# tools/bench-across-launches.py run, as bench.sh --baseline does. Each further launch is this script
+# again in a process of its own, with the same preset, binary, -Core and arguments plus the plan's
+# --benchmark_filter (Google Benchmark takes the last one), so it is pinned, sampled, redacted and given a
+# manifest the same way. Its output is shown and its RESULT= line read, by run.
 # The benchmark arguments go to it in a temporary file (-ExtraArgsFile, #3547), not on its command
 # line: "pwsh -File" splits an argument that starts with "-" at its first ":" as -name:value, and
-# most flagged names hold one (BM_X/iterations:1000). The preset, binary, directory and core stay on
-# the command line: none of them can start with "-" (a "--" preset was moved into ExtraArgs above,
-# the binary and directory are absolute paths, and -Core is validated). A process of its own, not
-# & bench.ps1 in this one: the launch pins, sets the console encoding and exits or throws as a
-# top-level run does, and none of that may reach this run or the launches after it.
+# most flagged names hold one (BM_X/iterations:1000). run appends the plan's filter to the command it
+# launches, so the command is tools/bench-ps1-launch.py, which adds that last argument to the file and
+# starts pwsh. The preset, binary and core stay on the command line: none of them can start with "-"
+# (a "--" preset was moved into ExtraArgs above, the binary is an absolute path, and -Core is
+# validated); the launch's directory is TASKSMACK_BENCH_OUT_DIR, which run sets. A process of its
+# own, not & bench.ps1 in this one: the launch pins, sets the console encoding and exits or throws as
+# a top-level run does, and none of that may reach this run or the launches after it.
 $checkExit = 0
 if ($Baseline) {
     $pwshExe = (Get-Process -Id $PID).Path
-    $launchOne = {
-        param([string]$Filter, [string]$Directory)
-        $argsFile = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-args-$([guid]::NewGuid().ToString('N')).json"
-        try {
-            [IO.File]::WriteAllText($argsFile, [System.Text.Json.JsonSerializer]::Serialize([string[]](@($ExtraArgs) + @("--benchmark_filter=$Filter")), [string[]], [System.Text.Json.JsonSerializerOptions]::new()), [Text.UTF8Encoding]::new($false))
-            $childArgs = @('-NoProfile', '-File', $benchScriptPath, $Preset, '-BenchmarkBinary', $benchBin, '-OutputDirectory', $Directory, '-ExtraArgsFile', $argsFile)
-            if ($Core) { $childArgs += @('-Core', $Core) }
-            $lines = @(& $pwshExe @childArgs | ForEach-Object { Write-Host $_; $_ })
-            $code = if ($null -eq $LASTEXITCODE) { 2 } else { $LASTEXITCODE }
-        }
-        finally {
-            Remove-Item -LiteralPath $argsFile -Force -ErrorAction SilentlyContinue
-        }
-        $resultLine = @($lines | Where-Object { "$_" -like 'RESULT=*' } | Select-Object -Last 1)
-        [pscustomobject]@{ ExitCode = $code; Result = $(if ($resultLine.Count -gt 0) { "$($resultLine[0])".Substring('RESULT='.Length) } else { $null }) }
+    $baseArgsFile = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-bench-base-args-$([guid]::NewGuid().ToString('N')).json"
+    try {
+        [IO.File]::WriteAllText($baseArgsFile, [System.Text.Json.JsonSerializer]::Serialize([string[]]@($ExtraArgs), [string[]], [System.Text.Json.JsonSerializerOptions]::new()), [Text.UTF8Encoding]::new($false))
+        $launchCommand = @($pythonExe, '-I', '-X', 'utf8', (Join-Path $scriptDir 'bench-ps1-launch.py'), $baseArgsFile,
+            $pwshExe, '-NoProfile', '-File', $benchScriptPath, $Preset, '-BenchmarkBinary', $benchBin)
+        if ($Core) { $launchCommand += @('-Core', $Core) }
+        $checkExit = Invoke-AcrossLaunches -Python $pythonExe -ToolsDirectory $scriptDir -Baseline $Baseline -First $outFile `
+            -FirstManifest $manifestFile -WorkDirectory ([IO.Path]::ChangeExtension($outFile, '.across-launches')) `
+            -Launches $Launches -BudgetSeconds $BudgetSeconds -CheckArgs $CheckArgs -LaunchCommand $launchCommand
     }
-    $checkExit = Invoke-AcrossLaunches -Python $pythonExe -ToolsDirectory $scriptDir -Baseline $Baseline -First $outFile `
-        -FirstManifest $manifestFile -WorkDirectory ([IO.Path]::ChangeExtension($outFile, '.across-launches')) `
-        -Launches $Launches -BudgetSeconds $BudgetSeconds -CheckArgs $CheckArgs -Launch $launchOne
+    finally {
+        Remove-Item -LiteralPath $baseArgsFile -Force -ErrorAction SilentlyContinue
+    }
 }
 
 Write-Host ""

@@ -13,6 +13,8 @@
 #include "RefusalOffer.h"
 #include "RestartAsAdministratorButton.h"
 
+#include <imgui.h>
+
 #include <concepts>
 
 namespace App::Detail
@@ -32,8 +34,13 @@ concept AuthenticatingView = requires(View& view, const View& constView) {
 /// the press to @p view (requestAuthorizedRead()). A refused read with no helper to read it offers
 /// "Restart as administrator..." instead, where RestartAsAdministrator::offered() (#3658). Draws nothing
 /// otherwise.
-template<AuthenticatingView View> void drawAuthenticateToReadButton(View& view)
+///
+/// @p idScope names the section (a string literal, such as "modules"), and the button is drawn inside it
+/// (ImGui::PushID()): the sections all draw in one Process Details child, and the button's label is the same
+/// in each, so without it two refused sections share one ID and a press on the second does nothing (#4268).
+template<AuthenticatingView View> void drawAuthenticateToReadButton(View& view, const char* idScope)
 {
+    ImGui::PushID(idScope);
     // offersAuthenticateToRead() is the helper's say: it offers the read only for a refusal it can redo.
     const bool offersRead = view.offersAuthenticateToRead();
     const RefusalOfferKind kind = decideRefusalOffer(
@@ -45,6 +52,7 @@ template<AuthenticatingView View> void drawAuthenticateToReadButton(View& view)
             .retryLabel = AuthorizeWording::READ_LABEL,
             .retryTooltip = AuthorizeWording::READ_TOOLTIP,
         }));
+    ImGui::PopID();
 }
 
 } // namespace App::Detail

@@ -895,6 +895,25 @@ TEST(ElevatedRestartOwnConfigDirTest, TheRealOwnerCheckAcceptsAFolderThisAccount
     EXPECT_EQ(ownerIsOwnAccountOrAdministrators(folder.get()), std::optional<bool>(true));
 }
 
+// #4263: and refuses one another account owns. Unelevated, a test can make a folder owned only by its own token user,
+// so this reads a real folder Windows owns instead: the Windows folder, TrustedInstaller's, opened for READ_CONTROL
+// only and never written. It is neither this account nor Administrators, elevated or not.
+TEST(ElevatedRestartOwnConfigDirTest, TheRealOwnerCheckRefusesAFolderAnotherAccountOwns)
+{
+    std::array<wchar_t, MAX_PATH> windows{};
+    const UINT length = GetWindowsDirectoryW(windows.data(), static_cast<UINT>(windows.size()));
+    ASSERT_NE(length, 0U) << GetLastError();
+    ASSERT_LT(length, windows.size());
+    const UniqueHandle folder(CreateFileW(windows.data(),
+                                          READ_CONTROL,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                          nullptr,
+                                          OPEN_EXISTING,
+                                          FILE_FLAG_BACKUP_SEMANTICS,
+                                          nullptr));
+    ASSERT_TRUE(folder) << GetLastError();
+    EXPECT_EQ(ownerIsOwnAccountOrAdministrators(folder.get()), std::optional<bool>(false));
+}
 // Not there yet: made in its held parent, then checked and held itself, and held again once it is there.
 TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderIsMadeInItsHeldParentAndHeld)
 {

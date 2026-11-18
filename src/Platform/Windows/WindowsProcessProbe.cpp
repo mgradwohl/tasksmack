@@ -49,6 +49,7 @@
 #include "WindowsProcessIdentity.h"
 #include "WindowsProcessMachine.h"
 #include "WindowsProcessMachineMath.h"
+#include "WindowsProcessSnapshotSize.h"
 #include "WindowsSignatureCheck.h"
 #include "WindowsSignatureWorker.h"
 #include "WindowsTcpRows.h"
@@ -306,8 +307,8 @@ static_assert(offsetof(SystemProcessInfo, readOperationCount) == offsetof(SYSTEM
 // Safe and necessary: STATUS_INFO_LENGTH_MISMATCH is the documented NTSTATUS value 0xC0000004;
 // NTSTATUS is signed, so the high-bit-set literal requires an explicit cast.
 constexpr NTSTATUS STATUS_INFO_LENGTH_MISMATCH_NT = static_cast<NTSTATUS>(0xC0000004L);
-constexpr std::size_t SNAPSHOT_INITIAL_BYTES = std::size_t{512} * std::size_t{1024};
-constexpr std::size_t SNAPSHOT_HEADROOM_BYTES = std::size_t{64} * std::size_t{1024};
+/// Tries at a snapshot that fits before the sample gives up (#4277): the buffer at least doubles each time.
+constexpr int MAX_SNAPSHOT_ATTEMPTS = 6;
 
 // PROCESS_EXTENDED_BASIC_INFORMATION (Windows 8+). It has no information class of its own: it is
 // ProcessBasicInformation (class 0) asked for with a buffer of this size whose Size field says so
@@ -1121,31 +1122,45 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         return results;
     }
 
+    // Kept between samples, so only the first query can start too small for the snapshot (#4277).
     if (m_SnapshotBuffer.empty())
     {
-        m_SnapshotBuffer.resize(SNAPSHOT_INITIAL_BYTES);
+        m_SnapshotBuffer.resize(Windows::PROCESS_SNAPSHOT_INITIAL_BYTES);
     }
+    const std::size_t keptBytes = m_SnapshotBuffer.size(); // The size the last sample that worked left, or the first
 
     // One bulk kernel snapshot provides PIDs, names, CPU times, memory, I/O, and handle/thread
     // counts for every process — replacing per-process OpenProcess + query calls per sample.
-    NTSTATUS status = 0;
+    NTSTATUS status = STATUS_INFO_LENGTH_MISMATCH_NT;
     ULONG returnedBytes = 0;
-    for (;;)
+    for (int attempt = 0; attempt < MAX_SNAPSHOT_ATTEMPTS; ++attempt)
     {
         returnedBytes = 0;
         // Fallback saturates at ULONG max; the kernel simply reports the buffer as too small.
         const auto bufferSize = Domain::Numeric::narrowOr<ULONG>(m_SnapshotBuffer.size(), std::numeric_limits<ULONG>::max());
         status = queryFn(SystemProcessInformation, m_SnapshotBuffer.data(), bufferSize, &returnedBytes);
-        if (status != STATUS_INFO_LENGTH_MISMATCH_NT)
+        if (status != STATUS_INFO_LENGTH_MISMATCH_NT || attempt + 1 == MAX_SNAPSHOT_ATTEMPTS)
+        {
+            break; // Read, failed, or out of tries: no buffer is grown for a try that won't come
+        }
+        // Snapshot didn't fit; grow with headroom because the process list can change between calls. Never past
+        // PROCESS_SNAPSHOT_MAX_BYTES: the sample fails instead (#4277).
+        const std::optional<std::size_t> grown = Windows::grownProcessSnapshotBytes(m_SnapshotBuffer.size(), returnedBytes);
+        if (!grown.has_value())
         {
             break;
         }
-        // Snapshot didn't fit; grow with headroom because the process list can change between calls.
-        m_SnapshotBuffer.resize(static_cast<std::size_t>(returnedBytes) + SNAPSHOT_HEADROOM_BYTES);
+        m_SnapshotBuffer.resize(*grown);
     }
 
     if (status < 0)
     {
+        if (m_SnapshotBuffer.size() != keptBytes)
+        {
+            // A failed sample keeps no size it grew to (#4277): the next starts from the last one that worked, so
+            // failures in a row can't each start bigger. Swapped, so the memory goes too.
+            std::vector<std::byte>(keptBytes).swap(m_SnapshotBuffer);
+        }
         spdlog::error("NtQuerySystemInformation(SystemProcessInformation) failed: status=0x{:08X}", static_cast<std::uint32_t>(status));
         return results;
     }
@@ -1549,13 +1564,25 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
     {
         // The process, not only its path (#4021): its check binds to the file its image was mapped from.
         const WindowsSignature::ImageProcess process{.pid = counters.pid, .startTimeTicks = counters.startTimeTicks};
-        if (!cache.signatureRequested)
+        if (!cache.signatureRequested || cache.signatureKey.empty())
         {
-            m_Signatures->request(cache.image.path, process);
-            cache.signatureRequested = true;
+            // Asked for again every sample until it is in (#4059), so the worker's key is made once, here (#4276). In
+            // this order, so a throw anywhere (the key, or the request, allocating) leaves the next sample to try the
+            // whole of it again: the key is made and kept first, the check asked for next, and the flag set last.
+            std::string key = WindowsSignature::SignatureWorker::keyFor(cache.image.path, process);
+            cache.signatureKey = std::move(key);
+            if (!cache.signatureRequested)
+            {
+                m_Signatures->request(cache.image.path, process);
+                cache.signatureRequested = true;
+            }
         }
         // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
-        cache.signature = m_Signatures->find(cache.image.path, process, &cache.image.publisher);
+        cache.signature = m_Signatures->find(cache.image.path, process, cache.signatureKey, &cache.image.publisher);
+        if (cache.signature.has_value())
+        {
+            cache.signatureKey = std::string{}; // Never asked for again: its memory goes now
+        }
         if (cache.signature.has_value() && cache.image.publisher.empty() && m_SignatureFunctions.readPublisher != nullptr &&
             m_Signatures->ended())
         {

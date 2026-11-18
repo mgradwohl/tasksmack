@@ -227,6 +227,11 @@ set(SDL_CAMERA OFF CACHE BOOL "" FORCE)  # We don't need camera
 set(SDL_X11_XSCRNSAVER OFF CACHE BOOL "" FORCE)  # We don't need screensaver support
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)  # We don't need XTEST
 set(SDL_X11_XDBE OFF CACHE BOOL "" FORCE)  # We don't need double buffering extension
+# libdecor loaded at run time, never linked (#4254): SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR=0, which keeps GTK out of a session
+# whose environment may be another user's, is read only where SDL dlopen()s it. Checked after the configure below.
+set(SDL_DEPS_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_WAYLAND_SHARED ON CACHE BOOL "" FORCE)
+set(SDL_WAYLAND_LIBDECOR_SHARED ON CACHE BOOL "" FORCE)
 
 set(_tasksmack_restore_cmp0219_default FALSE)
 if(DEFINED CMAKE_POLICY_DEFAULT_CMP0219)
@@ -245,6 +250,21 @@ endif()
 unset(_tasksmack_restore_cmp0219_default)
 unset(_tasksmack_saved_cmp0219_default)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
+# #4254: a libdecor SDL links rather than loads would ignore SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR, and its GTK plugin would
+# run in a setcap session. Fail here instead of building that.
+if(UNIX AND NOT APPLE)
+    file(GLOB_RECURSE _tasksmack_sdl_build_configs "${sdl3_BINARY_DIR}/include-config-*/build_config/SDL_build_config.h")
+    foreach(_tasksmack_sdl_build_config IN LISTS _tasksmack_sdl_build_configs)
+        file(STRINGS "${_tasksmack_sdl_build_config}" _tasksmack_libdecor_lines REGEX "HAVE_LIBDECOR_H|WAYLAND_DYNAMIC_LIBDECOR")
+        if(_tasksmack_libdecor_lines MATCHES "HAVE_LIBDECOR_H 1" AND NOT _tasksmack_libdecor_lines MATCHES "WAYLAND_DYNAMIC_LIBDECOR")
+            message(FATAL_ERROR "SDL links libdecor instead of loading it (${_tasksmack_sdl_build_config}): "
+                                "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR would be ignored (#4254). Keep SDL_WAYLAND_LIBDECOR_SHARED ON.")
+        endif()
+    endforeach()
+    unset(_tasksmack_sdl_build_configs)
+    unset(_tasksmack_sdl_build_config)
+    unset(_tasksmack_libdecor_lines)
+endif()
 
 # Prefer the project-local environment created by tools/setup-dev.sh / tools/setup-dev.ps1
 # without overriding the machine's system Python. Windows venvs keep the interpreter in
