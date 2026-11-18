@@ -105,5 +105,24 @@ TEST(LinuxProcessIconSourceTest, ReadsTheExecutableLinkWithoutItsDeletedMark)
     EXPECT_EQ(source.executablePath(0, 0), "");
 }
 
+// #4192 (the Linux half of #4183): with the row's start time, a reused PID gives no path.
+TEST(LinuxProcessIconSourceTest, AReusedPidGivesNoPathWhenTheStartTimeIsKnown)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_icon_proc_reuse");
+    std::filesystem::create_directories(dir.path / "proc/42");
+    std::filesystem::create_symlink("/usr/bin/newcomer", dir.path / "proc/42/exe");
+    // Field 22, starttime, is 5000: the process now holding PID 42.
+    {
+        std::ofstream stat(dir.path / "proc/42/stat");
+        stat << "42 (newcomer) S 1 42 42 0 -1 4194304 0 0 0 0 0 0 0 0 20 0 1 0 5000 0 0\n";
+    }
+    LinuxProcessIconSource source(DesktopEntryIcons::SearchDirs{}, dir.path / "proc");
+    EXPECT_EQ(source.executablePath(42, 5000), "/usr/bin/newcomer") << "the row's own process";
+    EXPECT_EQ(source.executablePath(42, 4000), "") << "the row's process exited and its PID was reused";
+    EXPECT_EQ(source.executablePath(42, 0), "/usr/bin/newcomer") << "an unknown start time reads by PID, as before";
+    std::filesystem::remove(dir.path / "proc/42/stat");
+    EXPECT_EQ(source.executablePath(42, 5000), "") << "no stat to confirm it: no path";
+}
+
 } // namespace
 } // namespace Platform
