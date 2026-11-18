@@ -1982,9 +1982,12 @@ pwsh tools/profile-etw.ps1 app -DurationSeconds 20 -IncludeStartup
 # Dry run of the launch/warm-up/crash checks, with no WPR session and no UAC prompt
 pwsh tools/profile-etw.ps1 app -DurationSeconds 10 -SkipTrace
 
-# Benchmark trace
+# Benchmark trace — defaults to the win-profile build (-g and frame pointers, so samples resolve
+# to functions; win-benchmark has no debug info) and one benchmark, BM_ProcessModel_Refresh,
+# because several benchmarks in one run skew the sampled percentages (a filter that matches more
+# than one warns). -Preset still overrides.
 pwsh tools/profile-etw.ps1 bench
-pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_ProcessModel_Refresh$'
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_SystemModel_Refresh$'
 pwsh tools/profile-etw.ps1 bench -BenchmarkFilter '.*'   # profile the entire benchmark suite
 
 # Use win-profile for symbol-rich follow-up attribution
