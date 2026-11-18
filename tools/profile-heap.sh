@@ -203,6 +203,11 @@ if [[ "${MODE}" = "app" ]]; then
         trap remove_config_dir EXIT
         # Exported for TaskSmack only: heaptrack and the other tools run here ignore it.
         export TASKSMACK_CONFIG_DIR="${CONFIG_DIR}"
+        # And its own temp folder (#4209): TaskSmack's debug log is <temp folder>/tasksmack-debug.log, opened
+        # emptied, whatever the config folder, so with the inherited one a capture wiped the debug log of the
+        # user's own running TaskSmack, and both wrote to one file. Removed with the config folder.
+        mkdir -p -- "${CONFIG_DIR}/tmp"
+        export TMPDIR="${CONFIG_DIR}/tmp"
     fi
 fi
 

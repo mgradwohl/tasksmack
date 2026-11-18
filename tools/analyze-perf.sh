@@ -152,7 +152,9 @@ perf report \
     -g \
     --sort comm,dso,symbol \
     > "${FULL_REPORT}"
-head -n $(( TOP * 10 + 50 )) "${FULL_REPORT}" > "${REPORT_FILE}"
+# The report keeps the header and the first TOP entries, each with its whole call graph (#4208): a
+# line count cut DWARF or fp graphs, tens of lines an entry, to a handful of entries, mid-graph.
+awk -v top="${TOP}" '/^[[:space:]]+[0-9]+\.[0-9]+%/ { if (++rows > top) exit } { print }' "${FULL_REPORT}" > "${REPORT_FILE}"
 
 info "Report: ${REPORT_FILE}"
 
@@ -231,7 +233,8 @@ fi
     echo ""
     echo "Top ${TOP} functions (self CPU):"
     # grep's status, not head's: the fallback ran only when the pipeline failed, which head never did.
-    TOP_ROWS="$(grep -E "^[[:space:]]+[0-9]+\.[0-9]+%" "${REPORT_FILE}" | grep -v "\[k\]" | head -n "${TOP}" || true)"
+    # From the whole report: the kernel rows left out here would otherwise leave fewer than TOP (#4208).
+    TOP_ROWS="$(grep -E "^[[:space:]]+[0-9]+\.[0-9]+%" "${FULL_REPORT}" | grep -v "\[k\]" | head -n "${TOP}" || true)"
     if [[ -n "${TOP_ROWS}" ]]; then
         echo "${TOP_ROWS}"
     else

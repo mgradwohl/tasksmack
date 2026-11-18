@@ -1441,6 +1441,12 @@ So:
   than four, as `bench.ps1` does. `--core any` leaves placement to the scheduler. Without those
   sysfs files, or without `taskset` (util-linux), the run isn't pinned and a warning says so. Its manifest records the same `placement` and `system_load`, the
   classes ranked from 0 (the slowest) as Windows numbers its `EfficiencyClass`.
+- **Not in a virtual machine** (#4194). Under WSL2 or another hypervisor (`/proc/cpuinfo`'s flags
+  include `hypervisor`), every vCPU reports the same `cpu_capacity` and no cpufreq, whatever cores
+  the host has. So `bench.sh` can't tell whether the host is hybrid, or where its run lands: it
+  records the classes as unknown (`"hybrid": null`), doesn't pin, and warns. On a hybrid host such
+  a run may land on efficiency cores, so compare Linux runs from bare metal, or treat WSL2 numbers
+  as noisy.
 
 Pinning isn't enough when the machine is busy: in #3112 the same binary pinned to the same core
 was 30-50% slower with a build and clangd running (38-78% system CPU) than at 7-63%. For an A/B
@@ -1862,6 +1868,17 @@ capture, `--include-startup` included, TaskSmack's own stdout and stderr go to
 `perf-data/perf-app-<timestamp>-app.log`. The `profile` preset keeps frame pointers for better stacks;
 pass `--preset release` to profile the shipped build's code generation.
 
+Stacks are unwound by frame pointer when the build keeps them (`-fno-omit-frame-pointer`, as the
+`profile` preset does), and otherwise by DWARF with a 16 KB stack copy per sample (#4210).
+Frame-pointer unwinding copies no stack, so the data file stays small and deep ImGui stacks aren't
+cut short. `--call-graph fp|dwarf|dwarf,<bytes>|lbr` chooses one yourself. Inline frames come from
+the build's debug info when the report is made, whichever is used. The log records the call-graph
+mode and `perf --version`, so two captures can be compared on how they were recorded.
+
+Every app capture also gets its own temp folder, inside that config folder (#4209). TaskSmack's
+debug log is `<temp folder>/tasksmack-debug.log`, emptied when it opens, so a capture no longer
+wipes the debug log of a TaskSmack you have open.
+
 Every app capture, with `profile-perf.sh` and `profile-heap.sh` alike, runs TaskSmack with a fresh,
 empty `TASKSMACK_CONFIG_DIR` that is removed afterwards (#2250). The run starts from default settings,
 never rewrites yours, and is not stopped by the single-instance lock of a TaskSmack you already have
@@ -1982,9 +1999,12 @@ pwsh tools/profile-etw.ps1 app -DurationSeconds 20 -IncludeStartup
 # Dry run of the launch/warm-up/crash checks, with no WPR session and no UAC prompt
 pwsh tools/profile-etw.ps1 app -DurationSeconds 10 -SkipTrace
 
-# Benchmark trace
+# Benchmark trace — defaults to the win-profile build (-g and frame pointers, so samples resolve
+# to functions; win-benchmark has no debug info) and one benchmark, BM_ProcessModel_Refresh,
+# because several benchmarks in one run skew the sampled percentages (a filter that matches more
+# than one warns). -Preset still overrides.
 pwsh tools/profile-etw.ps1 bench
-pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_ProcessModel_Refresh$'
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_SystemModel_Refresh$'
 pwsh tools/profile-etw.ps1 bench -BenchmarkFilter '.*'   # profile the entire benchmark suite
 
 # Use win-profile for symbol-rich follow-up attribution
