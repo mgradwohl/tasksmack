@@ -365,7 +365,7 @@ ProcessDumpView::ProcessDumpView() : ProcessDumpView(&DumpDetail::rememberDumpDi
     {
         // A hand-off session that isn't elevated: no admin-only file or folder can be made (#4188), so the confirm says
         // why rather than that TaskSmack's own folder couldn't be made as administrator.
-        m_NoDefaultFolderText = DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT;
+        setHandoffBlocked(true);
     }
 #endif
     m_DefaultFolder = &DumpDetail::defaultDumpDirectory; // elevated on Windows: TaskSmack's admin-only folder (#4188)
@@ -421,6 +421,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_FolderRefused = other.m_FolderRefused;
         m_FolderAdminOnly = other.m_FolderAdminOnly;
         m_NoDefaultFolderText = other.m_NoDefaultFolderText;
+        m_HandoffBlocked = other.m_HandoffBlocked;
     }
     return *this;
 }
@@ -578,7 +579,7 @@ void ProcessDumpView::applyCheck(DumpDetail::ConfirmCheck check, Platform::IProc
 void ProcessDumpView::rebuildQuestion()
 {
     std::string warning = checkingFolder() ? std::string(DumpDetail::CHECKING_FOLDER_TEXT) : m_SpaceWarning;
-    if (!checkingFolder() && needsFolder())
+    if (!checkingFolder() && (needsFolder() || m_HandoffBlocked))
     {
         if (!warning.empty())
         {
@@ -671,9 +672,11 @@ bool ProcessDumpView::takeFolderChoice(Platform::IProcessActions* actions, bool 
 
 void ProcessDumpView::confirm(Platform::IProcessActions* actions)
 {
-    if (!m_ConfirmPending || choosingFolder() || checkingFolder() || needsFolder() || m_FolderRefused)
+    if (!m_ConfirmPending || choosingFolder() || checkingFolder() || needsFolder() || m_HandoffBlocked || m_FolderRefused)
     {
-        return; // no folder yet (never the less-privileged side's %TEMP%, #4141), or one the dump would refuse (#4164)
+        // no folder yet (never the less-privileged side's %TEMP%, #4141), a hand-off session that can't make the file
+        // (#4242), or a folder the dump would refuse (#4164)
+        return;
     }
     m_ConfirmPending = false;
     m_ShowConfirm = false;
@@ -791,7 +794,8 @@ void ProcessDumpView::render(Platform::IProcessActions* actions, const Platform:
             .tooltip = DumpDetail::CHOOSE_FOLDER_TOOLTIP,
             .busy = choosingFolder() || checkingFolder(),
             .pressed = &choosePressed,
-            .confirmDisabled = needsFolder() || m_FolderRefused, // until a folder is chosen (#4141) that isn't refused (#4164)
+            // until a folder is chosen (#4141) that isn't refused (#4164); never in an unelevated hand-off (#4242)
+            .confirmDisabled = needsFolder() || m_HandoffBlocked || m_FolderRefused,
         };
         // The shared confirm dialog under an ID of its own: the panel's own confirm (Kill, Suspend...)
         // is submitted every frame too, and must never see this one open as its own.
