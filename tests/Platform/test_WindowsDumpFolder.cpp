@@ -20,7 +20,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <sddl.h> // ConvertSidToStringSidW, ConvertStringSidToSidW
+#include <aclapi.h> // GetNamedSecurityInfoW
+#include <sddl.h>   // ConvertSidToStringSidW, ConvertStringSidToSidW
 // clang-format on
 
 #include <cstddef>
@@ -31,6 +32,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <utility>
 #include <vector>
@@ -81,6 +83,13 @@ class ScratchFolder
 constexpr std::string_view OTHER_USER = "S-1-5-21-1000000001-1000000002-1000000003-1001";
 /// TrustedInstaller's service SID.
 constexpr std::string_view TRUSTED_INSTALLER = "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+/// A held folder's dump file security this unelevated test can set (#4188): ADMIN_DUMP_FILE_SECURITY's protected DACL,
+/// with OWNER RIGHTS so the file's owner (this account) can still remove it, and no owner, which only an elevated token may
+/// make Administrators.
+constexpr std::string_view TEST_FILE_SECURITY = "D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;FA;;;OW)";
+/// The default dump folder's security this unelevated test can set (#4188): ADMIN_DUMP_FOLDER_SECURITY's, with
+/// Authenticated Users so the test can work in and remove what it made, and no owner.
+constexpr std::string_view TEST_FOLDER_SECURITY = "D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;OICI;FA;;;AU)";
 
 /// The SID @p text describes (an SDDL alias such as "BU", or S-1-...), LocalFree'd; null when it doesn't parse.
 [[nodiscard]] std::unique_ptr<void, decltype(&::LocalFree)> sidFrom(std::string_view text)
@@ -204,7 +213,13 @@ TEST(WindowsDumpFolderTest, AJunctionSwappedInAfterThePickIsRefused)
     // The dump itself refuses it, before anything is made: this process, through a handle that can only be waited on.
     const UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
     ASSERT_TRUE(waitOnly);
-    const DumpSource held{.captureSnapshot = nullptr, .liveReason = "test", .processMachine = nullptr, .holdFolder = true};
+    const DumpSource held{
+        .captureSnapshot = nullptr,
+        .liveReason = "test",
+        .processMachine = nullptr,
+        .holdFolder = true,
+        .fileSecurity = TEST_FILE_SECURITY,
+    };
     const ProcessDumpResult result =
         writeProcessDump(waitOnly.get(), static_cast<std::int32_t>(GetCurrentProcessId()), picked, std::stop_token{}, held);
     ASSERT_FALSE(result.has_value());
@@ -240,7 +255,13 @@ TEST(WindowsDumpFolderTest, TheFileIsMadeInTheHeldFolderAndACancelLeavesNone)
     const ScratchFolder scratch;
     const UniqueHandle waitOnly(OpenProcess(SYNCHRONIZE, FALSE, GetCurrentProcessId()));
     ASSERT_TRUE(waitOnly);
-    const DumpSource held{.captureSnapshot = nullptr, .liveReason = "test", .processMachine = nullptr, .holdFolder = true};
+    const DumpSource held{
+        .captureSnapshot = nullptr,
+        .liveReason = "test",
+        .processMachine = nullptr,
+        .holdFolder = true,
+        .fileSecurity = TEST_FILE_SECURITY,
+    };
     std::stop_source stop;
     stop.request_stop();
     const ProcessDumpResult result =
@@ -383,5 +404,259 @@ TEST(WindowsDumpFolderTest, TheCheckReadsARealFoldersOwnerAndDacl)
     // the administrators-only folder passes.
     EXPECT_EQ(readersOf("O:BA" + usersReadDacl), DumpFolderAccess::ReadableByUser);
     EXPECT_EQ(readersOf("O:BA" + adminsOnlyDacl), DumpFolderAccess::AdministratorsOnly);
+}
+
+namespace
+{
+/// The string SID of @p sid; empty when it can't be converted.
+[[nodiscard]] std::wstring sidText(PSID sid)
+{
+    LPWSTR text = nullptr;
+    if (sid == nullptr || ConvertSidToStringSidW(sid, &text) == FALSE)
+    {
+        return {};
+    }
+    const std::unique_ptr<wchar_t, decltype(&::LocalFree)> owned(text, &::LocalFree);
+    return {owned.get()};
+}
+
+/// An allow ACE as read back: its SID, flags and mask.
+struct ReadAce
+{
+    std::wstring sid;
+    BYTE flags = 0;
+    ACCESS_MASK mask = 0;
+};
+
+/// @p descriptor's owner, whether its DACL is protected, and its ACEs (allow ACEs only; anything else is recorded with an
+/// empty SID).
+struct ReadSecurity
+{
+    std::wstring owner;
+    bool daclProtected = false;
+    std::vector<ReadAce> aces;
+};
+
+[[nodiscard]] ReadSecurity readSecurity(PSECURITY_DESCRIPTOR descriptor)
+{
+    ReadSecurity read;
+    PSID owner = nullptr;
+    BOOL ownerDefaulted = FALSE;
+    if (GetSecurityDescriptorOwner(descriptor, &owner, &ownerDefaulted) != FALSE)
+    {
+        read.owner = sidText(owner);
+    }
+    SECURITY_DESCRIPTOR_CONTROL control = 0;
+    DWORD revision = 0;
+    if (GetSecurityDescriptorControl(descriptor, &control, &revision) != FALSE)
+    {
+        read.daclProtected = (control & SE_DACL_PROTECTED) != 0;
+    }
+    BOOL present = FALSE;
+    BOOL defaulted = FALSE;
+    PACL dacl = nullptr;
+    if (GetSecurityDescriptorDacl(descriptor, &present, &dacl, &defaulted) == FALSE || present == FALSE || dacl == nullptr)
+    {
+        return read;
+    }
+    for (DWORD index = 0; index < dacl->AceCount; ++index)
+    {
+        void* ace = nullptr;
+        if (GetAce(dacl, index, &ace) == FALSE)
+        {
+            break;
+        }
+        const auto* header = static_cast<const ACE_HEADER*>(ace);
+        ReadAce entry{.sid = {}, .flags = header->AceFlags, .mask = 0};
+        if (header->AceType == ACCESS_ALLOWED_ACE_TYPE)
+        {
+            auto* allowed = static_cast<ACCESS_ALLOWED_ACE*>(ace);
+            entry.sid = sidText(&allowed->SidStart);
+            entry.mask = allowed->Mask;
+        }
+        read.aces.push_back(std::move(entry));
+    }
+    return read;
+}
+
+/// The security of the file or folder at @p path, as Windows has it.
+[[nodiscard]] ReadSecurity readSecurityOf(const std::filesystem::path& path)
+{
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetNamedSecurityInfoW(path.c_str(),
+                              SE_FILE_OBJECT,
+                              OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                              nullptr,
+                              nullptr,
+                              nullptr,
+                              nullptr,
+                              &descriptor) != ERROR_SUCCESS)
+    {
+        return {};
+    }
+    const std::unique_ptr<void, decltype(&::LocalFree)> owned(descriptor, &::LocalFree);
+    return readSecurity(descriptor);
+}
+
+constexpr std::wstring_view ADMINISTRATORS_SID = L"S-1-5-32-544";
+constexpr std::wstring_view SYSTEM_SID = L"S-1-5-18";
+constexpr std::wstring_view AUTHENTICATED_USERS_SID = L"S-1-5-11";
+
+/// makeAdminDumpFolder()'s options for this unelevated test (TEST_FOLDER_SECURITY), trusting a folder there already as
+/// an Administrators-owned one TaskSmack made would be, so a second call takes it over in place.
+[[nodiscard]] AdminDumpFolderOptions testFolderOptions()
+{
+    return {
+        .folderSecurity = std::string(TEST_FOLDER_SECURITY),
+        .ownerTrusted = [](HANDLE /*folder*/) { return std::optional(true); },
+    };
+}
+} // namespace
+
+// #4188: an elevated dump file is admin-only in any folder: owned by Administrators, with a protected DACL for
+// Administrators and SYSTEM only, nothing inherited. The default folder's security is the elevated log's, and it passes
+// the folder check as AdministratorsOnly, so its confirm has no warning.
+TEST(WindowsDumpFolderTest, TheDumpFileAndDefaultFolderAreAdministratorsAndSystemOnly)
+{
+    EXPECT_EQ(ADMIN_DUMP_FILE_SECURITY, "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)");
+    EXPECT_EQ(ADMIN_DUMP_FOLDER_SECURITY, "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)");
+
+    const OwnedSecurityDescriptor file = securityDescriptorFrom(ADMIN_DUMP_FILE_SECURITY);
+    ASSERT_NE(file, nullptr);
+    const ReadSecurity read = readSecurity(file.get());
+    EXPECT_EQ(read.owner, ADMINISTRATORS_SID);
+    EXPECT_TRUE(read.daclProtected) << "nothing inherited from the folder";
+    ASSERT_EQ(read.aces.size(), 2U);
+    EXPECT_EQ(read.aces[0].sid, ADMINISTRATORS_SID);
+    EXPECT_EQ(read.aces[1].sid, SYSTEM_SID);
+    for (const ReadAce& ace : read.aces)
+    {
+        EXPECT_EQ(ace.mask, static_cast<ACCESS_MASK>(FILE_ALL_ACCESS));
+        EXPECT_EQ(ace.flags, 0) << "a file's ACEs: not inherited, nothing to pass on";
+    }
+
+    EXPECT_EQ(readersOf(ADMIN_DUMP_FOLDER_SECURITY), DumpFolderAccess::AdministratorsOnly) << "no warning for the default folder";
+    EXPECT_EQ(readersOf(ADMIN_DUMP_FOLDER_SECURITY, false), DumpFolderAccess::ReadableByUser)
+        << "unless a new file would be owned by the user, which an elevated token's isn't";
+}
+
+// #4188: a held folder's dump file gets the security it is given, not the folder's: read back from a real file made in
+// a folder whose inheritable ACEs would give Users a read.
+TEST(WindowsDumpFolderTest, TheHeldFoldersDumpFileGetsItsOwnProtectedDacl)
+{
+    const ScratchFolder scratch;
+    const std::string me = ownSidText();
+    ASSERT_FALSE(me.empty());
+    const std::filesystem::path folder = scratch.path() / L"users-read";
+    ASSERT_TRUE(makeFolderWith(folder, std::format("O:{0}D:P(A;OICI;FA;;;{0})(A;OICI;FR;;;BU)", me))) << GetLastError();
+
+    // A file made in the held folder with the dump's security, as createDumpFileInHeldFolder() makes it.
+    auto held = openHeldDumpFolder(folder);
+    ASSERT_TRUE(held.has_value()) << held.error();
+    const OwnedSecurityDescriptor security = securityDescriptorFrom(TEST_FILE_SECURITY);
+    ASSERT_NE(security, nullptr);
+    {
+        auto made = openRelative(held->get(),
+                                 L"made.dmp",
+                                 RelativeOpen{
+                                     .access = GENERIC_WRITE | SYNCHRONIZE,
+                                     .share = 0,
+                                     .disposition = FILE_CREATE,
+                                     .kind = EntryKind::File,
+                                     .security = security.get(),
+                                 });
+        ASSERT_TRUE(made.has_value()) << ntStatusText(made.error());
+    }
+    const ReadSecurity read = readSecurityOf(folder / L"made.dmp");
+    EXPECT_TRUE(read.daclProtected);
+    ASSERT_EQ(read.aces.size(), 3U) << "the folder's Users read wasn't inherited";
+    EXPECT_EQ(read.aces[0].sid, ADMINISTRATORS_SID);
+    EXPECT_EQ(read.aces[1].sid, SYSTEM_SID);
+    EXPECT_EQ(read.aces[2].sid, L"S-1-3-4") << "OWNER RIGHTS, so this test can remove it";
+    for (const ReadAce& ace : read.aces)
+    {
+        EXPECT_EQ(ace.flags & INHERITED_ACE, 0);
+        EXPECT_EQ(ace.mask, static_cast<ACCESS_MASK>(FILE_ALL_ACCESS));
+    }
+}
+
+// #4188: the elevated default folder, made in a scratch "ProgramData": TaskSmack\Dumps, each with the given protected
+// DACL, held by its final path; a second call takes it over in place; and a junction planted for it is moved aside
+// rather than followed.
+TEST(WindowsDumpFolderTest, TheDefaultFolderIsMadeUnderProgramDataWithItsOwnSecurity)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path programData = scratch.path() / L"ProgramData";
+    ASSERT_TRUE(std::filesystem::create_directory(programData));
+
+    const auto made = makeAdminDumpFolder(programData, testFolderOptions());
+    ASSERT_TRUE(made.has_value()) << made.error();
+    EXPECT_EQ(*made, programData / L"TaskSmack" / L"Dumps");
+    for (const std::filesystem::path& folder : {programData / L"TaskSmack", *made})
+    {
+        const ReadSecurity read = readSecurityOf(folder);
+        EXPECT_TRUE(read.daclProtected) << folder.string() << ": nothing inherited from ProgramData";
+        ASSERT_EQ(read.aces.size(), 3U) << folder.string();
+        EXPECT_EQ(read.aces[0].sid, ADMINISTRATORS_SID);
+        EXPECT_EQ(read.aces[1].sid, SYSTEM_SID);
+        EXPECT_EQ(read.aces[2].sid, AUTHENTICATED_USERS_SID);
+    }
+    // The dump's own open takes it: a plain folder at its own path. Authenticated Users, which only this test adds, is
+    // flagged; the real security passes (TheDumpFileAndDefaultFolderAreAdministratorsAndSystemOnly).
+    EXPECT_TRUE(openHeldDumpFolder(*made).has_value());
+    EXPECT_EQ(checkDumpFolder(*made).access, DumpFolderAccess::ReadableByUser);
+
+    const auto again = makeAdminDumpFolder(programData, testFolderOptions());
+    ASSERT_TRUE(again.has_value()) << again.error();
+    EXPECT_EQ(*again, *made);
+
+    // A junction where Dumps should be: not a plain folder, so moved aside even though its owner is trusted, and a fresh
+    // folder made; nothing is written where it points.
+    const std::filesystem::path elsewhere = scratch.path() / L"elsewhere";
+    ASSERT_TRUE(std::filesystem::create_directory(elsewhere));
+    std::filesystem::remove(*made);
+    ASSERT_TRUE(std::filesystem::create_directory(*made));
+    const std::optional<std::string> notMade = TestSupport::makeJunction(*made, elsewhere);
+    ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
+    const auto remade = makeAdminDumpFolder(programData, testFolderOptions());
+    ASSERT_TRUE(remade.has_value()) << remade.error();
+    EXPECT_EQ(*remade, *made);
+    EXPECT_TRUE(openHeldDumpFolder(*remade).has_value()) << "a plain folder again, not the junction";
+    EXPECT_TRUE(isEmptyFolder(elsewhere));
+    for (const auto& entry : std::filesystem::directory_iterator(programData / L"TaskSmack"))
+    {
+        if (entry.path().filename().native().starts_with(L"Dumps.untrusted-"))
+        {
+            EXPECT_TRUE(TestSupport::removeJunction(entry.path())) << "the moved-aside junction";
+        }
+    }
+}
+
+TEST(WindowsDumpFolderTest, TheDefaultFolderIsRefusedWithoutAPlainProgramData)
+{
+    const ScratchFolder scratch;
+    EXPECT_FALSE(makeAdminDumpFolder({}, testFolderOptions()).has_value());
+    EXPECT_FALSE(makeAdminDumpFolder(L"relative\\ProgramData", testFolderOptions()).has_value());
+    const auto missing = makeAdminDumpFolder(scratch.path() / L"absent", testFolderOptions());
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_TRUE(missing.error().contains("can't be opened")) << missing.error();
+    AdminDumpFolderOptions badSecurity = testFolderOptions();
+    badSecurity.folderSecurity = "not SDDL";
+    const auto unbuilt = makeAdminDumpFolder(scratch.path(), badSecurity);
+    ASSERT_FALSE(unbuilt.has_value());
+    EXPECT_TRUE(unbuilt.error().contains("security")) << unbuilt.error();
+
+    // A junction for ProgramData itself is refused, not followed.
+    const std::filesystem::path real = scratch.path() / L"real";
+    const std::filesystem::path link = scratch.path() / L"link";
+    ASSERT_TRUE(std::filesystem::create_directory(real));
+    ASSERT_TRUE(std::filesystem::create_directory(link));
+    const std::optional<std::string> notMade = TestSupport::makeJunction(link, real);
+    ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
+    const auto refused = makeAdminDumpFolder(link, testFolderOptions());
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_TRUE(refused.error().contains("isn't a plain folder")) << refused.error();
+    EXPECT_TRUE(isEmptyFolder(real));
+    ASSERT_TRUE(TestSupport::removeJunction(link));
 }
 } // namespace Platform::Windows

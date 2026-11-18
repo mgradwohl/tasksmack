@@ -15,6 +15,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/Windows/WindowsAffinityMath.h"
+#include "Platform/Windows/WindowsDumpFolder.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessActionsMath.h"
@@ -32,6 +33,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
+#include <aclapi.h> // GetNamedSecurityInfoW
+#include <sddl.h>   // ConvertSecurityDescriptorToStringSecurityDescriptorW
 // clang-format on
 
 #include <array>
@@ -2467,6 +2470,30 @@ bool alwaysHold()
 {
     return true;
 }
+
+/// A held folder's dump file security this unelevated test can set (#4188): the admin-only file's protected DACL, with
+/// OWNER RIGHTS so the file's owner (this account) can read and remove it, and no owner, which only an elevated token may
+/// make Administrators.
+constexpr std::string_view TEST_DUMP_FILE_SECURITY = "D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;FA;;;OW)";
+
+/// The SDDL of what @p what (OWNER_SECURITY_INFORMATION, DACL_SECURITY_INFORMATION) of @p path Windows has; empty when it
+/// can't be read.
+[[nodiscard]] std::wstring securityTextOf(const std::filesystem::path& path, SECURITY_INFORMATION what)
+{
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, what, nullptr, nullptr, nullptr, nullptr, &descriptor) != ERROR_SUCCESS)
+    {
+        return {};
+    }
+    const std::unique_ptr<void, decltype(&::LocalFree)> owned(descriptor, &::LocalFree);
+    LPWSTR text = nullptr;
+    if (ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, what, &text, nullptr) == FALSE)
+    {
+        return {};
+    }
+    const std::unique_ptr<wchar_t, decltype(&::LocalFree)> ownedText(text, &::LocalFree);
+    return {ownedText.get()};
+}
 } // namespace
 
 // An elevated session's dump (#4164): the folder is held and the file made relative to it, a full dump as before, and
@@ -2479,11 +2506,14 @@ TEST(WindowsProcessDumpTest, AHeldFolderGetsTheDumpAndItsAccessIsChecked)
     const std::filesystem::path real = std::filesystem::canonical(folder.path()); // as Windows names it: its final path
     WindowsProcessFunctions functions = realWindowsProcessFunctions();
     functions.holdDumpFolder = &alwaysHold;
+    functions.dumpFileSecurity = TEST_DUMP_FILE_SECURITY;
     WindowsProcessActions held(functions);
 
     const ProcessDumpResult result = held.createDump(child.target(), real, std::stop_token{});
     ASSERT_TRUE(result.has_value()) << result.error();
     EXPECT_EQ(result->file.parent_path(), real);
+    // Its own protected DACL (#4188), read back: nothing inherited from %TEMP%, whose ACEs give this account access.
+    EXPECT_EQ(securityTextOf(result->file, DACL_SECURITY_INFORMATION), L"D:P(A;;FA;;;BA)(A;;FA;;;SY)(A;;FA;;;OW)");
     // Marked delete-on-close at its create, and kept once the dump finished: still there after its handle closed.
     ASSERT_TRUE(std::filesystem::exists(result->file));
     EXPECT_EQ(result->sizeBytes, std::filesystem::file_size(result->file));
@@ -2511,6 +2541,32 @@ TEST(WindowsProcessDumpTest, AHeldFolderGetsTheDumpAndItsAccessIsChecked)
     unheld.holdDumpFolder = nullptr;
     WindowsProcessActions byPath(unheld);
     EXPECT_EQ(byPath.dumpFolderAccess(real).access, DumpFolderAccess::NotChecked);
+}
+
+// #4188: with the real security, a held folder's dump is owned by Administrators and only Administrators and SYSTEM may
+// open it, read back from the file; or, where this token can't make Administrators the owner (an unelevated test), it
+// isn't made at all, and nothing is left in the folder. Never a dump with the folder's permissions.
+TEST(WindowsProcessDumpTest, AHeldFoldersDumpIsAdministratorsOnlyOrNotMade)
+{
+    const RunningChild child;
+    ASSERT_TRUE(child.started());
+    const DumpFolder folder;
+    const std::filesystem::path real = std::filesystem::canonical(folder.path());
+    WindowsProcessFunctions functions = realWindowsProcessFunctions();
+    functions.holdDumpFolder = &alwaysHold;
+    ASSERT_EQ(functions.dumpFileSecurity, Windows::ADMIN_DUMP_FILE_SECURITY);
+    WindowsProcessActions held(functions);
+
+    const ProcessDumpResult result = held.createDump(child.target(), real, std::stop_token{});
+    if (result.has_value())
+    {
+        EXPECT_EQ(securityTextOf(result->file, OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION), L"O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)");
+    }
+    else
+    {
+        EXPECT_FALSE(result.error().empty());
+        EXPECT_TRUE(folder.empty()) << "refused before anything was written: " << result.error();
+    }
 }
 TEST(WindowsProcessDumpTest, AnInvalidOrGoneOrReusedPidWritesNothing)
 {

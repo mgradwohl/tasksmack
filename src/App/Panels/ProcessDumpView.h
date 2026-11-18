@@ -92,33 +92,53 @@ inline constexpr std::uint64_t DUMP_SIZE_OVERHEAD_DIVISOR = 4; ///< A quarter mo
 [[nodiscard]] std::string
 lowSpaceWarning(const Platform::DumpSpace& space, const std::filesystem::path& directory, bool canChooseFolder = true);
 
-/// Whether this session has no default dump folder (#4141): on Windows, elevated or restarted with --handoff
+/// Whether this session has no temp-folder default for dumps (#4141): on Windows, elevated or restarted with --handoff
 /// (DllSearchPolicy::system32OnlyForThisProcess(), the rule main.cpp's lessPrivilegedEnvironment() uses, #4104). Its
 /// %TEMP% is then the less-privileged side's: a junction or another TEMP could steer the dump elsewhere, and anything
-/// running as that user could read the memory of a process only an administrator may open. On Linux, any root
-/// session (#4163): its default is then root's own folder instead (Platform::RootDumpFolder, #4181). Read once, then kept.
+/// running as that user could read the memory of a process only an administrator may open. Its default is instead
+/// TaskSmack's own admin-only folder (elevatedDumpDirectory(), #4188). On Linux, any root session (#4163): its default
+/// is then root's own folder instead (Platform::RootDumpFolder, #4181). Read once, then kept.
 [[nodiscard]] bool noDefaultDumpFolder() noexcept;
 
-/// What the confirm says while it has no folder, in a session with no default one (noDefaultDumpFolder()).
-#ifdef __linux__
+/// What the confirm says while it has no folder, in a session with no temp-folder default (noDefaultDumpFolder()):
+/// only when TaskSmack's own folder couldn't be made (#4181, #4188).
+#ifdef _WIN32
+inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
+    "Choose a folder with Save dump to...: as administrator, TaskSmack couldn't make its own dump folder "
+    "(TaskSmack\\Dumps in ProgramData), and your temp folder can be redirected and read by programs running as you. Choose "
+    "one only administrators can open.";
+#else
 inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
     "Choose a folder with Save dump to...: as root, TaskSmack couldn't make its own dump folder (TaskSmack-dumps in "
     "root's home), and your temp folder can be redirected by programs running as you. Choose one only root may change.";
-#else
-inline constexpr std::string_view NO_DEFAULT_FOLDER_TEXT =
-    "Choose a folder with Save dump to...: as administrator, TaskSmack has no default folder, because your temp folder "
-    "can be redirected and read by programs running as you. Choose one only administrators can open.";
 #endif
 
-/// The folder dumps go to by default: the user's temp folder (%TEMP% on Windows), as Task Manager's
-/// do; none where @p noDefault (noDefaultDumpFolder(), #4141), so the user must choose one, except root on Linux, whose
-/// default is its own (Platform::RootDumpFolder::rootDumpFolder(), #4181). Empty when there is
+/// The folder a confirm with nothing remembered uses, for @p noDefault (noDefaultDumpFolder()): defaultDumpDirectory(),
+/// or a test's.
+using DefaultFolderFn = std::function<std::filesystem::path(bool noDefault)>;
+
+/// The user's temp folder (%TEMP% on Windows), as Task Manager's dumps go to; none where @p noDefault. What a view made
+/// for a test uses as its default (ProcessDumpView::setDefaultFolder()), so no test makes the elevated folder.
+[[nodiscard]] std::filesystem::path tempDumpDirectory(bool noDefault);
+
+#ifdef _WIN32
+/// An elevated session's default dump folder (#4188): %ProgramData%\TaskSmack\Dumps, %ProgramData% from its known folder
+/// (DebugLogFile::systemProgramDataFolder()), made or taken over for Administrators and SYSTEM only
+/// (Platform::Windows::makeAdminDumpFolder()). Empty, and logged, when it can't be: the confirm then waits for Save dump
+/// to.... Touches the file system: on the confirm's worker, never the UI thread.
+[[nodiscard]] std::filesystem::path elevatedDumpDirectory();
+#endif
+
+/// The folder dumps go to by default: tempDumpDirectory(); where @p noDefault (noDefaultDumpFolder(), #4141), on Windows
+/// the admin-only elevatedDumpDirectory() (#4188), as root on Linux root's own folder
+/// (Platform::RootDumpFolder::rootDumpFolder(), #4181), elsewhere none, so the user must choose one. Empty when there is
 /// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
 [[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
 
 /// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
-/// folder, else defaultDumpDirectory(@p noDefault). Asks the file system: on the confirm's worker, never the UI thread.
-[[nodiscard]] std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault);
+/// folder, else @p defaultFolder(@p noDefault). Asks the file system: on the confirm's worker, never the UI thread.
+[[nodiscard]] std::filesystem::path
+dumpDirectory(std::string_view remembered, bool noDefault, const DefaultFolderFn& defaultFolder = &defaultDumpDirectory);
 /// The dump folder to use from @p stored (UserSettings::dumpFolder): in a session whose config folder an elevated
 /// restart was handed (@p handedOver, #2728) only @p chosenThisSession, the one this session's user picked with
 /// Save dump to..., as the stored one is the less-privileged side's and an elevated dump there is a write to a
@@ -156,15 +176,19 @@ void sdlFolderDialog(const std::filesystem::path& initial, std::function<void(Pl
 /// "Writing a dump file of notepad.exe (PID 1234)... 12 s", while it runs.
 [[nodiscard]] std::string progressText(std::string_view processName, std::int32_t pid, std::chrono::seconds elapsed);
 
-/// What the confirm says when programs running as the signed-in user could read a dump in its folder (#4164): an
-/// elevated session's folder, read by IProcessActions::dumpFolderAccess(). A warning, not a refusal: the administrator
-/// chose the folder, and may keep it or choose another with Save dump to....
+/// What the confirm says when programs running as the signed-in user could open its folder (#4164): an elevated
+/// session's folder, read by IProcessActions::dumpFolderAccess(). The dump file itself is admin-only wherever it is made
+/// (#4188), so this is about the folder: its listing, its other files, and what syncs it. A hint, not a refusal: the
+/// administrator chose the folder, and may keep it or choose another with Save dump to.... TaskSmack's own default
+/// folder passes the check, so it never shows there.
 inline constexpr std::string_view FOLDER_READABLE_TEXT =
-    "Programs running as you can read files in this folder. Choose one only administrators can open.";
-/// What the confirm says when who can read its folder couldn't be told (#4164).
+    "The dump file itself is for administrators only, but programs running as you can open this folder: they can see "
+    "what is in it and read its other files, and a synced folder such as OneDrive may try to upload the dump. Choose one "
+    "only administrators can open.";
+/// What the confirm says when who can open its folder couldn't be told (#4164).
 inline constexpr std::string_view FOLDER_ACCESS_UNKNOWN_TEXT =
-    "TaskSmack couldn't tell who can open files made in this folder, so programs running as you may be able to read the "
-    "dump. Choose one only administrators can open.";
+    "The dump file itself is for administrators only, but TaskSmack couldn't tell who can open this folder, so programs "
+    "running as you may be able to see what is in it and read its other files. Choose one only administrators can open.";
 
 /// The confirm's warning for @p check (#4164): FOLDER_READABLE_TEXT, FOLDER_ACCESS_UNKNOWN_TEXT, or why the dump would
 /// refuse the folder; empty when only administrators can read a new file there, or when it wasn't checked.
@@ -244,6 +268,15 @@ class ProcessDumpView
     void setNoDefaultFolder(bool noDefault) noexcept
     {
         m_NoDefaultFolder = noDefault;
+    }
+
+    /// The folder a confirm with nothing remembered uses (DumpDetail::DefaultFolderFn). The default constructor's is
+    /// DumpDetail::defaultDumpDirectory(), which elevated on Windows makes TaskSmack's admin-only folder (#4188); the
+    /// FolderChosenHandler one's is DumpDetail::tempDumpDirectory(), so a test never makes it. Tests set it here to stand
+    /// in for that folder.
+    void setDefaultFolder(DumpDetail::DefaultFolderFn defaultFolder)
+    {
+        m_DefaultFolder = std::move(defaultFolder);
     }
 
     /// Whether the confirm has no folder to write to and must wait for "Save dump to..." (#4141): it has none, and
@@ -447,6 +480,8 @@ class ProcessDumpView
     BackgroundTask<Platform::FolderChoice> m_FolderPick{Platform::FOLDER_DIALOG_THREAD_NAME,
                                                         &DumpDetail::failedWith<Platform::FolderChoice>};
     FolderDialog m_FolderDialog; // used where the platform has no folder dialog; empty: none
+    // The folder a confirm with nothing remembered uses (setDefaultFolder(), #4188).
+    DumpDetail::DefaultFolderFn m_DefaultFolder = &DumpDetail::tempDumpDirectory;
 
     /// The running dump; a new stop token per dump.
     BackgroundTask<Platform::ProcessDumpResult> m_Worker{Platform::DUMP_THREAD_NAME, &DumpDetail::failedWith<Platform::ProcessDumpResult>};
@@ -465,7 +500,7 @@ class ProcessDumpView
     bool m_CheckWanted = false;       // a folder check was asked for and not started yet
     bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
-    bool m_NoDefaultFolder = false;   // no default folder: the user must choose one (setNoDefaultFolder(), #4141)
+    bool m_NoDefaultFolder = false;   // no temp-folder default (setNoDefaultFolder(), #4141)
     bool m_FolderRefused = false;     // the confirm's folder is one the dump would refuse (folderRefused(), #4164)
 };
 

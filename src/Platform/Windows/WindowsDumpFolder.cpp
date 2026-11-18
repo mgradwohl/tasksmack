@@ -304,6 +304,48 @@ DumpFolderCheck checkDumpFolder(const std::filesystem::path& folder)
     }
     return {.access = heldFolderReaders(held->get(), *defaultOwnerTrusted), .problem = {}};
 }
+
+std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std::filesystem::path& programData,
+                                                                      const AdminDumpFolderOptions& options)
+{
+    const std::string shownRoot = WinString::wideToUtf8(programData.native());
+    if (programData.empty() || !programData.is_absolute())
+    {
+        return std::unexpected(std::string("the ProgramData folder isn't known"));
+    }
+    const OwnedSecurityDescriptor descriptor = securityDescriptorFrom(options.folderSecurity);
+    if (descriptor == nullptr)
+    {
+        return std::unexpected(std::string("the dump folder's security can't be built"));
+    }
+    // %ProgramData% by its path, once: a system folder SYSTEM owns, the trust root, as the elevated log opens it (#4105).
+    const auto root = openFolderByPath(programData);
+    if (!root.has_value())
+    {
+        return std::unexpected(std::format("{} can't be opened: {}", shownRoot, root.error()));
+    }
+    if (isPlainFolder(root->get()) != std::optional(true))
+    {
+        return std::unexpected(std::format("{} isn't a plain folder", shownRoot));
+    }
+    const std::filesystem::path taskSmackPath = programData / L"TaskSmack";
+    auto taskSmack =
+        secureChildFolder(root->get(), L"TaskSmack", descriptor.get(), WinString::wideToUtf8(taskSmackPath.native()), options.ownerTrusted);
+    if (!taskSmack.has_value())
+    {
+        return std::unexpected(std::move(taskSmack.error()));
+    }
+    const std::filesystem::path dumpsPath = taskSmackPath / L"Dumps";
+    auto dumps =
+        secureChildFolder(taskSmack->get(), L"Dumps", descriptor.get(), WinString::wideToUtf8(dumpsPath.native()), options.ownerTrusted);
+    if (!dumps.has_value())
+    {
+        return std::unexpected(std::move(dumps.error()));
+    }
+    // As Windows names it, so the dump's own open of it (openHeldDumpFolder()) finds the same path.
+    const std::optional<std::wstring> final = finalPathOf(dumps->get());
+    return final.has_value() ? std::filesystem::path(withoutUncPrefix(*final)) : dumpsPath;
+}
 // NOLINTEND(misc-include-cleaner)
 
 } // namespace Platform::Windows

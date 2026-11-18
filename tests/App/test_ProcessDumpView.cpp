@@ -32,6 +32,7 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <thread>
 #include <utility>
@@ -95,22 +96,24 @@ TEST(ProcessDumpViewTest, TheDefaultFolderIsTheTempFolder)
     EXPECT_EQ(DumpDetail::dumpDirectory("", false), std::filesystem::temp_directory_path());
 }
 
-// #4141: elevated, %TEMP% is the less-privileged side's (redirectable, and readable unelevated): no default folder.
+// #4141: elevated, %TEMP% is the less-privileged side's (redirectable, and readable unelevated): never the default.
+// tempDumpDirectory() stands in for the default here, so no test makes the elevated folder (#4188).
 TEST(ProcessDumpViewTest, ASessionWithNoDefaultFolderHasNone)
 {
+    EXPECT_EQ(DumpDetail::tempDumpDirectory(false), std::filesystem::temp_directory_path());
+    EXPECT_EQ(DumpDetail::tempDumpDirectory(true), std::filesystem::path{});
 #ifdef __linux__
     // Run as root, the default is root's own folder (#4181), not none: only a non-root view forced to no default has none.
-    const std::filesystem::path none = ::geteuid() == 0 ? Platform::RootDumpFolder::rootDumpFolder() : std::filesystem::path{};
-#else
-    const std::filesystem::path none{};
+    EXPECT_EQ(DumpDetail::defaultDumpDirectory(true),
+              ::geteuid() == 0 ? Platform::RootDumpFolder::rootDumpFolder() : std::filesystem::path{});
 #endif
-    EXPECT_EQ(DumpDetail::defaultDumpDirectory(true), none);
-    EXPECT_EQ(DumpDetail::dumpDirectory("", true), none) << "nothing remembered: none";
+    const DumpDetail::DefaultFolderFn none = &DumpDetail::tempDumpDirectory;
+    EXPECT_EQ(DumpDetail::dumpDirectory("", true, none), std::filesystem::path{}) << "nothing remembered: none";
     const std::filesystem::path temp = std::filesystem::temp_directory_path();
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp / "tasksmack-no-such-dump-folder-4141"), true), none)
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp / "tasksmack-no-such-dump-folder-4141"), true, none), std::filesystem::path{})
         << "gone: none, not the temp folder";
     // A folder that exists is still used: one chosen with Save dump to... in this session (trustedDumpFolder()).
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp), true), temp);
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp), true, none), temp);
 #ifndef _WIN32
 #ifdef __linux__
     EXPECT_EQ(DumpDetail::noDefaultDumpFolder(), ::geteuid() == 0) << "on Linux, any root process (#4163)";
@@ -592,6 +595,85 @@ TEST(ProcessDumpViewTest, NoFolderIsNoFolderAccessCheck)
 [[nodiscard]] std::filesystem::path otherFolder()
 {
     return std::filesystem::path("elsewhere") / "dumps";
+}
+
+// #4188: elevated, the default is TaskSmack's own admin-only folder (here a stand-in): the confirm names it, can be
+// confirmed at once, and, as it passes the folder check, shows no warning. A folder the admin then picks is checked
+// and warned about as before.
+TEST(ProcessDumpViewTest, TheElevatedDefaultFolderIsUsedWithNoWarningAndAPickedOneStillWarns)
+{
+    const std::filesystem::path own = std::filesystem::path("ProgramData") / "TaskSmack" / "Dumps";
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::AdministratorsOnly, .problem = {}});
+    mock.setFolderChoice(std::optional<std::filesystem::path>(otherFolder()));
+    std::atomic<int> asked{0};               // how often the default folder was asked for, on the confirm's worker
+    std::atomic<bool> askedNoDefault{false}; // the noDefault it was last given
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.setDefaultFolder(
+        // NOLINTNEXTLINE(bugprone-exception-escape) - only the path's copy can throw; a throw there is a test failure
+        [&asked, &askedNoDefault, &own](bool noDefault)
+        {
+            askedNoDefault = noDefault;
+            ++asked;
+            return std::filesystem::path(own); // a copy: the view keeps calling it
+        });
+    view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(asked.load(), 1) << "asked once, on the worker, for the elevated default";
+    EXPECT_TRUE(askedNoDefault.load());
+    EXPECT_EQ(view.directory(), own);
+    EXPECT_FALSE(view.needsFolder()) << "no Save dump to... needed (#4162's wait is only the fallback)";
+    EXPECT_EQ(mock.dumpFolderAccessCount(), 1);
+    EXPECT_EQ(mock.lastFolderAccessDirectory(), own);
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::FOLDER_READABLE_TEXT)) << view.confirmQuestion();
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::FOLDER_ACCESS_UNKNOWN_TEXT)) << view.confirmQuestion();
+    EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    EXPECT_TRUE(view.confirmQuestion().contains(own.string())) << view.confirmQuestion();
+
+    // The admin picks a folder programs running as them can open: it is checked, and the hint shows.
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::ReadableByUser, .problem = {}});
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(view.directory(), otherFolder());
+    EXPECT_EQ(mock.lastFolderAccessDirectory(), otherFolder());
+    EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::FOLDER_READABLE_TEXT)) << view.confirmQuestion();
+    EXPECT_EQ(asked.load(), 1) << "a chosen folder isn't resolved again";
+
+    mock.setDumpResult(
+        Platform::ProcessDump{.file = otherFolder() / "lsass.dmp", .sizeBytes = 1, .note = {}, .fromSnapshot = true, .liveReason = {}});
+    view.confirm(&mock);
+    ASSERT_TRUE(view.takeFinished(true));
+    EXPECT_EQ(mock.lastDumpDirectory(), otherFolder()) << "a hint, not a refusal";
+}
+
+// #4188: when the elevated default can't be made, the confirm falls back to #4162's: it waits for Save dump to...
+TEST(ProcessDumpViewTest, WhenTheElevatedDefaultCantBeMadeTheConfirmWaitsForAFolder)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.setDefaultFolder([](bool /*noDefault*/) { return std::filesystem::path{}; });
+    view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_TRUE(view.needsFolder());
+    EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    view.confirm(&mock);
+    EXPECT_EQ(mock.createDumpCount(), 0);
+}
+
+// The warnings say the dump file itself is admin-only, and that the hint is about the folder (#4188).
+TEST(ProcessDumpViewTest, TheFolderHintSaysTheFileItselfIsAdministratorsOnly)
+{
+    for (const std::string_view text : {DumpDetail::FOLDER_READABLE_TEXT, DumpDetail::FOLDER_ACCESS_UNKNOWN_TEXT})
+    {
+        EXPECT_TRUE(text.contains("The dump file itself is for administrators only")) << text;
+        EXPECT_TRUE(text.contains("this folder")) << text;
+    }
+    EXPECT_TRUE(DumpDetail::FOLDER_READABLE_TEXT.contains("OneDrive"));
 }
 
 TEST(ProcessDumpViewTest, AChosenFolderBecomesTheConfirmsAndIsRemembered)

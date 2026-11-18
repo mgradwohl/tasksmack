@@ -21,7 +21,9 @@
 #include "UI/Widgets.h"
 
 #ifdef _WIN32
+#include "App/DebugLogFile.h"
 #include "Platform/Windows/DllSearchPolicy.h"
+#include "Platform/Windows/WindowsDumpFolder.h"
 #elif defined(__linux__)
 #include "Platform/Linux/RootDumpFolder.h"
 
@@ -103,25 +105,54 @@ bool noDefaultDumpFolder() noexcept
 #endif
 }
 
-std::filesystem::path defaultDumpDirectory(bool noDefault)
+std::filesystem::path tempDumpDirectory(bool noDefault)
 {
     if (noDefault)
     {
-#ifdef __linux__
-        // Root's own folder, made 0700 in root's home (#4181); never the user's TMPDIR (#4163).
-        if (::geteuid() == 0)
-        {
-            return Platform::RootDumpFolder::rootDumpFolder();
-        }
-#endif
-        return {}; // the less-privileged side's %TEMP% (#4141): the user chooses a folder instead
+        return {}; // the less-privileged side's %TEMP% (#4141) or TMPDIR (#4163): never a dump's default
     }
     std::error_code error;
     const std::filesystem::path directory = std::filesystem::temp_directory_path(error);
     return error ? std::filesystem::path{} : directory;
 }
 
-std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault)
+#ifdef _WIN32
+std::filesystem::path elevatedDumpDirectory()
+{
+    const std::optional<std::filesystem::path> programData = DebugLogFile::systemProgramDataFolder();
+    if (!programData.has_value())
+    {
+        spdlog::warn("No default dump folder: the ProgramData folder isn't known; Save dump to... chooses one (#4188)");
+        return {};
+    }
+    auto made = Platform::Windows::makeAdminDumpFolder(*programData);
+    if (!made.has_value())
+    {
+        spdlog::warn("No default dump folder: {}; Save dump to... chooses one (#4188)", made.error());
+        return {};
+    }
+    return std::move(*made);
+}
+#endif
+
+std::filesystem::path defaultDumpDirectory(bool noDefault)
+{
+    if (noDefault)
+    {
+#ifdef _WIN32
+        return elevatedDumpDirectory(); // admin-only, never the less-privileged side's %TEMP% (#4141, #4188)
+#elif defined(__linux__)
+        // Root's own folder, made 0700 in root's home (#4181); never the user's TMPDIR (#4163).
+        if (::geteuid() == 0)
+        {
+            return Platform::RootDumpFolder::rootDumpFolder();
+        }
+#endif
+    }
+    return tempDumpDirectory(noDefault);
+}
+
+std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault, const DefaultFolderFn& defaultFolder)
 {
     if (!remembered.empty())
     {
@@ -132,7 +163,7 @@ std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault)
             return directory;
         }
     }
-    return defaultDumpDirectory(noDefault);
+    return defaultFolder ? defaultFolder(noDefault) : std::filesystem::path{};
 }
 
 namespace
@@ -152,7 +183,10 @@ std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::str
 
 namespace
 {
-#ifdef __linux__
+#ifdef _WIN32
+constexpr const char* NO_DEFAULT_LOG_TEXT = "using TaskSmack's own admin-only folder (TaskSmack\\Dumps in ProgramData) when it "
+                                            "can be made, unless Save dump to... chooses another (#4188)";
+#elif defined(__linux__)
 constexpr const char* NO_DEFAULT_LOG_TEXT =
     "using root's own folder (TaskSmack-dumps in root's home) when it can be made, unless Save dump to... chooses another (#4181)";
 #else
@@ -326,6 +360,7 @@ ProcessDumpView::ProcessDumpView() : ProcessDumpView(&DumpDetail::rememberDumpDi
 {
     m_FolderDialog = &DumpDetail::sdlFolderDialog;
     m_NoDefaultFolder = DumpDetail::noDefaultDumpFolder(); // elevated on Windows: no %TEMP% default (#4141)
+    m_DefaultFolder = &DumpDetail::defaultDumpDirectory;   // elevated on Windows: TaskSmack's admin-only folder (#4188)
 }
 
 bool ProcessDumpView::canChooseFolder(Platform::IProcessActions* actions) const
@@ -367,6 +402,7 @@ ProcessDumpView& ProcessDumpView::operator=(ProcessDumpView&& other) noexcept
         m_RunningCheckGeneration = other.m_RunningCheckGeneration;
         m_FolderPick = std::move(other.m_FolderPick);
         m_FolderDialog = std::move(other.m_FolderDialog);
+        m_DefaultFolder = std::move(other.m_DefaultFolder);
         m_Worker = std::move(other.m_Worker);
         m_StartedAt = other.m_StartedAt;
         m_CancelRequested = other.m_CancelRequested;
@@ -462,10 +498,11 @@ void ProcessDumpView::startCheckIfDue()
              directory = m_Directory,
              resolve = m_CheckResolve,
              remembered = m_CheckRemembered,
-             noDefault = m_NoDefaultFolder] -> DumpDetail::ConfirmCheck
+             noDefault = m_NoDefaultFolder,
+             defaultFolder = m_DefaultFolder] -> DumpDetail::ConfirmCheck
             {
                 DumpDetail::ConfirmFacts facts{
-                    .directory = resolve ? DumpDetail::dumpDirectory(remembered, noDefault) : directory,
+                    .directory = resolve ? DumpDetail::dumpDirectory(remembered, noDefault, defaultFolder) : directory,
                     .space = {},
                     .folder = {},
                 };
@@ -534,7 +571,7 @@ void ProcessDumpView::rebuildQuestion()
         {
             warning += "\n\n";
         }
-        warning += DumpDetail::NO_DEFAULT_FOLDER_TEXT; // no %TEMP% default as administrator (#4141)
+        warning += DumpDetail::NO_DEFAULT_FOLDER_TEXT; // no %TEMP% default as administrator (#4141), nor our own (#4188)
     }
     if (!m_FolderFailure.empty())
     {

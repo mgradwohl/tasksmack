@@ -540,6 +540,7 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
 #else
         .holdDumpFolder = &Windows::DllSearchPolicy::system32OnlyForThisProcess, // elevated or hand-off (#4164)
 #endif
+        .dumpFileSecurity = Windows::ADMIN_DUMP_FILE_SECURITY, // admin-only, in any folder (#4188)
         .isProcessCritical = &IsProcessCritical,
         .getProcessInformation = &GetProcessInformation,
         .ntSuspendProcess = Windows::ntSuspendProcess(),
@@ -1235,6 +1236,7 @@ WindowsProcessActions::createDump(const ProcessTarget& target, const std::filesy
         .liveReason = {},
         .processMachine = nullptr,
         .holdFolder = m_HoldDumpFolder,
+        .fileSecurity = m_Fns.dumpFileSecurity,
     };
     VerifiedProcess process;
     bool snapshotOpenRefused = false;

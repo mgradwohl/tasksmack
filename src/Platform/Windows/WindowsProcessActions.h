@@ -4,6 +4,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
 #include "WindowsAffinityMath.h"
+#include "WindowsDumpFolder.h" // ADMIN_DUMP_FILE_SECURITY (#4188)
 #include "WindowsFileLocation.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcessDump.h"
@@ -27,6 +28,7 @@
 #include <optional>
 #include <stop_token>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace Platform
@@ -61,6 +63,9 @@ struct WindowsProcessFunctions
     /// elevated or hand-off session. Read once, at construction. Null: never, as in a test's table and TaskSmackHelper.exe,
     /// which writes no dumps.
     bool (*holdDumpFolder)() = nullptr;
+    /// The security (SDDL) a held folder's dump file is made with (#4188; Windows::DumpSource::fileSecurity): admin-only,
+    /// Windows::ADMIN_DUMP_FILE_SECURITY. A test's leaves out the owner, which only an elevated token may set.
+    std::string_view dumpFileSecurity = Windows::ADMIN_DUMP_FILE_SECURITY;
     /// IsProcessCritical(), asked of the verified handle before Kill, Terminate, Suspend, a priority change or an
     /// affinity change (#2556). Null, or a failed call, refuses the action: a critical process is never
     /// acted on for want of an answer.

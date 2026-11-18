@@ -25,7 +25,17 @@
 // read. Deny, audit and alarm ACEs are ignored (so it may warn where a deny would stop the read); an object ACE that
 // grants an inheritable read or control is flagged whatever its SID, and any other allow ACE type is Unknown. Who can read the folder's
 // existing files isn't looked at. A warning, never a refusal: the administrator chose the folder.
+//
+// The dump file itself is admin-only wherever it is made (#4188): it is created with ADMIN_DUMP_FILE_SECURITY, its own
+// protected DACL for Administrators and SYSTEM, owned by Administrators, as Windows protects its own privileged dumps
+// (MEMORY.DMP, LiveKernelReports). Nothing is inherited from the folder, so the warning above is about the folder: its
+// listing, the other files in it, and what syncs it (OneDrive uploads a dump saved there).
+//
+// The elevated default folder is %ProgramData%\TaskSmack\Dumps (makeAdminDumpFolder(), #4188), made and checked as the
+// elevated log's %ProgramData%\TaskSmack\Logs is (#4105): each folder with secureChildFolder() and
+// ADMIN_DUMP_FOLDER_SECURITY, so it passes the check above as AdministratorsOnly.
 
+#include "HandleRelativeFile.h"
 #include "Platform/IProcessActions.h"
 #include "WindowsHandles.h"
 
@@ -43,9 +53,39 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 
 namespace Platform::Windows
 {
+
+/// The security an elevated session's dump file is made with, in any folder (#4188; SDDL): owned by Administrators, with
+/// a protected DACL (nothing inherited from the folder) that gives Administrators and SYSTEM full control and no one else
+/// any access.
+inline constexpr std::string_view ADMIN_DUMP_FILE_SECURITY = "O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)";
+
+/// The security the elevated default dump folder, and %ProgramData%\TaskSmack above it, are made with (#4188; SDDL): as
+/// the elevated log's folders (App::DebugLogFile::ADMIN_SECURITY), owned by Administrators, a protected DACL for
+/// Administrators and SYSTEM, inherited by what is made there.
+inline constexpr std::string_view ADMIN_DUMP_FOLDER_SECURITY = "O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)";
+
+/// How makeAdminDumpFolder() makes the folder: the real security, or a test's.
+struct AdminDumpFolderOptions
+{
+    /// The folders' security (SDDL). A test's leaves out the owner, which only an elevated token may set to
+    /// Administrators, and adds an account of its own, so it can work in and remove the folders it made.
+    std::string folderSecurity = std::string(ADMIN_DUMP_FOLDER_SECURITY);
+    /// Whether a folder there already may be taken over in place (secureChildFolder()); unset: owned by Administrators
+    /// or SYSTEM.
+    OwnerTrustedFn ownerTrusted{}; // NOLINT(readability-redundant-member-init) - designated initializers leave it out
+};
+
+/// An elevated session's default dump folder (#4188), under @p programData (%ProgramData%, from its known folder):
+/// TaskSmack\Dumps. @p programData is opened by its path once, as a plain folder; TaskSmack and Dumps are each made or
+/// taken over relative to the one above with secureChildFolder() and @p options' security, as the elevated log's folders
+/// are (#4105). The folder as Windows names it (its final path, so openHeldDumpFolder() takes it), or why it couldn't be
+/// made.
+[[nodiscard]] std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std::filesystem::path& programData,
+                                                                                    const AdminDumpFolderOptions& options = {});
 
 // NOLINTBEGIN(misc-include-cleaner) - Win32 types come from windows.h sub-headers
 
