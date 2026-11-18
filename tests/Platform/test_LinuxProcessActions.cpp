@@ -60,6 +60,7 @@
 #include <signal.h> // NOLINT(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
 #include <stdlib.h> // NOLINT(modernize-deprecated-headers) - POSIX setenv()/unsetenv()
 #include <sys/poll.h>
+#include <sys/prctl.h>
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -3035,12 +3036,74 @@ TEST(LinuxProcessActionsTest, OpenFileLocationSaysWhyTheExecutableCantBeRead)
     EXPECT_FALSE(result.success);
     EXPECT_NE(result.errorMessage.find("kernel thread"), std::string::npos) << result.errorMessage;
 
+    // ownTarget() is this user's own process: refused, it is a protected one of theirs, not another user's (#4271).
     linkError() = EACCES;
     result = actions.openFileLocation(ownTarget());
     EXPECT_FALSE(result.success);
     EXPECT_FALSE(result.permissionDenied); // nothing the helper could do better
-    EXPECT_NE(result.errorMessage.find("another user"), std::string::npos) << result.errorMessage;
+    EXPECT_NE(result.errorMessage.find("protected from inspection"), std::string::npos) << result.errorMessage;
+    EXPECT_EQ(result.errorMessage.find("another user"), std::string::npos) << result.errorMessage;
     EXPECT_TRUE(showItems().uris.empty());
+}
+
+namespace
+{
+std::optional<uid_t> anotherUsersRealUid(std::int32_t /*pid*/)
+{
+    return ::geteuid() + 1;
+}
+} // namespace
+
+// #4271: a refused link of another user's process says whose it is.
+TEST(LinuxProcessActionsTest, OpenFileLocationOfAnotherUsersProcessSaysWhoseItIs)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_open_another");
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.executableLink = &failingExecutableLink;
+    syscalls.processRealUid = &anotherUsersRealUid;
+    LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+    linkError() = EACCES;
+    const auto result = actions.openFileLocation(ownTarget());
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Its executable can't be read: it belongs to another user");
+}
+
+// #4271: this user's own process that isn't dumpable (as ssh-agent and gpg-agent make themselves) has its
+// /proc/<pid>/exe refused by ptrace_may_access, and the hash says it is protected, not another user's.
+TEST(LinuxProcessActionsTest, ImageSha256OfOwnProtectedProcessSaysItIsProtected)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root (CAP_SYS_PTRACE) reads a non-dumpable process's image";
+    }
+    std::array<int, 2> ready{-1, -1};
+    ASSERT_EQ(::pipe(ready.data()), 0);
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::close(ready[0]);
+        ::prctl(PR_SET_DUMPABLE, 0, 0, 0, 0); // NOLINT(cppcoreguidelines-pro-type-vararg) - prctl is variadic
+        const char byte = 1;
+        static_cast<void>(::write(ready[1], &byte, 1));
+        ::pause();
+        ::_exit(0);
+    }
+    ::close(ready[1]);
+    char byte = 0;
+    static_cast<void>(::read(ready[0], &byte, 1));
+    ::close(ready[0]);
+    const std::optional<ProcessTarget> target = targetOf(child);
+    LinuxProcessActions actions;
+    const auto refused = target.has_value() ? actions.imageSha256(*target, std::stop_token{})
+                                            : std::expected<std::string, std::string>(std::unexpected(std::string{}));
+    ::kill(child, SIGKILL);
+    ::waitpid(child, nullptr, 0);
+    ASSERT_TRUE(target.has_value());
+    ASSERT_FALSE(refused.has_value()) << "a non-dumpable process's image was readable";
+    EXPECT_EQ(refused.error(),
+              "Its executable can't be read: this process of yours is protected from inspection (TaskSmack "
+              "(Administrator) can read it)");
 }
 
 TEST(LinuxProcessActionsTest, OpenFileLocationRefusesAnInvalidOrUnconfirmedTarget)
