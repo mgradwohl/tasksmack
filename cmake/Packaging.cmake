@@ -73,7 +73,9 @@ if(WIN32)
     set(CPACK_NSIS_ENABLE_UNINSTALL_BEFORE_INSTALL OFF)
     # The Uninstall key's name, which those install lines read the old version's UninstallString from.
     set(CPACK_PACKAGE_INSTALL_REGISTRY_KEY "${PROJECT_NAME}")
-    set(CPACK_NSIS_MODIFY_PATH ON)
+    # No "Add to PATH" page (#4300): a GUI app needn't be on PATH, and NSIS's 1024-character strings truncate a long
+    # PATH. CPACK_NSIS_MODIFY_PATH is left unset (OFF), so the template writes no PATH entry; its uninstaller still
+    # removes one an older installer added (see tests/tools/test_nsis_unicode.py).
     set(CPACK_NSIS_MUI_ICON "${CMAKE_SOURCE_DIR}/assets/icons/tasksmack.ico")
     # Per machine, in Program Files, by an administrator (#2550): the template's RequestExecutionLevel
     # admin, and the 64-bit Program Files named here rather than left to CPack's default. Only an install
