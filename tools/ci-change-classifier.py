@@ -26,6 +26,12 @@ Outputs, the contract every caller reads (ci.yml's build jobs; #3103 adds docs_s
   docs_site        Some changed path is an input of the docs site's browser smoke test (DOCS_SITE: the
                    site itself, the test, its lockfile). docs-hygiene runs the Playwright test only when
                    it's true (#3103); its link audit runs every time.
+  dev_tools_only   Every changed path is documentation, an automation file or a local developer tool
+                   (DEV_TOOLS: the perf, profiling and idle-measurement scripts and their tests, #4248), at
+                   least one is a developer tool, and none is in FULL_VALIDATION. The C++ jobs skip as for
+                   docs_only, and ci.yml's dev-tools-checks jobs run the tool tests that read those files
+                   (DEV_TOOL_TESTS) instead, with the automation tests. Never true together with
+                   docs_only or automation_only.
 
 Each output has a safe value: the one that runs every job its flag can skip (false for each *_only
 flag, true for docs_site). Every output takes its safe value when the change is empty, when git fails, or when any
@@ -33,13 +39,13 @@ changed path is in FULL_VALIDATION or matches no set. A path no set names is a b
 someone shows otherwise. The first three outputs keep the paths-filter globs ci.yml used before
 this script (#2130); codeql.yml's docs-only skip still uses the same DOCS set.
 
-Why each AUTOMATION file can't change what the skipped jobs check. Those jobs build and test the
+Why each AUTOMATION and DEV_TOOLS file can't change what the skipped jobs check. Those jobs build and test the
 C++ tree and run ctest: they read src/, tests/, benchmarks/, assets/, cmake/, the CMake files,
 presets and dependency declarations, the build and tidy scripts under tools/, ci.yml, the reusable
 workflow and the local actions under .github/actions, none of which is in AUTOMATION. The only part
-of them that reads an AUTOMATION file is ctest's tool tests (tests/tools); automation-checks runs
-those, and test_ci_change_classifier.py fails when a tests/tools script names an AUTOMATION file
-without automation-checks running it. The reasons, file by file, are in AUTOMATION below. To add a
+of them that reads an AUTOMATION or DEV_TOOLS file is ctest's tool tests (tests/tools, tools/test-*.ps1);
+automation-checks and the dev-tools-checks jobs run those, and test_ci_change_classifier.py fails when a
+tool test names such a file without the matching job running it. The reasons, file by file, are in AUTOMATION below. To add a
 file, show the same for it (nothing in the skipped jobs reads it, or automation-checks runs what
 does) and add a case to tests/tools/test_ci_change_classifier.py.
 
@@ -142,11 +148,89 @@ AUTOMATION = {
     ".github/actionlint.yaml": "actionlint's configuration, read only by the pre-commit actionlint hook.",
 }
 
+# Local developer tools (#4248): the performance, profiling and idle-measurement scripts a developer runs by
+# hand. No workflow runs them, no build or C++ test reads them, and no build or CI script calls them; only
+# their own tool tests do, and the dev-tools-checks jobs run those (DEV_TOOL_TESTS). Exact paths, as for
+# AUTOMATION. Never here: anything a workflow, the build, a pre-commit or CI checker, coverage, release,
+# signing or packaging reads, and the scripts Heavy Checks runs (bench.sh, bench-manifest.py,
+# bench-across-launches.py, check-benchmark-regression.py, merge-benchmark-baselines.py, wayland-matrix.sh,
+# ninja-build-profile.py) or that these share with them (common.sh, common.ps1, cmake-cache.ps1).
+_LOCAL = "a local developer script; no workflow, build or C++ test runs it, only its own tool test"
+DEV_TOOLS = {
+    # Linux
+    "tools/profile-perf.sh": f"{_LOCAL} (test_profile_perf_sh.py).",
+    "tools/profile-heap.sh": f"{_LOCAL} (test_profile_heap_sh.py).",
+    "tools/analyze-perf.sh": f"{_LOCAL} (test_analyze_perf_sh.py).",
+    "tools/time-trace.sh": f"{_LOCAL}; CMakeLists.txt names it only in a message().",
+    "tools/pgo.sh": f"{_LOCAL} (test_pgo_sh.py); CMakeLists.txt names it only in a comment.",
+    "tools/measure-idle.sh": f"{_LOCAL}; its readers are idle-sample.py and resize-perf-summary.awk.",
+    "tools/idle-sample.py": f"{_LOCAL} (test_idle_sample.py), measure-idle.sh's sampler.",
+    "tools/resize-perf-summary.awk": f"{_LOCAL} (test_resize_perf_summary_awk.py), measure-idle.sh's reader.",
+    "tools/ui-compare.sh": f"{_LOCAL}; it builds two refs in scratch worktrees, never in CI.",
+    "tools/ui-compare-report.py": f"{_LOCAL} (test_ui_compare_report.py), ui-compare.sh's report.",
+    # Windows
+    "tools/bench.ps1": f"{_LOCAL} (test-bench.ps1, test-bench-across-launches.ps1); CI benchmarks run bench.sh.",
+    "tools/profile-etw.ps1": f"{_LOCAL} (test-profile-etw.ps1).",
+    "tools/profile-etw-common.ps1": f"{_LOCAL}, shared by the ETW capture scripts (test-profile-etw*.ps1).",
+    "tools/profile-etw-resize.ps1": f"{_LOCAL} (test-profile-etw-resize.ps1).",
+    "tools/analyze-etw.ps1": f"{_LOCAL} (test-analyze-etw.ps1).",
+    "tools/analyze-etw-common.ps1": f"{_LOCAL}, shared by the ETW analysis (test-analyze-etw.ps1).",
+    "tools/TaskSmackCPU.wprp": "the ETW CPU recording profile, read only by profile-etw.ps1.",
+    "tools/TaskSmackResize.wprp": "the ETW resize recording profile, read only by profile-etw-resize.ps1.",
+    "tools/pgo.ps1": f"{_LOCAL}; CMakeLists.txt names it only in a comment.",
+    "tools/measure-idle.ps1": f"{_LOCAL} (test-measure-idle.ps1).",
+    "tools/idle-sample.ps1": f"{_LOCAL} (test-measure-idle.ps1), measure-idle.ps1's sampler.",
+    "tools/resize-perf-summary.ps1": f"{_LOCAL} (test-resize-perf-summary.ps1), measure-idle.ps1's reader.",
+    "perf-data/win-baseline.json": "bench.ps1's local baseline; no workflow reads it (CI's is linux-ci-baseline.json).",
+    "perf-data/win-baseline.manifest.json": "win-baseline.json's manifest, read only by a local comparison.",
+    # Their tests: what each runs is in DEV_TOOL_TESTS.
+    "tests/tools/test_profile_heap_sh.py": "profile-heap.sh's tool test, run by ctest and by dev-tools-checks.",
+    "tests/tools/test_analyze_perf_sh.py": "analyze-perf.sh's tool test, run by ctest and by dev-tools-checks.",
+    "tests/tools/test_idle_sample.py": "idle-sample.py's tool test, run by ctest and by dev-tools-checks.",
+    "tests/tools/test_resize_perf_summary_awk.py": "resize-perf-summary.awk's tool test, run by ctest and by dev-tools-checks.",
+    "tests/tools/test_ui_compare_report.py": "ui-compare-report.py's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-bench.ps1": "bench.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-profile-etw.ps1": "profile-etw.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-profile-etw-resize.ps1": "profile-etw-resize.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-analyze-etw.ps1": "analyze-etw.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-measure-idle.ps1": "measure-idle.ps1's and idle-sample.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-resize-perf-summary.ps1": "resize-perf-summary.ps1's tool test, run by ctest and by dev-tools-checks.",
+}
+
+# The tool tests the dev-tools-checks jobs run, by runner, in ctest's registrations' way (tests/CMakeLists.txt):
+# the Python ones with TASKSMACK_TEST_BASH, the pwsh ones one at a time with TASKSMACK_TEST_PYTHON. Every
+# tool test that names a DEV_TOOLS file is here (test_ci_change_classifier.py checks), with the automation
+# tests, which a change that is both still needs.
+DEV_TOOL_TESTS = {
+    "linux": (
+        "tests/tools/test_ci_change_classifier.py",
+        "tests/tools/test_workflow_run_steps.py",
+        "tests/tools/test_check_cache_prune_triggers.py",
+        "tests/tools/test_profile_heap_sh.py",
+        "tests/tools/test_analyze_perf_sh.py",
+        "tests/tools/test_idle_sample.py",
+        "tests/tools/test_resize_perf_summary_awk.py",
+        "tests/tools/test_ui_compare_report.py",
+    ),
+    "windows": (
+        "tools/test-bench.ps1",
+        "tools/test-bench-across-launches.ps1",
+        "tools/test-profile-etw.ps1",
+        "tools/test-profile-etw-resize.ps1",
+        "tools/test-analyze-etw.ps1",
+        "tools/test-measure-idle.ps1",
+        "tools/test-resize-perf-summary.ps1",
+        # cmake-cache.ps1's test: it dot-sources profile-etw-common.ps1, so it reads a developer tool.
+        "tools/test-cmake-cache.ps1",
+    ),
+}
+
 # Always the safe values, whatever else the change holds: this classifier and its tests, the
 # workflow that calls it, the reusable build workflow and the local actions the C++ jobs use. None
 # is in DOCS or AUTOMATION; this list keeps it so if either is ever widened with a glob.
 FULL_VALIDATION = (
     "tools/ci-change-classifier.py",
+    "tools/run-dev-tool-tests.py",
     "tests/tools/test_ci_change_classifier.py",
     "tests/tools/workflow_steps.py",
     ".github/workflows/ci.yml",
@@ -165,10 +249,20 @@ def is_automation(path: str) -> bool:
     return path in AUTOMATION
 
 
+def is_dev_tools(path: str) -> bool:
+    return path in DEV_TOOLS
+
+
 def _automation_only(paths: Sequence[str]) -> bool:
     if all(is_docs(path) for path in paths):
         return False  # docs_only's case
     return all(is_docs(path) or is_automation(path) for path in paths)
+
+
+def _dev_tools_only(paths: Sequence[str]) -> bool:
+    if not any(is_dev_tools(path) for path in paths):
+        return False  # docs_only's or automation_only's case, or neither
+    return all(is_docs(path) or is_automation(path) or is_dev_tools(path) for path in paths)
 
 
 @dataclass(frozen=True)
@@ -184,6 +278,7 @@ OUTPUTS = (
     Output("windows_only", False, lambda paths: all(is_windows_platform(path) for path in paths)),
     Output("automation_only", False, _automation_only),
     Output("docs_site", True, lambda paths: any(is_docs_site(path) for path in paths)),
+    Output("dev_tools_only", False, _dev_tools_only),
 )
 
 
@@ -205,6 +300,8 @@ def category(path: str) -> str:
         return "docs"
     if is_automation(path):
         return "automation"
+    if is_dev_tools(path):
+        return "dev-tools"
     if is_linux_platform(path):
         return "linux-platform"
     if is_windows_platform(path):

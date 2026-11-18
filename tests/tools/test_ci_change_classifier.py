@@ -63,6 +63,7 @@ BUILD_INPUT = expect()
 LINUX_ONLY = expect(linux_only=True)
 WINDOWS_ONLY = expect(windows_only=True)
 AUTOMATION_ONLY = expect(automation_only=True)
+DEV_TOOLS_ONLY = expect(dev_tools_only=True)
 
 # (what the case covers, changed paths, expected outputs)
 CASES = [
@@ -142,6 +143,21 @@ CASES = [
     ("labeler and its workflow", [".github/labeler.yml", ".github/workflows/pr-labeler.yml"], AUTOMATION_ONLY),
     ("automation and docs", [".github/workflows/renovate.yml", "README.md"], AUTOMATION_ONLY),
     ("automation and a template", [".github/dependabot.yml", ".github/ISSUE_TEMPLATE/feature_request.md"], AUTOMATION_ONLY),
+    # developer-tools-only (#4248; each allowlisted file alone is generated below)
+    ("a profiling script and its test", ["tools/profile-heap.sh", "tests/tools/test_profile_heap_sh.py"], DEV_TOOLS_ONLY),
+    ("Linux and Windows perf scripts and docs", ["tools/profile-perf.sh", "tools/profile-etw.ps1", "CONTRIBUTING.md"],
+     DEV_TOOLS_ONLY),
+    ("a developer tool and an automation file", ["tools/bench.ps1", ".github/dependabot.yml"], DEV_TOOLS_ONLY),
+    ("the Windows local baseline", ["perf-data/win-baseline.json", "perf-data/win-baseline.manifest.json"], DEV_TOOLS_ONLY),
+    ("a developer tool and a source", ["tools/profile-perf.sh", "src/main.cpp"], SAFE),
+    ("a developer tool and its test's ctest entry", ["tools/pgo.sh", "tests/CMakeLists.txt"], SAFE),
+    ("bench.sh, which Heavy Checks runs, not bench.ps1", ["tools/bench.sh"], SAFE),
+    ("bench.ps1 and bench.sh", ["tools/bench.ps1", "tools/bench.sh"], SAFE),
+    ("the shared common.sh", ["tools/profile-perf.sh", "tools/common.sh"], SAFE),
+    ("the shared common.ps1", ["tools/profile-etw.ps1", "tools/common.ps1"], SAFE),
+    ("CI's own baseline", ["perf-data/linux-ci-baseline.json"], SAFE),
+    ("the dev tool test runner", ["tools/run-dev-tool-tests.py"], SAFE),
+    ("a near-miss name", ["tools/profile-perf.sh.orig"], SAFE),
     # mixed with build inputs
     ("Renovate workflow and a source", [".github/workflows/renovate.yml", "src/main.cpp"], SAFE),
     ("Dependabot config and ci.yml", [".github/dependabot.yml", ".github/workflows/ci.yml"], SAFE),
@@ -204,10 +220,16 @@ class ClassificationTable(unittest.TestCase):
             with self.subTest(path):
                 self.assertEqual(classifier.classify([path]), AUTOMATION_ONLY)
 
+    def test_each_dev_tools_file_alone(self) -> None:
+        for path in classifier.DEV_TOOLS:
+            with self.subTest(path):
+                self.assertEqual(classifier.classify([path]), DEV_TOOLS_ONLY)
+
     def test_command_line_prints_every_output_in_order(self) -> None:
         code, out, err = run_classifier("--paths", ".github/workflows/renovate.yml")
         self.assertEqual(code, 0)
-        self.assertEqual(out, "docs_only=false\nlinux_only=false\nwindows_only=false\nautomation_only=true\ndocs_site=false\n")
+        self.assertEqual(out, "docs_only=false\nlinux_only=false\nwindows_only=false\nautomation_only=true\n"
+                              "docs_site=false\ndev_tools_only=false\n")
         self.assertIn("automation", err)
         self.assertIn(".github/workflows/renovate.yml", err)
 
@@ -215,6 +237,13 @@ class ClassificationTable(unittest.TestCase):
         for _, paths, _ in CASES:
             values = classifier.classify(paths)
             self.assertFalse(values["docs_only"] and values["automation_only"], paths)
+
+    def test_dev_tools_only_is_never_with_another_skip(self) -> None:
+        for _, paths, _ in CASES:
+            values = classifier.classify(paths)
+            if values["dev_tools_only"]:
+                self.assertFalse(values["docs_only"] or values["automation_only"] or values["linux_only"]
+                                 or values["windows_only"], paths)
 
     def test_safe_values_run_everything(self) -> None:
         self.assertEqual(classifier.safe_values(), SAFE)
@@ -454,6 +483,155 @@ class AllowlistReview(unittest.TestCase):
                 self.assertEqual(classifier.classify([literal]), SAFE)
 
 
+def code_lines(source: Path) -> list[tuple[int, str]]:
+    """`source`'s lines outside its prose: a Python file's triple-quoted strings (docstrings) and a PowerShell
+    file's <# ... #> comment blocks, which name other scripts to say what is kept in step with what."""
+    lines = []
+    in_prose = False
+    for number, line in enumerate(source.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+        if source.suffix == ".py":
+            quotes = line.count('"""') + line.count("'''")
+            if in_prose or quotes:
+                if quotes % 2:
+                    in_prose = not in_prose
+                continue
+        elif source.suffix == ".ps1":
+            if in_prose or line.lstrip().startswith("<#"):
+                in_prose = "#>" not in line
+                continue
+        lines.append((number, line))
+    return lines
+
+
+def cxx_job_inputs() -> list[Path]:
+    """The files the C++ jobs read and run: the CMake files and presets, the reusable build workflow, the local
+    actions, and the tools/ scripts any of those names outside a comment, with the ones those name in turn."""
+    roots = [REPO / "CMakeLists.txt", REPO / "CMakePresets.json", REPO / ".github/workflows/reusable-build-test.yml"]
+    for pattern in ("src/**/CMakeLists.txt", "tests/**/CMakeLists.txt", "benchmarks/**/CMakeLists.txt",
+                    "cmake/**/*.cmake", ".github/actions/**/*"):
+        roots.extend(path for path in REPO.glob(pattern) if path.is_file())
+    found = set(roots)
+    frontier = list(roots)
+    for _depth in range(2):
+        named = set()
+        for source in frontier:
+            for _number, line in code_lines(source):
+                code = line.strip()
+                if code.startswith(("#", "//", "<#")):
+                    continue
+                for match in re.finditer(r"tools/[\w.-]+\.(?:sh|ps1|py|awk)\b", code):
+                    path = REPO / match.group(0)
+                    if path.is_file() and path not in found:
+                        named.add(path)
+        found |= named
+        frontier = sorted(named)
+    return sorted(found)
+
+
+def tool_tests() -> list[Path]:
+    """Every tool test ctest can run: tests/tools' Python tests and tools/test-*.ps1."""
+    return sorted([*(REPO / "tests" / "tools").glob("test_*.py"), *(REPO / "tools").glob("test-*.ps1")])
+
+
+def dev_tool_test_list() -> list[str]:
+    return [test for tests in classifier.DEV_TOOL_TESTS.values() for test in tests]
+
+
+# Tool tests that name a developer tool but never read the repository's copy of it, with the reason.
+DEV_TOOLS_NAMED_WITHOUT_READING = {
+    "tests/tools/test_bench_across_launches.py": "names bench.ps1 -Baseline in a comment, as the behaviour it mirrors",
+    "tests/tools/test_bench_sh.py": "names bench.ps1 in its docstring and skip reasons; it runs bench.sh",
+    "tests/tools/test_check_benchmark_regression.py": "writes \"tools/bench.ps1\" as a fixture manifest's generator",
+}
+# C++ job inputs that name a developer tool without running it, with the reason.
+CXX_INPUTS_NAMING_WITHOUT_RUNNING = {
+    "tools/check-benchmark-regression.py": "names bench.ps1's -Core option in its --help text",
+}
+
+
+class DevToolsReview(unittest.TestCase):
+    """#4248: the DEV_TOOLS allowlist's rules, as AllowlistReview's for AUTOMATION."""
+
+    def test_every_entry_exists_and_has_a_reason(self) -> None:
+        for path, reason in classifier.DEV_TOOLS.items():
+            with self.subTest(path):
+                self.assertTrue((REPO / path).is_file(), f"{path} is allowlisted but missing; update DEV_TOOLS")
+                self.assertGreater(len(reason.split()), 3)
+
+    def test_entries_are_exact_paths_in_no_other_set(self) -> None:
+        for path in classifier.DEV_TOOLS:
+            with self.subTest(path):
+                self.assertNotRegex(path, r"[*?\[]")
+                self.assertNotIn(path, classifier.AUTOMATION)
+                self.assertEqual(classifier.category(path), "dev-tools")
+
+    def test_no_workflow_names_a_dev_tool(self) -> None:
+        # A workflow that ran one would make it a CI input: it belongs off the list, or in that workflow's filter.
+        patterns = {path: reference(path) for path in classifier.DEV_TOOLS}
+        for workflow in sorted([*(REPO / ".github").rglob("*.yml"), *(REPO / ".github").rglob("*.yaml")]):
+            for number, line in enumerate(workflow.read_text(encoding="utf-8", errors="replace").splitlines(), 1):
+                code = line.strip()
+                if code.startswith("#"):
+                    continue
+                code = re.split(r"\s#\s", code, maxsplit=1)[0]
+                for path, pattern in patterns.items():
+                    with self.subTest(f"{workflow.relative_to(REPO).as_posix()}:{number}"):
+                        self.assertIsNone(pattern.search(code), f"names {path}: {line.strip()}")
+
+    def test_no_cpp_job_input_names_a_dev_tool(self) -> None:
+        # What the skipped C++ jobs run: the CMake files and presets, the reusable workflow, the local actions,
+        # and every tools/ script those name, one level down. A developer tool named there would be a C++ job's
+        # input. (Other local scripts, newcomer-check.ps1 among them, may run a developer tool: no CI job
+        # runs them. The tool tests are the next test's subject.)
+        patterns = {path: reference(path) for path in classifier.DEV_TOOLS}
+        for source in cxx_job_inputs():
+            if (source in {REPO / path for path in classifier.DEV_TOOLS} or source in set(tool_tests())
+                    or source.relative_to(REPO).as_posix() in CXX_INPUTS_NAMING_WITHOUT_RUNNING):
+                continue
+            for number, line in code_lines(source):
+                code = line.strip()
+                # A comment, a CMake message() or a preset's "description" names a script for a reader only.
+                if (code.startswith(("#", "//", "<#")) or (source.suffix == ".txt" and "message(" in code)
+                        or (source.name == "CMakePresets.json" and code.startswith('"description"'))):
+                    continue
+                code = re.split(r"\s#\s", code, maxsplit=1)[0]
+                for path, pattern in patterns.items():
+                    # tests/CMakeLists.txt registers the listed tests for ctest: that is how the full matrix runs them.
+                    if source.name == "CMakeLists.txt" and source.parent.name == "tests" and path in dev_tool_test_list():
+                        continue
+                    with self.subTest(f"{source.relative_to(REPO).as_posix()}:{number}"):
+                        self.assertIsNone(pattern.search(code), f"names {path}: {line.strip()}")
+
+    def test_tool_tests_that_name_a_dev_tool_run_in_dev_tools_checks(self) -> None:
+        listed = dev_tool_test_list()
+        patterns = [reference(path) for path in classifier.DEV_TOOLS if not path.startswith(("tests/", "tools/test-"))]
+        for test in tool_tests():
+            relative = test.relative_to(REPO).as_posix()
+            text = test.read_text(encoding="utf-8", errors="replace")
+            if not any(pattern.search(text) for pattern in patterns):
+                continue
+            with self.subTest(relative):
+                self.assertTrue(
+                    relative in listed or relative in DEV_TOOLS_NAMED_WITHOUT_READING,
+                    f"{relative} names a developer tool: add it to the classifier's DEV_TOOL_TESTS",
+                )
+
+    def test_every_listed_test_exists_is_registered_and_runs_on_its_runner(self) -> None:
+        registrations = (REPO / "tests" / "CMakeLists.txt").read_text(encoding="utf-8")
+        for runner, tests in classifier.DEV_TOOL_TESTS.items():
+            for test in tests:
+                with self.subTest(test):
+                    self.assertTrue((REPO / test).is_file(), test)
+                    # Registered for ctest, so the full matrix runs it too; the name as tests/CMakeLists.txt writes it.
+                    self.assertIn(test.removeprefix("tests/"), registrations)
+                    self.assertEqual(runner, "windows" if test.endswith(".ps1") else "linux")
+
+    def test_the_automation_tests_run_in_dev_tools_checks_too(self) -> None:
+        # A change that is both automation and developer tools gets dev_tools_only, not automation_only.
+        for test in automation_check_scripts():
+            self.assertIn(test, classifier.DEV_TOOL_TESTS["linux"])
+
+
 class WorkflowContract(unittest.TestCase):
     """ci.yml reads the classifier's outputs under the same names, with the same safe values."""
 
@@ -477,6 +655,14 @@ class WorkflowContract(unittest.TestCase):
 
     def test_automation_checks_runs_this_test(self) -> None:
         self.assertIn("tests/tools/test_ci_change_classifier.py", automation_check_scripts())
+
+    def test_dev_tools_checks_run_the_runner_for_their_platform(self) -> None:
+        for job, step, runner in (
+            ("dev-tools-checks", "Run the developer tool tests (Linux)", "linux"),
+            ("dev-tools-checks-windows", "Run the developer tool tests (Windows)", "windows"),
+        ):
+            with self.subTest(job):
+                self.assertIn(f"tools/run-dev-tool-tests.py {runner}", find_step(CI, step, job=job).run)
 
 
 def posix(path: Path) -> str:
@@ -679,6 +865,9 @@ FULL_PR = {
     "AUTOMATION_ONLY": "false",
     "DOCS_SITE": "false",
     "AUTOMATION_RESULT": "skipped",
+    "DEV_TOOLS_ONLY": "false",
+    "DEV_TOOLS_RESULT": "skipped",
+    "DEV_TOOLS_WINDOWS_RESULT": "skipped",
     "EVENT_NAME": "pull_request",
     "SCHEDULE": "",
     "REF": "refs/pull/1/merge",
@@ -705,6 +894,8 @@ SKIPPED_CPP = {
 }
 AUTOMATION_PR = {**FULL_PR, **SKIPPED_CPP, "AUTOMATION_ONLY": "true", "AUTOMATION_RESULT": "success"}
 DOCS_PR = {**FULL_PR, **SKIPPED_CPP, "DOCS_ONLY": "true", "DOCS_SITE": "true"}
+DEV_TOOLS_PR = {**FULL_PR, **SKIPPED_CPP, "DEV_TOOLS_ONLY": "true", "DEV_TOOLS_RESULT": "success",
+                "DEV_TOOLS_WINDOWS_RESULT": "success"}
 PUSH_MAIN = {
     **FULL_PR,
     "EVENT_NAME": "push",
@@ -744,6 +935,19 @@ GATE_CASES = [
     ("docs_site missing", {**FULL_PR, "DOCS_SITE": ""}, False),
     ("docs_site not boolean", {**DOCS_PR, "DOCS_SITE": "yes"}, False),
     ("the docs site test skipped on a push (#3103)", {**PUSH_MAIN, "DOCS_SITE": "false"}, False),
+    # #4248
+    ("developer-tools-only pull request", DEV_TOOLS_PR, True),
+    ("developer-tools-only, Linux checks failed", {**DEV_TOOLS_PR, "DEV_TOOLS_RESULT": "failure"}, False),
+    ("developer-tools-only, Windows checks failed", {**DEV_TOOLS_PR, "DEV_TOOLS_WINDOWS_RESULT": "failure"}, False),
+    ("developer-tools-only, Windows checks skipped", {**DEV_TOOLS_PR, "DEV_TOOLS_WINDOWS_RESULT": "skipped"}, False),
+    ("developer-tools-only, Linux checks cancelled", {**DEV_TOOLS_PR, "DEV_TOOLS_RESULT": "cancelled"}, False),
+    ("developer-tools-only, a build ran and failed", {**DEV_TOOLS_PR, "LINUX_RESULT": "failure"}, False),
+    ("developer tool checks failed on a full pull request", {**FULL_PR, "DEV_TOOLS_RESULT": "failure"}, False),
+    ("developer-tools-only for a push", {**PUSH_MAIN, **SKIPPED_CPP, "DEV_TOOLS_ONLY": "true"}, False),
+    ("both dev_tools_only and automation_only", {**DEV_TOOLS_PR, "AUTOMATION_ONLY": "true",
+                                                  "AUTOMATION_RESULT": "success"}, False),
+    ("both dev_tools_only and docs_only", {**DEV_TOOLS_PR, "DOCS_ONLY": "true"}, False),
+    ("dev_tools_only missing", {**DEV_TOOLS_PR, "DEV_TOOLS_ONLY": ""}, False),
 ]
 
 
