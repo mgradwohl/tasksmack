@@ -3,7 +3,7 @@
 tools/check-benchmark-regression.py — Compare benchmark results against a baseline.
 
 Usage:
-    python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
+    python3 tools/check-benchmark-regression.py --baseline <a run of main>.json \
         --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90] \
         [--min-abs-delta-ns 1.0] [--threshold-overrides perf-data/linux-ci-thresholds.json] \
         [--regressions-out regressions.json]
