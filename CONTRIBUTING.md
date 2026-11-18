@@ -2974,6 +2974,12 @@ Packages are created in `dist/`. The NSIS run also copies the uninstaller it bui
 CPack's `project.nsi` in `dist/_CPack_Packages/<system>/NSIS/` (`cmake/CPackProjectConfig.cmake.in`), so a
 release can sign it; see [Windows code signing](#windows-code-signing).
 
+The installer is a Unicode (UTF-8/UTF-16) NSIS target: `CPACK_NSIS_DEFINES` starts with `Unicode true`, so makensis
+raises no warning 7998 (ANSI target) and non-ASCII paths and registry values aren't narrowed to the code page (#4300).
+It has no "Add to PATH" option: a GUI app doesn't need to be on `PATH`, and the old option rewrote a `PATH` entry
+outside the ANSI code page with `?`. The uninstaller CPack generates still removes a `PATH` entry an older
+installer added, so an upgraded or removed install leaves none behind.
+
 What a package contains, and what it depends on (#1398):
 
 - Only the executable, the runtime assets, the Linux desktop entries, icons and the Administrator launcher's
