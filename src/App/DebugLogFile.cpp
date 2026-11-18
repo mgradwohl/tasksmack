@@ -1,12 +1,17 @@
 #include "App/DebugLogFile.h"
 
 #include "Core/LogFileSink.h"
+#ifdef __linux__
+#include "Platform/Linux/SessionUser.h"
+#endif
 
 #include <spdlog/common.h>
 
+#include <cstdint>
 #include <exception>
 #include <expected>
 #include <filesystem>
+#include <format>
 #include <optional>
 #include <string>
 #include <utility>
@@ -40,7 +45,6 @@
 
 #include <cerrno>
 #include <cstddef>
-#include <format>
 #include <memory>
 #include <mutex>
 #include <system_error>
@@ -285,8 +289,9 @@ class FdFileSink final : public spdlog::sinks::base_sink<std::mutex>
     {
         return std::unexpected(std::format("{}/{} can't be made private: {}", parent.string(), FOLDER, errnoText(errno)));
     }
-    const std::string fileName(FILE_NAME);
-    // Any old log goes, a link or a planted file included; the new one is made fresh, so none is reused.
+    const std::string fileName = rootLogName(functions.invokingUid());
+    // Any old log of this user's sessions goes, a link or a planted file included; the new one is made fresh, so none is
+    // reused. Another user's root session's log has its own name and is left alone (#4261).
     if (::unlinkat(folderFd.get(), fileName.c_str(), 0) != 0 && errno != ENOENT)
     {
         return std::unexpected(std::format("the old {} can't be removed: {}", fileName, errnoText(errno)));
@@ -298,13 +303,29 @@ class FdFileSink final : public spdlog::sinks::base_sink<std::mutex>
         return std::unexpected(std::format("{} can't be made fresh: {}", fileName, errnoText(errno)));
     }
     return Opened{
-        .path = parent / FOLDER / FILE_NAME,
+        .path = parent / FOLDER / fileName,
         .sink = std::make_shared<FdFileSink>(std::move(file)),
     };
 }
 #endif
 
 } // namespace
+
+std::string rootLogName(std::optional<std::uint32_t> invokingUid)
+{
+    return invokingUid.has_value() ? std::format("tasksmack-debug-{}.log", *invokingUid) : std::string("tasksmack-debug-root.log");
+}
+
+std::optional<std::uint32_t> systemInvokingUid()
+{
+#ifdef __linux__
+    if (const auto& invoking = Platform::SessionUser::processInvokingUser(); invoking.has_value())
+    {
+        return static_cast<std::uint32_t>(invoking->uid);
+    }
+#endif
+    return std::nullopt;
+}
 
 std::filesystem::path systemTempFolder()
 {

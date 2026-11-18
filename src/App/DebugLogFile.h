@@ -43,6 +43,7 @@
 
 #include <spdlog/common.h>
 
+#include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <functional>
@@ -55,6 +56,15 @@ namespace App::DebugLogFile
 
 /// The log's file name.
 inline constexpr std::string_view FILE_NAME = "tasksmack-debug.log";
+
+/// A Linux root session's log name in /run/tasksmack, one per user it was started for (#4261): two root sessions for
+/// different users (multi-seat, X forwarding) each take their own instance lock, so with one name the second removed
+/// the first one's live log. "tasksmack-debug-<uid>.log" for @p invokingUid, "tasksmack-debug-root.log" for none.
+[[nodiscard]] std::string rootLogName(std::optional<std::uint32_t> invokingUid);
+
+/// The user a Linux root session was started for (SessionUser::processInvokingUser()), or nullopt: root's own, and
+/// every other platform.
+[[nodiscard]] std::optional<std::uint32_t> systemInvokingUid();
 
 /// The security an elevated session's log folders and file get (SDDL): owned by Administrators, with a protected DACL
 /// (nothing inherited from %ProgramData%, where Users may create) that gives Administrators and SYSTEM full control,
@@ -93,6 +103,8 @@ struct Functions
     std::function<std::filesystem::path()> tempFolder = &systemTempFolder;
     /// Linux, less privileged (#4150): the folder the log's own folder, tasksmack, is made in.
     std::filesystem::path linuxLogParent = std::filesystem::path(LINUX_LOG_PARENT);
+    /// Linux, less privileged: whose session this is, for the log's name (rootLogName(), #4261).
+    std::function<std::optional<std::uint32_t>()> invokingUid = &systemInvokingUid;
     std::function<std::optional<std::filesystem::path>()> programDataFolder = &systemProgramDataFolder;
     /// The security the elevated log's folders and file are made with (SDDL). A test's may leave out the owner, which
     /// only an elevated token may set to Administrators, and add its own account, which only a test needs.
