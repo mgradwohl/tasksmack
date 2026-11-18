@@ -5,6 +5,12 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Hosted CI runners are virtual machines, which bench.ps1 reads as "hybrid unknown" (#4237). The
+# placement cases below expect what the cores say, so the run's VM check is mocked as "not a VM"
+# here (bench.ps1 reads TASKSMACK_BENCH_VM); the VM cases call Select-BenchCore and
+# Test-BenchVirtualMachine directly with a VM's values.
+$env:TASKSMACK_BENCH_VM = '0'
+
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
@@ -1259,6 +1265,10 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     Assert-True (-not (Test-BenchVirtualMachine (New-ComputerSystem 'Dell Inc.' 'XPS 14 (Dell 14 Premium) DA14250' $true))) 'A physical host with a hypervisor root partition is not a guest'
     Assert-True (-not (Test-BenchVirtualMachine (New-ComputerSystem 'Microsoft Corporation' 'Virtual Machine' $false))) 'No hypervisor means not a guest'
     Assert-True (-not (Test-BenchVirtualMachine $null)) 'An unreadable computer system is not a guest'
+    Assert-True (-not (Test-BenchHostIsVirtualMachine)) 'TASKSMACK_BENCH_VM=0 must say not a VM'
+    $env:TASKSMACK_BENCH_VM = '1'
+    try { Assert-True (Test-BenchHostIsVirtualMachine) 'TASKSMACK_BENCH_VM=1 must say a VM' }
+    finally { $env:TASKSMACK_BENCH_VM = '0' }
     Assert-True ((Format-AffinityMask ([uint64]1 -shl 63)) -ceq '0x8000000000000000' -and $null -eq (Format-AffinityMask $null)) 'Format-AffinityMask'
     Assert-True ((ConvertFrom-AffinityPointer (ConvertTo-AffinityPointer ([uint64]1 -shl 63))) -eq ([uint64]1 -shl 63) -or [IntPtr]::Size -eq 4) 'An affinity mask with bit 63 survives the IntPtr round trip'
 

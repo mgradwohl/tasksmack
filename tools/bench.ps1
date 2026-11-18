@@ -796,6 +796,13 @@ function Get-BenchComputerSystem {
     }
 }
 
+function Test-BenchHostIsVirtualMachine {
+    # Whether this machine is a virtual machine. TASKSMACK_BENCH_VM (1 or 0) overrides the check, for
+    # the tests, like bench.sh's TASKSMACK_BENCH_CPUINFO.
+    if ($env:TASKSMACK_BENCH_VM -match '^[01]$') { return $env:TASKSMACK_BENCH_VM -eq '1' }
+    return [bool](Test-BenchVirtualMachine (Get-BenchComputerSystem))
+}
+
 function Select-BenchCore {
     # Where the run goes (#3163), from the physical cores (ConvertFrom-ProcessorCoreBuffer's
     # shape, or $null when they could not be read), the -Core choice ('' when not given) and the
@@ -1195,7 +1202,7 @@ Write-Host "Binary: $benchBin"
 $loadSampleMs = $script:LoadSampleMilliseconds
 if ($env:TASKSMACK_BENCH_LOAD_SAMPLE_MS -match '^[0-9]+$') { $loadSampleMs = [int]$env:TASKSMACK_BENCH_LOAD_SAMPLE_MS }
 $processMask = Get-ProcessAffinityMask
-$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask -VirtualMachine (Test-BenchVirtualMachine (Get-BenchComputerSystem))
+$coreChoice = Select-BenchCore -Cores (Get-ProcessorCores) -Requested $Core -AllowedMask $processMask -VirtualMachine (Test-BenchHostIsVirtualMachine)
 $runMask = if ($null -ne $coreChoice.Mask) { $coreChoice.Mask } else { $processMask }
 
 # Provenance is captured before the benchmark starts (#1445 review): git state, build
