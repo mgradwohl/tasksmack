@@ -178,6 +178,7 @@ class RootTestFilterTests(unittest.TestCase):
         "SessionUserRootTest.*",
         "RootCapabilitiesRootTest.*",
         "LinuxProcessActionsRootTest.*",
+        "RootDumpFolderRootTest.*",  # rootDumpRefusal() fails closed on a home under /tmp (#4262)
     )
 
     def test_the_filter_names_every_root_suite(self):

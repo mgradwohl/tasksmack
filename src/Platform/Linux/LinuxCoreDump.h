@@ -8,6 +8,7 @@
 #include <filesystem>
 #include <format>
 #include <functional>
+#include <mutex>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -198,6 +199,51 @@ inline constexpr int DETACH_WAIT_MS = 2000;
     }
     return {};
 }
+
+/// umask 077 for as long as any dump runs (#4177, #4258): the first one in saves the process's umask and sets 077, the
+/// last one out puts it back. A plain save-and-restore let two dumps at once undo each other: A saves 022, B saves 077,
+/// A restores 022 while B's gcore still runs, then B restores 077, and TaskSmack is owner-only until it restarts.
+class OwnerOnlyUmask
+{
+  public:
+    OwnerOnlyUmask()
+    {
+        const std::scoped_lock lock(mutex());
+        if (count()++ == 0)
+        {
+            saved() = ::umask(S_IRWXG | S_IRWXO);
+        }
+    }
+    ~OwnerOnlyUmask()
+    {
+        const std::scoped_lock lock(mutex());
+        if (--count() == 0)
+        {
+            ::umask(saved());
+        }
+    }
+    OwnerOnlyUmask(const OwnerOnlyUmask&) = delete;
+    OwnerOnlyUmask& operator=(const OwnerOnlyUmask&) = delete;
+    OwnerOnlyUmask(OwnerOnlyUmask&&) = delete;
+    OwnerOnlyUmask& operator=(OwnerOnlyUmask&&) = delete;
+
+  private:
+    [[nodiscard]] static std::mutex& mutex() noexcept
+    {
+        static std::mutex lock;
+        return lock;
+    }
+    [[nodiscard]] static int& count() noexcept
+    {
+        static int running = 0;
+        return running;
+    }
+    [[nodiscard]] static mode_t& saved() noexcept
+    {
+        static mode_t previous = 0;
+        return previous;
+    }
+};
 
 /// Why gcore wrote no core for @p pid: its exit status and the last line it wrote on stderr, when any.
 [[nodiscard]] inline std::string gcoreFailureMessage(std::int32_t pid, int exitStatus, std::string_view stderrText)
