@@ -45,11 +45,15 @@ function New-TestPe {
     [BitConverter]::GetBytes([uint32]0x00004550).CopyTo($file, $pe)
     [BitConverter]::GetBytes($Machine).CopyTo($file, $pe + 4)
     [BitConverter]::GetBytes([uint16]1).CopyTo($file, $pe + 6)      # one section
-    [BitConverter]::GetBytes([uint16]240).CopyTo($file, $pe + 20)   # optional header size
+    # x86 (0x014C) is PE32: magic 0x10B, directory count at +92, directories at +96, 224-byte header.
+    $pe32 = $Machine -eq 0x014C
+    $optSize = if ($pe32) { 224 } else { 240 }
+    $countAt = if ($pe32) { 92 } else { 108 }
+    [BitConverter]::GetBytes([uint16]$optSize).CopyTo($file, $pe + 20)   # optional header size
     $opt = $pe + 24
-    [BitConverter]::GetBytes([uint16]0x20B).CopyTo($file, $opt)
-    [BitConverter]::GetBytes([uint32]16).CopyTo($file, $opt + 108)  # data directory count
-    $dirs = $opt + 112
+    [BitConverter]::GetBytes([uint16]$(if ($pe32) { 0x10B } else { 0x20B })).CopyTo($file, $opt)
+    [BitConverter]::GetBytes([uint32]16).CopyTo($file, $opt + $countAt)  # data directory count
+    $dirs = $opt + $countAt + 4
     if ($Imports.Count -gt 0) {
         [BitConverter]::GetBytes([uint32]0x1000).CopyTo($file, $dirs + 8)
         [BitConverter]::GetBytes([uint32]$importSize).CopyTo($file, $dirs + 12)
@@ -58,7 +62,7 @@ function New-TestPe {
         [BitConverter]::GetBytes([uint32](0x1000 + $importSize)).CopyTo($file, $dirs + 8 * 13)
         [BitConverter]::GetBytes([uint32]$delaySize).CopyTo($file, $dirs + 8 * 13 + 4)
     }
-    $sec = $opt + 240
+    $sec = $opt + $optSize
     [Text.Encoding]::ASCII.GetBytes('.idata').CopyTo($file, $sec)
     [BitConverter]::GetBytes([uint32]$section.Length).CopyTo($file, $sec + 8)    # virtual size
     [BitConverter]::GetBytes([uint32]0x1000).CopyTo($file, $sec + 12)            # virtual address
@@ -118,7 +122,12 @@ try {
 
     # Files the checker can't read fail it rather than pass unchecked.
     Assert-Fails 'a file that is not a PE' @{ 'TaskSmack.exe' = [Text.Encoding]::ASCII.GetBytes('not an executable at all, just text padded out past sixty-four bytes') } 'not a readable PE'
-    Assert-Fails 'an x86 machine' @{ 'TaskSmack.exe' = (New-TestPe 0x014C @('kernel32.dll')) } 'neither x64 nor ARM64'
+    # NSIS's stub is x86: allowed for Uninstall.exe only, with its imports (and delay-imports) still checked.
+    Assert-Passes 'an x86 Uninstall.exe' @{ 'Uninstall.exe' = (New-TestPe 0x014C @('kernel32.dll', 'user32.dll') @('dbghelp.dll')) }
+    Assert-Fails 'an x86 Uninstall.exe importing the runtime' @{ 'Uninstall.exe' = (New-TestPe 0x014C @('kernel32.dll', 'msvcp140.dll')) } 'uninstall.exe imports msvcp140.dll'
+    Assert-Fails 'an x86 Uninstall.exe delay-loading the runtime' @{ 'Uninstall.exe' = (New-TestPe 0x014C @('kernel32.dll') @('vcruntime140.dll')) } 'vcruntime140.dll'
+    Assert-Fails 'an x86 TaskSmack.exe' @{ 'TaskSmack.exe' = (New-TestPe 0x014C @('kernel32.dll')) } 'neither x64 nor ARM64'
+    Assert-Fails 'an x86 TaskSmackHelper.exe' @{ 'TaskSmackHelper.exe' = (New-TestPe 0x014C @('kernel32.dll')) } 'neither x64 nor ARM64'
     $truncated = New-TestPe 0x8664 @('kernel32.dll')
     Assert-Fails 'a truncated PE' @{ 'TaskSmack.exe' = $truncated[0..0x120] } 'not a readable PE'
 

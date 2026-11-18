@@ -9,6 +9,9 @@
     regression to /MD (#1398 shipped one: "MSVCP140.dll was not found") would pass every smoke launch
     and install check and fail on a clean PC. This reads the import tables instead.
 
+    NSIS's stub is 32-bit, so Uninstall.exe (and only it) may be x86 (PE32); every other file must
+    be x64 or ARM64.
+
     Reads each .exe and .dll under -Path directly from its bytes (DOS header, NT headers, section
     table, then the import and delay-import directories), so it works for x64 and ARM64 with no
     dumpbin or llvm-objdump. A PE that is not x64 or ARM64, or has no readable import table, fails,
@@ -57,20 +60,27 @@ $ForbiddenPatterns = @(
 # Every import (import and delay-import directories) of one PE file, as lower-case DLL names. Throws a
 # message saying what is wrong when it isn't a readable x64 or ARM64 PE.
 function Get-PeImports {
-    param([Parameter(Mandatory)][string]$File)
+    param([Parameter(Mandatory)][string]$File, [switch]$AllowX86)
     $b = [IO.File]::ReadAllBytes($File)
     $fail = { param([string]$Why) throw "not a readable PE: $Why" }
     if ($b.Length -lt 0x40 -or $b[0] -ne 0x4D -or $b[1] -ne 0x5A) { & $fail 'no MZ header' }
     $pe = [BitConverter]::ToInt32($b, 0x3C)
     if ($pe -lt 0 -or $pe + 24 -gt $b.Length -or [BitConverter]::ToUInt32($b, $pe) -ne 0x00004550) { & $fail 'no PE signature' }
     $machine = [BitConverter]::ToUInt16($b, $pe + 4)
-    if ($machine -ne 0x8664 -and $machine -ne 0xAA64) { & $fail ('machine 0x{0:X4} is neither x64 nor ARM64' -f $machine) }
+    if ($machine -ne 0x8664 -and $machine -ne 0xAA64 -and -not ($AllowX86 -and $machine -eq 0x014C)) {
+        & $fail ('machine 0x{0:X4} is neither x64 nor ARM64' -f $machine)
+    }
     $sections = [BitConverter]::ToUInt16($b, $pe + 6)
     $optSize = [BitConverter]::ToUInt16($b, $pe + 20)
     $opt = $pe + 24
-    if ($opt + 112 -gt $b.Length -or [BitConverter]::ToUInt16($b, $opt) -ne 0x20B) { & $fail 'not a PE32+ optional header' }
-    $dirCount = [BitConverter]::ToUInt32($b, $opt + 108)
-    $dirs = $opt + 112
+    # PE32 (x86, 0x10B) has its directory count at +92 and the directories at +96; PE32+ at +108 and +112.
+    $magic = if ($opt + 2 -le $b.Length) { [BitConverter]::ToUInt16($b, $opt) } else { 0 }
+    $pe32 = $machine -eq 0x014C
+    if ($magic -ne $(if ($pe32) { 0x10B } else { 0x20B })) { & $fail 'optional header magic does not match the machine' }
+    $countAt = if ($pe32) { 92 } else { 108 }
+    if ($opt + $countAt + 4 + 8 * 14 -gt $b.Length) { & $fail 'optional header past the end of the file' }
+    $dirCount = [BitConverter]::ToUInt32($b, $opt + $countAt)
+    $dirs = $opt + $countAt + 4
     $table = $opt + $optSize
     if ($table + 40 * $sections -gt $b.Length) { & $fail 'section table past the end of the file' }
     $rvaToOffset = {
@@ -127,7 +137,7 @@ $shipped = @($files | Where-Object { $_.Extension -eq '.dll' } | ForEach-Object 
 $failures = [System.Collections.Generic.List[string]]::new()
 foreach ($file in $files) {
     try {
-        $imports = Get-PeImports -File $file.FullName
+        $imports = Get-PeImports -File $file.FullName -AllowX86:($file.Name -ieq 'Uninstall.exe')
     } catch {
         $failures.Add("$($file.FullName): $($_.Exception.Message)")
         continue
