@@ -120,6 +120,9 @@ struct WindowsProcessProbeFunctions
     struct Process
     {
         HANDLE(WINAPI* openProcess)(DWORD, BOOL, DWORD) = nullptr;
+        /// GetProcessTimes: the open process's creation time, compared with the snapshot's start time so a process
+        /// opened by a reused PID is not read as the row's (#4183). Nullable: no process is then confirmed, so none is read.
+        BOOL(WINAPI* getProcessTimes)(HANDLE, LPFILETIME, LPFILETIME, LPFILETIME, LPFILETIME) = nullptr;
         DWORD(WINAPI* getPriorityClass)(HANDLE) = nullptr;
         BOOL(WINAPI* queryFullProcessImageNameW)(HANDLE, DWORD, LPWSTR, PDWORD) = nullptr;
         /// ntdll's NtQueryInformationProcess, its class passed as a ULONG. Nullable: status and

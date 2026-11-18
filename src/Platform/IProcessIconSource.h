@@ -37,7 +37,10 @@ class IProcessIconSource
 
     /// The full path, UTF-8, of the executable process @p pid runs. Empty when it can't be read: the
     /// process exited, or TaskSmack may not open it (another user's process without the rights).
-    [[nodiscard]] virtual std::string executablePath(std::int32_t pid) = 0;
+    /// @p startTimeTicks is the start time the row recorded (ProcessSnapshot::startTimeTicks, 0 when
+    /// unknown): a platform that opens the process by PID confirms it is that process, so a reused PID
+    /// gives no path (#4183). Windows refuses an unknown start time; Linux reads /proc/<pid>/exe as before.
+    [[nodiscard]] virtual std::string executablePath(std::int32_t pid, std::uint64_t startTimeTicks) = 0;
 
     /// The icon of the program at @p executablePath, as near @p sizePx square as the OS has it.
     /// @p processName is the process's name as listed, for a platform that finds icons by name as
@@ -63,7 +66,7 @@ class IProcessIconSource
 class UnsupportedProcessIconSource final : public IProcessIconSource
 {
   public:
-    [[nodiscard]] std::string executablePath(std::int32_t /*pid*/) override
+    [[nodiscard]] std::string executablePath(std::int32_t /*pid*/, std::uint64_t /*startTimeTicks*/) override
     {
         return {};
     }

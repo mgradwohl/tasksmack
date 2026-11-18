@@ -141,6 +141,8 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     int lookupCalls = 0;
     // Process
     bool failOpenProcess = false;
+    std::optional<LONGLONG> openedCreateTime; ///< The opened process's creation time; unset: the snapshot process's
+    bool failProcessTimes = false;
     bool failQueryInfoOpen = false; ///< Only the PROCESS_QUERY_INFORMATION open is refused
     int openProcessCalls = 0;
     HANDLE queryInfoHandle = nullptr; // The last PROCESS_QUERY_INFORMATION open
@@ -402,6 +404,19 @@ HANDLE WINAPI fakeOpenProcess(DWORD access, BOOL /*inherit*/, DWORD /*pid*/)
         fake().queryInfoHandle = handle;
     }
     return handle;
+}
+
+BOOL WINAPI fakeGetProcessTimes(HANDLE /*process*/, LPFILETIME creation, LPFILETIME /*exit*/, LPFILETIME /*kernel*/, LPFILETIME /*user*/)
+{
+    if (fake().failProcessTimes)
+    {
+        SetLastError(ERROR_ACCESS_DENIED);
+        return FALSE;
+    }
+    const LONGLONG ticks = fake().openedCreateTime.value_or(fake().processes.front().createTime);
+    creation->dwLowDateTime = static_cast<DWORD>(static_cast<ULONGLONG>(ticks) & 0xFFFFFFFFU);
+    creation->dwHighDateTime = static_cast<DWORD>(static_cast<ULONGLONG>(ticks) >> 32U);
+    return TRUE;
 }
 
 DWORD WINAPI fakeGetPriorityClass(HANDLE /*process*/)
@@ -738,6 +753,7 @@ WindowsProcessProbeFunctions fakeFunctions()
         .process =
             {
                 .openProcess = &fakeOpenProcess,
+                .getProcessTimes = &fakeGetProcessTimes,
                 .getPriorityClass = &fakeGetPriorityClass,
                 .queryFullProcessImageNameW = &fakeQueryFullProcessImageNameW,
                 .ntQueryInformationProcess = &fakeNtQueryInformationProcess,
@@ -817,6 +833,39 @@ TEST_F(WindowsProcessProbeSeamTest, AnUnopenableProcessKeepsItsNameAndNothingEls
     EXPECT_TRUE(process.processType.empty());
     EXPECT_FALSE(process.gdiObjectCount.has_value());
     EXPECT_TRUE(process.cpuAffinity.empty());
+}
+
+// #4183: the PID was reused between the snapshot and the open, so the process opened isn't the row's.
+TEST_F(WindowsProcessProbeSeamTest, AReusedPidsDetailsAreNotCachedOnTheExitedProcesssRow)
+{
+    fake().openedCreateTime = fake().processes.front().createTime + 1;
+    WindowsProcessProbe probe(fakeFunctions());
+    const ProcessCounters process = find(probe.enumerate());
+    EXPECT_EQ(process.command, "[app.exe]");
+    EXPECT_TRUE(process.user.empty());
+    EXPECT_TRUE(process.processType.empty());
+    EXPECT_TRUE(process.architecture.empty());
+    EXPECT_FALSE(process.gdiObjectCount.has_value());
+    EXPECT_EQ(fake().imagePathCalls, 0) << "the new process's image path is never read";
+    EXPECT_EQ(fake().lookupCalls, 0) << "nor its owner";
+    EXPECT_TRUE(process.status.empty());
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AProcessWhoseCreationTimeCantBeReadIsNotReadEither)
+{
+    fake().failProcessTimes = true;
+    const ProcessCounters process = sampleOne();
+    EXPECT_EQ(process.command, "[app.exe]");
+    EXPECT_TRUE(process.user.empty());
+    EXPECT_EQ(fake().imagePathCalls, 0);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AMatchingCreationTimeReadsEveryDetail)
+{
+    fake().openedCreateTime = fake().processes.front().createTime;
+    const ProcessCounters process = sampleOne();
+    EXPECT_EQ(process.user, "alice");
+    EXPECT_EQ(process.command, "app.exe --flag");
 }
 
 TEST_F(WindowsProcessProbeSeamTest, EachFailedOwnerStepLeavesOnlyTheUserMissing)

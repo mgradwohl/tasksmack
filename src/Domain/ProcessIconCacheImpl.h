@@ -59,10 +59,10 @@ BasicProcessIconCache<Faults>::BasicProcessIconCache(std::unique_ptr<Platform::I
 template<typename Faults> BasicProcessIconCache<Faults>::~BasicProcessIconCache() = default;
 
 template<typename Faults>
-std::shared_ptr<const ProcessIconImage>
-BasicProcessIconCache<Faults>::lookup(std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx)
+std::shared_ptr<const ProcessIconImage> BasicProcessIconCache<Faults>::lookup(
+    std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx, std::uint64_t startTimeTicks)
 {
-    return lookupEntry(false, uniqueKey, pid, name, {}, sizePx);
+    return lookupEntry(false, uniqueKey, pid, startTimeTicks, name, {}, sizePx);
 }
 
 template<typename Faults>
@@ -73,12 +73,12 @@ BasicProcessIconCache<Faults>::lookupFile(std::uint64_t fileKey, std::string_vie
     {
         return nullptr; // Nothing to read: the row shows its generic icon
     }
-    return lookupEntry(true, fileKey, 0, name, path, sizePx);
+    return lookupEntry(true, fileKey, 0, 0, name, path, sizePx);
 }
 
 template<typename Faults>
 std::shared_ptr<const ProcessIconImage> BasicProcessIconCache<Faults>::lookupEntry(
-    bool file, std::uint64_t key, std::int32_t pid, std::string_view name, std::string_view path, int sizePx)
+    bool file, std::uint64_t key, std::int32_t pid, std::uint64_t startTimeTicks, std::string_view name, std::string_view path, int sizePx)
 {
     if (m_Source == nullptr || sizePx <= 0)
     {
@@ -106,8 +106,15 @@ std::shared_ptr<const ProcessIconImage> BasicProcessIconCache<Faults>::lookupEnt
             static_cast<void>(entries(oldest.file).erase(oldest.uniqueKey));
             m_Queue.pop_front();
         }
-        m_Queue.push_back(
-            Request{.uniqueKey = key, .pid = pid, .sizePx = sizePx, .name = std::string(name), .file = file, .path = std::string(path)});
+        m_Queue.push_back(Request{
+            .uniqueKey = key,
+            .pid = pid,
+            .startTimeTicks = startTimeTicks,
+            .sizePx = sizePx,
+            .name = std::string(name),
+            .file = file,
+            .path = std::string(path),
+        });
     }
     wakeWorker();
     return nullptr;
@@ -240,7 +247,7 @@ template<typename Faults> void BasicProcessIconCache<Faults>::load(const Request
 {
     try
     {
-        const std::string path = request.file ? request.path : m_Source->executablePath(request.pid);
+        const std::string path = request.file ? request.path : m_Source->executablePath(request.pid, request.startTimeTicks);
         const std::string key = iconKey(path, request.name, request.sizePx);
         {
             const std::scoped_lock lock(m_Mutex);

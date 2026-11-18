@@ -156,9 +156,11 @@ template<typename Faults = NoIconCacheFaults> class BasicProcessIconCache
 
     /// The icon of process @p uniqueKey (PID @p pid, named @p name) at @p sizePx, or nullptr while it
     /// loads and when it has none. Queues the load the first time the process is seen at that size.
+    /// @p startTimeTicks is the process's start time (0 unknown), which the source checks against the
+    /// process it opens by PID, so a reused PID's icon isn't drawn on this row (#4183).
     /// UI thread; allocates only then.
     [[nodiscard]] std::shared_ptr<const ProcessIconImage>
-    lookup(std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx);
+    lookup(std::uint64_t uniqueKey, std::int32_t pid, std::string_view name, int sizePx, std::uint64_t startTimeTicks = 0);
 
     /// The icon of the file at @p path (a program, or an image such as a packaged app's logo; #1800),
     /// filed under @p fileKey (iconFileKey(path)), at @p sizePx; nullptr while it loads, when it has
@@ -179,6 +181,7 @@ template<typename Faults = NoIconCacheFaults> class BasicProcessIconCache
     {
         std::uint64_t uniqueKey = 0; ///< The process's uniqueKey, or the file's key
         std::int32_t pid = 0;
+        std::uint64_t startTimeTicks = 0; ///< With pid, the process's identity (0 unknown, and for a file)
         int sizePx = 0;
         std::string name;
         bool file = false; ///< A lookupFile() request: path is the file, there is no process
@@ -195,8 +198,13 @@ template<typename Faults = NoIconCacheFaults> class BasicProcessIconCache
     };
 
     /// lookup() and lookupFile(): the entry of @p key in the processes or the files map.
-    [[nodiscard]] std::shared_ptr<const ProcessIconImage>
-    lookupEntry(bool file, std::uint64_t key, std::int32_t pid, std::string_view name, std::string_view path, int sizePx);
+    [[nodiscard]] std::shared_ptr<const ProcessIconImage> lookupEntry(bool file,
+                                                                      std::uint64_t key,
+                                                                      std::int32_t pid,
+                                                                      std::uint64_t startTimeTicks,
+                                                                      std::string_view name,
+                                                                      std::string_view path,
+                                                                      int sizePx);
     /// The processes map, or the files map for a lookupFile() request. Called with the lock held.
     [[nodiscard]] LruMap<std::uint64_t, ProcessEntry>& entries(bool file) noexcept
     {
