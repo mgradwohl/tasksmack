@@ -9,6 +9,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <map>
@@ -275,10 +276,24 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     // every open as nobody would fail there for a reason that isn't the file's (the #4286 CI run).
     const std::filesystem::path dir = std::filesystem::path("/tmp") / ("tasksmack-xauth-root-" + std::to_string(::getpid()));
     std::filesystem::create_directories(dir);
-    constexpr uid_t NOBODY = 65534;
-    if (::getpwuid(NOBODY) == nullptr)
+    // Another account to switch to: the one sudo names (CI's runner user), else nobody. A uid the kernel can't switch the
+    // filesystem uid to (unmapped in a container's user namespace, say) skips, rather than pass or fail on it (#4286 CI).
+    uid_t account = 65534;
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - a test, one thread
+    if (const char* sudoUid = std::getenv("SUDO_UID"); sudoUid != nullptr && std::atoi(sudoUid) > 0)
     {
-        GTEST_SKIP() << "no passwd entry for uid 65534";
+        account = static_cast<uid_t>(std::atoi(sudoUid));
+    }
+    if (::getpwuid(account) == nullptr)
+    {
+        GTEST_SKIP() << "no passwd entry for uid " << account;
+    }
+    static_cast<void>(::setfsuid(account));
+    const bool canSwitch = ::setfsuid(static_cast<uid_t>(-1)) == static_cast<int>(account);
+    static_cast<void>(::setfsuid(0));
+    if (!canSwitch)
+    {
+        GTEST_SKIP() << "the filesystem uid can't be switched to " << account << " here";
     }
     // The folder nobody may pass through, so only the files' own modes decide (the #4286 review).
     std::filesystem::permissions(dir, std::filesystem::perms::owner_all | std::filesystem::perms::others_exec);
@@ -291,14 +306,14 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     {
         ::close(asRoot);
     }
-    EXPECT_EQ(openAsUser(rootOnly.string(), NOBODY), -1) << "nobody may not read root's 0600 file";
+    EXPECT_EQ(openAsUser(rootOnly.string(), account), -1) << "that account may not read root's 0600 file";
     const std::filesystem::path nobodys = dir / "nobodys";
     std::ofstream(nobodys) << "cookie";
-    ASSERT_EQ(::chown(nobodys.c_str(), NOBODY, static_cast<gid_t>(-1)), 0);
+    ASSERT_EQ(::chown(nobodys.c_str(), account, static_cast<gid_t>(-1)), 0);
     std::filesystem::permissions(nobodys, std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
-    const int own = openAsUser(nobodys.string(), NOBODY);
-    ASSERT_GE(own, 0) << "nobody may read its own 0600 file";
-    EXPECT_EQ(readOwnedFile(own, NOBODY, MOST_XAUTHORITY_BYTES), "cookie");
+    const int own = openAsUser(nobodys.string(), account);
+    ASSERT_GE(own, 0) << "that account may read its own 0600 file";
+    EXPECT_EQ(readOwnedFile(own, account, MOST_XAUTHORITY_BYTES), "cookie");
     ::close(own);
     EXPECT_EQ(::setfsuid(static_cast<uid_t>(-1)), 0) << "root's filesystem uid is back";
     EXPECT_EQ(::setfsgid(static_cast<gid_t>(-1)), 0) << "and its group";
