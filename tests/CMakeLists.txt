@@ -379,6 +379,12 @@ add_test(NAME BenchmarkRegressionGateScript
 add_test(NAME MergeBenchmarkBaselinesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_merge_benchmark_baselines.py)
 
+# The committed perf-data/ baselines against the BENCHMARK(...) registrations, split by platform as
+# benchmarks/CMakeLists.txt builds them: no baseline name may be unregistered, and each baseline covers at
+# least 90% of its platform's benchmarks (#4207).
+add_test(NAME BenchmarkBaselinesScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_benchmark_baselines.py)
+
 # tools/bench-across-launches.py re-measures the benchmarks the CI gate flagged in separate launches, and the gate
 # checks the median across them (#3476).
 add_test(NAME BenchAcrossLaunchesScript
@@ -440,6 +446,10 @@ add_test(NAME LcovExcludeScript
 # tools/check-cache-prune-triggers.py keeps cache-prune.yml's workflow_run list complete (#2410).
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
+
+# Heavy Checks' push-scope must cover everything benchmarks/*.cpp includes, and the build settings (#4195).
+add_test(NAME HeavyChecksPushScopeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
 
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript

@@ -1763,9 +1763,13 @@ It's for CI alone, deliberately: a baseline recorded on a developer machine, com
 class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
 (`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
 (`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
-takes each benchmark from whichever capture, over several classes, read it slowest
+takes each benchmark's median per runner class, then the slowest class
 (`tools/merge-benchmark-baselines.py`): a run on any captured class can only look like an improvement,
-never a false regression (#682), and the threshold still applies to every benchmark. Its context's
+never a false regression (#682), and the threshold still applies to every benchmark. Captures on the same
+class (same `mhz_per_cpu`) are reduced to the median of their medians first, so one slow launch is an
+outlier the median ignores and the baseline doesn't drift slow (#4197); an even count takes the lower
+middle, so the baseline is always one real capture's entry. It is the same fix as elsewhere in the
+benchmarks (medians across launches, #3476), not an exclusion. Its context's
 `tasksmack_merged_from` lists the captures and how many benchmarks each supplied. Classes don't slow every
 benchmark alike (#2336):
 allocator- and memory-bound benchmarks vary more, so `--threshold-overrides FILE` gives the benchmarks a
@@ -1797,8 +1801,8 @@ gate should treat as the new normal):
    should be a deliberate, reviewed change, not a way to silently paper over a real regression.
    If every benchmark shifted by roughly the same percentage in the same direction, that's very
    likely a runner-class difference, not a real change.
-4. Merge the captures, each benchmark from the capture slowest at it, labelled by run id, and commit the
-   result in its own PR (not bundled with unrelated changes):
+4. Merge the captures (per benchmark, the median per runner class, then the slowest class), labelled by
+   run id, and commit the result in its own PR (not bundled with unrelated changes):
    ```bash
    python3 tools/merge-benchmark-baselines.py --output perf-data/linux-ci-baseline.json \
        <run-id>=/tmp/benchmark-results/<run-id>/perf-data/benchmark-current.json ...
@@ -3190,7 +3194,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch product or test code: `src/Domain`, `src/UI`, `src/Platform`, `src/App`, `src/Core`, `src/main.cpp`, `tests`, or the benchmarks, their baseline and tools). On a push, the coverage jobs run for any of those, and `benchmark-regression` only when the push touched what the benchmarks measure (`src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory`, the benchmarks, their baseline and tools); the `push-scope` job decides, and every other event runs it as before (#3834). So a merge that drops the Linux floor fails main on that merge, not the next nightly run. The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch product or test code: `src/Domain`, `src/UI`, `src/Platform`, `src/App`, `src/Core`, `src/main.cpp`, `tests`, or the benchmarks, their baseline and tools). On a push, the coverage jobs run for any of those, and `benchmark-regression` only when the push touched what the benchmarks measure (`src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory`, the App headers and `tests/Mocks` the benchmarks include, the build settings `CMakePresets.json`, `cmake/CompilerOptions.cmake` and `tools/common.sh`, the benchmarks, their baseline and tools; `tests/tools/test_heavy_checks_push_scope.py` derives the includes from `benchmarks/*.cpp` and fails if the scope misses one, #4195); the `push-scope` job decides, and every other event runs it as before (#3834). So a merge that drops the Linux floor fails main on that merge, not the next nightly run. The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
 - **`devcontainer.yml`**: Builds the dev container's image (`.devcontainer/Dockerfile`, from `tools/setup-dev.sh`) and, inside it, runs `tools/check-prereqs.sh` and configures the debug preset, whenever the image's inputs change (#136).
 - **`renovate-docs-sri.yml`**: On Renovate's docs-site PRs, regenerates `docs/index.html`'s `integrity=` hashes and `docs/cdn-integrity.json` (`tools/docs-sri.py --update`) and pushes them back with `RENOVATE_TOKEN`, so CI runs on the fixed commit (#3661).
 

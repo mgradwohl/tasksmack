@@ -85,12 +85,20 @@ inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share"
 /// parses the file TZ names (sudo's env_check drops the rest).
 [[nodiscard]] bool isSafeTimeZone(std::string_view value) noexcept;
 
+/// Whether @p name is a variable whose value is checked as sudo's env_check does (#4256): LANG, LANGUAGE, LC_*,
+/// TERM, COLORTERM, and TaskSmack's TASKSMACK_LOCALE.
+[[nodiscard]] bool isLocaleVariable(std::string_view name) noexcept;
+
+/// Whether such a variable's @p value is kept, as sudo's env_check decides (#4256): never one with "/" or "%", nor one
+/// starting with "." once leading whitespace is trimmed, which setlocale(), newlocale() or terminfo could take as a path.
+[[nodiscard]] bool isSafeLocale(std::string_view value) noexcept;
+
 /// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
-/// #4179, and the review of #4187): every name not kept, and a TZ that isn't safe, is unset (collected first); a
-/// relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's (or is
-/// unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH
-/// becomes ROOT_PATH and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value that can't be set is unset
-/// instead, so nothing of the user's is left by a failure. @return The names removed (a failed unset is left out), in order.
+/// #4179, and the review of #4187): every name not kept, a TZ that isn't safe and a checked variable whose value isn't (isSafeLocale()) are
+/// unset (collected first); a relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's
+/// (or is unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH becomes ROOT_PATH
+/// and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value that can't be set is unset instead, so
+/// nothing of the user's is left by a failure. @return The names removed (a failed unset is left out), in order.
 [[nodiscard]] std::vector<std::string> applyTo(const char* const* environment, const RootValues& root, const Operations& ops);
 
 /// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment,
