@@ -50,7 +50,8 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <shlobj.h>
+
+#include "Platform/Windows/WindowsPathProvider.h"
 
 #include <fstream>
 #include <ios>
@@ -779,16 +780,10 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
         return *overrideDir;
     }
 #ifdef _WIN32
-    // Windows: %APPDATA%/TaskSmack
-    wchar_t* appDataPath = nullptr;
-    if (SUCCEEDED(SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &appDataPath)))
-    {
-        std::filesystem::path configDir = std::filesystem::path(appDataPath) / "TaskSmack";
-        CoTaskMemFree(appDataPath);
-        return configDir;
-    }
-    // Fallback to current directory
-    return std::filesystem::current_path();
+    // Windows: FOLDERID_RoamingAppData\TaskSmack, from the one function the themes folder comes from too (#4267, #4107):
+    // the known folder's buffer freed whether or not the call succeeded, an empty one refused, and the current
+    // directory where there is none.
+    return Platform::WindowsPathProvider().getUserConfigDir();
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config, decided by Platform::ConfigDirectory::configDirectoryFor() (#1891): run as
     // root for a user (sudo, pkexec), that user's (#3580).
