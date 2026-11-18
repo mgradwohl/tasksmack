@@ -447,6 +447,10 @@ add_test(NAME LcovExcludeScript
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
 
+# Heavy Checks' push-scope must cover everything benchmarks/*.cpp includes, and the build settings (#4195).
+add_test(NAME HeavyChecksPushScopeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
+
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_compose_release_notes.py)
