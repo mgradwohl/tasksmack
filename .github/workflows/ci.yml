@@ -63,6 +63,7 @@ jobs:
       windows_only: ${{ steps.set_output.outputs.windows_only }}
       automation_only: ${{ steps.set_output.outputs.automation_only }}
       docs_site: ${{ steps.set_output.outputs.docs_site }}
+      dev_tools_only: ${{ steps.set_output.outputs.dev_tools_only }}
     steps:
       # The merge commit GitHub builds (refs/pull/N/merge) and its two parents, so HEAD^1..HEAD is
       # exactly what the pull request changes on the base branch it would merge into.
@@ -87,7 +88,7 @@ jobs:
           # Every output, in the classifier's order, with its safe value (the one that runs every job
           # the output can skip). Keep it in step with OUTPUTS in tools/ci-change-classifier.py;
           # tests/tools/test_ci_change_classifier.py checks that it is.
-          SAFE_OUTPUTS='docs_only=false linux_only=false windows_only=false automation_only=false docs_site=true'
+          SAFE_OUTPUTS='docs_only=false linux_only=false windows_only=false automation_only=false docs_site=true dev_tools_only=false'
           read -r -a safe <<<"$SAFE_OUTPUTS"
 
           report() {
@@ -165,13 +166,15 @@ jobs:
   # or a release/* branch never (the PR already checked the same tree). The nightly only runs
   # clang-tidy here (no build). "CI Success" gates on the tidy-outcome output; skipped for
   # docs-only and Windows-only changes, whose Linux file selection would be empty anyway. Every C++
-  # job skips for an automation-only pull request too (#3104): see automation-checks below.
+  # job skips for an automation-only pull request too (#3104), and a developer-tools-only one (#4248):
+  # see automation-checks and dev-tools-checks below.
   build-linux-debug:
     needs: [detect-docs-only]
     if: >-
       (github.event_name != 'pull_request' ||
        (needs.detect-docs-only.outputs.docs_only != 'true' &&
-        needs.detect-docs-only.outputs.automation_only != 'true')) &&
+        needs.detect-docs-only.outputs.automation_only != 'true' &&
+        needs.detect-docs-only.outputs.dev_tools_only != 'true')) &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -193,7 +196,8 @@ jobs:
     if: >-
       (github.event_name != 'pull_request' ||
        (needs.detect-docs-only.outputs.docs_only != 'true' &&
-        needs.detect-docs-only.outputs.automation_only != 'true')) &&
+        needs.detect-docs-only.outputs.automation_only != 'true' &&
+        needs.detect-docs-only.outputs.dev_tools_only != 'true')) &&
       needs.detect-docs-only.outputs.windows_only != 'true'
     permissions:
       contents: read
@@ -217,7 +221,8 @@ jobs:
     if: >-
       (github.event_name != 'pull_request' ||
        (needs.detect-docs-only.outputs.docs_only != 'true' &&
-        needs.detect-docs-only.outputs.automation_only != 'true')) &&
+        needs.detect-docs-only.outputs.automation_only != 'true' &&
+        needs.detect-docs-only.outputs.dev_tools_only != 'true')) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     permissions:
       contents: read
@@ -334,6 +339,57 @@ jobs:
           done
           exit "$status"
 
+  # A developer-tools-only pull request (tools/ci-change-classifier.py's dev_tools_only, #4248): every changed
+  # file is a local perf, profiling or idle-measurement script, one of their tests, docs or an automation
+  # file. No workflow, build or C++ test reads those, so the C++ jobs skip, and with them ctest's tool tests.
+  # These two jobs run the ones that read them instead (the classifier's DEV_TOOL_TESTS, run as ctest runs
+  # them by tools/run-dev-tool-tests.py), with the automation tests: Linux's on Ubuntu, the pwsh ones on
+  # Windows. No build. test_ci_change_classifier.py fails when a tool test names a DEV_TOOLS file and isn't
+  # in the list. pre-commit.yml (shellcheck, actionlint), CodeQL, Dependency Review and OSV-Scanner run as
+  # for any pull request.
+  dev-tools-checks:
+    name: Developer tool checks (Linux)
+    needs: [detect-docs-only]
+    if: github.event_name == 'pull_request' && needs.detect-docs-only.outputs.dev_tools_only == 'true'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+
+      - name: Run the developer tool tests (Linux)
+        run: python -X utf8 tools/run-dev-tool-tests.py linux
+
+  dev-tools-checks-windows:
+    name: Developer tool checks (Windows)
+    needs: [detect-docs-only]
+    if: github.event_name == 'pull_request' && needs.detect-docs-only.outputs.dev_tools_only == 'true'
+    runs-on: windows-2025
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: '3.14'
+
+      - name: Run the developer tool tests (Windows)
+        shell: pwsh
+        run: python -X utf8 tools/run-dev-tool-tests.py windows
+
   # Blocking clang-tidy for Windows-only code (#1233). The Linux run in build-linux-debug can't see
   # src/Platform/Windows/** or the _WIN32 branches of shared files, so a finding there merged
   # without failing anything. clang-tidy itself runs inside build-windows-debug (#1875); this job
@@ -350,7 +406,8 @@ jobs:
       needs.detect-docs-only.result == 'success' &&
       (github.event_name != 'pull_request' ||
        (needs.detect-docs-only.outputs.docs_only != 'true' &&
-        needs.detect-docs-only.outputs.automation_only != 'true')) &&
+        needs.detect-docs-only.outputs.automation_only != 'true' &&
+        needs.detect-docs-only.outputs.dev_tools_only != 'true')) &&
       (github.event_name != 'push' || (github.ref != 'refs/heads/main' && !startsWith(github.ref, 'refs/heads/release/'))) &&
       needs.detect-docs-only.outputs.linux_only != 'true'
     runs-on: ubuntu-26.04
@@ -557,7 +614,8 @@ jobs:
     if: >-
       (github.event_name == 'pull_request' || github.event_name == 'merge_group') &&
       needs.detect-docs-only.outputs.docs_only != 'true' &&
-      needs.detect-docs-only.outputs.automation_only != 'true'
+      needs.detect-docs-only.outputs.automation_only != 'true' &&
+      needs.detect-docs-only.outputs.dev_tools_only != 'true'
     runs-on: ubuntu-26.04
     # 45, not 30: a PR into release/X.Y restores main's ccache, which matches little of the release
     # branch's sources, so its build runs near cold. Backport #2862 took 28 minutes and backport
@@ -652,6 +710,8 @@ jobs:
       - build-linux-unity
       - docs-hygiene
       - automation-checks
+      - dev-tools-checks
+      - dev-tools-checks-windows
       - static-analysis-windows
       - asan-ubsan
     runs-on: ubuntu-26.04
@@ -694,6 +754,9 @@ jobs:
           AUTOMATION_ONLY: ${{ needs.detect-docs-only.outputs.automation_only }}
           DOCS_SITE:      ${{ needs.detect-docs-only.outputs.docs_site }}
           AUTOMATION_RESULT: ${{ needs.automation-checks.result }}
+          DEV_TOOLS_ONLY: ${{ needs.detect-docs-only.outputs.dev_tools_only }}
+          DEV_TOOLS_RESULT: ${{ needs.dev-tools-checks.result }}
+          DEV_TOOLS_WINDOWS_RESULT: ${{ needs.dev-tools-checks-windows.result }}
           EVENT_NAME:     ${{ github.event_name }}
           SCHEDULE:       ${{ github.event.schedule }}
           REF:            ${{ github.ref }}
@@ -718,7 +781,7 @@ jobs:
             # The detect job always writes every output. An unset or odd one, both skips at once,
             # or an automation-only skip outside a pull request is a broken classification: fail
             # rather than trust it.
-            for flag in DOCS_ONLY LINUX_ONLY WINDOWS_ONLY AUTOMATION_ONLY DOCS_SITE; do
+            for flag in DOCS_ONLY LINUX_ONLY WINDOWS_ONLY AUTOMATION_ONLY DOCS_SITE DEV_TOOLS_ONLY; do
               if [[ "${!flag}" != 'true' && "${!flag}" != 'false' ]]; then
                 echo "❌ Change detection output ${flag,,} is '${!flag}', not true or false"
                 failed=true
@@ -732,6 +795,15 @@ jobs:
               echo "❌ Change detection said automation_only for a ${EVENT_NAME} run"
               failed=true
             fi
+            # dev_tools_only (#4248) is exclusive with the other two skips, and a pull request's alone.
+            if [[ "$DEV_TOOLS_ONLY" == 'true' && ("$DOCS_ONLY" == 'true' || "$AUTOMATION_ONLY" == 'true') ]]; then
+              echo "❌ Change detection said dev_tools_only together with docs_only or automation_only"
+              failed=true
+            fi
+            if [[ "$DEV_TOOLS_ONLY" == 'true' && "$EVENT_NAME" != 'pull_request' ]]; then
+              echo "❌ Change detection said dev_tools_only for a ${EVENT_NAME} run"
+              failed=true
+            fi
             # Outside a pull request every output has its safe value, so the docs site test runs (#3103).
             if [[ "$DOCS_SITE" != 'true' && "$EVENT_NAME" != 'pull_request' ]]; then
               echo "❌ Change detection skipped the docs site test for a ${EVENT_NAME} run"
@@ -741,9 +813,25 @@ jobs:
           # A docs-only or an automation-only pull request changes no C++ job's input (#3104,
           # tools/ci-change-classifier.py), so those jobs may skip; nothing else lets them.
           no_cpp_change=false
-          if [[ "$DOCS_ONLY" == 'true' || ("$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request') ]]; then
+          if [[ "$DOCS_ONLY" == 'true' || ("$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request') ||
+                ("$DEV_TOOLS_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request') ]]; then
             no_cpp_change=true
           fi
+          # The dev-tools-checks jobs run the tool tests the skipped C++ jobs would have (#4248), so both
+          # must pass whenever those skip for dev_tools_only; otherwise both are skipped.
+          for job in "DEV_TOOLS_RESULT:Developer tool checks (Linux)" "DEV_TOOLS_WINDOWS_RESULT:Developer tool checks (Windows)"; do
+            var="${job%%:*}"
+            label="${job#*:}"
+            if [[ "$DEV_TOOLS_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request' ]]; then
+              if [[ "${!var}" != 'success' ]]; then
+                echo "❌ ${label} did not succeed: ${!var}"
+                failed=true
+              fi
+            elif [[ "${!var}" != 'skipped' && "${!var}" != 'success' ]]; then
+              echo "❌ ${label} did not succeed: ${!var}"
+              failed=true
+            fi
+          done
           # automation-checks runs the tool tests the skipped C++ jobs would have, so it must pass
           # whenever they skip for automation_only; otherwise it is skipped.
           if [[ "$AUTOMATION_ONLY" == 'true' && "$EVENT_NAME" == 'pull_request' ]]; then

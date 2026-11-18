@@ -334,15 +334,24 @@ function Invoke-ResizeCapture {
         $previousTrace = $env:TASKSMACK_TRACE_RESIZE_PERF
         $previousLog = $env:TASKSMACK_LOG_LEVEL
         $previousConfigDir = $env:TASKSMACK_CONFIG_DIR
+        $previousTemp = $env:TEMP
+        $previousTmp = $env:TMP
         # The run's own config directory (#2250): default settings, the user's config.toml never read
         # or rewritten, and a single-instance lock of its own, so a TaskSmack already open does not
         # turn this launch into an "already running" box. Kept with the run's other artifacts.
         $app.ConfigDirectory = Join-Path $RunDirectory 'config'
+        # TEMP and TMP too (#4229): the app opens tasksmack-debug.log in TEMP with truncation, so an
+        # inherited TEMP would wipe the log of the TaskSmack the user normally runs. The run's own
+        # folder keeps this run's log (temp\tasksmack-debug.log) with its other artifacts.
+        $app.TempDirectory = Join-Path $RunDirectory 'temp'
         try {
             Invoke-ResizeCaptureCommand $WhoamiExe @('/all') (Join-Path $RunDirectory 'app-launcher-token.txt')
             $env:TASKSMACK_TRACE_RESIZE_PERF = '1'
             $env:TASKSMACK_LOG_LEVEL = 'info'
             $env:TASKSMACK_CONFIG_DIR = $app.ConfigDirectory
+            $null = New-Item -ItemType Directory -Force -Path $app.TempDirectory
+            $env:TEMP = $app.TempDirectory
+            $env:TMP = $app.TempDirectory
             $app.StartUtc = [DateTimeOffset]::UtcNow.ToString('o')
             $process = Start-Process -FilePath (Join-Path $RunDirectory 'binary\TaskSmack.exe') -WorkingDirectory $RunDirectory `
                 -RedirectStandardOutput (Join-Path $RunDirectory 'stdout.log') `
@@ -376,6 +385,8 @@ function Invoke-ResizeCapture {
             $env:TASKSMACK_TRACE_RESIZE_PERF = $previousTrace
             $env:TASKSMACK_LOG_LEVEL = $previousLog
             $env:TASKSMACK_CONFIG_DIR = $previousConfigDir
+            $env:TEMP = $previousTemp
+            $env:TMP = $previousTmp
             Write-ResizeCaptureJson $appPath $app
         }
         return

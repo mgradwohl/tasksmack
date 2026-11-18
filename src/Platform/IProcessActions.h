@@ -251,12 +251,13 @@ struct DumpSpace
     std::optional<std::uint64_t> processBytes;
 };
 
-/// Who can read a new file in a dump's folder (#4164), as IProcessActions::dumpFolderAccess() finds it.
+/// Who can open a dump's folder (#4164; the folder, not the file, since the file is admin-only, #4188), as
+/// IProcessActions::dumpFolderAccess() finds it.
 enum class DumpFolderAccess : std::uint8_t
 {
     NotChecked,         ///< Not read: an unelevated session's folder, or a platform that doesn't check
-    AdministratorsOnly, ///< None of the less-privileged accounts the check looks for can read a new file there
-    ReadableByUser,     ///< Programs running as the signed-in user can read a new file there, or can change who may
+    AdministratorsOnly, ///< None of the less-privileged accounts the check looks for can list, read or change the folder
+    ReadableByUser,     ///< Programs running as the signed-in user can list or read the folder, or can change who may
     Unknown,            ///< Its permissions couldn't be read
     Refused,            ///< The dump would refuse the folder: a junction or link, or not where its path says (problem)
 };
@@ -587,7 +588,7 @@ class IProcessActions
         return {};
     }
 
-    /// Whether a dump in @p directory would be readable by less-privileged programs, for the dump's confirm to warn
+    /// Whether less-privileged programs can open @p directory itself, for the dump's confirm to hint
     /// (#4164); or why createDump() would refuse the folder. Read only where createDump() holds and checks the folder
     /// (Windows, elevated); NotChecked elsewhere. Reads the file system: on the confirm's worker, never the UI thread.
     /// The default checks nothing.
