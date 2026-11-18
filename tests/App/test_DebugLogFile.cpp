@@ -9,6 +9,7 @@
 #include <gtest/gtest.h>
 #include <spdlog/logger.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -603,6 +604,10 @@ TEST(DebugLogFileTest, AHardLinkedLogIsReplacedAndTheOtherFileKept)
 {
     App::DebugLogFile::Functions functions = functionsIn(scratch);
     functions.linuxLogParent = scratch.root() / "Log";
+    functions.invokingUid = []
+    {
+        return std::optional<std::uint32_t>{};
+    }; // root's own session: tasksmack-debug-root.log
     std::filesystem::create_directories(functions.linuxLogParent);
     std::filesystem::permissions(functions.linuxLogParent, std::filesystem::perms(0755));
     return functions;
@@ -615,7 +620,7 @@ TEST(DebugLogFileTest, ALinuxRootSessionsLogIsMadeFreshInAPrivateFolderNotTheTem
     const std::filesystem::path folder = functions.linuxLogParent / "tasksmack";
     const auto first = App::DebugLogFile::open(true, functions);
     ASSERT_TRUE(first.has_value()) << first.error();
-    EXPECT_EQ(first->path, folder / App::DebugLogFile::FILE_NAME);
+    EXPECT_EQ(first->path, folder / App::DebugLogFile::rootLogName(std::nullopt));
     logThrough(first->sink, "the first run");
     EXPECT_EQ(std::filesystem::status(folder).permissions() & std::filesystem::perms::all, std::filesystem::perms::owner_all);
     EXPECT_EQ(std::filesystem::status(first->path).permissions() & std::filesystem::perms::all,
@@ -638,13 +643,39 @@ TEST(DebugLogFileTest, ALinkPlantedAsTheLinuxLogIsReplacedNotFollowed)
     std::filesystem::permissions(folder, std::filesystem::perms::owner_all);
     const std::filesystem::path victim = scratch.root() / "victim";
     std::ofstream(victim, std::ios::binary) << "not the log's\n";
-    std::filesystem::create_symlink(victim, folder / App::DebugLogFile::FILE_NAME);
+    std::filesystem::create_symlink(victim, folder / App::DebugLogFile::rootLogName(std::nullopt));
     const auto opened = App::DebugLogFile::open(true, functions);
     ASSERT_TRUE(opened.has_value()) << opened.error();
     logThrough(opened->sink, "this run");
     EXPECT_EQ(contentsOf(victim), "not the log's\n") << "the link's target is never truncated or written";
     EXPECT_FALSE(std::filesystem::is_symlink(opened->path));
     EXPECT_TRUE(contentsOf(opened->path).contains("this run"));
+}
+
+TEST(DebugLogFileTest, TwoRootSessionsForDifferentUsersKeepTheirOwnLogs)
+{
+    // #4261: alice and bob each run sudo tasksmack at once; the second removed the first one's live log.
+    const ScratchFolder scratch;
+    App::DebugLogFile::Functions alice = linuxRootFunctionsIn(scratch);
+    alice.invokingUid = []
+    {
+        return std::optional<std::uint32_t>(1000);
+    };
+    App::DebugLogFile::Functions bob = alice;
+    bob.invokingUid = []
+    {
+        return std::optional<std::uint32_t>(1001);
+    };
+    const auto first = App::DebugLogFile::open(true, alice);
+    ASSERT_TRUE(first.has_value()) << first.error();
+    logThrough(first->sink, "alice's session");
+    const auto second = App::DebugLogFile::open(true, bob);
+    ASSERT_TRUE(second.has_value()) << second.error();
+    logThrough(second->sink, "bob's session");
+    EXPECT_EQ(first->path.filename(), "tasksmack-debug-1000.log");
+    EXPECT_EQ(second->path.filename(), "tasksmack-debug-1001.log");
+    EXPECT_TRUE(contentsOf(first->path).contains("alice's session")) << "bob's session left alice's log alone";
+    EXPECT_EQ(App::DebugLogFile::rootLogName(std::nullopt), "tasksmack-debug-root.log");
 }
 
 TEST(DebugLogFileTest, ALinkAsTheLinuxLogFolderIsRefused)
