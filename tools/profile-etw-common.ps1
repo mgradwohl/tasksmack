@@ -83,6 +83,15 @@ function Get-ProcessIntegrityLevel {
     return ConvertTo-IntegrityLevelName ([TaskSmackProfile.TokenInfo]::IntegrityRid($ProcessId))
 }
 
+function Get-DefaultProfilePreset {
+    # app: win-release, the build users run (#1186). bench: win-profile, which has -g and frame
+    # pointers and builds the benchmarks, so ETW samples resolve to functions; win-benchmark has
+    # no debug info (#4235).
+    param([Parameter(Mandatory = $true)][string]$Mode)
+    if ($Mode -eq 'app') { return 'win-release' }
+    return 'win-profile'
+}
+
 function Resolve-BenchmarkFilterMatches {
     # Classify the output of `TaskSmackBenchmarks.exe --benchmark_filter=<f> --benchmark_list_tests=true`
     # (#874), mirroring profile-perf.sh: no match is an error -- the capture would only measure

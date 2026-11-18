@@ -71,6 +71,22 @@ try {
     # A directory that does not exist is an error, not an endless search for a free name.
     Assert-Throws { Request-CaptureTimestamp -Directory (Join-Path $root 'missing') -Prefix 'etw-app' -Timestamp 'x' } 'Could not find'
 
+    # #4235: app mode ships win-release; bench mode profiles the win-profile build (debug info and
+    # frame pointers), not win-benchmark. #4236: the default bench filter names one benchmark.
+    Assert-True ((Get-DefaultProfilePreset -Mode 'app') -eq 'win-release') 'The app default preset must be win-release'
+    Assert-True ((Get-DefaultProfilePreset -Mode 'bench') -eq 'win-profile') 'The bench default preset must be win-profile'
+    Assert-True ((Get-DefaultProfilePreset -Mode 'resize') -ne 'win-benchmark') 'No mode may default to the debug-info-free win-benchmark preset'
+    $presets = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\CMakePresets.json') -Raw | ConvertFrom-Json
+    $profilePreset = $presets.configurePresets | Where-Object { $_.name -eq 'win-profile' }
+    Assert-True ($profilePreset.cacheVariables.TASKSMACK_BUILD_BENCHMARKS -eq 'ON' -and $profilePreset.cacheVariables.CMAKE_CXX_FLAGS_RELWITHDEBINFO -like '*-g *' -and $profilePreset.cacheVariables.CMAKE_CXX_FLAGS_RELWITHDEBINFO -like '*-fno-omit-frame-pointer*') 'win-profile must build the benchmarks with -g and frame pointers'
+    $parsed = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'profile-etw.ps1'), [ref]$null, [ref]$null)
+    $filterParam = $parsed.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'BenchmarkFilter' }
+    $defaultFilter = $filterParam.DefaultValue.Value
+    Assert-True ($defaultFilter -eq 'BM_ProcessModel_Refresh$') "The default bench filter must be one benchmark: $defaultFilter"
+    Assert-True ($defaultFilter -notmatch '[|(*]') 'The default bench filter must not be an alternation or wildcard'
+    $oneListed = Resolve-BenchmarkFilterMatches -ListOutput @('BM_ProcessModel_Refresh') -Filter $defaultFilter
+    Assert-True ($oneListed.Severity -eq 'ok') "The default filter against one match must not warn: $($oneListed.Severity)"
+
     $fakeLister = Join-Path $root 'lister.cmd'
     Set-Content -LiteralPath $fakeLister -Value "@echo BM_One`r`n@echo BM_Two`r`n@exit /b 0" -Encoding ascii
     $listed = Get-BenchmarkFilterMatches -BinaryPath $fakeLister -Filter 'BM_.*'
