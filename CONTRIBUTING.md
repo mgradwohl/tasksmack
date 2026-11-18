@@ -3023,8 +3023,10 @@ What a package contains, and what it depends on (#1398):
   installer's per-machine `C:\Program Files\TaskSmack`, but not from a `.zip` unpacked into a folder
   its user owns.
 - Windows builds other than Debug link the C and C++ runtime statically (`/MT`), so the `.zip`'s
-  `TaskSmack.exe` runs without the Visual C++ Redistributable: `llvm-objdump -p` on it should list
-  no `MSVCP140.dll`, `VCRUNTIME140*.dll` or `api-ms-win-crt-*.dll`. Debug keeps `/MDd`.
+  `TaskSmack.exe` runs without the Visual C++ Redistributable. `pwsh tools/check-windows-imports.ps1 -Path <file or folder> -List`
+  reads the import tables (x64 and ARM64) and fails on `MSVCP140.dll`, `VCRUNTIME140*.dll`, `api-ms-win-crt-*.dll`
+  or any DLL outside its allowlist; release.yml runs it on the `.zip` and the installed files (#4439). Debug keeps
+  `/MDd`, so it fails the check on purpose.
 
 ## Version Header
 
