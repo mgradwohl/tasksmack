@@ -140,7 +140,7 @@ jobs:
                 benchmarks=true
                 break ;;
             esac
-          done < <(git diff --name-only "$BEFORE" "$SHA")
+          done < <(git -c core.quotePath=false diff --name-only "$BEFORE" "$SHA")
           echo "benchmarks=$benchmarks" >> "$GITHUB_OUTPUT"
           [[ "$benchmarks" == true ]] || echo "No benchmarked path changed: coverage only."
 

@@ -199,6 +199,24 @@ class CheckNoRevertsTest(unittest.TestCase):
         self.assertIn("## Revert guard (#3986)", text)
         self.assertIn("| advisory |", text)
 
+    def test_a_stale_copy_of_a_non_ascii_file_still_fails(self) -> None:
+        # #4331: the diff header was "--- \"a/docs/guide/caf\\303\\251.md\"", which parse_diff skipped, so the revert
+        # passed unchecked. The subject's é must also come back as itself, not as its UTF-8 bytes read in a code page.
+        self.merged("docs: the café guide (#150)", {"docs/guide/café.md": code("cafe", 8)})
+        self.branch("stale-cafe")
+        head = self.commit("fix: unrelated (#151)", {"docs/guide/café.md": "", "src/d.cpp": code("d", 2)})
+        status, out, _ = self.run_check(head)
+        self.assertEqual(status, 1, out)
+        self.assertIn("docs: the café guide (#150)", out)
+        self.assertIn("docs/guide/café.md", out)
+
+    def test_header_path_unquotes_what_git_still_quotes(self) -> None:
+        self.assertEqual(check_no_reverts.header_path("--- a/src/x.cpp", "a"), "src/x.cpp")
+        self.assertIsNone(check_no_reverts.header_path("--- /dev/null", "a"))
+        self.assertEqual(check_no_reverts.header_path('+++ "b/odd\\tname.md"', "b"), "odd\tname.md")
+        self.assertEqual(check_no_reverts.header_path('--- "a/caf\\303\\251.md"', "a"), "café.md")
+        self.assertEqual(check_no_reverts.header_path('--- "a/q\\"uote.md"', "a"), 'q"uote.md')
+
     def test_a_clean_change_passes(self) -> None:
         self.branch("clean")
         head = self.commit("feat: new file (#140)", {"src/new.cpp": code("n", 10)})
