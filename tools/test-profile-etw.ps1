@@ -37,6 +37,27 @@ Assert-True ($many.Severity -eq 'warning') 'Several matches must warn'
 Assert-True (@($many.Names).Count -eq 3) 'Matched names lost'
 Assert-True ($many.Message -like '*matches 3 benchmarks*' -and $many.Message -like '*- BM_B*') 'Warning must list the matches'
 
+# #4238: benchmark options are refused in app mode, and bench mode checks their values.
+foreach ($ok in @('0.5s', '2s', '1', '0.01', '10x', '1x')) { Assert-True (Test-BenchmarkMinTime $ok) "Min time '$ok' must be accepted" }
+foreach ($bad in @('', '0', '0s', '0x', '-1s', 'fast', '1.5x', '5ms', '0.5 s', 's', '1s;calc')) { Assert-True (-not (Test-BenchmarkMinTime $bad)) "Min time '$bad' must be refused" }
+Assert-BenchmarkOption -Mode bench -Role Orchestrator -Bound @{ BenchmarkRepetitions = 3 } -Repetitions 3 -MinTime '10x'
+Assert-Throws { Assert-BenchmarkOption -Mode bench -Role Orchestrator -Bound @{} -Repetitions 0 -MinTime '0.5s' } '-BenchmarkRepetitions must be 1 or more'
+Assert-Throws { Assert-BenchmarkOption -Mode bench -Role Orchestrator -Bound @{} -Repetitions -2 -MinTime '0.5s' } '-BenchmarkRepetitions must be 1 or more'
+Assert-Throws { Assert-BenchmarkOption -Mode bench -Role Collector -Bound @{} -Repetitions 5 -MinTime 'soon' } "-BenchmarkMinTime 'soon'"
+Assert-BenchmarkOption -Mode app -Role Orchestrator -Bound @{ Preset = 'x' } -Repetitions 5 -MinTime '0.5s'
+Assert-Throws { Assert-BenchmarkOption -Mode app -Role Orchestrator -Bound @{ BenchmarkMinTime = '1s'; BenchmarkFilter = 'x' } -Repetitions 5 -MinTime '1s' } '-BenchmarkFilter, -BenchmarkMinTime apply to bench mode only'
+# The orchestrator hands every Benchmark* option to its children by value, so they must not refuse.
+Assert-BenchmarkOption -Mode app -Role ElevatedRun -Bound @{ BenchmarkRepetitions = 5 } -Repetitions 5 -MinTime '0.5s'
+# The script itself refuses before building, tracing or prompting.
+$hostPwsh = (Get-Process -Id $PID).Path
+$etwScript = Join-Path $PSScriptRoot 'profile-etw.ps1'
+$stray = & $hostPwsh -NoProfile -File $etwScript app -SkipBuild -BenchmarkRepetitions 3 2>&1 | Out-String
+Assert-True ($LASTEXITCODE -ne 0 -and $stray -like '*-BenchmarkRepetitions apply to bench mode only*') "App mode must refuse a bench option: $stray"
+$badReps = & $hostPwsh -NoProfile -File $etwScript bench -SkipBuild -BenchmarkRepetitions 0 2>&1 | Out-String
+Assert-True ($LASTEXITCODE -ne 0 -and $badReps -like '*must be 1 or more*') "Bench mode must refuse zero repetitions: $badReps"
+$badTime = & $hostPwsh -NoProfile -File $etwScript bench -SkipBuild -BenchmarkMinTime 'soon' 2>&1 | Out-String
+Assert-True ($LASTEXITCODE -ne 0 -and $badTime -like '*not a Google Benchmark minimum time*') "Bench mode must refuse a bad min time: $badTime"
+
 # Listing goes through the real benchmark binary's exit code: a failing lister throws.
 $hostExe = (Get-Process -Id $PID).Path
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-etw-tests-$([guid]::NewGuid().ToString('N'))"

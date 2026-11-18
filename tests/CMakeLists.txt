@@ -99,6 +99,9 @@ if(WIN32)
         add_test(NAME BenchAcrossLaunchesPs1Script
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench-across-launches.ps1)
         set_tests_properties(BenchAcrossLaunchesPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        # tools/pgo.ps1 --help exits 0 and an unknown command exits 1 (#4239); no build runs.
+        add_test(NAME PgoScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-pgo.ps1)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
@@ -405,6 +408,14 @@ add_test(NAME TidyFindingsScript
 # fake registry: it removes only a TaskSmack's taskmgr.exe IFEO Debugger, and the key only when TaskSmack made it.
 add_test(NAME NsisIfeoUninstallStep
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_ifeo_uninstall.py)
+
+# tools/ui-compare.sh's argument checks (#4213) and dependency seeding (#4214): sourced, on fixture trees and
+# throwaway git repositories; nothing is built. The script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME UiCompareShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_sh.py)
+    set_tests_properties(UiCompareShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
 
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript
@@ -885,6 +896,7 @@ set(WINDOWS_MATH_TEST_SOURCES
     Platform/WindowsMath/test_WindowsPowerProbeMath.cpp
     Platform/WindowsMath/test_WindowsEnergyMeterMath.cpp  # EMI metadata and measurement blocks, package channel names (#2587)
     Platform/WindowsMath/test_WindowsProcessProbeMath.cpp
+    Platform/WindowsMath/test_WindowsProcessSnapshotSize.cpp  # the first SystemProcessInformation buffer and its growth (#4277)
     Platform/WindowsMath/test_WindowsStartupProbeMath.cpp
     Platform/WindowsMath/test_WindowsStartupImpact.cpp  # the WDI StartupInfo sign-in measurements (#3073)
     Platform/WindowsMath/test_WindowsScheduledTasksMath.cpp  # scheduled tasks' triggers, owners and wording (#3424)

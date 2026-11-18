@@ -44,18 +44,30 @@ different priority in a comment, but **never raises one** the maintainer set, an
 
 ## Queue order
 
-Each lane takes work in this order (maintainer, 2026-11-04):
-1. **CI, infra, tooling, build and dependencies** (`ci`, `tooling`, `dependencies`, `release`).
-2. **Bugs** (`bug`), with the test gaps that go with fixing them.
-3. **Refactors** (`refactoring`), before any feature, so features build on the cleaned-up structure.
-4. **Parity features** (`parity`).
-5. **New features** (`enhancement` without `parity`).
+Each lane takes work in this order (maintainer, 2026-11-18; it replaces the order of 2026-11-04):
+1. **Dependency-bot PRs** (Renovate, Dependabot). They're small, and holding them lets base images and actions go
+   stale.
+2. **CI** (`ci`).
+3. **Tooling** (`tooling`, `release` mechanics, build).
+4. **Security and bugs** (`security`, `bug`), with the test gaps that go with fixing them.
+5. **Perf** (`performance`).
+6. **Testing** (`testing`): test gaps that don't guard a fix in step 4.
+7. **Docs** (`documentation`).
+8. **Refactors** (`refactoring`), then **parity features** (`parity`), then **new features** (`enhancement`
+   without `parity`). No feature merges before the refactor it depends on.
 
-Priority orders the work *within* each step: `pri:high`, then `pri:medium`, then `pri:low`. It never moves a
-feature ahead of a refactor or a bug. Severity breaks ties among bugs.
+How to apply it:
+- **Severity beats kind.** An item with `sev:high` or `sev:medium` goes in step 4 whatever its kind: a test that
+  guards a security fix, a CI break, a perf regression users notice.
+- **Priority orders the work within each step:** `pri:high`, then `pri:medium`, then `pri:low`. Severity breaks
+  ties among bugs.
+- **The order picks the next item.** Work already in flight (a PR on its last CI job, a review fix) finishes before
+  something earlier in the order starts.
+- **Release-blocking docs aren't step 7.** Docs the candidate needs, such as the release screenshots or a Platform
+  Differences row for a shipped gap, go as soon as what they depend on is ready.
+- **Perf fixes can land in step 5, but measurements wait for a quiet machine** (no builds or tests on either lane).
 
-No feature merges before the refactor it depends on. The release tracker (`[RELEASE X.Y]`) lists the cycle's own
-order.
+The release tracker (`[RELEASE X.Y]`) lists the cycle's own order.
 
 ## Lane, parity and areas
 

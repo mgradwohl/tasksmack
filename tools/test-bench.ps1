@@ -5,6 +5,12 @@
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# Hosted CI runners are virtual machines, which bench.ps1 reads as "hybrid unknown" (#4237). The
+# placement cases below expect what the cores say, so the run's VM check is mocked as "not a VM"
+# here (bench.ps1 reads TASKSMACK_BENCH_VM); the VM cases call Select-BenchCore and
+# Test-BenchVirtualMachine directly with a VM's values.
+$env:TASKSMACK_BENCH_VM = '0'
+
 function Assert-True {
     param([bool]$Condition, [string]$Message)
     if (-not $Condition) { throw $Message }
@@ -1225,6 +1231,44 @@ $outcomes | ConvertTo-Json -Depth 3 | Set-Content -LiteralPath $Results -Encodin
     # The warning for too few names the count and the minimum.
     $tooFew = Select-BenchCore -Cores $arrowLake -Requested '' -AllowedMask (& $without 11, 12, 13)
     Assert-True ($tooFew.Warning -like "*Only 3 logical CPU*fewer than the $($script:MinPinnedCpus)*") "Too-few warning: $($tooFew.Warning)"
+    # #4237: in a virtual machine one class is unknown, not "not hybrid"; several classes are believed.
+    $oneClass = New-Cores @(@(0, @(0, 1)), @(0, @(2, 3)))
+    foreach ($case in @(
+            @{ Name = 'VM default'; Requested = ''; Warns = $true }
+            @{ Name = 'VM performance'; Requested = 'performance'; Warns = $true }
+            @{ Name = 'VM any'; Requested = 'any'; Warns = $false }
+        )) {
+        $got = Select-BenchCore -Cores $oneClass -Requested $case.Requested -AllowedMask $allMask -VirtualMachine $true
+        Assert-True ($null -eq $got.Hybrid -and $got.CoreClass -eq 'any' -and $null -eq $got.Mask -and $null -eq $got.LogicalCpus -and [bool]$got.Warning -eq $case.Warns) "Select-BenchCore ($($case.Name)): $($got | ConvertTo-Json -Compress)"
+    }
+    $vmWarning = (Select-BenchCore -Cores $oneClass -Requested '' -AllowedMask $allMask -VirtualMachine $true).Warning
+    Assert-True ($vmWarning -like '*virtual machine*unknown*not pinned*') "VM warning: $vmWarning"
+    Assert-True ((Get-PlacementDescription (Select-BenchCore -Cores $oneClass -Requested '' -AllowedMask $allMask -VirtualMachine $true) $null) -like '*any (not pinned)') 'A VM run is described as not pinned, not as non-hybrid'
+    $vmHybrid = Select-BenchCore -Cores $arrowLake -Requested '' -AllowedMask $allMask -VirtualMachine $true
+    Assert-True ($vmHybrid.Hybrid -eq $true -and $vmHybrid.Core -eq 'performance' -and $null -ne $vmHybrid.Mask -and -not $vmHybrid.Warning) 'A guest that reports several classes is still pinned'
+    Assert-True ((Select-BenchCore -Cores $oneClass -Requested '' -AllowedMask $allMask -VirtualMachine $false).Hybrid -eq $false) 'Bare metal with one class is still not hybrid'
+    $unknownVm = Select-BenchCore -Cores $null -Requested '' -AllowedMask $allMask -VirtualMachine $true
+    Assert-True ($null -eq $unknownVm.Hybrid -and $unknownVm.Warning -like '*could not be read*') 'Unreadable cores keep their own warning in a VM'
+
+    # The virtual machine check, from mocked Win32_ComputerSystem values (no CIM query). A physical
+    # host with Hyper-V, VBS or WSL2 reports HypervisorPresent too, and is not a guest.
+    function New-ComputerSystem([string]$Manufacturer, [string]$Model, $Hypervisor) { [pscustomobject]@{ Manufacturer = $Manufacturer; Model = $Model; HypervisorPresent = $Hypervisor } }
+    foreach ($vm in @(
+            (New-ComputerSystem 'Microsoft Corporation' 'Virtual Machine' $true)
+            (New-ComputerSystem 'VMware, Inc.' 'VMware7,1' $true)
+            (New-ComputerSystem 'innotek GmbH' 'VirtualBox' $true)
+            (New-ComputerSystem 'QEMU' 'Standard PC (Q35 + ICH9, 2009)' $true)
+            (New-ComputerSystem 'Google' 'Google Compute Engine' $true)
+        )) {
+        Assert-True (Test-BenchVirtualMachine $vm) "Not read as a virtual machine: $($vm.Manufacturer) $($vm.Model)"
+    }
+    Assert-True (-not (Test-BenchVirtualMachine (New-ComputerSystem 'Dell Inc.' 'XPS 14 (Dell 14 Premium) DA14250' $true))) 'A physical host with a hypervisor root partition is not a guest'
+    Assert-True (-not (Test-BenchVirtualMachine (New-ComputerSystem 'Microsoft Corporation' 'Virtual Machine' $false))) 'No hypervisor means not a guest'
+    Assert-True (-not (Test-BenchVirtualMachine $null)) 'An unreadable computer system is not a guest'
+    Assert-True (-not (Test-BenchHostIsVirtualMachine)) 'TASKSMACK_BENCH_VM=0 must say not a VM'
+    $env:TASKSMACK_BENCH_VM = '1'
+    try { Assert-True (Test-BenchHostIsVirtualMachine) 'TASKSMACK_BENCH_VM=1 must say a VM' }
+    finally { $env:TASKSMACK_BENCH_VM = '0' }
     Assert-True ((Format-AffinityMask ([uint64]1 -shl 63)) -ceq '0x8000000000000000' -and $null -eq (Format-AffinityMask $null)) 'Format-AffinityMask'
     Assert-True ((ConvertFrom-AffinityPointer (ConvertTo-AffinityPointer ([uint64]1 -shl 63))) -eq ([uint64]1 -shl 63) -or [IntPtr]::Size -eq 4) 'An affinity mask with bit 63 survives the IntPtr round trip'
 

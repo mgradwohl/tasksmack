@@ -430,6 +430,13 @@ class ProcessesPanel : public Panel
         return m_BatchIoPriorityDialog;
     }
 
+    /// The row menu's dump view (#4269), for tests: they pin its default folder to %TEMP% (setNoDefaultFolder(false),
+    /// setDefaultFolder(&DumpDetail::tempDumpDirectory)), so an elevated run never makes the admin-only folder.
+    [[nodiscard]] ProcessDumpView& dumpViewForTesting() noexcept
+    {
+        return m_DumpView;
+    }
+
     /// The row menu's wait chain dialog (#3084), for tests: open after Analyze wait chain... is chosen.
     [[nodiscard]] ProcessWaitChainDialog& waitChainDialogForTesting() noexcept
     {

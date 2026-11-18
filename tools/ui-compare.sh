@@ -12,10 +12,13 @@
 # this machine, and live values (CPU %, times) move a little between runs, so a small change on every
 # step is normal. Look at the diffs, not just the numbers.
 #
-# Dependencies: each worktree reuses this checkout's FetchContent sources (.cache/fetchcontent, or
-# --seed) read-only, through FETCHCONTENT_SOURCE_DIR_<NAME>, for every dependency whose GIT_TAG in that
-# ref matches the seed's checkout; a dependency the ref pins differently, such as the one being bumped,
-# is downloaded into that worktree's own cache as a normal configure would. The scenarios run under Xvfb
+# Dependencies: each worktree reuses this checkout's FetchContent sources (FETCHCONTENT_BASE_DIR when set,
+# else .cache/fetchcontent, or --seed) read-only, through FETCHCONTENT_SOURCE_DIR_<NAME>, for every
+# dependency whose GIT_TAG in that ref matches the seed's checkout; a dependency the ref pins differently,
+# such as the one being bumped, is downloaded into that worktree's own cache (TASKSMACK_FETCHCONTENT_CACHE_DIR,
+# never an inherited FETCHCONTENT_BASE_DIR: that would change the sources of your other builds, #4214).
+# A ref whose cmake/patches differ from this checkout's seeds nothing: a seeded source keeps the patches
+# this checkout applied, so it wouldn't be what the ref builds. The scenarios run under Xvfb
 # (apt install xvfb) with WAYLAND_DISPLAY unset, as in CI, even when a desktop is up: on a real display
 # the pointer's own moves would mix with the scenarios' injected ones; --use-display runs them there.
 set -euo pipefail
@@ -24,7 +27,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 
 OUT=""
-SEED="$PROJECT_ROOT/.cache/fetchcontent"
+# Where this checkout's configure put its dependency sources (cmake/Dependencies.cmake's order, #4214).
+SEED="${FETCHCONTENT_BASE_DIR:-$PROJECT_ROOT/.cache/fetchcontent}"
 WORK=""
 KEEP=false
 USE_DISPLAY=false
@@ -45,47 +49,6 @@ Options:
   -h, --help    Show this help
 EOF
 }
-
-REFS=()
-while [[ $# -gt 0 ]]; do
-    case "$1" in
-    --out) OUT="$2"; shift 2 ;;
-    --seed) SEED="$2"; shift 2 ;;
-    --work) WORK="$2"; shift 2 ;;
-    --keep) KEEP=true; shift ;;
-    --use-display) USE_DISPLAY=true; shift ;;
-    -h | --help) usage; exit 0 ;;
-    -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
-    *) REFS+=("$1"); shift ;;
-    esac
-done
-if [[ ${#REFS[@]} -ne 2 ]]; then
-    usage >&2
-    exit 2
-fi
-if [[ "$USE_DISPLAY" == false ]] && ! command -v xvfb-run >/dev/null; then
-    echo "xvfb-run not found (apt install xvfb), or pass --use-display" >&2
-    exit 1
-fi
-
-slug() { tr -c 'A-Za-z0-9._-' '-' <<<"$1" | sed 's/-*$//'; }
-[[ -n "$OUT" ]] || OUT="$PWD/ui-compare-$(slug "${REFS[0]}")-vs-$(slug "${REFS[1]}")"
-[[ -n "$WORK" ]] || WORK="$(mktemp -d "${TMPDIR:-/tmp}/tasksmack-ui-compare.XXXXXX")"
-mkdir -p "$OUT" "$WORK"
-OUT="$(cd "$OUT" && pwd)"
-
-WORKTREES=()
-cleanup() {
-    if [[ "$KEEP" == false ]]; then
-        for tree in "${WORKTREES[@]}"; do
-            git -C "$PROJECT_ROOT" worktree remove --force "$tree" 2>/dev/null || true
-        done
-        rm -rf "$WORK"
-    else
-        echo "Kept the worktrees under $WORK"
-    fi
-}
-trap cleanup EXIT
 
 # "<name> <sha>" for each FetchContent_Declare() with a GIT_TAG under <tree>: the name lower-cased, as
 # FetchContent names its <name>-src directory.
@@ -116,6 +79,11 @@ seed_arguments() {
     done
 }
 
+# Whether <tree>'s cmake/patches match this checkout's, which patched the seed's sources.
+patches_match() {
+    diff -r -q "$1/cmake/patches" "$PROJECT_ROOT/cmake/patches" >/dev/null 2>&1
+}
+
 run_side() {
     local side="$1" ref="$2"
     local tree="$WORK/$side"
@@ -127,7 +95,13 @@ run_side() {
         exit 1
     fi
     local seeds=()
-    mapfile -t seeds < <(seed_arguments "$tree")
+    if patches_match "$tree"; then
+        mapfile -t seeds < <(seed_arguments "$tree")
+    else
+        echo "  $ref's cmake/patches differ from this checkout's: nothing is seeded, every dependency is downloaded" >&2
+    fi
+    # Its own dependency cache, whatever FETCHCONTENT_BASE_DIR says (#4214).
+    seeds+=("-DTASKSMACK_FETCHCONTENT_CACHE_DIR=$tree/.cache/fetchcontent")
     (cd "$tree" && cmake --preset debug "${seeds[@]}" >"$OUT/$side-configure.log" 2>&1) ||
         { echo "Configuring $ref failed: $OUT/$side-configure.log" >&2; exit 1; }
     (cd "$tree" && cmake --build --preset debug -j "$JOBS" --target TaskSmackAppTests >"$OUT/$side-build.log" 2>&1) ||
@@ -146,6 +120,56 @@ run_side() {
     echo "  $(find "$OUT/$side" -name '*.png' | wc -l) frames"
 }
 
-run_side a "${REFS[0]}"
-run_side b "${REFS[1]}"
-python3 "$SCRIPT_DIR/ui-compare-report.py" "$OUT" "${REFS[0]}" "${REFS[1]}"
+main() {
+    REFS=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+        --out | --seed | --work)
+            # A value is required (#4213): set -u used to stop on "$2: unbound variable" instead.
+            [[ $# -ge 2 && -n "$2" ]] || { echo "$1 requires a value" >&2; usage >&2; exit 2; }
+            case "$1" in --out) OUT="$2" ;; --seed) SEED="$2" ;; --work) WORK="$2" ;; esac
+            shift 2 ;;
+        --keep) KEEP=true; shift ;;
+        --use-display) USE_DISPLAY=true; shift ;;
+        -h | --help) usage; exit 0 ;;
+        -*) echo "Unknown option: $1" >&2; usage >&2; exit 2 ;;
+        *) REFS+=("$1"); shift ;;
+        esac
+    done
+    if [[ ${#REFS[@]} -ne 2 ]]; then
+        usage >&2
+        exit 2
+    fi
+    if [[ "$USE_DISPLAY" == false ]] && ! command -v xvfb-run >/dev/null; then
+        echo "xvfb-run not found (apt install xvfb), or pass --use-display" >&2
+        exit 1
+    fi
+
+    slug() { tr -c 'A-Za-z0-9._-' '-' <<<"$1" | sed 's/-*$//'; }
+    [[ -n "$OUT" ]] || OUT="$PWD/ui-compare-$(slug "${REFS[0]}")-vs-$(slug "${REFS[1]}")"
+    [[ -n "$WORK" ]] || WORK="$(mktemp -d "${TMPDIR:-/tmp}/tasksmack-ui-compare.XXXXXX")"
+    mkdir -p "$OUT" "$WORK"
+    OUT="$(cd "$OUT" && pwd)"
+
+    WORKTREES=()
+    cleanup() {
+        if [[ "$KEEP" == false ]]; then
+            for tree in "${WORKTREES[@]}"; do
+                git -C "$PROJECT_ROOT" worktree remove --force "$tree" 2>/dev/null || true
+            done
+            rm -rf "$WORK"
+        else
+            echo "Kept the worktrees under $WORK"
+        fi
+    }
+    trap cleanup EXIT
+
+    run_side a "${REFS[0]}"
+    run_side b "${REFS[1]}"
+    python3 "$SCRIPT_DIR/ui-compare-report.py" "$OUT" "${REFS[0]}" "${REFS[1]}"
+}
+
+# Sourced (tests/tools/test_ui_compare_sh.py), it only defines its functions.
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+    main "$@"
+fi

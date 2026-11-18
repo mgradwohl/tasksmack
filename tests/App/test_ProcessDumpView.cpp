@@ -676,7 +676,7 @@ TEST(ProcessDumpViewTest, AHandOffSessionThatIsntElevatedSaysWhyItHasNoFolder)
     mock.setCapabilities(folderCapable());
     ProcessDumpView view([](const std::filesystem::path&) {});
     view.setNoDefaultFolder(true);
-    view.setNoDefaultFolderText(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT);
+    view.setHandoffBlocked(true);
     view.setDefaultFolder([](bool /*noDefault*/) { return std::filesystem::path{}; });
     view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
     ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
@@ -684,6 +684,30 @@ TEST(ProcessDumpViewTest, AHandOffSessionThatIsntElevatedSaysWhyItHasNoFolder)
     EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
     EXPECT_FALSE(view.confirmQuestion().contains(DumpDetail::NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
     EXPECT_TRUE(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT.contains("--handoff"));
+}
+
+// #4242: choosing a folder with Save dump to... doesn't help an unelevated hand-off: the text stays and nothing is made.
+TEST(ProcessDumpViewTest, AnUnelevatedHandOffKeepsItsTextAndMakesNoDumpAfterAFolderIsChosen)
+{
+    TestMocks::MockProcessActions mock;
+    mock.setCapabilities(folderCapable());
+    mock.setDumpFolderCheck({.access = Platform::DumpFolderAccess::AdministratorsOnly, .problem = {}});
+    mock.setFolderChoice(std::optional<std::filesystem::path>(otherFolder()));
+    ProcessDumpView view([](const std::filesystem::path&) {});
+    view.setNoDefaultFolder(true);
+    view.setHandoffBlocked(true);
+    view.setDefaultFolder([](bool /*noDefault*/) { return std::filesystem::path{}; });
+    view.requestInRememberedFolder(TARGET, "lsass.exe", "", &mock);
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    view.chooseFolder(&mock, nullptr);
+    ASSERT_TRUE(view.takeFolderChoice(&mock, true));
+    ASSERT_TRUE(view.takeConfirmCheck(&mock, true));
+    EXPECT_EQ(view.directory(), otherFolder());
+    EXPECT_FALSE(view.needsFolder()) << "a folder is chosen";
+    EXPECT_TRUE(view.handoffBlocked());
+    EXPECT_TRUE(view.confirmQuestion().contains(DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT)) << view.confirmQuestion();
+    view.confirm(&mock);
+    EXPECT_EQ(mock.createDumpCount(), 0);
 }
 #endif
 

@@ -74,17 +74,17 @@ constexpr std::wstring_view TRUSTED_INSTALLER_SID = L"S-1-5-80-956008885-3418522
            isTrustedInstaller(sid) || (creatorOwnerTrusted && IsWellKnownSid(sid, WinCreatorOwnerSid) != FALSE);
 }
 
-/// An owner ownerIsAdministratorsOrSystem() trusts: BUILTIN\Administrators or SYSTEM.
+/// An owner ownerIsAdministratorsOrSystem() trusts: BUILTIN\Administrators, SYSTEM or TrustedInstaller.
 [[nodiscard]] bool trustedOwner(PSID owner)
 {
-    return IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(owner, WinLocalSystemSid) != FALSE;
+    return trustedSid(owner, false);
 }
 
-/// The access bits on a folder that the hint flags (#4188): a listing (FILE_LIST_DIRECTORY, which is FILE_READ_DATA), a
-/// traverse to the files in it (FILE_TRAVERSE, which is FILE_EXECUTE), their generic forms, and a change of its DACL or
-/// owner.
-constexpr ACCESS_MASK FOLDER_RIGHTS =
-    FILE_LIST_DIRECTORY | FILE_TRAVERSE | GENERIC_READ | GENERIC_EXECUTE | GENERIC_ALL | WRITE_DAC | WRITE_OWNER;
+/// The access bits on a folder that the hint flags (#4188): a listing (FILE_LIST_DIRECTORY, which is FILE_READ_DATA), its
+/// generic form, and a change of its DACL or owner. Traverse (FILE_TRAVERSE, GENERIC_EXECUTE) isn't one (#4242): it
+/// can't list the folder, the dump has its own DACL, and Bypass-traverse is Everyone's anyway (Windows' own
+/// C:\Windows\Temp gives Users (X)).
+constexpr ACCESS_MASK FOLDER_RIGHTS = FILE_LIST_DIRECTORY | GENERIC_READ | GENERIC_ALL | WRITE_DAC | WRITE_OWNER;
 
 } // namespace
 
@@ -312,7 +312,7 @@ std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handl
     {
         return std::nullopt;
     }
-    return trustedOwner(owner) || isTrustedInstaller(owner);
+    return trustedOwner(owner);
 }
 
 std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std::filesystem::path& programData,

@@ -1420,6 +1420,12 @@ So:
   placement to the scheduler, as before. On a CPU with one class of core, nothing changes. If the
   classes can't be read (`GetLogicalProcessorInformationEx`), the run isn't pinned and a warning
   says so.
+- **Not in a virtual machine** (#4237). In a Hyper-V, VMware, VirtualBox or other guest
+  (`Win32_ComputerSystem` reports a hypervisor and a virtual machine's maker or model; a physical host
+  with Hyper-V, VBS or WSL2 on is not a guest), every vCPU may report one `EfficiencyClass` whatever
+  cores the host has. So `bench.ps1` can't tell whether the host is hybrid: with one class there, it
+  records the classes as unknown (`hybrid: null`), doesn't pin, and warns. Compare Windows runs from
+  bare metal, or treat a guest's numbers as noisy. Several classes in a guest are used as read.
 - **Never fewer than four CPUs** (#3413). The `*_Concurrent_PublicationWait` benchmarks run up to
   four threads (the measuring thread, a writer and two readers) that spin on each other. On one
   CPU each hand-off waits for a scheduler time slice, so they barely progress and a full run never
@@ -1728,11 +1734,17 @@ On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it che
 checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
 alone in `-Launches` more separate launches (default 4, 5 in all), each a `bench.ps1` run of its own with the
 same preset, binary, `-Core` and arguments plus the plan's filter, so each is pinned, redacted and given a
-manifest like any run. A launch whose manifest records a different core class from the full run's (its
-pinning failed, say) stops it with exit 2 before anything is combined. It then combines them and checks the
-median across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or
-low coverage, 2 unusable input). The flagged names, the launches and the combined run go to
-`<result>.across-launches\` next to the result; `-BudgetSeconds` (default 600) bounds the launches as on CI.
+manifest like any run. The plan, the launches, the budget and the combine are `bench-across-launches.py run`
+(#4198), the command `bench.sh --baseline` and CI use, so the exit codes and the budget are theirs: a launch
+whose manifest records a different core class from the full run's (its pinning failed, say) stops it with exit
+2 before anything is combined, and a launch that fails or writes no result with exit 3. (The launch command
+is `tools/bench-ps1-launch.py`, which hands the plan's filter to `bench.ps1` in a file, since `pwsh -File`
+would split it at its first `:`.) It then checks the median across launches at the same thresholds, and exits
+with that check's code (0 passed, 1 regressions, low coverage or flags that stand, 2 unusable input or a launch
+on another core class, 3 a failed launch). The flagged names, the combined run and the launches (in folders
+numbered 2 to `-Launches` + 1) go to `<result>.across-launches\` next to the result; `-BudgetSeconds`
+(default 600) bounds the launches as on CI, and a launch still running at it is stopped, with the flags
+standing.
 The checks run as `python -I -X utf8`. `-CheckArgs` refuses the options the script sets itself
 (`--baseline`, `--current`, `--current-manifest`, `--regressions-out`) and any abbreviation of them, since
 the checker's argparse accepts unique prefixes. No Windows CI job runs the benchmarks, so this is for local
@@ -1868,9 +1880,11 @@ refuses the other's options (#4212), and a failed capture ends with an error, no
 writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
 it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
 a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
-prints the real compile flags of one of the profiled binary's `src/` files (`src/main.cpp` for the
-app), read from the build's `compile_commands.json` with `python3`, and logs that file's full
-compile command. Every preset exports `compile_commands.json`. If the file or `python3` is missing,
+prints the real compile flags of one of the profiled binary's own files (`src/main.cpp` for the
+app, a `benchmarks/` file for bench mode), read from the build's `compile_commands.json` with
+`python3`, and logs that file's full compile command and `COMPILE_SOURCE`. If none of its own files
+is there, it says the flags are a sample from another target (#4215). The capture's sample count
+comes from `perf report --stats`, which stays quick on a large trace (#4224). Every preset exports `compile_commands.json`. If the file or `python3` is missing,
 the run says so and logs the cache entries alone.
 
 App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log

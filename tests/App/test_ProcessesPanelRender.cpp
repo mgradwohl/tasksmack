@@ -348,6 +348,11 @@ TEST_F(ProcessesPanelRenderTest, CreateDumpFromTheRowMenuAsksFirst)
             return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(mock), .icons = nullptr};
         },
         [](Core::Event&) {});
+    // The panel's dump view reads this session's elevation (#4141), and elevated its default is the admin-only
+    // %ProgramData%\TaskSmack\Dumps, which the confirm would make (#4188). Pinned to %TEMP%, as the Process Details
+    // harnesses do, so an elevated run neither behaves differently nor touches a real system folder (#4269).
+    panel->dumpViewForTesting().setNoDefaultFolder(false);
+    panel->dumpViewForTesting().setDefaultFolder(&DumpDetail::tempDumpDirectory);
     attachAndSeed(*panel);
     Core::ActiveTabChangedEvent shown("Processes");
     panel->onEvent(shown);

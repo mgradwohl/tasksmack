@@ -951,6 +951,10 @@ auto main(int argc, char** argv) -> int
     // PATH, PYTHONPATH and whatever else a list of bad names would miss. After the SDL scrub, which a setcap session
     // (not root) still needs on its own. Logged in runApp().
     Platform::RootEnvironment::applyToThisProcess(::geteuid() == 0 && lessPrivilegedEnvironment());
+    // Last, so neither pass above drops it (the #4284 review): no libdecor, so no GTK in the process, and no Mesa shader
+    // cache (#4254, #4285). GTK loads the modules the user's own settings.ini names, and llvmpipe runs the user's cached
+    // machine code; a setcap session would run either with its capabilities.
+    Platform::SdlEnvironment::keepPrivilegedLoadersOutOfThisProcess(lessPrivilegedEnvironment());
 #endif
     // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - argv is argc C strings, as the C++ standard gives them
     const std::vector<std::string> arguments(argv, argv + std::max(argc, 0));
