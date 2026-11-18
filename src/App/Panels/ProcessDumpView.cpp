@@ -23,7 +23,9 @@
 #ifdef _WIN32
 #include "Platform/Windows/DllSearchPolicy.h"
 #elif defined(__linux__)
-#include <unistd.h> // geteuid(): a root session has no default dump folder (#4163)
+#include "Platform/Linux/RootDumpFolder.h"
+
+#include <unistd.h> // geteuid(): a root session's default dump folder is its own (#4163, #4181)
 #endif
 
 #include <SDL3/SDL_video.h>
@@ -105,6 +107,13 @@ std::filesystem::path defaultDumpDirectory(bool noDefault)
 {
     if (noDefault)
     {
+#ifdef __linux__
+        // Root's own folder, made 0700 in root's home (#4181); never the user's TMPDIR (#4163).
+        if (::geteuid() == 0)
+        {
+            return Platform::RootDumpFolder::rootDumpFolder();
+        }
+#endif
         return {}; // the less-privileged side's %TEMP% (#4141): the user chooses a folder instead
     }
     std::error_code error;
@@ -141,6 +150,16 @@ std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::str
     return std::string(handedOver ? chosenThisSession : stored);
 }
 
+namespace
+{
+#ifdef __linux__
+constexpr const char* NO_DEFAULT_LOG_TEXT =
+    "using root's own folder (TaskSmack-dumps in root's home) when it can be made, unless Save dump to... chooses another (#4181)";
+#else
+constexpr const char* NO_DEFAULT_LOG_TEXT = "no folder until Save dump to... chooses one (#4141)";
+#endif
+} // namespace
+
 std::string rememberedDumpFolder()
 {
     const std::string& stored = UserConfig::get().settings().dumpFolder;
@@ -155,7 +174,7 @@ std::string rememberedDumpFolder()
         {
             spdlog::info("Not writing dumps to {}: it came from settings this session doesn't trust (#2728, #4163); {}",
                          stored,
-                         noDefaultDumpFolder() ? "no folder until Save dump to... chooses one (#4141)"
+                         noDefaultDumpFolder() ? NO_DEFAULT_LOG_TEXT
                                                : "using this account's default unless Save dump to... chooses another");
         }
     }

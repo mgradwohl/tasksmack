@@ -12,6 +12,7 @@
 
 #ifdef __linux__
 #include "Platform/Linux/LinuxCoreDump.h"
+#include "Platform/Linux/RootDumpFolder.h"
 #endif
 
 #include <gtest/gtest.h>
@@ -97,10 +98,16 @@ TEST(ProcessDumpViewTest, TheDefaultFolderIsTheTempFolder)
 // #4141: elevated, %TEMP% is the less-privileged side's (redirectable, and readable unelevated): no default folder.
 TEST(ProcessDumpViewTest, ASessionWithNoDefaultFolderHasNone)
 {
-    EXPECT_EQ(DumpDetail::defaultDumpDirectory(true), std::filesystem::path{});
-    EXPECT_EQ(DumpDetail::dumpDirectory("", true), std::filesystem::path{}) << "nothing remembered: none";
+#ifdef __linux__
+    // Run as root, the default is root's own folder (#4181), not none: only a non-root view forced to no default has none.
+    const std::filesystem::path none = ::geteuid() == 0 ? Platform::RootDumpFolder::rootDumpFolder() : std::filesystem::path{};
+#else
+    const std::filesystem::path none{};
+#endif
+    EXPECT_EQ(DumpDetail::defaultDumpDirectory(true), none);
+    EXPECT_EQ(DumpDetail::dumpDirectory("", true), none) << "nothing remembered: none";
     const std::filesystem::path temp = std::filesystem::temp_directory_path();
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp / "tasksmack-no-such-dump-folder-4141"), true), std::filesystem::path{})
+    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp / "tasksmack-no-such-dump-folder-4141"), true), none)
         << "gone: none, not the temp folder";
     // A folder that exists is still used: one chosen with Save dump to... in this session (trustedDumpFolder()).
     EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp), true), temp);

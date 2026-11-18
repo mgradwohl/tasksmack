@@ -11,6 +11,7 @@
 #include "PosixGuards.h"
 #include "ProcParsing.h"
 #include "ProcPrivileges.h"
+#include "RootDumpFolder.h"
 #include "RootTools.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
@@ -57,7 +58,6 @@
 #include <spawn.h>
 #include <sys/poll.h>
 #include <sys/stat.h>
-#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/types.h> // NOLINT(misc-include-cleaner) - pid_t; clang-tidy 23 maps it to no header
 // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG, WIFEXITED and WEXITSTATUS, which tidy maps elsewhere (see their uses)
@@ -782,17 +782,7 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     // can be planted in it, nor the folder swapped. Not root, it writes as this account, into its own files.
     if (::geteuid() == 0)
     {
-        std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat);
-        if (!refusal.has_value())
-        {
-            // Fail closed: a filesystem that won't say what it is (a FUSE daemon can refuse statfs) may be a user's (the
-            // second #4177 review).
-            struct statvfs vfs = {};
-            struct statfs fs = {};
-            refusal = (::statvfs(directory.c_str(), &vfs) != 0 || ::statfs(directory.c_str(), &fs) != 0)
-                        ? std::optional(std::format("TaskSmack can't tell what filesystem {} is on", directory.string()))
-                        : LinuxCoreDump::userMountRefusal(directory, vfs.f_flag, static_cast<long>(fs.f_type));
-        }
+        const std::optional<std::string> refusal = RootDumpFolder::rootDumpRefusal(directory); // #4176, #4177
         if (refusal.has_value())
         {
             spdlog::warn("Not dumping PID {}: {}", target.pid, *refusal);
