@@ -1462,8 +1462,10 @@ comparison on a shared desktop:
    pinned run against one unpinned.
 2. **Interleave the runs:** A, B, A, B, not all of A and then all of B. Load that comes and goes
    then hits both sides alike.
-3. **Keep the best of N.** Run each side at least twice and compare the faster median of each
-   benchmark. Noise from other work only ever adds time.
+3. **Take the median across launches.** Run each side at least three times, interleaved, and
+   compare the median of each benchmark's per-launch medians, as the gate does (#3448, #4204).
+   Not the best of N: picking each side's fastest run favours whichever side got the luckier
+   launch, and biases the comparison toward a pass.
 4. **Check the load.** Read `system_load` in each manifest (the comparison prints it). A run that
    started or ended with the machine busy is worth repeating.
 
@@ -1561,8 +1563,11 @@ manifest's `preset`, so no file name or manifest field carries it:
 For the script tests, the `TASKSMACK_BENCH_BIN` / `TASKSMACK_BENCH_OUT_DIR` environment variables
 point either script at a stub binary and a scratch directory (`tools/test-bench.ps1`,
 `tests/tools/test_bench_sh.py`); `bench.ps1`'s `-BenchmarkBinary <path>` / `-OutputDirectory <dir>`
-do the same and win over the variables. `TASKSMACK_BENCH_LOAD_SAMPLE_MS` shortens `bench.ps1`'s
-system-load samples for them.
+do the same and win over the variables. `TASKSMACK_BENCH_LOAD_SAMPLE_MS` shortens either script's
+system-load samples for them. `bench.sh` also reads `TASKSMACK_BENCH_SYSFS_CPU` (a fake
+`/sys/devices/system/cpu` for its core choice), `TASKSMACK_BENCH_PROC_STAT` (a fake `/proc/stat`
+for the load) and `TASKSMACK_BENCH_CPUINFO` (a fake `/proc/cpuinfo` for the virtual-machine check)
+(#4205). These are test hooks; a real run leaves them unset.
 A relative binary path, a bare name included, is relative to the current directory (the
 PowerShell location for `bench.ps1`) and is never looked up on `PATH`: the file that is checked
 and hashed is the one that runs. They are also the only way to move the output: an extra `--benchmark_out` or
@@ -1575,19 +1580,27 @@ interpreter `find_python` in `tools/common.sh` picks (the project `.venv`, else 
 By default, benchmarks output to console. You can also:
 
 ```bash
-# Keep baselines platform-specific for apples-to-apples comparisons
-# Linux baseline:    perf-data/linux-baseline.json
 # Windows baseline:  perf-data/win-baseline.json (+ win-baseline.manifest.json; a full default
 #                    `pwsh tools/bench.ps1` run, pinned to the performance cores, #3414)
-# A committed baseline keeps only the aggregate rows (mean/median/stddev/cv), which is all the
-# comparison reads: every repetition of the full suite is over pre-commit's 500 KB file limit.
+# Linux: no committed local baseline (#4199). Compare a branch with main on the same machine (A/B, below).
+# CI's baseline, perf-data/linux-ci-baseline.json, is a hosted runner's numbers, for CI's gate.
+# The comparison reads only the aggregate rows (the median); linux-ci-baseline.json also keeps every
+# repetition, which merge-benchmark-baselines.py copies through (#4201).
 
 # Compare Windows runs (median per benchmark; exits 1 on a regression over --threshold, default 15%)
 python tools/check-benchmark-regression.py --baseline perf-data/win-baseline.json --current perf-data/win-benchmark-<timestamp>.json
 
-# Compare Linux runs
-python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current perf-data/benchmark-<timestamp>.json
+# Compare a Linux branch with main (A/B): run main, then check the branch against that run, across launches
+git worktree add ../tasksmack-main origin/main && (cd ../tasksmack-main && ./tools/bench.sh)
+./tools/bench.sh --baseline ../tasksmack-main/perf-data/benchmark-<timestamp>.json
 ```
+
+There is no committed Linux baseline for local runs (#4199). The one there was came from a
+developer machine in May 2026, unpinned, with one repetition and no medians, and its benchmark
+names had drifted until no comparison against it could pass. A baseline only means something on the
+machine and build it came from, so on Linux compare a branch with a run of `main` on the same
+machine, with the same preset and `--core`, and follow the A/B steps above. Under WSL2 that
+comparison can't be pinned (#4194), so treat its numbers as noisy.
 
 The comparison reads each run's `<result>.manifest.json` next to it, or the one
 `--baseline-manifest` / `--current-manifest` names. When both record a `placement.core_class`
@@ -1692,7 +1705,7 @@ options the script sets itself (`--baseline`, `--current`, `--current-manifest`,
 their abbreviations are refused. The launches and the combined run go to `<result>.across-launches/`:
 
 ```bash
-./tools/bench.sh --baseline perf-data/linux-baseline.json
+./tools/bench.sh --baseline ../tasksmack-main/perf-data/benchmark-<timestamp>.json   # a run of main (A/B, above)
 # CI's thresholds, against CI's baseline (a hosted runner's numbers; see below)
 ./tools/bench.sh --baseline perf-data/linux-ci-baseline.json --check-arg=--threshold=40 \
     --check-arg=--threshold-overrides=perf-data/linux-ci-thresholds.json
@@ -1721,11 +1734,17 @@ On Windows, `bench.ps1 -Baseline <file>` does all of that itself (#3448): it che
 checker's defaults plus any `-CheckArgs`, and when that flags regressions it runs the flagged benchmarks
 alone in `-Launches` more separate launches (default 4, 5 in all), each a `bench.ps1` run of its own with the
 same preset, binary, `-Core` and arguments plus the plan's filter, so each is pinned, redacted and given a
-manifest like any run. A launch whose manifest records a different core class from the full run's (its
-pinning failed, say) stops it with exit 2 before anything is combined. It then combines them and checks the
-median across launches at the same thresholds, and exits with that check's code (0 passed, 1 regressions or
-low coverage, 2 unusable input). The flagged names, the launches and the combined run go to
-`<result>.across-launches\` next to the result; `-BudgetSeconds` (default 600) bounds the launches as on CI.
+manifest like any run. The plan, the launches, the budget and the combine are `bench-across-launches.py run`
+(#4198), the command `bench.sh --baseline` and CI use, so the exit codes and the budget are theirs: a launch
+whose manifest records a different core class from the full run's (its pinning failed, say) stops it with exit
+2 before anything is combined, and a launch that fails or writes no result with exit 3. (The launch command
+is `tools/bench-ps1-launch.py`, which hands the plan's filter to `bench.ps1` in a file, since `pwsh -File`
+would split it at its first `:`.) It then checks the median across launches at the same thresholds, and exits
+with that check's code (0 passed, 1 regressions, low coverage or flags that stand, 2 unusable input or a launch
+on another core class, 3 a failed launch). The flagged names, the combined run and the launches (in folders
+numbered 2 to `-Launches` + 1) go to `<result>.across-launches\` next to the result; `-BudgetSeconds`
+(default 600) bounds the launches as on CI, and a launch still running at it is stopped, with the flags
+standing.
 The checks run as `python -I -X utf8`. `-CheckArgs` refuses the options the script sets itself
 (`--baseline`, `--current`, `--current-manifest`, `--regressions-out`) and any abbreviation of them, since
 the checker's argparse accepts unique prefixes. No Windows CI job runs the benchmarks, so this is for local
@@ -1739,9 +1758,8 @@ pwsh tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json -CheckA
 & ./tools/bench.ps1 win-benchmark -Baseline perf-data/win-baseline.json -CheckArgs @('--threshold', '40')
 ```
 
-This is a *separate* baseline from `perf-data/linux-baseline.json` above, deliberately: that one was
-recorded on a developer machine, and comparing it with hosted `ubuntu-24.04` runners flagged the machine
-difference as a regression on every run (#683). Hosted runners also land on several CPU classes, and no
+It's for CI alone, deliberately: a baseline recorded on a developer machine, compared with hosted
+`ubuntu-24.04` runners, flagged the machine difference as a regression on every run (#683). Hosted runners also land on several CPU classes, and no
 class is the slowest at everything: on `ubuntu-26.04` a 2600 MHz class reads the thread-handoff benchmarks
 (`*_Concurrent_PublicationWait`) about twice as slow as a 3240 MHz one, and the /proc and syscall ones
 (`BM_ProcessProbe_*`, `BM_*Model_Refresh`) two to three times as fast (#3395). So the committed CI baseline
@@ -1853,13 +1871,20 @@ write artifacts under `perf-data/` and emit `KEY=value` lines at exit for script
 ### Linux — CPU profiling (perf)
 
 Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
-Default preset is `profile` for app mode and `benchmark` for bench mode. Every run prints, and
+The default preset is `profile` in both modes (#4222): an `-O2 -g` build with frame pointers that builds
+the benchmarks too, so stacks have lines and inline frames (`benchmark` is `-O3` with no `-g`, for
+timing). Bench mode's default filter is `BM_ProcessModel_Refresh$` alone (#4223), as
+`profile-etw.ps1`'s (#4241); `--help` gives a survey filter over the probes and models. Each mode
+refuses the other's options (#4212), and a failed capture ends with an error, not "Capture complete"
+(#4211). Every run prints, and
 writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
 it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
 a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
-prints the real compile flags of one of the profiled binary's `src/` files (`src/main.cpp` for the
-app), read from the build's `compile_commands.json` with `python3`, and logs that file's full
-compile command. Every preset exports `compile_commands.json`. If the file or `python3` is missing,
+prints the real compile flags of one of the profiled binary's own files (`src/main.cpp` for the
+app, a `benchmarks/` file for bench mode), read from the build's `compile_commands.json` with
+`python3`, and logs that file's full compile command and `COMPILE_SOURCE`. If none of its own files
+is there, it says the flags are a sample from another target (#4215). The capture's sample count
+comes from `perf report --stats`, which stays quick on a large trace (#4224). Every preset exports `compile_commands.json`. If the file or `python3` is missing,
 the run says so and logs the cache entries alone.
 
 App mode profiles steady state, not startup (#1371). It launches TaskSmack, waits for it to log
@@ -1964,19 +1989,25 @@ sudo apt install heaptrack
 ./tools/profile-heap.sh app
 
 # Unattended app trace (#3406): closed 60 s after its main loop starts, for agents, CI and re-measures.
-# Use the profile preset (the default) when you need TaskSmack's own call sites named: release-type
-# presets have no symbols, so heaptrack shows them as addresses.
+# Use the profile preset (the default, both modes, #4222) when you need TaskSmack's own call sites in full:
+# release and benchmark keep function names but have no -g, so no file, line or inlined frame; only the
+# optimized preset strips its symbols (-s), and heaptrack then shows addresses (#4218).
 ./tools/profile-heap.sh app --duration 60
 
-# Benchmark trace — pinpoint per-call allocation sources
+# Benchmark trace — pinpoint per-call allocation sources. Defaults: the profile preset and
+# BM_ProcessModel_Refresh$ alone (#4223); several benchmarks together warn, as their counts scale with
+# each one's iteration count.
 ./tools/profile-heap.sh bench
-./tools/profile-heap.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
+./tools/profile-heap.sh bench --bench-filter 'BM_SystemModel_Refresh$'
 
 # Open in GUI
-heaptrack_gui perf-data/heaptrack-app-<timestamp>.gz
+# heaptrack names its file after the traced process (#4217): perf-data/heaptrack-<mode>-<timestamp>.<pid>.zst
+# (.gz on older heaptrack). The run prints the path as HEAPTRACK_DATA= and writes heaptrack_print's report
+# to perf-data/heaptrack-<mode>-<timestamp>-summary.txt.
+heaptrack_gui perf-data/heaptrack-app-<timestamp>.<pid>.zst
 
 # Headless analysis (CI-friendly)
-heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
+heaptrack_print perf-data/heaptrack-app-<timestamp>.<pid>.zst
 ```
 
 ### Windows — CPU profiling (ETW)
@@ -2005,9 +2036,12 @@ pwsh tools/profile-etw.ps1 app -DurationSeconds 20 -IncludeStartup
 # Dry run of the launch/warm-up/crash checks, with no WPR session and no UAC prompt
 pwsh tools/profile-etw.ps1 app -DurationSeconds 10 -SkipTrace
 
-# Benchmark trace
+# Benchmark trace — defaults to the win-profile build (-g and frame pointers, so samples resolve
+# to functions; win-benchmark has no debug info) and one benchmark, BM_ProcessModel_Refresh,
+# because several benchmarks in one run skew the sampled percentages (a filter that matches more
+# than one warns). -Preset still overrides.
 pwsh tools/profile-etw.ps1 bench
-pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_ProcessModel_Refresh$'
+pwsh tools/profile-etw.ps1 bench -BenchmarkFilter 'BM_SystemModel_Refresh$'
 pwsh tools/profile-etw.ps1 bench -BenchmarkFilter '.*'   # profile the entire benchmark suite
 
 # Use win-profile for symbol-rich follow-up attribution
@@ -3111,6 +3145,19 @@ We use GitHub Actions for our CI workflows. They are categorized as follows:
     | `.github/actionlint.yaml` | actionlint's configuration, read only by the pre-commit hook, which still runs. |
 
     To add a file, show the same for it, add it to `AUTOMATION` in the classifier with its reason, and add a case to `tests/tools/test_ci_change_classifier.py`. That test fails when an allowlisted file is missing, when a build input names one outside a comment, or when a `tests/tools` script names one without `Automation checks` running it.
+
+    **Developer-tools-only pull requests** (#4248). `dev_tools_only` is true when every change is docs, an automation file or a local developer tool, at least one of them a developer tool: the perf, profiling and idle-measurement scripts and their tests (`DEV_TOOLS` in the classifier, exact paths, each with its reason). No workflow, build or C++ test reads those, so the C++ jobs skip as for docs-only, and two jobs run instead, with no build:
+    - `Developer tool checks (Linux)` (Ubuntu): the Python tool tests that read those files, plus the three automation tests.
+    - `Developer tool checks (Windows)` (windows-2025): the pwsh ones (`tools/test-*.ps1`).
+
+    `tools/run-dev-tool-tests.py linux|windows` runs the classifier's `DEV_TOOL_TESTS` the way their ctest entries do: one at a time, with `TASKSMACK_TEST_BASH` or `TASKSMACK_TEST_PYTHON` set. Run it locally to check a change the same way. `CI Success` requires both jobs to pass whenever `dev_tools_only` is true. On the list: `profile-perf.sh`, `profile-heap.sh`, `analyze-perf.sh`, `time-trace.sh`, `pgo.sh`/`pgo.ps1`, `measure-idle.sh`/`measure-idle.ps1` with their samplers and summary readers, `ui-compare.sh` and its report, `bench.ps1` and the `cmake-cache.ps1` reader it shares with the ETW scripts, the ETW capture and analysis scripts and their `.wprp` profiles, and `perf-data/win-baseline*.json`.
+
+    Never on the list:
+    - anything a workflow reads;
+    - the scripts Heavy Checks runs (`bench.sh`, `bench-manifest.py`, `bench-across-launches.py`, `check-benchmark-regression.py`, `merge-benchmark-baselines.py`, `ninja-build-profile.py`, `wayland-matrix.sh`), and the helpers the build and CI scripts share with them (`common.sh`, `common.ps1`);
+    - CI's own baseline (`perf-data/linux-ci-*`).
+
+    A change that also touches a source, CMake or a test's ctest entry gets every job. `tests/tools/test_ci_change_classifier.py` fails when a listed file is missing, when a workflow or anything a C++ job runs names one, or when a tool test names one without the classifier's `DEV_TOOL_TESTS` running it.
 - **`reusable-build-test.yml`**: Contains the actual matrix steps for setting up LLVM, Python, `ccache`, configuring CMake, building, and running CTest tests, plus an optional Linux build-only `TaskSmackBenchmarks` step (`build_benchmarks` input). Called by other workflows. It configures with `-DTASKSMACK_ENABLE_PCH=OFF` (except the weekly unity build) because ccache can't cache PCH-using compiles; local presets keep PCH on.
 - **`arm64.yml`**: Linux aarch64 (`ubuntu-26.04-arm`) and Windows ARM64 (`windows-11-arm`, plain ARM64, not ARM64EC) debug build and full `ctest`, through `reusable-build-test.yml` (#2214). It runs on pushes to `main` and `release/*`, nightly and on manual dispatch, and on a pull request only when the PR carries the `ci:arm64` label or its changes match that label's paths (adding the label by hand starts a run; the PR labeler adds it for build-system and arch-specific paths, #3820, but with `GITHUB_TOKEN`, which starts no run, so a small `detect` job reads the same globs from `.github/labeler.yml` with `tools/arm64-paths.py` and a PR's first push runs, #3930). It is not part of `CI Success` or any required check, and for any other PR its build jobs are skipped before a runner is assigned. Windows ARM64 installs the native `LLVM-<ver>-woa64.msi` (`setup-windows-llvm`, pinned by SHA-256, as x64's `win64.msi` is) and runs the display suites on `mmozeiko/build-mesa`'s ARM64 llvmpipe (`setup-mesa-llvmpipe`, pinned by SHA-256, test-only). `release.yml` builds and ships the ARM64 packages with its own matrix; this workflow is the PR and nightly test leg. On `windows-11-arm` the PowerShell script tests (`pwsh-script` label) run in a second `ctest` with `--repeat until-pass:2`, because pwsh itself crashes there now and then ("Internal CLR error", #2832); nothing else is retried.
 - **`manual-build.yml`**: Manual dispatch entry point to trigger a specific OS and build type build from the GitHub UI without opening a PR.

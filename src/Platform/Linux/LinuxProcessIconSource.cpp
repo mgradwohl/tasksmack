@@ -3,16 +3,23 @@
 #include "Platform/IProcessIconSource.h"
 #include "Platform/IconImageFile.h"
 #include "Platform/Linux/DesktopEntryIcons.h"
+#include "Platform/Linux/PosixGuards.h"
+#include "Platform/Linux/ProcParsing.h"
 
+#include <array>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <expected>
 #include <filesystem>
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
+
+#include <fcntl.h>
+#include <unistd.h>
 
 namespace Platform
 {
@@ -39,21 +46,40 @@ LinuxProcessIconSource::LinuxProcessIconSource(DesktopEntryIcons::SearchDirs dir
     : m_Dirs(std::move(dirs)), m_ProcRoot(std::move(procRoot))
 {}
 
-std::string LinuxProcessIconSource::executablePath(std::int32_t pid, std::uint64_t /*startTimeTicks*/)
+std::string LinuxProcessIconSource::executablePath(std::int32_t pid, std::uint64_t startTimeTicks)
 {
     if (pid <= 0)
     {
         return {};
     }
-    // Unreadable for another user's process without CAP_SYS_PTRACE, and for kernel threads: the
-    // icon is then looked up by the process's name alone.
-    std::error_code ec;
-    const std::filesystem::path target = std::filesystem::read_symlink(m_ProcRoot / std::to_string(pid) / "exe", ec);
-    if (ec)
+    // One handle on the process's /proc directory: once open it keeps naming this process, so the exe
+    // link read through it after the process exits fails instead of reaching the PID's next owner.
+    const std::string dirPath = (m_ProcRoot / std::to_string(pid)).string();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const Posix::FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
+    if (dir.get() < 0)
     {
         return {};
     }
-    std::string path = target.string();
+    // The row's start time, when known (#4192, the Linux half of #4183): a reused PID is another
+    // process, whose program isn't the row's, so it gives no path. Unknown (0) reads by PID, as before.
+    if (startTimeTicks != 0)
+    {
+        const std::expected<std::string, int> stat = ProcParsing::readWholeFileAt(dir.get(), "stat");
+        if (!stat.has_value() || ProcParsing::parseStatStartTime(*stat) != startTimeTicks)
+        {
+            return {};
+        }
+    }
+    // Unreadable for another user's process without CAP_SYS_PTRACE, and for kernel threads: the
+    // icon is then looked up by the process's name alone.
+    std::array<char, 4096> buffer{}; // Linux's PATH_MAX
+    const auto length = ::readlinkat(dir.get(), "exe", buffer.data(), buffer.size());
+    if (length <= 0 || static_cast<std::size_t>(length) >= buffer.size())
+    {
+        return {};
+    }
+    std::string path(buffer.data(), static_cast<std::size_t>(length));
     // An executable replaced on disk since it started (an upgrade) reads as "... (deleted)".
     constexpr std::string_view DELETED_SUFFIX = " (deleted)";
     if (path.ends_with(DELETED_SUFFIX))

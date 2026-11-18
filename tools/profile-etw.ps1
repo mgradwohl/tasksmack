@@ -45,10 +45,12 @@
     Build preset that contains the binaries to run. Defaults depend on mode:
         - app   -> win-release, the preset release builds ship (.github/workflows/release.yml),
                    so the profile measures the binary users run (#1186)
-        - bench -> win-benchmark for non-debug-info benchmark binaries
+        - bench -> win-profile (-O2 -g, frame pointers, and it builds the benchmarks), so the
+                   samples resolve to functions and lines. win-benchmark has no debug info; use it
+                   for timing with tools/bench.ps1, not for ETW attribution (#4235)
     The preset and the compile flags its build tree was configured with are logged at the start
-    of the run and recorded in the manifest. Pass win-profile for a symbol-rich frame-pointer
-    build for deeper follow-up attribution, or win-optimized (LTO, -march=x86-64-v3,
+    of the run and recorded in the manifest. Pass win-profile in app mode for a symbol-rich
+    frame-pointer build for deeper follow-up attribution, or win-optimized (LTO, -march=x86-64-v3,
     -fomit-frame-pointer) to profile that opt-in build -- it is not what ships.
 .PARAMETER WarmupSeconds
     app mode: after the app's main window appears (waiting up to -MainWindowTimeoutSeconds), wait
@@ -82,12 +84,11 @@
     an app-mode capture run unattended/scripted. Omit (0) to keep the default interactive
     behavior (wait for manual close, useful when you actually want to exercise the UI).
 .PARAMETER BenchmarkFilter
-    Google Benchmark filter used when Mode=bench. Defaults to a curated set covering every
-    probe/model refresh path (Process/System/GPU/Storage/Disk) plus the PDH per-process GPU
-    path and core HistoryBuffer ring operations - deliberately excludes MemoryGrowth-style
-    benchmarks (measure allocation, not CPU hotspots) and the pure-algorithmic Format/Numeric
-    micro-benchmarks (better suited to bench.ps1's regression tracking than ETW correlation).
-    Pass '.*' to profile the entire benchmark suite instead.
+    Google Benchmark filter used when Mode=bench. Defaults to BM_ProcessModel_Refresh$, a single
+    representative benchmark (the Processes table's refresh path), so the sampled percentages
+    describe one workload (#4236). To survey several refresh paths, pass an alternation such as
+    'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUModel_Refresh)$'
+    (expect the warning below); '.*' profiles the entire suite.
 
     The filter is checked before capturing (#874), as tools/profile-perf.sh does on Linux: a
     filter matching no benchmark fails, and one matching several warns, because each benchmark
@@ -167,7 +168,7 @@ param(
     # window.
     [string]$TargetPath,
 
-    [string]$BenchmarkFilter = 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh|GPUModel_ProcessGpuCounters|PDHGPUProbe_ReadProcessGPUCounters|DiskProbe_Read|StorageModel_Sample|HistoryBuffer_(Push|RandomAccess|SequentialAccess|CopyTo))$',
+    [string]$BenchmarkFilter = 'BM_ProcessModel_Refresh$',
 
     [int]$BenchmarkRepetitions = 5,
 
@@ -213,12 +214,13 @@ $perfDir = Resolve-CaptureOutputDirectory -OutputDirectory $OutputDirectory -Rep
 
 if ([string]::IsNullOrWhiteSpace($Preset)) {
     # win-release is what .github/workflows/release.yml builds and ships (#1186).
-    $Preset = if ($Mode -eq 'app') { 'win-release' } else { 'win-benchmark' }
+    $Preset = Get-DefaultProfilePreset -Mode $Mode
 }
 if ($SkipTrace -and $Mode -ne 'app') { throw '-SkipTrace is supported in app mode only.' }
 if ($Mode -ne 'app' -and ($IncludeStartup -or $UseUserConfig -or $PSBoundParameters.ContainsKey('WarmupSeconds'))) {
     throw '-WarmupSeconds, -IncludeStartup and -UseUserConfig apply to app mode only.'
 }
+Assert-BenchmarkOption -Mode $Mode -Role $Role -Bound $PSBoundParameters -Repetitions $BenchmarkRepetitions -MinTime $BenchmarkMinTime
 
 $timestampGiven = -not [string]::IsNullOrEmpty($Timestamp)
 if (-not $timestampGiven) {
@@ -236,6 +238,7 @@ function Use-CaptureTimestamp {
     $script:tracePath = $paths.Trace
     $script:childLogPath = $paths.ChildLog
     $script:launcherLogPath = $paths.LauncherLog
+    $script:appLogPath = $paths.AppLog
     $script:benchJsonPath = $paths.BenchJson
     $script:manifestPath = $paths.Manifest
     $script:controlDir = $paths.Control
@@ -312,7 +315,7 @@ function Invoke-ProfileTarget {
         $windowStyle = if ($TargetPath) { 'Hidden' } else { 'Normal' }
         return Invoke-AppCapture -BinaryPath $binaryPath -StartTrace $StartTrace -StopTrace $StopTrace `
             -DurationSeconds $DurationSeconds -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup `
-            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle -UseUserConfig:$UseUserConfig
+            -MainWindowTimeoutSeconds $MainWindowTimeoutSeconds -WindowStyle $windowStyle -UseUserConfig:$UseUserConfig -AppLogPath $appLogPath
     }
     $result = [ordered]@{
         Binary         = $binaryPath

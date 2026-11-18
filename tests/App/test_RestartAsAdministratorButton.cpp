@@ -158,7 +158,16 @@ class RestartAsAdministratorButtonTest : public ::testing::Test
         ImGui::ActivateItemByID(ImHashStr(label, 0, window->ID));
     }
 
+    /// Presses the button @p label drawn in the section whose ID scope is @p scope, on the next frame.
+    static void pressIn(const char* scope, const char* label)
+    {
+        const ImGuiWindow* window = ImGui::FindWindowByName(WINDOW);
+        ASSERT_NE(window, nullptr);
+        ImGui::ActivateItemByID(ImHashStr(label, 0, ImHashStr(scope, 0, window->ID)));
+    }
+
     static constexpr const char* WINDOW = "Section";
+    static constexpr const char* SECTION = "section"; ///< The ID scope a lone section draws its button in
 
   private:
     ImGuiContext* m_Context = nullptr;
@@ -239,33 +248,56 @@ TEST_F(RestartAsAdministratorButtonTest, ARefusedReadWithNoHelperOffersTheRestar
 {
     const RestartOffered offered;
     FakeSection section{.refused = true, .canHelper = false};
-    std::string text = frame([&section] { Detail::drawAuthenticateToReadButton(section); });
+    std::string text = frame([&section] { Detail::drawAuthenticateToReadButton(section, SECTION); });
     EXPECT_TRUE(text.contains("Restart as administrator...")) << text;
     EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT)) << text;
 
-    press(RestartAsAdministrator::LABEL);
-    static_cast<void>(frame([&section] { Detail::drawAuthenticateToReadButton(section); }));
+    pressIn(SECTION, RestartAsAdministrator::LABEL);
+    static_cast<void>(frame([&section] { Detail::drawAuthenticateToReadButton(section, SECTION); }));
     ASSERT_EQ(offered.raised().size(), 1U);
     EXPECT_EQ(offered.raised().front(), Core::EventType::OpenElevationNotice);
     EXPECT_EQ(section.authorizedReads, 0) << "the restart, not a read through a helper there isn't";
 
     // With a helper, its Read as administrator, as before.
     section.canHelper = true;
-    text = frame([&section] { Detail::drawAuthenticateToReadButton(section); });
+    text = frame([&section] { Detail::drawAuthenticateToReadButton(section, SECTION); });
     EXPECT_TRUE(text.contains(AuthorizeWording::READ_TEXT)) << text;
     EXPECT_FALSE(text.contains("Restart as administrator...")) << text;
 
     // A read that wasn't refused offers neither.
     section = FakeSection{};
-    text = frame([&section] { Detail::drawAuthenticateToReadButton(section); });
+    text = frame([&section] { Detail::drawAuthenticateToReadButton(section, SECTION); });
     EXPECT_FALSE(text.contains("Restart as administrator...")) << text;
     EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT)) << text;
+}
+
+// #4268: two sections drawn in one window each draw the button in their own ID scope, so a press reaches only its own.
+TEST_F(RestartAsAdministratorButtonTest, TwoSectionsInOneWindowEachTakeTheirOwnPress)
+{
+    FakeSection first{.refused = true, .canHelper = true};
+    FakeSection second{.refused = true, .canHelper = true};
+    const auto drawBoth = [&first, &second]
+    {
+        Detail::drawAuthenticateToReadButton(first, "first");
+        Detail::drawAuthenticateToReadButton(second, "second");
+    };
+    static_cast<void>(frame(drawBoth));
+
+    pressIn("second", AuthorizeWording::READ_LABEL);
+    static_cast<void>(frame(drawBoth));
+    EXPECT_EQ(second.authorizedReads, 1);
+    EXPECT_EQ(first.authorizedReads, 0) << "the second section's press, not the first's";
+
+    pressIn("first", AuthorizeWording::READ_LABEL);
+    static_cast<void>(frame(drawBoth));
+    EXPECT_EQ(first.authorizedReads, 1);
+    EXPECT_EQ(second.authorizedReads, 1);
 }
 
 TEST_F(RestartAsAdministratorButtonTest, ARefusedReadOffersNothingWhereTaskSmackCantRestart)
 {
     FakeSection section{.refused = true, .canHelper = false};
-    const std::string text = frame([&section] { Detail::drawAuthenticateToReadButton(section); });
+    const std::string text = frame([&section] { Detail::drawAuthenticateToReadButton(section, SECTION); });
     EXPECT_FALSE(text.contains("Restart as administrator...")) << text;
     EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT)) << text;
 }

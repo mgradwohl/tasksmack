@@ -314,8 +314,11 @@ class Tee:
 
 
 def stop(process: subprocess.Popen) -> None:
-    """Stops @p process and, on POSIX, every process in its group (bench.sh and the benchmark binary it runs)."""
+    """Stops @p process and every process under it: its group on POSIX, its tree on Windows (bench.sh or bench.ps1 and the benchmark binary it runs)."""
     if os.name == "nt":
+        # taskkill /T reaches what the command started (pwsh, then the benchmark binary), which kill() alone leaves running.
+        with contextlib.suppress(OSError):
+            subprocess.run(["taskkill", "/PID", str(process.pid), "/T", "/F"], capture_output=True, check=False)
         process.kill()
         process.wait()
         return

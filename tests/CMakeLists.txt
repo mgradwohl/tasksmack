@@ -335,6 +335,22 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(ProfileHeapShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/profile-perf.sh's bench mode and option checks: its defaults (#4222, #4223), the call-graph mode
+# (#4210), a failed capture (#4211) and each mode refusing the other's options (#4212). A stub perf and stub
+# benchmarks; the script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME ProfilePerfShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_profile_perf_sh.py)
+    set_tests_properties(ProfilePerfShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
+endif()
+
+# tools/pgo.sh's help exits 0 and an unknown action 1 (#4216); nothing is built. Linux-only.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME PgoShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pgo_sh.py)
+    set_tests_properties(PgoShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
+
 # tools/analyze-perf.sh fails, rather than summarizing, when every TaskSmack function it sampled is an
 # unresolved address (#2977). A stub perf; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -389,6 +405,14 @@ add_test(NAME TidyFindingsScript
 # fake registry: it removes only a TaskSmack's taskmgr.exe IFEO Debugger, and the key only when TaskSmack made it.
 add_test(NAME NsisIfeoUninstallStep
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_ifeo_uninstall.py)
+
+# tools/ui-compare.sh's argument checks (#4213) and dependency seeding (#4214): sourced, on fixture trees and
+# throwaway git repositories; nothing is built. The script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME UiCompareShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_sh.py)
+    set_tests_properties(UiCompareShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
 
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript

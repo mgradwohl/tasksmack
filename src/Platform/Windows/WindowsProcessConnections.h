@@ -8,7 +8,9 @@
 //      of the read: it pins the PID, so the process checked is the one whose rows are kept.
 //   2. GetExtendedTcpTable(TCP_TABLE_OWNER_PID_ALL) and GetExtendedUdpTable(UDP_TABLE_OWNER_PID), each
 //      for AF_INET and AF_INET6 (WindowsSocketTables.h, shared with the Connections tab's reader, #3356),
-//      kept only for rows whose owning PID is the target's.
+//      kept only for rows whose owning PID is the target's. A table that can't be read fails the read, but a
+//      family this machine doesn't run (ERROR_NOT_SUPPORTED: IPv6 removed) has no sockets, as the Connections
+//      tab reads it (#4266).
 //
 // Unlike Linux, the tables list every user's sockets with their owning PID, so the sockets themselves
 // are never refused. Only step 1 can be: a process TaskSmack may not open even for limited query

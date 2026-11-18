@@ -11,7 +11,7 @@
 #
 # Training (phase 1) runs two workloads on the instrumented build:
 #   1. the benchmark suite (TaskSmackBenchmarks), for the Domain/Platform hot paths;
-#   2. the headless UI training driver (TaskSmackUiTraining, #880): the real panels, every main tab,
+#   2. the headless UI training driver (TaskSmackUiTraining, #880): the real panels, six main tabs (not Connections or Users, UiTrainingPlan.h),
 #      by the weights in src/Training/UiTrainingPlan.h, once on the real probes and once on the
 #      synthetic large-UI machine (#1413). No window, no input: it never takes a process action.
 #
@@ -114,7 +114,7 @@ function Invoke-Generate {
             exit 1
         }
 
-        # Every main tab, by the weights in src/Training/UiTrainingPlan.h, for a fixed number of frames;
+        # The six main tabs the plan trains (not Connections or Users), by the weights in src/Training/UiTrainingPlan.h, for a fixed number of frames;
         # once per probe set (TASKSMACK_SYNTHETIC is read once per process). Each run writes its own
         # .profraw (%p) when it exits.
         foreach ($probes in @('real', 'synthetic')) {
