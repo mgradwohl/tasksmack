@@ -339,6 +339,9 @@ class WindowsProcessProbe : public IProcessProbe
         bool signatureRequested = false;               // Whether the worker was asked to check the image (#3070)
         std::optional<std::int32_t> gdiObjectCount;    // GetGuiResources (light TTL, #1156)
         std::optional<IoPriority> ioPriority;          // The I/O priority hint (light TTL, #3563)
+        // SignatureWorker::keyFor() of the image and process, made when the check is asked for and passed to every
+        // find() until the answer is in, then freed (#4276): no sample makes it again.
+        std::string signatureKey;
         // The app it belongs to (#3457): the package read once, with the first handle; an unpackaged process's
         // window AppUserModelID looked for on the heavy TTL until one is found (lookForWindowAppIds()).
         std::string packageFamily;

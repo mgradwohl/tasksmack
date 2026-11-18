@@ -1553,9 +1553,15 @@ void WindowsProcessProbe::updateSignature(DetailCacheEntry& cache, ProcessCounte
         {
             m_Signatures->request(cache.image.path, process);
             cache.signatureRequested = true;
+            // Asked for again every sample until it is in (#4059), so the worker's key is made once, here (#4276)
+            cache.signatureKey = WindowsSignature::SignatureWorker::keyFor(cache.image.path, process);
         }
         // nullopt until the worker has checked it; then the publisher it read with the check comes too (#3703)
-        cache.signature = m_Signatures->find(cache.image.path, process, &cache.image.publisher);
+        cache.signature = m_Signatures->find(cache.image.path, process, cache.signatureKey, &cache.image.publisher);
+        if (cache.signature.has_value())
+        {
+            cache.signatureKey = std::string{}; // Never asked for again: its memory goes now
+        }
         if (cache.signature.has_value() && cache.image.publisher.empty() && m_SignatureFunctions.readPublisher != nullptr &&
             m_Signatures->ended())
         {

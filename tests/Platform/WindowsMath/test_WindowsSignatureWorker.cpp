@@ -1189,6 +1189,40 @@ TEST_F(SignatureBindingTest, EachProcessOfAPathHasItsOwnAnswerAndTheSameFileIsCh
     EXPECT_EQ(checksOf("C:\\app.exe"), 1);
 }
 
+// #4276: the probe makes a process's key once and asks with it every sample. The answer is the one find() without a
+// key gives, and a key the table doesn't hold yet requests its path, as find() does.
+TEST_F(SignatureBindingTest, AFindWithTheCallersKeyAnswersAsAFindThatMakesItAndRequestsAnUnknownPath)
+{
+    setStamp("C:\\app.exe", 1);
+    setStamp("C:\\renamed.exe", 2);
+    bindTo(7, "C:\\renamed.exe");
+    bindTo(8, "C:\\app.exe");
+    SignatureWorker worker(bindingFunctions(), WorkerOptions{});
+    const ImageProcess renamed{.pid = 7, .startTimeTicks = 100};
+    const ImageProcess other{.pid = 8, .startTimeTicks = 200};
+    const std::string renamedKey = SignatureWorker::keyFor("C:\\App.EXE", renamed);
+    EXPECT_EQ(renamedKey, SignatureWorker::keyFor("c:\\app.exe", renamed)) << "the path's case is folded, as the table's is";
+    EXPECT_NE(renamedKey, SignatureWorker::keyFor("C:\\app.exe", other)) << "each process has its own";
+
+    worker.beginSample();
+    EXPECT_FALSE(worker.find("C:\\app.exe", renamed, renamedKey).has_value()) << "not in the table: requested, not answered";
+    ASSERT_TRUE(worker.waitUntilIdle(WAIT));
+    EXPECT_EQ(worker.pathCount(), 1U);
+
+    std::string keyed;
+    std::string made;
+    const std::optional<SignatureCheck> withKey = worker.find("C:\\app.exe", renamed, renamedKey, &keyed);
+    const std::optional<SignatureCheck> withoutKey = worker.find("C:\\app.exe", renamed, &made);
+    ASSERT_TRUE(withKey.has_value());
+    ASSERT_TRUE(withoutKey.has_value());
+    EXPECT_EQ(withKey->signer, "Signer of C:\\renamed.exe");
+    EXPECT_EQ(withKey->signer, withoutKey->signer);
+    EXPECT_EQ(keyed, "Publisher of C:\\renamed.exe");
+    EXPECT_EQ(keyed, made);
+    EXPECT_EQ(worker.pathCount(), 1U) << "the same entry: no second request";
+    EXPECT_EQ(checksOf("C:\\renamed.exe"), 1);
+}
+
 // The publisher the probe reads once the worker has ended (#3862) goes through the same binding: the bound file's,
 // none when it can't be bound, and the path's only with no binding to make (no openProcessImage, or no process).
 TEST_F(SignatureBindingTest, ThePublisherReadWithoutTheWorkerIsTheBoundFilesToo)
