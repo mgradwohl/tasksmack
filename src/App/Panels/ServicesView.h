@@ -93,6 +93,11 @@ struct ServicesViewState
     bool scrollToSelected = false; ///< Scroll the selected row into view on the next draw (#1886)
 };
 
+/// The service the action bar acts on (#4304): the one row @p state's selection names. A selection by name alone
+/// (Show in Services) that one service answers to is pinned to its id in @p state; one that two or more answer to
+/// (names alike once shown as UTF-8) names none, until a row is clicked. Null when none answers.
+[[nodiscard]] const Platform::ServiceInfo* selectedService(std::span<const Platform::ServiceInfo> services, ServicesViewState& state);
+
 class ServiceActionsView;
 class ProcessIconView;
 

@@ -8,6 +8,7 @@
 #include "Mocks/MockServiceProbe.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 #include "UI/Theme.h"
 
 #include <gtest/gtest.h>
@@ -20,6 +21,7 @@
 #include <format>
 #include <functional>
 #include <memory>
+#include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
@@ -515,6 +517,72 @@ TEST_F(ServicesViewRenderTest, ActionBarActsOnTheSelectedServiceByName)
     // A selection the latest sample no longer lists acts on nothing.
     state.selectedName = "RemovedService";
     EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a service"));
+}
+
+// #4304: two services whose names show alike ("Up<U+D800>date" and "Up<U+FFFD>date") are two rows. A selection by name
+// alone (Show in Services) acts on neither; a click selects the one clicked, by its id.
+[[nodiscard]] Domain::ServicePublication twinPublication()
+{
+    Domain::ServicePublication publication;
+    publication.version = 1;
+    publication.services = {
+        service("Up\xEF\xBF\xBD"
+                "date",
+                "Updater",
+                ServiceState::Running,
+                100),
+        service("Up\xEF\xBF\xBD"
+                "date",
+                "Updater",
+                ServiceState::Running,
+                200),
+    };
+    publication.services[0].nativeId = static_cast<Platform::NativeId>(7);
+    publication.services[1].nativeId = static_cast<Platform::NativeId>(8);
+    return publication;
+}
+
+TEST(ServicesViewTest, ASelectionByNameAloneThatTwoServicesAnswerToNamesNeither)
+{
+    const auto publication = twinPublication();
+    ServicesViewState state;
+    state.selectedName = publication.services[0].name;
+    EXPECT_EQ(selectedService(publication.services, state), nullptr) << "not whichever sorts first";
+    EXPECT_EQ(state.selectedNativeId, Platform::NativeId::None) << "and nothing is pinned";
+
+    // One service answering to it is the selection, pinned to its id.
+    const std::span<const Platform::ServiceInfo> one(publication.services.data(), 1);
+    EXPECT_EQ(selectedService(one, state), publication.services.data());
+    EXPECT_EQ(state.selectedNativeId, publication.services[0].nativeId);
+    // Pinned, it stays that service when the other is listed again.
+    EXPECT_EQ(selectedService(publication.services, state), publication.services.data());
+}
+
+TEST_F(ServicesViewRenderTest, TwoServicesShownAlikeAreSelectedByTheirIds)
+{
+    const auto publication = twinPublication();
+    ServiceActionsView actions(std::make_shared<IdleServiceActions>());
+    ServicesViewState state;
+    state.selectedName = publication.services[0].name; // Show in Services, by name alone
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a service")) << "ambiguous: no service acted on";
+
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    // Clicked without the action bar, as firstRowCentre measured the row.
+    io.AddMousePosEvent(row.x, row.y);
+    static_cast<void>(captureFrame(publication, state));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(captureFrame(publication, state));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    static_cast<void>(captureFrame(publication, state));
+
+    ASSERT_NE(state.selectedNativeId, Platform::NativeId::None) << "the click selects by id";
+    const Platform::ServiceInfo* selected = selectedService(publication.services, state);
+    ASSERT_NE(selected, nullptr);
+    EXPECT_EQ(selected->nativeId, state.selectedNativeId) << "only the row clicked";
+    EXPECT_FALSE(captureFrame(publication, state, &actions).contains("Select a service"));
 }
 
 } // namespace

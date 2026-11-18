@@ -45,6 +45,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cassert>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -1255,7 +1256,15 @@ std::vector<StartupEntry> WindowsStartupProbe::enumerate()
 
     // Each entry's id for its exact identity (#4304): the actions switch what it maps to, never what the entry's
     // display text would convert back to.
-    if (m_Impl->ids && m_Impl->keys.size() == entries.size())
+    // Every reader adds one key per entry it lists; a mismatch is a bug in a reader, so it is loud, and no id is
+    // published: a wrong pairing would switch another entry.
+    if (m_Impl->keys.size() != entries.size())
+    {
+        spdlog::warn(
+            "WindowsStartupProbe: {} identities for {} entries; no entry gets an id this sample", m_Impl->keys.size(), entries.size());
+        assert(m_Impl->keys.size() == entries.size() && "each startup reader adds one key per entry it lists");
+    }
+    else if (m_Impl->ids)
     {
         const std::vector<NativeId> ids = m_Impl->ids->publish(m_Impl->keys);
         for (std::size_t index = 0; index < entries.size(); ++index)

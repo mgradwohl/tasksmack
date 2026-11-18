@@ -150,6 +150,30 @@ void rebuildRowsIfStale(const Domain::ServicePublication& publication, ServicesV
 
 } // namespace
 
+const Platform::ServiceInfo* selectedService(std::span<const Platform::ServiceInfo> services, ServicesViewState& state)
+{
+    const Platform::ServiceInfo* match = nullptr;
+    for (const Platform::ServiceInfo& service : services)
+    {
+        if (!isSelectedService(service, state))
+        {
+            continue;
+        }
+        if (match != nullptr)
+        {
+            // A selection by name alone (Show in Services) that two services answer to (#4304): neither is
+            // acted on until a row is clicked, rather than whichever sorts first.
+            return nullptr;
+        }
+        match = &service;
+    }
+    if (match != nullptr)
+    {
+        state.selectedNativeId = match->nativeId; // the one service it named: pinned, by id from now on
+    }
+    return match;
+}
+
 std::string_view serviceStateLabel(Platform::ServiceState state) noexcept
 {
     using enum Platform::ServiceState;
@@ -338,9 +362,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
         const Platform::ServiceInfo* selected = nullptr;
         if (!state.selectedName.empty())
         {
-            const auto found = std::ranges::find_if(
-                publication->services, [&state](const Platform::ServiceInfo& service) { return isSelectedService(service, state); });
-            selected = (found != publication->services.end()) ? &*found : nullptr;
+            selected = selectedService(publication->services, state);
         }
         actions->renderActionBar(selected);
         actions->renderResultLine();
