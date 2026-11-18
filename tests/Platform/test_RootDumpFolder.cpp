@@ -138,7 +138,9 @@ TEST(RootDumpFolderRootTest, ARootHomeUnderAFolderOthersMayWriteGetsNoDefault)
     {
         GTEST_SKIP() << "needs root";
     }
-    const std::filesystem::path home = std::filesystem::temp_directory_path() / ("tasksmack-root-home-4262-" + std::to_string(::getpid()));
+    // /tmp itself, not temp_directory_path() (CI's is under /home/runner): the refusal must be /tmp's, sticky and
+    // world-writable, not some other folder's (the #4286 CI run's lesson).
+    const std::filesystem::path home = std::filesystem::path("/tmp") / ("tasksmack-root-home-4262-" + std::to_string(::getpid()));
     std::filesystem::create_directories(home);
     std::filesystem::permissions(home, std::filesystem::perms::owner_all);
     EXPECT_EQ(rootDumpFolderIn(home.string() + "/", 0, &rootDumpRefusal), std::filesystem::path{});
