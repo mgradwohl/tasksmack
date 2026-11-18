@@ -195,6 +195,7 @@ DEV_TOOLS = {
     "tests/tools/test_idle_sample.py": "idle-sample.py's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_resize_perf_summary_awk.py": "resize-perf-summary.awk's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_ui_compare_report.py": "ui-compare-report.py's tool test, run by ctest and by dev-tools-checks.",
+    "tests/tools/test_ui_compare_sh.py": "ui-compare.sh's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-bench.ps1": "bench.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-bench-across-launches.ps1": "bench.ps1 -Baseline's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-cmake-cache.ps1": "cmake-cache.ps1's tool test, run by ctest and by dev-tools-checks.",
@@ -221,6 +222,7 @@ DEV_TOOL_TESTS = {
         "tests/tools/test_idle_sample.py",
         "tests/tools/test_resize_perf_summary_awk.py",
         "tests/tools/test_ui_compare_report.py",
+        "tests/tools/test_ui_compare_sh.py",
     ),
     "windows": (
         "tools/test-bench.ps1",

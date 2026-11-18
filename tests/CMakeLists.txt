@@ -406,6 +406,14 @@ add_test(NAME TidyFindingsScript
 add_test(NAME NsisIfeoUninstallStep
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_ifeo_uninstall.py)
 
+# tools/ui-compare.sh's argument checks (#4213) and dependency seeding (#4214): sourced, on fixture trees and
+# throwaway git repositories; nothing is built. The script is Linux-only, so the test is too.
+if(TASKSMACK_BASH AND NOT WIN32)
+    add_test(NAME UiCompareShScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_sh.py)
+    set_tests_properties(UiCompareShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 60)
+endif()
+
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
