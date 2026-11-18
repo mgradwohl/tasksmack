@@ -8,14 +8,17 @@
 
 #include "App/Panels/AuthorizeWording.h"
 #include "App/Panels/ProcessMemoryMapView.h"
+#include "App/Panels/ProcessModulesView.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessMemoryMap.h"
+#include "Platform/IProcessModules.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
 #include <imgui_internal.h>
 
+#include <cstddef>
 #include <span>
 #include <string>
 
@@ -447,7 +450,8 @@ TEST_F(ProcessMemoryMapViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonAnd
 
     const ImGuiWindow* details = ImGui::FindWindowByName("Details");
     ASSERT_NE(details, nullptr);
-    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, details->ID));
+    // The button is in its section's ID scope (#4268).
+    ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, ImHashStr("memory_map", 0, details->ID)));
     static_cast<void>(renderAndCapture(view, true)); // the frame the press lands in
     EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
     view.finishPendingRead(TARGET);
@@ -455,6 +459,84 @@ TEST_F(ProcessMemoryMapViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonAnd
     text = renderAndCapture(view, true);
     EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT));
     EXPECT_TRUE(text.contains("Memory map (6)"));
+}
+
+// #4268: Process Details draws every section in one child, so two refused sections (Modules and Memory map, an
+// unelevated user viewing a SYSTEM process) draw the same "Read as administrator" label side by side. Each is in
+// its own section's ID scope, so each takes its own press: one press reads only its own section again.
+TEST_F(ProcessMemoryMapViewRenderTest, TwoRefusedSectionsEachTakeTheirOwnPress)
+{
+    ProcessModulesView modules;
+    TestMocks::MockProcessModulesReader modulesReader;
+    modulesReader.setResult({.status = Platform::ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
+    modulesReader.setAuthorizedResult({.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}});
+    ProcessMemoryMapView memoryMap;
+    TestMocks::MockProcessMemoryMapReader mapReader;
+    mapReader.setResult({.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false});
+    mapReader.setAuthorizedResult(windowsMap());
+
+    // One frame of both sections, held open, in one window, as Process Details draws them.
+    const auto drawBoth = [&modules, &memoryMap]
+    {
+        std::string captured;
+        ImGui::NewFrame();
+        ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
+        ImGui::SetNextWindowSize(ImVec2(1200.0F, 800.0F));
+        ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
+        ImGui::LogToBuffer();
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        modules.render(true);
+        ImGui::SetNextItemOpen(true, ImGuiCond_Always);
+        memoryMap.render(true);
+        captured = GImGui->LogBuffer.c_str();
+        ImGui::LogFinish();
+        ImGui::End();
+        ImGui::Render();
+        return captured;
+    };
+    const auto update = [&]
+    {
+        if (modules.update(&modulesReader, TARGET, 0.0F))
+        {
+            modules.finishPendingRead(TARGET);
+        }
+        if (memoryMap.update(&mapReader, TARGET, 0.0F))
+        {
+            memoryMap.finishPendingRead(TARGET);
+        }
+    };
+
+    static_cast<void>(drawBoth()); // drawn open, so the first update reads
+    update();
+    ASSERT_TRUE(modules.offersAuthenticateToRead());
+    ASSERT_TRUE(memoryMap.offersAuthenticateToRead());
+    const std::string text = drawBoth();
+    const std::size_t first = text.find(AuthorizeWording::READ_TEXT);
+    ASSERT_NE(first, std::string::npos) << text;
+    EXPECT_NE(text.find(AuthorizeWording::READ_TEXT, first + 1), std::string::npos) << "both sections offer it: " << text;
+
+    const ImGuiWindow* details = ImGui::FindWindowByName("Details");
+    ASSERT_NE(details, nullptr);
+    const ImGuiID modulesButton = ImHashStr(AuthorizeWording::READ_LABEL, 0, ImHashStr("modules", 0, details->ID));
+    const ImGuiID mapButton = ImHashStr(AuthorizeWording::READ_LABEL, 0, ImHashStr("memory_map", 0, details->ID));
+    ASSERT_NE(modulesButton, mapButton);
+
+    // The second section's button: only the memory map reads again.
+    ImGui::ActivateItemByID(mapButton);
+    static_cast<void>(drawBoth()); // the frame the press lands in
+    update();
+    EXPECT_EQ(mapReader.authorizedReadCount(), 1);
+    EXPECT_EQ(modulesReader.authorizedReadCount(), 0) << "the memory map's press, not the modules'";
+    EXPECT_TRUE(modules.offersAuthenticateToRead());
+    EXPECT_FALSE(memoryMap.offersAuthenticateToRead());
+
+    // The first section's, still offered: now the modules read again.
+    ImGui::ActivateItemByID(modulesButton);
+    static_cast<void>(drawBoth());
+    update();
+    EXPECT_EQ(modulesReader.authorizedReadCount(), 1);
+    EXPECT_EQ(mapReader.authorizedReadCount(), 1);
+    EXPECT_FALSE(modules.offersAuthenticateToRead());
 }
 
 TEST_F(ProcessMemoryMapViewRenderTest, WindowsShowsReservedButNoSmapsSizes)
