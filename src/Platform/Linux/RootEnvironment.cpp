@@ -51,8 +51,8 @@ std::optional<std::string> rootPasswdHome()
     return std::string(entry.pw_dir);
 }
 
-/// The uid that started this root session, from what sudo, pkexec or doas set (SUDO_UID, PKEXEC_UID, DOAS_USER), or
-/// nullopt (su names no one).
+/// The uid that started this root session, from what sudo, pkexec or doas set (SUDO_UID, PKEXEC_UID, DOAS_USER), and
+/// only when a process above this one runs as it (#4186), or nullopt (su names no one).
 std::optional<uid_t> invokingUid()
 {
     for (const char* name : {"SUDO_UID", "PKEXEC_UID"})
@@ -62,7 +62,8 @@ std::optional<uid_t> invokingUid()
         {
             std::uint32_t uid = 0;
             const std::string_view view(text);
-            if (std::from_chars(view.data(), view.data() + view.size(), uid).ptr == view.data() + view.size() && uid != 0)
+            if (std::from_chars(view.data(), view.data() + view.size(), uid).ptr == view.data() + view.size() && uid != 0 &&
+                SessionUser::invokerIsAboveThisProcess(static_cast<uid_t>(uid))) // never one su -p passed through (#4186)
             {
                 return static_cast<uid_t>(uid);
             }
@@ -74,7 +75,8 @@ std::optional<uid_t> invokingUid()
         passwd entry{};
         passwd* found = nullptr;
         std::vector<char> buffer(16384);
-        if (::getpwnam_r(doasUser, &entry, buffer.data(), buffer.size(), &found) == 0 && found != nullptr && entry.pw_uid != 0)
+        if (::getpwnam_r(doasUser, &entry, buffer.data(), buffer.size(), &found) == 0 && found != nullptr && entry.pw_uid != 0 &&
+            SessionUser::invokerIsAboveThisProcess(entry.pw_uid)) // as SUDO_UID (#4186)
         {
             return entry.pw_uid;
         }

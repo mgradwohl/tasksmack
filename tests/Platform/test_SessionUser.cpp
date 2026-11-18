@@ -323,4 +323,74 @@ TEST(SessionUserTest, AUserAboveIsFoundUpTheProcessTree)
     EXPECT_FALSE(aUserIsAbove(400, tree({{400, {300, 0, 0}}, {300, {400, 0, 0}}})));
 }
 
+// #4186: a SUDO_UID or PKEXEC_UID is the invoking user only when that user runs a process above TaskSmack.
+TEST(SessionUserTest, OnlyAnInvokerAboveTheProcessIsTrusted)
+{
+    using Platform::SessionUser::ProcessIds;
+    const std::map<int, ProcessIds> sudo{{400, {300, 0, 0}}, {300, {200, 0, 0}}, {200, {1, 1000, 1000}}};
+    const auto ids = [&sudo](int pid) -> std::optional<ProcessIds>
+    {
+        if (const auto found = sudo.find(pid); found != sudo.end())
+        {
+            return found->second;
+        }
+        return std::nullopt;
+    };
+    // sudo: TaskSmack <- sudo (root) <- alice's shell.
+    EXPECT_TRUE(uidIsAbove(400, 1000, ids));
+    EXPECT_FALSE(uidIsAbove(400, 1001, ids)) << "su -p with SUDO_UID=1001: no process of 1001's above";
+    EXPECT_FALSE(uidIsAbove(400, 1000, [](int) -> std::optional<ProcessIds> { return std::nullopt; })) << "nothing known";
+    // #4193 review: an administrator (1000) su'd into user 2000's shell, whose .bashrc forged SUDO_UID=1000, then su -p.
+    const std::map<int, ProcessIds> suInto{
+        {400, {300, 0, 0}}, {300, {250, 2000, 0}}, {250, {200, 2000, 2000}}, {200, {150, 1000, 0}}, {150, {1, 1000, 1000}}};
+    const auto suIds = [&suInto](int pid) -> std::optional<ProcessIds>
+    {
+        if (const auto found = suInto.find(pid); found != suInto.end())
+        {
+            return found->second;
+        }
+        return std::nullopt;
+    };
+    EXPECT_FALSE(uidIsAbove(400, 1000, suIds)) << "only the nearest user counts: 2000's shell started this";
+    EXPECT_TRUE(uidIsAbove(400, 2000, suIds));
+    // A setuid-to-1000 helper run by 2000 (effective 1000 only) isn't 1000.
+    EXPECT_FALSE(uidIsAbove(400,
+                            1000,
+                            [](int pid) -> std::optional<ProcessIds>
+                            {
+                                return pid == 400 ? std::optional(ProcessIds{.parent = 300, .realUid = 0, .effectiveUid = 0})
+                                                  : std::optional(ProcessIds{.parent = 1, .realUid = 2000, .effectiveUid = 1000});
+                            }));
+    // TaskSmack itself isn't counted.
+    EXPECT_FALSE(uidIsAbove(
+        400,
+        0x7fff,
+        [](int pid) -> std::optional<ProcessIds>
+        { return pid == 400 ? std::optional(ProcessIds{.parent = 0, .realUid = 0x7fff, .effectiveUid = 0x7fff}) : std::nullopt; }));
+
+    const auto above1000 = [](uid_t uid)
+    {
+        return uid == 1000;
+    };
+    EXPECT_EQ(invokerVariable("SUDO_UID", std::string("1000"), above1000), "1000");
+    EXPECT_EQ(invokerVariable("SUDO_UID", std::string("1001"), above1000), std::nullopt) << "a forged SUDO_UID is dropped";
+    EXPECT_EQ(invokerVariable("PKEXEC_UID", std::string("1001"), above1000), std::nullopt);
+    EXPECT_EQ(invokerVariable("SUDO_UID", std::string("0"), above1000), "0") << "root: invokingUser() refuses it anyway";
+    EXPECT_EQ(invokerVariable("SUDO_UID", std::string("x1"), above1000), "x1") << "malformed: refused anyway";
+    EXPECT_EQ(invokerVariable("HOME", std::string("/home/a"), above1000), "/home/a") << "other variables pass";
+    EXPECT_EQ(invokerVariable("SUDO_UID", std::nullopt, above1000), std::nullopt);
+
+    // invokingUser() over the trusted value: a forged one names no one, so the session has no invoking user.
+    const auto account = [](uid_t uid) -> std::optional<Account>
+    {
+        return uid == 1000 || uid == 1001 ? std::optional(Account{.gid = uid, .name = "u", .home = "/home/u", .shell = {}, .groups = {}})
+                                          : std::nullopt;
+    };
+    const auto forged = [&](std::string_view name)
+    {
+        return invokerVariable(name, name == "SUDO_UID" ? std::optional<std::string>("1001") : std::nullopt, above1000);
+    };
+    EXPECT_FALSE(invokingUser(0, forged, account).has_value());
+}
+
 } // namespace Platform::SessionUser
