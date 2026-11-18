@@ -451,10 +451,13 @@ TEST(WindowsDumpFolderTest, TheCheckReadsARealFoldersOwnerAndDacl)
 
     // The real folders' own DACLs, the owner set aside. The Users folder's read is in its DACL: flagged.
     EXPECT_EQ(readersWithAdministratorsAsOwner(heldUsers->get()), DumpFolderAccess::ReadableByUser);
-    // A real folder whose DACL is administrators-only: this account owns it, which still lets it read the folder's
-    // security (READ_CONTROL), but has no ACE in it. Passes once the owner is set aside.
+    // A real folder whose DACL is administrators-only for every right the hint measures: this account owns it, which
+    // lets it read the folder's security (READ_CONTROL), and its own ACE grants only what opening and removing the
+    // folder take (SYNCHRONIZE, DELETE, FILE_READ_ATTRIBUTES), none of which lists, traverses or controls it. Passes once
+    // the owner is set aside.
     const std::filesystem::path adminsDaclOnly = scratch.path() / L"admins-dacl-only";
-    ASSERT_TRUE(makeFolderWith(adminsDaclOnly, std::format("O:{}{}", me, adminsOnlyDacl))) << GetLastError();
+    ASSERT_TRUE(makeFolderWith(adminsDaclOnly, std::format("O:{0}D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;;0x110080;;;{0})", me)))
+        << GetLastError();
     const RemovedFolder removeAdminsDaclOnly(adminsDaclOnly);
     const UniqueHandle adminsDaclFolder(CreateFileW(adminsDaclOnly.c_str(),
                                                     READ_CONTROL,
