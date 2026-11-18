@@ -300,6 +300,26 @@ class ProcessDumpView
         m_NoDefaultFolderText = text;
     }
 
+    /// Marks this a hand-off session that isn't elevated (#4242): no admin-only file can be made, so whatever folder is
+    /// chosen, the confirm keeps DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT and Create dump file stays disabled. The
+    /// default constructor decides this from the token; tests set it here.
+    void setHandoffBlocked(bool blocked) noexcept
+    {
+        m_HandoffBlocked = blocked;
+#ifdef _WIN32
+        if (blocked)
+        {
+            m_NoDefaultFolderText = DumpDetail::HANDOFF_NO_DEFAULT_FOLDER_TEXT;
+        }
+#endif
+    }
+
+    /// Whether this is a hand-off session that isn't elevated (setHandoffBlocked()), which can't make a dump at all.
+    [[nodiscard]] bool handoffBlocked() const noexcept
+    {
+        return m_HandoffBlocked;
+    }
+
     /// Whether the dump's folder passed the folder check as AdministratorsOnly (#4188), such as TaskSmack's own default:
     /// the result then names it, with Copy, instead of offering Open folder, which an unelevated Explorer can't do.
     [[nodiscard]] bool resultFolderOpensOnlyElevated() const noexcept
@@ -374,7 +394,8 @@ class ProcessDumpView
     /// The confirm was accepted: starts the dump on a worker, through @p actions (null: the result says
     /// actions are unavailable, and nothing starts). @p actions must outlive the dump: see the file
     /// comment. Does nothing unless a confirm is pending, or while the folder dialog is up, its
-    /// folder is being checked, it has no folder yet (needsFolder()), or its folder would be refused (folderRefused()).
+    /// folder is being checked, it has no folder yet (needsFolder()), it is handoffBlocked(), or its folder would be refused
+    /// (folderRefused()).
     void confirm(Platform::IProcessActions* actions);
 
     /// The confirm was cancelled or dismissed: nothing starts.
@@ -529,6 +550,7 @@ class ProcessDumpView
     bool m_CheckResolve = false;      // it resolves m_CheckRemembered first
     bool m_CancelRequested = false;   // Cancel was pressed while the dump ran
     bool m_NoDefaultFolder = false;   // no temp-folder default (setNoDefaultFolder(), #4141)
+    bool m_HandoffBlocked = false;    // a hand-off session that isn't elevated (setHandoffBlocked(), #4242)
     bool m_FolderRefused = false;     // the confirm's folder is one the dump would refuse (folderRefused(), #4164)
     bool m_FolderAdminOnly = false;   // the confirm's folder is for administrators only (resultFolderOpensOnlyElevated())
     std::string_view m_NoDefaultFolderText = DumpDetail::NO_DEFAULT_FOLDER_TEXT; // setNoDefaultFolderText()

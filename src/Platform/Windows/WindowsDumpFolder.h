@@ -15,10 +15,11 @@
 // it, or change who may. It is an allowlist read of the folder's owner and DACL, not an access check: only
 // Administrators (BA), SYSTEM (SY) and TrustedInstaller are trusted, and CREATOR OWNER in an inherit-only ACE. It flags:
 //   - a folder with no DACL (everyone has every access);
-//   - an owner other than Administrators or SYSTEM (as ownerIsAdministratorsOrSystem() trusts), who can change the DACL;
+//   - an owner other than Administrators, SYSTEM or TrustedInstaller, who can change the DACL;
 //   - an allow ACE that applies to the folder itself (not INHERIT_ONLY_ACE) granting FILE_LIST_DIRECTORY (FILE_READ_DATA),
-//     FILE_TRAVERSE (FILE_EXECUTE), GENERIC_READ, GENERIC_EXECUTE, GENERIC_ALL, WRITE_DAC or WRITE_OWNER to any SID not
-//     trusted: the signed-in user, a group they are in, or the user whose credentials weren't the ones that elevated;
+//     GENERIC_READ, GENERIC_ALL, WRITE_DAC or WRITE_OWNER to any SID not trusted (traverse alone, FILE_TRAVERSE or
+//     GENERIC_EXECUTE, isn't flagged, #4242): the signed-in user, a group they are in, or the user whose credentials weren't the ones that
+//     elevated;
 //   - a container-inherit allow ACE (CONTAINER_INHERIT_ACE) granting any of those to such a SID: it reaches subfolders.
 // Deny, audit and alarm ACEs are ignored (so it may warn where a deny would stop the access); an object ACE that grants
 // any of those is flagged whatever its SID, and so is any other allow ACE type. Unknown means only that the folder's

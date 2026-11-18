@@ -285,9 +285,7 @@ TEST(WindowsDumpFolderTest, AnAllowlistTrustsOnlyAdministratorsSystemAndTrustedI
         EXPECT_EQ(readersOf(std::format("O:BAD:P(A;OICI;FA;;;BA)(A;;FR;;;{})", sid)), DumpFolderAccess::ReadableByUser) << sid;
     }
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x1;;;BU)"), DumpFolderAccess::ReadableByUser) << "FILE_LIST_DIRECTORY";
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x20;;;BU)"), DumpFolderAccess::ReadableByUser) << "FILE_TRAVERSE";
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GR;;;BU)"), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GX;;;BU)"), DumpFolderAccess::ReadableByUser);
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GA;;;BU)"), DumpFolderAccess::ReadableByUser);
     // Control of the folder itself (WRITE_DAC, WRITE_OWNER) for anyone else: they could grant themselves the rest.
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;WD;;;BU)"), DumpFolderAccess::ReadableByUser);
@@ -304,10 +302,16 @@ TEST(WindowsDumpFolderTest, AnAllowlistTrustsOnlyAdministratorsSystemAndTrustedI
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OIIO;WD;;;BU)"), DumpFolderAccess::AdministratorsOnly);
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;OICIIO;FW;;;BU)"), DumpFolderAccess::AdministratorsOnly);
     EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x2;;;BU)"), DumpFolderAccess::AdministratorsOnly) << "FILE_ADD_FILE alone";
+    // Traverse alone can't list the folder (#4242): Windows' own C:\Windows\Temp gives Users (CI)(S,WD,AD,X).
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;0x20;;;BU)"), DumpFolderAccess::AdministratorsOnly) << "FILE_TRAVERSE";
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;;GX;;;BU)"), DumpFolderAccess::AdministratorsOnly) << "GENERIC_EXECUTE";
+    EXPECT_EQ(readersOf("O:BAD:P(A;OICI;FA;;;BA)(A;CI;0x100026;;;BU)"), DumpFolderAccess::AdministratorsOnly)
+        << "Windows temp folder's Users ACE";
     EXPECT_EQ(readersOf("O:BAD:P(D;OICI;FA;;;BU)(A;OICI;FA;;;BA)"), DumpFolderAccess::AdministratorsOnly);
-    // An owner other than Administrators or SYSTEM, even with an administrators-only DACL.
+    // An owner other than Administrators, SYSTEM or TrustedInstaller, even with an administrators-only DACL.
     EXPECT_EQ(readersOf(std::format("O:{}D:P(A;OICI;FA;;;BA)", OTHER_USER)), DumpFolderAccess::ReadableByUser);
-    EXPECT_EQ(readersOf(std::format("O:{}D:P(A;OICI;FA;;;BA)", TRUSTED_INSTALLER)), DumpFolderAccess::ReadableByUser);
+    // TrustedInstaller owns Windows' own folders, so it is trusted as an owner as it is in an ACE (#4242).
+    EXPECT_EQ(readersOf(std::format("O:{}D:P(A;OICI;FA;;;BA)", TRUSTED_INSTALLER)), DumpFolderAccess::AdministratorsOnly);
     // No DACL at all: everyone has every access. An empty DACL, or one with no inheritable ACE, grants no one else
     // anything. Unknown is only an unreadable descriptor.
     EXPECT_EQ(readersOf("O:BAD:NO_ACCESS_CONTROL"), DumpFolderAccess::ReadableByUser);
