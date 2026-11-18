@@ -335,6 +335,11 @@ set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
 add_test(NAME NsisUnicodeScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_unicode.py)
 set_tests_properties(NsisUnicodeScript PROPERTIES TIMEOUT 60)
 
+# The installer and the uninstaller stop, before they change anything, while TaskSmack.exe or TaskSmackHelper.exe
+# runs (#4436): TaskSmackInUseCheck, run against a fake folder, and where both call it. Pure Python, on every platform.
+add_test(NAME NsisInUseCheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_in_use.py)
+set_tests_properties(NsisInUseCheck PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)

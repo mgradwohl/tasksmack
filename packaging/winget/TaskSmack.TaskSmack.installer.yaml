@@ -16,6 +16,12 @@
 # as a plain uninstall, which turns both off. No InstallerSwitches: winget's nullsoft defaults (/S for a silent
 # install, /D= for --location) are the installer's, and an upgrade needs no switch of its own. No Commands: the
 # installer doesn't put TaskSmack on PATH.
+#
+# ExpectedReturnCodes (#4436): the installer and its uninstaller exit with 32, before they change anything, when
+# TaskSmack.exe or TaskSmackHelper.exe in the folder is running, in any user's session (TASKSMACK_IN_USE_EXIT_CODE,
+# cmake/CPackProjectConfig.cmake.in). packageInUse has winget say "Application is currently running. Exit the
+# application then try again." rather than report a failed install. At the root, so both installers have it;
+# tools/check-winget-manifests.ps1 checks it is there.
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: TaskSmack.TaskSmack
@@ -38,6 +44,9 @@ AppsAndFeaturesEntries:
     ProductCode: TaskSmack
 InstallationMetadata:
   DefaultInstallLocation: '%ProgramFiles%\TaskSmack'
+ExpectedReturnCodes:
+  - InstallerReturnCode: 32
+    ReturnResponse: packageInUse
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v${VERSION}/TaskSmack-${VERSION}-win64.exe
