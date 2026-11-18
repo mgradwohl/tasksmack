@@ -39,7 +39,7 @@ TEST(WindowsProcessSnapshotSizeTest, ABufferThatKeepsFallingShortAtLeastDoubles)
 
     std::size_t bytes = PROCESS_SNAPSHOT_INITIAL_BYTES;
     int retries = 0;
-    constexpr std::size_t BIG = 40 * 1024 * KIB; // A server's 40 MiB snapshot, the kernel saying only "too small"
+    constexpr std::size_t BIG = std::size_t{40} * 1024 * KIB; // A server's 40 MiB snapshot, the kernel saying only "too small"
     while (bytes < BIG)
     {
         bytes = grownProcessSnapshotBytes(bytes, 0);

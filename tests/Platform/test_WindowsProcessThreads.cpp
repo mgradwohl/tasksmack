@@ -23,7 +23,6 @@
 // clang-format on
 
 #include <algorithm>
-#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
