@@ -99,6 +99,9 @@ if(WIN32)
         add_test(NAME BenchAcrossLaunchesPs1Script
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-bench-across-launches.ps1)
         set_tests_properties(BenchAcrossLaunchesPs1Script PROPERTIES ENVIRONMENT "TASKSMACK_TEST_PYTHON=${Python3_EXECUTABLE}")
+        # tools/pgo.ps1 --help exits 0 and an unknown command exits 1 (#4239); no build runs.
+        add_test(NAME PgoScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-pgo.ps1)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
