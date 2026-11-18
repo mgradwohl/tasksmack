@@ -20,6 +20,7 @@
 #include "Platform/Windows/WindowsProcessMachineMath.h"
 #include "Platform/Windows/WindowsProcessProbe.h"
 #include "Platform/Windows/WindowsProcessProbeMath.h"
+#include "Platform/Windows/WindowsProcessSnapshotSize.h"
 
 #include <gtest/gtest.h>
 
@@ -191,6 +192,9 @@ struct FakeWin // NOLINT(clang-analyzer-optin.performance.Padding)
     int tableFillsTooSmall = 0; // Fills that report the table grew meanwhile
     int table6Calls = 0;
     bool failSnapshot = false;
+    std::size_t snapshotPaddingBytes = 0; ///< Written after the last entry (whose link is 0): a bigger snapshot (#4277)
+    int snapshotQueries = 0;
+    std::vector<ULONG> snapshotLengths; ///< The buffer size each snapshot query was given, in order (#4277)
     // The detail caches' clock: still unless a test moves it, so no TTL runs out between two
     // enumerate() calls however slowly the test runs (#2054).
     std::chrono::steady_clock::time_point now;
@@ -211,6 +215,8 @@ HANDLE newHandle()
 
 LONG NTAPI fakeNtQuerySystemInformation(ULONG /*infoClass*/, PVOID buffer, ULONG length, PULONG returnLength)
 {
+    ++fake().snapshotQueries;
+    fake().snapshotLengths.push_back(length);
     if (fake().failSnapshot)
     {
         return STATUS_ACCESS_DENIED_NT;
@@ -221,7 +227,7 @@ LONG NTAPI fakeNtQuerySystemInformation(ULONG /*infoClass*/, PVOID buffer, ULONG
                                   ((p.name.size() + 1) * sizeof(wchar_t));
         return (bytes + 7U) & ~std::size_t{7};
     };
-    std::size_t needed = 0;
+    std::size_t needed = fake().snapshotPaddingBytes;
     for (const FakeProcess& p : fake().processes)
     {
         needed += entrySize(p);
@@ -1542,6 +1548,90 @@ TEST_F(WindowsProcessProbeSeamTest, WithoutTheMachineReadsTheArchitectureIsUnrea
     functions.system.nativeMachine = nullptr;
     fake().processMachine = MachineMath::MACHINE_I386;
     EXPECT_EQ(find(WindowsProcessProbe(functions).enumerate()).architecture, "x86");
+}
+
+// #4277: the first sample's query fits a desktop's 618 KiB snapshot, and one past the first buffer is queried twice
+// only on the first sample: the probe keeps the buffer it grew.
+TEST_F(WindowsProcessProbeSeamTest, TheFirstSampleFitsADesktopSnapshotAndLaterSamplesKeepTheSizeLearned)
+{
+    fake().snapshotPaddingBytes = std::size_t{618} * 1024;
+    WindowsProcessProbe desktop(fakeFunctions());
+    EXPECT_EQ(find(desktop.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotQueries, 1) << "a 618 KiB snapshot fits the first buffer";
+
+    fake().snapshotPaddingBytes = Windows::PROCESS_SNAPSHOT_INITIAL_BYTES + (std::size_t{512} * 1024);
+    fake().snapshotQueries = 0;
+    WindowsProcessProbe bigger(fakeFunctions());
+    EXPECT_EQ(find(bigger.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotQueries, 2) << "a snapshot past the first buffer grows it once";
+    fake().snapshotQueries = 0;
+    EXPECT_EQ(find(bigger.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotQueries, 1) << "the next sample starts from the size the first one learned";
+}
+
+// #4277 review: a snapshot that never fits fails the sample after 6 tries, never grows the buffer past the ceiling,
+// and leaves no bigger buffer behind: sample after failed sample on one probe starts from the same size, so memory
+// stays bounded however long the failures go on.
+TEST_F(WindowsProcessProbeSeamTest, ASnapshotThatNeverFitsFailsEachSampleWithinTheCeilingAndKeepsNoBiggerBuffer)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.system.ntQuerySystemInformation = [](ULONG /*infoClass*/, PVOID /*buffer*/, ULONG length, PULONG returnLength) -> LONG
+    {
+        ++fake().snapshotQueries;
+        fake().snapshotLengths.push_back(length);
+        *returnLength = length + 1; // Always a byte more than the buffer: the list outgrows every retry
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
+    };
+    WindowsProcessProbe probe(functions);
+    constexpr int SAMPLES = 4;
+    for (int sample = 0; sample < SAMPLES; ++sample)
+    {
+        fake().snapshotLengths.clear();
+        EXPECT_TRUE(probe.enumerate().empty());
+        ASSERT_EQ(fake().snapshotLengths.size(), 6U) << "sample " << sample << ": given up on, not looped on";
+        EXPECT_EQ(fake().snapshotLengths.front(), Windows::PROCESS_SNAPSHOT_INITIAL_BYTES)
+            << "sample " << sample << " starts where the last sample that worked (none) left it";
+        EXPECT_LE(std::ranges::max(fake().snapshotLengths), Windows::PROCESS_SNAPSHOT_MAX_BYTES);
+    }
+    EXPECT_EQ(fake().snapshotQueries, 6 * SAMPLES);
+}
+
+TEST_F(WindowsProcessProbeSeamTest, AKernelAskingForMoreThanTheCeilingFailsTheSampleWithoutGrowing)
+{
+    WindowsProcessProbeFunctions functions = fakeFunctions();
+    functions.system.ntQuerySystemInformation = [](ULONG /*infoClass*/, PVOID /*buffer*/, ULONG length, PULONG returnLength) -> LONG
+    {
+        fake().snapshotLengths.push_back(length);
+        *returnLength = static_cast<ULONG>(Windows::PROCESS_SNAPSHOT_MAX_BYTES + 1);
+        return STATUS_INFO_LENGTH_MISMATCH_NT;
+    };
+    WindowsProcessProbe probe(functions);
+    EXPECT_TRUE(probe.enumerate().empty());
+    EXPECT_TRUE(probe.enumerate().empty());
+    EXPECT_EQ(fake().snapshotLengths,
+              (std::vector<ULONG>{Windows::PROCESS_SNAPSHOT_INITIAL_BYTES, Windows::PROCESS_SNAPSHOT_INITIAL_BYTES}))
+        << "one query each, and no buffer grown for it";
+}
+
+// A sample that worked keeps its size; a failed one after it goes back to that size, not the one it grew to.
+TEST_F(WindowsProcessProbeSeamTest, AFailedSampleGoesBackToTheSizeTheLastGoodSampleLeft)
+{
+    fake().snapshotPaddingBytes = Windows::PROCESS_SNAPSHOT_INITIAL_BYTES + (std::size_t{512} * 1024);
+    WindowsProcessProbe probe(fakeFunctions());
+    EXPECT_EQ(find(probe.enumerate()).name, "app.exe");
+    ASSERT_EQ(fake().snapshotLengths.size(), 2U);
+    const ULONG learned = fake().snapshotLengths.back();
+
+    fake().snapshotPaddingBytes = Windows::PROCESS_SNAPSHOT_MAX_BYTES * 2; // More than any buffer may grow to
+    fake().snapshotLengths.clear();
+    EXPECT_TRUE(probe.enumerate().empty());
+    EXPECT_EQ(fake().snapshotLengths.front(), learned);
+    EXPECT_LE(std::ranges::max(fake().snapshotLengths), Windows::PROCESS_SNAPSHOT_MAX_BYTES);
+
+    fake().snapshotPaddingBytes = 0;
+    fake().snapshotLengths.clear();
+    EXPECT_EQ(find(probe.enumerate()).name, "app.exe");
+    EXPECT_EQ(fake().snapshotLengths, (std::vector<ULONG>{learned})) << "back at the size that worked, in one query";
 }
 
 TEST_F(WindowsProcessProbeSeamTest, AFailedSnapshotEnumeratesNothing)
