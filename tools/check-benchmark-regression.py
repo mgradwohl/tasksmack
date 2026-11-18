@@ -3,7 +3,7 @@
 tools/check-benchmark-regression.py — Compare benchmark results against a baseline.
 
 Usage:
-    python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
+    python3 tools/check-benchmark-regression.py --baseline <a run of main>.json \
         --current perf-data/benchmark-latest.json [--threshold 15] [--min-coverage 90] \
         [--min-abs-delta-ns 1.0] [--threshold-overrides perf-data/linux-ci-thresholds.json] \
         [--regressions-out regressions.json]
@@ -279,11 +279,12 @@ def core_class(manifest: dict | None) -> int | str | None:
     value = placement["core_class"]
     if value == "any" or (isinstance(value, int) and not isinstance(value, bool) and value >= 0):
         return value
-    raise ValueError(f"'placement.core_class' must be \"any\" or an EfficiencyClass >= 0, not {value!r}")
+    raise ValueError(f"'placement.core_class' must be \"any\" or a core class >= 0, not {value!r}")
 
 
 def describe_core_class(value: int | str) -> str:
-    return "not pinned (any core)" if value == "any" else f"pinned to EfficiencyClass {value}"
+    # Windows' EfficiencyClass, or on Linux the rank of the cores' cpu_capacity: "core class" fits both (#4194 audit).
+    return "not pinned (any core)" if value == "any" else f"pinned to core class {value}"
 
 
 def describe_load(manifest: dict | None) -> str | None:

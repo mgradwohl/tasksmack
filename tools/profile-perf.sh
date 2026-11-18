@@ -13,7 +13,11 @@
 # Modes:
 #   app   — launch TaskSmack, let it start up and warm up, then attach perf and record its
 #           steady state until it exits (or for --duration seconds). Default preset: profile.
-#   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: benchmark.
+#   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: profile (-O2 -g,
+#           frame pointers kept: it builds the benchmarks too), as profile-etw.ps1's win-profile (#4222).
+#           Default filter: BM_ProcessModel_Refresh$ alone, as profile-etw.ps1's (#4223): one benchmark, since
+#           several together skew the percentages. A survey of the probes and models, for a first look:
+#             --bench-filter 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 #
 # App-mode options:
 #   --warmup <seconds>   Once TaskSmack's main loop is running, wait this long before perf
@@ -24,6 +28,10 @@
 #                        stops the capture and closes TaskSmack).
 #   --include-startup    Launch TaskSmack under perf as before, so startup is profiled too, until
 #                        you close it. --warmup is ignored; --duration cannot be combined with it.
+#   --call-graph <mode>  How perf unwinds stacks: fp, dwarf, dwarf,<stack bytes> or lbr. Default: fp when
+#                        the build keeps frame pointers (-fno-omit-frame-pointer, as the profile preset
+#                        does), else dwarf,16384 (#4210). fp copies no stack per sample, so files stay
+#                        small and deep stacks aren't cut; dwarf works on builds without frame pointers.
 #   --user-config        Run TaskSmack with the config it would use on its own (your config.toml,
 #                        or an inherited TASKSMACK_CONFIG_DIR). By default every app capture gets a
 #                        fresh, empty TASKSMACK_CONFIG_DIR, removed afterwards (#2250): TaskSmack
@@ -108,26 +116,40 @@ DURATION_SECONDS=0
 INCLUDE_STARTUP=0
 USE_USER_CONFIG=0
 APP_OPTION_GIVEN=""
-BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
+BENCH_FILTER='BM_ProcessModel_Refresh$' # one benchmark (#4223); the survey filter is in the help
+BENCH_OPTION_GIVEN=""
 BENCH_REPS=5
 BENCH_MIN_TIME="0.5s"
+CALL_GRAPH=""
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --preset)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; PRESET="$2";        shift 2 ;;
         --skip-build)   SKIP_BUILD=1;        shift   ;;
-        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  shift 2 ;;
-        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    shift 2 ;;
-        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; shift 2 ;;
+        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; BENCH_OPTION_GIVEN="$1"; shift 2 ;;
         --warmup)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; WARMUP_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --duration)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --include-startup) INCLUDE_STARTUP=1; APP_OPTION_GIVEN="$1"; shift ;;
         --user-config)  USE_USER_CONFIG=1; APP_OPTION_GIVEN="$1"; shift ;;
+        --call-graph)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; CALL_GRAPH="$2"; shift 2 ;;
         -h|--help)      sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; exit 0 ;;
         *) echo "Unknown argument: $1" >&2; exit 1 ;;
     esac
 done
 
+if [[ -n "${CALL_GRAPH}" && ! "${CALL_GRAPH}" =~ ^(fp|lbr|dwarf(,[1-9][0-9]*)?)$ ]]; then
+    echo "ERROR: --call-graph takes fp, lbr, dwarf or dwarf,<stack bytes>, not '${CALL_GRAPH}'" >&2
+    exit 1
+fi
+# Each mode refuses the other's options (#4212): an app capture used to run with a --bench-filter ignored.
+if [[ "${MODE}" = "app" && -n "${BENCH_OPTION_GIVEN}" ]]; then
+    echo "ERROR: ${BENCH_OPTION_GIVEN} applies to bench mode only" >&2
+    exit 1
+fi
+[[ "${BENCH_REPS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: --bench-reps must be a whole number of 1 or more" >&2; exit 1; }
+[[ "${BENCH_MIN_TIME}" =~ ^[0-9]+(\.[0-9]+)?(s|x)$ ]] || { echo "ERROR: --bench-min-time takes Google Benchmark's form: seconds (0.5s) or iterations (100x)" >&2; exit 1; }
 if [[ "${MODE}" != "app" && -n "${APP_OPTION_GIVEN}" ]]; then
     echo "ERROR: ${APP_OPTION_GIVEN} applies to app mode only" >&2
     exit 1
@@ -144,7 +166,7 @@ fi
 
 # Default preset depends on mode
 if [[ -z "${PRESET}" ]]; then
-    PRESET=$([ "${MODE}" = "app" ] && echo "profile" || echo "benchmark")
+    PRESET="profile" # both modes (#4222): frame pointers and -g; benchmark (-O3, no -g) is for timing
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -388,6 +410,11 @@ if [[ "${MODE}" = "app" ]]; then
         trap remove_config_dir EXIT
         # Exported for TaskSmack only: perf and the other tools run here ignore it.
         export TASKSMACK_CONFIG_DIR="${CONFIG_DIR}"
+        # And its own temp folder (#4209): TaskSmack's debug log is <temp folder>/tasksmack-debug.log, opened
+        # emptied, whatever the config folder, so with the inherited one a capture wiped the debug log of the
+        # user's own running TaskSmack, and both wrote to one file. Removed with the config folder.
+        mkdir -p -- "${CONFIG_DIR}/tmp"
+        export TMPDIR="${CONFIG_DIR}/tmp"
     fi
 fi
 
@@ -412,8 +439,20 @@ if [[ "${MODE}" = "app" ]]; then
     info "Config dir: ${CONFIG_DIR:-the user config (--user-config)}"
 fi
 
+if [[ -z "${CALL_GRAPH}" ]]; then
+    if [[ " ${COMPILE_FLAGS} ${CXX_FLAGS} " == *" -fno-omit-frame-pointer "* ]]; then
+        CALL_GRAPH="fp"
+    else
+        CALL_GRAPH="dwarf,16384"
+    fi
+fi
+info "Call graph: ${CALL_GRAPH}"
+PERF_VERSION="$(perf --version 2>/dev/null || echo unknown)"
+
 {
     echo "PROFILE_MODE=${MODE}"
+    echo "PERF_VERSION=${PERF_VERSION}"
+    echo "PERF_CALL_GRAPH=${CALL_GRAPH}"
     echo "PRESET=${PRESET}"
     echo "BUILD_DIR=${BUILD_DIR}"
     echo "BUILD_TYPE=${BUILD_TYPE}"
@@ -441,11 +480,12 @@ fi
 # perf record flags:
 #   -e            — sampling event; see detect_perf_event() above
 #   -F 997        — sample at ~997 Hz (prime to avoid aliasing with timer interrupts)
-#   -g            — capture call graphs
-#   --call-graph dwarf — use DWARF unwinding (more accurate than fp for inlined frames;
-#                         requires -g in build flags; falls back gracefully on older kernels)
+#   --call-graph  — how stacks are unwound (#4210): frame pointers when the build keeps them (the
+#                   profile preset does), so no stack is copied per sample and deep ImGui stacks
+#                   aren't cut; else DWARF with a 16 KB stack copy (.eh_frame; -g isn't needed for
+#                   unwinding). Inline frames come from debug info when the report is made, either way.
 #   -o            — output file
-PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 -g --call-graph dwarf -o "${DATA_FILE}")
+PERF_RECORD_FLAGS=(-e "${PERF_EVENT}" -F 997 --call-graph "${CALL_GRAPH}" -o "${DATA_FILE}")
 
 PERF_EXIT_CODE=0
 # Every app capture keeps TaskSmack's own stdout/stderr here, apart from perf's messages.
@@ -666,6 +706,13 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
 fi
 
 # ── done ──────────────────────────────────────────────────────────────────────
+# A failed capture says so (#4211): it used to print "Capture complete" and "Next steps" and exit non-zero.
+if [[ "${PERF_EXIT_CODE}" -ne 0 ]]; then
+    echo "ERROR: the capture failed (exit ${PERF_EXIT_CODE}); ${DATA_FILE} may be partial or empty. See ${LOG_FILE}${APP_LOG:+, and the output of TaskSmack itself in ${APP_LOG}}." >&2
+    echo "PERF_DATA=${DATA_FILE}"
+    echo "LOG=${LOG_FILE}"
+    exit "${PERF_EXIT_CODE}"
+fi
 print_step "Capture complete"
 echo ""
 echo "PERF_DATA=${DATA_FILE}"

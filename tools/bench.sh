@@ -45,6 +45,7 @@
 #   TASKSMACK_BENCH_OUT_DIR  output directory (default perf-data/)
 #   TASKSMACK_BENCH_SYSFS_CPU  the CPUs' sysfs directory (default /sys/devices/system/cpu)
 #   TASKSMACK_BENCH_PROC_STAT  the file the load is read from (default /proc/stat)
+#   TASKSMACK_BENCH_CPUINFO    the file a virtual machine is told from (default /proc/cpuinfo)
 #   TASKSMACK_BENCH_LOAD_SAMPLE_MS  how long each load sample lasts (default 500)
 #
 # Exits with the benchmark binary's own exit code if it fails or crashes; any partial output is
@@ -59,10 +60,12 @@
 #   ./tools/bench.sh --core any               # not pinned, even on a hybrid CPU
 #   ./tools/bench.sh benchmark -- --benchmark_filter=ProcessModel
 #
-#   ./tools/bench.sh --baseline perf-data/linux-baseline.json   # and check it, across launches
+#   ./tools/bench.sh --baseline <a run of main>.json   # and check it, across launches
 #
-# Compare a run against the baseline yourself (one launch's medians, which a noisy launch can fail):
-#   python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json \
+# There is no committed local Linux baseline (#4199): check a branch against a run of main on the same
+# machine (CONTRIBUTING.md, "Running Benchmarks"). Compare two runs yourself (one launch's medians, which a
+# noisy launch can fail):
+#   python3 tools/check-benchmark-regression.py --baseline <a run of main>.json \
 #       --current perf-data/benchmark-<timestamp>.json
 
 set -euo pipefail
@@ -383,8 +386,8 @@ if [[ -n "${BASELINE}" ]]; then
         echo "Checked against ${BASELINE}: failed (exit ${CHECK_EXIT})"
     fi
 else
-    echo "Compare against a baseline across launches with --baseline, or on this run alone:"
-    echo "  python3 tools/check-benchmark-regression.py --baseline perf-data/linux-baseline.json --current ${OUT_FILE}"
+    echo "Compare against a run of main across launches with --baseline <that run's .json>, or on this run alone:"
+    echo "  python3 tools/check-benchmark-regression.py --baseline <a run of main>.json --current ${OUT_FILE}"
 fi
 # Machine-readable result path, printed once the run succeeded (as the profile-* scripts print
 # TRACE=), even when a --baseline check then fails: heavy-checks.yml reads it instead of guessing from

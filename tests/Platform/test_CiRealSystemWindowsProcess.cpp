@@ -14,6 +14,7 @@
 #include "Platform/ProcessTypes.h"
 #include "Platform/WaitChain.h"
 #include "Platform/Windows/WindowsDebugPrivilege.h"
+#include "Platform/Windows/WindowsDumpFolder.h"
 #include "Platform/Windows/WindowsEtwNetCollector.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
@@ -36,6 +37,7 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <aclapi.h>
+#include <sddl.h>
 #include <evntrace.h>
 #include <tlhelp32.h>
 // clang-format on
@@ -804,6 +806,59 @@ TEST_F(CiRealSystemStandardUserTest, TheElevatedOnlySkipsRunAsAStandardUser)
     EXPECT_EQ(occurrences(json, "\"result\": \"COMPLETED\""), 2U) << json;
     EXPECT_EQ(occurrences(json, "\"result\": \"SKIPPED\""), 0U) << json;
     EXPECT_EQ(occurrences(json, "\"failure\""), 0U) << json;
+}
+
+// --- #4188: an elevated dump is admin-only, in an admin-only default folder ----------------------------------------
+
+class CiRealSystemAdminDumpTest : public TestSupport::CiRealSystemTest
+{};
+
+/// The owner and DACL of the file or folder at @p path, as SDDL; empty when they can't be read.
+[[nodiscard]] std::wstring ownerAndDaclOf(const std::filesystem::path& path)
+{
+    constexpr SECURITY_INFORMATION WHAT = OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION;
+    PSECURITY_DESCRIPTOR descriptor = nullptr;
+    if (GetNamedSecurityInfoW(path.c_str(), SE_FILE_OBJECT, WHAT, nullptr, nullptr, nullptr, nullptr, &descriptor) != ERROR_SUCCESS)
+    {
+        return {};
+    }
+    const std::unique_ptr<void, decltype(&::LocalFree)> owned(descriptor, &::LocalFree);
+    LPWSTR text = nullptr;
+    if (ConvertSecurityDescriptorToStringSecurityDescriptorW(descriptor, SDDL_REVISION_1, WHAT, &text, nullptr) == FALSE)
+    {
+        return {};
+    }
+    const std::unique_ptr<wchar_t, decltype(&::LocalFree)> ownedText(text, &::LocalFree);
+    return {ownedText.get()};
+}
+
+[[nodiscard]] bool alwaysHoldTheFolder()
+{
+    return true;
+}
+
+TEST_F(CiRealSystemAdminDumpTest, TheDefaultFolderAndTheDumpInItAreAdministratorsOnly)
+{
+    // A scratch "ProgramData", never the real one: the elevated runner can make Administrators the owner, which the
+    // unelevated tests can't, so the real security is made and read back here.
+    const ScratchFolder scratch(std::filesystem::temp_directory_path() / (L"TaskSmackCiAdminDump." + uniqueSuffix()));
+    const std::filesystem::path programData = scratch.path() / L"ProgramData";
+    ASSERT_TRUE(std::filesystem::create_directory(programData));
+
+    const auto folder = Platform::Windows::makeAdminDumpFolder(programData);
+    ASSERT_TRUE(folder.has_value()) << folder.error();
+    EXPECT_EQ(ownerAndDaclOf(*folder), L"O:BAD:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)");
+    EXPECT_EQ(Platform::Windows::checkDumpFolder(*folder).access, Platform::DumpFolderAccess::AdministratorsOnly)
+        << "the default folder shows no warning";
+
+    const Child stub = start(TASKSMACK_CI_STUB_PATH, {.parameters = L"60000"});
+    ASSERT_NE(stub.process(), nullptr);
+    Platform::WindowsProcessFunctions functions = Platform::realWindowsProcessFunctions();
+    functions.holdDumpFolder = &alwaysHoldTheFolder; // as an elevated session's
+    Platform::WindowsProcessActions actions(functions);
+    const Platform::ProcessDumpResult result = actions.createDump(stub.target(), *folder, std::stop_token{});
+    ASSERT_TRUE(result.has_value()) << result.error();
+    EXPECT_EQ(ownerAndDaclOf(result->file), L"O:BAD:P(A;;FA;;;BA)(A;;FA;;;SY)") << "its own, not the folder's inherited ACEs";
 }
 
 } // namespace

@@ -247,6 +247,8 @@ class BenchShTest(unittest.TestCase):
             # No CPU classes (#3198): the run isn't pinned, whatever this machine is, unless a test
             # points this at a fake sysfs tree. Short load samples keep the runs quick.
             TASKSMACK_BENCH_SYSFS_CPU=posix(self.root / "no-sysfs"),
+            # Not a virtual machine, whatever runs the tests (WSL2 is one), unless a test says so.
+            TASKSMACK_BENCH_CPUINFO=posix(self.root / "no-cpuinfo"),
             TASKSMACK_BENCH_LOAD_SAMPLE_MS="10",
         )
         env.update(env_extra or {})
@@ -1453,6 +1455,24 @@ class PlacementTest(unittest.TestCase):
         (self.root / "cpu1" / "cpufreq" / "cpuinfo_max_freq").write_text("fast\n", encoding="ascii")
         self.assertIsNone(self.module.cpu_classes(self.root), "one CPU unreadable")
         self.assertIsNone(self.module.cpu_classes(self.root / "missing"))
+
+    def test_a_virtual_machine_with_one_cpu_class_is_unknown_not_non_hybrid(self):
+        # The #4194 audit: WSL2 on a Core Ultra 7 255H gives every vCPU cpu_capacity 1024 and no cpufreq,
+        # which read as "not a hybrid CPU", so the run went unpinned with no warning.
+        cpuinfo = self.root / "cpuinfo"
+        cpuinfo.write_text("processor\t: 0\nflags\t\t: fpu vme hypervisor avx2\n", encoding="ascii")
+        self.assertTrue(self.module.in_virtual_machine(cpuinfo))
+        cpuinfo.write_text("processor\t: 0\nflags\t\t: fpu vme avx2\n", encoding="ascii")
+        self.assertFalse(self.module.in_virtual_machine(cpuinfo), "bare metal")
+        self.assertFalse(self.module.in_virtual_machine(self.root / "missing"), "unreadable: bare metal")
+        uniform = {0: 0, 1: 0, 2: 0}
+        classes, warning = self.module.guest_classes(uniform, True)
+        self.assertIsNone(classes)
+        self.assertIn("virtual machine", warning)
+        self.assertEqual(self.module.select_core(classes, "", {0, 1, 2}, {0})["hybrid"], None)
+        self.assertEqual(self.module.guest_classes(uniform, False), (uniform, None), "bare metal: really not hybrid")
+        hybrid = {0: 1, 1: 0}
+        self.assertEqual(self.module.guest_classes(hybrid, True), (hybrid, None), "a VM that does report classes keeps them")
 
     def test_cpu_lists_and_smt_siblings(self):
         self.assertEqual(self.module.parse_cpu_list("0-3,8,10-11"), {0, 1, 2, 3, 8, 10, 11})

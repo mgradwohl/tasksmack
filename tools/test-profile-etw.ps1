@@ -71,6 +71,22 @@ try {
     # A directory that does not exist is an error, not an endless search for a free name.
     Assert-Throws { Request-CaptureTimestamp -Directory (Join-Path $root 'missing') -Prefix 'etw-app' -Timestamp 'x' } 'Could not find'
 
+    # #4235: app mode ships win-release; bench mode profiles the win-profile build (debug info and
+    # frame pointers), not win-benchmark. #4236: the default bench filter names one benchmark.
+    Assert-True ((Get-DefaultProfilePreset -Mode 'app') -eq 'win-release') 'The app default preset must be win-release'
+    Assert-True ((Get-DefaultProfilePreset -Mode 'bench') -eq 'win-profile') 'The bench default preset must be win-profile'
+    Assert-True ((Get-DefaultProfilePreset -Mode 'resize') -ne 'win-benchmark') 'No mode may default to the debug-info-free win-benchmark preset'
+    $presets = Get-Content -LiteralPath (Join-Path $PSScriptRoot '..\CMakePresets.json') -Raw | ConvertFrom-Json
+    $profilePreset = $presets.configurePresets | Where-Object { $_.name -eq 'win-profile' }
+    Assert-True ($profilePreset.cacheVariables.TASKSMACK_BUILD_BENCHMARKS -eq 'ON' -and $profilePreset.cacheVariables.CMAKE_CXX_FLAGS_RELWITHDEBINFO -like '*-g *' -and $profilePreset.cacheVariables.CMAKE_CXX_FLAGS_RELWITHDEBINFO -like '*-fno-omit-frame-pointer*') 'win-profile must build the benchmarks with -g and frame pointers'
+    $parsed = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'profile-etw.ps1'), [ref]$null, [ref]$null)
+    $filterParam = $parsed.ParamBlock.Parameters | Where-Object { $_.Name.VariablePath.UserPath -eq 'BenchmarkFilter' }
+    $defaultFilter = $filterParam.DefaultValue.Value
+    Assert-True ($defaultFilter -eq 'BM_ProcessModel_Refresh$') "The default bench filter must be one benchmark: $defaultFilter"
+    Assert-True ($defaultFilter -notmatch '[|(*]') 'The default bench filter must not be an alternation or wildcard'
+    $oneListed = Resolve-BenchmarkFilterMatches -ListOutput @('BM_ProcessModel_Refresh') -Filter $defaultFilter
+    Assert-True ($oneListed.Severity -eq 'ok') "The default filter against one match must not warn: $($oneListed.Severity)"
+
     $fakeLister = Join-Path $root 'lister.cmd'
     Set-Content -LiteralPath $fakeLister -Value "@echo BM_One`r`n@echo BM_Two`r`n@exit /b 0" -Encoding ascii
     $listed = Get-BenchmarkFilterMatches -BinaryPath $fakeLister -Filter 'BM_.*'
@@ -218,6 +234,8 @@ try {
     Set-Content -LiteralPath $exitNow75 -Encoding ascii -Value @(
         '@echo off'
         'echo [%TASKSMACK_CONFIG_DIR%]>"%~dp0config-dir-seen.txt"'
+        'echo [%TEMP%][%TMP%]>"%~dp0temp-seen.txt"'
+        'if not "%TEMP%"=="" echo kept>"%TEMP%\tasksmack-debug.log"'
         'exit /b 75'
     )
     # The release file sits next to the stubs, which find it through %~dp0 (their own directory),
@@ -258,7 +276,7 @@ try {
     $traceStart = { $script:events.Add('start') }
     $traceStop = { $script:events.Add("stop(app running: $(Test-StubRunning $script:stubPath))") }
     function Invoke-StubCapture {
-        param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart, [switch]$UseUserConfig)
+        param([string]$App, [int]$DurationSeconds, [int]$WarmupSeconds = 0, [switch]$IncludeStartup, [scriptblock]$StartTrace = $traceStart, [switch]$UseUserConfig, [string]$AppLogPath)
         $script:events.Clear()
         Remove-Item -LiteralPath $releaseFile -ErrorAction SilentlyContinue
         # The "exits later" stubs are released only once Invoke-AppCapture has entered the capture
@@ -279,7 +297,7 @@ try {
         # 3>$null: the no-main-window warning is expected for a hidden stub.
         $r = Invoke-AppCapture -BinaryPath $App -StartTrace $StartTrace -StopTrace $traceStop -DurationSeconds $DurationSeconds `
             -WarmupSeconds $WarmupSeconds -IncludeStartup:$IncludeStartup -MainWindowTimeoutSeconds 0 -InteractiveTimeoutSeconds 60 `
-            -WindowStyle Hidden -UseUserConfig:$UseUserConfig 3>$null
+            -WindowStyle Hidden -UseUserConfig:$UseUserConfig -AppLogPath $AppLogPath 3>$null
         $r.Elapsed = $watch.Elapsed.TotalSeconds
         $r.Released = Test-Path -LiteralPath $releaseFile
         return $r
@@ -301,11 +319,22 @@ try {
     # #2250: by default the app gets a fresh TASKSMACK_CONFIG_DIR of its own, removed once it has
     # exited, and this process's own value is left as it was. The "already running" exit code fails
     # the capture with that reason, before any trace starts.
+    # #4229: it also gets a private TEMP/TMP, so its tasksmack-debug.log is not the user's own, and
+    # the log it wrote is kept at -AppLogPath once the app has exited.
     $savedConfigDir = $env:TASKSMACK_CONFIG_DIR
+    $savedTemp = $env:TEMP
+    $savedTmp = $env:TMP
+    $tempSeenFile = Join-Path $root 'temp-seen.txt'
     try {
         $env:TASKSMACK_CONFIG_DIR = 'inherited-config'
-        Remove-Item -LiteralPath $configSeenFile -ErrorAction SilentlyContinue
-        $r = Invoke-StubCapture -App $exitNow75 -DurationSeconds 30 -WarmupSeconds 30
+        Remove-Item -LiteralPath $configSeenFile, $tempSeenFile -ErrorAction SilentlyContinue
+        $keptLog = Join-Path $root 'kept-app.log'
+        Remove-Item -LiteralPath $keptLog -ErrorAction SilentlyContinue
+        $r = Invoke-StubCapture -App $exitNow75 -DurationSeconds 30 -WarmupSeconds 30 -AppLogPath $keptLog
+        $tempSeen = (Get-Content -LiteralPath $tempSeenFile -Raw).Trim()
+        Assert-True ($tempSeen -eq "[$($r.TempDirectory)][$($r.TempDirectory)]" -and $tempSeen -like '*tasksmack-profile-config-*') "The app must get the capture's own TEMP/TMP: saw $tempSeen, capture used $($r.TempDirectory)"
+        Assert-True ($env:TEMP -eq $savedTemp -and $env:TMP -eq $savedTmp) "The script's own TEMP/TMP must be restored: '$env:TEMP' / '$env:TMP'"
+        Assert-True ((Test-Path -LiteralPath $keptLog) -and $r.AppLog -eq $keptLog) 'The app log must be kept at -AppLogPath'
         $seen = (Get-Content -LiteralPath $configSeenFile -Raw).Trim()
         Assert-True ($seen -eq "[$($r.ConfigDirectory)]" -and $seen -like '*tasksmack-profile-config-*') "The app must get the capture's own config directory: saw $seen, capture used $($r.ConfigDirectory)"
         Assert-True (-not (Test-Path -LiteralPath $r.ConfigDirectory)) "The capture's config directory must be removed once the app exits: $($r.ConfigDirectory)"

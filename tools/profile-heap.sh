@@ -10,7 +10,10 @@
 #
 # Modes:
 #   app   — launch TaskSmack under heaptrack, wait for exit (or for --duration). Default preset: profile.
-#   bench — run TaskSmackBenchmarks under heaptrack. Default preset: benchmark.
+#   bench — run TaskSmackBenchmarks under heaptrack. Default preset: profile (-g, so stacks have lines;
+#           it builds the benchmarks too) (#4222). Default filter: BM_ProcessModel_Refresh$ alone (#4223), as
+#           profile-perf.sh's: iteration counts scale per benchmark, so several together skew the totals.
+#           A survey: --bench-filter 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 #
 # App mode runs TaskSmack with a fresh, empty TASKSMACK_CONFIG_DIR, removed afterwards (#2250), so it
 # starts from default settings, cannot rewrite yours, and is not stopped by the single-instance lock
@@ -78,7 +81,8 @@ fi
 PRESET=""
 SKIP_BUILD=0
 USE_USER_CONFIG=0
-BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
+BENCH_FILTER='BM_ProcessModel_Refresh$' # one benchmark (#4223); the survey filter is in the help
+BENCH_OPTION_GIVEN=""
 BENCH_REPS=3
 BENCH_MIN_TIME="0.5s"
 DURATION_SECONDS=0
@@ -87,9 +91,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --preset)         [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; PRESET="$2";           shift 2 ;;
         --skip-build)     SKIP_BUILD=1;           shift   ;;
-        --bench-filter)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";     shift 2 ;;
-        --bench-reps)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";       shift 2 ;;
-        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2";   shift 2 ;;
+        --bench-filter)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";     BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-reps)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";       BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2";   BENCH_OPTION_GIVEN="$1"; shift 2 ;;
         --user-config)    USE_USER_CONFIG=1;      shift   ;;
         --duration)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; shift 2 ;;
         -h|--help)        sed -n '2,/^$/{/^$/d;s/^# \{0,1\}//;p;}' "${BASH_SOURCE[0]}"; exit 0 ;;
@@ -97,6 +101,13 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Each mode refuses the other's options (#4212).
+if [[ "${MODE}" = "app" && -n "${BENCH_OPTION_GIVEN}" ]]; then
+    echo "ERROR: ${BENCH_OPTION_GIVEN} applies to bench mode only" >&2
+    exit 1
+fi
+[[ "${BENCH_REPS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: --bench-reps must be a whole number of 1 or more" >&2; exit 1; }
+[[ "${BENCH_MIN_TIME}" =~ ^[0-9]+(\.[0-9]+)?(s|x)$ ]] || { echo "ERROR: --bench-min-time takes Google Benchmark's form: seconds (0.5s) or iterations (100x)" >&2; exit 1; }
 if [[ "${MODE}" != "app" && "${USE_USER_CONFIG}" -eq 1 ]]; then
     echo "ERROR: --user-config applies to app mode only" >&2
     exit 1
@@ -109,7 +120,7 @@ if [[ "${MODE}" != "app" && "${DURATION_SECONDS}" -gt 0 ]]; then
 fi
 
 if [[ -z "${PRESET}" ]]; then
-    PRESET=$([ "${MODE}" = "app" ] && echo "profile" || echo "benchmark")
+    PRESET="profile" # both modes (#4222): -g and frame pointers; benchmark (-O3, no -g) is for timing
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -185,8 +196,17 @@ if [[ "${MODE}" = "bench" ]]; then
     BENCH_LIST_ERRORS="$(cat "${BENCH_LIST_ERR}")"
     rm -f "${BENCH_LIST_ERR}"
     [[ "${BENCH_LIST_STATUS}" -eq 0 ]] || die "Failed to list benchmarks from ${BINARY} (exit ${BENCH_LIST_STATUS}): ${BENCH_LIST_ERRORS}"
-    if [[ "$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)" -eq 0 ]]; then
+    BENCH_MATCH_COUNT="$(printf '%s\n' "${BENCH_MATCHES}" | grep -c . || true)"
+    if [[ "${BENCH_MATCH_COUNT}" -eq 0 ]]; then
         die "--bench-filter '${BENCH_FILTER}' matches no benchmarks, so a capture would hold only benchmark startup. Run '${BINARY} --benchmark_list_tests=true' to see valid names."
+    elif [[ "${BENCH_MATCH_COUNT}" -gt 1 ]]; then
+        # As profile-perf.sh (#4223): Google Benchmark scales each one's iterations to its min time, so a cheap
+        # benchmark's allocations are counted many more times than an expensive one's.
+        echo "WARNING: --bench-filter '${BENCH_FILTER}' matches ${BENCH_MATCH_COUNT} benchmarks:" >&2
+        printf '%s\n' "${BENCH_MATCHES}" | sed 's/^/  - /' >&2
+        echo "  Their allocation counts scale with each one's iteration count, not its real cost, so totals" >&2
+        echo "  across them mislead. For one function's allocations, pass --bench-filter matching one benchmark." >&2
+        echo "" >&2
     fi
 fi
 
@@ -203,6 +223,11 @@ if [[ "${MODE}" = "app" ]]; then
         trap remove_config_dir EXIT
         # Exported for TaskSmack only: heaptrack and the other tools run here ignore it.
         export TASKSMACK_CONFIG_DIR="${CONFIG_DIR}"
+        # And its own temp folder (#4209): TaskSmack's debug log is <temp folder>/tasksmack-debug.log, opened
+        # emptied, whatever the config folder, so with the inherited one a capture wiped the debug log of the
+        # user's own running TaskSmack, and both wrote to one file. Removed with the config folder.
+        mkdir -p -- "${CONFIG_DIR}/tmp"
+        export TMPDIR="${CONFIG_DIR}/tmp"
     fi
 fi
 

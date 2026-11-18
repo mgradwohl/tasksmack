@@ -2657,7 +2657,7 @@ class MergeQueueTests(unittest.TestCase):
         # The classifier gives a merge group every job: nothing the PR gate builds is skipped on the combined tree.
         self.assertEqual(outputs["detect-docs-only"], {
             "docs_only": "false", "linux_only": "false", "windows_only": "false", "automation_only": "false",
-            "docs_site": "true",
+            "docs_site": "true", "dev_tools_only": "false",
         })
         for key in ("build-linux-debug", "build-linux-release", "build-windows-debug", "static-analysis-windows",
                     "asan-ubsan", "docs-hygiene"):
@@ -2690,6 +2690,34 @@ class MergeQueueTests(unittest.TestCase):
         # A pull request's gate still requires ASan+UBSan.
         result = self.run_ci_gate(pull_request_context(), {**pr_results, "asan-ubsan": "skipped"}, pr_outputs)
         self.assertNotEqual(result.returncode, 0)
+
+    def test_a_dev_tools_only_pull_request_skips_the_cpp_jobs_and_passes_on_the_dev_tool_checks(self):
+        # #4248: with dev_tools_only, every C++ job skips, both dev-tools-checks jobs run, and CI Success passes on
+        # them; with them failed, it fails.
+        jobs = workflow_jobs(WORKFLOWS / "ci.yml")
+        detect = {"docs_only": "false", "linux_only": "false", "windows_only": "false", "automation_only": "false",
+                  "docs_site": "false", "dev_tools_only": "true"}
+        results: dict[str, str] = {"detect-docs-only": "success"}
+        outputs: dict[str, dict[str, str]] = {"detect-docs-only": detect}
+        pending = [key for key in jobs if key != "detect-docs-only"]
+        while pending:
+            ready = [key for key in pending if all(need in results for need in jobs[key].needs)]
+            self.assertTrue(ready, pending)
+            for key in ready:
+                scope = self.with_needs(pull_request_context(), {need: results[need] for need in jobs[key].needs}, outputs)
+                scope["__success__"] = all(results[need] == "success" for need in jobs[key].needs)
+                results[key] = "success" if condition_holds(jobs[key].condition, scope) else "skipped"
+                outputs[key] = {}
+                pending.remove(key)
+        for key in ("build-linux-debug", "build-linux-release", "build-windows-debug", "static-analysis-windows",
+                    "asan-ubsan", "automation-checks"):
+            self.assertEqual(results[key], "skipped", key)
+        for key in ("dev-tools-checks", "dev-tools-checks-windows", "docs-hygiene"):
+            self.assertEqual(results[key], "success", key)
+        result = self.run_ci_gate(pull_request_context(), results, outputs)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        result = self.run_ci_gate(pull_request_context(), {**results, "dev-tools-checks-windows": "failure"}, outputs)
+        self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
 
     def test_osv_scan_required_scans_and_passes_on_a_merge_group(self):
         path = WORKFLOWS / "osv-scanner.yml"

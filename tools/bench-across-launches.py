@@ -180,11 +180,15 @@ def launch_seconds(data: dict, name: str) -> float:
 
 
 def median_row(data: dict, name: str) -> dict | None:
-    """@p name's median row in @p data, or None when it has none or any of its rows failed or skipped."""
+    """@p name's median row in @p data, or None when it has none or any of its rows failed or skipped. A run
+    with one repetition (--benchmark_repetitions=1) has no aggregates: its one iteration row is the median,
+    as check-benchmark-regression.py's load_benchmarks reads it (the #4194 audit)."""
     rows = [e for e in data["benchmarks"] if run_name(e) == name]
     if any(e.get("error_occurred") or e.get("skipped") for e in rows):
         return None
     medians = [e for e in rows if e.get("aggregate_name") == "median"]
+    if not medians and not any(e.get("run_type") == "aggregate" for e in rows):
+        medians = [e for e in rows if e.get("run_type", "iteration") == "iteration"]
     if len(medians) != 1 or to_ns(medians[0].get("real_time"), medians[0].get("time_unit", "ns")) is None:
         return None
     return medians[0]
@@ -276,12 +280,15 @@ def combine(args: argparse.Namespace) -> int:
         return 2
 
     benchmarks: list[dict] = []
+    written: set[str] = set()
     for entry in first["benchmarks"]:
         name = run_name(entry)
         if name not in replaced:
             benchmarks.append(entry)
-        elif entry.get("aggregate_name") == "median":
+        elif name not in written and (entry.get("aggregate_name") == "median" or median_row(first, name) is entry):
+            # The median row, or a one-repetition run's only row (median_row()), takes the combined value once.
             benchmarks.append(replaced[name])
+            written.add(name)
     context = dict((launches[0] if args.exclude_first else first).get("context", {}))
     context["tasksmack_across_launches"] = {"launches": len(launches), "benchmarks": names}
     if args.exclude_first:
