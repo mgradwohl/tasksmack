@@ -1847,7 +1847,12 @@ write artifacts under `perf-data/` and emit `KEY=value` lines at exit for script
 ### Linux — CPU profiling (perf)
 
 Use `tools/profile-perf.sh` to capture and `tools/analyze-perf.sh` to analyze.
-Default preset is `profile` for app mode and `benchmark` for bench mode. Every run prints, and
+The default preset is `profile` in both modes (#4222): an `-O2 -g` build with frame pointers that builds
+the benchmarks too, so stacks have lines and inline frames (`benchmark` is `-O3` with no `-g`, for
+timing). Bench mode's default filter is `BM_ProcessModel_Refresh$` alone (#4223), as
+`profile-etw.ps1`'s (#4241); `--help` gives a survey filter over the probes and models. Each mode
+refuses the other's options (#4212), and a failed capture ends with an error, not "Capture complete"
+(#4211). Every run prints, and
 writes to its log, the preset, build directory, build type, compiler and `CMAKE_CXX_FLAGS*` entries
 it profiled. Those cache entries miss `add_compile_options()`/`target_compile_options()` flags such as
 a `TASKSMACK_MARCH` `-march`, `-stdlib=libc++` and the release hardening flags. So each run also
@@ -1958,19 +1963,25 @@ sudo apt install heaptrack
 ./tools/profile-heap.sh app
 
 # Unattended app trace (#3406): closed 60 s after its main loop starts, for agents, CI and re-measures.
-# Use the profile preset (the default) when you need TaskSmack's own call sites named: release-type
-# presets have no symbols, so heaptrack shows them as addresses.
+# Use the profile preset (the default, both modes, #4222) when you need TaskSmack's own call sites in full:
+# release and benchmark keep function names but have no -g, so no file, line or inlined frame; only the
+# optimized preset strips its symbols (-s), and heaptrack then shows addresses (#4218).
 ./tools/profile-heap.sh app --duration 60
 
-# Benchmark trace — pinpoint per-call allocation sources
+# Benchmark trace — pinpoint per-call allocation sources. Defaults: the profile preset and
+# BM_ProcessModel_Refresh$ alone (#4223); several benchmarks together warn, as their counts scale with
+# each one's iteration count.
 ./tools/profile-heap.sh bench
-./tools/profile-heap.sh bench --bench-filter 'BM_ProcessModel_Refresh$'
+./tools/profile-heap.sh bench --bench-filter 'BM_SystemModel_Refresh$'
 
 # Open in GUI
-heaptrack_gui perf-data/heaptrack-app-<timestamp>.gz
+# heaptrack names its file after the traced process (#4217): perf-data/heaptrack-<mode>-<timestamp>.<pid>.zst
+# (.gz on older heaptrack). The run prints the path as HEAPTRACK_DATA= and writes heaptrack_print's report
+# to perf-data/heaptrack-<mode>-<timestamp>-summary.txt.
+heaptrack_gui perf-data/heaptrack-app-<timestamp>.<pid>.zst
 
 # Headless analysis (CI-friendly)
-heaptrack_print perf-data/heaptrack-app-<timestamp>.gz
+heaptrack_print perf-data/heaptrack-app-<timestamp>.<pid>.zst
 ```
 
 ### Windows — CPU profiling (ETW)

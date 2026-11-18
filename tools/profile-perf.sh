@@ -13,7 +13,11 @@
 # Modes:
 #   app   — launch TaskSmack, let it start up and warm up, then attach perf and record its
 #           steady state until it exits (or for --duration seconds). Default preset: profile.
-#   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: benchmark.
+#   bench — run TaskSmackBenchmarks under perf with a benchmark filter. Default preset: profile (-O2 -g,
+#           frame pointers kept: it builds the benchmarks too), as profile-etw.ps1's win-profile (#4222).
+#           Default filter: BM_ProcessModel_Refresh$ alone, as profile-etw.ps1's (#4223): one benchmark, since
+#           several together skew the percentages. A survey of the probes and models, for a first look:
+#             --bench-filter 'BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
 #
 # App-mode options:
 #   --warmup <seconds>   Once TaskSmack's main loop is running, wait this long before perf
@@ -112,7 +116,8 @@ DURATION_SECONDS=0
 INCLUDE_STARTUP=0
 USE_USER_CONFIG=0
 APP_OPTION_GIVEN=""
-BENCH_FILTER='BM_(ProcessProbe_Enumerate|ProcessModel_Refresh|SystemProbe_Sample|SystemModel_Refresh|GPUProbe_ReadCounters|GPUModel_Refresh)$'
+BENCH_FILTER='BM_ProcessModel_Refresh$' # one benchmark (#4223); the survey filter is in the help
+BENCH_OPTION_GIVEN=""
 BENCH_REPS=5
 BENCH_MIN_TIME="0.5s"
 CALL_GRAPH=""
@@ -121,9 +126,9 @@ while [[ $# -gt 0 ]]; do
     case "$1" in
         --preset)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; PRESET="$2";        shift 2 ;;
         --skip-build)   SKIP_BUILD=1;        shift   ;;
-        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  shift 2 ;;
-        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    shift 2 ;;
-        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; shift 2 ;;
+        --bench-filter) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_FILTER="$2";  BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-reps)   [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_REPS="$2";    BENCH_OPTION_GIVEN="$1"; shift 2 ;;
+        --bench-min-time) [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; BENCH_MIN_TIME="$2"; BENCH_OPTION_GIVEN="$1"; shift 2 ;;
         --warmup)       [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; WARMUP_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --duration)     [[ $# -ge 2 ]] || { echo "ERROR: $1 requires a value" >&2; exit 1; }; DURATION_SECONDS="$2"; APP_OPTION_GIVEN="$1"; shift 2 ;;
         --include-startup) INCLUDE_STARTUP=1; APP_OPTION_GIVEN="$1"; shift ;;
@@ -138,6 +143,13 @@ if [[ -n "${CALL_GRAPH}" && ! "${CALL_GRAPH}" =~ ^(fp|lbr|dwarf(,[1-9][0-9]*)?)$
     echo "ERROR: --call-graph takes fp, lbr, dwarf or dwarf,<stack bytes>, not '${CALL_GRAPH}'" >&2
     exit 1
 fi
+# Each mode refuses the other's options (#4212): an app capture used to run with a --bench-filter ignored.
+if [[ "${MODE}" = "app" && -n "${BENCH_OPTION_GIVEN}" ]]; then
+    echo "ERROR: ${BENCH_OPTION_GIVEN} applies to bench mode only" >&2
+    exit 1
+fi
+[[ "${BENCH_REPS}" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: --bench-reps must be a whole number of 1 or more" >&2; exit 1; }
+[[ "${BENCH_MIN_TIME}" =~ ^[0-9]+(\.[0-9]+)?(s|x)$ ]] || { echo "ERROR: --bench-min-time takes Google Benchmark's form: seconds (0.5s) or iterations (100x)" >&2; exit 1; }
 if [[ "${MODE}" != "app" && -n "${APP_OPTION_GIVEN}" ]]; then
     echo "ERROR: ${APP_OPTION_GIVEN} applies to app mode only" >&2
     exit 1
@@ -154,7 +166,7 @@ fi
 
 # Default preset depends on mode
 if [[ -z "${PRESET}" ]]; then
-    PRESET=$([ "${MODE}" = "app" ] && echo "profile" || echo "benchmark")
+    PRESET="profile" # both modes (#4222): frame pointers and -g; benchmark (-O3, no -g) is for timing
 fi
 
 TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
@@ -694,6 +706,13 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
 fi
 
 # ── done ──────────────────────────────────────────────────────────────────────
+# A failed capture says so (#4211): it used to print "Capture complete" and "Next steps" and exit non-zero.
+if [[ "${PERF_EXIT_CODE}" -ne 0 ]]; then
+    echo "ERROR: the capture failed (exit ${PERF_EXIT_CODE}); ${DATA_FILE} may be partial or empty. See ${LOG_FILE}${APP_LOG:+, and the output of TaskSmack itself in ${APP_LOG}}." >&2
+    echo "PERF_DATA=${DATA_FILE}"
+    echo "LOG=${LOG_FILE}"
+    exit "${PERF_EXIT_CODE}"
+fi
 print_step "Capture complete"
 echo ""
 echo "PERF_DATA=${DATA_FILE}"

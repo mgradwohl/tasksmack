@@ -20,7 +20,8 @@ from pathlib import Path
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BASH = os.environ.get("TASKSMACK_TEST_BASH") or shutil.which("bash") or "bash"
 
-# Lists BM_Real for any filter but one naming "NoSuch", for which it complains on stderr, as Google Benchmark does.
+# Lists BM_Real for any filter but one naming "NoSuch", for which it complains on stderr, as Google Benchmark does,
+# and BM_Real and BM_Other for one naming "Several".
 STUB_BENCHMARKS = textwrap.dedent(
     """\
     #!/usr/bin/env bash
@@ -33,6 +34,8 @@ STUB_BENCHMARKS = textwrap.dedent(
     if [[ -n "${list:-}" ]]; then
         if [[ -n "${filter_misses:-}" ]]; then
             echo "Failed to match any benchmarks against regex: ^BM_NoSuch$" >&2
+        elif [[ "$*" == *Several* ]]; then
+            printf 'BM_Real\nBM_Other\n'
         else
             echo "BM_Real"
         fi
@@ -131,6 +134,43 @@ class ProfileHeapTest(unittest.TestCase):
         self.assertIn("--benchmark_filter=^BM_Real$", self.calls.read_text(encoding="utf-8"))
         self.assertIn("Capture complete", result.stdout)
 
+
+    def run_heap(self, *args):
+        return subprocess.run(
+            [BASH, str(self.root / "tools" / "profile-heap.sh"), *args],
+            capture_output=True, text=True, env=self.env, cwd=self.root, check=False,
+        )
+
+    def test_several_matches_warn_that_the_totals_mislead(self):
+        # #4223: allocation counts scale with each benchmark's iteration count.
+        result = self.profile("Several")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("matches 2 benchmarks", result.stderr)
+        self.assertIn("totals", result.stderr)
+
+    def test_the_defaults_are_the_profile_preset_and_one_benchmark(self):
+        # #4222, #4223: as profile-etw.ps1 (#4241), bench mode builds nothing new (profile builds the benchmarks)
+        # and profiles BM_ProcessModel_Refresh alone.
+        result = self.run_heap("bench", "--skip-build", "--bench-reps", "1", "--bench-min-time", "0.01s")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls.read_text(encoding="utf-8")
+        self.assertIn("build/profile/bin/TaskSmackBenchmarks", calls)
+        self.assertIn("--benchmark_filter=BM_ProcessModel_Refresh$", calls)
+
+    def test_bench_options_are_refused_in_app_mode_and_checked(self):
+        # #4212: an app capture used to run with a --bench-filter silently ignored.
+        for args, message in (
+            (("app", "--bench-filter", "X"), "applies to bench mode only"),
+            (("app", "--bench-reps", "3"), "applies to bench mode only"),
+            (("bench", "--bench-reps", "0"), "--bench-reps must be"),
+            (("bench", "--bench-reps", "two"), "--bench-reps must be"),
+            (("bench", "--bench-min-time", "fast"), "--bench-min-time takes"),
+        ):
+            with self.subTest(args=args):
+                result = self.run_heap(*args, "--skip-build")
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.calls.exists(), "nothing captured")
 
 
 class ProfileHeapDurationTest(unittest.TestCase):
