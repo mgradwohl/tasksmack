@@ -371,10 +371,58 @@ TEST(WindowsDumpFolderTest, OnlyACloudFilesReparsePointIsAcceptedForADump)
     EXPECT_FALSE(acceptedDumpFolder(REPARSE_FOLDER, 0)) << "an unknown tag";
 }
 
+namespace
+{
+/// A directory removed at the end of the test even when this account has no right to list it (RemoveDirectoryW, which
+/// the parent's delete-child right allows): std::filesystem::remove_all() would have to open it first.
+class RemovedFolder
+{
+  public:
+    explicit RemovedFolder(std::filesystem::path path) : m_Path(std::move(path))
+    {}
+    ~RemovedFolder()
+    {
+        static_cast<void>(RemoveDirectoryW(m_Path.c_str()));
+    }
+    RemovedFolder(const RemovedFolder&) = delete;
+    RemovedFolder& operator=(const RemovedFolder&) = delete;
+    RemovedFolder(RemovedFolder&&) = delete;
+    RemovedFolder& operator=(RemovedFolder&&) = delete;
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+/// folderReaders() of the real DACL of the folder @p folder holds (opened with READ_CONTROL), read through the handle
+/// as heldFolderReaders() reads it, with BUILTIN\Administrators standing in for the folder's owner (#4264): what its DACL
+/// alone says, as for the folder an elevated TaskSmack makes. Unknown when it can't be read.
+[[nodiscard]] DumpFolderAccess readersWithAdministratorsAsOwner(HANDLE folder)
+{
+    PACL dacl = nullptr;
+    PSECURITY_DESCRIPTOR read = nullptr;
+    if (GetSecurityInfo(folder, SE_FILE_OBJECT, DACL_SECURITY_INFORMATION, nullptr, nullptr, &dacl, nullptr, &read) != ERROR_SUCCESS)
+    {
+        return DumpFolderAccess::Unknown;
+    }
+    const std::unique_ptr<void, decltype(&::LocalFree)> owned(read, &::LocalFree);
+    const auto admins = sidFrom("BA");
+    SECURITY_DESCRIPTOR descriptor{};
+    if (admins == nullptr || InitializeSecurityDescriptor(&descriptor, SECURITY_DESCRIPTOR_REVISION) == FALSE ||
+        SetSecurityDescriptorOwner(&descriptor, admins.get(), FALSE) == FALSE ||
+        SetSecurityDescriptorDacl(&descriptor, TRUE, dacl, FALSE) == FALSE)
+    {
+        return DumpFolderAccess::Unknown;
+    }
+    return folderReaders(&descriptor);
+}
+} // namespace
+
 // Real folders, made with explicit SDDL and an explicit owner (this test's account, which can't make Administrators
 // the owner unelevated), so the result doesn't depend on the runner's token. As the allowlist says, both are flagged:
-// this account owns them, and it keeps full control of them so it can remove them. The Users folder is flagged even
-// when the owner is set aside, by its inherited read; the administrators-only DACL passes the same read.
+// this account owns them, and it keeps full control of them so it can remove them. That stops at the owner check, so
+// the DACLs are also read from real folders with the owner set aside (#4264): the Users folder is flagged by its
+// inherited read, and a folder whose DACL names only Administrators and SYSTEM passes, so a check that stopped reading
+// the DACL, or flagged every one, fails here and not only in CI's elevated run.
 TEST(WindowsDumpFolderTest, TheCheckReadsARealFoldersOwnerAndDacl)
 {
     const ScratchFolder scratch;
@@ -400,6 +448,27 @@ TEST(WindowsDumpFolderTest, TheCheckReadsARealFoldersOwnerAndDacl)
     // the administrators-only folder passes.
     EXPECT_EQ(readersOf("O:BA" + usersReadDacl), DumpFolderAccess::ReadableByUser);
     EXPECT_EQ(readersOf("O:BA" + adminsOnlyDacl), DumpFolderAccess::AdministratorsOnly);
+
+    // The real folders' own DACLs, the owner set aside. The Users folder's read is in its DACL: flagged.
+    EXPECT_EQ(readersWithAdministratorsAsOwner(heldUsers->get()), DumpFolderAccess::ReadableByUser);
+    // A real folder whose DACL is administrators-only for every right the hint measures: this account owns it, which
+    // lets it read the folder's security (READ_CONTROL), and its own ACE grants only what opening and removing the
+    // folder take (SYNCHRONIZE, DELETE, FILE_READ_ATTRIBUTES), none of which lists, traverses or controls it. Passes once
+    // the owner is set aside.
+    const std::filesystem::path adminsDaclOnly = scratch.path() / L"admins-dacl-only";
+    ASSERT_TRUE(makeFolderWith(adminsDaclOnly, std::format("O:{0}D:P(A;OICI;FA;;;BA)(A;OICI;FA;;;SY)(A;;0x110080;;;{0})", me)))
+        << GetLastError();
+    const RemovedFolder removeAdminsDaclOnly(adminsDaclOnly);
+    const UniqueHandle adminsDaclFolder(CreateFileW(adminsDaclOnly.c_str(),
+                                                    READ_CONTROL,
+                                                    FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                    nullptr,
+                                                    OPEN_EXISTING,
+                                                    FILE_FLAG_BACKUP_SEMANTICS,
+                                                    nullptr));
+    ASSERT_TRUE(adminsDaclFolder) << GetLastError();
+    EXPECT_EQ(heldFolderReaders(adminsDaclFolder.get()), DumpFolderAccess::ReadableByUser) << "owned by this account";
+    EXPECT_EQ(readersWithAdministratorsAsOwner(adminsDaclFolder.get()), DumpFolderAccess::AdministratorsOnly);
 }
 
 namespace
