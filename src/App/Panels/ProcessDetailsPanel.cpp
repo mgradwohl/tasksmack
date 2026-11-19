@@ -251,6 +251,8 @@ void ProcessDetailsPanel::takeSamples(std::span<const Domain::ProcessSample> sam
                             m_CachedRateReadings = Detail::rateReadings(sample);
                             recordHistoryPoint(*sample.snapshot, sample.sampleTimeSeconds, gapBefore, m_CachedRateReadings);
                             recorded = true;
+                            // A priority just applied stays on the slider until a sample taken after it (#4379)
+                            m_Views->m_PriorityView.takeProcessSample(sample.sampleTimeSeconds, sample.snapshot->nice);
                         });
     if (recorded)
     {
