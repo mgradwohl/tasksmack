@@ -6,20 +6,16 @@
 #include "WindowsDevicePaths.h"
 #include "WindowsHandles.h"
 #include "WindowsHeldFileVersion.h"
-#include "WindowsNtQuery.h"
+#include "WindowsLocalNtFile.h"
 #include "WindowsProcessIdentity.h"
 #include "WindowsVersionResourceMath.h"
-
-// clang-format off
-#include <winioctl.h> // FILE_DEVICE_DISK, FILE_DEVICE_CD_ROM, FILE_DEVICE_VIRTUAL_DISK
-#include <winternl.h> // NtCreateFile's OBJECT_ATTRIBUTES, IO_STATUS_BLOCK and UNICODE_STRING
-// clang-format on
 
 #include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cwctype>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string>
@@ -104,38 +100,6 @@ constexpr int MAX_ENUM_ATTEMPTS = 3;
     return std::ranges::any_of(localDevices, [ntName](const std::wstring& device) { return isOnDevice(ntName, device); });
 }
 
-/// OBJ_DONT_REPARSE (ntdef.h, which user-mode code doesn't include): the open fails, rather than following any reparse
-/// it meets on the way (a junction, a symlink, an object manager link), with STATUS_REPARSE_POINT_ENCOUNTERED.
-#ifdef OBJ_DONT_REPARSE
-constexpr ULONG DONT_REPARSE = OBJ_DONT_REPARSE;
-#else
-constexpr ULONG DONT_REPARSE = 0x00001000UL;
-#endif
-
-/// FileFsDeviceInformation, the FS_INFORMATION_CLASS NtQueryVolumeInformationFile is asked for, and what it fills
-/// (FILE_FS_DEVICE_INFORMATION, ntddk.h), and its FILE_REMOTE_DEVICE characteristic.
-constexpr ULONG FILE_FS_DEVICE_INFORMATION_CLASS = 4;
-struct FileFsDeviceInformation
-{
-    DWORD DeviceType = 0;
-    ULONG Characteristics = 0;
-};
-constexpr ULONG REMOTE_DEVICE = 0x00000010UL;
-
-/// ntdll's NtCreateFile, found once; null when it can't be.
-[[nodiscard]] LocalFileFunctions::NtCreateFileFn ntdllNtCreateFile() noexcept
-{
-    static const auto fn = ntdllProc<LocalFileFunctions::NtCreateFileFn>("NtCreateFile");
-    return fn;
-}
-
-/// ntdll's NtQueryVolumeInformationFile, found once; null when it can't be.
-[[nodiscard]] LocalFileFunctions::NtQueryVolumeInformationFileFn ntdllNtQueryVolumeInformationFile() noexcept
-{
-    static const auto fn = ntdllProc<LocalFileFunctions::NtQueryVolumeInformationFileFn>("NtQueryVolumeInformationFile");
-    return fn;
-}
-
 /// The version of the file @p file is open on, as heldFileVersion() reads it, as its four parts.
 [[nodiscard]] std::optional<ModuleVersion> heldModuleVersion(HANDLE file)
 {
@@ -152,101 +116,28 @@ constexpr ULONG REMOTE_DEVICE = 0x00000010UL;
     };
 }
 
-/// Whether the held @p file may be read for its version (#4373): not a name-surrogate reparse point (a symlink or a
-/// junction, which FILE_OPEN_REPARSE_POINT opened as itself), on a disk, a virtual disk or a CD-ROM that isn't a remote
-/// device, and not a file a redirector serves. Each is a backstop for the read: the open itself is what keeps a
-/// connection from being made. A reparse point that isn't a name surrogate (a compressed system file's WOF tag, a
-/// deduplicated or cloud file) is the file itself, so it is read.
-[[nodiscard]] bool mayRead(HANDLE file, const LocalFileFunctions& fns)
-{
-    FILE_ATTRIBUTE_TAG_INFO tag{};
-    if (fns.getFileInformationByHandleEx(file, FileAttributeTagInfo, &tag, sizeof(tag)) == 0 ||
-        ((tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && IsReparseTagNameSurrogate(tag.ReparseTag)))
-    {
-        return false;
-    }
-    IO_STATUS_BLOCK status{};
-    FileFsDeviceInformation device{};
-    if (fns.ntQueryVolumeInformationFile(file, &status, &device, sizeof(device), FILE_FS_DEVICE_INFORMATION_CLASS) < 0 ||
-        (device.DeviceType != FILE_DEVICE_DISK && device.DeviceType != FILE_DEVICE_VIRTUAL_DISK &&
-         device.DeviceType != FILE_DEVICE_CD_ROM) ||
-        (device.Characteristics & REMOTE_DEVICE) != 0)
-    {
-        return false;
-    }
-    // Only a redirector answers this, for its own files.
-    FILE_REMOTE_PROTOCOL_INFO remote{};
-    return fns.getFileInformationByHandleEx(file, FileRemoteProtocolInfo, &remote, sizeof(remote)) == 0;
-}
-
 } // namespace
 
-LocalFileFunctions systemLocalFileFunctions() noexcept
+std::optional<ModuleVersion>
+readLocalFileVersion(const std::wstring& ntName, const LocalFileFunctions& fns, ReadHeldVersionFn readHeldVersion)
 {
-    return {
-        .ntCreateFile = ntdllNtCreateFile(),
-        .ntQueryVolumeInformationFile = ntdllNtQueryVolumeInformationFile(),
-        .getFileInformationByHandleEx = &::GetFileInformationByHandleEx,
-        .readHeldVersion = &heldModuleVersion,
-    };
-}
-
-std::optional<ModuleVersion> readLocalFileVersion(const std::wstring& ntName, const LocalFileFunctions& fns)
-{
-    if (fns.ntCreateFile == nullptr || fns.ntQueryVolumeInformationFile == nullptr || fns.getFileInformationByHandleEx == nullptr ||
-        fns.readHeldVersion == nullptr || ntName.empty() || ntName.size() * sizeof(wchar_t) > 0xFFFEU)
+    if (readHeldVersion == nullptr)
     {
         return std::nullopt;
     }
-    // The kernel's NT name itself, never through \\?\GLOBALROOT (a symbolic link) or a drive letter. OBJ_DONT_REPARSE: a
-    // junction or symlink anywhere on the way fails the open instead of being followed, so a link the process put there
-    // since its module was named can't send the open to a share; the kernel's name is the one left after every reparse,
-    // so a real module never needs one. FILE_OPEN_REPARSE_POINT: a link at the name itself is opened as itself.
-    UNICODE_STRING name{};
-    name.Buffer = const_cast<PWSTR>(ntName.c_str()); // NOLINT(cppcoreguidelines-pro-type-const-cast) - NtCreateFile only reads it
-    name.Length = static_cast<USHORT>(ntName.size() * sizeof(wchar_t));
-    name.MaximumLength = name.Length;
-    // Identification only: whatever answers the open (a pipe server, should one be reached) can learn who is asking but
-    // can't act as TaskSmack, or as the elevated helper.
-    SECURITY_QUALITY_OF_SERVICE qos{};
-    qos.Length = sizeof(qos);
-    qos.ImpersonationLevel = SecurityIdentification;
-    qos.ContextTrackingMode = SECURITY_STATIC_TRACKING;
-    qos.EffectiveOnly = TRUE;
-    OBJECT_ATTRIBUTES attributes{};
-    attributes.Length = sizeof(attributes);
-    attributes.ObjectName = &name;
-    attributes.Attributes = OBJ_CASE_INSENSITIVE | DONT_REPARSE;
-    attributes.SecurityQualityOfService = &qos;
-    IO_STATUS_BLOCK status{};
-    HANDLE opened = nullptr;
     // Shared for read and delete (the loader's own opens share delete), never for write, so the bytes stay put.
-    const NTSTATUS result = fns.ntCreateFile(&opened,
-                                             GENERIC_READ | SYNCHRONIZE,
-                                             &attributes,
-                                             &status,
-                                             nullptr,
-                                             FILE_ATTRIBUTE_NORMAL,
-                                             FILE_SHARE_READ | FILE_SHARE_DELETE,
-                                             FILE_OPEN,
-                                             FILE_OPEN_REPARSE_POINT | FILE_NON_DIRECTORY_FILE | FILE_SYNCHRONOUS_IO_NONALERT,
-                                             nullptr,
-                                             0);
-    if (result < 0)
+    const std::expected<UniqueHandle, LocalFileError> file =
+        openLocalNtFile(ntName, {.access = GENERIC_READ, .share = FILE_SHARE_READ | FILE_SHARE_DELETE, .sequential = false}, fns);
+    if (!file.has_value())
     {
         return std::nullopt;
     }
-    const UniqueHandle file(opened);
-    if (!file || !mayRead(file.get(), fns))
-    {
-        return std::nullopt;
-    }
-    return fns.readHeldVersion(file.get());
+    return readHeldVersion(file->get());
 }
 
 std::optional<ModuleVersion> readLocalFileVersion(const std::wstring& ntName)
 {
-    return readLocalFileVersion(ntName, systemLocalFileFunctions());
+    return readLocalFileVersion(ntName, systemLocalFileFunctions(), &heldModuleVersion);
 }
 
 bool WindowsProcessModulesReader::hasModules() const

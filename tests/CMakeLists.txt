@@ -1012,6 +1012,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsPackageLogo.cpp
     Platform/test_WindowsProcessModules.cpp
+    Platform/test_WindowsLocalNtFile.cpp  # the shared open by NT name: no link followed, no share opened, through fakes and a real junction (#4482)
     Platform/test_WindowsProcessMemoryMap.cpp  # the region walk through fakes, the decoding, device paths, this process's own (#3089)
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsProcessSecurity.cpp

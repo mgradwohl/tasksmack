@@ -413,6 +413,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsHeldFileVersion.cpp # a held file's version resource, read through its handle: Publisher and Modules (#4057, #4373)
+    src/Platform/Windows/WindowsLocalNtFile.cpp # a local file opened by its NT name, no link followed: Publisher, VirusTotal and Modules (#4373, #4482)
     src/Platform/Windows/WindowsProcessMemoryMap.cpp # a process's memory map: VirtualQueryEx, GetMappedFileNameW (#3089)
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
@@ -1054,6 +1055,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # Process Details' environment of another user's process (#3610)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsHeldFileVersion.cpp # the modules' versions, read through a held file (#4373)
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsLocalNtFile.cpp # the modules' files, opened by their NT names with no link followed (#4482)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSocketTables.cpp

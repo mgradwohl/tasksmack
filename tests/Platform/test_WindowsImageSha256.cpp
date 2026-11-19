@@ -5,10 +5,13 @@
 /// writes, by its NT name as GetMappedFileNameW gives one, so the hash is known; one test hashes this test
 /// process's own image through the real calls. Nothing here is privileged and nothing changes the machine.
 
+#include "Mocks/WindowsFakeLocalNtFile.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/Sha256.h"
 #include "Platform/Windows/WindowsImageFile.h"
+#include "Platform/Windows/WindowsLocalNtFile.h"
 #include "Platform/Windows/WindowsProcessActions.h"
+#include "Support/Junction.h"
 
 #include <gtest/gtest.h>
 
@@ -31,10 +34,12 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <optional>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <vector>
 
 namespace Platform
 {
@@ -304,6 +309,7 @@ struct FakeImage
         fns.virtualQueryEx = &virtualQueryEx;
         fns.ntQueryInformationProcess = &ntQueryInformationProcess;
         fns.getProcessInformation = &getProcessInformation;
+        fns.localFile = Windows::systemLocalFileFunctions();
         return fns;
     }
 };
@@ -434,7 +440,7 @@ TEST_F(WindowsImageSha256Test, ACheckThatCantBeMadeIsUnconfirmedNotReplaced)
 }
 
 // The held file and the file under the image's name are compared by identity, never by name, so another form of
-// the same name (another case, a hard link, an 8.3 short name, a network drive's redirector name) matches.
+// the same name (another case, a hard link, an 8.3 short name) matches.
 TEST_F(WindowsImageSha256Test, AnotherFormOfTheImagesNameIsTheSameFile)
 {
     WindowsProcessActions actions(FakeImage::functions());
@@ -528,6 +534,7 @@ TEST_F(WindowsImageSha256Test, WithoutASuffixARefusalEndsAtItsReason)
         .virtualQueryEx = process.virtualQueryEx,
         .getExitCodeProcess = process.getExitCodeProcess,
         .getProcessInformation = process.getProcessInformation,
+        .localFile = process.localFile,
     };
     FakeImage::relocated = true;
     const auto refused = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
@@ -554,6 +561,131 @@ TEST_F(WindowsImageSha256Test, WithoutASuffixARefusalEndsAtItsReason)
     ASSERT_FALSE(hidden.has_value());
     EXPECT_EQ(hidden.error(), "Its executable can't be read: Windows doesn't show which file a protected process runs");
 }
+/// openProcessImageFile()'s calls from FakeImage's, with the image's file opened through @p localFile.
+[[nodiscard]] Windows::ImageFileFunctions imageFunctions(const Windows::LocalFileFunctions& localFile)
+{
+    const WindowsProcessFunctions process = FakeImage::functions();
+    return {
+        .ntQueryInformationProcess = process.ntQueryInformationProcess,
+        .getMappedFileName = process.getMappedFileName,
+        .virtualQueryEx = process.virtualQueryEx,
+        .getExitCodeProcess = process.getExitCodeProcess,
+        .getProcessInformation = process.getProcessInformation,
+        .localFile = localFile,
+    };
+}
+
+// #4482: both opens of the image's file, the one held and hashed and the one under its name again, go through
+// Windows::openLocalNtFile(): the NT name itself, no link on the way or at the name followed, identification-level
+// security. The held one is shared for read only, so the file can't be renamed or written while it is held.
+TEST_F(WindowsImageSha256Test, BothOpensOfTheImagesFileGoThroughTheSharedOpen)
+{
+    TestMocks::localNtFile() = {};
+    TestMocks::localNtFile().forward = true; // recorded, then the real open, so the real file is held and compared
+    const auto file = Windows::openProcessImageFile(imageFunctions(TestMocks::FAKE_LOCAL_NT_FILE), GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_TRUE(file.has_value()) << file.error();
+    const std::vector<TestMocks::LocalNtOpen>& opens = TestMocks::localNtFile().opens;
+    ASSERT_EQ(opens.size(), 2U);
+    for (const TestMocks::LocalNtOpen& open : opens)
+    {
+        EXPECT_EQ(open.name, FakeImage::mappedName) << R"(the NT name itself, not through \\?\GLOBALROOT)";
+        EXPECT_NE(open.objectAttributes & TestMocks::OBJ_DONT_REPARSE_FLAG, 0U);
+        EXPECT_NE(open.options & static_cast<ULONG>(FILE_OPEN_REPARSE_POINT), 0U);
+        EXPECT_EQ(open.impersonation, SecurityIdentification);
+    }
+    EXPECT_EQ(opens[0].access, static_cast<ACCESS_MASK>(GENERIC_READ | SYNCHRONIZE));
+    EXPECT_EQ(opens[0].share, static_cast<ULONG>(FILE_SHARE_READ));
+    EXPECT_EQ(opens[1].access, static_cast<ACCESS_MASK>(FILE_READ_ATTRIBUTES | SYNCHRONIZE));
+    EXPECT_EQ(opens[1].share, static_cast<ULONG>(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE));
+    TestMocks::localNtFile() = {};
+}
+
+// #4482: a refused open is the same refusal it always was ("Its executable can't be read: ..."), now saying why: a
+// link at the name, or a network share's image, which is never opened, so Look up on VirusTotal doesn't hash it and
+// the Publisher column doesn't read it.
+TEST_F(WindowsImageSha256Test, ALinkOrAShareImageIsRefusedAndSaysWhy)
+{
+    TestMocks::localNtFile() = {};
+    TestMocks::localNtFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
+    TestMocks::localNtFile().reparseTag = IO_REPARSE_TAG_SYMLINK;
+    const auto link = Windows::openProcessImageFile(imageFunctions(TestMocks::FAKE_LOCAL_NT_FILE), GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(link.has_value());
+    EXPECT_EQ(link.error(), "Its executable can't be read: it is a symbolic link or a junction, which TaskSmack doesn't follow");
+
+    WindowsProcessFunctions process = FakeImage::functions();
+    process.localFile = TestMocks::FAKE_LOCAL_NT_FILE;
+    WindowsProcessActions actions(process);
+    const std::stop_source stop;
+    const auto unhashed = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(unhashed.has_value());
+    EXPECT_EQ(unhashed.error(), link.error());
+
+    TestMocks::localNtFile() = {};
+    FakeImage::mappedName = L"\\Device\\Mup\\attacker\\share\\x.exe";
+    const auto share = Windows::openProcessImageFile(imageFunctions(TestMocks::FAKE_LOCAL_NT_FILE), GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(share.has_value());
+    EXPECT_EQ(share.error(), "Its executable can't be read: it isn't on a drive TaskSmack can check");
+    EXPECT_TRUE(TestMocks::localNtFile().opens.empty()) << "a share's file is never opened";
+
+    // The image's name, read again once its file is held, now a share's: never opened, and unconfirmed.
+    FakeImage::reset(m_Image);
+    FakeImage::mappedNameLater = L"\\Device\\Mup\\attacker\\share\\x.exe";
+    WindowsProcessActions realOpen(FakeImage::functions()); // the held file opened for real, so its identity reads
+    const auto later = realOpen.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(later.has_value());
+    EXPECT_EQ(later.error(),
+              "Its executable couldn't be confirmed as the image it runs (the file under its name now can't be opened: it isn't on a "
+              "drive TaskSmack can check), so it wasn't hashed");
+    TestMocks::localNtFile() = {};
+}
+
+// #4482, on the real system with no network: the image's name, or its name read again, through a junction (one the
+// process could have swapped in on the way since its name was read, to \\attacker\share say) fails the open and
+// is never followed, so nothing is hashed; the same file by its own name is. The junction is removed before the folder.
+TEST_F(WindowsImageSha256Test, AnImageNameThroughAJunctionIsNotFollowed)
+{
+    const std::filesystem::path folder = fileNamed(L"-junction");
+    const std::filesystem::path target = folder / L"target";
+    const std::filesystem::path link = folder / L"link";
+    std::filesystem::create_directories(target);
+    std::filesystem::create_directory(link);
+    const std::filesystem::path image = target / L"image.exe";
+    std::ofstream(image, std::ios::binary) << "abc";
+    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
+    const std::wstring folderName = ntNameOf(folder);
+    ASSERT_FALSE(folderName.empty());
+
+    WindowsProcessActions actions(FakeImage::functions());
+    const std::stop_source stop;
+    FakeImage::reset(image);
+    const auto direct = actions.imageSha256(TARGET, stop.get_token());
+    EXPECT_EQ(direct.value_or(""), ABC_SHA256) << direct.error_or("");
+
+    FakeImage::reset(image);
+    FakeImage::mappedName = folderName + L"\\link\\image.exe";
+    const auto through = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(through.has_value()) << "hashed through the junction";
+    EXPECT_TRUE(through.error().starts_with("Its executable can't be read: ")) << through.error();
+
+    FakeImage::reset(image);
+    FakeImage::mappedNameLater = folderName + L"\\link\\image.exe";
+    const auto laterThrough = actions.imageSha256(TARGET, stop.get_token());
+    ASSERT_FALSE(laterThrough.has_value());
+    EXPECT_TRUE(laterThrough.error().starts_with(
+        "Its executable couldn't be confirmed as the image it runs (the file under its name now can't be opened: "))
+        << laterThrough.error();
+    EXPECT_TRUE(std::filesystem::exists(link / L"image.exe")) << "a path through it that a by-name open would have followed";
+
+    const bool removed = TestSupport::removeJunction(link);
+    std::error_code ec;
+    if (removed)
+    {
+        std::filesystem::remove_all(folder, ec);
+    }
+    ASSERT_TRUE(removed) << "an empty folder again, so removing the folder removes nothing behind it";
+}
+
 TEST_F(WindowsImageSha256Test, AProtectedProcessOrOneWithNoImageSaysSo)
 {
     WindowsProcessActions actions(FakeImage::functions());
