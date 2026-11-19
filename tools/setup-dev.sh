@@ -279,7 +279,8 @@ run_apt \
     libxi-dev \
     libxext-dev \
     libwayland-dev \
-    libxkbcommon-dev
+    libxkbcommon-dev \
+    libdecor-0-dev
 
 if ! $MINIMAL; then
     # ── Step 5: Coverage and profiling tools ─────────────────────────────────
