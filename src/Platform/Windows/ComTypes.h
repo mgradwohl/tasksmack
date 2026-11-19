@@ -88,6 +88,11 @@ class Bstr
     {
         return m_Value == nullptr ? std::string() : WinString::wideToUtf8(std::wstring_view(m_Value, SysStringLen(m_Value)));
     }
+    /// The string as it is, all SysStringLen() characters of it, for a native identity (#4304); empty when there is none.
+    [[nodiscard]] std::wstring wide() const
+    {
+        return m_Value == nullptr ? std::wstring() : std::wstring(m_Value, SysStringLen(m_Value));
+    }
 
   private:
     [[nodiscard]] static BSTR allocate(std::wstring_view text)

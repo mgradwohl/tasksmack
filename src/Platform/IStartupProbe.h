@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/NativeId.h"
+
 #include <cstdint>
 #include <string>
 #include <vector>
@@ -89,6 +91,10 @@ struct StartupEntry
     std::uint64_t disabledAtUnixSeconds = 0; ///< When it was disabled (Unix seconds); 0 when unknown or enabled.
     std::string publisher;                   ///< The executable's version-resource CompanyName, or the package's publisher.
     StartupTargetState target = StartupTargetState::Unresolved;
+    /// The probe's opaque id for the entry's exact native identity (#4304): Windows' IStartupActions acts on what it
+    /// maps to, never on registrationName or packageFamily, which are display text there and may be lossy. None
+    /// where the platform gives none.
+    NativeId nativeId = NativeId::None;
 };
 
 /// Which StartupEntry fields this platform can fill at all, following ServiceCapabilities.

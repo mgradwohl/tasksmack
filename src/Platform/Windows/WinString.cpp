@@ -35,7 +35,8 @@ namespace Platform::WinString
 
 [[nodiscard]] std::string wideToUtf8(const std::wstring& wide)
 {
-    return wideToUtf8(wide.c_str());
+    // All size() units, embedded NULs included (#4307): c_str() would stop at the first one.
+    return wideToUtf8(std::wstring_view(wide));
 }
 
 [[nodiscard]] std::string wideToUtf8(std::wstring_view wide)
@@ -69,6 +70,25 @@ namespace Platform::WinString
     }
     result.resize(static_cast<size_t>(written));
     return result;
+}
+
+[[nodiscard]] std::string wideToDisplayUtf8(std::wstring_view wide)
+{
+    std::string text;
+    std::size_t start = 0;
+    while (start <= wide.size())
+    {
+        const std::size_t nul = wide.find(L'\0', start);
+        const std::size_t end = (nul == std::wstring_view::npos) ? wide.size() : nul;
+        text += wideToUtf8(wide.substr(start, end - start));
+        if (nul == std::wstring_view::npos)
+        {
+            break;
+        }
+        text += "\xE2\x90\x80"; // U+2400 SYMBOL FOR NULL
+        start = nul + 1;
+    }
+    return text;
 }
 
 [[nodiscard]] std::wstring utf8ToWide(std::string_view utf8)

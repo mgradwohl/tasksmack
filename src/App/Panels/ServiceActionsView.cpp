@@ -111,18 +111,20 @@ constexpr std::string_view SYSTEM_NAME = "the system";
 [[nodiscard]] Platform::ServiceActionResult
 dispatch(Platform::IServiceActions& actions, const ServiceActionRequest& request, const std::stop_token& stopToken)
 {
+    // The service as listed: its id, which Windows maps back to the exact name it read (#4304).
+    const Platform::ServiceTarget target(request.name, request.nativeId);
     switch (request.kind)
     {
     case ServiceActionKind::Start:
-        return actions.start(request.name, stopToken);
+        return actions.start(target, stopToken);
     case ServiceActionKind::Stop:
-        return actions.stop(request.name, stopToken);
+        return actions.stop(target, stopToken);
     case ServiceActionKind::Restart:
-        return actions.restart(request.name, stopToken);
+        return actions.restart(target, stopToken);
     case ServiceActionKind::SetStartType:
         break;
     }
-    return actions.setStartType(request.name, request.startType);
+    return actions.setStartType(target, request.startType);
 }
 
 } // namespace
@@ -176,6 +178,7 @@ ServiceActionRequest makeRequest(ServiceActionKind kind, const Platform::Service
     return {
         .kind = kind,
         .name = service.name,
+        .nativeId = service.nativeId,
         .displayName = service.displayName.empty() ? service.name : service.displayName,
         .startType = startType,
         .fromStartType = service.startType,

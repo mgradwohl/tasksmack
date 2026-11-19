@@ -6,12 +6,16 @@
 /// fake SCM calls: none in the constructor, a passing failure retried, a denial final.
 
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
+#include "Platform/Windows/WindowsNativeIds.h"
 #include "Platform/Windows/WindowsServiceConfig.h"
 #include "Platform/Windows/WindowsServiceProbe.h"
 
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <cstddef>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -198,6 +202,76 @@ TEST(WindowsServiceProbeTest, EnumeratesEventLogWithItsConfiguration)
     EXPECT_EQ(eventLogReread->binaryPath, eventLog->binaryPath);
     EXPECT_EQ(eventLogReread->startType, eventLog->startType);
     EXPECT_EQ(eventLogReread->account, eventLog->account);
+}
+
+/// Two services whose short names read the same once shown as UTF-8 (#4304): "Up<U+D800>date", with a lone
+/// surrogate, and "Up<U+FFFD>date".
+[[nodiscard]] std::vector<std::wstring>& twinNames()
+{
+    static std::vector<std::wstring> names{std::wstring(L"Up") + static_cast<wchar_t>(0xD800) + L"date", L"Up\uFFFDdate"};
+    return names;
+}
+
+BOOL WINAPI fakeEnumTwins(SC_HANDLE /*scm*/,
+                          SC_ENUM_TYPE /*infoLevel*/,
+                          DWORD /*type*/,
+                          DWORD /*state*/,
+                          LPBYTE buffer,
+                          DWORD bytes,
+                          LPDWORD needed,
+                          LPDWORD count,
+                          LPDWORD /*resume*/,
+                          LPCWSTR /*group*/)
+{
+    std::vector<std::wstring>& names = twinNames();
+    *needed = static_cast<DWORD>(names.size() * sizeof(ENUM_SERVICE_STATUS_PROCESSW));
+    *count = 0;
+    if (buffer == nullptr || bytes < *needed)
+    {
+        SetLastError(ERROR_MORE_DATA);
+        return FALSE;
+    }
+    auto* entries = reinterpret_cast<ENUM_SERVICE_STATUS_PROCESSW*>(buffer);
+    for (std::size_t index = 0; index < names.size(); ++index)
+    {
+        entries[index] = ENUM_SERVICE_STATUS_PROCESSW{};
+        entries[index].lpServiceName = names[index].data();
+        entries[index].lpDisplayName = names[index].data();
+        entries[index].ServiceStatusProcess.dwCurrentState = SERVICE_STOPPED;
+    }
+    *count = static_cast<DWORD>(names.size());
+    return TRUE;
+}
+
+SC_HANDLE WINAPI noService(SC_HANDLE /*scm*/, LPCWSTR /*name*/, DWORD /*access*/)
+{
+    SetLastError(ERROR_ACCESS_DENIED);
+    return nullptr; // no configuration: the list alone is under test
+}
+
+TEST(WindowsServiceProbeOpenTest, TwoServicesShownAlikeGetTwoIdsForTheirExactNames)
+{
+    fakeOpen() = {};
+    Windows::ServiceConfigFunctions api = fakeApi();
+    api.enumServicesStatusEx = &fakeEnumTwins;
+    api.openService = &noService;
+    const auto ids = std::make_shared<Windows::ServiceIdTable>();
+    WindowsServiceProbe probe(api, ids);
+
+    const ServiceEnumeration first = probe.enumerate();
+    ASSERT_TRUE(first.ok) << first.failureReason;
+    ASSERT_EQ(first.services.size(), 2U);
+    EXPECT_EQ(first.services[0].name, first.services[1].name) << "the same display text";
+    EXPECT_NE(first.services[0].nativeId, NativeId::None);
+    EXPECT_NE(first.services[0].nativeId, first.services[1].nativeId);
+    EXPECT_EQ(ids->resolve(first.services[0].nativeId), twinNames()[0]) << "the lone surrogate kept";
+    EXPECT_EQ(ids->resolve(first.services[1].nativeId), twinNames()[1]);
+
+    // Listed again, each keeps its id.
+    const ServiceEnumeration second = probe.enumerate();
+    ASSERT_EQ(second.services.size(), 2U);
+    EXPECT_EQ(second.services[0].nativeId, first.services[0].nativeId);
+    EXPECT_EQ(second.services[1].nativeId, first.services[1].nativeId);
 }
 
 } // namespace

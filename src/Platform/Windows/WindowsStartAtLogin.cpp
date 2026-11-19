@@ -100,14 +100,15 @@ constexpr DWORD LONGEST_PATH = 32'768;
     return false;
 }
 
-/// The text of a REG_SZ or REG_EXPAND_SZ value's @p bytes (UTF-16), without its terminating nulls.
+/// The text of a REG_SZ or REG_EXPAND_SZ value's @p bytes (UTF-16), up to its first null: Windows runs the value as a
+/// NUL-terminated string, so text past one is never part of the command (#4307).
 [[nodiscard]] std::wstring valueText(const std::vector<BYTE>& bytes)
 {
     std::wstring text(bytes.size() / sizeof(wchar_t), L'\0');
     std::memcpy(text.data(), bytes.data(), text.size() * sizeof(wchar_t));
-    while (!text.empty() && text.back() == L'\0')
+    if (const std::size_t nul = text.find(L'\0'); nul != std::wstring::npos)
     {
-        text.pop_back();
+        text.resize(nul);
     }
     return text;
 }

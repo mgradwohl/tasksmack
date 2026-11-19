@@ -2,6 +2,7 @@
 
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -16,18 +17,21 @@
 #pragma comment(lib, "advapi32.lib")
 
 #include "ComScope.h"
-#include "WinString.h"
 #include "WindowsConversions.h"
+#include "WindowsNativeIds.h"
 #include "WindowsScheduledTasks.h"
 #include "WindowsStartupProbeMath.h"
 
 #include <array>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <memory>
+#include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -66,16 +70,54 @@ template<typename T> [[nodiscard]] std::array<std::uint8_t, sizeof(T)> numberByt
     return bytes;
 }
 
-/// Sets packaged startup task @p entry's State (#1873), as Settings > Apps > Startup does.
-[[nodiscard]] StartupActionResult
-setPackagedTaskEnabled(const Windows::StartupRegistryFunctions& api, const StartupEntry& entry, bool enabled)
+/// Why an action on an entry whose listed identity can't be resolved is refused (#4304).
+constexpr const char* NO_LONGER_LISTED = "The entry is no longer listed as it was. Try again once the list updates";
+
+/// The exact identity @p entry names (#4304): the one its id was issued for, while WindowsStartupProbe still lists
+/// it; without an id (a caller that built the entry itself), its UTF-8 names converted back, when they can be exact.
+/// An empty name stays empty, for the caller's own "has no name" refusal. Never another entry's identity.
+[[nodiscard]] std::expected<Windows::StartupNativeKey, StartupActionResult> resolveKey(const Windows::StartupIdTable* ids,
+                                                                                       const StartupEntry& entry)
 {
-    if (entry.packageFamily.empty() || entry.registrationName.empty())
+    if (entry.nativeId != NativeId::None)
+    {
+        std::optional<Windows::StartupNativeKey> key = (ids != nullptr) ? ids->resolve(entry.nativeId) : std::nullopt;
+        if (!key || key->location != entry.location)
+        {
+            return std::unexpected(StartupActionResult::failed(NO_LONGER_LISTED));
+        }
+        if (Windows::hasEmbeddedNul(key->name) || Windows::hasEmbeddedNul(key->packageFamily))
+        {
+            // RegSetValueExW and RegOpenKeyExW stop at the NUL: they would write another entry's record.
+            return std::unexpected(
+                StartupActionResult::failed("The entry's name holds a NUL character, so its state can't be recorded under it"));
+        }
+        return std::move(*key);
+    }
+    const auto exact = [](std::string_view utf8) -> std::optional<std::wstring>
+    {
+        return utf8.empty() ? std::optional<std::wstring>(std::wstring()) : Windows::exactWideName(utf8);
+    };
+    const bool packaged = entry.location == StartupLocation::PackagedApp;
+    const std::string name = packaged ? entry.registrationName : Math::approvedValueName(entry);
+    std::optional<std::wstring> wideName = exact(name);
+    std::optional<std::wstring> wideFamily = exact(packaged ? std::string_view(entry.packageFamily) : std::string_view());
+    if (!wideName || !wideFamily)
+    {
+        return std::unexpected(StartupActionResult::failed("The entry's name couldn't be read exactly, so its state isn't changed"));
+    }
+    return Windows::StartupNativeKey{.location = entry.location, .name = std::move(*wideName), .packageFamily = std::move(*wideFamily)};
+}
+
+/// Sets packaged startup task @p taskId's State (#1873), in @p family, as Settings > Apps > Startup does.
+[[nodiscard]] StartupActionResult
+setPackagedTaskEnabled(const Windows::StartupRegistryFunctions& api, const std::wstring& family, const std::wstring& taskId, bool enabled)
+{
+    if (family.empty() || taskId.empty())
     {
         return StartupActionResult::failed("The startup task has no package or task id to record its state under");
     }
-    const std::wstring subkey = std::format(
-        L"{}\\{}\\{}", Math::PACKAGED_TASKS_KEY, WinString::utf8ToWide(entry.packageFamily), WinString::utf8ToWide(entry.registrationName));
+    const std::wstring subkey = std::format(L"{}\\{}\\{}", Math::PACKAGED_TASKS_KEY, family, taskId);
     // Opened, never created: a task Windows keeps no state for (its package was removed since the list
     // was read) isn't made up.
     HKEY rawKey = nullptr;
@@ -127,8 +169,9 @@ setPackagedTaskEnabled(const Windows::StartupRegistryFunctions& api, const Start
 
 WindowsStartupActions::WindowsStartupActions(bool elevated,
                                              Windows::StartupRegistryFunctions api,
-                                             Windows::ScheduledTaskApiFactory scheduledTasks)
-    : m_Elevated(elevated), m_Api(api), m_ScheduledTasks(std::move(scheduledTasks))
+                                             Windows::ScheduledTaskApiFactory scheduledTasks,
+                                             std::shared_ptr<const Windows::StartupIdTable> ids)
+    : m_Elevated(elevated), m_Api(api), m_ScheduledTasks(std::move(scheduledTasks)), m_Ids(std::move(ids))
 {}
 
 StartupActionCapabilities WindowsStartupActions::capabilities() const
@@ -140,10 +183,16 @@ StartupActionResult WindowsStartupActions::setEnabled(const StartupEntry& entry,
 {
     if (entry.location == StartupLocation::PackagedApp)
     {
-        return setPackagedTaskEnabled(m_Api, entry, enabled);
+        const std::expected<Windows::StartupNativeKey, StartupActionResult> key = resolveKey(m_Ids.get(), entry);
+        return key ? setPackagedTaskEnabled(m_Api, key->packageFamily, key->name, enabled) : key.error();
     }
     if (entry.location == StartupLocation::ScheduledTaskUser || entry.location == StartupLocation::ScheduledTaskMachine)
     {
+        const std::expected<Windows::StartupNativeKey, StartupActionResult> key = resolveKey(m_Ids.get(), entry);
+        if (!key)
+        {
+            return key.error();
+        }
         // The API's COM objects are released before the ComScope uninitialises COM: declared after it.
         const ComScope com;
         if (!com.usable())
@@ -155,14 +204,20 @@ StartupActionResult WindowsStartupActions::setEnabled(const StartupEntry& entry,
         {
             return StartupActionResult::failed("The Task Scheduler isn't available");
         }
-        return Windows::setStartupTaskEnabled(*tasks, entry, enabled);
+        return Windows::setStartupTaskEnabled(*tasks, entry, key->name, enabled);
     }
     const auto approvedKey = Math::approvedKeyFor(entry.location);
     if (!approvedKey)
     {
         return StartupActionResult::failed("Run-once entries can't be enabled or disabled");
     }
-    const std::wstring valueName = WinString::utf8ToWide(Math::approvedValueName(entry));
+    const std::expected<Windows::StartupNativeKey, StartupActionResult> identity = resolveKey(m_Ids.get(), entry);
+    if (!identity)
+    {
+        return identity.error();
+    }
+    // The exact value name the probe matched (#4304), never one converted back from the entry's display text.
+    const std::wstring& valueName = identity->name;
     if (valueName.empty())
     {
         return StartupActionResult::failed("The entry has no name to record its state under");
