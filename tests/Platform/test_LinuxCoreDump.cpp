@@ -45,6 +45,22 @@ TEST(LinuxCoreDumpTest, TheFileIsNamedForTheProcessItsPidAndTheTime)
     EXPECT_EQ(dumpFileName("bash", 1234, t, 17), "bash_1234_2026-10-15_04-07-09 (17).core");
 }
 
+TEST(LinuxCoreDumpTest, ACommCutInsideACharacterGivesAWellFormedName)
+{
+    // #4323: Linux keeps 15 bytes of a comm, which can end inside a multi-byte character.
+    using LinuxCoreDump::dumpFileName;
+    const std::tm t = someLocalTime();
+    // "datensicherungüber": 14 ASCII bytes, then the first of ü's two (C3 BC).
+    EXPECT_EQ(dumpFileName("datensicherung\xC3", 1234, t, 1), "datensicherung_1234_2026-10-15_04-07-09.core");
+    // A three-byte character (器, E5 99 A8) cut after two bytes.
+    EXPECT_EQ(dumpFileName("QQ\xE5\x99", 1, t, 1), "QQ_1_2026-10-15_04-07-09.core");
+    // Valid non-ASCII is kept as it is.
+    EXPECT_EQ(dumpFileName("Grüße", 1, t, 1), "Grüße_1_2026-10-15_04-07-09.core");
+    // An ill-formed byte before the end becomes '_'; a name that was only a cut character reads as "process".
+    EXPECT_EQ(dumpFileName("a\xFFb", 1, t, 1), "a_b_1_2026-10-15_04-07-09.core");
+    EXPECT_EQ(dumpFileName("\xC3", 1, t, 1), "process_1_2026-10-15_04-07-09.core");
+}
+
 TEST(LinuxCoreDumpTest, ANameThatCantBeAFileNameIsMadeOne)
 {
     using LinuxCoreDump::dumpFileName;
