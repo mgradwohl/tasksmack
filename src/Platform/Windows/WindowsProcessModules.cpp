@@ -11,7 +11,6 @@
 #include <cstdint>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -42,7 +41,7 @@ constexpr DWORD FIXED_FILE_INFO_SIGNATURE = 0xFEEF04BD;
 /// The system's message for a Win32 error code ("Only part of a ReadProcessMemory ... was completed").
 [[nodiscard]] std::string errorText(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 } // namespace

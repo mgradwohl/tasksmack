@@ -16,4 +16,9 @@ namespace Platform::WinString
 [[nodiscard]] std::string wideToDisplayUtf8(std::wstring_view wide);
 [[nodiscard]] std::wstring utf8ToWide(std::string_view utf8);
 
+/// The system's words for Win32 error @p error, as UTF-8 (#4308): FormatMessageW, never the ANSI code page's
+/// FormatMessageA that the standard library's system_category message calls, with the trailing period, spaces and line break
+/// trimmed. "error N" when the system has no text for it. @p error is a DWORD.
+[[nodiscard]] std::string win32ErrorText(unsigned long error);
+
 } // namespace Platform::WinString

@@ -3,6 +3,7 @@
 #include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
 #include "App/InterfaceScaleChange.h"
+#include "Core/ErrorCodeText.h"
 #ifndef _WIN32
 #include "App/NewFileOwner.h"
 #endif
@@ -103,7 +104,7 @@ void makeUserThemesDir(const std::filesystem::path& dir)
     std::filesystem::create_directories(dir, ec);
     if (ec)
     {
-        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
+        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), Core::errorCodeText(ec));
     }
 #endif
 }

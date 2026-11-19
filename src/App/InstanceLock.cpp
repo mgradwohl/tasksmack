@@ -1,5 +1,7 @@
 #include "InstanceLock.h"
 
+#include "Core/ErrorCodeText.h"
+
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -20,6 +22,7 @@
 // clang-format on
 
 #include "Platform/IHandedOverFolder.h"
+#include "Platform/Windows/WinString.h"
 
 #include <utility>
 #else
@@ -70,7 +73,7 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
         std::filesystem::create_directories(lockPath.parent_path(), ec);
         if (ec)
         {
-            m_Error = ec.message();
+            m_Error = Core::errorCodeText(ec);
             return;
         }
     }
@@ -91,7 +94,7 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
                                   nullptr);
     if (handle == INVALID_HANDLE_VALUE)
     {
-        m_Error = std::system_category().message(static_cast<int>(::GetLastError()));
+        m_Error = Platform::WinString::win32ErrorText(::GetLastError());
         return;
     }
     lock(handle);
@@ -172,7 +175,7 @@ void InstanceLock::lock(void* handle)
         }
         else
         {
-            m_Error = std::system_category().message(static_cast<int>(lastError));
+            m_Error = Platform::WinString::win32ErrorText(lastError);
         }
         return;
     }

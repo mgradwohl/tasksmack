@@ -35,7 +35,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -81,7 +80,7 @@ constexpr std::wstring_view BROKER_FLAG = L"--broker";
 
 [[nodiscard]] std::string lastErrorText(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// The longest path the wide Win32 calls return, in characters (an extended-length path).

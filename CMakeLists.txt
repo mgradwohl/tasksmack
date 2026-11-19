@@ -519,6 +519,7 @@ set(TASKSMACK_HEADERS
     src/Core/Application.h
     src/Core/FrameLoopState.h
     src/Core/ConfigDirOverride.h
+    src/Core/ErrorCodeText.h
     src/Core/LocaleSetup.h
     src/Core/LogFileSink.h
     src/Core/PathService.h
