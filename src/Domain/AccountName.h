@@ -5,7 +5,7 @@
 // #3310), and the user name alone on Linux, which has no domain. Pure and allocation-free except for
 // qualified(), so the Processes filter can run matches() on every row.
 
-#include "Platform/AsciiCase.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <cstddef>
 #include <string>
@@ -33,7 +33,8 @@ inline constexpr char DOMAIN_SEPARATOR = '\\';
     return text;
 }
 
-/// Whether @p term is in the account qualified() writes for @p domain and @p user, ASCII case aside:
+/// Whether @p term is in the account qualified() writes for @p domain and @p user, by Unicode simple case
+/// folding (#4302: "élodie" matches "PC\\Élodie"):
 /// the short name ("alice", "lic"), the domain ("PC"), or a span across the separator ("pc\\al"). Nothing
 /// matches an owner whose user couldn't be read. Allocates nothing.
 [[nodiscard]] constexpr bool matches(std::string_view domain, std::string_view user, std::string_view term) noexcept
@@ -42,7 +43,7 @@ inline constexpr char DOMAIN_SEPARATOR = '\\';
     {
         return false;
     }
-    if (Platform::containsIgnoreCase(user, term))
+    if (Platform::containsFoldedCase(user, term))
     {
         return true;
     }
@@ -50,7 +51,7 @@ inline constexpr char DOMAIN_SEPARATOR = '\\';
     {
         return false;
     }
-    if (Platform::containsIgnoreCase(domain, term))
+    if (Platform::containsFoldedCase(domain, term))
     {
         return true;
     }
@@ -61,30 +62,11 @@ inline constexpr char DOMAIN_SEPARATOR = '\\';
     {
         return false;
     }
-    // Compared character by character, not through substr(), which can throw out_of_range: every index
-    // below is checked to lie inside its string first, and operator[] and foldAscii() can't throw.
-    const std::size_t headSize = separator;
-    const std::size_t tailSize = term.size() - separator - 1;
-    if (headSize > domain.size() || tailSize > user.size())
-    {
-        return false;
-    }
-    const std::size_t domainStart = domain.size() - headSize;
-    for (std::size_t i = 0; i < headSize; ++i)
-    {
-        if (Platform::foldAscii(domain[domainStart + i]) != Platform::foldAscii(term[i]))
-        {
-            return false;
-        }
-    }
-    for (std::size_t i = 0; i < tailSize; ++i)
-    {
-        if (Platform::foldAscii(user[i]) != Platform::foldAscii(term[separator + 1 + i]))
-        {
-            return false;
-        }
-    }
-    return true;
+    // The term's head must end the domain and its tail start the user name, by Unicode simple case folding
+    // (#4302). Views built from data() and lengths, not substr(), which can throw: separator < term.size().
+    const std::string_view head(term.data(), separator);
+    const std::string_view tail(term.data() + separator + 1, term.size() - separator - 1);
+    return Platform::endsWithFoldedCase(domain, head) && Platform::startsWithFoldedCase(user, tail);
 }
 
 } // namespace Domain::AccountName

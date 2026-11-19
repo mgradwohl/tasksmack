@@ -777,6 +777,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
     Platform/test_AsciiCase.cpp
+    Platform/test_Utf8CaseFold.cpp
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerSessionRules.cpp  # each request kind's category trait (#3783)
