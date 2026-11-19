@@ -1,5 +1,6 @@
 #include "Domain/HandleSearch.h"
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
@@ -45,7 +46,15 @@ void addMatch(const SearchProcess& process,
         into.truncated = true;
         return;
     }
-    into.matches.append(HandleMatch{.target = process.target, .process = process.name, .kind = kind, .path = path, .deleted = deleted});
+    // Shown and copied only (an action goes by target), so well-formed UTF-8 (#4301): a raw Linux path or comm
+    // can hold invalid bytes, which ImGui would draw by swallowing the bytes after them.
+    into.matches.append(HandleMatch{
+        .target = process.target,
+        .process = sanitizedUtf8(process.name),
+        .kind = kind,
+        .path = sanitizedUtf8(path),
+        .deleted = deleted,
+    });
 }
 
 } // namespace

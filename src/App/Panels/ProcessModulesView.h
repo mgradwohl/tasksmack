@@ -19,6 +19,7 @@
 
 #include "Domain/ProcessModules.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/Utf8Sanitize.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
@@ -94,6 +95,7 @@ class ProcessModulesView
         std::string version; ///< "10.0.26100.4202", or empty
         std::string base;    ///< "0x7FF8A1B20000"
         std::string size;    ///< "2.4 MB"
+        std::string path;    ///< module.path as well-formed UTF-8, for display (#4301)
     };
 
     /// Draws the section: a collapsing "Modules (N)" header and, while it is open, the filter box and
@@ -166,7 +168,9 @@ class ProcessModulesView
         m_Rows.reserve(result.modules.size());
         for (const Platform::ProcessModule& module : result.modules)
         {
-            std::string name(Domain::Modules::fileName(module.path));
+            // Shown as well-formed UTF-8 (#4301); module keeps the raw path.
+            std::string path = Domain::sanitizedUtf8(module.path);
+            std::string name(Domain::Modules::fileName(path));
             if (module.deleted)
             {
                 name += " (deleted)";
@@ -177,6 +181,7 @@ class ProcessModulesView
                 .version = Domain::Modules::formatVersion(module.version),
                 .base = Domain::Modules::formatAddress(module.baseAddress),
                 .size = UI::Format::formatBytes(static_cast<double>(module.sizeBytes)),
+                .path = std::move(path),
             });
         }
         sortRows();
@@ -205,13 +210,11 @@ class ProcessModulesView
     /// rows or the filter change.
     [[nodiscard]] std::span<const std::size_t> filteredRows()
     {
-        return m_Filtered.get(m_Rows.size(),
-                              m_Filter,
-                              [this](std::size_t i)
-                              {
-                                  return Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) ||
-                                         Platform::containsIgnoreCase(m_Rows[i].module.path, m_Filter);
-                              });
+        return m_Filtered.get(
+            m_Rows.size(),
+            m_Filter,
+            [this](std::size_t i)
+            { return Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].path, m_Filter); });
     }
 
     /// Whether any module has a version: the Version column is left out when none does (Linux).
