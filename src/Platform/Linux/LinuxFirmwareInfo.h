@@ -7,6 +7,7 @@
 // MemTotal from /proc/meminfo. No helper or dmidecode is ever run. Standard library only, so the
 // fixture tests build and run everywhere.
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/LinuxOsInfo.h"
 #include "Platform/SmbiosParser.h"
@@ -58,7 +59,8 @@ inline void readFirmwareFacts(const std::filesystem::path& root, FirmwareInfo& i
             }
             return std::string{};
         }
-        return LinuxOsInfo::readLine(path);
+        // Raw DMI bytes: well-formed UTF-8 before they are shown or saved (#4305).
+        return Domain::sanitizedUtf8(LinuxOsInfo::readLine(path));
     };
 
     info.available = true;

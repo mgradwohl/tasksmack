@@ -355,6 +355,20 @@ TEST(SmbiosParserTest, CleanStringOfOnlyControlsAndSpacesIsEmpty)
     EXPECT_EQ(cleanString(embedded), "A B");
 }
 
+TEST(SmbiosParserTest, CleanStringMakesLatin1AndUnprogrammedBytesWellFormed)
+{
+    // #4305: a vendor writing Latin-1 (0xAE for the registered sign) or an unprogrammed field (0xFF) gives U+FFFD.
+    const ByteVector latin1{'A', 'c', 'm', 'e', 0xAE};
+    EXPECT_EQ(cleanString(latin1), "Acme\xEF\xBF\xBD");
+    const ByteVector unprogrammed{0xFF, 0xFF, ' '};
+    EXPECT_EQ(cleanString(unprogrammed), "\xEF\xBF\xBD\xEF\xBF\xBD");
+    const ByteVector utf8{'5', '2', ' ', 0xC2, 0xB0, 'C'};
+    EXPECT_EQ(cleanString(utf8),
+              "52 \xC2\xB0"
+              "C")
+        << "well-formed UTF-8 is kept";
+}
+
 TEST(SmbiosParserTest, FormatReleaseNeedsBothBytesAndASupportedMajor)
 {
     EXPECT_EQ(formatRelease(std::uint8_t{5}, std::uint8_t{17}), "5.17");
