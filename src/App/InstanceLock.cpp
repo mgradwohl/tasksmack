@@ -1,7 +1,5 @@
 #include "InstanceLock.h"
 
-#include "Core/ErrorCodeText.h"
-
 #include <chrono>
 #include <filesystem>
 #include <functional>
@@ -21,6 +19,7 @@
 #include <windows.h>
 // clang-format on
 
+#include "Core/ErrorCodeText.h" // Windows only: Linux reports errno text, not error_code text (#4308)
 #include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/WinString.h"
 

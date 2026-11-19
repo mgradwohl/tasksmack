@@ -3,8 +3,9 @@
 #include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
 #include "App/InterfaceScaleChange.h"
-#include "Core/ErrorCodeText.h"
-#ifndef _WIN32
+#ifdef _WIN32
+#include "Core/ErrorCodeText.h" // Windows only: Linux reports NewFileOwner's text (#4308)
+#else
 #include "App/NewFileOwner.h"
 #endif
 #include "App/PanelPlatforms.h"
