@@ -3,6 +3,7 @@
 /// keyed on the snapshot generation actually adopted (#1394)
 
 #include "App/Panels/ProcessFilterCache.h"
+#include "Domain/AccountName.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Mocks/MockProbes.h"
@@ -101,12 +102,22 @@ TEST(ProcessFilterMatchTest, AnEmptyTermMatchesEverything)
     EXPECT_TRUE(matches("", "", ""));
 }
 
-TEST(ProcessFilterMatchTest, OnlyAsciiLettersFold)
+TEST(ProcessFilterMatchTest, EveryLetterFoldsNotJustAscii)
 {
-    using Platform::containsIgnoreCase;
-    EXPECT_TRUE(containsIgnoreCase("Résumé.exe", "RéSUMé"));          // the ASCII letters fold, é matches itself
-    EXPECT_FALSE(containsIgnoreCase("Résumé.exe", "RÉSUMÉ"));         // É is not folded to é
-    EXPECT_TRUE(containsIgnoreCase("C:\\Tools\\[x]_1.exe", "[X]_1")); // punctuation and digits as they are
+    // #4302: the filter folds by Unicode simple case folding, so É matches é.
+    using App::ProcessFilterCache::matches;
+    EXPECT_TRUE(matches("Résumé.exe", "", "RÉSUMÉ"));
+    EXPECT_TRUE(matches("Émile.exe", "", "émile"));
+    EXPECT_TRUE(matches("", "C:\\Tools\\[x]_1.exe", "[X]_1")); // punctuation and digits as they are
+    EXPECT_FALSE(matches("Résumé.exe", "", "resume"));         // no accent stripping: é is not e
+}
+
+TEST(ProcessFilterMatchTest, ANonAsciiTermMatchesTheOwnersAccount)
+{
+    // #4302: "élodie" found no process owned by PC\Élodie.
+    EXPECT_TRUE(Domain::AccountName::matches("PC", "Élodie", "élodie"));
+    EXPECT_TRUE(Domain::AccountName::matches("PC", "Élodie", "pc\\élo"));
+    EXPECT_FALSE(Domain::AccountName::matches("PC", "Élodie", "elodie"));
 }
 
 TEST(ProcessFilterMatchTest, TheFilterMatchesTheNameOrTheCommandLine)

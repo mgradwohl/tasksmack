@@ -7,6 +7,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
@@ -234,9 +235,9 @@ bool connectionMatches(const ConnectionRow& row, std::string_view filter)
     {
         return true;
     }
-    return Platform::containsIgnoreCase(row.process, filter) || row.pid.contains(filter) ||
-           Platform::containsIgnoreCase(row.local, filter) || Platform::containsIgnoreCase(row.remote, filter) ||
-           Platform::containsIgnoreCase(row.protocol, filter) || Platform::containsIgnoreCase(row.state, filter);
+    return Platform::containsFoldedCase(row.process, filter) || row.pid.contains(filter) ||
+           Platform::containsFoldedCase(row.local, filter) || Platform::containsFoldedCase(row.remote, filter) ||
+           Platform::containsFoldedCase(row.protocol, filter) || Platform::containsFoldedCase(row.state, filter);
 }
 
 std::vector<std::size_t>
