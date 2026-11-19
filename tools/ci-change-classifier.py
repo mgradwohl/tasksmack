@@ -208,6 +208,7 @@ DEV_TOOLS = {
     "tools/test-measure-idle.ps1": "measure-idle.ps1's and idle-sample.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-resize-perf-summary.ps1": "resize-perf-summary.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-pgo.ps1": "pgo.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-ps1-compat.ps1": "the tools/*.ps1 PowerShell 5.1 test (#4319), run by ctest and by dev-tools-checks.",
 }
 
 # The tool tests the dev-tools-checks jobs run, by runner, in ctest's registrations' way (tests/CMakeLists.txt):
@@ -240,6 +241,7 @@ DEV_TOOL_TESTS = {
         "tools/test-resize-perf-summary.ps1",
         "tools/test-cmake-cache.ps1",
         "tools/test-pgo.ps1",
+        "tools/test-ps1-compat.ps1",
     ),
 }
 

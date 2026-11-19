@@ -17,6 +17,7 @@
 // tests/App/test_ProcessOpenFilesViewRender.cpp.
 
 #include "Domain/ProcessOpenFiles.h"
+#include "Domain/Utf8Sanitize.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
@@ -184,7 +185,8 @@ class ProcessOpenFilesView
         m_Rows.reserve(result.files.size());
         for (Platform::OpenFile& file : result.files)
         {
-            std::string path = file.path;
+            // The shown path is well-formed UTF-8 (#4301); file keeps the raw bytes.
+            std::string path = Domain::sanitizedUtf8(file.path);
             if (file.deleted)
             {
                 path += " (deleted)";

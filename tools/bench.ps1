@@ -1,3 +1,4 @@
+#Requires -Version 7
 #!/usr/bin/env pwsh
 # The blank line below keeps this comment out of the help block, so Get-Help reads it (#2254).
 

@@ -139,7 +139,7 @@ Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
 `.venv\Scripts\Activate.ps1` under its default execution policy (`Restricted`).
 
 The Windows setup installs only what building, testing and running need:
-- Visual Studio 2022 Build Tools with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
+- Visual Studio 2026 Build Tools (the Visual Studio CI builds with) with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
 - LLVM 23 (`-LlvmVersion` must stay on the pinned major), as the only LLVM in `C:\Program Files\LLVM` (see below);
 - CMake, Ninja and Python 3.14.
 
@@ -203,9 +203,10 @@ Example (Ubuntu/Debian):
 sudo apt install clang-23 clang-tidy-23 clang-format-23 lld-23 llvm-23 libc++-23-dev libc++abi-23-dev cmake ninja-build ccache
 # The compiler runtimes the coverage, PGO and sanitizer presets link (only a Recommends of clang-23)
 sudo apt install libclang-rt-23-dev
-# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL)
+# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL); libdecor's for
+# native Wayland decorations, which a Release build requires (#4440: -DTASKSMACK_REQUIRE_LIBDECOR=OFF opts out)
 sudo apt install libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
-    libwayland-dev libxkbcommon-dev
+    libwayland-dev libxkbcommon-dev libdecor-0-dev
 
 # Python 3.14 (Ubuntu 24.04's python3 is 3.12; tools/setup-dev.sh adds the deadsnakes PPA for it),
 # with GLAD's hash-locked dependencies in the project venv
@@ -243,7 +244,7 @@ sudo apt install libbpf-dev
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - git (CMake requires it, and fetches the dependencies with it)
 - FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
-- **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if it has `VC.Tools.x86.x64` and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
+- **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2026 Build Tools (winget `Microsoft.VisualStudio.BuildTools`, the Visual Studio of CI's `windows-2025-vs2026` image) with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if its MSVC toolset is 14.51 or newer (the floor: the standard library CI builds with, VS 2026 18.6, which first shipped `<flat_map>` and `<flat_set>`; `tools/check-prereqs.ps1` warns on an older one), it has `VC.Tools.x86.x64`, and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
 `TaskSmack.exe`; the DPI-awareness manifest is embedded separately at link time. `cmake/RCCompiler.cmake`
@@ -450,7 +451,12 @@ it on any new target. Third-party dependencies keep their own settings.
   hook (`tools/check-utf8.py`) fails on any staged text file that doesn't decode as strict UTF-8,
   reporting `file:line:column`. Binary files (the types `.gitattributes` marks binary) and the fuzz
   corpora under `tests/fuzz/corpus/` are skipped.
-- **PowerShell scripts need PowerShell 7 (`pwsh`)** and name the encoding on every write:
+- **PowerShell scripts need PowerShell 7 (`pwsh`)**: each `tools/*.ps1` starts with `#Requires -Version 7`, so
+  Windows PowerShell 5.1 says what to run it in. Only `tools/newcomer-check.ps1`, which runs on a clean Windows,
+  stays 5.1-compatible. 5.1 reads a script with no BOM as the ANSI code page, so a non-ASCII byte in a string can
+  break its parse: `setup-dev.ps1`, `check-prereqs.ps1` and `pgo.ps1` are ASCII-only (`[char]0x2713` for a mark),
+  and the `check-utf8` hook fails a `.ps1` with non-ASCII text and no `#Requires -Version 7`. A script names the
+  encoding on every write:
   `Set-Content`/`Add-Content`/`Out-File -Encoding utf8`, which in PowerShell 7 means UTF-8
   without a BOM (`utf8NoBOM` is the same thing). Use `-Encoding ascii` only for `.cmd` stubs that
   `cmd.exe` reads. A script that parses a native tool's output (git, cmake, clang-tidy, llvm-cov)

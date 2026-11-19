@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Usage: pwsh -File tools/md-link-audit.ps1 [-RepoRoot <dir>]. The root defaults to this checkout's, wherever
 # it runs from; it was the current directory, so a run from tools\ scanned 0 files and passed (#3529).
 param(

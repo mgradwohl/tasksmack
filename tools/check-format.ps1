@@ -11,6 +11,7 @@
 .EXAMPLE
     .\check-format.ps1 -ShowDetails
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [switch]$ShowDetails

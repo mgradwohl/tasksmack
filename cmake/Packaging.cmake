@@ -4,8 +4,12 @@
 
 set(CPACK_PACKAGE_NAME "${PROJECT_NAME}")
 set(CPACK_PACKAGE_VERSION "${PROJECT_VERSION}")
-set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "${PROJECT_NAME} - TaskSmack")
-set(CPACK_PACKAGE_DESCRIPTION "TaskSmack - Modern cross-platform system monitor")
+# The synopsis (Debian Policy 3.4.1) is what apt, dpkg -l and the software centres show beside the name, so it never
+# repeats it (#4442: "TaskSmack - TaskSmack"); it matches the desktop entry's Comment.
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Modern system monitor and task manager")
+# Lines of at most 80 characters: the .deb's extended description keeps CPack's line breaks.
+set(CPACK_PACKAGE_DESCRIPTION
+    "Shows CPU, memory, disk, network and GPU use for the whole system and for each\nprocess, with history, and lets you end, suspend or reprioritize processes.")
 set(CPACK_PACKAGE_HOMEPAGE_URL "https://github.com/mgradwohl/tasksmack")
 set(CPACK_PACKAGE_VENDOR "TaskSmack Contributors")
 # Also the .deb Maintainer field (CPACK_DEBIAN_PACKAGE_MAINTAINER below) and the NSIS Contact (CPACK_NSIS_CONTACT

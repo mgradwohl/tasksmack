@@ -21,6 +21,13 @@ inputs:
     description: 'Install llvm-profdata and llvm-cov for coverage'
     required: false
     default: 'false'
+  install-iwyu-build-deps:
+    description: >
+      Install llvm-<llvm-version>-dev and libclang-<llvm-version>-dev from the same pinned apt.llvm.org
+      source (or the package cache) as the toolchain, for building include-what-you-use from source (#4481).
+      Ubuntu's own archive has no LLVM packages for the version, so a bare apt-get install of them fails.
+    required: false
+    default: 'false'
   install-ninja:
     description: 'Install ninja build system'
     required: false
@@ -125,6 +132,7 @@ runs:
         EXPECT_RELEASE: ${{ inputs.expect-release }}
         INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
         INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
+        INSTALL_IWYU_BUILD_DEPS: ${{ inputs.install-iwyu-build-deps }}
         LLVM_VERSION: ${{ inputs.llvm-version }}
       run: |
         VER="${LLVM_VERSION:-23}"
@@ -146,6 +154,10 @@ runs:
         image=$(. /etc/os-release && echo "${ID}${VERSION_ID}")
         # The optional apt.llvm.org packages (install-llvm.sh's LLVM_PACKAGES); clangd is always in.
         packages="format=${INSTALL_CLANG_FORMAT} tidy=${INSTALL_CLANG_TIDY}"
+        # Appended only when set, so every other caller keeps the key it already has (#4481).
+        if [[ "${INSTALL_IWYU_BUILD_DEPS:-}" == "true" ]]; then
+          packages="${packages} iwyu-build-deps=true"
+        fi
         set_id=$(printf '%s' "$packages" | sha256sum | cut -c1-12)
         if [[ -n "$EXPECT_RELEASE" ]]; then
           echo "key=Linux-llvm-debs-${EXPECT_RELEASE}-${image}-${RUNNER_ARCH}-${set_id}-v1" >> "$GITHUB_OUTPUT"
@@ -176,6 +188,7 @@ runs:
         INSTALL_CCACHE: ${{ inputs.install-ccache }}
         INSTALL_CLANG_FORMAT: ${{ inputs.install-clang-format }}
         INSTALL_CLANG_TIDY: ${{ inputs.install-clang-tidy }}
+        INSTALL_IWYU_BUILD_DEPS: ${{ inputs.install-iwyu-build-deps }}
         INSTALL_NINJA: ${{ inputs.install-ninja }}
         LLVM_VERSION: ${{ inputs.llvm-version }}
       # The cache-hit path, apt.llvm.org's installer, the retries and the older-entry fallback are in
