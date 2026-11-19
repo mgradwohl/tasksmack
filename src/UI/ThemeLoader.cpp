@@ -1,6 +1,7 @@
 #include "ThemeLoader.h"
 
 #include "Core/Utf8Path.h"
+#include "FallbackTheme.h"
 #include "Theme.h"
 #include "UI/ColorContrast.h"
 #include "UI/Format.h"
@@ -235,16 +236,67 @@ auto getRoleColors(const toml::table& tbl,
     return {.line = borrowedLine, .fill = getColor(tbl, fillKey, borrowedFill)};
 }
 
-/// Load a color array (e.g., accent colors)
-template<std::size_t N> void loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors)
+/// Load a color array (e.g., accent colors). Returns how many of @p colors the table gave: 0 when @p key is
+/// missing or not an array. The rest are left as they were.
+template<std::size_t N> auto loadColorArray(const toml::table& tbl, std::string_view key, std::array<ImVec4, N>& colors) -> std::size_t
 {
-    if (const auto* arr = tbl.at_path(key).as_array())
+    const auto* arr = tbl.at_path(key).as_array();
+    if (arr == nullptr)
     {
-        for (std::size_t i = 0; i < std::min(N, arr->size()); ++i)
-        {
-            colors[i] = parseColorNode(*arr->get(i));
-        }
+        return 0;
     }
+    const std::size_t given = std::min(N, arr->size());
+    for (std::size_t i = 0; i < given; ++i)
+    {
+        colors[i] = parseColorNode(*arr->get(i));
+    }
+    return given;
+}
+
+using Accents = decltype(ColorScheme::accents);
+
+/// The built-in fallback theme's accents (FallbackTheme.h), parsed once: what a theme that gives fewer than
+/// all of them gets for the rest (#4427), as a zero ImVec4 is transparent. The embedded file has them all
+/// (test_BundledThemes.cpp); one it ever lost would be errorColor(), as any other missing colour is.
+[[nodiscard]] auto fallbackAccents() -> const Accents&
+{
+    static const Accents accents = []
+    {
+        Accents colors{};
+        colors.fill(errorColor());
+        try
+        {
+            static_cast<void>(
+                loadColorArray(toml::parse(FALLBACK_THEME_TOML, std::string_view{"built-in fallback theme"}), "accents.colors", colors));
+        }
+        catch (const toml::parse_error& err)
+        {
+            spdlog::error("Failed to parse the built-in fallback theme's accents: {}", err.description());
+        }
+        return colors;
+    }();
+    return accents;
+}
+
+/// The theme's accents (`accents.colors`), any it doesn't give taken from the fallback theme with a warning
+/// naming the theme (#4427): a missing, short or non-array list left them transparent, and with them the
+/// title and status bar text, the Network chart's later interfaces, and the Page Faults and GDI series.
+void loadAccents(const toml::table& tbl, ColorScheme& scheme)
+{
+    const std::size_t given = loadColorArray(tbl, "accents.colors", scheme.accents);
+    if (given == scheme.accents.size())
+    {
+        return;
+    }
+    const Accents& fallback = fallbackAccents();
+    for (std::size_t i = given; i < scheme.accents.size(); ++i)
+    {
+        scheme.accents[i] = fallback[i];
+    }
+    spdlog::warn("Theme '{}' gives {} of the {} colors in 'accents.colors'; the rest are the fallback theme's",
+                 scheme.name,
+                 given,
+                 scheme.accents.size());
 }
 
 /// The inline meters' fallback alphas (#1528): a faint amber at 0, a stronger red at full scale.
@@ -433,8 +485,8 @@ auto schemeFromTable(const toml::table& tbl) -> ColorScheme
         scheme.name = (*meta)["name"].value_or(std::string{"Unknown"});
     }
 
-    // Accents
-    loadColorArray(tbl, "accents.colors", scheme.accents);
+    // Accents, after the name, which a warning for missing ones gives
+    loadAccents(tbl, scheme);
 
     // Semantic colors
     scheme.textMuted = getColor(tbl, "semantic.text_muted");

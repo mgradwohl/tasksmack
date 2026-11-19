@@ -1,4 +1,5 @@
 #include "Core/Utf8Path.h"
+#include "FallbackTheme.h" // The built-in fallback theme, whose accents fill a theme's missing ones (#4427)
 #include "UI/ColorContrast.h"
 #include "UI/Theme.h"
 #include "UI/ThemeLoader.h"
@@ -12,7 +13,9 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstddef>
 #include <filesystem>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <memory>
@@ -2310,6 +2313,88 @@ TEST_F(ThemeInfoFromStringTest, MatchesLoadThemeInfoOnTheSameText)
     EXPECT_EQ(fromString->name, fromFile->name);
     EXPECT_EQ(fromString->description, fromFile->description);
     EXPECT_EQ(fromString->path, fromFile->path);
+}
+
+// ========== Accents a theme doesn't give (#4427) ==========
+
+/// The log captured, as for loadThemeInfoFromString.
+class ThemeAccentsTest : public ThemeInfoFromStringTest
+{};
+
+/// k_FullThemeTomlBody under a [meta] naming it @p name, with no `accents.colors` key at all.
+[[nodiscard]] auto namedThemeWithoutAccents(std::string_view name) -> std::string
+{
+    std::string body = k_FullThemeTomlBody;
+    const std::size_t start = body.find("colors = [");
+    const std::size_t end = body.find('\n', start);
+    if (start == std::string::npos || end == std::string::npos)
+    {
+        throw std::runtime_error("namedThemeWithoutAccents: colors key not found in k_FullThemeTomlBody");
+    }
+    body.erase(start, end - start);
+    return std::format("[meta]\nname = \"{}\"\n{}", name, body);
+}
+
+// #4427: a missing, short or non-array accents.colors left the accents a theme didn't give as a zero ImVec4,
+// transparent: invisible title and status bar text, Network interface lines, and Page Faults and GDI series
+// (which fall back to accents 3 and 4). Each is now the fallback theme's, and a warning names the theme.
+TEST_F(ThemeAccentsTest, AccentsAThemeDoesntGiveAreTheFallbackThemesWithAWarning)
+{
+    const auto fallback = ThemeLoader::loadThemeFromString(FALLBACK_THEME_TOML, "fallback");
+    ASSERT_TRUE(fallback.has_value());
+    const ColorScheme reference = fallback.value_or(ColorScheme{});
+
+    struct Case
+    {
+        const char* name;
+        std::string toml;
+        std::size_t given;
+    };
+    const std::vector<Case> cases{
+        {
+            .name = "Short Accents",
+            .toml = "[meta]\nname = \"Short Accents\"\n" + buildFullThemeWithAccents(R"(["#42A5F5", "#FF7043"])"),
+            .given = 2,
+        },
+        {
+            .name = "Accents Not An Array",
+            .toml = "[meta]\nname = \"Accents Not An Array\"\n" + buildFullThemeWithAccents(R"("#42A5F5")"),
+            .given = 0,
+        },
+        {.name = "No Accents", .toml = namedThemeWithoutAccents("No Accents"), .given = 0},
+    };
+    for (const Case& themeCase : cases)
+    {
+        SCOPED_TRACE(themeCase.name);
+        const auto loaded = ThemeLoader::loadThemeFromString(themeCase.toml, "accents.toml");
+        ASSERT_TRUE(loaded.has_value());
+        const ColorScheme scheme = loaded.value_or(ColorScheme{});
+        for (std::size_t i = 0; i < scheme.accents.size(); ++i)
+        {
+            EXPECT_GT(scheme.accents[i].w, 0.0F) << "accent " << i;
+            if (i >= themeCase.given)
+            {
+                expectColorNear(scheme.accents[i], reference.accents[i]);
+            }
+        }
+        if (themeCase.given > 0)
+        {
+            expectColorNear(scheme.accents[0], ImVec4(0x42 / 255.0F, 0xA5 / 255.0F, 0xF5 / 255.0F, 1.0F)); // its own, kept
+        }
+        EXPECT_GT(scheme.chartPageFaults.w, 0.0F);
+        EXPECT_GT(scheme.chartGdi.w, 0.0F);
+        const std::string logged = log();
+        EXPECT_TRUE(
+            logged.contains(std::format("Theme '{}' gives {} of the 8 colors in 'accents.colors'", themeCase.name, themeCase.given)))
+            << logged;
+    }
+}
+
+// #4427: a theme that gives all 8 accents logs no accents warning.
+TEST_F(ThemeAccentsTest, AThemeWithEveryAccentLogsNoAccentsWarning)
+{
+    ASSERT_TRUE(ThemeLoader::loadThemeFromString(k_FullThemeTomlBody, "full.toml").has_value());
+    EXPECT_FALSE(log().contains("accents.colors")) << log();
 }
 
 } // namespace
