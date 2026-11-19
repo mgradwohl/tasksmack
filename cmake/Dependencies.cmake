@@ -52,8 +52,9 @@ set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 # so Ninja in one preset could treat objects compiled with another preset's flags (sanitizers,
 # coverage, LTO, -O level) as up to date (#1308). Pinning BINARY_DIR to this build tree keeps
 # the download shared while every preset builds its own objects. The calls stay literal
-# FetchContent_Declare() (no wrapper) because osv-scanner.yml's Syft cmake cataloger and
-# Renovate's regex managers read them from the source text.
+# FetchContent_Declare() (no wrapper) because tools/cpp-deps-sbom.py (the source SBOM and the
+# OSV gate, #4438), cmake/ThirdPartyNotices.cmake and Renovate's regex managers read them from the
+# source text.
 set(TASKSMACK_DEPS_BINARY_DIR "${CMAKE_BINARY_DIR}/_deps")
 
 # The -subbuild is the small CMake project FetchContent configures and builds to clone a
