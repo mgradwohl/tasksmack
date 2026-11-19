@@ -63,9 +63,11 @@ inline constexpr char DOMAIN_SEPARATOR = '\\';
         return false;
     }
     // The term's head must end the domain and its tail start the user name, by Unicode simple case folding
-    // (#4302). Views built from data() and lengths, not substr(), which can throw: separator < term.size().
-    const std::string_view head(term.data(), separator);
-    const std::string_view tail(term.data() + separator + 1, term.size() - separator - 1);
+    // (#4302). Trimmed views, not substr(), which can throw: separator < term.size().
+    std::string_view head = term;
+    head.remove_suffix(term.size() - separator);
+    std::string_view tail = term;
+    tail.remove_prefix(separator + 1);
     return Platform::endsWithFoldedCase(domain, head) && Platform::startsWithFoldedCase(user, tail);
 }
 
