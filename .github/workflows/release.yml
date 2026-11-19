@@ -2551,6 +2551,62 @@ jobs:
           }
           Write-Host "Upgraded in place: the old uninstaller ran, the files are the .zip's again, and both values are kept ($debugger; $runValue)."
 
+      - name: Upgrade and uninstall while TaskSmack.exe is in use, and check both stop with 32 and change nothing
+        # #4436: the installer and its uninstaller check for a running TaskSmack.exe or TaskSmackHelper.exe before they
+        # change anything (TaskSmackInUseCheck, cmake/CPackProjectConfig.cmake.in): Windows won't open a running .exe
+        # for writing. This step holds the installed TaskSmack.exe open with read-only sharing, which refuses a write
+        # open the same way, rather than start TaskSmack (its launch here needs Mesa's DLLs copied into the folder).
+        # Then this installer with /S, and the installed Uninstall.exe with /S _?=<folder> (in place, as an upgrade
+        # runs it, so the exit code is its own rather than its %TEMP% copy's launcher's) must each exit with 32, the
+        # code WinGet's manifest declares as packageInUse, and leave the folder's files, the Uninstall key, both
+        # values the upgrade kept and the absent uninstall mark exactly as they were.
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-State {
+            $state = [ordered]@{}
+            Get-ChildItem -LiteralPath $env:TASKSMACK_INSTALL_DIR -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+              $state["file $($_.FullName)"] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            }
+            foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
+              Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | Where-Object PSChildName -Match 'TaskSmack' | ForEach-Object {
+                $key = $_
+                $key.GetValueNames() | Sort-Object | ForEach-Object { $state["$($key.Name) $_"] = "$($key.GetValue($_))" }
+              }
+            }
+            $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+            $ifeo = $hklm.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe')
+            $state['Debugger'] = if ($ifeo) { "$($ifeo.GetValue('Debugger'))" }
+            $run = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+            $state['Run'] = if ($run) { "$($run.GetValue('TaskSmack'))" }
+            $mark = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\TaskSmack')
+            $state['Uninstalled'] = if ($mark) { "$($mark.GetValue('Uninstalled'))" }
+            return $state
+          }
+          $before = Get-State | ConvertTo-Json
+          $exe = Join-Path $env:TASKSMACK_INSTALL_DIR 'TaskSmack.exe'
+          $runs = @(
+            @{ What = 'The installer'; File = $env:TASKSMACK_INSTALLER; Arguments = '/S' },
+            @{ What = 'Uninstall.exe'; File = (Join-Path $env:TASKSMACK_INSTALL_DIR 'Uninstall.exe'); Arguments = "/S _?=$env:TASKSMACK_INSTALL_DIR" })
+          $failed = @()
+          $lock = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+          try {
+            foreach ($run in $runs) {
+              $proc = Start-Process -FilePath $run.File -ArgumentList $run.Arguments -PassThru
+              $null = $proc.Handle
+              if (-not $proc.WaitForExit(120000)) { $failed += "$($run.What) didn't exit within 120 s while TaskSmack.exe was in use"; break }
+              if ($proc.ExitCode -ne 32) { $failed += "$($run.What) exited with $($proc.ExitCode) while TaskSmack.exe was in use, not 32" }
+            }
+          } finally { $lock.Dispose() }
+          $after = Get-State | ConvertTo-Json
+          if ($after -cne $before) { $failed += "the install changed while TaskSmack.exe was in use:`nbefore: $before`nafter: $after" }
+          if ($failed.Count) {
+            $failed | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host 'With TaskSmack.exe in use, the installer and Uninstall.exe both exited with 32 and changed nothing.'
+
       - name: Uninstall silently and check nothing is left
         # The installed Uninstall.exe with /S. NSIS's uninstaller copies itself to %TEMP% and runs from
         # there, so the process started here exits at once; the end state is polled for instead: the
@@ -2880,6 +2936,13 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Add the C/C++ dependencies to the source SBOM
+        # Syft has no CMake or FetchContent cataloger, so its document lists the Actions and the Python
+        # tooling but none of the libraries compiled into the binaries (#4438). This adds each
+        # FetchContent_Declare() pin (version, commit, pkg:github purl, licence; the test and benchmark
+        # ones marked as such) and the Linux build's pkg-config libraries.
+        run: python3 -I tools/cpp-deps-sbom.py merge --sbom "$RUNNER_TEMP/sbom.spdx.json"
+
       - name: Download packages (every OS and architecture)
         # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/; with signing
         # on, the Windows .zips are sign-windows' signed ones (windows-unsigned-* never matches). Package
@@ -2947,6 +3010,13 @@ jobs:
         env:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
         run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
+
+      - name: Check the source SBOM lists every pinned C/C++ dependency
+        # Before SHA256SUMS and signing: the staged file must list every FetchContent_Declare() at its pinned
+        # commit, and nothing no CMake file declares, so the published SBOM can't drift from the pins (#4438).
+        env:
+          VERSION_LABEL: ${{ steps.version.outputs.label }}
+        run: python3 -I tools/cpp-deps-sbom.py check --sbom "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
 
       - name: Write SHA256SUMS
         # One `sha256sum`-format line per release file ("<sha256>  <name>": two spaces, LF endings, sorted

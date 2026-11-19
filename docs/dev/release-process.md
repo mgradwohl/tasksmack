@@ -112,7 +112,8 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    from the bump right after the last branch cut (see [Versions](#versions)); if it doesn't, merge that bump first.
 3. **Signed dry run on that exact SHA,** with every job green. If it fails: a fix PR, then a new candidate.
 4. **Both lanes validate:**
-   - Windows runs the smoke checks, Authenticode, and an installer install, upgrade and uninstall.
+   - Windows runs the smoke checks, Authenticode, and an installer install, upgrade and uninstall, plus an upgrade
+     and an uninstall while TaskSmack.exe is in use, which must exit with 32 and change nothing (#4436).
    - WSL installs the Linux packages on the supported distros.
 5. **Manual checks** by the maintainer: UAC elevation, lock and virtual-desktop behaviour, and a real install of
    the installer.
@@ -310,6 +311,10 @@ packaging, with the reasons for the installer fields:
   DisplayName `TaskSmack`, Publisher `TaskSmack Contributors`);
 - no `InstallerSwitches` (winget's nullsoft defaults, `/S` and `/D=`, are the installer's) and no `Commands` (the
   installer doesn't put TaskSmack on `PATH`).
+- `ExpectedReturnCodes` mapping 32 to `packageInUse` (#4436): the installer and its uninstaller exit with 32, before
+  they change anything, while TaskSmack.exe or TaskSmackHelper.exe in the folder is running, in any session
+  (`TASKSMACK_IN_USE_EXIT_CODE` in `cmake/CPackProjectConfig.cmake.in`). winget then says the application is running
+  rather than report a failed install. `tools/check-winget-manifests.ps1` refuses a manifest without it.
 
 Change those templates when the installer changes. The automatic updates copy each version's manifests from the
 one before, so a changed field also needs a hand-made update PR to winget-pkgs.
@@ -426,6 +431,10 @@ does. Before publication, `winget upgrade` can't tie the installed copy to the m
 (The Sandbox maps `$sandbox` to its desktop under the same folder name.) The expected result: the install succeeds
 silently. The table shows exactly **one** entry, `TaskSmack` at `DisplayVersion` `0.11.0`: one entry, not two.
 TaskSmack.exe reports 0.11.0, and `winget list --name TaskSmack` shows one TaskSmack at 0.11.0.
+
+To check the running case (#4436), start the installed TaskSmack in the Sandbox before the `winget install
+--manifest` line: winget should report "Application is currently running" (the installer's exit code 32), and the
+table should still show the old version. Close TaskSmack and run it again to upgrade.
 
 **After publication, check by ID.** Once the winget-pkgs pull request merges, run these in a fresh Sandbox:
 - `.\SandboxTest.ps1 -Script { winget install --id TaskSmack.TaskSmack --exact --silent --accept-source-agreements; winget list --id TaskSmack.TaskSmack --accept-source-agreements }`
