@@ -53,6 +53,10 @@ struct ProcessModule
     std::uint64_t sizeBytes = 0;          ///< Its image size (Linux: the sum of its mappings' spans).
     std::optional<ModuleVersion> version; ///< When the file carries one (Windows); Linux has none.
     bool deleted = false;                 ///< The file was deleted or replaced after it was mapped (Linux).
+    /// The file isn't on a drive TaskSmack can tell is local (a network share, another device), so it wasn't opened for
+    /// its version (Windows, #4373): opening a network file would connect, with TaskSmack's or its helper's
+    /// credentials, to where the file is.
+    bool versionNotRead = false;
 };
 
 /// The outcome of IProcessModulesReader::readModules(): a status, and the modules when Ok.

@@ -107,9 +107,10 @@ if [[ "$(dpkg --print-architecture)" == 'amd64' ]]; then
 fi
 
 # Always include GUI dependencies; libcurl for the update check's HTTPS client (#3238); libbpf for
-# the UDP byte counter TaskSmack loads as root (#3366, #3580; libbpf required on Linux).
+# the UDP byte counter TaskSmack loads as root (#3366, #3580; libbpf required on Linux); libdecor's
+# headers so SDL builds its dlopen()ed libdecor support, which a Release build requires (#4440).
 SYSTEM_PACKAGES=(libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev
-  libwayland-dev libxkbcommon-dev libfreetype-dev libsystemd-dev libcurl4-openssl-dev
+  libwayland-dev libxkbcommon-dev libdecor-0-dev libfreetype-dev libsystemd-dev libcurl4-openssl-dev
   libbpf-dev dbus-daemon pkg-config)
 # The apt.llvm.org packages this job uses by name: llvm.sh's own four, then the extras. Their
 # dependencies (libllvm, libclang-cpp, ...) come along.
