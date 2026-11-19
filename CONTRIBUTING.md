@@ -14,6 +14,7 @@ To avoid duplication and doc drift, these are the canonical docs:
 - [tasksmack.md](tasksmack.md): architecture, metrics pipeline, and engineering direction
 - [docs/dev/completed-features.md](docs/dev/completed-features.md): canonical implemented-feature inventory
 - [docs/guide/](docs/guide/): user guide and troubleshooting
+- [docs/dev/cpp23.md](docs/dev/cpp23.md): which C++23 features both toolchains support, and how the project uses the language
 - [docs/dev/](docs/dev/): the docs site's developer overview and the Wayland test matrix
 - [AGENTS.md](AGENTS.md) and [.github/copilot-instructions.md](.github/copilot-instructions.md): agent guidance (also useful to contributors)
 
