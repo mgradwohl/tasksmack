@@ -113,6 +113,17 @@ constexpr DWORD LONGEST_PATH = 32'768;
     return text;
 }
 
+/// Domain::StartAtLogin::runCommand() for @p image, built from the wide path itself, so it names exactly that file.
+[[nodiscard]] std::wstring exactRunCommand(const std::wstring& image)
+{
+    std::wstring command = L"\"" + image + L"\" ";
+    for (const char c : Domain::StartAtLogin::MINIMIZED_ARGUMENT)
+    {
+        command.push_back(static_cast<wchar_t>(static_cast<unsigned char>(c))); // ASCII
+    }
+    return command;
+}
+
 } // namespace
 
 WindowsStartAtLogin::WindowsStartAtLogin(std::wstring key, std::wstring valueName, Windows::StartAtLoginFunctions api, std::wstring markKey)
@@ -207,7 +218,16 @@ std::expected<StartAtLoginFacts, std::string> WindowsStartAtLogin::read()
         }
         bytes.resize(std::min<std::size_t>(bytes.size(), size));
         // A value that isn't text starts nothing TaskSmack can name: an empty command, which reads as another program.
-        facts.command = (type == REG_SZ || type == REG_EXPAND_SZ) ? WinString::wideToUtf8(valueText(bytes)) : std::string{};
+        const std::wstring value = (type == REG_SZ || type == REG_EXPAND_SZ) ? valueText(bytes) : std::wstring{};
+        facts.command = WinString::wideToUtf8(value);
+        // An image with a lone surrogate reads, as UTF-8, the same as its U+FFFD twin (#4310): a value that reads as
+        // this copy's but isn't exactly what write() writes for it names the twin, so it reads as another program's,
+        // which Settings offers to repair.
+        if (WinString::hasLoneSurrogate(*image) && value != exactRunCommand(*image) &&
+            facts.command == Domain::StartAtLogin::runCommand(facts.executable))
+        {
+            facts.command = std::string{};
+        }
         return facts;
     }
     return std::unexpected(std::string("couldn't read the Run value: it kept changing"));
@@ -215,6 +235,23 @@ std::expected<StartAtLoginFacts, std::string> WindowsStartAtLogin::read()
 
 std::expected<void, std::string> WindowsStartAtLogin::write(std::string_view command)
 {
+    // This copy's own entry is written from its exact image (#4310): the UTF-8 command shows a lone surrogate in the
+    // path as U+FFFD, which names a file that doesn't exist, and Settings would still read it as on for this copy.
+    // Any other command is written from its text, which must then be UTF-8 that converts.
+    std::wstring text;
+    if (const std::optional<std::wstring> image = ownImage(m_Api.moduleFileName);
+        image.has_value() && command == Domain::StartAtLogin::runCommand(WinString::wideToUtf8(*image)))
+    {
+        text = exactRunCommand(*image);
+    }
+    else
+    {
+        text = WinString::utf8ToWide(command);
+        if (text.empty() && !command.empty())
+        {
+            return std::unexpected(std::string("couldn't write the Run value: its text isn't valid UTF-8"));
+        }
+    }
     HKEY rawKey = nullptr;
     // Created when missing (a new profile may have no Run key yet); per-user, so no elevation.
     const LSTATUS created = m_Api.createKey(HKEY_CURRENT_USER, m_Key.c_str(), 0, nullptr, 0, KEY_SET_VALUE, nullptr, &rawKey, nullptr);
@@ -223,7 +260,6 @@ std::expected<void, std::string> WindowsStartAtLogin::write(std::string_view com
         return std::unexpected(std::format("couldn't open the Run key: {}", errorText(created)));
     }
     const InjectableKey key(rawKey, InjectedKeyCloser{.close = m_Api.closeKey});
-    const std::wstring text = WinString::utf8ToWide(command);
     // REG_SZ, with its terminating null counted, as RegSetValueExW asks.
     const auto bytes = static_cast<DWORD>((text.size() + 1) * sizeof(wchar_t));
     const LSTATUS set = m_Api.setValue(key.get(),

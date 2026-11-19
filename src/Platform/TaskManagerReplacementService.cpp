@@ -31,7 +31,11 @@ TaskManagerReplacementInfo TaskManagerReplacementService::read()
         .installedCopy = m_Setup.installedCopy,
         .writesDirectly = m_Setup.direct != nullptr,
     };
-    if (const auto refused = directSetRefused(); refused.has_value())
+    if (!m_Setup.selfPathRefusal.empty())
+    {
+        info.turnOnUnavailableReason = "This TaskSmack can't replace Task Manager: " + m_Setup.selfPathRefusal;
+    }
+    else if (const auto refused = directSetRefused(); refused.has_value())
     {
         info.turnOnUnavailableReason = *refused;
     }
@@ -64,6 +68,10 @@ TaskManagerReplacementService::change(Broker::TaskManagerChange change, bool rep
     Broker::TaskManagerReplacementRequest request{.change = change, .path = {}, .replaceOther = false};
     if (change == Broker::TaskManagerChange::Set)
     {
+        if (!m_Setup.selfPathRefusal.empty())
+        {
+            return ProcessActionResult::error("This TaskSmack can't replace Task Manager: " + m_Setup.selfPathRefusal);
+        }
         if (const auto valid = TaskManagerReplacement::validateTaskSmackPath(m_Setup.selfPath); !valid.has_value())
         {
             return ProcessActionResult::error("This TaskSmack can't replace Task Manager: " + std::string(valid.error()));

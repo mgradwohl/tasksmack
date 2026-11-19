@@ -98,6 +98,24 @@ TEST(WinStringTest, WideToDisplayUtf8ShowsEachNul)
     EXPECT_EQ(wideToDisplayUtf8(lone), "a\xEF\xBF\xBD");
 }
 
+TEST(WinStringTest, HasLoneSurrogateFindsOnlyUnpairedHalves)
+{
+    // #4310: what can't survive the trip to UTF-8 and back.
+    static_assert(!hasLoneSurrogate(L""));
+    static_assert(!hasLoneSurrogate(L"TaskSmack.exe"));
+    EXPECT_FALSE(hasLoneSurrogate(L"Größe 日本語 😀")) << "a pair is a character";
+    const auto unit = [](unsigned value)
+    {
+        return static_cast<wchar_t>(value);
+    };
+    EXPECT_TRUE(hasLoneSurrogate(std::wstring{L'a', unit(0xD800)})) << "a high half at the end";
+    EXPECT_TRUE(hasLoneSurrogate(std::wstring{unit(0xD800), L'a'})) << "a high half before a non-surrogate";
+    EXPECT_TRUE(hasLoneSurrogate(std::wstring{unit(0xDC00), L'a'})) << "a low half first";
+    EXPECT_TRUE(hasLoneSurrogate(std::wstring{unit(0xD83D), unit(0xDE00), unit(0xDC00)})) << "a pair, then a low half";
+    EXPECT_TRUE(hasLoneSurrogate(std::wstring{unit(0xD800), unit(0xD800), unit(0xDC00)})) << "a high half, then a pair";
+    EXPECT_EQ(wideToUtf8(std::wstring{L'a', unit(0xD800)}), "a\xEF\xBF\xBD") << "why: it comes back as U+FFFD";
+}
+
 // ========== wideToUtf8 (wstring_view) Tests ==========
 
 TEST(WinStringTest, WideToUtf8ViewEmptyReturnsEmpty)
