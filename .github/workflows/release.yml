@@ -1526,6 +1526,14 @@ jobs:
             exit 1
           fi
           echo "${debs[0]}: Architecture $arch"
+          # The synopsis apt and the software centres show beside the name (#4442): never the name again.
+          package=$(dpkg-deb -f "${debs[0]}" Package)
+          synopsis=$(dpkg-deb -f "${debs[0]}" Description | head -n 1)
+          if [[ -z "$synopsis" || "${synopsis,,}" == "${package,,}"* ]]; then
+            echo "${debs[0]}: Description synopsis '$synopsis' is empty or starts with the package name '$package'." >&2
+            exit 1
+          fi
+          echo "${debs[0]}: Description $synopsis"
 
       - name: Verify .deb contains only the app's files
         # cmake/InstallRules.cmake's rules are shared with every bundled dependency's own
