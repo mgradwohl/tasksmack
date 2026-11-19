@@ -7,6 +7,7 @@
 /// by its NT name, and the same file through a junction refused, never followed.
 
 #include "Mocks/WindowsFakeLocalNtFile.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsLocalNtFile.h"
 #include "Support/Junction.h"
@@ -115,7 +116,7 @@ TEST_F(WindowsLocalNtFileTest, AFailedOpenSaysWhyInWin32Terms)
     EXPECT_EQ(file.error().reason, LocalFileRefusal::OpenFailed);
     EXPECT_EQ(file.error().status, static_cast<NTSTATUS>(0xC0000034L));
     EXPECT_EQ(file.error().win32Error, static_cast<DWORD>(ERROR_FILE_NOT_FOUND));
-    EXPECT_EQ(describeLocalFileError(file.error()), std::system_category().message(ERROR_FILE_NOT_FOUND));
+    EXPECT_EQ(describeLocalFileError(file.error()), Platform::WinString::win32ErrorText(ERROR_FILE_NOT_FOUND));
 
     localNtFile().openStatus = static_cast<NTSTATUS>(0xC000050BL); // STATUS_REPARSE_POINT_ENCOUNTERED: a link on the way
     EXPECT_EQ(refusalOf(), LocalFileRefusal::OpenFailed);
