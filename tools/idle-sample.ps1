@@ -1,3 +1,4 @@
+#Requires -Version 7
 # What tools/measure-idle.ps1 samples beyond CPU time (#3715), and the arithmetic on it: dot-source it.
 #
 # None of it needs elevation:

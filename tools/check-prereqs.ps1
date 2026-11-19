@@ -8,11 +8,18 @@
 .EXAMPLE
     pwsh tools/check-prereqs.ps1
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param()
 
 . (Join-Path $PSScriptRoot "common.ps1")
 $RepoRoot = Split-Path -Parent $PSScriptRoot
+
+# The Python probes print sys.executable, which holds the user's name: decode their output as UTF-8 (#4320).
+# The probes also run with -X utf8 (below), since Python writes a pipe in the ANSI code page otherwise.
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
 
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.29"
@@ -20,6 +27,9 @@ $MIN_CLANG_VERSION = 23
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
 $MIN_PYTHON_VERSION = [Version]"3.14"
 $MIN_GIT_VERSION = [Version]"2.30"
+# The oldest MSVC Build Tools (the standard library clang compiles against): VS 2026 18.6's 14.51, which first
+# shipped <flat_map> and <flat_set>, and what CI builds with (#4354). tools/setup-dev.ps1 installs VS 2026.
+$MIN_MSVC_TOOLSET_VERSION = [Version]"14.51"
 
 # The LLVM major CI builds and formats with (the clang-format rev in .pre-commit-config.yaml). The
 # compilers the win-* presets use (clang, clang++) fail on any other major: the presets require the
@@ -44,7 +54,7 @@ function Write-Status {
     $requiredFormatted = if ($Required -like '=*') { "($Required)".PadRight(12) } elseif ($Required) { "(>= $Required)".PadRight(12) } else { "".PadRight(12) }
 
     if ($Status -eq "ok") {
-        Write-Host "✓ " -ForegroundColor Green -NoNewline
+        Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
         Write-Host $nameFormatted -NoNewline
         Write-Host $versionFormatted -ForegroundColor Green -NoNewline
     }
@@ -54,7 +64,7 @@ function Write-Status {
         Write-Host $versionFormatted -ForegroundColor Yellow -NoNewline
     }
     else {
-        Write-Host "✗ " -ForegroundColor Red -NoNewline
+        Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
         Write-Host $nameFormatted -NoNewline
         Write-Host $versionFormatted -ForegroundColor Red -NoNewline
     }
@@ -186,6 +196,29 @@ function Get-NinjaVersion {
     return $null
 }
 
+# The newest MSVC toolset (VC\Tools\MSVC\<version>) of any Visual Studio vswhere lists, or $null. clang takes the
+# MSVC standard library and CRT from it. Returns @{ Version = [Version]; Path = <toolset directory> }.
+function Get-MsvcToolset {
+    $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { return $null }
+    $best = $null
+    try {
+        $installs = @(& $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null)
+    }
+    catch { return $null }
+    foreach ($install in $installs) {
+        $toolsets = Join-Path "$install".Trim() 'VC\Tools\MSVC'
+        if (-not (Test-Path -LiteralPath $toolsets)) { continue }
+        foreach ($dir in Get-ChildItem -LiteralPath $toolsets -Directory -ErrorAction SilentlyContinue) {
+            $parsed = $null
+            if ([Version]::TryParse($dir.Name, [ref]$parsed) -and (-not $best -or $parsed -gt $best.Version)) {
+                $best = @{ Version = $parsed; Path = $dir.FullName }
+            }
+        }
+    }
+    return $best
+}
+
 # Find the RC compiler the same way cmake/RCCompiler.cmake does: the RC environment variable
 # first (an explicit override CMake always honors, may carry the compiler plus arguments, and
 # is skipped here if empty -- CMake treats an empty RC as unset too), then llvm-rc only, searched
@@ -267,7 +300,7 @@ function Get-PythonInfo {
     $firstWorking = $null
     foreach ($candidate in $candidates) {
         try {
-            $output = (& $candidate.Exe @($candidate.Args + @('-c', 'import sys, platform; print(platform.python_version()); print(sys.executable)')) 2>&1) | Out-String
+            $output = (& $candidate.Exe @($candidate.Args + @('-X', 'utf8', '-c', 'import sys, platform; print(platform.python_version()); print(sys.executable)')) 2>&1) | Out-String
         }
         catch { continue }
         # platform.python_version() can carry a suffix (3.15.0a1); [Version] takes only the numbers.
@@ -286,7 +319,7 @@ function Get-Jinja2Version {
     param($PythonInfo)
     if (-not $PythonInfo) { return $null }
     try {
-        $result = & $PythonInfo.Exe @($PythonInfo.Args + @('-c', 'import jinja2; print(jinja2.__version__)')) 2>&1
+        $result = & $PythonInfo.Exe @($PythonInfo.Args + @('-X', 'utf8', '-c', 'import jinja2; print(jinja2.__version__)')) 2>&1
         if ($LASTEXITCODE -eq 0 -and "$result" -match '^\d+\.') {
             return "$result".Trim()
         }
@@ -302,7 +335,7 @@ Write-Host "  Prerequisite Check" -ForegroundColor White
 Write-Host "========================================" -ForegroundColor White
 Write-Host ""
 Write-Host "Tool           Version      Required     Path" -ForegroundColor White
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 
 $AllOK = $true
 $clangVersionPattern = 'clang version (\d+)'
@@ -315,6 +348,19 @@ if (-not (Write-LlvmToolStatus -Name "clang" -Path $clangPath -MissingHint (Get-
 $clangppPath = Get-PresetLlvmToolPath "clang++"
 if (-not (Write-LlvmToolStatus -Name "clang++" -Path $clangppPath -MissingHint (Get-PresetLlvmToolHint "clang++") -Major (Get-ToolVersion -Path $clangppPath -Pattern $clangVersionPattern) -RequirePinned)) {
     $AllOK = $false
+}
+
+# The MSVC standard library clang compiles against (#4354): the floor is CI's. An older one is a warning, not a
+# failure: it builds until the code uses a library feature only the newer STL has (<flat_map>, <flat_set>).
+$msvcToolset = Get-MsvcToolset
+if (-not $msvcToolset) {
+    Write-Status -Name "MSVC STL" -Status "warn" -Version $null -Path "(Visual Studio with the MSVC C++ libraries; pwsh tools/setup-dev.ps1 installs VS 2026)" -Required $MIN_MSVC_TOOLSET_VERSION
+}
+elseif ($msvcToolset.Version -ge $MIN_MSVC_TOOLSET_VERSION) {
+    Write-Status -Name "MSVC STL" -Status "ok" -Version $msvcToolset.Version.ToString() -Path $msvcToolset.Path -Required $MIN_MSVC_TOOLSET_VERSION
+}
+else {
+    Write-Status -Name "MSVC STL" -Status "warn" -Version $msvcToolset.Version.ToString() -Path "$($msvcToolset.Path) (older than CI's; pwsh tools/setup-dev.ps1 installs VS 2026)" -Required $MIN_MSVC_TOOLSET_VERSION
 }
 
 # Developer tools, not needed to build, test or run (#2618): a missing or old one is a warning, not a
@@ -487,9 +533,9 @@ else {
     $AllOK = $false
 }
 
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 if ($script:LlvmCompilerMajor) {
-    Write-Host "✗ " -ForegroundColor Red -NoNewline
+    Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
     Write-Host "The win-* presets build with LLVM $PinnedLlvmMajor (.pre-commit-config.yaml), but this clang is LLVM $($script:LlvmCompilerMajor). pwsh tools/setup-dev.ps1 replaces it with LLVM $PinnedLlvmMajor." -ForegroundColor Red
 }
 if ($script:LlvmSkewSeen) {
@@ -506,55 +552,55 @@ Write-Host ""
 
 # Environment variables
 Write-Host "Environment Variables" -ForegroundColor White
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 
 if ($env:CMAKE_ROOT) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "CMAKE_ROOT      = " -NoNewline
     Write-Host $env:CMAKE_ROOT -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "$([char]0x25CB) " -ForegroundColor Yellow -NoNewline
     Write-Host "CMAKE_ROOT      = " -NoNewline
     Write-Host "(not set)" -ForegroundColor Yellow
 }
 
 # Required: the win-* presets derive the compiler paths from it (CMakePresets.json, windows-base).
 if ($env:LLVM_ROOT) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "LLVM_ROOT       = " -NoNewline
     Write-Host $env:LLVM_ROOT -ForegroundColor Blue
 }
 else {
-    Write-Host "✗ " -ForegroundColor Red -NoNewline
+    Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
     Write-Host "LLVM_ROOT       = " -NoNewline
     Write-Host "(not set; the win-* presets need it -- set it to your LLVM $(if ($PinnedLlvmMajor) { $PinnedLlvmMajor } else { $MIN_CLANG_VERSION }) install, e.g. C:\Program Files\LLVM)" -ForegroundColor Red
     $AllOK = $false
 }
 
 if ($env:CC) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "CC              = " -NoNewline
     Write-Host $env:CC -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "$([char]0x25CB) " -ForegroundColor Yellow -NoNewline
     Write-Host "CC              = " -NoNewline
     Write-Host "(not set, using default)" -ForegroundColor Yellow
 }
 
 if ($env:CXX) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "CXX             = " -NoNewline
     Write-Host $env:CXX -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "$([char]0x25CB) " -ForegroundColor Yellow -NoNewline
     Write-Host "CXX             = " -NoNewline
     Write-Host "(not set, using default)" -ForegroundColor Yellow
 }
 
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 Write-Host ""
 
 # Summary
