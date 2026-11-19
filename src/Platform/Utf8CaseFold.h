@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
+#include <type_traits>
 
 namespace Platform
 {
@@ -27,7 +28,10 @@ namespace Platform
         return static_cast<char32_t>(static_cast<unsigned char>(foldAscii(static_cast<char>(cp))));
     }
     const auto& table = UnicodeCaseFold::SIMPLE_FOLDS;
-    const auto found = std::ranges::lower_bound(table, static_cast<std::uint32_t>(cp), {}, [](const auto& pair) { return pair.first; });
+    // Named, not auto: libc++'s std::array iterator is a pointer (readability-qualified-auto wants auto*) and
+    // MSVC's is a class (auto* doesn't compile).
+    using Iterator = std::remove_cvref_t<decltype(table)>::const_iterator;
+    const Iterator found = std::ranges::lower_bound(table, static_cast<std::uint32_t>(cp), {}, [](const auto& pair) { return pair.first; });
     return (found != table.end() && found->first == cp) ? static_cast<char32_t>(found->second) : cp;
 }
 
