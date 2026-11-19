@@ -10,6 +10,7 @@
 // (#1942): middleEllipsize() fits it, keeping its tail, and cellTextKeepingTail() draws it.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -80,19 +81,17 @@ inline constexpr char32_t ZERO_WIDTH_JOINER = 0x200D;
         char32_t first;
         char32_t last;
     };
-    constexpr Range RANGES[] = {
-        {0x0300, 0x036F}, {0x0483, 0x0489}, {0x0591, 0x05BD}, {0x0610, 0x061A}, {0x064B, 0x065F},   {0x0670, 0x0670}, {0x06D6, 0x06DC},
-        {0x0900, 0x0903}, {0x093A, 0x094F}, {0x0E31, 0x0E3A}, {0x0E47, 0x0E4E}, {0x1AB0, 0x1AFF},   {0x1DC0, 0x1DFF}, {0x200D, 0x200D},
-        {0x20D0, 0x20FF}, {0x3099, 0x309A}, {0xFE00, 0xFE0F}, {0xFE20, 0xFE2F}, {0xE0100, 0xE01EF},
+    constexpr std::array RANGES{
+        Range{.first = 0x0300, .last = 0x036F},   Range{.first = 0x0483, .last = 0x0489}, Range{.first = 0x0591, .last = 0x05BD},
+        Range{.first = 0x0610, .last = 0x061A},   Range{.first = 0x064B, .last = 0x065F}, Range{.first = 0x0670, .last = 0x0670},
+        Range{.first = 0x06D6, .last = 0x06DC},   Range{.first = 0x0900, .last = 0x0903}, Range{.first = 0x093A, .last = 0x094F},
+        Range{.first = 0x0E31, .last = 0x0E3A},   Range{.first = 0x0E47, .last = 0x0E4E}, Range{.first = 0x1AB0, .last = 0x1AFF},
+        Range{.first = 0x1DC0, .last = 0x1DFF},   Range{.first = 0x200D, .last = 0x200D}, Range{.first = 0x20D0, .last = 0x20FF},
+        Range{.first = 0x3099, .last = 0x309A},   Range{.first = 0xFE00, .last = 0xFE0F}, Range{.first = 0xFE20, .last = 0xFE2F},
+        Range{.first = 0xE0100, .last = 0xE01EF},
     };
-    for (const Range& range : RANGES)
-    {
-        if (codePoint >= range.first && codePoint <= range.last)
-        {
-            return true;
-        }
-    }
-    return false;
+    return std::ranges::any_of(RANGES,
+                               [codePoint](const Range& range) noexcept { return codePoint >= range.first && codePoint <= range.last; });
 }
 
 /// The code point whose UTF-8 sequence starts at @p text[@p index], or U+FFFD for a malformed one.

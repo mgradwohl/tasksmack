@@ -2687,7 +2687,16 @@ std::string reportFileName(std::string_view computerName, bool showIdentifiers, 
                 ++at;
                 continue;
             }
-            const std::size_t length = lead < 0xE0U ? 2 : (lead < 0xF0U ? 3 : 4); // the sanitized text is well-formed
+            // The sanitized text is well-formed, so the lead byte gives the sequence length.
+            std::size_t length = 4;
+            if (lead < 0xE0U)
+            {
+                length = 2;
+            }
+            else if (lead < 0xF0U)
+            {
+                length = 3;
+            }
             const std::string_view character = std::string_view{name}.substr(at, length);
             const bool c1OrNoBreakSpace = lead == 0xC2U && static_cast<unsigned char>(character[1]) <= 0xA0U;
             const bool unsafe = c1OrNoBreakSpace || character == Domain::UTF8_REPLACEMENT_CHARACTER;
