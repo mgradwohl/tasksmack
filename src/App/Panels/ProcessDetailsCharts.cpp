@@ -1704,8 +1704,12 @@ void ProcessDetailsCharts::renderPerGpuBreakdown(const ProcessChartContext& ctx)
         // depending on which tab is open (#963).
         const std::string gpuLabel =
             std::format("{} {} [{}]", ICON_FA_MICROCHIP, gpuUsage.gpuName, gpuUsage.isIntegrated ? "Shared Memory" : "Discrete");
+        // The header and table under the GPU's own id, not its label: two cards of one model share the
+        // label, and so shared one open state (#4381), as the system GPU tab's ScopedGpuId keys them (#1163).
+        ImGui::PushID(gpuUsage.gpuId.data(), gpuUsage.gpuId.data() + gpuUsage.gpuId.size());
         if (!ImGui::CollapsingHeader(gpuLabel.c_str(), ImGuiTreeNodeFlags_DefaultOpen))
         {
+            ImGui::PopID();
             continue;
         }
         ImGui::Indent();
@@ -1733,6 +1737,7 @@ void ProcessDetailsCharts::renderPerGpuBreakdown(const ProcessChartContext& ctx)
 
         ImGui::Unindent();
         ImGui::Spacing();
+        ImGui::PopID();
     }
 }
 
@@ -1911,7 +1916,7 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
             .value01 = smoothed.npuMemoryAvailable ? UI::Widgets::normalizeToUnitInterval(bytes, memAxisUpper) : 0.0,
             .color = color,
             .marker = ImPlotMarker_None,
-            .available = smoothed.gpuMemoryAvailable, // N/A is drawn hatched, not as a 0 bar (#1935)
+            .available = smoothed.npuMemoryAvailable, // N/A is drawn hatched, not as a 0 bar (#1935); the NPU's flag (#4380)
         };
     };
     const NowBar dedicatedBar = memBar(NPU_DEDICATED_LABEL, smoothed.npuDedicatedMemoryBytes, scheme.gpuMemory);

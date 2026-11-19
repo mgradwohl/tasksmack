@@ -16,12 +16,15 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cstddef>
 #include <filesystem>
+#include <format>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace UI
@@ -404,6 +407,31 @@ TEST_F(ThemeRealTest, NoGoodThemeFromSourcesKeepsTheThemesLoaded)
     EXPECT_EQ(findTheme("handoff-4094-bad"), nullptr);
     EXPECT_TRUE(log.text().contains("handoff-4094-bad.toml")) << log.text();
     EXPECT_TRUE(log.text().contains("Failed to load any themes from")) << log.text();
+}
+
+// #4427: an empty user themes folder (Settings' Open Themes Folder makes one) beside the bundled themes is
+// normal: it is logged at info as no user themes, not as a warning that the fallback is in use, which it isn't.
+TEST_F(ThemeRealTest, AnEmptyUserThemesFolderIsNoWarning)
+{
+    const std::size_t bundled = Theme::get().discoveredThemes().size();
+    ASSERT_GT(bundled, 1U);
+    const std::filesystem::path emptyDir =
+        std::filesystem::temp_directory_path() /
+        std::format("tasksmack-4427-empty-themes-{}", std::chrono::steady_clock::now().time_since_epoch().count());
+    std::filesystem::create_directories(emptyDir);
+    std::string logged;
+    {
+        const ScopedLogCapture log;
+        Theme::get().loadThemes(emptyDir);
+        logged = log.text();
+    }
+    std::error_code ec;
+    std::filesystem::remove_all(emptyDir, ec);
+
+    EXPECT_EQ(Theme::get().discoveredThemes().size(), bundled);
+    EXPECT_TRUE(logged.contains("No user themes in")) << logged;
+    EXPECT_FALSE(logged.contains("using fallback")) << logged;
+    EXPECT_FALSE(logged.contains("[warning]")) << logged;
 }
 
 } // namespace
