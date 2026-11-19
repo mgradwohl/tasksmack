@@ -2581,14 +2581,14 @@ std::string allSectionsText(std::span<const Section> sections, bool showIdentifi
     return text;
 }
 
-std::string jsonString(std::string_view raw)
+std::string jsonString(std::string_view text)
 {
     // RFC 8259 text is UTF-8: an ill-formed sequence would make json.load and jq refuse the saved report (#4305).
-    const std::string text = Domain::sanitizedUtf8(raw);
+    const std::string wellFormed = Domain::sanitizedUtf8(text);
     std::string out;
-    out.reserve(text.size() + 2);
+    out.reserve(wellFormed.size() + 2);
     out += '"';
-    for (const char c : text)
+    for (const char c : wellFormed)
     {
         switch (c)
         {
