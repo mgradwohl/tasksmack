@@ -41,6 +41,8 @@ on:
       - 'src/Platform/SmbiosParser.h'
       - 'src/UI/Theme.h'
       - 'src/UI/ThemeLoader.cpp'
+      - 'src/UI/FallbackTheme.h.in'
+      - 'assets/themes/arctic-fire.toml'
       - 'src/UI/ThemeLoader.h'
       - 'tests/Mocks/ThemeStub.cpp'
       - 'tests/fuzz/**'
