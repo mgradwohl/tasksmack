@@ -221,6 +221,90 @@ TEST_F(NonAsciiConfigTest, ConfigSavesAndLoadsUnderANonAsciiDirectoryWithNonAsci
     EXPECT_EQ(config.settings().processTableLayout, LATIN_NAME);
 }
 
+#ifdef _WIN32
+/// @p path with each lone surrogate replaced by U+FFFD: the folder its UTF-8 text (Core::pathToUtf8()) names.
+[[nodiscard]] std::filesystem::path replacementTwin(const std::filesystem::path& path)
+{
+    std::wstring native = path.native();
+    std::ranges::replace(native, TestSupport::LONE_SURROGATE, static_cast<wchar_t>(0xFFFD));
+    return native;
+}
+
+/// A folder made beside a LoneSurrogateTempDir, under its U+FFFD twin's name, removed on destruction.
+class ReplacementTwinDir
+{
+  public:
+    explicit ReplacementTwinDir(const std::filesystem::path& lone) : m_Path(replacementTwin(lone))
+    {
+        std::error_code ec;
+        m_Created = std::filesystem::create_directory(m_Path, ec) && !ec;
+    }
+    ~ReplacementTwinDir()
+    {
+        if (m_Created)
+        {
+            try
+            {
+                std::error_code ec;
+                std::filesystem::remove_all(m_Path, ec);
+            }
+            catch (...) // NOLINT(bugprone-empty-catch) - best effort; never throws from a destructor
+            {}
+        }
+    }
+    ReplacementTwinDir(const ReplacementTwinDir&) = delete;
+    ReplacementTwinDir& operator=(const ReplacementTwinDir&) = delete;
+    ReplacementTwinDir(ReplacementTwinDir&&) = delete;
+    ReplacementTwinDir& operator=(ReplacementTwinDir&&) = delete;
+
+    [[nodiscard]] bool created() const noexcept
+    {
+        return m_Created;
+    }
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return m_Path;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+    bool m_Created = false;
+};
+
+void writeText(const std::filesystem::path& path, std::string_view text)
+{
+    std::ofstream file(path, std::ios::binary);
+    file << text;
+}
+
+// #4315: config.toml was opened through its UTF-8 name (toml::parse_file), so a config folder whose name holds a lone
+// surrogate opened its U+FFFD twin instead: here a decoy there. It is read, and saved, by its own path.
+TEST_F(NonAsciiConfigTest, ConfigInALoneSurrogateFolderIsLoadedAndSavedThere)
+{
+    const TestSupport::LoneSurrogateTempDir lone;
+    if (!lone.created())
+    {
+        GTEST_SKIP() << "the filesystem refused a lone surrogate in a folder name";
+    }
+    const ReplacementTwinDir twin(lone.path());
+    ASSERT_TRUE(twin.created());
+    writeText(twin.path() / "config.toml", "[theme]\nid = \"decoy\"\n");
+    const std::filesystem::path configPath = lone.path() / "config.toml";
+    writeText(configPath, "[theme]\nid = \"real\"\n");
+
+    auto& config = App::UserConfig::get();
+    config.resetConfigPathForTesting(configPath);
+    config.load();
+    EXPECT_EQ(config.settings().themeId, "real") << "the file the path names, not its U+FFFD twin";
+
+    config.settings().themeId = "saved";
+    config.save();
+    EXPECT_TRUE(readWholeFile(configPath).contains("id = 'saved'")) << readWholeFile(configPath);
+    EXPECT_EQ(readWholeFile(twin.path() / "config.toml"), "[theme]\nid = \"decoy\"\n") << "the twin is never written";
+    EXPECT_EQ(entryNames(lone.path()), std::vector<std::string>{"config.toml"}) << "no staging file left behind";
+}
+#endif
+
 // ========== User themes ==========
 
 TEST_F(NonAsciiRoundTripTest, UserThemeWithANonAsciiFileNameIsDiscoveredAndLoaded)
@@ -259,6 +343,31 @@ TEST(NonAsciiPathTest, UnreadableUserThemesWarningSurvivesAnUnpairedSurrogate)
     std::string message;
     ASSERT_NO_THROW(message = UI::ThemeLoader::userThemesSkippedMessage(themesDir, std::make_error_code(std::errc::permission_denied)));
     EXPECT_TRUE(message.contains("\xEF\xBF\xBD")) << "the surrogate should come out as U+FFFD: " << message;
+}
+
+// #4315: a user theme whose file name holds a lone surrogate was listed, then opened through its UTF-8 name, which is
+// its U+FFFD twin: skipped as "could not be opened", or another theme loaded in its place. It is read by its path.
+TEST(NonAsciiPathTest, AUserThemeWithALoneSurrogateInItsNameIsReadByItsPath)
+{
+    const TestSupport::LoneSurrogateTempDir dir;
+    if (!dir.created())
+    {
+        GTEST_SKIP() << "the filesystem refused a lone surrogate in a folder name";
+    }
+    std::wstring stem = L"mine";
+    stem.push_back(TestSupport::LONE_SURROGATE);
+    const std::filesystem::path themePath = dir.path() / (stem + L".toml");
+    std::filesystem::copy_file(std::filesystem::path(TASKSMACK_SOURCE_THEMES_DIR) / "arctic-fire.toml", themePath);
+    // Its UTF-8 name names a folder and a file that don't exist: the folder's lone surrogate is U+FFFD there too.
+    ASSERT_FALSE(std::filesystem::exists(replacementTwin(themePath)));
+
+    const std::vector<UI::ThemeInfo> themes = UI::ThemeLoader::discoverThemes(dir.path());
+    ASSERT_EQ(themes.size(), 1U) << "listed, and read";
+    EXPECT_EQ(themes[0].path, themePath);
+    const std::optional<UI::ThemeInfo> info = UI::ThemeLoader::loadThemeInfo(themePath);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info.value_or(UI::ThemeInfo{}).path, themePath);
+    EXPECT_TRUE(UI::ThemeLoader::loadTheme(themePath).has_value()) << "read by its own path, not its U+FFFD twin's";
 }
 #endif
 

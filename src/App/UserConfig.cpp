@@ -7,6 +7,7 @@
 #include "App/Panels/RunTaskHistory.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/ConfigDirOverride.h"
+#include "Core/ReadWholeFile.h"
 #include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -978,9 +979,17 @@ void UserConfig::load()
         return;
     }
 
+    // Read by the path itself, then parsed (#4315): parse_file() opened the UTF-8 name, which for a folder holding a
+    // lone surrogate names another file, or none.
+    const std::optional<std::string> text = Core::readWholeFile(m_ConfigPath);
+    if (!text.has_value())
+    {
+        spdlog::error("Not reading {}: it couldn't be opened; using defaults", Core::pathToUtf8(m_ConfigPath));
+        return;
+    }
     try
     {
-        const auto config = toml::parse_file(Core::pathToUtf8(m_ConfigPath));
+        const auto config = toml::parse(*text, Core::pathToUtf8(m_ConfigPath));
         readSettings(config, m_Settings);
         m_Synced = m_Settings;
         spdlog::info("Loaded config from {}", Core::pathToUtf8(m_ConfigPath));
@@ -1155,9 +1164,16 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     }
     if (fileExists)
     {
+        // By the path itself, as load() reads it (#4315).
+        const std::optional<std::string> existing = Core::readWholeFile(destination);
+        if (!existing.has_value())
+        {
+            spdlog::error("Not saving settings: {} can't be opened; fix or remove it", Core::pathToUtf8(m_ConfigPath));
+            return false;
+        }
         try
         {
-            document = toml::parse_file(Core::pathToUtf8(destination));
+            document = toml::parse(*existing, Core::pathToUtf8(m_ConfigPath));
         }
         catch (const toml::parse_error& err)
         {

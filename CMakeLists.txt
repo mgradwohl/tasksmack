@@ -523,6 +523,7 @@ set(TASKSMACK_HEADERS
     src/Core/LocaleSetup.h
     src/Core/LogFileSink.h
     src/Core/PathService.h
+    src/Core/ReadWholeFile.h
     src/Core/Utf8Path.h
     src/Core/Window.h
     src/Core/GraphicsHostInfo.h
