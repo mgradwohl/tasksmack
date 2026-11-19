@@ -19,7 +19,6 @@
 #include "Domain/RateTracker.h"
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/ThreadName.h"

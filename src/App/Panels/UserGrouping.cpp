@@ -4,7 +4,6 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/AccountName.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/Utf8CaseFold.h"
 #include "UI/Format.h"
@@ -94,20 +93,15 @@ bool isSignInSession(const Platform::UserSession& session)
 namespace
 {
 
-/// "pc\\alice": @p domain and @p user, ASCII case folded, the key of an account that names its domain.
+/// "pc\\alice": @p domain and @p user, case folded by Unicode simple case folding (#4302, #4324: "PC\\Élodie" and
+/// "pc\\élodie" are one account), the key of an account that names its domain.
 [[nodiscard]] std::string foldedAccountKey(std::string_view domain, std::string_view user)
 {
     std::string key;
     key.reserve(domain.size() + 1 + user.size());
-    for (const char ch : domain)
-    {
-        key += Platform::foldAscii(ch);
-    }
+    Platform::appendFolded(key, domain);
     key += '\\';
-    for (const char ch : user)
-    {
-        key += Platform::foldAscii(ch);
-    }
+    Platform::appendFolded(key, user);
     return key;
 }
 

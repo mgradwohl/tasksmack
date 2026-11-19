@@ -14,6 +14,7 @@
 #include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace Platform
@@ -225,6 +226,48 @@ namespace Utf8CaseFoldDetail
         at += length;
     }
     return false;
+}
+
+/// Appends @p text's Unicode simple case fold to @p out, as UTF-8: a key that two spellings of one name share
+/// ("PC\\Élodie" and "pc\\élodie"). An ill-formed byte is copied as it is, so it stays distinct from any character.
+inline void appendFolded(std::string& out, std::string_view text)
+{
+    std::size_t at = 0;
+    while (at < text.size())
+    {
+        std::size_t length = 0;
+        const char32_t decoded = Utf8CaseFoldDetail::decodeAt(text, at, length);
+        if (decoded > 0x10FFFFU) // ill-formed: keep the byte
+        {
+            out += text[at];
+            at += length;
+            continue;
+        }
+        const char32_t cp = simpleCaseFold(decoded);
+        if (cp < 0x80U)
+        {
+            out += static_cast<char>(cp);
+        }
+        else if (cp < 0x800U)
+        {
+            out += static_cast<char>(0xC0U | (cp >> 6U));
+            out += static_cast<char>(0x80U | (cp & 0x3FU));
+        }
+        else if (cp < 0x10000U)
+        {
+            out += static_cast<char>(0xE0U | (cp >> 12U));
+            out += static_cast<char>(0x80U | ((cp >> 6U) & 0x3FU));
+            out += static_cast<char>(0x80U | (cp & 0x3FU));
+        }
+        else
+        {
+            out += static_cast<char>(0xF0U | (cp >> 18U));
+            out += static_cast<char>(0x80U | ((cp >> 12U) & 0x3FU));
+            out += static_cast<char>(0x80U | ((cp >> 6U) & 0x3FU));
+            out += static_cast<char>(0x80U | (cp & 0x3FU));
+        }
+        at += length;
+    }
 }
 
 /// The order of @p a and @p b by Unicode simple case folding alone: case variants ("PC\\alice", "pc\\ALICE") compare

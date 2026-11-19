@@ -6,7 +6,6 @@
 #include "Domain/ProcessIconCache.h"
 #include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/NativeId.h"
 #include "Platform/Utf8CaseFold.h"

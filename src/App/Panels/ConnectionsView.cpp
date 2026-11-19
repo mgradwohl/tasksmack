@@ -3,7 +3,6 @@
 #include "App/Panels/ProcessTableLayout.h"
 #include "Domain/ConnectionsModel.h"
 #include "Domain/ProcessConnections.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"

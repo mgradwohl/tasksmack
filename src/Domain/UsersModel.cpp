@@ -1,6 +1,5 @@
 #include "UsersModel.h"
 
-#include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/Utf8CaseFold.h"
 

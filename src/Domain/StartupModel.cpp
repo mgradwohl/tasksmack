@@ -2,7 +2,6 @@
 
 #include "Domain/SamplingConfig.h"
 #include "Domain/StartupImpact.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Utf8CaseFold.h"
 

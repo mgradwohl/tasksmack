@@ -7,7 +7,6 @@
 
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
 #include "Platform/Utf8CaseFold.h"
 

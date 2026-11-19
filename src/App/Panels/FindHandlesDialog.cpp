@@ -3,7 +3,6 @@
 #include "AuthorizeWording.h"
 #include "Domain/HandleSearch.h"
 #include "Domain/Worker.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"

@@ -1,7 +1,6 @@
 #include "ConnectionsModel.h"
 
 #include "Domain/ProcessConnections.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
 #include "Platform/Utf8CaseFold.h"

@@ -1,6 +1,5 @@
 #include "ServiceModel.h"
 
-#include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/Utf8CaseFold.h"
 

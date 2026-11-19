@@ -21,7 +21,6 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/Utf8Sanitize.h"
 #include "LazyBackgroundRead.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/ThreadName.h"
