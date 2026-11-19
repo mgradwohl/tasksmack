@@ -15,6 +15,10 @@ CPack puts in the installer's section, CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS) are
 run here by a small interpreter of the NSIS commands they use. The uninstaller it starts is then run as
 NSIS would run it, with the command line the step passes ($CMDLINE ends before _?=, which sets $INSTDIR),
 through the uninstall lines' own interpreters (test_nsis_ifeo_uninstall.py, test_nsis_run_uninstall.py).
+
+#4436: the step first has TaskSmackInUseCheck look at the install folder and the installed copy's folder, before the
+old uninstaller runs, and reads that uninstaller's exit code. The check itself is test_nsis_in_use.py's; here a
+folder in `busy` makes it exit with TASKSMACK_IN_USE_EXIT_CODE, as a silent run does.
 """
 
 import re
@@ -33,7 +37,8 @@ PACKAGING = REPO / "cmake" / "Packaging.cmake"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack"
 INSTDIR = r"C:\Program Files\TaskSmack"
 UNINSTALLER = INSTDIR + r"\Uninstall.exe"
-REGISTERS = {"$0": "zero", "$1": "one"}
+REGISTERS = {"$0": "zero", "$1": "one", "$2": "two"}
+IN_USE_EXIT_CODE = 32
 MARK_KEY = r"Software\TaskSmack"
 MARK_BEGIN = "; TaskSmack's uninstall mark (#3276): BEGIN"
 MARK_END = "; TaskSmack's uninstall mark (#3276): END"
@@ -52,17 +57,30 @@ class Installer:
     """Runs the step's lines as NSIS would: registers, a stack, the error flag, HKLM's Uninstall key (in the
     32-bit installer's default view) and the files that exist. ExecWait records the command it starts."""
 
-    def __init__(self, uninstall_string: str | None, instdir: str, files: set[str], can_start: bool = True) -> None:
+    def __init__(
+        self,
+        uninstall_string: str | None,
+        instdir: str,
+        files: set[str],
+        can_start: bool = True,
+        busy: set[str] | None = None,
+        exit_code: int = 0,
+    ) -> None:
         self.uninstall_string = uninstall_string
         self.files = {name.lower() for name in files}
         self.can_start = can_start
-        self.vars = {"$INSTDIR": instdir, **REGISTERS}
+        self.busy = {name.lower() for name in busy or set()}
+        self.exit_code = exit_code
+        self.vars = {"$INSTDIR": instdir, **REGISTERS, "${TASKSMACK_IN_USE_EXIT_CODE}": str(IN_USE_EXIT_CODE)}
         self.stack: list[str] = []
         self.error = False
         self.executed: list[str] = []
         self.out_paths: list[str] = []
         self.messages: list[str] = []
         self.aborted = False
+        self.checked: list[str] = []
+        self.error_level: int | None = None
+        self.quit = False
 
     def expand(self, word: str) -> str:
         for name in sorted(self.vars, key=len, reverse=True):
@@ -132,6 +150,21 @@ class Installer:
                 self.executed.append(self.expand(args[0]))
                 if not self.can_start:
                     self.error = True
+                elif len(args) > 1:
+                    self.vars[args[1]] = str(self.exit_code)
+            elif op == "Call":
+                if args[0] != "TaskSmackInUseCheck":
+                    raise AssertionError(f"the step calls {args[0]}, not TaskSmackInUseCheck")
+                folder = self.stack.pop()
+                self.checked.append(folder)
+                if folder.lower() in self.busy:  # what the check does under /S: exit, before anything changes
+                    self.error_level, self.quit = IN_USE_EXIT_CODE, True
+                    return
+            elif op == "SetErrorLevel":
+                self.error_level = int(self.expand(args[0]))
+            elif op == "Quit":
+                self.quit = True
+                return
             elif op == "MessageBox":
                 if "/SD" not in args:
                     raise AssertionError("a message box needs /SD, for a silent install")
@@ -248,8 +281,15 @@ class Machine:
         return self.hkcu[run.RUN.lower()].get("tasksmack")
 
 
-def install(uninstall_string: str | None, instdir: str = INSTDIR, files: set[str] | None = None, can_start: bool = True) -> Installer:
-    installer = Installer(uninstall_string, instdir, {UNINSTALLER} if files is None else files, can_start)
+def install(
+    uninstall_string: str | None,
+    instdir: str = INSTDIR,
+    files: set[str] | None = None,
+    can_start: bool = True,
+    busy: set[str] | None = None,
+    exit_code: int = 0,
+) -> Installer:
+    installer = Installer(uninstall_string, instdir, {UNINSTALLER} if files is None else files, can_start, busy, exit_code)
     installer.run(step_lines())
     return installer
 
@@ -342,6 +382,42 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertEqual(len(installer.executed), 1)
         self.assertEqual(installer.messages, ["Uninstall failed."])
         self.assertTrue(installer.aborted)
+
+    def test_both_folders_are_checked_before_the_old_uninstaller_runs(self) -> None:
+        # #4436: the install folder, then the installed copy's folder, each before anything changes.
+        installer = install(f'"{UNINSTALLER}"')
+        self.assertEqual(installer.checked, [INSTDIR, INSTDIR])
+        elsewhere = r"D:\Apps\TaskSmack"
+        installer = install(f'"{UNINSTALLER}"', instdir=elsewhere)
+        self.assertEqual(installer.checked, [elsewhere, INSTDIR])
+        installer = install(None)
+        self.assertEqual(installer.checked, [INSTDIR], "a first install checks the folder it writes to")
+        self.assertFalse(installer.quit)
+        self.assert_registers_back(installer)
+
+    def test_a_running_tasksmack_stops_the_install_before_the_uninstaller(self) -> None:
+        elsewhere = r"D:\Apps\TaskSmack"
+        for instdir, busy in ((INSTDIR, INSTDIR), (elsewhere, INSTDIR), (elsewhere, elsewhere)):
+            with self.subTest(instdir=instdir, busy=busy):
+                installer = install(f'"{UNINSTALLER}"', instdir=instdir, busy={busy})
+                self.assertTrue(installer.quit)
+                self.assertEqual(installer.error_level, IN_USE_EXIT_CODE)
+                self.assertEqual(installer.executed, [], "the old uninstaller never runs")
+                self.assertEqual(installer.out_paths, [])
+
+    def test_an_uninstaller_that_finds_tasksmack_running_stops_the_install_with_its_code(self) -> None:
+        installer = install(f'"{UNINSTALLER}"', exit_code=IN_USE_EXIT_CODE)
+        self.assertEqual(len(installer.executed), 1)
+        self.assertTrue(installer.quit)
+        self.assertFalse(installer.aborted)
+        self.assertEqual(installer.error_level, IN_USE_EXIT_CODE)
+        self.assertEqual(installer.out_paths, [], "nothing more is installed")
+
+    def test_an_uninstaller_that_fails_stops_the_install(self) -> None:
+        installer = install(f'"{UNINSTALLER}"', exit_code=2)
+        self.assertEqual(installer.messages, ["Uninstall failed (exit code 2)."])
+        self.assertTrue(installer.aborted)
+        self.assertEqual(installer.out_paths, [])
 
     def test_cpacks_own_uninstall_before_install_is_off(self) -> None:
         # CPack's .onInit call can't pass the flag: with it on, the old uninstaller would run first, without it.
