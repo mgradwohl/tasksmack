@@ -11,6 +11,7 @@
 // Structure::byte()/word()/dword()/qword()/stringAt(), which return nothing past the structure's
 // formatted area. Nothing here reads past the buffer it is given, whatever the input.
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <algorithm>
@@ -52,7 +53,9 @@ struct Table
     Bytes data;
 };
 
-/// A string as shown: control characters made spaces, then leading and trailing spaces trimmed.
+/// A string as shown: control characters made spaces, leading and trailing spaces trimmed, and well-formed UTF-8
+/// (#4305): an unprogrammed field reads 0xFF and some vendors write Latin-1 (0xAE for the registered sign), so each
+/// ill-formed subpart becomes U+FFFD, as everything shown or saved must be (the maintainer's D1).
 [[nodiscard]] inline std::string cleanString(Bytes bytes)
 {
     std::string text;
@@ -68,7 +71,7 @@ struct Table
     }
     text.erase(text.find_last_not_of(' ') + 1);
     text.erase(0, first);
-    return text;
+    return Domain::sanitizedUtf8(text);
 }
 
 /// One structure: its formatted area (header included, exactly its declared length) and its string set.
