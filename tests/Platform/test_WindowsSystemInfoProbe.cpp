@@ -533,7 +533,7 @@ TEST(WindowsSystemInfoProbeTest, LayoutParserMatchesWinIoctlStructs)
 }
 
 // A USB-SATA bridge padding with 0xFF, or a Latin-1 0xDC in the product or serial (#4312): the strings stay valid UTF-8,
-// padding trimmed and any other byte outside printable ASCII shown as U+FFFD.
+// padding trimmed, a control character shown as U+FFFD and an invalid byte as U+FFFD.
 TEST(WindowsSystemInfoProbeTest, DeviceDescriptorStringsAreValidUtf8)
 {
     const auto parsed = WindowsStorage::parseDeviceDescriptor(deviceDescriptor("ATA",
@@ -555,6 +555,23 @@ TEST(WindowsSystemInfoProbeTest, DeviceDescriptorStringsAreValidUtf8)
     {
         EXPECT_FALSE(Platform::WinString::utf8ToWide(text).empty()) << text; // utf8ToWide() rejects invalid UTF-8
     }
+
+    // The rest goes through the shared sanitizer (Domain::sanitizedUtf8, #4301): well-formed UTF-8 is kept, and a
+    // sequence cut short costs one U+FFFD (its maximal ill-formed subpart), not one per byte.
+    const auto unicode = WindowsStorage::parseDeviceDescriptor(deviceDescriptor("",
+                                                                                "M\xC3\xBC"
+                                                                                "ller SSD",
+                                                                                "1.0",
+                                                                                "\xE7\x94"
+                                                                                "A1",
+                                                                                BusTypeUsb));
+    ASSERT_TRUE(unicode.has_value());
+    EXPECT_EQ(unicode.value_or(WindowsStorage::DeviceDescriptor{}).model,
+              "M\xC3\xBC"
+              "ller SSD");
+    EXPECT_EQ(unicode.value_or(WindowsStorage::DeviceDescriptor{}).serial,
+              "\xEF\xBF\xBD"
+              "A1");
 
     // A string of nothing but padding is empty, as one of spaces always was.
     const auto blank = WindowsStorage::parseDeviceDescriptor(deviceDescriptor("", "\xFF\xFF\xFF", "  ", "", BusTypeUsb));

@@ -111,6 +111,21 @@ to every diff you review or open. `.claude/skills/tasksmack-review/SKILL.md` is 
 `check-guidance-sync` pre-commit hook (`tools/check-guidance-sync.py`) fails if their bodies differ, so edit
 both together.
 
+## Modern C++23
+
+[docs/dev/cpp23.md](docs/dev/cpp23.md) is the full guidance, from the C++23 audit of 2026-11-18 (#4340). The rules
+agents act on:
+
+- **libc++ is the limit for shared code.** `std::generator`, `std::stacktrace`, `std::move_only_function`,
+  `std::atomic<std::shared_ptr>`, `views::chunk` and `views::slide` compile on Windows only. The page lists what both
+  standard libraries have and how to re-check after a toolchain bump.
+- **Results:** `std::expected` for a failure with a reason and `std::optional` for an absent value. No `bool` plus
+  out-parameters and no sentinels in new code.
+- **Owners:** wrap every OS resource where it's acquired. Nothing that can throw sits between an acquire and a
+  hand-written release.
+- **Parsing:** `std::from_chars`, never `std::stoi`, `strtol` or `sscanf`.
+- **Modernize only when the behavior is kept** and a bug class, a duplicate or an unclear owner goes away.
+
 ## Quick reference (condensed from CONTRIBUTING.md / copilot-instructions.md)
 
 Architecture: `Platform` (raw OS counters only) → `Domain` (deltas/rates/history/immutable snapshots) →

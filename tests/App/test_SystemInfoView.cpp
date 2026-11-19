@@ -218,6 +218,21 @@ TEST(SystemInfoSectionsTest, ReportFileNameFormatAndExtension)
     EXPECT_EQ(SystemInfo::reportFileName("", true, "", ReportFormat::Text), "tasksmack-system-info-machine.txt");
     // #1891: trailing dots and dashes are trimmed too, so the name never ends the stem in one.
     EXPECT_EQ(SystemInfo::reportFileName("box-.", true, "", ReportFormat::Text), "tasksmack-system-info-box.txt");
+    // #4314: walked by code point, so a non-ASCII letter is kept, not one '-' per byte.
+    EXPECT_EQ(SystemInfo::reportFileName("M\xC3\xBCller-PC", true, "", ReportFormat::Text), "tasksmack-system-info-M\xC3\xBCller-PC.txt");
+    EXPECT_EQ(SystemInfo::reportFileName("\xE7\x94\xB0\xE4\xB8\xAD\xE3\x81\xAEPC", true, "", ReportFormat::Text),
+              "tasksmack-system-info-\xE7\x94\xB0\xE4\xB8\xAD\xE3\x81\xAEPC.txt")
+        << "an all-CJK name is kept, not \"machine\"";
+    // An invalid byte (a Latin-1 0xFC), or a sequence cut short, is one '-'; a reserved character or a no-break
+    // space is one '-' too.
+    EXPECT_EQ(SystemInfo::reportFileName("M\xFCller", true, "", ReportFormat::Text), "tasksmack-system-info-M-ller.txt");
+    EXPECT_EQ(SystemInfo::reportFileName("box\xE7\x94", true, "", ReportFormat::Text), "tasksmack-system-info-box.txt");
+    EXPECT_EQ(SystemInfo::reportFileName("a:b\xC2\xA0"
+                                         "c",
+                                         true,
+                                         "",
+                                         ReportFormat::Text),
+              "tasksmack-system-info-a-b-c.txt");
 
     // #2144: a typed ".txt" or ".json" wins over the dialog's filter; the filter decides otherwise.
     EXPECT_EQ(SystemInfo::reportFormatFor("/tmp/a.txt", 1), ReportFormat::Text) << "the typed extension wins";
