@@ -24,6 +24,7 @@
 #include "Domain/ProcessMemoryMap.h"
 #include "Domain/ProcessModules.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/Utf8Sanitize.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
@@ -174,7 +175,8 @@ class ProcessMemoryMapView
         prepared.rows.reserve(result.mappings.size());
         for (const Platform::MemoryMapping& mapping : result.mappings)
         {
-            std::string path = mapping.path;
+            // The shown path is well-formed UTF-8 (#4301); mapping keeps the raw bytes.
+            std::string path = Domain::sanitizedUtf8(mapping.path);
             if (mapping.deleted)
             {
                 path += " (deleted)";

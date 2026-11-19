@@ -52,8 +52,9 @@ set(FETCHCONTENT_TRY_FIND_PACKAGE_MODE OPT_IN)
 # so Ninja in one preset could treat objects compiled with another preset's flags (sanitizers,
 # coverage, LTO, -O level) as up to date (#1308). Pinning BINARY_DIR to this build tree keeps
 # the download shared while every preset builds its own objects. The calls stay literal
-# FetchContent_Declare() (no wrapper) because osv-scanner.yml's Syft cmake cataloger and
-# Renovate's regex managers read them from the source text.
+# FetchContent_Declare() (no wrapper) because tools/cpp-deps-sbom.py (the source SBOM and the
+# OSV gate, #4438), cmake/ThirdPartyNotices.cmake and Renovate's regex managers read them from the
+# source text.
 set(TASKSMACK_DEPS_BINARY_DIR "${CMAKE_BINARY_DIR}/_deps")
 
 # The -subbuild is the small CMake project FetchContent configures and builds to clone a
@@ -252,18 +253,40 @@ unset(_tasksmack_saved_cmp0219_default)
 set_target_properties(SDL3-static PROPERTIES FOLDER "third_party")
 # #4254: a libdecor SDL links rather than loads would ignore SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR, and its GTK plugin would
 # run in a setcap session. Fail here instead of building that.
+# #4440: and a Release build must have libdecor at all (loaded at run time), or "Use native window decorations" leaves a
+# GNOME window with no frame. The release packages are built with it (the maintainer, 2026-11-18); a local Release build
+# without libdecor-0-dev can opt out.
+if(CMAKE_BUILD_TYPE STREQUAL "Release")
+    set(_tasksmack_require_libdecor_default ON)
+else()
+    set(_tasksmack_require_libdecor_default OFF)
+endif()
+option(TASKSMACK_REQUIRE_LIBDECOR "Linux: fail the configure unless SDL loads libdecor at run time (#4440)"
+       ${_tasksmack_require_libdecor_default})
+unset(_tasksmack_require_libdecor_default)
 if(UNIX AND NOT APPLE)
     file(GLOB_RECURSE _tasksmack_sdl_build_configs "${sdl3_BINARY_DIR}/include-config-*/build_config/SDL_build_config.h")
     foreach(_tasksmack_sdl_build_config IN LISTS _tasksmack_sdl_build_configs)
-        file(STRINGS "${_tasksmack_sdl_build_config}" _tasksmack_libdecor_lines REGEX "HAVE_LIBDECOR_H|WAYLAND_DYNAMIC_LIBDECOR")
-        if(_tasksmack_libdecor_lines MATCHES "HAVE_LIBDECOR_H 1" AND NOT _tasksmack_libdecor_lines MATCHES "WAYLAND_DYNAMIC_LIBDECOR")
+        # Only a #define counts: an option SDL left off is still in the file, as "/* #undef NAME */" (#4440).
+        file(STRINGS "${_tasksmack_sdl_build_config}" _tasksmack_libdecor_lines REGEX "^#define (HAVE_LIBDECOR_H|SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR)")
+        set(_tasksmack_libdecor_loaded FALSE)
+        if(_tasksmack_libdecor_lines MATCHES "#define SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR")
+            set(_tasksmack_libdecor_loaded TRUE)
+        endif()
+        if(_tasksmack_libdecor_lines MATCHES "#define HAVE_LIBDECOR_H 1" AND NOT _tasksmack_libdecor_loaded)
             message(FATAL_ERROR "SDL links libdecor instead of loading it (${_tasksmack_sdl_build_config}): "
                                 "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR would be ignored (#4254). Keep SDL_WAYLAND_LIBDECOR_SHARED ON.")
+        endif()
+        if(TASKSMACK_REQUIRE_LIBDECOR AND NOT _tasksmack_libdecor_loaded)
+            message(FATAL_ERROR "SDL was built without libdecor (${_tasksmack_sdl_build_config}), so native Wayland "
+                                "decorations would leave a window with no frame on GNOME (#4440). Install libdecor-0-dev, "
+                                "or configure with -DTASKSMACK_REQUIRE_LIBDECOR=OFF.")
         endif()
     endforeach()
     unset(_tasksmack_sdl_build_configs)
     unset(_tasksmack_sdl_build_config)
     unset(_tasksmack_libdecor_lines)
+    unset(_tasksmack_libdecor_loaded)
 endif()
 
 # Prefer the project-local environment created by tools/setup-dev.sh / tools/setup-dev.ps1

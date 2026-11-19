@@ -102,6 +102,30 @@ TEST(ProcessModelTest, ProbeSuppliedControlCharactersNeverReachASnapshot)
     EXPECT_EQ(snapshots[0].name.find('\n'), std::string::npos);
 }
 
+TEST(ProcessModelTest, AnIllFormedUtf8NameOrCommandIsShownWithReplacementCharacters)
+{
+    // #4301: Linux keeps 15 bytes of a comm, which can end in the middle of a character, and a command line can
+    // hold a Latin-1 file name. The snapshot (what the UI shows) gets U+FFFD per maximal ill-formed subpart;
+    // the raw counters, which actions and the crash-history comm match use, are not the snapshot's concern.
+    Domain::ProcessModel model(nullptr);
+    const std::string cutComm = std::string("QQ\xE9\x9F\xB3\xE4\xB9\x90\xE6\x92\xAD\xE6\x94\xBE\xE5");
+    ASSERT_EQ(cutComm.size(), 15U);
+    auto counter = makeCounter(100, cutComm, 'R', 1000, 500);
+    counter.command = "vlc Gr\xFC\xDF"
+                      "e.mp3";
+
+    model.updateFromCounters({counter}, 100000);
+
+    const auto snapshots = model.snapshots();
+    ASSERT_EQ(snapshots.size(), 1);
+    EXPECT_EQ(snapshots[0].name, "QQ\xE9\x9F\xB3\xE4\xB9\x90\xE6\x92\xAD\xE6\x94\xBE\xEF\xBF\xBD");
+    EXPECT_EQ(snapshots[0].command,
+              "vlc Gr\xEF\xBF\xBD\xEF\xBF\xBD"
+              "e.mp3");
+    EXPECT_TRUE(Domain::isValidUtf8(snapshots[0].name));
+    EXPECT_TRUE(Domain::isValidUtf8(snapshots[0].command));
+}
+
 TEST(ProcessModelTest, ASingleLineFormFollowsItsProcessAcrossRefreshes)
 {
     // The single-line form is kept per process and re-derived only when the raw string changes

@@ -17,6 +17,11 @@ Installers:
   InstallerSwitches:
     Silent: /S
     Custom: /NCRC # a comment on a value
+  ExpectedReturnCodes:
+  - InstallerReturnCode: 1
+    ReturnResponse: cancelledByUser
+  - InstallerReturnCode: 32
+    ReturnResponse: packageInUse
   ProductCode: TaskSmack
   AppsAndFeaturesEntries:
   - DisplayName: TaskSmack
@@ -30,6 +35,9 @@ Installers:
   InstallerSwitches:
     Silent: /S
     Custom: /NCRC
+  ExpectedReturnCodes:
+  - InstallerReturnCode: 32
+    ReturnResponse: packageInUse
   ProductCode: TaskSmack
   AppsAndFeaturesEntries:
   - DisplayName: TaskSmack

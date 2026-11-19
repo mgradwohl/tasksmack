@@ -58,6 +58,20 @@ endif()
 # configures project.nsi, at the top of the script. Unicode true makes the installer a UTF-8/UTF-16 target
 # rather than an ANSI one (#4300, makensis warning 7998): registry values and paths with characters outside the
 # machine's code page go through the W APIs unchanged.
+#
+# TaskSmack in use (#4436): TaskSmackInUseCheck, and un.TaskSmackInUseCheck for the uninstaller, take a folder on the
+# stack and return only when neither TaskSmack.exe nor TaskSmackHelper.exe in it is running. Windows won't open a
+# running program's .exe for writing, in any user's session, so each one that exists is opened for writing (FileOpen
+# "a": open, never create or truncate, and closed unwritten) and a refusal means it is in use. Nothing is started,
+# stopped or asked to exit, and no plugin is needed. The single-instance lock can't do it: it is a file in each user's
+# own %APPDATA%\TaskSmack, so another account's TaskSmack holds a lock this account can't see. In use, an interactive
+# run asks the user to close TaskSmack, with Retry and Cancel; Cancel, and a silent (/S) run at once, exits with
+# TASKSMACK_IN_USE_EXIT_CODE (32, ERROR_SHARING_VIOLATION's number), before anything is changed. WinGet's manifest
+# declares that code as packageInUse (packaging/winget/TaskSmack.TaskSmack.installer.yaml). The installer checks the
+# install folder and the installed copy's folder before its upgrade step runs the old uninstaller (below); the
+# uninstaller checks first of all its lines (the last block in this file). A running TaskSmack used to leave a
+# half-applied install: the locked .exe skipped (AllowSkipFiles) beside everything else replaced, or removed. Its
+# registers are saved. Checked by tests/tools/test_nsis_in_use.py, which runs these lines.
 if(CPACK_GENERATOR STREQUAL "NSIS")
     set(CPACK_NSIS_DEFINES [=[
   Unicode true
@@ -75,6 +89,39 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
   !else
     !uninstfinalize 'copy /b /y "%1" "Uninstall.exe"' = 0
   !endif
+  ; TaskSmack in use (#4436): BEGIN
+  !define TASKSMACK_IN_USE_EXIT_CODE 32
+  !macro TASKSMACK_IN_USE_CHECK UN
+  Function ${UN}TaskSmackInUseCheck
+    Exch $0
+    Push $1
+    Push $2
+  tasksmack_in_use_retry:
+    StrCpy $1 "TaskSmack.exe"
+  tasksmack_in_use_next:
+    IfFileExists "$0\$1" 0 tasksmack_in_use_free
+    ClearErrors
+    FileOpen $2 "$0\$1" a
+    IfErrors tasksmack_in_use_busy
+    FileClose $2
+  tasksmack_in_use_free:
+    StrCmp $1 "TaskSmackHelper.exe" tasksmack_in_use_done
+    StrCpy $1 "TaskSmackHelper.exe"
+    Goto tasksmack_in_use_next
+  tasksmack_in_use_busy:
+    DetailPrint "TaskSmack is running: $0\$1 is in use."
+    MessageBox MB_RETRYCANCEL|MB_ICONEXCLAMATION "TaskSmack is running, so it can't be changed now.$\r$\n$\r$\nClose TaskSmack, in every account signed in to this PC, then select Retry. Cancel leaves the installed TaskSmack as it is." /SD IDCANCEL IDRETRY tasksmack_in_use_retry
+    SetErrorLevel ${TASKSMACK_IN_USE_EXIT_CODE}
+    Quit
+  tasksmack_in_use_done:
+    Pop $2
+    Pop $1
+    Pop $0
+  FunctionEnd
+  !macroend
+  !insertmacro TASKSMACK_IN_USE_CHECK ""
+  !insertmacro TASKSMACK_IN_USE_CHECK "un."
+  ; TaskSmack in use (#4436): END
 ]=])
     # Replace Task Manager (#3072): the uninstaller always gives Task Manager back when TaskSmack has it, so
     # Ctrl+Shift+Esc never starts a TaskSmack.exe that is gone. It removes taskmgr.exe's Image File Execution
@@ -213,11 +260,20 @@ endif()
 # install, as CPack's did. The old uninstaller leaves the folder (its _?= run can't delete itself), but it
 # may remove what the install's SetOutPath made, so it is made again. Its registers are saved. Checked by
 # tests/tools/test_nsis_upgrade.py, which runs these lines and then the uninstall lines as they call them.
+# TaskSmack in use (#4436): first the install folder, then the installed copy's, is checked for a running TaskSmack
+# (TaskSmackInUseCheck, above), so a silent install over a running one exits with TASKSMACK_IN_USE_EXIT_CODE and
+# changes nothing. The old uninstaller's exit code is read too: 0 goes on; TASKSMACK_IN_USE_EXIT_CODE, from an
+# uninstaller that has the check itself and found TaskSmack started since, stops the install with that code; any
+# other stops it as "Uninstall failed".
 if(CPACK_GENERATOR STREQUAL "NSIS")
     set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS [=[
+  ; TaskSmack in use (#4436): the install folder, before anything is written to it.
+  Push $INSTDIR
+  Call TaskSmackInUseCheck
   ; TaskSmack's upgrade (#3276): BEGIN
   Push $0
   Push $1
+  Push $2
   ClearErrors
   ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack" "UninstallString"
   IfErrors tasksmack_upgrade_done
@@ -233,23 +289,50 @@ tasksmack_upgrade_path:
   StrCmp $1 "\Uninstall.exe" 0 tasksmack_upgrade_done
   IfFileExists $0 0 tasksmack_upgrade_done
   StrCpy $1 $0 -14
+  ; TaskSmack in use (#4436): the installed copy's folder, before its uninstaller empties it.
+  Push $1
+  Call TaskSmackInUseCheck
   ClearErrors
   StrCmp $1 $INSTDIR 0 tasksmack_upgrade_elsewhere
   DetailPrint "Upgrading the TaskSmack in $1"
-  ExecWait '"$0" /S /TASKSMACK_UPGRADE _?=$1'
+  ExecWait '"$0" /S /TASKSMACK_UPGRADE _?=$1' $2
   Goto tasksmack_upgrade_ran
 tasksmack_upgrade_elsewhere:
   DetailPrint "Uninstalling the TaskSmack in $1"
-  ExecWait '"$0" /S /TASKSMACK_MOVE _?=$1'
+  ExecWait '"$0" /S /TASKSMACK_MOVE _?=$1' $2
 tasksmack_upgrade_ran:
-  IfErrors 0 tasksmack_upgrade_uninstalled
+  IfErrors 0 tasksmack_upgrade_started
   MessageBox MB_OK|MB_ICONSTOP "Uninstall failed." /SD IDOK
+  Abort
+tasksmack_upgrade_started:
+  StrCmp $2 "0" tasksmack_upgrade_uninstalled
+  StrCmp $2 "${TASKSMACK_IN_USE_EXIT_CODE}" 0 tasksmack_upgrade_failed
+  ; An uninstaller from #4436 on found TaskSmack started since the check above, and changed nothing.
+  MessageBox MB_OK|MB_ICONEXCLAMATION "TaskSmack is running, so it can't be changed now. Close TaskSmack, then run Setup again." /SD IDOK
+  SetErrorLevel ${TASKSMACK_IN_USE_EXIT_CODE}
+  Quit
+tasksmack_upgrade_failed:
+  MessageBox MB_OK|MB_ICONSTOP "Uninstall failed (exit code $2)." /SD IDOK
   Abort
 tasksmack_upgrade_uninstalled:
   SetOutPath $INSTDIR
 tasksmack_upgrade_done:
+  Pop $2
   Pop $1
   Pop $0
   ; TaskSmack's upgrade (#3276): END
+]=])
+endif()
+
+# TaskSmack in use (#4436): the uninstaller's first lines, so a running TaskSmack.exe or TaskSmackHelper.exe stops it
+# before any of the lines above, or CPack's own deletions, change anything (TaskSmackInUseCheck, at the top). Prepended
+# here, after every block above is set or appended, so it runs first; its registers are saved by the function. A
+# user's uninstall runs from NSIS's copy in %TEMP%, so its exit code isn't the one the started Uninstall.exe returns;
+# the installer's upgrade step, which runs it in place (_?=), reads it. Checked by tests/tools/test_nsis_in_use.py.
+if(CPACK_GENERATOR STREQUAL "NSIS")
+    string(PREPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  ; TaskSmack in use (#4436): the install folder, before anything is removed.
+  Push $INSTDIR
+  Call un.TaskSmackInUseCheck
 ]=])
 endif()

@@ -7,12 +7,14 @@
 /// only (#3292); then the real calls on a
 /// signed system binary and on an unsigned file this test writes; this process's image bound to its own file, and on a
 /// CI runner a renamed image checked as itself, not the signed decoy left at its old name (#4021), and hashed for Look
-/// up on VirusTotal as itself or not at all (#4057); the publisher read through a held file's handle (#4057).
+/// up on VirusTotal as itself or not at all (#4057); the publisher and the file version read through a held file's handle
+/// (#4057, #4373).
 
 #include "Platform/ImageSignature.h"
 #include "Platform/Sha256.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsHeldFileVersion.h"
 #include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsImageSignature.h"
 #include "Platform/Windows/WindowsProcessActions.h"
@@ -917,6 +919,32 @@ TEST(WindowsHeldFilePublisherTest, AFilesPublisherIsReadThroughItsHandle)
     EXPECT_EQ(heldFilePublisher(noneFile.get()), "");
 
     EXPECT_EQ(heldFilePublisher(INVALID_HANDLE_VALUE), "") << "no file";
+}
+
+// #4373: the Modules section's file version is read the same way, through the held file's handle, never by a name.
+TEST(WindowsHeldFileVersionTest, AFilesVersionIsReadThroughItsHandle)
+{
+    const TestSupport::PeImage image =
+        TestSupport::buildPeImage({{0x0409U, TestSupport::versionInfoBlock(u"Co", (10U << 16U) | 1U, (26100U << 16U) | 4202U)}});
+    const TempFile pe(L"-version.dll", image.bytes);
+    const UniqueHandle file = openForRead(pe.path().wstring());
+    ASSERT_TRUE(file) << GetLastError();
+    EXPECT_EQ(heldFileVersion(file.get()),
+              std::optional(VersionResourceMath::FixedFileVersion{.mostSignificant = (10U << 16U) | 1U,
+                                                                  .leastSignificant = (26100U << 16U) | 4202U}));
+
+    std::vector<std::byte> cutBytes = image.bytes;
+    cutBytes.resize(cutBytes.size() - 8);
+    const TempFile cut(L"-version-cut.dll", cutBytes);
+    const UniqueHandle cutFile = openForRead(cut.path().wstring());
+    ASSERT_TRUE(cutFile);
+    EXPECT_FALSE(heldFileVersion(cutFile.get()).has_value()) << "the block runs past the end of the file";
+
+    const TempFile empty(L"-version-empty.dll", {});
+    const UniqueHandle emptyFile = openForRead(empty.path().wstring());
+    ASSERT_TRUE(emptyFile);
+    EXPECT_FALSE(heldFileVersion(emptyFile.get()).has_value());
+    EXPECT_FALSE(heldFileVersion(INVALID_HANDLE_VALUE).has_value()) << "no file";
 }
 
 /// @p bytes at the very end of a committed page whose next page is PAGE_NOACCESS, so any read past them faults.
