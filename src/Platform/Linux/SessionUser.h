@@ -159,9 +159,10 @@ invokingUserSession(uid_t effectiveUid,
 /// The user's own values of the variables a root session replaced for itself (RootEnvironment: PATH, XDG_DATA_DIRS,
 /// XAUTHORITY; the second #4187 review), kept for the programs it starts as that user, which run as them, so their own
 /// values are safe there and needed (snap and Flatpak handlers, their ~/.local/bin, their Xauthority).
-[[nodiscard]] inline std::map<std::string, std::string, std::less<>>& userSideValues()
+[[nodiscard]] inline std::map<std::string, std::optional<std::string>, std::less<>>& userSideValues()
 {
-    static std::map<std::string, std::string, std::less<>> values;
+    // nullopt: the user's session had none, and the program started as them gets none (#4259), never root's value.
+    static std::map<std::string, std::optional<std::string>, std::less<>> values;
     return values;
 }
 

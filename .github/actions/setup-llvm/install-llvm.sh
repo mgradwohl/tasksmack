@@ -128,6 +128,10 @@ fi
 if [[ "${INSTALL_CLANG_TIDY:-}" == "true" ]]; then
   LLVM_PACKAGES+=("clang-tidy-${LLVM_VER}")
 fi
+if [[ "${INSTALL_IWYU_BUILD_DEPS:-}" == "true" ]]; then
+  # The static clang/LLVM libraries include-what-you-use links against (#4481).
+  LLVM_PACKAGES+=("llvm-${LLVM_VER}-dev" "libclang-${LLVM_VER}-dev")
+fi
 # clangd is one of llvm.sh's four, so INSTALL_CLANGD needs nothing more here.
 
 if [[ -n "$EXPECT_RELEASE" ]]; then
