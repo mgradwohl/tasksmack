@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <array>
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -39,6 +40,48 @@ TEST(DumpFileNameTest, TheStemIsSafeForAFileName)
     EXPECT_EQ(dumpFileStem(".exe"), ".exe"); // nothing before the extension to drop it from
     // UTF-8 passes through untouched
     EXPECT_EQ(dumpFileStem("caf\xc3\xa9.exe"), "caf\xc3\xa9");
+}
+
+TEST(DumpFileNameTest, ALongImageNameIsCutSoTheFileNameFits)
+{
+    // #4364: NTFS allows 255 UTF-16 units in a file name, and an executable's own name can use them all.
+    constexpr std::size_t NTFS_NAME_UNITS = 255;
+    const std::string name = dumpFileName(std::string(251, 'a') + ".exe", 4'000'000, TIME, MAX_NAME_ATTEMPTS);
+    EXPECT_LE(name.size(), NTFS_NAME_UNITS); // ASCII: one unit per byte
+    EXPECT_TRUE(name.ends_with(std::format("_4000000_2026-10-03_04-05-09 ({}).dmp", MAX_NAME_ATTEMPTS))) << name;
+
+    const std::string stem = dumpFileStem(std::string(251, 'a') + ".exe");
+    EXPECT_EQ(stem.size(), MAX_STEM_UTF16_UNITS);
+    EXPECT_EQ(stem.substr(0, MAX_STEM_UTF16_UNITS - 9), std::string(MAX_STEM_UTF16_UNITS - 9, 'a'));
+    EXPECT_EQ(stem[MAX_STEM_UTF16_UNITS - 9], '~');
+    // Two long names that share the kept prefix get different names
+    EXPECT_NE(dumpFileStem(std::string(200, 'a') + "x.exe"), dumpFileStem(std::string(200, 'a') + "y.exe"));
+    // A name at the cap is kept whole
+    EXPECT_EQ(dumpFileStem(std::string(MAX_STEM_UTF16_UNITS, 'b')), std::string(MAX_STEM_UTF16_UNITS, 'b'));
+}
+
+TEST(DumpFileNameTest, ALongNameIsCutOnACodePointBoundary)
+{
+    std::string cjk;
+    for (int i = 0; i < 200; ++i)
+    {
+        cjk += "\xe4\xb8\xad"; // U+4E2D: three bytes, one UTF-16 unit
+    }
+    const std::string stem = dumpFileStem(cjk + ".exe");
+    ASSERT_GT(stem.size(), 9U);
+    const std::string kept = stem.substr(0, stem.size() - 9);
+    EXPECT_EQ(kept.size() % 3, 0U) << "never cut mid-character";
+    EXPECT_EQ(kept.size() / 3, MAX_STEM_UTF16_UNITS - 9);
+
+    std::string emoji;
+    for (int i = 0; i < 100; ++i)
+    {
+        emoji += "\xf0\x9f\x98\x80"; // U+1F600: four bytes, two UTF-16 units (a surrogate pair)
+    }
+    const std::string emojiStem = dumpFileStem(emoji + ".exe");
+    const std::string emojiKept = emojiStem.substr(0, emojiStem.size() - 9);
+    EXPECT_EQ(emojiKept.size() % 4, 0U) << "never cut inside a surrogate pair";
+    EXPECT_LE((emojiKept.size() / 4 * 2) + 9, MAX_STEM_UTF16_UNITS);
 }
 
 TEST(DumpErrorTest, AWrappedWin32ErrorIsUnwrapped)

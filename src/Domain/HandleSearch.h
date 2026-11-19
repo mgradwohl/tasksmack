@@ -187,11 +187,8 @@ struct SearchPublication
     std::string failure;     ///< Why the walk stopped early, when it failed (#3335); empty otherwise.
 };
 
-/// @p text in lower case (ASCII letters only, so a UTF-8 path keeps its other bytes).
-[[nodiscard]] std::string lowered(std::string_view text);
-
-/// Whether @p path contains @p loweredQuery, ignoring ASCII case. An empty query matches nothing.
-[[nodiscard]] bool pathMatches(std::string_view path, std::string_view loweredQuery);
+/// Whether @p path contains @p query by Unicode simple case folding (#4303). An empty query matches nothing.
+[[nodiscard]] bool pathMatches(std::string_view path, std::string_view query);
 
 /// The kind shown for an open descriptor or handle of @p kind.
 [[nodiscard]] HandleKind kindOf(Platform::OpenFileKind kind) noexcept;
@@ -208,7 +205,7 @@ struct SearchPublication
 void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
-                std::string_view loweredQuery,
+                std::string_view query,
                 SearchPublication& into,
                 SearchSources asked = {});
 

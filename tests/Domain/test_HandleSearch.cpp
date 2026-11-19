@@ -211,15 +211,27 @@ class FakeModules final : public Platform::IProcessModulesReader
     }
 };
 
+TEST(HandleSearchTest, PathMatchesFoldsEveryLetterNotJustAscii)
+{
+    // #4303: Find handles folded A-Z only, so "ölfilter" found nothing open on Ölfilter.xlsx.
+    EXPECT_TRUE(pathMatches("C:\\Users\\Ana\\Documents\\\xC3\x96lfilter.xlsx", "\xC3\xB6lfilter")); // Ö, ö
+    EXPECT_TRUE(pathMatches("/home/ana/\xC3\xB6lfilter.xlsx", "\xC3\x96LFILTER"));
+    EXPECT_TRUE(pathMatches("/srv/\xCE\xA3\xCE\x9F\xCE\xA6\xCE\x99\xCE\x91", "\xCF\x83\xCE\xBF\xCF\x86")); // ΣΟΦΙΑ, σοφ
+    // A path holding U+FFFD (from a lone surrogate on Windows) still matches around it, and the
+    // replacement character matches itself.
+    EXPECT_TRUE(pathMatches("C:\\x\xEF\xBF\xBDy\\Report.ods", "report"));
+    EXPECT_TRUE(pathMatches("C:\\x\xEF\xBF\xBDy", "\xEF\xBF\xBDY"));
+}
+
 TEST(HandleSearchTest, PathMatchesIgnoresAsciiCaseAndAnEmptyQueryMatchesNothing)
 {
-    EXPECT_TRUE(pathMatches("/home/me/Report.ODS", lowered("report.ods")));
-    EXPECT_TRUE(pathMatches("/home/me/report.ods", lowered("ME/REP")));
-    EXPECT_FALSE(pathMatches("/home/me/report.ods", lowered("reports")));
+    EXPECT_TRUE(pathMatches("/home/me/Report.ODS", "report.ods"));
+    EXPECT_TRUE(pathMatches("/home/me/report.ods", "ME/REP"));
+    EXPECT_FALSE(pathMatches("/home/me/report.ods", "reports"));
     EXPECT_FALSE(pathMatches("/home/me/report.ods", ""));
     EXPECT_FALSE(pathMatches("", "a"));
-    // Bytes outside ASCII are compared as they are.
-    EXPECT_TRUE(pathMatches("/tmp/caf\xC3\xA9.txt", lowered("CAF\xC3\xA9")));
+    // Bytes outside ASCII fold too: é matches É.
+    EXPECT_TRUE(pathMatches("/tmp/caf\xC3\xA9.txt", "CAF\xC3\x89"));
 }
 
 TEST(HandleSearchTest, KindsFollowTheOpenFileKindAndModulesAreLibraries)

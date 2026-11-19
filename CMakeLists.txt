@@ -413,6 +413,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
     src/Platform/Windows/WindowsHeldFileVersion.cpp # a held file's version resource, read through its handle: Publisher and Modules (#4057, #4373)
+    src/Platform/Windows/WindowsLocalNtFile.cpp # a local file opened by its NT name, no link followed: Publisher, VirusTotal and Modules (#4373, #4482)
     src/Platform/Windows/WindowsProcessMemoryMap.cpp # a process's memory map: VirtualQueryEx, GetMappedFileNameW (#3089)
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
@@ -852,6 +853,9 @@ function(tasksmack_apply_windows_definitions target)
         # so spdlog's templates agree across them; spdlog is consumed header-only
         # (spdlog::spdlog_header_only), so there is no prebuilt library whose ABI could disagree.
         SPDLOG_WCHAR_FILENAMES
+        # The console sink writes UTF-8 log text with WriteConsoleW (UTF-16), so a non-ASCII path or
+        # name prints right whatever the console's code page, with no SetConsoleOutputCP (#4317).
+        SPDLOG_UTF8_TO_WCHAR_CONSOLE
     )
 endfunction()
 
@@ -1055,6 +1059,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # Process Details' environment of another user's process (#3610)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsHeldFileVersion.cpp # the modules' versions, read through a held file (#4373)
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsLocalNtFile.cpp # the modules' files, opened by their NT names with no link followed (#4482)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSocketTables.cpp

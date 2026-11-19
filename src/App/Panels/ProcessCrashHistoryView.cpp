@@ -95,7 +95,10 @@ CrashLine crashLineFor(const Domain::CrashHistorySnapshot& history, std::string_
     std::string tooltip;
     if (counts.total() == 0)
     {
-        line.value = std::format("None in the last {} days", Platform::CRASH_HISTORY_DAYS);
+        // A read cut short (#4375) can't say there were none.
+        line.value = crashes.incomplete
+                       ? std::format("None found in the last {} days (the log wasn't fully read)", Platform::CRASH_HISTORY_DAYS)
+                       : std::format("None in the last {} days", Platform::CRASH_HISTORY_DAYS);
     }
     else
     {
@@ -127,6 +130,10 @@ CrashLine crashLineFor(const Domain::CrashHistorySnapshot& history, std::string_
     {
         tooltip +=
             std::format("\nOnly the system's {} newest crashes and hangs were read; older ones aren't counted.", Platform::CRASH_LIST_MAX);
+    }
+    if (crashes.incomplete)
+    {
+        tooltip += "\nThe event log stopped answering partway through the read, so older crashes and hangs may be missing."; // #4375
     }
     tooltip += "\nThe System tab's Recent crashes section lists every program's." + readNote;
     line.tooltip = std::move(tooltip);

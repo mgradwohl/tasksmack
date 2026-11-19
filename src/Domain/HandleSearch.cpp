@@ -4,6 +4,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -25,20 +26,11 @@ namespace Domain::HandleSearch
 namespace
 {
 
-[[nodiscard]] char lowerAscii(char c) noexcept
-{
-    return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c;
-}
-
 /// Adds @p path to @p into when it matches, stopping at MAX_MATCHES.
-void addMatch(const SearchProcess& process,
-              HandleKind kind,
-              const std::string& path,
-              bool deleted,
-              std::string_view loweredQuery,
-              SearchPublication& into)
+void addMatch(
+    const SearchProcess& process, HandleKind kind, const std::string& path, bool deleted, std::string_view query, SearchPublication& into)
 {
-    if (!pathMatches(path, loweredQuery))
+    if (!pathMatches(path, query))
     {
         return;
     }
@@ -132,20 +124,11 @@ bool MatchList::extends(const MatchList& earlier) const noexcept
            std::ranges::equal(earlier.m_Chunks, std::span(m_Chunks).first(earlier.m_Chunks.size()));
 }
 
-std::string lowered(std::string_view text)
+bool pathMatches(std::string_view path, std::string_view query)
 {
-    std::string out(text);
-    std::ranges::transform(out, out.begin(), lowerAscii);
-    return out;
-}
-
-bool pathMatches(std::string_view path, std::string_view loweredQuery)
-{
-    if (loweredQuery.empty() || path.size() < loweredQuery.size())
-    {
-        return false;
-    }
-    return !std::ranges::search(path, loweredQuery, {}, lowerAscii).empty();
+    // Unicode simple case folding (#4303): "ölfilter" finds C:\Users\Ana\Ölfilter.xlsx, as NTFS treats them as one
+    // file, and /home/Ölaf on Linux. Byte lengths can differ (U+212A is three bytes, its fold one), so no size test.
+    return !query.empty() && Platform::containsFoldedCase(path, query);
 }
 
 HandleKind kindOf(Platform::OpenFileKind kind) noexcept
@@ -195,7 +178,7 @@ std::string_view kindLabel(HandleKind kind) noexcept
 void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
-                std::string_view loweredQuery,
+                std::string_view query,
                 SearchPublication& into,
                 SearchSources asked)
 {
@@ -210,7 +193,7 @@ void addProcess(const SearchProcess& process,
     {
         for (const Platform::OpenFile& file : files.files)
         {
-            addMatch(process, kindOf(file.kind), file.path, file.deleted, loweredQuery, into);
+            addMatch(process, kindOf(file.kind), file.path, file.deleted, query, into);
         }
         into.truncated = into.truncated || files.truncated;
         if (files.namesIncomplete)
@@ -222,7 +205,7 @@ void addProcess(const SearchProcess& process,
     {
         for (const Platform::ProcessModule& module : modules.modules)
         {
-            addMatch(process, HandleKind::Library, module.path, module.deleted, loweredQuery, into);
+            addMatch(process, HandleKind::Library, module.path, module.deleted, query, into);
         }
         into.truncated = into.truncated || modules.truncated;
     }
@@ -358,7 +341,7 @@ void walk(std::span<const SearchProcess> processes,
           const Publish& publish,
           const std::stop_token& stopToken)
 {
-    const std::string loweredQuery = lowered(current.query);
+    const std::string query = current.query; // folded as it is matched, by pathMatches()
     if (stopToken.stop_requested())
     {
         return; // stopped before it began: no batch, so no table walked for a search that reads nothing
@@ -479,7 +462,7 @@ void walk(std::span<const SearchProcess> processes,
             modules =
                 authorized ? readers.modules->readAuthorized(process.target, stopToken) : readers.modules->readModules(process.target);
         }
-        addProcess(process, files, modules, loweredQuery, current, asked);
+        addProcess(process, files, modules, query, current, asked);
         if (++sincePublish == PUBLISH_EVERY_PROCESSES)
         {
             sincePublish = 0;
