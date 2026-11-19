@@ -15,6 +15,17 @@ on:
       - 'src/UI/**'
       - 'src/Platform/**'
       - 'src/App/Panels/ProcessDetailsHistory.*'
+      - 'src/App/Panels/ProcessFilterCache.h'
+      - 'src/App/Panels/ProcessIconView.h'
+      - 'src/App/Panels/ProcessRowFormat.h'
+      - 'src/App/Panels/ProcessRowMeter.h'
+      - 'src/App/Panels/ProcessRowMeterView.h'
+      - 'src/App/Panels/ProcessTreeFlatten.h'
+      - 'src/App/ProcessColumnConfig.h'
+      - 'tests/Mocks/**'
+      - 'CMakePresets.json'
+      - 'cmake/CompilerOptions.cmake'
+      - 'tools/common.sh'
       # Coverage only (#3834); push-scope keeps the benchmarks to the paths above and below.
       - 'src/App/**'
       - 'src/Core/**'
@@ -119,6 +130,9 @@ jobs:
           while IFS= read -r path; do
             case "$path" in
               src/Domain/*|src/UI/*|src/Platform/*|src/App/Panels/ProcessDetailsHistory.*|benchmarks/*|\
+              src/App/Panels/ProcessFilterCache.h|src/App/Panels/ProcessIconView.h|src/App/Panels/ProcessRowFormat.h|\
+              src/App/Panels/ProcessRowMeter.h|src/App/Panels/ProcessRowMeterView.h|src/App/Panels/ProcessTreeFlatten.h|\
+              src/App/ProcessColumnConfig.h|tests/Mocks/*|CMakePresets.json|cmake/CompilerOptions.cmake|tools/common.sh|\
               perf-data/linux-ci-baseline.json|perf-data/linux-ci-thresholds.json|tools/bench.sh|\
               tools/check-benchmark-regression.py|tools/bench-across-launches.py|tools/bench-manifest.py|\
               tools/merge-benchmark-baselines.py|.github/workflows/heavy-checks.yml)
@@ -126,7 +140,7 @@ jobs:
                 benchmarks=true
                 break ;;
             esac
-          done < <(git diff --name-only "$BEFORE" "$SHA")
+          done < <(git -c core.quotePath=false diff --name-only "$BEFORE" "$SHA")
           echo "benchmarks=$benchmarks" >> "$GITHUB_OUTPUT"
           [[ "$benchmarks" == true ]] || echo "No benchmarked path changed: coverage only."
 

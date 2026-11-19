@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Platform/NativeId.h"
+
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -52,6 +54,9 @@ struct ServiceInfo
     std::string executablePath;
     std::string account; ///< Account the service logs on as.
     std::string group;   ///< svchost group (Windows "-k <group>"), when there is one.
+    /// The probe's opaque id for the service's exact native name (#4304), which an action passes back in its
+    /// ServiceTarget: on Windows, name is display text that may be lossy. None where names are exact (Linux).
+    NativeId nativeId = NativeId::None;
 };
 
 /// Which ServiceInfo fields this platform can fill at all, following ProcessCapabilities.

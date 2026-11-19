@@ -12,10 +12,11 @@ function Assert-True {
 }
 
 $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $PSScriptRoot 'check-winget-manifests.ps1'), [ref]$null, [ref]$null)
-$definition = $ast.Find({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Test-WingetManifests' }, $true)
-Assert-True ($null -ne $definition) 'check-winget-manifests.ps1 has no Test-WingetManifests function'
+$definitions = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $false))
+Assert-True (@($definitions | Where-Object Name -eq 'Test-WingetManifests').Count -eq 1) 'check-winget-manifests.ps1 has no Test-WingetManifests function'
 $PackageId = 'TaskSmack.TaskSmack'
-. ([scriptblock]::Create($definition.Extent.Text))
+# The checker's YAML reader and its helpers come along with Test-WingetManifests.
+. ([scriptblock]::Create(($definitions | ForEach-Object { $_.Extent.Text }) -join "`n"))
 
 $releaseYml = Join-Path (Split-Path -Parent $PSScriptRoot) '.github/workflows/release.yml'
 $pinned = @(Get-Content -LiteralPath $releaseYml | Where-Object { $_ -match "^\s+WINGETCREATE_MANIFEST_VERSION:\s*'([0-9.]+)'" } | ForEach-Object { $Matches[1] })
@@ -87,6 +88,40 @@ try {
     Assert-True ((Has-Problem $problems 'the folder is named 1\.2\.3, not 1\.2\.4') -and (Has-Problem $problems 'PackageVersion')) "A folder of another version wasn't refused: $($problems -join '; ')"
     $problems = @(Test-WingetManifests (Join-Path $root 'missing') '1.2.3' 'v1.2.3' $repository $manifestVersion $installers)
     Assert-True (Has-Problem $problems "isn't a folder") "A missing folder wasn't named: $($problems -join '; ')"
+
+    # The layouts wingetcreate writes (#4437): "Installers:" with its "- Architecture:" items at column 0 (its serializer
+    # has no indented sequences), fields shifted to the root or left on each installer, quoted and unquoted scalars,
+    # comments, CRLF. The version and locale manifests stay the generated ones.
+    $fixtureDir = Join-Path $PSScriptRoot 'test-fixtures/winget'
+    $sumX64 = (Get-FileHash -LiteralPath (Join-Path $installers 'TaskSmack-1.2.3-win64.exe') -Algorithm SHA256).Hash
+    $sumArm64 = (Get-FileHash -LiteralPath (Join-Path $installers 'TaskSmack-1.2.3-windows-arm64.exe') -Algorithm SHA256).Hash
+    function Test-Fixture([string]$Name, [string]$Eol, [scriptblock]$Mutate) {
+        return Test-Copy {
+            param($d)
+            $text = [IO.File]::ReadAllText((Join-Path $fixtureDir "$Name.installer.yaml")).Replace('__VERSION__', '1.2.3').Replace('__SHA_X64__', $sumX64).Replace('__SHA_ARM64__', $sumArm64)
+            if ($Mutate) { $text = & $Mutate $text }
+            [IO.File]::WriteAllText((Join-Path $d 'TaskSmack.TaskSmack.installer.yaml'), $text.Replace("`r`n", "`n").Replace("`n", $Eol))
+        }
+    }
+    foreach ($name in @('wingetcreate-root-level', 'wingetcreate-per-installer')) {
+        foreach ($eol in @("`n", "`r`n")) {
+            $label = "$name ($(if ($eol -eq "`n") { 'LF' } else { 'CRLF' }))"
+            $problems = Test-Fixture $name $eol $null
+            Assert-True ($problems.Count -eq 0) "The $label fixture was refused: $($problems -join '; ')"
+            $problems = Test-Fixture $name $eol { param($t) $t.Replace("v1.2.3/TaskSmack-1.2.3-win64", "v1.2.2/TaskSmack-1.2.3-win64") }
+            Assert-True (Has-Problem $problems 'x64 InstallerUrl') "$label, a wrong URL wasn't named: $($problems -join '; ')"
+            $problems = Test-Fixture $name $eol { param($t) $t.Replace($sumArm64, ('0' * 64)) }
+            Assert-True (Has-Problem $problems 'arm64 InstallerSha256 is 0{64}, but') "$label, a wrong hash wasn't named: $($problems -join '; ')"
+            $problems = Test-Fixture $name $eol { param($t) $t.Replace('Architecture: arm64', 'Architecture: x64') }
+            Assert-True ((Has-Problem $problems 'x64 installer is listed twice') -and (Has-Problem $problems 'lists no arm64 installer')) "$label, a repeated architecture wasn't named: $($problems -join '; ')"
+            $problems = Test-Fixture $name $eol { param($t) $t.Replace('ManifestVersion: 1.12.0', 'ManifestVersion: 1.4.0') }
+            Assert-True (Has-Problem $problems 'installer\.yaml is on ManifestVersion \[1\.4\.0\]') "$label, a wrong ManifestVersion wasn't named: $($problems -join '; ')"
+        }
+    }
+    # A manifest outside the YAML subset is named, never misread as having no installers.
+    $problems = Test-Fixture 'wingetcreate-root-level' "`n" { param($t) $t.Replace('Installers:', "Installers: &anchor`n- Architecture: x64`n  Architecture: x64`nOther:") }
+    Assert-True (Has-Problem $problems 'installer\.yaml can''t be read as YAML') "An unreadable manifest wasn't named: $($problems -join '; ')"
+
     Write-Host 'check-winget-manifests tests passed'
 } finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue

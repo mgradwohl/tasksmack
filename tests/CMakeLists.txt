@@ -115,6 +115,10 @@ if(WIN32)
         add_test(NAME VerifyWindowsSignaturesScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-verify-windows-signatures.ps1)
         set_tests_properties(VerifyWindowsSignaturesScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}")
+        # tools/check-windows-imports.ps1 (#4439): a shipped PE importing the MSVC runtime, a UCRT API set or a
+        # DLL outside the allowlist fails the release check. PEs built from bytes, x64 and ARM64.
+        add_test(NAME CheckWindowsImportsScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-windows-imports.ps1)
         # The NSIS installer's second pass (#2302): only a .zip whose files are the ones the uninstaller
         # deletes is packaged, with the given uninstaller. Stub makensis; nothing is installed.
         add_test(NAME BuildWindowsInstallerScript
@@ -336,6 +340,11 @@ set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
 set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
 
+# The installer is a Unicode NSIS target and has no Add-to-PATH option (#4300): CPACK_NSIS_DEFINES starts with
+# `Unicode true` and CPACK_NSIS_MODIFY_PATH is gone. Pure Python, on every platform.
+add_test(NAME NsisUnicodeScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_unicode.py)
+set_tests_properties(NsisUnicodeScript PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -452,6 +461,10 @@ add_test(NAME LcovExcludeScript
 # tools/check-cache-prune-triggers.py keeps cache-prune.yml's workflow_run list complete (#2410).
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
+
+# Heavy Checks' push-scope must cover everything benchmarks/*.cpp includes, and the build settings (#4195).
+add_test(NAME HeavyChecksPushScopeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
 
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript
@@ -653,6 +666,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
     UI/test_CellText.cpp
+    UI/test_LabelledText.cpp # a label and a value from outside, drawn whole past ImGui's 3 KB buffer (#4306)
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp

@@ -15,6 +15,7 @@
 #include "UI/FontPointSize.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -588,14 +589,8 @@ Action render(State& state)
         // so a large font or a narrow window doesn't clip or widen it.
         ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + appearanceComboWidth + valueColumn);
         const UdpCountingLine udpLine = udpCountingLine(state.udpEventTrace, state.udpDelivering, state.udpUnsupported, state.udpProblem);
-        ImGui::TextColored(udpLine.warning ? theme.scheme().textWarning : theme.scheme().textMuted,
-                           "%.*s%.*s%.*s",
-                           static_cast<int>(udpLine.lead.size()),
-                           udpLine.lead.data(),
-                           static_cast<int>(udpLine.detail.size()),
-                           udpLine.detail.data(),
-                           static_cast<int>(udpLine.end.size()),
-                           udpLine.end.data());
+        UI::Widgets::labelledTextColored(
+            udpLine.warning ? theme.scheme().textWarning : theme.scheme().textMuted, udpLine.lead, udpLine.detail, udpLine.end);
         ImGui::PopTextWrapPos();
 
         UI::Widgets::sectionGap();
