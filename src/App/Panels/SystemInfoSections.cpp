@@ -10,6 +10,7 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/Format.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -58,6 +59,7 @@ constexpr std::string_view NEEDS_ADMIN = "Requires administrator (readable by ro
     };
 }
 
+using Platform::containsFoldedCase;
 using Platform::containsIgnoreCase;
 
 void appendRowsWindows(const Platform::OsInfo& os, std::vector<Row>& rows)
@@ -2531,7 +2533,7 @@ std::vector<VisibleSection> visibleSections(std::span<const Section> sections, s
     for (std::size_t s = 0; s < sections.size(); ++s)
     {
         const Section& section = sections[s];
-        const bool titleMatches = containsIgnoreCase(section.title, filter);
+        const bool titleMatches = containsFoldedCase(section.title, filter);
         VisibleSection entry{.section = s, .rows = {}};
         for (std::size_t r = 0; r < section.rows.size(); ++r)
         {
@@ -2540,8 +2542,8 @@ std::vector<VisibleSection> visibleSections(std::span<const Section> sections, s
             {
                 continue;
             }
-            if (titleMatches || containsIgnoreCase(item.shownLabel(showIdentifiers), filter) ||
-                containsIgnoreCase(item.shownValue(showIdentifiers), filter))
+            if (titleMatches || containsFoldedCase(item.shownLabel(showIdentifiers), filter) ||
+                containsFoldedCase(item.shownValue(showIdentifiers), filter))
             {
                 entry.rows.push_back(r);
             }

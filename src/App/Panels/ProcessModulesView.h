@@ -25,6 +25,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Utf8CaseFold.h"
 #include "ProcessEnvironmentView.h"
 #include "SectionCaches.h"
 #include "UI/Format.h"
@@ -214,7 +215,7 @@ class ProcessModulesView
             m_Rows.size(),
             m_Filter,
             [this](std::size_t i)
-            { return Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].path, m_Filter); });
+            { return Platform::containsFoldedCase(m_Rows[i].name, m_Filter) || Platform::containsFoldedCase(m_Rows[i].path, m_Filter); });
     }
 
     /// Whether any module has a version, or says why it has none: the Version column is left out when none does (Linux).

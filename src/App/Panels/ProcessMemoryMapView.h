@@ -30,6 +30,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Utf8CaseFold.h"
 #include "SectionCaches.h"
 #include "UI/Format.h"
 
@@ -326,9 +327,9 @@ class ProcessMemoryMapView
                               [this](std::size_t i)
                               {
                                   const Row& row = m_Rows[i];
-                                  return Platform::containsIgnoreCase(row.kind, m_Filter) ||
-                                         Platform::containsIgnoreCase(row.protection, m_Filter) ||
-                                         Platform::containsIgnoreCase(row.path, m_Filter);
+                                  return Platform::containsFoldedCase(row.kind, m_Filter) ||
+                                         Platform::containsFoldedCase(row.protection, m_Filter) ||
+                                         Platform::containsFoldedCase(row.path, m_Filter);
                               });
     }
 

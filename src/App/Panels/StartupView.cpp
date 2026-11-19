@@ -9,6 +9,7 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/NativeId.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
@@ -40,7 +41,7 @@ namespace
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup apps...";
 
 using Platform::compareIgnoreCase;
-using Platform::containsIgnoreCase;
+using Platform::containsFoldedCase;
 
 /// An entry's impact, or Not measured when @p impacts doesn't reach it.
 [[nodiscard]] Domain::StartupEntryImpact impactAt(std::span<const Domain::StartupEntryImpact> impacts, std::size_t index) noexcept
@@ -389,9 +390,9 @@ std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry
         {
             continue;
         }
-        if (containsIgnoreCase(entry.name, filter) || containsIgnoreCase(entry.registrationName, filter) ||
-            containsIgnoreCase(entry.programName, filter) || containsIgnoreCase(entry.publisher, filter) ||
-            containsIgnoreCase(entry.command, filter))
+        if (containsFoldedCase(entry.name, filter) || containsFoldedCase(entry.registrationName, filter) ||
+            containsFoldedCase(entry.programName, filter) || containsFoldedCase(entry.publisher, filter) ||
+            containsFoldedCase(entry.command, filter))
         {
             rows.push_back(i);
         }

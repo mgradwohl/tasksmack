@@ -8,6 +8,7 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/NativeId.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/FrameOutline.h"
@@ -37,7 +38,7 @@ namespace
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
 
 using Platform::compareIgnoreCase;
-using Platform::containsIgnoreCase;
+using Platform::containsFoldedCase;
 
 [[nodiscard]] std::strong_ordering compareBy(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b, ServiceColumn column)
 {
@@ -287,7 +288,7 @@ buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_vi
     rows.reserve(services.size());
     for (std::size_t i = 0; i < services.size(); ++i)
     {
-        if (containsIgnoreCase(services[i].name, filter) || containsIgnoreCase(services[i].displayName, filter))
+        if (containsFoldedCase(services[i].name, filter) || containsFoldedCase(services[i].displayName, filter))
         {
             rows.push_back(i);
         }
