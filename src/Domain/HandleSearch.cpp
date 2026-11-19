@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <exception>
+#include <expected>
 #include <format>
 #include <memory>
 #include <span>
@@ -300,6 +301,54 @@ SearchPublication startAuthorizedAfter(const SearchPublication& previous, std::u
 namespace
 {
 
+/// Gets an administrator's pass ready (#4420): starts the helper once, after one password prompt, for every read the
+/// walk makes, rather than letting each readAuthorized() ask again after the prompt is dismissed. Each reader the walk
+/// reads with is asked; they share one helper, so once the first has started it the second has nothing to start. The
+/// error is the first one's that couldn't.
+[[nodiscard]] std::expected<void, std::string> authorizeWalk(std::span<const SearchProcess> processes,
+                                                             std::span<const SearchSources> sources,
+                                                             const Readers& readers,
+                                                             const std::stop_token& stopToken)
+{
+    // A process past the end of `sources` reads both.
+    const bool all = processes.size() > sources.size();
+    const std::span<const SearchSources> asked = sources.first(std::min(sources.size(), processes.size()));
+    if (readers.openFiles != nullptr && (all || std::ranges::any_of(asked, &SearchSources::openFiles)))
+    {
+        if (std::expected<void, std::string> ready = readers.openFiles->authorize(stopToken); !ready.has_value())
+        {
+            return ready;
+        }
+    }
+    if (readers.modules != nullptr && (all || std::ranges::any_of(asked, &SearchSources::modules)))
+    {
+        return readers.modules->authorize(stopToken);
+    }
+    return {};
+}
+
+/// The processes an administrator's pass won't read, since its helper didn't start (#4420): each stays denied for what
+/// it was to read, so the status line counts them and offers the search again.
+void keepDenied(std::span<const SearchProcess> processes,
+                std::span<const SearchSources> sources,
+                const Readers& readers,
+                SearchPublication& current)
+{
+    for (std::size_t i = 0; i < processes.size(); ++i)
+    {
+        const SearchSources asked = i < sources.size() ? sources[i] : SearchSources{};
+        const SearchSources refused{
+            .openFiles = asked.openFiles && readers.openFiles != nullptr,
+            .modules = asked.modules && readers.modules != nullptr,
+        };
+        ++current.searched;
+        if (refused.openFiles || refused.modules)
+        {
+            current.denied.push_back(DeniedProcess{.process = processes[i], .refused = refused});
+        }
+    }
+}
+
 /// The walk itself: run()'s, which catches what this throws.
 void walk(std::span<const SearchProcess> processes,
           std::span<const SearchSources> sources,
@@ -313,6 +362,37 @@ void walk(std::span<const SearchProcess> processes,
     if (stopToken.stop_requested())
     {
         return; // stopped before it began: no batch, so no table walked for a search that reads nothing
+    }
+    // The sources of the processes from processes[from] on (a process past the end of `sources` reads both).
+    const auto sourcesFrom = [sources](std::size_t from)
+    {
+        return sources.subspan(std::min(from, sources.size()));
+    };
+    // Whether an administrator's pass may read on from processes[from] (#4420): its helper is running, or was started
+    // now. When it isn't (the prompt was dismissed, Stop was pressed while it was up, or the helper couldn't start),
+    // the pass ends there with one line saying why, its processes from there on still refused, rather than prompting
+    // again for each one.
+    const auto readyFrom = [&](std::size_t from, std::size_t count)
+    {
+        const std::span<const SearchProcess> rest = processes.subspan(from);
+        std::expected<void, std::string> ready =
+            authorizeWalk(rest.first(std::min(count, rest.size())), sourcesFrom(from), readers, stopToken);
+        if (ready.has_value())
+        {
+            return true;
+        }
+        keepDenied(rest, sourcesFrom(from), readers, current);
+        if (!stopToken.stop_requested())
+        {
+            current.failure = from == 0 ? std::format("The search as administrator didn't start: {}", ready.error())
+                                        : std::format("The search as administrator stopped: {}", ready.error());
+        }
+        return false;
+    };
+    // One password prompt for the walk, before any table is walked.
+    if (authorized && !readyFrom(0, processes.size()))
+    {
+        return;
     }
 
     // One batch for the walk (#3357): on Windows, one pass over the system handle table for every process, not one
@@ -380,6 +460,12 @@ void walk(std::span<const SearchProcess> processes,
         // Each reader confirms the process's identity (start time) itself, so a reused PID reads as exited. Only the
         // sources asked for are read: an administrator's search reads just the ones the first search was refused.
         const SearchSources asked = index < sources.size() ? sources[index] : SearchSources{};
+        // The helper doesn't stay for good (its idle exit, or it ended): one that has gone is started again once, and
+        // a prompt dismissed then ends the pass here, as at its start, not with a prompt for every process left.
+        if (authorized && index > 0 && !readyFrom(index, 1))
+        {
+            break;
+        }
         ++index;
         Platform::OpenFilesReadResult files;
         Platform::ModulesReadResult modules;
