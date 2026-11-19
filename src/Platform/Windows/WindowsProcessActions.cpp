@@ -1465,7 +1465,7 @@ ProcessActionResult WindowsProcessActions::openFileLocation(const ProcessTarget&
     {
         return IProcessActions::openFileLocation(target);
     }
-    if (target.pid == SYSTEM_PROCESS_PID)
+    if (isSystemPid(target.pid))
     {
         return ProcessActionResult::error("The System process has no executable file");
     }
@@ -1488,7 +1488,7 @@ std::expected<std::string, std::string> WindowsProcessActions::imageSha256(const
     {
         return IProcessActions::imageSha256(target, stop);
     }
-    if (target.pid == SYSTEM_PROCESS_PID)
+    if (isSystemPid(target.pid))
     {
         return std::unexpected(std::string("The System process has no executable file"));
     }
