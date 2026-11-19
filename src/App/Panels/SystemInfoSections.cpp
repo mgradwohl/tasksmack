@@ -1668,6 +1668,10 @@ Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canRestar
     {
         rows.push_back(row("Older", "", std::format("Not listed: only the {} newest are shown", Platform::CRASH_LIST_MAX)));
     }
+    if (crashes.incomplete)
+    {
+        rows.push_back(row("Older", "", "Not all read: the event log stopped answering partway, so older ones may be missing")); // #4375
+    }
     if (!windows && crashes.listed)
     {
         // What was read, and why the journal's details are missing when they are (#1697).
