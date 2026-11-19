@@ -57,7 +57,12 @@ TEST(LinuxCoreDumpTest, ACommCutInsideACharacterGivesAWellFormedName)
     // Valid non-ASCII is kept as it is.
     EXPECT_EQ(dumpFileName("Grüße", 1, t, 1), "Grüße_1_2026-10-15_04-07-09.core");
     // An ill-formed byte before the end becomes '_'; a name that was only a cut character reads as "process".
-    EXPECT_EQ(dumpFileName("a\xFFb", 1, t, 1), "a_b_1_2026-10-15_04-07-09.core");
+    EXPECT_EQ(dumpFileName("a\xFF"
+                           "b",
+                           1,
+                           t,
+                           1),
+              "a_b_1_2026-10-15_04-07-09.core");
     EXPECT_EQ(dumpFileName("\xC3", 1, t, 1), "process_1_2026-10-15_04-07-09.core");
 }
 
