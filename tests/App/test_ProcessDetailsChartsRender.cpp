@@ -901,6 +901,44 @@ TEST_F(ProcessDetailsChartsRenderTest, GpuTabBreaksDownAProcessOnTwoGpus)
     EXPECT_FALSE(gpuTabText(charts, inputs.ctx).contains("Per-GPU Breakdown"));
 }
 
+// #4381: two GPUs of the same model have one header label, but each header is keyed on its GPU's id, so
+// collapsing the first leaves the second open (they shared one ID, and so one open state).
+TEST_F(ProcessDetailsChartsRenderTest, TwoGpusOfOneModelCollapseSeparately)
+{
+    ChartInputs inputs(busyPoint);
+    const auto gpu = [](const char* id, const char* engine)
+    {
+        return Domain::ProcessSnapshot::PerGPUUsage{
+            .gpuId = id,
+            .gpuName = "Twin GPU 4090",
+            .isIntegrated = false,
+            .utilPercent = 30.0,
+            .memoryBytes = 1'000'000'000,
+            .dedicatedMemoryBytes = 1'000'000'000,
+            .sharedMemoryBytes = 0,
+            .engines = {engine},
+        };
+    };
+    inputs.snapshot.perGpuUsage = {gpu("luid-0", "EngineOfTheFirst"), gpu("luid-1", "EngineOfTheSecond")};
+    ProcessDetailsCharts charts;
+    static_cast<void>(gpuTabText(charts, inputs.ctx));
+    const std::string open = gpuTabText(charts, inputs.ctx);
+    ASSERT_TRUE(open.contains("EngineOfTheFirst")) << open;
+    ASSERT_TRUE(open.contains("EngineOfTheSecond")) << open;
+
+    // The first header's open state, as a click on it stores it: under the card, the GPU's id, and the label.
+    const ImGuiWindow* found = findCard("##ProcGpuUsageCard");
+    ASSERT_NE(found, nullptr);
+    ImGuiWindow* card = ImGui::FindWindowByName(found->Name);
+    ASSERT_NE(card, nullptr);
+    const std::string label = std::format("{} {} [{}]", ICON_FA_MICROCHIP, "Twin GPU 4090", "Discrete");
+    card->StateStorage.SetInt(ImHashStr(label.c_str(), 0, ImHashStr("luid-0", 0, card->ID)), 0);
+
+    const std::string text = gpuTabText(charts, inputs.ctx);
+    EXPECT_FALSE(text.contains("EngineOfTheFirst")) << text;
+    EXPECT_TRUE(text.contains("EngineOfTheSecond")) << text;
+}
+
 TEST_F(ProcessDetailsChartsRenderTest, TheNetworkChartsShowTooltips)
 {
     ChartInputs inputs(busyPoint);
@@ -1856,13 +1894,13 @@ TEST_F(ProcessDetailsChartsRenderTest, ACollapsedGpuInTheBreakdownHidesItsRows)
     ASSERT_TRUE(open.contains("VideoDecode")) << open;
     EXPECT_TRUE(open.contains("Idle GPU 310")) << "a GPU with no engines active is listed too: " << open;
 
-    // The header's open state, as a click on it stores it, in the usage card's window.
+    // The header's open state, as a click on it stores it, in the usage card's window, under its GPU's id (#4381).
     const ImGuiWindow* found = findCard("##ProcGpuUsageCard");
     ASSERT_NE(found, nullptr);
     ImGuiWindow* card = ImGui::FindWindowByID(found->ID);
     ASSERT_NE(card, nullptr);
     const std::string label = std::format("{} {} [{}]", ICON_FA_MICROCHIP, "Integrated GPU 770", "Shared Memory");
-    card->StateStorage.SetInt(ImHashStr(label.c_str(), 0, card->ID), 0);
+    card->StateStorage.SetInt(ImHashStr(label.c_str(), 0, ImHashStr("1", 0, card->ID)), 0);
 
     const std::string text = tabText([&] { charts.renderGpuTab(inputs.ctx); });
     EXPECT_TRUE(text.contains("Integrated GPU 770")) << "its header stays: " << text;
