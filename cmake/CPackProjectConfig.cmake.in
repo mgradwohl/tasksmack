@@ -55,9 +55,12 @@ endif()
 # of one commit can make the same installer (release.yml's verify-reproducibility-windows); installed files
 # take the install's time instead. The version information is assets/tasksmack.rc.in's, for the installer,
 # so it too names the product and the release's version (docs/code-signing-policy.md). Read when CPack
-# configures project.nsi, at the top of the script.
+# configures project.nsi, at the top of the script. Unicode true makes the installer a UTF-8/UTF-16 target
+# rather than an ANSI one (#4300, makensis warning 7998): registry values and paths with characters outside the
+# machine's code page go through the W APIs unchanged.
 if(CPACK_GENERATOR STREQUAL "NSIS")
     set(CPACK_NSIS_DEFINES [=[
+  Unicode true
   SetDateSave off
   VIProductVersion "@PROJECT_VERSION@.0"
   VIFileVersion "@PROJECT_VERSION@.0"

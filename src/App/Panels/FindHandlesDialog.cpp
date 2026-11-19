@@ -14,6 +14,7 @@
 #include "UI/DialogMetrics.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -484,7 +485,7 @@ std::optional<FindHandlesAction> FindHandlesDialog::renderResults(const SearchPu
             ImGui::TableNextColumn();
             if (match.deleted)
             {
-                ImGui::TextColored(scheme.textMuted, "%s (deleted)", match.path.c_str());
+                UI::Widgets::labelledTextColored(scheme.textMuted, {}, match.path, " (deleted)");
             }
             else
             {
