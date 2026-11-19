@@ -33,6 +33,7 @@
 
 #include <spdlog/spdlog.h>
 
+#include <cstdint>
 #include <filesystem>
 #include <format>
 #include <functional>
@@ -316,6 +317,12 @@ void SettingsLayer::onRender()
     if (m_State.withheldPath != m_Open.withheld())
     {
         m_State.withheldPath = m_Open.withheld();
+    }
+    // config.toml's problem (#4318), copied only when UserConfig's version of it moved.
+    if (const std::uint64_t version = UserConfig::get().fileProblemVersion(); version != m_ConfigProblemVersion)
+    {
+        m_ConfigProblemVersion = version;
+        m_State.configProblem = UserConfig::get().fileProblem();
     }
     syncStartAtLogin();
     {

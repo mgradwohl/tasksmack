@@ -1042,6 +1042,8 @@ Dialogs (Settings, About and the Standard notice) and the Help window are kept i
 
 To reset all layout and theme settings, delete the `config.toml` file in the user config directory. TaskSmack will recreate it with defaults on the next launch.
 
+`config.toml` is UTF-8 text, with or without a byte-order mark. If TaskSmack can't open it or read it (a mistake made while editing it by hand, or a file saved as UTF-16 or in another encoding, which Windows PowerShell 5.1's `Out-File` and Notepad's "Unicode" do), it leaves the file as it is, starts with its default settings, and saves nothing over the file, so nothing in it is lost (#4318). A warning triangle in the status bar says so: its tooltip names the file, the line and column, and the reason (for a UTF-16 file, "save it as UTF-8"), and clicking it opens Settings, which says the same above **Edit Config File**. Fix the file there (or delete it), and the next save writes it again; changes made in the meantime are saved then.
+
 ### Replacing Task Manager (Windows)
 
 **Settings > Task Manager > Replace Task Manager** makes Windows open TaskSmack wherever it would open Task Manager: Ctrl+Shift+Esc, the taskbar's menu, the Ctrl+Alt+Del screen, or `taskmgr` typed in Run. If TaskSmack is already running, Ctrl+Shift+Esc brings its window to the front instead of starting another.

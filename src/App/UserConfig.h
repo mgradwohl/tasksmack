@@ -265,6 +265,18 @@ class UserConfig
         return m_ConfigPath;
     }
 
+    /// Why config.toml couldn't be used (#4318, ConfigFileProblem.h): set when load() or a save finds a file it can't
+    /// open or parse, which is then kept as it is while TaskSmack runs on its defaults and saves nothing over it;
+    /// cleared when one reads or writes it. Display text naming the file, the line and column, and the reason; empty
+    /// when there is no problem. Thread-safe: a save sets it on its worker.
+    [[nodiscard]] std::string fileProblem() const;
+
+    /// Changes each time fileProblem() does, so the UI thread copies the text only then. Thread-safe.
+    [[nodiscard]] std::uint64_t fileProblemVersion() const noexcept
+    {
+        return m_FileProblemVersion.load(std::memory_order_acquire);
+    }
+
     /// Override the config file path and reset all in-memory settings to defaults.
     /// This is a destructive operation intended only for test fixtures: it clears
     /// m_Settings so that each test starts from a clean state without inheriting
@@ -281,6 +293,7 @@ class UserConfig
         m_FailingSaveStep = SaveStep::None;
         m_FailingSaveErrno = 0;
         m_EffectiveUidForTesting.reset();
+        setFileProblem({});
     }
 
     /// Testing only: save() runs as if its effective user ID were @p uid (0: root, #2121); nullopt for the
@@ -337,6 +350,13 @@ class UserConfig
     SaveStep m_FailingSaveStep = SaveStep::None;     // Testing only (failSaveStepForTesting())
     int m_FailingSaveErrno = 0;
     std::optional<std::uint32_t> m_EffectiveUidForTesting; // Testing only (setEffectiveUidForTesting())
+
+    // fileProblem()'s text, under its own lock: the UI thread reads it while a save on the worker may set it.
+    mutable std::mutex m_FileProblemMutex;
+    std::string m_FileProblem;
+    std::atomic<std::uint64_t> m_FileProblemVersion = 0;
+    /// Records @p problem (empty: none) for fileProblem(); the version moves only when the text changes.
+    void setFileProblem(std::string problem);
 
     /// Whether @p step is the one a test made fail; sets errno to its error if so.
     [[nodiscard]] bool saveStepFails(SaveStep step) const noexcept;

@@ -621,6 +621,14 @@ Action render(State& state)
         ImGui::Separator();
         ImGui::Spacing();
 
+        // config.toml couldn't be used (#4318): said here, above the button that opens it to fix.
+        if (!state.configProblem.empty())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textWarning);
+            ImGui::TextWrapped("%s %s", ICON_FA_TRIANGLE_EXCLAMATION, state.configProblem.c_str());
+            ImGui::PopStyleColor();
+        }
+
         // Button row for config file and themes folder
         // Push text color to ensure visibility on button backgrounds
         ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textPrimary);

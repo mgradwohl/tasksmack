@@ -303,6 +303,30 @@ TEST_F(NonAsciiConfigTest, ConfigInALoneSurrogateFolderIsLoadedAndSavedThere)
     EXPECT_EQ(readWholeFile(twin.path() / "config.toml"), "[theme]\nid = \"decoy\"\n") << "the twin is never written";
     EXPECT_EQ(entryNames(lone.path()), std::vector<std::string>{"config.toml"}) << "no staging file left behind";
 }
+
+// #4318 with #4315: a config.toml that isn't UTF-8, in a folder whose name holds a lone surrogate, is kept, and the
+// problem recorded for the user names it as valid UTF-8 (U+FFFD for the surrogate).
+TEST_F(NonAsciiConfigTest, ANonUtf8ConfigInALoneSurrogateFolderIsKeptAndNamedInValidUtf8)
+{
+    const TestSupport::LoneSurrogateTempDir lone;
+    if (!lone.created())
+    {
+        GTEST_SKIP() << "the filesystem refused a lone surrogate in a folder name";
+    }
+    const std::filesystem::path configPath = lone.path() / "config.toml";
+    const std::string original = "[theme]\nid = \"caf\xE9\"\n"; // a cp1252 e-acute
+    writeText(configPath, original);
+
+    auto& config = App::UserConfig::get();
+    config.resetConfigPathForTesting(configPath);
+    config.load();
+    const std::string problem = config.fileProblem();
+    EXPECT_TRUE(problem.contains("line 2")) << problem;
+    EXPECT_TRUE(problem.contains("\xEF\xBF\xBD")) << "the folder's lone surrogate shown as U+FFFD: " << problem;
+    EXPECT_EQ(Domain::sanitizedUtf8(problem), problem) << "valid UTF-8";
+    config.save();
+    EXPECT_EQ(readWholeFile(configPath), original) << "kept as it is";
+}
 #endif
 
 // ========== User themes ==========
