@@ -11,11 +11,9 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/UnicodeCaseFoldTable.h"
 
-#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
-#include <type_traits>
 
 namespace Platform
 {
@@ -27,12 +25,26 @@ namespace Platform
     {
         return static_cast<char32_t>(static_cast<unsigned char>(foldAscii(static_cast<char>(cp))));
     }
+    // A plain binary search over indices: an iterator variable can't satisfy both toolchains' clang-tidy (libc++'s
+    // std::array iterator is a pointer, so readability-qualified-auto wants auto*; MSVC's is a class, which auto*
+    // can't hold, and a named type trips modernize-use-auto).
     const auto& table = UnicodeCaseFold::SIMPLE_FOLDS;
-    // Named, not auto: libc++'s std::array iterator is a pointer (readability-qualified-auto wants auto*) and
-    // MSVC's is a class (auto* doesn't compile).
-    using Iterator = std::remove_cvref_t<decltype(table)>::const_iterator;
-    const Iterator found = std::ranges::lower_bound(table, static_cast<std::uint32_t>(cp), {}, [](const auto& pair) { return pair.first; });
-    return (found != table.end() && found->first == cp) ? static_cast<char32_t>(found->second) : cp;
+    const auto key = static_cast<std::uint32_t>(cp);
+    std::size_t low = 0;
+    std::size_t high = table.size();
+    while (low < high)
+    {
+        const std::size_t middle = low + ((high - low) / 2);
+        if (table[middle].first < key)
+        {
+            low = middle + 1;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    return (low < table.size() && table[low].first == key) ? static_cast<char32_t>(table[low].second) : cp;
 }
 
 namespace Utf8CaseFoldDetail
