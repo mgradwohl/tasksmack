@@ -9,10 +9,12 @@
 /// or a redirector's. Plus reads of this test process through the real calls, and a junction in a scratch folder that
 /// the real open refuses to follow.
 
+#include "Mocks/WindowsFakeLocalNtFile.h"
 #include "Mocks/WindowsFakeProcessIdentity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsLocalNtFile.h"
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Support/Junction.h"
 #include "Support/PeImageBuilder.h"
@@ -25,7 +27,6 @@
 // clang-format on
 
 #include <algorithm>
-#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -538,8 +539,10 @@ TEST(WindowsProcessModulesRealTest, ReadsThisProcess)
     FILETIME kernelTime{};
     FILETIME userTime{};
     ASSERT_NE(GetProcessTimes(GetCurrentProcess(), &creation, &exitTime, &kernelTime, &userTime), 0);
-    const ProcessTarget self{.pid = static_cast<std::int32_t>(GetCurrentProcessId()),
-                             .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime};
+    const ProcessTarget self{
+        .pid = static_cast<std::int32_t>(GetCurrentProcessId()),
+        .startTimeTicks = (static_cast<std::uint64_t>(creation.dwHighDateTime) << 32U) | creation.dwLowDateTime,
+    };
     WindowsProcessModulesReader reader;
     const ModulesReadResult result = reader.readModules(self);
     ASSERT_EQ(result.status, ModulesReadStatus::Ok);
@@ -589,104 +592,21 @@ TEST(WindowsProcessModulesRealTest, ReadsAFilesVersionThroughItsNtName)
     EXPECT_FALSE(readLocalFileVersion(ntName + L".no-such-file").has_value());
 }
 
-// #4373: how readLocalFileVersion() opens a name, through fakes. The kernel's NT name itself (no \\?\GLOBALROOT, a
-// symbolic link), with OBJ_DONT_REPARSE so a junction or symlink on the way fails the open rather than being followed,
-// FILE_OPEN_REPARSE_POINT so one at the name is opened as itself, identification-level security, and no write sharing.
-// Then a link, a handle off a disk, or a redirector's file isn't read.
-struct FakeLocalFile
+// #4373, #4482: readLocalFileVersion() opens the name through Windows::openLocalNtFile() (whose flags and refusals
+// test_WindowsLocalNtFile.cpp checks), shared for read and delete but never for write, and reads the version through
+// that handle; a refused open reads no version.
+/// How many times fakeReadHeldVersion() was called.
+int& heldVersionReads()
 {
-    NTSTATUS openStatus = 0;
-    DWORD attributes = FILE_ATTRIBUTE_ARCHIVE;
-    DWORD reparseTag = 0;
-    DWORD deviceType = FILE_DEVICE_DISK;
-    ULONG characteristics = 0;
-    bool remote = false;
-    // What the open was asked.
-    std::wstring name;
-    ULONG objectAttributes = 0;
-    bool rooted = false;
-    SECURITY_IMPERSONATION_LEVEL impersonation = SecurityDelegation;
-    ACCESS_MASK access = 0;
-    ULONG share = 0;
-    ULONG disposition = 0;
-    ULONG options = 0;
-    int opens = 0;
-    int versionReads = 0;
-};
-
-FakeLocalFile& localFile()
-{
-    static FakeLocalFile instance;
-    return instance;
-}
-
-NTSTATUS NTAPI fakeNtCreateFile(PHANDLE handle,
-                                ACCESS_MASK access,
-                                POBJECT_ATTRIBUTES attributes,
-                                PIO_STATUS_BLOCK /*status*/,
-                                PLARGE_INTEGER /*allocationSize*/,
-                                ULONG /*fileAttributes*/,
-                                ULONG share,
-                                ULONG disposition,
-                                ULONG options,
-                                PVOID /*eaBuffer*/,
-                                ULONG /*eaLength*/)
-{
-    FakeLocalFile& file = localFile();
-    ++file.opens;
-    file.name.assign(attributes->ObjectName->Buffer, attributes->ObjectName->Length / sizeof(wchar_t));
-    file.objectAttributes = attributes->Attributes;
-    file.rooted = attributes->RootDirectory != nullptr;
-    if (attributes->SecurityQualityOfService != nullptr)
-    {
-        file.impersonation = static_cast<const SECURITY_QUALITY_OF_SERVICE*>(attributes->SecurityQualityOfService)->ImpersonationLevel;
-    }
-    file.access = access;
-    file.share = share;
-    file.disposition = disposition;
-    file.options = options;
-    if (file.openStatus < 0)
-    {
-        return file.openStatus;
-    }
-    *handle = CreateEventW(nullptr, TRUE, FALSE, nullptr); // a real handle, so its owner closes something real
-    return 0;
-}
-
-NTSTATUS NTAPI fakeNtQueryVolumeInformationFile(HANDLE /*file*/, PIO_STATUS_BLOCK /*status*/, PVOID information, ULONG length, ULONG what)
-{
-    EXPECT_EQ(what, 4U); // FileFsDeviceInformation
-    EXPECT_GE(length, 2 * sizeof(ULONG));
-    const std::array<ULONG, 2> device{localFile().deviceType, localFile().characteristics};
-    std::memcpy(information, device.data(), sizeof(device));
-    return 0;
-}
-
-BOOL WINAPI fakeGetFileInformationByHandleEx(HANDLE /*file*/, FILE_INFO_BY_HANDLE_CLASS what, LPVOID information, DWORD /*bytes*/)
-{
-    if (what == FileAttributeTagInfo)
-    {
-        auto* tag = static_cast<FILE_ATTRIBUTE_TAG_INFO*>(information);
-        tag->FileAttributes = localFile().attributes;
-        tag->ReparseTag = localFile().reparseTag;
-        return TRUE;
-    }
-    EXPECT_EQ(what, FileRemoteProtocolInfo);
-    return localFile().remote ? TRUE : FALSE;
+    static int count = 0;
+    return count;
 }
 
 std::optional<ModuleVersion> fakeReadHeldVersion(HANDLE /*file*/)
 {
-    ++localFile().versionReads;
+    ++heldVersionReads();
     return ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4};
 }
-
-constexpr LocalFileFunctions FAKE_LOCAL_FILE{
-    .ntCreateFile = &fakeNtCreateFile,
-    .ntQueryVolumeInformationFile = &fakeNtQueryVolumeInformationFile,
-    .getFileInformationByHandleEx = &fakeGetFileInformationByHandleEx,
-    .readHeldVersion = &fakeReadHeldVersion,
-};
 
 constexpr std::wstring_view LOCAL_NAME = L"\\Device\\HarddiskVolume3\\Windows\\System32\\ntdll.dll";
 
@@ -695,78 +615,46 @@ class WindowsLocalFileVersionTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        localFile() = {};
+        TestMocks::localNtFile() = {};
+        heldVersionReads() = 0;
     }
 };
 
-TEST_F(WindowsLocalFileVersionTest, OpensTheKernelsNameWithoutFollowingAnyReparseAndForIdentificationOnly)
+TEST_F(WindowsLocalFileVersionTest, OpensThroughTheSharedOpenAndReadsThroughTheHandle)
 {
-    EXPECT_EQ(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE),
+    EXPECT_EQ(readLocalFileVersion(std::wstring(LOCAL_NAME), TestMocks::FAKE_LOCAL_NT_FILE, &fakeReadHeldVersion),
               std::optional(ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4}));
-    const FakeLocalFile& file = localFile();
-    EXPECT_EQ(file.name, LOCAL_NAME) << R"(the NT name itself, not through \\?\GLOBALROOT)";
-    EXPECT_FALSE(file.rooted);
-    EXPECT_NE(file.objectAttributes & 0x00001000U, 0U) << "OBJ_DONT_REPARSE";
-    EXPECT_NE(file.objectAttributes & static_cast<ULONG>(OBJ_CASE_INSENSITIVE), 0U);
-    EXPECT_NE(file.options & static_cast<ULONG>(FILE_OPEN_REPARSE_POINT), 0U);
-    EXPECT_NE(file.options & static_cast<ULONG>(FILE_NON_DIRECTORY_FILE), 0U);
-    EXPECT_NE(file.options & static_cast<ULONG>(FILE_SYNCHRONOUS_IO_NONALERT), 0U);
-    EXPECT_EQ(file.impersonation, SecurityIdentification);
-    EXPECT_EQ(file.disposition, static_cast<ULONG>(FILE_OPEN));
-    EXPECT_EQ(file.share, static_cast<ULONG>(FILE_SHARE_READ | FILE_SHARE_DELETE)) << "never shared for write";
-    EXPECT_EQ(file.access & (GENERIC_WRITE | FILE_WRITE_DATA | DELETE), 0U);
-    EXPECT_EQ(file.versionReads, 1);
+    const std::vector<TestMocks::LocalNtOpen>& opens = TestMocks::localNtFile().opens;
+    ASSERT_EQ(opens.size(), 1U);
+    EXPECT_EQ(opens[0].name, LOCAL_NAME) << R"(the NT name itself, not through \\?\GLOBALROOT)";
+    EXPECT_NE(opens[0].objectAttributes & TestMocks::OBJ_DONT_REPARSE_FLAG, 0U);
+    EXPECT_NE(opens[0].options & static_cast<ULONG>(FILE_OPEN_REPARSE_POINT), 0U);
+    EXPECT_EQ(opens[0].impersonation, SecurityIdentification);
+    EXPECT_EQ(opens[0].share, static_cast<ULONG>(FILE_SHARE_READ | FILE_SHARE_DELETE)) << "never shared for write";
+    EXPECT_EQ(opens[0].access & (GENERIC_WRITE | FILE_WRITE_DATA | DELETE), 0U);
+    EXPECT_EQ(heldVersionReads(), 1);
 }
 
-TEST_F(WindowsLocalFileVersionTest, AFailedOpenIsNoVersion)
+TEST_F(WindowsLocalFileVersionTest, ARefusedOpenIsNoVersion)
 {
-    localFile().openStatus = static_cast<NTSTATUS>(0xC000050BL); // STATUS_REPARSE_POINT_ENCOUNTERED
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-    EXPECT_EQ(localFile().versionReads, 0);
+    TestMocks::localNtFile().openStatus = static_cast<NTSTATUS>(0xC000050BL); // STATUS_REPARSE_POINT_ENCOUNTERED
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), TestMocks::FAKE_LOCAL_NT_FILE, &fakeReadHeldVersion).has_value());
+    TestMocks::localNtFile() = {};
+    TestMocks::localNtFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
+    TestMocks::localNtFile().reparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), TestMocks::FAKE_LOCAL_NT_FILE, &fakeReadHeldVersion).has_value());
+    TestMocks::localNtFile() = {};
+    TestMocks::localNtFile().deviceType = FILE_DEVICE_NETWORK_FILE_SYSTEM;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), TestMocks::FAKE_LOCAL_NT_FILE, &fakeReadHeldVersion).has_value());
+    EXPECT_EQ(heldVersionReads(), 0);
 }
 
-TEST_F(WindowsLocalFileVersionTest, ALinkAHandleOffADiskOrARedirectorsFileIsNotRead)
+TEST_F(WindowsLocalFileVersionTest, NoCallsOrNoReaderIsNoVersion)
 {
-    localFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
-    localFile().reparseTag = IO_REPARSE_TAG_SYMLINK;
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value()) << "a symlink, opened as itself";
-    localFile().reparseTag = IO_REPARSE_TAG_MOUNT_POINT;
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value()) << "a junction";
-
-    localFile() = {};
-    localFile().deviceType = FILE_DEVICE_NETWORK_FILE_SYSTEM;
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-    localFile().deviceType = FILE_DEVICE_NAMED_PIPE;
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-    localFile().deviceType = FILE_DEVICE_DISK;
-    localFile().characteristics = 0x00000010; // FILE_REMOTE_DEVICE
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-
-    localFile() = {};
-    localFile().remote = true;
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-    EXPECT_EQ(localFile().versionReads, 0);
-}
-
-// A reparse point that isn't a name surrogate is the file itself (a CompactOS system file's WOF tag), so it is read;
-// so are a CD-ROM's and a virtual disk's files.
-TEST_F(WindowsLocalFileVersionTest, ACompressedFileACdRomAndAVirtualDiskAreRead)
-{
-    localFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
-    localFile().reparseTag = IO_REPARSE_TAG_WOF;
-    EXPECT_TRUE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-    localFile() = {};
-    localFile().deviceType = FILE_DEVICE_CD_ROM;
-    EXPECT_TRUE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-    localFile().deviceType = FILE_DEVICE_VIRTUAL_DISK;
-    EXPECT_TRUE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
-}
-
-TEST_F(WindowsLocalFileVersionTest, NoCallsOrAnEmptyNameIsNoVersion)
-{
-    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), LocalFileFunctions{}).has_value());
-    EXPECT_FALSE(readLocalFileVersion(std::wstring{}, FAKE_LOCAL_FILE).has_value());
-    EXPECT_EQ(localFile().opens, 0);
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), LocalFileFunctions{}, &fakeReadHeldVersion).has_value());
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), TestMocks::FAKE_LOCAL_NT_FILE, nullptr).has_value());
+    EXPECT_FALSE(readLocalFileVersion(std::wstring{}, TestMocks::FAKE_LOCAL_NT_FILE, &fakeReadHeldVersion).has_value());
+    EXPECT_TRUE(TestMocks::localNtFile().opens.empty());
 }
 
 /// A folder of this test's own under the temp folder, removed with everything in it at the end.

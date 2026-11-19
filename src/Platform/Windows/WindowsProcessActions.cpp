@@ -599,9 +599,11 @@ WindowsProcessFunctions realWindowsProcessFunctions() noexcept
 #ifdef TASKSMACK_NO_FILE_LOCATION
         .getMappedFileName = nullptr, // TaskSmackHelper.exe: no image hash (#3646)
         .virtualQueryEx = nullptr,
+        .localFile = {},
 #else
         .getMappedFileName = &GetMappedFileNameW,
         .virtualQueryEx = &VirtualQueryEx,
+        .localFile = Windows::systemLocalFileFunctions(),
 #endif
 #ifdef TASKSMACK_NO_FILE_LOCATION
         .fileLocation = {}, // TaskSmackHelper.exe: no shell calls in the elevated image (#3426)
@@ -1550,6 +1552,7 @@ std::expected<std::string, std::string> WindowsProcessActions::imageSha256(const
             .virtualQueryEx = m_Fns.virtualQueryEx,
             .getExitCodeProcess = m_Fns.getExitCodeProcess,
             .getProcessInformation = m_Fns.getProcessInformation,
+            .localFile = m_Fns.localFile,
         },
         process.handle.get(),
         target.pid,

@@ -6,6 +6,7 @@
 #include "WindowsAffinityMath.h"
 #include "WindowsDumpFolder.h" // ADMIN_DUMP_FILE_SECURITY (#4188)
 #include "WindowsFileLocation.h"
+#include "WindowsLocalNtFile.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcessDump.h"
 #include "WindowsRunProgram.h"
@@ -120,6 +121,9 @@ struct WindowsProcessFunctions
     /// loader mapped elsewhere (a .NET executable, one relocated from its preferred base) isn't hashed (#4057;
     /// WindowsImageFile.h says why). Null: the entry point is taken as the image.
     SIZE_T(WINAPI* virtualQueryEx)(HANDLE process, LPCVOID address, PMEMORY_BASIC_INFORMATION info, SIZE_T size) = nullptr;
+    /// The calls the image's file is opened by its NT name with (#4482; Windows::openLocalNtFile()): no link followed,
+    /// no share's file opened. Null: nothing is opened, and the image isn't hashed.
+    Windows::LocalFileFunctions localFile{};
     /// Explorer asked to show that executable selected (#3426). Null queryFullProcessImageName, or no
     /// selectInFolder and no startProcess here: no Open file location (canOpenFileLocation false), as in
     /// TaskSmackHelper.exe, which never serves one (BrokeredProcessActions keeps it the user's own).

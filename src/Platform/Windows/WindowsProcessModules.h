@@ -14,13 +14,12 @@
 // network share, or from a device TaskSmack can't tell is a local drive, keeps its row with versionNotRead set and no
 // version: opening it could connect, with TaskSmack's or the elevated helper's credentials, to wherever it is.
 //
-// The open (readLocalFileVersion()) is NtCreateFile on that NT name itself, with OBJ_DONT_REPARSE and
-// FILE_OPEN_REPARSE_POINT: the kernel's name is already the one left after every reparse, so a junction or symlink met
-// on the way, which the process could have put there since it was named (one to \\host\share, say), fails the open
-// rather than being followed to a host of the process's choosing. Not through \\?\GLOBALROOT, itself a symbolic link.
-// The open asks for identification-level security only, so a pipe it might still reach can't impersonate TaskSmack.
-// After it, a handle that is a name-surrogate reparse point (a link), on a device that isn't a disk or a CD-ROM, or
-// that a redirector serves, isn't read: a backstop for the read, not for the connection, which the open itself guards.
+// The open (readLocalFileVersion()) is Windows::openLocalNtFile() (WindowsLocalNtFile.h, #4482), the one the image
+// file the Publisher column and Look up on VirusTotal read is opened with too: NtCreateFile on that NT name itself,
+// with OBJ_DONT_REPARSE and FILE_OPEN_REPARSE_POINT, so a junction or symlink met on the way, which the process could
+// have put there since it was named (one to \\host\share, say), fails the open rather than being followed to a host of
+// the process's choosing; identification-level security only; and a handle that is a link, off a local disk or a
+// redirector's, closed unread.
 //
 // What this can't rule out: a process can map another local file's image where its own module was, and its own
 // files' version info says whatever their author wrote. A version is the file's own claim either way.
@@ -35,11 +34,11 @@
 #endif
 #include <windows.h>
 #include <psapi.h>
-#include <winternl.h> // NtCreateFile's OBJECT_ATTRIBUTES, IO_STATUS_BLOCK and UNICODE_STRING
 // clang-format on
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
+#include "WindowsLocalNtFile.h"
 
 #include <optional>
 #include <string>
@@ -48,35 +47,19 @@
 namespace Platform::Windows
 {
 
-/// The calls readLocalFileVersion() makes: ntdll's and kernel32's (systemLocalFileFunctions()), or a test's fakes.
-struct LocalFileFunctions
-{
-    using NtCreateFileFn = NTSTATUS(NTAPI*)(
-        PHANDLE, ACCESS_MASK, POBJECT_ATTRIBUTES, PIO_STATUS_BLOCK, PLARGE_INTEGER, ULONG, ULONG, ULONG, ULONG, PVOID, ULONG);
-    /// NtQueryVolumeInformationFile, its FS_INFORMATION_CLASS passed as a ULONG.
-    using NtQueryVolumeInformationFileFn = NTSTATUS(NTAPI*)(HANDLE, PIO_STATUS_BLOCK, PVOID, ULONG, ULONG);
-    using GetFileInformationByHandleExFn = BOOL(WINAPI*)(HANDLE, FILE_INFO_BY_HANDLE_CLASS, LPVOID, DWORD);
-    /// Reads the version of the file a handle is open on (Windows::heldFileVersion()).
-    using ReadHeldVersionFn = std::optional<ModuleVersion> (*)(HANDLE);
-
-    NtCreateFileFn ntCreateFile = nullptr;
-    NtQueryVolumeInformationFileFn ntQueryVolumeInformationFile = nullptr;
-    GetFileInformationByHandleExFn getFileInformationByHandleEx = nullptr;
-    ReadHeldVersionFn readHeldVersion = nullptr;
-};
-
-/// The system's calls: ntdll's NtCreateFile and NtQueryVolumeInformationFile (found with GetModuleHandleW, which ntdll
-/// always answers), GetFileInformationByHandleEx, and the by-handle version read.
-[[nodiscard]] LocalFileFunctions systemLocalFileFunctions() noexcept;
+/// Reads the version of the file a handle is open on (Windows::heldFileVersion()).
+using ReadHeldVersionFn = std::optional<ModuleVersion> (*)(HANDLE);
 
 /// The version of the file whose NT name is @p ntName ("\Device\HarddiskVolume3\Windows\System32\ntdll.dll", as
-/// GetMappedFileNameW names it), opened as the top of this file says (NtCreateFile on the name itself, no reparse
-/// followed, identification-level security) and read through that handle. nullopt when it can't be opened (a link on
-/// the way included), has none, or the handle is a link, isn't on a disk or a CD-ROM, or a redirector serves it. Only
-/// ever given a name the reader has found to be on a local volume.
-[[nodiscard]] std::optional<ModuleVersion> readLocalFileVersion(const std::wstring& ntName, const LocalFileFunctions& fns);
+/// GetMappedFileNameW names it), opened by Windows::openLocalNtFile() through @p fns (NtCreateFile on the name itself,
+/// no reparse followed, identification-level security, shared for read and delete) and read through that handle by
+/// @p readHeldVersion. nullopt when it can't be opened (a link on the way included), has none, or the handle is a link,
+/// isn't on a disk or a CD-ROM, or a redirector serves it. Only ever given a name the reader has found to be on a local
+/// volume.
+[[nodiscard]] std::optional<ModuleVersion>
+readLocalFileVersion(const std::wstring& ntName, const LocalFileFunctions& fns, ReadHeldVersionFn readHeldVersion);
 
-/// readLocalFileVersion() through the system's calls.
+/// readLocalFileVersion() through the system's calls and Windows::heldFileVersion().
 [[nodiscard]] std::optional<ModuleVersion> readLocalFileVersion(const std::wstring& ntName);
 
 /// The calls WindowsProcessModulesReader makes: kernel32's, or a test's fakes.
