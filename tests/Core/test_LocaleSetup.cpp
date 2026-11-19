@@ -211,6 +211,42 @@ TEST_F(LocaleSetupTest, ARefusedClassicNumericResetIsWarnedAbout)
     EXPECT_EQ(outcome.warnings[0], R"(setlocale(LC_NUMERIC, "C") failed)");
 }
 
+// GetACP() through CRuntime (#4334): a legacy code page (the manifest missing or replaced, or Windows before 1903)
+// is a warning, which a release log (warn and up) keeps; UTF-8 is none.
+TEST_F(LocaleSetupTest, ALegacyActiveCodePageIsWarnedAbout)
+{
+    CRuntime crt = FAKE_CRT;
+    crt.activeCodePage = []
+    {
+        return 1252U;
+    };
+    std::vector<std::string> warnings;
+    EXPECT_EQ(checkActiveCodePage(crt, warnings), 1252U);
+    ASSERT_EQ(warnings.size(), 1U);
+    EXPECT_TRUE(warnings[0].contains("1252")) << warnings[0];
+    EXPECT_TRUE(warnings[0].contains("activeCodePage")) << warnings[0];
+    EXPECT_TRUE(warnings[0].contains("1903")) << warnings[0];
+}
+
+TEST_F(LocaleSetupTest, AUtf8ActiveCodePageIsNotWarnedAbout)
+{
+    CRuntime crt = FAKE_CRT;
+    crt.activeCodePage = []
+    {
+        return 65001U;
+    };
+    std::vector<std::string> warnings;
+    EXPECT_EQ(checkActiveCodePage(crt, warnings), 65001U);
+    EXPECT_TRUE(warnings.empty());
+}
+
+TEST_F(LocaleSetupTest, NoActiveCodePageReaderMeansNoCodePageAndNoWarning)
+{
+    std::vector<std::string> warnings;
+    EXPECT_EQ(checkActiveCodePage(FAKE_CRT, warnings), 0U); // Linux: no GetACP
+    EXPECT_TRUE(warnings.empty());
+}
+
 TEST(LocaleSetupCppTest, UserNumericFacetsKeepTheUsersLocaleWhole)
 {
     // NumericFacets::User (the UI's own numbers): the user's locale is the global one, numerics and all.
