@@ -2915,6 +2915,13 @@ TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
     none.family = Platform::OsFamily::Windows;
     none.listed = true;
     EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(none), "Last 14 days")->value, "No crashes or hangs");
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(none), "Older"), nullptr);
+
+    // #4375: the log's read failed or timed out partway, so the list says it may not be all.
+    Platform::CrashesInfo partial = none;
+    partial.incomplete = true;
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(partial), "Older")->unavailableReason,
+              "Not all read: the event log stopped answering partway, so older ones may be missing");
 }
 
 TEST(SystemInfoSectionsTest, CrashesSectionComesLast)

@@ -1333,9 +1333,12 @@ struct FakeEco
     static inline bool isProtected = false;
     static inline std::vector<Throttle> throttles;
     static inline std::vector<DWORD> classesSet;
+    // What GetProcessInformation(ProcessPowerThrottling) reads (#4366); nullopt: the read fails
+    static inline std::optional<Throttle> throttlingRead;
 
     static void reset()
     {
+        throttlingRead = Throttle{};
         creationTicks = 1234;
         openError = 0;
         throttleError = 0;
@@ -1374,6 +1377,19 @@ struct FakeEco
     }
     static BOOL WINAPI getProcessInformation(HANDLE /*process*/, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size)
     {
+        if (infoClass == ProcessPowerThrottling && size == sizeof(PROCESS_POWER_THROTTLING_STATE))
+        {
+            auto* state = static_cast<PROCESS_POWER_THROTTLING_STATE*>(info);
+            EXPECT_EQ(state->Version, static_cast<ULONG>(PROCESS_POWER_THROTTLING_CURRENT_VERSION));
+            if (!throttlingRead.has_value())
+            {
+                SetLastError(ERROR_ACCESS_DENIED);
+                return FALSE;
+            }
+            state->ControlMask = throttlingRead->control;
+            state->StateMask = throttlingRead->state;
+            return TRUE;
+        }
         if (infoClass != ProcessProtectionLevelInfo || size != sizeof(PROCESS_PROTECTION_LEVEL_INFORMATION))
         {
             SetLastError(ERROR_INVALID_PARAMETER);
@@ -1586,6 +1602,32 @@ TEST_F(WindowsEfficiencyModeTest, ARefusedThrottlingOrClassChangeIsReportedAndAR
     const auto off = actions.setEfficiencyMode(ecoTarget(7106), false);
     EXPECT_FALSE(off.success);
     EXPECT_NE(off.errorMessage.find("its priority could not be restored"), std::string::npos) << off.errorMessage;
+}
+
+TEST_F(WindowsEfficiencyModeTest, ARefusedOnKeepsTheThrottlingTheProcessHadBefore)
+{
+    // #4366: the process had EcoQoS on already (Windows', or another tool's). The "on" sets it again, the class
+    // change is refused, and nothing turns the throttle it had off.
+    WindowsProcessActions actions(FakeEco::functions());
+    FakeEco::throttlingRead = ECO_ON;
+    FakeEco::classError = ERROR_GEN_FAILURE;
+    const auto keptOn = actions.setEfficiencyMode(ecoTarget(7108), true);
+    EXPECT_FALSE(keptOn.success);
+    EXPECT_NE(keptOn.errorMessage.find("Efficiency mode was not turned on"), std::string::npos) << keptOn.errorMessage;
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_ON})) << "no call turns the throttling off";
+
+    // Some other state (taken control of, but off) is put back as it was.
+    constexpr FakeEco::Throttle CONTROLLED_OFF{.control = PROCESS_POWER_THROTTLING_EXECUTION_SPEED, .state = 0};
+    FakeEco::throttles.clear();
+    FakeEco::throttlingRead = CONTROLLED_OFF;
+    EXPECT_FALSE(actions.setEfficiencyMode(ecoTarget(7108), true).success);
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_ON, CONTROLLED_OFF}));
+
+    // Unreadable: handed back to Windows, as before.
+    FakeEco::throttles.clear();
+    FakeEco::throttlingRead.reset();
+    EXPECT_FALSE(actions.setEfficiencyMode(ecoTarget(7108), true).success);
+    EXPECT_EQ(FakeEco::throttles, (std::vector<FakeEco::Throttle>{ECO_ON, ECO_HANDED_BACK}));
 }
 
 TEST_F(WindowsEfficiencyModeTest, WithoutItsCallsThereIsNoEfficiencyModeAndNothingIsOpened)
