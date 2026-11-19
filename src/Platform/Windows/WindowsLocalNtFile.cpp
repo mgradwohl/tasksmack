@@ -1,5 +1,6 @@
 #include "WindowsLocalNtFile.h"
 
+#include "WinString.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 
@@ -20,7 +21,6 @@
 #include <expected>
 #include <string>
 #include <string_view>
-#include <system_error>
 
 namespace Platform::Windows
 {
@@ -218,7 +218,7 @@ std::string describeLocalFileError(const LocalFileError& error)
     switch (error.reason)
     {
     case LocalFileRefusal::OpenFailed:
-        return std::system_category().message(static_cast<int>(error.win32Error));
+        return WinString::win32ErrorText(error.win32Error);
     case LocalFileRefusal::Link:
         return "it is a symbolic link or a junction, which TaskSmack doesn't follow";
     case LocalFileRefusal::NotLocal:
