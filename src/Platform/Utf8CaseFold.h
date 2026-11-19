@@ -295,7 +295,7 @@ inline void appendFolded(std::string& out, std::string_view text)
         i += aLength;
         j += bLength;
     }
-    return (i < a.size()) <=> (j < b.size()); // the one with text left is after
+    return (a.size() - i) <=> (b.size() - j); // one side is used up: the one with text left is after
 }
 
 /// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile", not
