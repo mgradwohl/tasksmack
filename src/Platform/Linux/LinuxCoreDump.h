@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Domain/Utf8Sanitize.h"
+
 #include <algorithm>
 #include <charconv>
 #include <cstddef>
@@ -88,15 +90,39 @@ inline constexpr int DETACH_WAIT_MS = 2000;
 /// The dump file's name: "bash_1234_2026-10-15_04-30-00.core" -- the process name, the PID and the local
 /// time, so dumps of one process sort by when they were taken. @p attempt 2 and up (the name before it
 /// existed already) adds " (2)" and so on before ".core". A '/' or control character in the name
-/// (comm can hold almost anything) becomes '_', and an empty name reads as "process".
+/// (comm can hold almost anything) becomes '_', and an empty name reads as "process". The name is
+/// well-formed UTF-8 (#4323): a 15-byte comm cut inside a character ("datensicherung\xC3") loses the cut
+/// sequence at its end, and any other ill-formed subpart becomes '_', so a file manager can show the name.
 [[nodiscard]] inline std::string dumpFileName(std::string_view processName, std::int32_t pid, const std::tm& local, int attempt)
 {
     std::string name;
     name.reserve(processName.size());
-    for (const char c : processName)
+    std::size_t at = 0;
+    while (at < processName.size())
     {
-        const auto byte = static_cast<unsigned char>(c);
-        name += (c == '/' || byte < 0x20 || byte == 0x7F) ? '_' : c;
+        std::size_t prefix = 0;
+        const std::size_t length = Domain::Utf8Detail::sequenceAt(processName, at, prefix);
+        if (length == 0)
+        {
+            // A sequence the 15-byte cut ended inside is dropped; one ill-formed elsewhere is a '_'.
+            if (at + prefix < processName.size())
+            {
+                name += '_';
+            }
+            at += prefix;
+            continue;
+        }
+        if (length == 1)
+        {
+            const char c = processName[at];
+            const auto byte = static_cast<unsigned char>(c);
+            name += (c == '/' || byte < 0x20 || byte == 0x7F) ? '_' : c;
+        }
+        else
+        {
+            name += processName.substr(at, length);
+        }
+        at += length;
     }
     if (name.empty() || name == "." || name == "..")
     {
