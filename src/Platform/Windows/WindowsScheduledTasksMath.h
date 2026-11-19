@@ -49,10 +49,14 @@ struct TaskTrigger
     bool enabled = true; ///< ITrigger::get_Enabled: a disabled trigger never fires.
 };
 
-/// One registered task, as WindowsScheduledTasks reads it through the Task Scheduler API. Strings are UTF-8.
+/// One registered task, as WindowsScheduledTasks reads it through the Task Scheduler API. Strings are UTF-8, but for
+/// nativePath.
 struct TaskRecord
 {
-    std::string path; ///< Its full path, "\Vendor\Updater" (IRegisteredTask::get_Path).
+    std::string path; ///< Its full path, "\Vendor\Updater" (IRegisteredTask::get_Path), as display text.
+    /// The same path exactly as the Task Scheduler gave it (#4304), lone surrogates and all: what a switch opens the
+    /// task by, through the probe's opaque id. Never shown, and never rebuilt from path.
+    std::wstring nativePath;
     bool enabled = true;
     std::vector<TaskTrigger> triggers;
     std::string execPath;      ///< The first exec action's Path, as written (environment variables, maybe quoted); empty when none.

@@ -7,7 +7,11 @@
 
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsConversions.h"
+#include "Platform/Windows/WindowsNativeIds.h"
+#include "Platform/Windows/WindowsScheduledTasks.h"
 #include "Platform/Windows/WindowsStartupActions.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
 
@@ -18,6 +22,7 @@
 #include <cstdint>
 #include <cstring>
 #include <map>
+#include <memory>
 #include <optional>
 #include <string>
 #include <utility>
@@ -146,15 +151,20 @@ class WindowsStartupActionsTest : public ::testing::Test
         EXPECT_EQ(fake().opened, 0) << "every key opened is closed";
     }
 
-    [[nodiscard]] static WindowsStartupActions actions(bool elevated = false)
+    [[nodiscard]] static WindowsStartupActions actions(bool elevated = false,
+                                                       std::shared_ptr<const Windows::StartupIdTable> ids = Windows::sharedStartupIds())
     {
         return WindowsStartupActions(elevated,
-                                     {.createKey = &fakeCreate,
-                                      .openKey = &fakeOpen,
-                                      .queryValue = &fakeQuery,
-                                      .setValue = &fakeSet,
-                                      .closeKey = &fakeClose,
-                                      .now = &fakeNow});
+                                     {
+                                         .createKey = &fakeCreate,
+                                         .openKey = &fakeOpen,
+                                         .queryValue = &fakeQuery,
+                                         .setValue = &fakeSet,
+                                         .closeKey = &fakeClose,
+                                         .now = &fakeNow,
+                                     },
+                                     &Windows::makeTaskSchedulerApi,
+                                     std::move(ids));
     }
 
     /// An entry registered as @p name, shown by another name (its program's, #1873): the actions
@@ -350,6 +360,101 @@ TEST_F(WindowsStartupActionsTest, APackagedTaskThatCantBeFoundOrReadIsNotWritten
     EXPECT_FALSE(subject.setEnabled(unnamed, true).ok);
 
     EXPECT_EQ(fake().writes, 0);
+    EXPECT_EQ(fake().creates, 0);
+}
+
+// --- Native identities (#4304) --------------------------------------------------------------------------------
+
+/// Run values as the probe would list them: each @p names' exact wide name published into @p ids, and an entry
+/// shown by the UTF-8 that name displays as, carrying its id.
+[[nodiscard]] std::vector<StartupEntry> listedRunEntries(Windows::StartupIdTable& ids, const std::vector<std::wstring>& names)
+{
+    std::vector<Windows::StartupNativeKey> keys;
+    std::vector<StartupEntry> entries;
+    for (const std::wstring& name : names)
+    {
+        keys.push_back({.location = StartupLocation::RunUser, .name = name, .packageFamily = {}});
+        StartupEntry entry;
+        entry.registrationName = WinString::wideToDisplayUtf8(name);
+        entry.name = entry.registrationName;
+        entry.location = StartupLocation::RunUser;
+        entry.scope = StartupScope::User;
+        entries.push_back(std::move(entry));
+    }
+    const std::vector<NativeId> issued = ids.publish(keys);
+    for (std::size_t index = 0; index < entries.size(); ++index)
+    {
+        entries[index].nativeId = issued[index];
+    }
+    return entries;
+}
+
+TEST_F(WindowsStartupActionsTest, ALoneSurrogateRunValueIsRecordedUnderItsExactName)
+{
+    // "Up<U+D800>date" shows as "Up<U+FFFD>date"; "Up<U+FFFD>date" is a second value that shows the same.
+    const std::wstring lone = std::wstring(L"Up") + static_cast<wchar_t>(0xD800) + L"date";
+    const std::wstring replaced = L"Up\uFFFDdate";
+    const auto ids = std::make_shared<Windows::StartupIdTable>();
+    const std::vector<StartupEntry> entries = listedRunEntries(*ids, {lone, replaced});
+    ASSERT_EQ(entries[0].registrationName, entries[1].registrationName) << "the same display text";
+    ASSERT_NE(entries[0].nativeId, entries[1].nativeId) << "two entries all the same";
+
+    auto subject = actions(false, ids);
+    ASSERT_TRUE(subject.setEnabled(entries[0], false).ok);
+    EXPECT_TRUE(recorded(hkcu(Math::APPROVED_RUN_KEY), lone).has_value()) << "under the exact wide name";
+    EXPECT_FALSE(recorded(hkcu(Math::APPROVED_RUN_KEY), replaced).has_value()) << "never under the one the text converts to";
+    EXPECT_EQ(fake().writes, 1);
+
+    ASSERT_TRUE(subject.setEnabled(entries[1], false).ok);
+    EXPECT_TRUE(recorded(hkcu(Math::APPROVED_RUN_KEY), replaced).has_value());
+    EXPECT_EQ(fake().values.size(), 2U) << "each entry its own record";
+}
+
+TEST_F(WindowsStartupActionsTest, AnEmbeddedNulNameIsRefusedAndItsSiblingUntouched)
+{
+    // The hidden-value trick: "OneDrive\0x", beside the real OneDrive. RegSetValueExW would stop at the NUL.
+    const auto ids = std::make_shared<Windows::StartupIdTable>();
+    const std::vector<StartupEntry> entries = listedRunEntries(*ids, {std::wstring(L"OneDrive\0x", 10), L"OneDrive"});
+    EXPECT_EQ(entries[0].registrationName, "OneDrive\xE2\x90\x80x") << "the NUL shown, not cut at";
+
+    auto subject = actions(false, ids);
+    const StartupActionResult refused = subject.setEnabled(entries[0], false);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.message, "The entry's name holds a NUL character, so its state can't be recorded under it");
+    EXPECT_EQ(fake().creates, 0);
+    EXPECT_FALSE(recorded(hkcu(Math::APPROVED_RUN_KEY), L"OneDrive").has_value()) << "the sibling's record is untouched";
+}
+
+TEST_F(WindowsStartupActionsTest, AStaleIdIsRefusedWithoutAWrite)
+{
+    const auto ids = std::make_shared<Windows::StartupIdTable>();
+    const std::vector<StartupEntry> entries = listedRunEntries(*ids, {L"Gone", L"Kept"});
+    // The next snapshot lists only "Kept", now under a new entry: the old "Gone" id names nothing.
+    const std::vector<StartupEntry> next = listedRunEntries(*ids, {L"Kept"});
+    EXPECT_EQ(next[0].nativeId, entries[1].nativeId) << "an entry still listed keeps its id";
+
+    auto subject = actions(false, ids);
+    const StartupActionResult refused = subject.setEnabled(entries[0], false);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.message, "The entry is no longer listed as it was. Try again once the list updates");
+    EXPECT_EQ(fake().creates, 0);
+
+    // An id issued for one location doesn't switch an entry at another.
+    StartupEntry moved = next[0];
+    moved.location = StartupLocation::RunMachine;
+    EXPECT_FALSE(subject.setEnabled(moved, false).ok);
+    EXPECT_EQ(fake().creates, 0);
+}
+
+TEST_F(WindowsStartupActionsTest, WithoutAnIdALossyNameIsRefused)
+{
+    // A caller that built the entry itself, from display text holding U+FFFD: converting it back would name another value.
+    auto subject = actions();
+    const StartupActionResult refused = subject.setEnabled(entry("Up\xEF\xBF\xBD"
+                                                                 "date",
+                                                                 StartupLocation::RunUser),
+                                                           false);
+    EXPECT_FALSE(refused.ok);
     EXPECT_EQ(fake().creates, 0);
 }
 

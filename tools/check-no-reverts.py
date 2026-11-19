@@ -53,7 +53,16 @@ class HistoryError(Exception):
 
 
 def git(repo: Path, *args: str) -> str:
-    result = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, errors="replace", check=False)
+    # UTF-8, not the locale's code page (on Windows, "café" printed as its UTF-8 bytes read in the code page), and core.quotePath=false so a non-ASCII path
+    # is itself in the diff headers and listings, not an octal-escaped quoted name (#4331).
+    result = subprocess.run(
+        ["git", "-c", "core.quotePath=false", "-C", str(repo), *args],
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        check=False,
+    )
     if result.returncode != 0:
         raise HistoryError(f"git {' '.join(args[:3])}...: {result.stderr.strip() or result.returncode}")
     return result.stdout
@@ -68,6 +77,37 @@ def exempt(path: str) -> bool:
     return any(fnmatch.fnmatch(path, pattern) or fnmatch.fnmatch(name, pattern) for pattern in EXEMPT)
 
 
+def header_path(line: str, side: str) -> str | None:
+    r"""The path on a "--- a/x" or "+++ b/x" diff header, or None for /dev/null. git still quotes a name holding a tab,
+    newline, quote or backslash even with core.quotePath=false ("--- \"a/x\ty\""): unquote that too (#4331)."""
+    rest = line[4:]
+    if rest.startswith('"') and rest.endswith('"'):
+        rest = unquote_c_style(rest[1:-1])
+    prefix = side + "/"
+    return rest[len(prefix) :] if rest.startswith(prefix) else None
+
+
+def unquote_c_style(text: str) -> str:
+    r"""git's C-style quoting: \\, \", \t, \n and \ooo octal bytes, the bytes then decoded as UTF-8."""
+    out = bytearray()
+    i = 0
+    escapes = {"\\": b"\\", '"': b'"', "t": b"\t", "n": b"\n", "a": b"\a", "b": b"\b", "f": b"\f", "r": b"\r", "v": b"\v"}
+    while i < len(text):
+        ch = text[i]
+        if ch == "\\" and i + 1 < len(text):
+            nxt = text[i + 1]
+            if len(digits := text[i + 1 : i + 4]) == 3 and all(c in "01234567" for c in digits):
+                out.append(int(digits, 8))
+                i += 4
+                continue
+            out += escapes.get(nxt, nxt.encode())
+            i += 2
+            continue
+        out += ch.encode()
+        i += 1
+    return out.decode("utf-8", errors="replace")
+
+
 def parse_diff(diff: str) -> tuple[dict[str, list[tuple[int, int]]], dict[str, str]]:
     """The old-side line ranges each file's hunks remove, and every line the diff adds (normalised -> its file)."""
     ranges: dict[str, list[tuple[int, int]]] = {}
@@ -75,9 +115,9 @@ def parse_diff(diff: str) -> tuple[dict[str, list[tuple[int, int]]], dict[str, s
     old = new = None
     for line in diff.splitlines():
         if line.startswith("--- "):
-            old = line[6:] if line.startswith("--- a/") else None
+            old = header_path(line, "a")
         elif line.startswith("+++ "):
-            new = line[6:] if line.startswith("+++ b/") else None
+            new = header_path(line, "b")
         elif match := HUNK.match(line):
             start, count = int(match.group(1)), int(match.group(2) or "1")
             if old is not None and count > 0:

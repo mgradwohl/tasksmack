@@ -3029,8 +3029,10 @@ What a package contains, and what it depends on (#1398):
   installer's per-machine `C:\Program Files\TaskSmack`, but not from a `.zip` unpacked into a folder
   its user owns.
 - Windows builds other than Debug link the C and C++ runtime statically (`/MT`), so the `.zip`'s
-  `TaskSmack.exe` runs without the Visual C++ Redistributable: `llvm-objdump -p` on it should list
-  no `MSVCP140.dll`, `VCRUNTIME140*.dll` or `api-ms-win-crt-*.dll`. Debug keeps `/MDd`.
+  `TaskSmack.exe` runs without the Visual C++ Redistributable. `pwsh tools/check-windows-imports.ps1 -Path <file or folder> -List`
+  reads the import tables (x64 and ARM64) and fails on `MSVCP140.dll`, `VCRUNTIME140*.dll`, `api-ms-win-crt-*.dll`
+  or any DLL outside its allowlist; release.yml runs it on the `.zip` and the installed files (#4439). Debug keeps
+  `/MDd`, so it fails the check on purpose.
 
 ## Version Header
 
@@ -3220,9 +3222,15 @@ blamed on the commit that caused it (#1187). `codeql.yml` doesn't cancel `main` 
 `pre-commit.yml` and `dependency-review.yml` also cancel a PR's superseded run.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
-[OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
-(via Syft SBOM generated from `CMakeLists.txt`) and all four Python dependency manifests against the
-[OSV vulnerability database](https://osv.dev) on pushes to `main` and `release/*` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+[OSV Scanner](https://google.github.io/osv-scanner/) scans the Python dependency manifests against the
+[OSV vulnerability database](https://osv.dev), and `osv-scanner.yml` checks every C/C++ FetchContent pin there
+too, on pull requests that touch a dependency manifest, on pushes to `main` and `release/*`, in the merge queue
+and in the weekly scheduled run. Syft has no CMake cataloger, so `tools/cpp-deps-sbom.py` adds each
+`FetchContent_Declare()` (name, version, pinned commit, `pkg:github` purl, licence) to the Syft SBOM, fails if
+one is missing or can't be read, and asks OSV about each pinned commit (#4438). A vulnerable pin fails "OSV Scan
+Required" unless `osv-scanner.toml` lists it under `[[IgnoredVulns]]` with a reason and an `ignoreUntil` date;
+after the date it fails again. `python -I tools/cpp-deps-sbom.py list` prints the components. Results of the
+Python scan appear in the repository's **Security → Code scanning** tab.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
 `requirements-glad.txt`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
@@ -3434,7 +3442,7 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   Windows SDK version, the runner image (`ImageOS`/`ImageVersion`), the compiler and the commit. Two
   builds of one commit with equal `inputs` should give the same bytes; see [Release
   Reproducibility](#release-reproducibility) for how a mismatch is read.
-- Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
+- Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action), with the C/C++ libraries added by `tools/cpp-deps-sbom.py` (#4438): every `FetchContent_Declare()` pin (SDL3, Dear ImGui, ImPlot, GLAD, FreeType, spdlog, toml++, stb; GoogleTest, RapidCheck and Google Benchmark marked as test and development dependencies) at its version and commit, with a `pkg:github` purl and its licence, and the Linux build's distribution libraries (libbpf, libsystemd, libcurl) with no version. `create-release` fails if the staged SBOM misses a pin. It lists components and licenses at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
 - Checksums: `SHA256SUMS` and `SHA256SUMS.bundle` (from v0.10.0, #3145) -- `SHA256SUMS` has one
   `sha256sum`-format line (`<sha256>  <name>`, sorted by name) for every file above, and
   `SHA256SUMS.bundle` is its Sigstore bundle, the release's only one. Up to v0.9.x each file had its

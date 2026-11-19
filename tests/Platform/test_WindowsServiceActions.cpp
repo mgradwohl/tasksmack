@@ -8,6 +8,9 @@
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
+#include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsNativeIds.h"
 #include "Platform/Windows/WindowsServiceActions.h"
 #include "Platform/Windows/WindowsServiceActionsMath.h"
 
@@ -16,6 +19,7 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <stop_token>
 #include <string>
 #include <utility>
@@ -43,7 +47,8 @@ struct FakeScm
     DWORD waitHint = 0;              ///< Each QueryServiceStatus answer's dwWaitHint.
     std::size_t checkPointRises = 0; ///< dwCheckPoint is the query's 0-based index, up to this; then it stays.
     std::vector<std::wstring> dependents;
-    std::vector<DWORD> accesses; ///< Each OpenServiceW's requested rights.
+    std::vector<DWORD> accesses;      ///< Each OpenServiceW's requested rights.
+    std::vector<std::wstring> opened; ///< Each OpenServiceW's service name, exactly (#4304).
     int starts = 0;
     int stops = 0;
     int sleeps = 0;
@@ -79,9 +84,10 @@ SC_HANDLE WINAPI fakeOpenScm(LPCWSTR /*machine*/, LPCWSTR /*database*/, DWORD ac
     return handle();
 }
 
-SC_HANDLE WINAPI fakeOpenService(SC_HANDLE /*scm*/, LPCWSTR /*name*/, DWORD access)
+SC_HANDLE WINAPI fakeOpenService(SC_HANDLE /*scm*/, LPCWSTR name, DWORD access)
 {
     fake().accesses.push_back(access);
+    fake().opened.emplace_back(name);
     const bool failing = fake().openFailsFrom == 0 || std::cmp_greater_equal(fake().accesses.size(), fake().openFailsFrom);
     if (fake().openError != ERROR_SUCCESS && failing)
     {
@@ -208,19 +214,22 @@ class WindowsServiceActionsTest : public ::testing::Test
         EXPECT_EQ(fake().handles, 0) << "every handle opened is closed";
     }
 
-    [[nodiscard]] static WindowsServiceActions actions()
+    [[nodiscard]] static WindowsServiceActions actions(std::shared_ptr<const Windows::ServiceIdTable> ids = Windows::sharedServiceIds())
     {
         return WindowsServiceActions(false,
-                                     {.openSCManager = &fakeOpenScm,
-                                      .openService = &fakeOpenService,
-                                      .closeServiceHandle = &fakeClose,
-                                      .startService = &fakeStart,
-                                      .controlService = &fakeControl,
-                                      .queryServiceStatus = &fakeQuery,
-                                      .enumDependentServices = &fakeEnumDependents,
-                                      .changeServiceConfig = &fakeChangeConfig,
-                                      .changeServiceConfig2 = &fakeChangeConfig2,
-                                      .sleep = &fakeSleep});
+                                     {
+                                         .openSCManager = &fakeOpenScm,
+                                         .openService = &fakeOpenService,
+                                         .closeServiceHandle = &fakeClose,
+                                         .startService = &fakeStart,
+                                         .controlService = &fakeControl,
+                                         .queryServiceStatus = &fakeQuery,
+                                         .enumDependentServices = &fakeEnumDependents,
+                                         .changeServiceConfig = &fakeChangeConfig,
+                                         .changeServiceConfig2 = &fakeChangeConfig2,
+                                         .sleep = &fakeSleep,
+                                     },
+                                     std::move(ids));
     }
 };
 
@@ -491,6 +500,72 @@ TEST_F(WindowsServiceActionsTest, DependentsThatCantBeListedGiveThePlainMessage)
     fake().openFailsFrom = 2;
     EXPECT_EQ(actions().stop("Spooler", token()).message, plain);
     EXPECT_EQ(fake().dependentsCalls, 0);
+}
+
+// --- Native identities (#4304) --------------------------------------------------------------------------------
+
+TEST_F(WindowsServiceActionsTest, ALoneSurrogateServiceIsOpenedByItsExactNameThroughItsId)
+{
+    // "Up<U+D800>date" and "Up<U+FFFD>date" show as the same UTF-8; each is its own service.
+    const std::wstring lone = std::wstring(L"Up") + static_cast<wchar_t>(0xD800) + L"date";
+    const std::wstring replaced = L"Up\uFFFDdate";
+    const auto ids = std::make_shared<Windows::ServiceIdTable>();
+    const std::vector<std::wstring> names{lone, replaced};
+    const std::vector<NativeId> issued = ids->publish(names);
+    ASSERT_NE(issued[0], issued[1]);
+    const std::string shown = WinString::wideToUtf8(lone);
+    ASSERT_EQ(shown, WinString::wideToUtf8(replaced));
+
+    auto subject = actions(ids);
+    fake().states = {SERVICE_RUNNING};
+    EXPECT_TRUE(subject.start(ServiceTarget(shown, issued[0]), token()).ok);
+    EXPECT_EQ(fake().opened, (std::vector<std::wstring>{lone}));
+
+    fake().opened.clear();
+    EXPECT_TRUE(subject.setStartType(ServiceTarget(shown, issued[1]), ServiceStartType::Manual).ok);
+    EXPECT_EQ(fake().opened, (std::vector<std::wstring>{replaced}));
+
+    // A restart resolves once: its stop and its start open the same exact name.
+    fake().opened.clear();
+    fake().states = {SERVICE_STOPPED, SERVICE_RUNNING};
+    fake().queries = 0;
+    EXPECT_TRUE(subject.restart(ServiceTarget(shown, issued[0]), token()).ok);
+    EXPECT_EQ(fake().opened, (std::vector<std::wstring>{lone, lone}));
+}
+
+TEST_F(WindowsServiceActionsTest, AStaleIdIsRefusedWithoutOpeningAnything)
+{
+    const auto ids = std::make_shared<Windows::ServiceIdTable>();
+    const std::vector<std::wstring> before{L"Gone", L"Kept"};
+    const std::vector<NativeId> issued = ids->publish(before);
+    const std::vector<std::wstring> after{L"Kept"};
+    static_cast<void>(ids->publish(after));
+
+    auto subject = actions(ids);
+    const ServiceActionResult refused = subject.stop(ServiceTarget("Gone", issued[0]), token());
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.message, "The service is no longer listed as it was. Try again once the list updates");
+    EXPECT_FALSE(subject.setStartType(ServiceTarget("Gone", issued[0]), ServiceStartType::Disabled).ok);
+    EXPECT_TRUE(fake().opened.empty());
+
+    // An id from another table (another probe's) names nothing here either.
+    const auto other = std::make_shared<Windows::ServiceIdTable>();
+    const std::vector<std::wstring> elsewhere{L"Kept"};
+    const NativeId foreign = other->publish(elsewhere).front();
+    EXPECT_FALSE(subject.start(ServiceTarget("Kept", foreign), token()).ok);
+    EXPECT_TRUE(fake().opened.empty());
+}
+
+TEST_F(WindowsServiceActionsTest, WithoutAnIdALossyNameIsRefused)
+{
+    EXPECT_FALSE(actions()
+                     .start("Up\xEF\xBF\xBD"
+                            "date",
+                            token())
+                     .ok);
+    EXPECT_TRUE(fake().opened.empty());
+    EXPECT_TRUE(actions().start("Spooler", token()).ok) << "an exact name with no id is opened as it is";
+    EXPECT_EQ(fake().opened, (std::vector<std::wstring>{L"Spooler"}));
 }
 
 } // namespace

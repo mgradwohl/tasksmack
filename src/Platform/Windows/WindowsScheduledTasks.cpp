@@ -124,7 +124,13 @@ void readExecAction(ITaskDefinition* definition, Math::TaskRecord& record)
 [[nodiscard]] TaskReading readRecord(IRegisteredTask* task)
 {
     Math::TaskRecord record;
-    record.path = readString(task, &IRegisteredTask::get_Path);
+    // The exact path, kept for the switch (#4304); the UTF-8 one is for display, a lone surrogate shown as U+FFFD.
+    Bstr path;
+    if (SUCCEEDED(task->get_Path(path.put())))
+    {
+        record.nativePath = path.wide();
+        record.path = path.utf8();
+    }
     VARIANT_BOOL enabled = VARIANT_TRUE;
     if (const HRESULT read = task->get_Enabled(&enabled); FAILED(read))
     {
@@ -180,9 +186,9 @@ class TaskSchedulerApi final : public ScheduledTaskApi
         return static_cast<std::int32_t>(result);
     }
 
-    [[nodiscard]] std::vector<std::string> subfolders(const std::string& folderPath) override
+    [[nodiscard]] std::vector<std::wstring> subfolders(const std::wstring& folderPath) override
     {
-        std::vector<std::string> paths;
+        std::vector<std::wstring> paths;
         const ComPtr<ITaskFolder> folder = open(folderPath);
         ComPtr<ITaskFolderCollection> collection;
         LONG count = 0;
@@ -197,16 +203,21 @@ class TaskSchedulerApi final : public ScheduledTaskApi
             const Variant item(index);
             if (SUCCEEDED(collection->get_Item(item.get(), child.releaseAndGetAddressOf())) && child)
             {
-                if (std::string path = readString(child.get(), &ITaskFolder::get_Path); !path.empty())
+                // Its exact path (#4304): a UTF-8 copy of a name with a lone surrogate would open no folder.
+                Bstr path;
+                if (SUCCEEDED(child->get_Path(path.put())))
                 {
-                    paths.push_back(std::move(path));
+                    if (std::wstring wide = path.wide(); !wide.empty())
+                    {
+                        paths.push_back(std::move(wide));
+                    }
                 }
             }
         }
         return paths;
     }
 
-    [[nodiscard]] std::vector<TaskReading> tasks(const std::string& folderPath) override
+    [[nodiscard]] std::vector<TaskReading> tasks(const std::wstring& folderPath) override
     {
         std::vector<TaskReading> records;
         const ComPtr<ITaskFolder> folder = open(folderPath);
@@ -229,7 +240,7 @@ class TaskSchedulerApi final : public ScheduledTaskApi
         return records;
     }
 
-    [[nodiscard]] TaskReading task(const std::string& path) override
+    [[nodiscard]] TaskReading task(const std::wstring& path) override
     {
         ComPtr<IRegisteredTask> registered;
         if (const HRESULT result = find(path, registered); FAILED(result))
@@ -239,7 +250,7 @@ class TaskSchedulerApi final : public ScheduledTaskApi
         return readRecord(registered.get());
     }
 
-    [[nodiscard]] std::int32_t setEnabled(const std::string& path, bool enabled) override
+    [[nodiscard]] std::int32_t setEnabled(const std::wstring& path, bool enabled) override
     {
         ComPtr<IRegisteredTask> registered;
         if (const HRESULT result = find(path, registered); FAILED(result))
@@ -269,7 +280,7 @@ class TaskSchedulerApi final : public ScheduledTaskApi
 
   private:
     /// The folder at @p path; null when it can't be opened (not connected, gone, or denied).
-    [[nodiscard]] ComPtr<ITaskFolder> open(const std::string& path) const
+    [[nodiscard]] ComPtr<ITaskFolder> open(const std::wstring& path) const
     {
         ComPtr<ITaskFolder> folder;
         if (m_Service)
@@ -284,9 +295,9 @@ class TaskSchedulerApi final : public ScheduledTaskApi
     }
 
     /// The task at full path @p path, from the root folder.
-    [[nodiscard]] HRESULT find(const std::string& path, ComPtr<IRegisteredTask>& task) const
+    [[nodiscard]] HRESULT find(const std::wstring& path, ComPtr<IRegisteredTask>& task) const
     {
-        const ComPtr<ITaskFolder> root = open("\\");
+        const ComPtr<ITaskFolder> root = open(L"\\");
         if (!root)
         {
             return E_FAIL;
@@ -317,7 +328,7 @@ std::optional<std::vector<Math::TaskRecord>> readStartupTasks(ScheduledTaskApi& 
         return std::nullopt;
     }
     std::vector<Math::TaskRecord> found;
-    std::vector<std::pair<std::string, int>> pending{{"\\", 0}};
+    std::vector<std::pair<std::wstring, int>> pending{{L"\\", 0}};
     while (!pending.empty())
     {
         auto [folder, depth] = std::move(pending.back());
@@ -332,7 +343,7 @@ std::optional<std::vector<Math::TaskRecord>> readStartupTasks(ScheduledTaskApi& 
         }
         if (depth < Math::MAX_FOLDER_DEPTH)
         {
-            for (std::string& child : api.subfolders(folder))
+            for (std::wstring& child : api.subfolders(folder))
             {
                 pending.emplace_back(std::move(child), depth + 1);
             }
@@ -341,18 +352,18 @@ std::optional<std::vector<Math::TaskRecord>> readStartupTasks(ScheduledTaskApi& 
     return found;
 }
 
-StartupActionResult setStartupTaskEnabled(ScheduledTaskApi& api, const StartupEntry& entry, bool enabled)
+StartupActionResult setStartupTaskEnabled(ScheduledTaskApi& api, const StartupEntry& entry, const std::wstring& path, bool enabled)
 {
     if (entry.location != StartupLocation::ScheduledTaskUser && entry.location != StartupLocation::ScheduledTaskMachine)
     {
         return StartupActionResult::failed("Not a scheduled task");
     }
-    const std::string& path = entry.registrationName;
     if (path.empty())
     {
         return StartupActionResult::failed("The scheduled task has no path to switch it by");
     }
-    if (Math::isMicrosoftTask(path))
+    // Checked on the path acted on, not the entry's display text.
+    if (Math::isMicrosoftTask(WinString::wideToUtf8(path)))
     {
         return StartupActionResult::failed(std::string(Math::MICROSOFT_TASK_REASON));
     }

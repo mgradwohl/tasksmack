@@ -2077,6 +2077,7 @@ jobs:
           sparse-checkout: |
             cmake/VerifyWindowsSignatures.cmake
             tools/verify-windows-signatures.ps1
+            tools/check-windows-imports.ps1
             tools/release-smoke-check.ps1
             tests/App/fixtures/config-v0.8.0.toml
             tests/App/fixtures/config-v0.8.0.expected.txt
@@ -2141,6 +2142,16 @@ jobs:
         run: |
           & repo/tools/verify-windows-signatures.ps1 -PackageRoot $env:TASKSMACK_PKG_ROOT `
             -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify the .zip's executables import no MSVC runtime
+        # The CRT is linked statically (/MT), so the .zip needs no Visual C++ Redistributable, which these
+        # runners have installed and a clean PC may not (#1398). tools/check-windows-imports.ps1 reads each
+        # .exe's and .dll's import and delay-import tables and fails on vcruntime*, msvcp*, concrt*, vccorlib*,
+        # ucrtbase*, the UCRT API sets or any DLL outside its allowlist of Windows system DLLs (#4439).
+        shell: pwsh
+        run: |
+          & repo/tools/check-windows-imports.ps1 -Path $env:TASKSMACK_PKG_ROOT -List
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify the executable's architecture
@@ -2409,6 +2420,13 @@ jobs:
           }
           & repo/tools/verify-windows-signatures.ps1 -PackageRoot $env:TASKSMACK_INSTALL_DIR -Names $names `
             -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify the installed executables import no MSVC runtime
+        # The .zip's import check, on every file the installer installed, Uninstall.exe included (#4439).
+        shell: pwsh
+        run: |
+          & repo/tools/check-windows-imports.ps1 -Path $env:TASKSMACK_INSTALL_DIR -List
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Smoke-check the installed executable
@@ -2910,6 +2928,13 @@ jobs:
           upload-artifact: false
           upload-release-assets: false
 
+      - name: Add the C/C++ dependencies to the source SBOM
+        # Syft has no CMake or FetchContent cataloger, so its document lists the Actions and the Python
+        # tooling but none of the libraries compiled into the binaries (#4438). This adds each
+        # FetchContent_Declare() pin (version, commit, pkg:github purl, licence; the test and benchmark
+        # ones marked as such) and the Linux build's pkg-config libraries.
+        run: python3 -I tools/cpp-deps-sbom.py merge --sbom "$RUNNER_TEMP/sbom.spdx.json"
+
       - name: Download packages (every OS and architecture)
         # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/; with signing
         # on, the Windows .zips are sign-windows' signed ones (windows-unsigned-* never matches). Package
@@ -2977,6 +3002,13 @@ jobs:
         env:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
         run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
+
+      - name: Check the source SBOM lists every pinned C/C++ dependency
+        # Before SHA256SUMS and signing: the staged file must list every FetchContent_Declare() at its pinned
+        # commit, and nothing no CMake file declares, so the published SBOM can't drift from the pins (#4438).
+        env:
+          VERSION_LABEL: ${{ steps.version.outputs.label }}
+        run: python3 -I tools/cpp-deps-sbom.py check --sbom "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
 
       - name: Write SHA256SUMS
         # One `sha256sum`-format line per release file ("<sha256>  <name>": two spaces, LF endings, sorted

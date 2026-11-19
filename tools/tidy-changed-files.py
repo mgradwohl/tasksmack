@@ -62,9 +62,9 @@ LIST_OPENER_RE = re.compile(
     r"^\s*(?:set\s*\(|list\s*\(\s*APPEND\s)\s*[A-Za-z0-9_]*(?:SOURCES|HEADERS)[A-Za-z0-9_]*\s*(?:#.*)?$",
     re.IGNORECASE,
 )
-# One plain list entry per line: a .cpp/.h/.hpp path, optionally quoted or ${CMAKE_CURRENT_SOURCE_DIR}/-prefixed.
+# One plain list entry per line: a .cpp/.h/.hpp path (any letters, not ASCII only: #4331), optionally quoted or ${CMAKE_CURRENT_SOURCE_DIR}/-prefixed.
 LIST_ENTRY_RE = re.compile(
-    r'^\s*("?)(?:\$\{CMAKE_CURRENT_SOURCE_DIR\}/)?([A-Za-z0-9_./+-]+\.(?:cpp|h|hpp))\1\s*(?:#.*)?$'
+    r'^\s*("?)(?:\$\{CMAKE_CURRENT_SOURCE_DIR\}/)?([\w./+-]+\.(?:cpp|h|hpp))\1\s*(?:#.*)?$'
 )
 # Blank or line-comment-only. Not "#[[" / "#[=[": a bracket comment can comment out real code.
 BLANK_OR_COMMENT_RE = re.compile(r"^\s*(?:#(?!\[=*\[).*)?$")
@@ -75,8 +75,14 @@ INCLUDE_RE = re.compile(r'^\s*#\s*include\s*[<"]([^">]+)[">]', re.MULTILINE)
 
 
 def git(*args: str) -> str:
+    # core.quotePath=false: a non-ASCII path is listed as itself, not as an octal-escaped "\303\251" (#4331).
     return subprocess.run(
-        ["git", *args], check=True, capture_output=True, text=True, encoding="utf-8", errors="replace"
+        ["git", "-c", "core.quotePath=false", *args],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
     ).stdout
 
 
@@ -139,8 +145,10 @@ def main() -> int:
     parser.add_argument("--head", default="HEAD", help="commit with the change (default: HEAD)")
     parser.add_argument("--platform", required=True, choices=("linux", "windows"))
     args = parser.parse_args()
-    # The workflow compares the first line with "ALL"; never emit CRLF, even on Windows.
-    sys.stdout.reconfigure(newline="\n")
+    # The workflow compares the first line with "ALL"; never emit CRLF, even on Windows. UTF-8 whatever the console's
+    # code page, so a non-ASCII path is written as itself even without -X utf8 (#4331).
+    sys.stdout.reconfigure(newline="\n", encoding="utf-8")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
     other_platform = "src/Platform/Windows/" if args.platform == "linux" else "src/Platform/Linux/"
 

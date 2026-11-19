@@ -6,7 +6,6 @@
 
 #include <filesystem>
 #include <stop_token>
-#include <string_view>
 #include <system_error>
 
 #include <unistd.h>
@@ -33,29 +32,29 @@ ServiceActionCapabilities LinuxServiceActions::capabilities() const
     return caps;
 }
 
-ServiceActionResult LinuxServiceActions::start(std::string_view name, const std::stop_token& stopToken)
+ServiceActionResult LinuxServiceActions::start(const ServiceTarget& service, const std::stop_token& stopToken)
 {
     if (!m_Available)
     {
         return ServiceActionResult::failed("systemd isn't running");
     }
-    return SystemdBus::startUnit(name, stopToken, m_Wait);
+    return SystemdBus::startUnit(service.name, stopToken, m_Wait);
 }
 
-ServiceActionResult LinuxServiceActions::stop(std::string_view name, const std::stop_token& stopToken)
+ServiceActionResult LinuxServiceActions::stop(const ServiceTarget& service, const std::stop_token& stopToken)
 {
     if (!m_Available)
     {
         return ServiceActionResult::failed("systemd isn't running");
     }
-    return SystemdBus::stopUnit(name, stopToken, m_Wait);
+    return SystemdBus::stopUnit(service.name, stopToken, m_Wait);
 }
 
-ServiceActionResult LinuxServiceActions::restart(std::string_view name, const std::stop_token& stopToken)
+ServiceActionResult LinuxServiceActions::restart(const ServiceTarget& service, const std::stop_token& stopToken)
 {
     // stop(), then start(), as the interface has it: so a restart, like a stop, never takes running
     // dependents down, and a stop request between the two skips the start.
-    ServiceActionResult stopped = stop(name, stopToken);
+    ServiceActionResult stopped = stop(service, stopToken);
     if (!stopped.ok)
     {
         return stopped;
@@ -64,16 +63,16 @@ ServiceActionResult LinuxServiceActions::restart(std::string_view name, const st
     {
         return ServiceActionResult::stopRequested();
     }
-    return start(name, stopToken);
+    return start(service, stopToken);
 }
 
-ServiceActionResult LinuxServiceActions::setStartType(std::string_view name, ServiceStartType startType)
+ServiceActionResult LinuxServiceActions::setStartType(const ServiceTarget& service, ServiceStartType startType)
 {
     if (!m_Available)
     {
         return ServiceActionResult::failed("systemd isn't running");
     }
-    return SystemdBus::setUnitStartType(name, startType);
+    return SystemdBus::setUnitStartType(service.name, startType);
 }
 
 } // namespace Platform

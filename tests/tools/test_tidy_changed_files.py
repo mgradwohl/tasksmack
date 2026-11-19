@@ -145,6 +145,13 @@ class TidyChangedFilesTest(unittest.TestCase):
         self.commit("add New.cpp")
         self.assertEqual(self.run_script(), ["src/Core/New.cpp"])
 
+    def test_a_non_ascii_cpp_is_selected_by_its_own_name(self) -> None:
+        # #4331: without core.quotePath=false git lists it as "src/Core/Th\\303\\250me.cpp", which matched nothing.
+        self.write("src/Core/Thème.cpp", "int t() { return 7; }\n")
+        self.edit_cmake("    src/Core/B.cpp\n", "    src/Core/B.cpp\n    src/Core/Thème.cpp\n")
+        self.commit("add Thème.cpp")
+        self.assertEqual(self.run_script(), ["src/Core/Thème.cpp"])
+
     def test_listing_an_existing_cpp_selects_it(self) -> None:
         # Only CMakeLists.txt changes: the file itself is not in the diff, the list entry selects it.
         self.edit_cmake("    src/Core/B.cpp\n", "    src/Core/B.cpp\n    src/Core/Orphan.cpp\n")
