@@ -23,11 +23,19 @@ on:
         default: '23.1.5'
       build_benchmarks:
         description: >-
-          Linux only: after the tests, reconfigure with TASKSMACK_BUILD_BENCHMARKS=ON and build
-          the TaskSmackBenchmarks target (compile/link only, no timing run)
+          After the tests, reconfigure with TASKSMACK_BUILD_BENCHMARKS=ON and build the
+          TaskSmackBenchmarks target (compile/link only, no timing run). Linux and Windows x64
+          (the Windows benchmark sources were never built before a release tag, #4349)
         required: false
         type: boolean
         default: false
+      run_tests:
+        description: >-
+          Windows only: run the tests. Off for arm64.yml's nightly Windows ARM64 release leg,
+          which only has to prove the release configuration still builds (#4349)
+        required: false
+        type: boolean
+        default: true
       build:
         description: >-
           Build and test. Off for ci.yml's nightly Windows debug job, which only runs clang-tidy
@@ -258,7 +266,7 @@ jobs:
       # code never ran in CI (#2134). Mesa's llvmpipe beside the test executables (in the build
       # tree; the test binaries load it before System32's opengl32.dll) is a software GL 4.6.
       - name: Software OpenGL for the display tests (Windows)
-        if: runner.os == 'Windows' && inputs.build
+        if: runner.os == 'Windows' && inputs.build && inputs.run_tests
         uses: ./.github/actions/setup-mesa-llvmpipe
         with:
           copy-to: build/win-${{ inputs.build_type }}/tests
@@ -484,7 +492,7 @@ jobs:
           cache-hit: ${{ steps.fetchcontent.outputs.cache-hit }}
 
       - name: Test (Windows)
-        if: runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build
+        if: runner.os == 'Windows' && runner.arch != 'ARM64' && inputs.build && inputs.run_tests
         shell: pwsh
         env:
           # llvmpipe (beside the test executables, see "Software OpenGL for the display tests")
@@ -510,7 +518,7 @@ jobs:
       # real OS paths are exercised on the ARM64 binary that ships. A case ARM64 can't run skips inside the test
       # with its reason; any that is expected there goes in $arm64Skips below, with that reason.
       - name: Real-system tests (Windows)
-        if: ${{ !cancelled() && runner.os == 'Windows' && inputs.build && steps.build-windows.outcome == 'success' }}
+        if: ${{ !cancelled() && runner.os == 'Windows' && inputs.build && inputs.run_tests && steps.build-windows.outcome == 'success' }}
         shell: pwsh
         timeout-minutes: 10
         env:
@@ -614,7 +622,7 @@ jobs:
       # (--repeat until-pass:2); everything else runs exactly as on x64, first. The two reports are
       # merged below, so the Job Summary and the artifact still list every entry.
       - name: Test (Windows ARM64)
-        if: runner.os == 'Windows' && runner.arch == 'ARM64' && inputs.build
+        if: runner.os == 'Windows' && runner.arch == 'ARM64' && inputs.build && inputs.run_tests
         shell: pwsh
         env:
           TASKSMACK_REQUIRE_DISPLAY: '1'
@@ -628,6 +636,19 @@ jobs:
           if ($suites -ne 0) { Write-Host "::error::ctest (every entry but the pwsh-script label) exited $suites" }
           if ($scripts -ne 0) { Write-Host "::error::ctest (the pwsh-script label, two attempts each) exited $scripts" }
           if ($suites -ne 0 -or $scripts -ne 0) { exit 1 }
+
+      # Windows: the same build-only check (#4349). #1673 was "TaskSmackBenchmarks doesn't link on
+      # Windows", found by hand, since the four bench_Windows*.cpp sources were compiled by no workflow.
+      # Only ci.yml's nightly Windows release job and arm64.yml's nightly ARM64 release leg turn it on.
+      - name: Build benchmarks (Windows)
+        if: runner.os == 'Windows' && inputs.build && inputs.build_benchmarks && steps.build-windows.outcome == 'success'
+        shell: pwsh
+        env:
+          LLVM_ROOT: C:\Program Files\LLVM
+        run: |
+          cmake --preset win-${{ inputs.build_type }} -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_PCH=${{ env.PCH }} -DTASKSMACK_ENABLE_CCACHE=ON -DTASKSMACK_BUILD_BENCHMARKS=ON ${{ env.WIN_DEBUG_CI_ARGS }} ${{ steps.cmake-checks.outputs.cmake-args }}
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          cmake --build --preset win-${{ inputs.build_type }} --target TaskSmackBenchmarks
 
       # ctest runs one entry per gtest suite (#1871); each entry also writes gtest's own report, one
       # testcase per case, to gtest-results/. Fold those into one JUnit file so the artifact and the

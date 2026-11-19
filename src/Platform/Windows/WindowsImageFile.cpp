@@ -29,7 +29,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 namespace Platform::Windows
@@ -42,7 +41,7 @@ namespace
 /// Win32 error @p error as the system words it.
 [[nodiscard]] std::string describe(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// SECTION_IMAGE_INFORMATION, which NtQueryInformationProcess's ProcessImageInformation (class 37) fills from the

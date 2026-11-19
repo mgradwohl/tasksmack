@@ -23,7 +23,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <vector>
 
 #include <knownfolders.h>
@@ -38,7 +37,7 @@ namespace
 
 [[nodiscard]] std::string lastErrorText()
 {
-    return std::system_category().message(static_cast<int>(GetLastError()));
+    return Platform::WinString::win32ErrorText(GetLastError());
 }
 
 /// @p ownToken restricted as UAC restricts an administrator's: Administrators and "local account and

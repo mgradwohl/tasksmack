@@ -13,6 +13,7 @@
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 
 #include <gtest/gtest.h>
@@ -32,7 +33,6 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
-#include <system_error>
 #include <thread>
 #include <utility>
 #include <variant>
@@ -392,7 +392,7 @@ TEST(BrokerPipeTest, ALowIntegrityClientIsRefused)
         GTEST_SKIP() << "no low-integrity token here: " << connected.error();
     }
     EXPECT_NE(*connected, "opened");
-    EXPECT_TRUE(connected->contains(std::system_category().message(ERROR_ACCESS_DENIED))) << *connected;
+    EXPECT_TRUE(connected->contains(Platform::WinString::win32ErrorText(ERROR_ACCESS_DENIED))) << *connected;
 }
 
 TEST(BrokerPipeTest, TheServerCanIdentifyTheClientButNotActAsIt)
