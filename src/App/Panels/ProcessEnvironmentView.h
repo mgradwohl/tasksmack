@@ -26,6 +26,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Utf8CaseFold.h"
 #include "ProcessEnvironmentMasking.h"
 #include "SectionCaches.h"
 
@@ -290,8 +291,8 @@ class ProcessEnvironmentView
                               [this](std::size_t i)
                               {
                                   const Row& row = m_Rows[i];
-                                  return Platform::containsIgnoreCase(row.name, m_Filter) ||
-                                         (!isMasked(row) && Platform::containsIgnoreCase(row.value, m_Filter));
+                                  return Platform::containsFoldedCase(row.name, m_Filter) ||
+                                         (!isMasked(row) && Platform::containsFoldedCase(row.value, m_Filter));
                               });
     }
 

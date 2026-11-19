@@ -5,6 +5,7 @@
 
 #include "Domain/AccountName.h"
 #include "Platform/AsciiCase.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <cstdint>
 #include <string_view>
@@ -24,12 +25,12 @@ isStale(std::uint64_t adoptedVersion, std::uint64_t filterVersion, std::string_v
     return adoptedVersion != filterVersion || searchTerm != cachedSearchTerm;
 }
 
-/// Whether `term` is in a process's name or its command line, ASCII case aside, as the user guide says
-/// (#838). Platform::containsIgnoreCase() allocates nothing and scans by the term's first character, so a
-/// long command line costs about one pass per row.
+/// Whether `term` is in a process's name or its command line, case aside, as the user guide says (#838), by
+/// Unicode simple case folding (#4302: "émile" finds "Émile.exe"). Platform::containsFoldedCase() allocates
+/// nothing, and ASCII text takes the ASCII scan, so a long command line costs about one pass per row.
 [[nodiscard]] constexpr bool matches(std::string_view name, std::string_view command, std::string_view term) noexcept
 {
-    return Platform::containsIgnoreCase(name, term) || Platform::containsIgnoreCase(command, term);
+    return Platform::containsFoldedCase(name, term) || Platform::containsFoldedCase(command, term);
 }
 
 /// As above, or `term` is in the owner's account (#3328): its short name, its domain, or "PC\\alice" across
