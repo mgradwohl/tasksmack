@@ -203,9 +203,10 @@ Example (Ubuntu/Debian):
 sudo apt install clang-23 clang-tidy-23 clang-format-23 lld-23 llvm-23 libc++-23-dev libc++abi-23-dev cmake ninja-build ccache
 # The compiler runtimes the coverage, PGO and sanitizer presets link (only a Recommends of clang-23)
 sudo apt install libclang-rt-23-dev
-# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL)
+# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL); libdecor's for
+# native Wayland decorations, which a Release build requires (#4440: -DTASKSMACK_REQUIRE_LIBDECOR=OFF opts out)
 sudo apt install libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
-    libwayland-dev libxkbcommon-dev
+    libwayland-dev libxkbcommon-dev libdecor-0-dev
 
 # Python 3.14 (Ubuntu 24.04's python3 is 3.12; tools/setup-dev.sh adds the deadsnakes PPA for it),
 # with GLAD's hash-locked dependencies in the project venv

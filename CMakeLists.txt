@@ -412,6 +412,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # a process's environment block, out of its PEB (#2569)
     src/Platform/Windows/WindowsProcessIconSource.cpp
     src/Platform/Windows/WindowsProcessModules.cpp
+    src/Platform/Windows/WindowsHeldFileVersion.cpp # a held file's version resource, read through its handle: Publisher and Modules (#4057, #4373)
     src/Platform/Windows/WindowsProcessMemoryMap.cpp # a process's memory map: VirtualQueryEx, GetMappedFileNameW (#3089)
     src/Platform/Windows/WindowsProcessOpenFiles.cpp
     src/Platform/Windows/WindowsProcessSecurity.cpp
@@ -1053,6 +1054,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMachine.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessEnvironmentReader.cpp # Process Details' environment of another user's process (#3610)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessModules.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsHeldFileVersion.cpp # the modules' versions, read through a held file (#4373)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessOpenFiles.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessConnections.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSocketTables.cpp
@@ -1077,7 +1079,6 @@ if(WIN32)
         bcrypt # BCryptGenRandom (BrokerPipe)
         iphlpapi # the process's TCP and UDP tables (WindowsProcessConnections)
         ws2_32 # ntohs and the address formatting there
-        version # a module's file description and version (WindowsProcessModules)
         wtsapi32 # the sessions a Disconnect or Sign out names, and the call itself (WindowsUserSessions, #3076)
     )
 
