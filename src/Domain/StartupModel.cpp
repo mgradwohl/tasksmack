@@ -36,7 +36,7 @@ void StartupModel::sample()
     // letters fold by Unicode simple case folding, then bytes break ties, whatever the locale (#2566, #4324).
     const auto lessIgnoringCase = [](const Platform::StartupEntry& a, const Platform::StartupEntry& b)
     {
-        return Platform::compareFoldedCase(a.name, b.name) < 0;
+        return Platform::compareFolded(a.name, b.name) < 0;
     };
     std::ranges::stable_sort(next->entries, lessIgnoringCase);
     if (m_Capabilities.hasImpact)

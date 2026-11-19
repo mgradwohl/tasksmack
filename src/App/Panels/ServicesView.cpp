@@ -37,7 +37,7 @@ namespace
 
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
 
-using Platform::compareFoldedCase;
+using Platform::compareFolded;
 using Platform::containsFoldedCase;
 
 [[nodiscard]] std::strong_ordering compareBy(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b, ServiceColumn column)
@@ -45,18 +45,18 @@ using Platform::containsFoldedCase;
     switch (column)
     {
     case ServiceColumn::DisplayName:
-        return compareFoldedCase(a.displayName, b.displayName);
+        return compareFolded(a.displayName, b.displayName);
     case ServiceColumn::State:
         return serviceStateSortRank(a.state) <=> serviceStateSortRank(b.state);
     case ServiceColumn::StartType:
-        return compareFoldedCase(serviceStartTypeLabel(a.startType), serviceStartTypeLabel(b.startType));
+        return compareFolded(serviceStartTypeLabel(a.startType), serviceStartTypeLabel(b.startType));
     case ServiceColumn::Pid:
         return a.pid <=> b.pid;
     case ServiceColumn::Account:
-        return compareFoldedCase(a.account, b.account);
+        return compareFolded(a.account, b.account);
     case ServiceColumn::Name:
     default:
-        return compareFoldedCase(a.name, b.name);
+        return compareFolded(a.name, b.name);
     }
 }
 
@@ -70,11 +70,11 @@ using Platform::containsFoldedCase;
 /// service name (case-insensitive, then exact), so two services never compare equal by name alone.
 [[nodiscard]] std::strong_ordering compareByListedName(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
 {
-    if (const std::strong_ordering order = compareFoldedCase(listedName(a), listedName(b)); order != 0)
+    if (const std::strong_ordering order = compareFolded(listedName(a), listedName(b)); order != 0)
     {
         return order;
     }
-    if (const std::strong_ordering order = compareFoldedCase(a.name, b.name); order != 0)
+    if (const std::strong_ordering order = compareFolded(a.name, b.name); order != 0)
     {
         return order;
     }

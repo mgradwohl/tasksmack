@@ -414,13 +414,13 @@ class ProcessMemoryMapView
         case Detail::MemoryMapColumn::Size:
             return a.mapping.sizeBytes() <=> b.mapping.sizeBytes();
         case Detail::MemoryMapColumn::Kind:
-            return Platform::compareFoldedCase(a.kind, b.kind);
+            return Platform::compareFolded(a.kind, b.kind);
         case Detail::MemoryMapColumn::Protection:
-            return Platform::compareFoldedCase(a.protection, b.protection);
+            return Platform::compareFolded(a.protection, b.protection);
         case Detail::MemoryMapColumn::Resident:
             return a.mapping.residentBytes <=> b.mapping.residentBytes; // none sorts first
         case Detail::MemoryMapColumn::Path:
-            return Platform::compareFoldedCase(a.path, b.path);
+            return Platform::compareFolded(a.path, b.path);
         case Detail::MemoryMapColumn::Address:
             break;
         }

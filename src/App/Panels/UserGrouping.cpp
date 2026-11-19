@@ -63,7 +63,7 @@ constexpr std::uint64_t USEC_PER_SECOND = 1'000'000;
 
 /// An account by domain and user name, case variants equivalent by Unicode simple case folding, as Windows
 /// compares account names (#3310, #4302). A key, so compareFolded() with no tie-break, not a sort's
-/// compareFoldedCase(). The key views the rows' names, so a process's names are looked up without building a string.
+/// compareFolded(). The key views the rows' names, so a process's names are looked up without building a string.
 struct AccountLess
 {
     using Names = std::pair<std::string_view, std::string_view>; // domain, user

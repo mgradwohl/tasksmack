@@ -85,7 +85,7 @@ void ServiceModel::sample()
     // letters fold by Unicode simple case folding, then bytes break ties, whatever the locale (#2566, #4324).
     const auto lessIgnoringCase = [](const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
     {
-        return Platform::compareFoldedCase(a.name, b.name) < 0;
+        return Platform::compareFolded(a.name, b.name) < 0;
     };
     std::ranges::sort(next->services, lessIgnoringCase);
     // The PID index too (#1880), built here on the sampler thread rather than by each reader.

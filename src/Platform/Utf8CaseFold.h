@@ -227,10 +227,11 @@ namespace Utf8CaseFoldDetail
     return false;
 }
 
-/// The order of @p a and @p b by Unicode simple case folding alone: case variants ("PC\\alice", "pc\\ALICE") are
-/// equivalent. For keys that identify one thing however it is spelled, as Windows compares account names; a
-/// user-visible sort wants compareFoldedCase(), which breaks those ties.
-[[nodiscard]] constexpr std::weak_ordering compareFolded(std::string_view a, std::string_view b) noexcept
+/// The order of @p a and @p b by Unicode simple case folding alone: case variants ("PC\\alice", "pc\\ALICE") compare
+/// equal, as compareIgnoreCase()'s do (a strong_ordering for the same reason: callers order by it and then by their
+/// own tie-breakers). For keys that identify one thing however it is spelled, and for sorts that break ties by
+/// another key; a sort with no tie-breaker of its own wants compareFoldedCase().
+[[nodiscard]] constexpr std::strong_ordering compareFolded(std::string_view a, std::string_view b) noexcept
 {
     if (Utf8CaseFoldDetail::isAscii(a) && Utf8CaseFoldDetail::isAscii(b))
     {
@@ -259,7 +260,7 @@ namespace Utf8CaseFoldDetail
 /// same fold as matching, with a byte-wise tie-break; not locale collation).
 [[nodiscard]] constexpr std::strong_ordering compareFoldedCase(std::string_view a, std::string_view b) noexcept
 {
-    const std::weak_ordering folded = compareFolded(a, b);
+    const std::strong_ordering folded = compareFolded(a, b);
     if (folded < 0)
     {
         return std::strong_ordering::less;

@@ -66,9 +66,9 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
     {
         return !a.empty();
     }
-    // Unicode simple case folding, then bytes (#4324): not std::tolower, which follows the C locale main() sets,
-    // so the app and the tests (in the "C" locale) could order the column differently.
-    return ascending ? Platform::compareFoldedCase(a, b) < 0 : Platform::compareFoldedCase(b, a) < 0;
+    // Unicode simple case folding (#4324): not std::tolower, which follows the C locale main() sets, so the app and
+    // the tests (in the "C" locale) could order the column differently. Ties fall to the table's own tie-breakers.
+    return ascending ? Platform::compareFolded(a, b) < 0 : Platform::compareFolded(b, a) < 0;
 }
 
 /// The column's own key comparison, with no tie-breaker: equal keys compare false both ways.

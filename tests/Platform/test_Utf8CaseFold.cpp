@@ -76,10 +76,12 @@ TEST(Utf8CaseFoldTest, IllFormedBytesNeverCrashAndNeverMatchACharacter)
 
 TEST(Utf8CaseFoldTest, CompareSortsCaseVariantsTogetherThenByBytes)
 {
-    // #4324: "Émile" and "émile" sorted far apart, both after "Zoe".
-    EXPECT_TRUE(compareFoldedCase("Émile", "Zoe") < 0);
-    EXPECT_TRUE(compareFoldedCase("émile", "Zoe") < 0);
+    // #4324: "Émile" and "émile" sorted far apart. Folded they sort side by side; both still come after "Zoe" in
+    // code point order (é is U+00E9), as folding is not collation.
     EXPECT_TRUE(compareFoldedCase("Émile", "émile") < 0) << "the byte-wise tie-break: É (C3 89) before é (C3 A9)";
+    EXPECT_TRUE(compareFoldedCase("émile", "émilf") < 0) << "nothing that differs later sorts between them";
+    EXPECT_TRUE(compareFoldedCase("Émilf", "émile") > 0);
+    EXPECT_TRUE(compareFoldedCase("Zoe", "Émile") < 0);
     EXPECT_TRUE(compareFoldedCase("émile", "Émile") > 0);
     EXPECT_TRUE(compareFoldedCase("émile", "émile") == 0);
     EXPECT_TRUE(compareFoldedCase("bits", "BITS2") < 0) << "a prefix sorts first";

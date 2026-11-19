@@ -59,13 +59,13 @@ using Domain::HandleSearch::SearchPublication;
     switch (column)
     {
     case FindHandlesColumn::Process:
-        return Platform::compareFoldedCase(a.process, b.process);
+        return Platform::compareFolded(a.process, b.process);
     case FindHandlesColumn::Pid:
         return a.target.pid <=> b.target.pid;
     case FindHandlesColumn::Kind:
         return Domain::HandleSearch::kindLabel(a.kind) <=> Domain::HandleSearch::kindLabel(b.kind);
     case FindHandlesColumn::Path:
-        return Platform::compareFoldedCase(a.path, b.path);
+        return Platform::compareFolded(a.path, b.path);
     }
     return std::strong_ordering::equal;
 }

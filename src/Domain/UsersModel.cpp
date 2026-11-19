@@ -35,7 +35,7 @@ void UsersModel::sample()
     std::ranges::stable_sort(next->sessions,
                              [](const Platform::UserSession& a, const Platform::UserSession& b)
                              {
-                                 if (const auto byUser = Platform::compareFoldedCase(a.user, b.user); byUser != 0)
+                                 if (const auto byUser = Platform::compareFolded(a.user, b.user); byUser != 0)
                                  {
                                      return byUser < 0;
                                  }

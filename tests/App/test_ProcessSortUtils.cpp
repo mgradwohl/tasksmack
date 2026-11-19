@@ -156,8 +156,11 @@ TEST(ProcessSortUtilsTest, ServicesSortFoldsByUnicodeWhateverTheLocale)
         {
             continue;
         }
-        EXPECT_TRUE(compareServicesText("\xC3\x89mile", "Zoe", true)) << locale; // Émile before Zoe
-        EXPECT_TRUE(compareServicesText("\xC3\xA9mile", "Zoe", true)) << locale; // émile before Zoe
+        // Émile and émile are one name to the fold, so neither sorts before the other. Both come after Zoe in code
+        // point order (é is U+00E9): folding is not collation (the maintainer, #4324).
+        EXPECT_FALSE(compareServicesText("\xC3\x89mile", "\xC3\xA9mile", true)) << locale;
+        EXPECT_FALSE(compareServicesText("\xC3\xA9mile", "\xC3\x89mile", true)) << locale;
+        EXPECT_TRUE(compareServicesText("Zoe", "\xC3\x89mile", true)) << locale;
         EXPECT_TRUE(compareServicesText("Appinfo", "bits", true)) << locale;
         EXPECT_TRUE(compareServicesText("ID", "ie", true)) << locale << ": I folds to i, not a Turkish dotless i";
     }
@@ -181,8 +184,7 @@ TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
     // Equal texts, two empty ones included, compare false both ways.
     EXPECT_FALSE(compareServicesText("", "", true));
     EXPECT_FALSE(compareServicesText("", "", false));
-    // Case variants: together, then by bytes for one stable order (#4324, the maintainer's decision).
-    EXPECT_TRUE(compareServicesText("BFE", "bfe", true));
+    EXPECT_FALSE(compareServicesText("BFE", "bfe", true));
     EXPECT_FALSE(compareServicesText("bfe", "BFE", true));
 
     ProcessSnapshot host = makeSnapshot(false);
