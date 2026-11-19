@@ -47,7 +47,7 @@ def main() -> int:
     out.write(f"inline constexpr std::array<std::pair<std::uint32_t, std::uint32_t>, {len(pairs)}> SIMPLE_FOLDS{{{{\n")
     for cp, to in pairs:
         out.write(f"    {{0x{cp:04X}, 0x{to:04X}}},\n")
-    out.write("}};\n\n} // namespace Platform::UnicodeCaseFold\n")
+    out.write("},\n};\n\n} // namespace Platform::UnicodeCaseFold\n")
     return 0
 
 
