@@ -149,7 +149,7 @@ void ProcessModulesView::renderTable()
             ImGui::TableNextColumn();
             UI::Widgets::cellText(row.size);
             ImGui::TableNextColumn();
-            UI::Widgets::cellText(row.module.path);
+            UI::Widgets::cellText(row.path);
         }
     }
     ImGui::EndTable();
