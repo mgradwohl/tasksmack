@@ -4,6 +4,7 @@
 // tested without ImGui (test_IncrementalSearch.cpp).
 
 #include "Platform/AsciiCase.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <cstddef>
 #include <optional>
@@ -29,7 +30,7 @@ findMatch(std::span<const std::string_view> names, std::optional<std::size_t> fr
     for (std::size_t step = first; step < names.size() + first; ++step)
     {
         const std::size_t row = (start + step) % names.size();
-        if (Platform::containsIgnoreCase(names[row], query))
+        if (Platform::containsFoldedCase(names[row], query))
         {
             return row;
         }
