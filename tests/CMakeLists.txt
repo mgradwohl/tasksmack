@@ -323,6 +323,12 @@ endif()
 add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
 set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 
+# tools/cpp-deps-sbom.py: the source SBOM and the OSV gate list every FetchContent_Declare() pin, at its commit,
+# with its licence, and a pin missing from the SBOM fails (#4438). Pure Python and offline (OSV is a fake), so on
+# every platform.
+add_test(NAME CppDepsSbomScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cpp_deps_sbom.py)
+set_tests_properties(CppDepsSbomScript PROPERTIES TIMEOUT 60)
+
 # The NSIS uninstaller's start-at-sign-in step (#3093 part 2), cmake/CPackProjectConfig.cmake.in: it deletes
 # the HKCU Run value only when it starts this installation's TaskSmack.exe. Pure Python, on every platform.
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
