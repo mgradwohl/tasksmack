@@ -4,24 +4,41 @@
 /// between the size query and the copy, a module unloaded mid-read, an enumeration that fails, and the handle closed
 /// exactly once. And #4373: the path in the process's loader data is shown, never opened; the version comes from the
 /// file the kernel says the image was mapped from, and only from one on a local volume, so a module mapped from a
-/// network share or a device is listed, says its version wasn't read, and is never opened. Plus one read of this test
-/// process through the real calls.
+/// network share or a device is listed, says its version wasn't read, and is never opened; and that file is opened by
+/// its NT name with no reparse followed and identification-level security, and isn't read when it is a link, off a disk
+/// or a redirector's. Plus reads of this test process through the real calls, and a junction in a scratch folder that
+/// the real open refuses to follow.
 
 #include "Mocks/WindowsFakeProcessIdentity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessModules.h"
+#include "Support/Junction.h"
+#include "Support/PeImageBuilder.h"
 
 #include <gtest/gtest.h>
 
+// clang-format off
+#include <winioctl.h> // FILE_DEVICE_DISK and the other device types
+#include <winternl.h> // OBJECT_ATTRIBUTES
+// clang-format on
+
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
+#include <filesystem>
+#include <format>
+#include <fstream>
 #include <functional>
+#include <ios>
 #include <map>
 #include <optional>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <vector>
 
 namespace Platform::Windows
@@ -94,7 +111,13 @@ BOOL WINAPI fakeEnumProcessModulesEx(HANDLE /*process*/, HMODULE* modules, DWORD
         {
             const auto base = 0x7FF900000000ULL + (static_cast<std::uintptr_t>(i) * 0x100000U);
             const std::wstring path = L"C:\\Late\\late" + std::to_wstring(i) + L".dll";
-            fake().modules.push_back({.base = base, .size = 0x1000, .path = path, .mapped = onC(path), .unloaded = false});
+            fake().modules.push_back({
+                .base = base,
+                .size = 0x1000,
+                .path = path,
+                .mapped = onC(path),
+                .unloaded = false,
+            });
         }
     }
     *needed = static_cast<DWORD>(fake().modules.size() * sizeof(HMODULE));
@@ -213,18 +236,20 @@ std::optional<ModuleVersion> fakeReadFileVersion(const std::wstring& ntName)
 
 ProcessModuleFunctions fakeApi()
 {
-    return {.openProcess = &Identity::openProcess,
-            .closeHandle = &Identity::closeHandle,
-            .getProcessTimes = &Identity::getProcessTimes,
-            .getExitCodeProcess = &Identity::getExitCodeProcess,
-            .enumProcessModulesEx = &fakeEnumProcessModulesEx,
-            .getModuleFileNameEx = &fakeGetModuleFileNameEx,
-            .getModuleInformation = &fakeGetModuleInformation,
-            .getMappedFileName = &fakeGetMappedFileName,
-            .getLogicalDrives = &fakeGetLogicalDrives,
-            .queryDosDevice = &fakeQueryDosDevice,
-            .getDriveType = &fakeGetDriveType,
-            .readFileVersion = &fakeReadFileVersion};
+    return {
+        .openProcess = &Identity::openProcess,
+        .closeHandle = &Identity::closeHandle,
+        .getProcessTimes = &Identity::getProcessTimes,
+        .getExitCodeProcess = &Identity::getExitCodeProcess,
+        .enumProcessModulesEx = &fakeEnumProcessModulesEx,
+        .getModuleFileNameEx = &fakeGetModuleFileNameEx,
+        .getModuleInformation = &fakeGetModuleInformation,
+        .getMappedFileName = &fakeGetMappedFileName,
+        .getLogicalDrives = &fakeGetLogicalDrives,
+        .queryDosDevice = &fakeQueryDosDevice,
+        .getDriveType = &fakeGetDriveType,
+        .readFileVersion = &fakeReadFileVersion,
+    };
 }
 
 constexpr ModuleVersion NTDLL_64{.major = 10, .minor = 0, .build = 26100, .revision = 4202};
@@ -243,17 +268,28 @@ class WindowsProcessModulesTest : public ::testing::Test
     {
         fake() = {};
         fake().modules = {
-            {.base = 0x7FF6A0000000, .size = 0x52000, .path = L"C:\\Apps\\app.exe", .mapped = onC(L"C:\\Apps\\app.exe"), .unloaded = false},
-            {.base = 0x7FF8A1B20000,
-             .size = 0x1F8000,
-             .path = L"C:\\Windows\\System32\\ntdll.dll",
-             .mapped = onC(L"C:\\Windows\\System32\\ntdll.dll"),
-             .unloaded = false},
-            {.base = 0x77A00000,
-             .size = 0x1A000,
-             .path = L"C:\\Windows\\SysWOW64\\ntdll.dll",
-             .mapped = onC(L"C:\\Windows\\SysWOW64\\ntdll.dll"),
-             .unloaded = false}};
+            {
+                .base = 0x7FF6A0000000,
+                .size = 0x52000,
+                .path = L"C:\\Apps\\app.exe",
+                .mapped = onC(L"C:\\Apps\\app.exe"),
+                .unloaded = false,
+            },
+            {
+                .base = 0x7FF8A1B20000,
+                .size = 0x1F8000,
+                .path = L"C:\\Windows\\System32\\ntdll.dll",
+                .mapped = onC(L"C:\\Windows\\System32\\ntdll.dll"),
+                .unloaded = false,
+            },
+            {
+                .base = 0x77A00000,
+                .size = 0x1A000,
+                .path = L"C:\\Windows\\SysWOW64\\ntdll.dll",
+                .mapped = onC(L"C:\\Windows\\SysWOW64\\ntdll.dll"),
+                .unloaded = false,
+            },
+        };
         fake().files = {{onC(L"C:\\Windows\\System32\\ntdll.dll"), NTDLL_64}, {onC(L"C:\\Windows\\SysWOW64\\ntdll.dll"), NTDLL_32}};
     }
 
@@ -297,11 +333,13 @@ TEST_F(WindowsProcessModulesTest, TheLoaderDataPathIsShownButNeverOpened)
 {
     fake().modules[1].path = L"\\\\server\\share\\a.dll";
     fake().modules[2].path = L"\\\\.\\pipe\\x";
-    fake().modules.push_back({.base = 0x7FF8B0000000,
-                              .size = 0x10000,
-                              .path = L"\\\\?\\UNC\\attacker\\share\\b.dll",
-                              .mapped = onC(L"C:\\Windows\\System32\\ntdll.dll"),
-                              .unloaded = false});
+    fake().modules.push_back({
+        .base = 0x7FF8B0000000,
+        .size = 0x10000,
+        .path = L"\\\\?\\UNC\\attacker\\share\\b.dll",
+        .mapped = onC(L"C:\\Windows\\System32\\ntdll.dll"),
+        .unloaded = false,
+    });
     WindowsProcessModulesReader reader(fakeApi());
     const ModulesReadResult result = reader.readModules(TARGET);
     ASSERT_EQ(result.status, ModulesReadStatus::Ok);
@@ -327,8 +365,13 @@ TEST_F(WindowsProcessModulesTest, ADecoyLoaderPathGetsTheMappedImagesVersion)
     fake().files.emplace(payload, PAYLOAD);
     fake().files.emplace(onC(L"C:\\Windows\\System32\\kernel32.dll"),
                          ModuleVersion{.major = 10, .minor = 0, .build = 26100, .revision = 1});
-    fake().modules.push_back(
-        {.base = 0x7FF8C0000000, .size = 0x8000, .path = L"C:\\Windows\\System32\\kernel32.dll", .mapped = payload, .unloaded = false});
+    fake().modules.push_back({
+        .base = 0x7FF8C0000000,
+        .size = 0x8000,
+        .path = L"C:\\Windows\\System32\\kernel32.dll",
+        .mapped = payload,
+        .unloaded = false,
+    });
     WindowsProcessModulesReader reader(fakeApi());
     const ModulesReadResult result = reader.readModules(TARGET);
     ASSERT_EQ(result.modules.size(), 4U);
@@ -342,23 +385,34 @@ TEST_F(WindowsProcessModulesTest, ADecoyLoaderPathGetsTheMappedImagesVersion)
 // connect, with TaskSmack's credentials (or the elevated helper's), to wherever it is.
 TEST_F(WindowsProcessModulesTest, AModuleMappedFromANetworkShareOrADeviceIsListedButNeverOpened)
 {
-    fake().modules.push_back({.base = 0x10000000,
-                              .size = 0x1000,
-                              .path = L"\\\\server\\share\\a.dll",
-                              .mapped = L"\\Device\\Mup\\server\\share\\a.dll",
-                              .unloaded = false});
-    fake().modules.push_back({.base = 0x20000000,
-                              .size = 0x1000,
-                              .path = L"Z:\\tools\\z.dll",
-                              .mapped = std::wstring(Z_DEVICE) + L"\\tools\\z.dll",
-                              .unloaded = false});
-    fake().modules.push_back(
-        {.base = 0x30000000, .size = 0x1000, .path = L"\\\\.\\pipe\\x", .mapped = L"\\Device\\NamedPipe\\x", .unloaded = false});
-    fake().modules.push_back({.base = 0x40000000,
-                              .size = 0x1000,
-                              .path = L"C:\\Windows\\System32\\x.dll",
-                              .mapped = L"\\Device\\HarddiskVolume3\\..\\Mup\\server\\share\\x.dll",
-                              .unloaded = false});
+    fake().modules.push_back({
+        .base = 0x10000000,
+        .size = 0x1000,
+        .path = L"\\\\server\\share\\a.dll",
+        .mapped = L"\\Device\\Mup\\server\\share\\a.dll",
+        .unloaded = false,
+    });
+    fake().modules.push_back({
+        .base = 0x20000000,
+        .size = 0x1000,
+        .path = L"Z:\\tools\\z.dll",
+        .mapped = std::wstring(Z_DEVICE) + L"\\tools\\z.dll",
+        .unloaded = false,
+    });
+    fake().modules.push_back({
+        .base = 0x30000000,
+        .size = 0x1000,
+        .path = L"\\\\.\\pipe\\x",
+        .mapped = L"\\Device\\NamedPipe\\x",
+        .unloaded = false,
+    });
+    fake().modules.push_back({
+        .base = 0x40000000,
+        .size = 0x1000,
+        .path = L"C:\\Windows\\System32\\x.dll",
+        .mapped = L"\\Device\\HarddiskVolume3\\..\\Mup\\server\\share\\x.dll",
+        .unloaded = false,
+    });
     WindowsProcessModulesReader reader(fakeApi());
     const ModulesReadResult result = reader.readModules(TARGET);
     ASSERT_EQ(result.status, ModulesReadStatus::Ok);
@@ -384,8 +438,20 @@ TEST_F(WindowsProcessModulesTest, ACdRomDrivesFileAndAnUnletteredVolumesFileAreR
     const std::wstring unlettered = L"\\Device\\HarddiskVolume12\\mnt\\e.dll";
     fake().files.emplace(onD, ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4});
     fake().files.emplace(unlettered, ModuleVersion{.major = 5, .minor = 6, .build = 7, .revision = 8});
-    fake().modules.push_back({.base = 0x10000000, .size = 0x1000, .path = L"D:\\setup\\d.dll", .mapped = onD, .unloaded = false});
-    fake().modules.push_back({.base = 0x20000000, .size = 0x1000, .path = L"C:\\mnt\\e.dll", .mapped = unlettered, .unloaded = false});
+    fake().modules.push_back({
+        .base = 0x10000000,
+        .size = 0x1000,
+        .path = L"D:\\setup\\d.dll",
+        .mapped = onD,
+        .unloaded = false,
+    });
+    fake().modules.push_back({
+        .base = 0x20000000,
+        .size = 0x1000,
+        .path = L"C:\\mnt\\e.dll",
+        .mapped = unlettered,
+        .unloaded = false,
+    });
     WindowsProcessModulesReader reader(fakeApi());
     const ModulesReadResult result = reader.readModules(TARGET);
     ASSERT_EQ(result.modules.size(), 5U);
@@ -497,8 +563,9 @@ TEST(WindowsProcessModulesRealTest, ReadsAFilesVersionThroughItsNtName)
     const DWORD length = GetMappedFileNameW(GetCurrentProcess(), ntdll, ntName.data(), static_cast<DWORD>(ntName.size()));
     ASSERT_GT(length, 0U) << GetLastError();
     ntName.resize(length);
-    const std::optional<ModuleVersion> version = readLocalFileVersion(ntName);
-    ASSERT_TRUE(version.has_value());
+    const std::optional<ModuleVersion> read = readLocalFileVersion(ntName);
+    ASSERT_TRUE(read.has_value());
+    const ModuleVersion version = read.value_or(ModuleVersion{});
 
     std::wstring dosPath(32768, L'\0');
     const DWORD dosLength = GetModuleFileNameW(ntdll, dosPath.data(), static_cast<DWORD>(dosPath.size()));
@@ -514,12 +581,278 @@ TEST(WindowsProcessModulesRealTest, ReadsAFilesVersionThroughItsNtName)
     ASSERT_NE(VerQueryValueW(block.data(), L"\\", &data, &bytes), 0);
     ASSERT_GE(bytes, sizeof(VS_FIXEDFILEINFO));
     const auto* fixed = static_cast<const VS_FIXEDFILEINFO*>(data);
-    EXPECT_GE(version->major, HIWORD(fixed->dwFileVersionMS));
-    EXPECT_GE(version->major, 10U);
-    EXPECT_EQ(version->build, HIWORD(fixed->dwFileVersionLS));
-    EXPECT_EQ(version->revision, LOWORD(fixed->dwFileVersionLS));
+    EXPECT_GE(version.major, HIWORD(fixed->dwFileVersionMS));
+    EXPECT_GE(version.major, 10U);
+    EXPECT_EQ(version.build, HIWORD(fixed->dwFileVersionLS));
+    EXPECT_EQ(version.revision, LOWORD(fixed->dwFileVersionLS));
 
     EXPECT_FALSE(readLocalFileVersion(ntName + L".no-such-file").has_value());
+}
+
+// #4373: how readLocalFileVersion() opens a name, through fakes. The kernel's NT name itself (no \\?\GLOBALROOT, a
+// symbolic link), with OBJ_DONT_REPARSE so a junction or symlink on the way fails the open rather than being followed,
+// FILE_OPEN_REPARSE_POINT so one at the name is opened as itself, identification-level security, and no write sharing.
+// Then a link, a handle off a disk, or a redirector's file isn't read.
+struct FakeLocalFile
+{
+    NTSTATUS openStatus = 0;
+    DWORD attributes = FILE_ATTRIBUTE_ARCHIVE;
+    DWORD reparseTag = 0;
+    DWORD deviceType = FILE_DEVICE_DISK;
+    ULONG characteristics = 0;
+    bool remote = false;
+    // What the open was asked.
+    std::wstring name;
+    ULONG objectAttributes = 0;
+    bool rooted = false;
+    SECURITY_IMPERSONATION_LEVEL impersonation = SecurityDelegation;
+    ACCESS_MASK access = 0;
+    ULONG share = 0;
+    ULONG disposition = 0;
+    ULONG options = 0;
+    int opens = 0;
+    int versionReads = 0;
+};
+
+FakeLocalFile& localFile()
+{
+    static FakeLocalFile instance;
+    return instance;
+}
+
+NTSTATUS NTAPI fakeNtCreateFile(PHANDLE handle,
+                                ACCESS_MASK access,
+                                POBJECT_ATTRIBUTES attributes,
+                                PIO_STATUS_BLOCK /*status*/,
+                                PLARGE_INTEGER /*allocationSize*/,
+                                ULONG /*fileAttributes*/,
+                                ULONG share,
+                                ULONG disposition,
+                                ULONG options,
+                                PVOID /*eaBuffer*/,
+                                ULONG /*eaLength*/)
+{
+    FakeLocalFile& file = localFile();
+    ++file.opens;
+    file.name.assign(attributes->ObjectName->Buffer, attributes->ObjectName->Length / sizeof(wchar_t));
+    file.objectAttributes = attributes->Attributes;
+    file.rooted = attributes->RootDirectory != nullptr;
+    if (attributes->SecurityQualityOfService != nullptr)
+    {
+        file.impersonation = static_cast<const SECURITY_QUALITY_OF_SERVICE*>(attributes->SecurityQualityOfService)->ImpersonationLevel;
+    }
+    file.access = access;
+    file.share = share;
+    file.disposition = disposition;
+    file.options = options;
+    if (file.openStatus < 0)
+    {
+        return file.openStatus;
+    }
+    *handle = CreateEventW(nullptr, TRUE, FALSE, nullptr); // a real handle, so its owner closes something real
+    return 0;
+}
+
+NTSTATUS NTAPI fakeNtQueryVolumeInformationFile(HANDLE /*file*/, PIO_STATUS_BLOCK /*status*/, PVOID information, ULONG length, ULONG what)
+{
+    EXPECT_EQ(what, 4U); // FileFsDeviceInformation
+    EXPECT_GE(length, 2 * sizeof(ULONG));
+    const std::array<ULONG, 2> device{localFile().deviceType, localFile().characteristics};
+    std::memcpy(information, device.data(), sizeof(device));
+    return 0;
+}
+
+BOOL WINAPI fakeGetFileInformationByHandleEx(HANDLE /*file*/, FILE_INFO_BY_HANDLE_CLASS what, LPVOID information, DWORD /*bytes*/)
+{
+    if (what == FileAttributeTagInfo)
+    {
+        auto* tag = static_cast<FILE_ATTRIBUTE_TAG_INFO*>(information);
+        tag->FileAttributes = localFile().attributes;
+        tag->ReparseTag = localFile().reparseTag;
+        return TRUE;
+    }
+    EXPECT_EQ(what, FileRemoteProtocolInfo);
+    return localFile().remote ? TRUE : FALSE;
+}
+
+std::optional<ModuleVersion> fakeReadHeldVersion(HANDLE /*file*/)
+{
+    ++localFile().versionReads;
+    return ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4};
+}
+
+constexpr LocalFileFunctions FAKE_LOCAL_FILE{
+    .ntCreateFile = &fakeNtCreateFile,
+    .ntQueryVolumeInformationFile = &fakeNtQueryVolumeInformationFile,
+    .getFileInformationByHandleEx = &fakeGetFileInformationByHandleEx,
+    .readHeldVersion = &fakeReadHeldVersion,
+};
+
+constexpr std::wstring_view LOCAL_NAME = L"\\Device\\HarddiskVolume3\\Windows\\System32\\ntdll.dll";
+
+class WindowsLocalFileVersionTest : public ::testing::Test
+{
+  protected:
+    void SetUp() override
+    {
+        localFile() = {};
+    }
+};
+
+TEST_F(WindowsLocalFileVersionTest, OpensTheKernelsNameWithoutFollowingAnyReparseAndForIdentificationOnly)
+{
+    EXPECT_EQ(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE),
+              std::optional(ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4}));
+    const FakeLocalFile& file = localFile();
+    EXPECT_EQ(file.name, LOCAL_NAME) << R"(the NT name itself, not through \\?\GLOBALROOT)";
+    EXPECT_FALSE(file.rooted);
+    EXPECT_NE(file.objectAttributes & 0x00001000U, 0U) << "OBJ_DONT_REPARSE";
+    EXPECT_NE(file.objectAttributes & static_cast<ULONG>(OBJ_CASE_INSENSITIVE), 0U);
+    EXPECT_NE(file.options & static_cast<ULONG>(FILE_OPEN_REPARSE_POINT), 0U);
+    EXPECT_NE(file.options & static_cast<ULONG>(FILE_NON_DIRECTORY_FILE), 0U);
+    EXPECT_NE(file.options & static_cast<ULONG>(FILE_SYNCHRONOUS_IO_NONALERT), 0U);
+    EXPECT_EQ(file.impersonation, SecurityIdentification);
+    EXPECT_EQ(file.disposition, static_cast<ULONG>(FILE_OPEN));
+    EXPECT_EQ(file.share, static_cast<ULONG>(FILE_SHARE_READ | FILE_SHARE_DELETE)) << "never shared for write";
+    EXPECT_EQ(file.access & (GENERIC_WRITE | FILE_WRITE_DATA | DELETE), 0U);
+    EXPECT_EQ(file.versionReads, 1);
+}
+
+TEST_F(WindowsLocalFileVersionTest, AFailedOpenIsNoVersion)
+{
+    localFile().openStatus = static_cast<NTSTATUS>(0xC000050BL); // STATUS_REPARSE_POINT_ENCOUNTERED
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+    EXPECT_EQ(localFile().versionReads, 0);
+}
+
+TEST_F(WindowsLocalFileVersionTest, ALinkAHandleOffADiskOrARedirectorsFileIsNotRead)
+{
+    localFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
+    localFile().reparseTag = IO_REPARSE_TAG_SYMLINK;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value()) << "a symlink, opened as itself";
+    localFile().reparseTag = IO_REPARSE_TAG_MOUNT_POINT;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value()) << "a junction";
+
+    localFile() = {};
+    localFile().deviceType = FILE_DEVICE_NETWORK_FILE_SYSTEM;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+    localFile().deviceType = FILE_DEVICE_NAMED_PIPE;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+    localFile().deviceType = FILE_DEVICE_DISK;
+    localFile().characteristics = 0x00000010; // FILE_REMOTE_DEVICE
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+
+    localFile() = {};
+    localFile().remote = true;
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+    EXPECT_EQ(localFile().versionReads, 0);
+}
+
+// A reparse point that isn't a name surrogate is the file itself (a CompactOS system file's WOF tag), so it is read;
+// so are a CD-ROM's and a virtual disk's files.
+TEST_F(WindowsLocalFileVersionTest, ACompressedFileACdRomAndAVirtualDiskAreRead)
+{
+    localFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
+    localFile().reparseTag = IO_REPARSE_TAG_WOF;
+    EXPECT_TRUE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+    localFile() = {};
+    localFile().deviceType = FILE_DEVICE_CD_ROM;
+    EXPECT_TRUE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+    localFile().deviceType = FILE_DEVICE_VIRTUAL_DISK;
+    EXPECT_TRUE(readLocalFileVersion(std::wstring(LOCAL_NAME), FAKE_LOCAL_FILE).has_value());
+}
+
+TEST_F(WindowsLocalFileVersionTest, NoCallsOrAnEmptyNameIsNoVersion)
+{
+    EXPECT_FALSE(readLocalFileVersion(std::wstring(LOCAL_NAME), LocalFileFunctions{}).has_value());
+    EXPECT_FALSE(readLocalFileVersion(std::wstring{}, FAKE_LOCAL_FILE).has_value());
+    EXPECT_EQ(localFile().opens, 0);
+}
+
+/// A folder of this test's own under the temp folder, removed with everything in it at the end.
+class ScratchFolder
+{
+  public:
+    ScratchFolder()
+        : m_Path(std::filesystem::temp_directory_path() / std::format(L"tasksmack-4373-{}-{}", GetCurrentProcessId(), GetTickCount64()))
+    {
+        std::filesystem::create_directories(m_Path);
+    }
+    ScratchFolder(const ScratchFolder&) = delete;
+    ScratchFolder& operator=(const ScratchFolder&) = delete;
+    ScratchFolder(ScratchFolder&&) = delete;
+    ScratchFolder& operator=(ScratchFolder&&) = delete;
+    ~ScratchFolder()
+    {
+        try
+        {
+            std::error_code ignored;
+            std::filesystem::remove_all(m_Path, ignored);
+        }
+        catch (...) // NOLINT(bugprone-empty-catch) - a destructor; a scratch folder left behind is only clutter
+        {}
+    }
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return m_Path;
+    }
+
+  private:
+    std::filesystem::path m_Path;
+};
+
+/// The NT name of @p path ("\Device\HarddiskVolume3\..."), as GetMappedFileNameW would give it; empty when unreadable.
+[[nodiscard]] std::wstring ntNameOf(const std::filesystem::path& path)
+{
+    const UniqueHandle handle(CreateFileW(path.c_str(),
+                                          FILE_READ_ATTRIBUTES,
+                                          FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                          nullptr,
+                                          OPEN_EXISTING,
+                                          FILE_FLAG_BACKUP_SEMANTICS,
+                                          nullptr));
+    if (!handle)
+    {
+        return {};
+    }
+    std::wstring name(32768, L'\0');
+    const DWORD length =
+        GetFinalPathNameByHandleW(handle.get(), name.data(), static_cast<DWORD>(name.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_NT);
+    if (length == 0 || length >= name.size())
+    {
+        return {};
+    }
+    name.resize(length);
+    return name;
+}
+
+// #4373, on the real system with no network: a PE file with a version, read by its own NT name, reads as that version;
+// the same file named through a junction (one the process could have planted on the way since the name was read) is
+// refused by the open, never followed. The junction is removed before the folder.
+TEST(WindowsProcessModulesRealTest, ANameThroughAJunctionIsNotFollowed)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path target = scratch.path() / L"target";
+    const std::filesystem::path link = scratch.path() / L"link";
+    std::filesystem::create_directory(target);
+    std::filesystem::create_directory(link);
+    const TestSupport::PeImage image =
+        TestSupport::buildPeImage({{0x0409U, TestSupport::versionInfoBlock(u"Co", (7U << 16U) | 8U, (9U << 16U) | 10U)}});
+    {
+        std::ofstream out(target / L"v.dll", std::ios::binary);
+        out.write(reinterpret_cast<const char*>(image.bytes.data()), static_cast<std::streamsize>(image.bytes.size()));
+    }
+    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
+
+    const std::wstring folder = ntNameOf(scratch.path());
+    ASSERT_FALSE(folder.empty()) << GetLastError();
+    EXPECT_EQ(readLocalFileVersion(folder + L"\\target\\v.dll"),
+              std::optional(ModuleVersion{.major = 7, .minor = 8, .build = 9, .revision = 10}));
+    EXPECT_FALSE(readLocalFileVersion(folder + L"\\link\\v.dll").has_value()) << "the junction on the way is never followed";
+    EXPECT_TRUE(std::filesystem::exists(link / L"v.dll")) << "a path through it that a by-name open would have followed";
+
+    ASSERT_TRUE(TestSupport::removeJunction(link)) << "an empty folder again, so removing the scratch folder removes nothing behind it";
 }
 
 } // namespace

@@ -91,7 +91,7 @@ class ProcessModulesView
     {
         Platform::ProcessModule module;
         std::string name;    ///< "ntdll.dll", "libc.so.6 (deleted)"
-        std::string version; ///< "10.0.26100.4202", "Not read: not a local file" (#4373), or empty
+        std::string version; ///< "10.0.26100.4202", "Not read: not on a drive TaskSmack can check" (#4373), or empty
         std::string base;    ///< "0x7FF8A1B20000"
         std::string size;    ///< "2.4 MB"
     };

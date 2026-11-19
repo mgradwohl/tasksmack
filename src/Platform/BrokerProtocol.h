@@ -85,8 +85,8 @@ namespace Platform::Broker
 /// 26: what only the Linux helper used is gone from the requests left (#3784): CloseConnection's socket inode (a
 ///     Windows connection is named by its IPv4 TCP endpoints alone) and Signal's Hangup, Interrupt, Quit, User1 and
 ///     User2 (Windows has no POSIX signals). The kinds keep their numbers.
-/// 27: a ModulesResult module ends with a version-not-read flag (#4373): its file isn't on a local drive, so the
-///     helper didn't open it for its version.
+/// 27: a ModulesResult module ends with a version-not-read flag (#4373): its file isn't on a drive TaskSmack can tell
+///     is local, so the helper didn't open it for its version.
 inline constexpr std::uint16_t PROTOCOL_VERSION = 27;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
