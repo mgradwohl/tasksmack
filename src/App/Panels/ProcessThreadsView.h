@@ -23,6 +23,7 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Utf8CaseFold.h"
 #include "SectionCaches.h"
 #include "ThreadActionControl.h"
 #include "UI/Format.h"
@@ -379,7 +380,7 @@ class ProcessThreadsView
             m_Rows.size(),
             m_Filter,
             [this](std::size_t i)
-            { return Platform::containsIgnoreCase(m_Rows[i].thread.name, m_Filter) || m_Rows[i].tid.contains(m_Filter); });
+            { return Platform::containsFoldedCase(m_Rows[i].thread.name, m_Filter) || m_Rows[i].tid.contains(m_Filter); });
     }
 
     [[nodiscard]] bool hasRead() const noexcept
