@@ -61,25 +61,26 @@ constexpr std::uint64_t USEC_PER_SECOND = 1'000'000;
     return type == "unspecified" ? std::string{} : type;
 }
 
-/// An account by domain and user name, ordered with ASCII case ignored, as Windows compares account names
-/// (#3310). The key views the rows' names, so a process's names are looked up without building a string.
+/// An account by domain and user name, case variants equivalent by Unicode simple case folding, as Windows
+/// compares account names (#3310, #4302). A key, so compareFolded() with no tie-break, not a sort's
+/// compareFoldedCase(). The key views the rows' names, so a process's names are looked up without building a string.
 struct AccountLess
 {
     using Names = std::pair<std::string_view, std::string_view>; // domain, user
 
     [[nodiscard]] bool operator()(const Names& a, const Names& b) const noexcept
     {
-        const auto byDomain = Platform::compareFoldedCase(a.first, b.first);
-        return byDomain != 0 ? byDomain < 0 : Platform::compareFoldedCase(a.second, b.second) < 0;
+        const auto byDomain = Platform::compareFolded(a.first, b.first);
+        return byDomain != 0 ? byDomain < 0 : Platform::compareFolded(a.second, b.second) < 0;
     }
 };
 
-/// A short name ordered with ASCII case ignored, for a Windows process's name (#3310).
+/// A short name, case variants equivalent by Unicode simple case folding (#3310, #4302): a key, as above.
 struct NameLess
 {
     [[nodiscard]] bool operator()(std::string_view a, std::string_view b) const noexcept
     {
-        return Platform::compareFoldedCase(a, b) < 0;
+        return Platform::compareFolded(a, b) < 0;
     }
 };
 

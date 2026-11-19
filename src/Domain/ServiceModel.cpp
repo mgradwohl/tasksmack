@@ -82,7 +82,7 @@ void ServiceModel::sample()
     }
     next->services = std::move(result.services);
     // The table's default order, done once per sample here rather than per frame in the UI. ASCII
-    // letters fold, every other byte sorts as itself whatever the locale (#2566).
+    // letters fold by Unicode simple case folding, then bytes break ties, whatever the locale (#2566, #4324).
     const auto lessIgnoringCase = [](const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
     {
         return Platform::compareFoldedCase(a.name, b.name) < 0;

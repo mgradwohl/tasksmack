@@ -227,15 +227,14 @@ namespace Utf8CaseFoldDetail
     return false;
 }
 
-/// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile", not
-/// after "Zoe"), then by their bytes, so case variants still sort in one stable order (the maintainer, #4324: the
-/// same fold as matching, with a byte-wise tie-break; not locale collation). ASCII text takes the ASCII compare.
-[[nodiscard]] constexpr std::strong_ordering compareFoldedCase(std::string_view a, std::string_view b) noexcept
+/// The order of @p a and @p b by Unicode simple case folding alone: case variants ("PC\\alice", "pc\\ALICE") are
+/// equivalent. For keys that identify one thing however it is spelled, as Windows compares account names; a
+/// user-visible sort wants compareFoldedCase(), which breaks those ties.
+[[nodiscard]] constexpr std::weak_ordering compareFolded(std::string_view a, std::string_view b) noexcept
 {
     if (Utf8CaseFoldDetail::isAscii(a) && Utf8CaseFoldDetail::isAscii(b))
     {
-        const std::strong_ordering folded = compareIgnoreCase(a, b);
-        return folded != 0 ? folded : a.compare(b) <=> 0;
+        return compareIgnoreCase(a, b);
     }
     std::size_t i = 0;
     std::size_t j = 0;
@@ -252,9 +251,22 @@ namespace Utf8CaseFoldDetail
         i += aLength;
         j += bLength;
     }
-    if (i < a.size() || j < b.size())
+    return (i < a.size()) <=> (j < b.size()); // the one with text left is after
+}
+
+/// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile", not
+/// after "Zoe"), then by their bytes, so case variants still sort in one stable order (the maintainer, #4324: the
+/// same fold as matching, with a byte-wise tie-break; not locale collation).
+[[nodiscard]] constexpr std::strong_ordering compareFoldedCase(std::string_view a, std::string_view b) noexcept
+{
+    const std::weak_ordering folded = compareFolded(a, b);
+    if (folded < 0)
     {
-        return (a.size() - i) <=> (b.size() - j);
+        return std::strong_ordering::less;
+    }
+    if (folded > 0)
+    {
+        return std::strong_ordering::greater;
     }
     return a.compare(b) <=> 0;
 }

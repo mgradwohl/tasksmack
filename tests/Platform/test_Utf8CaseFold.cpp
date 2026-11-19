@@ -88,5 +88,14 @@ TEST(Utf8CaseFoldTest, CompareSortsCaseVariantsTogetherThenByBytes)
     EXPECT_TRUE(compareFoldedCase("\u212A", "l") < 0) << "U+212A folds to k, which is before l";
 }
 
+TEST(Utf8CaseFoldTest, CompareFoldedTreatsCaseVariantsAsOneKey)
+{
+    // For keys such as Windows account names (#3310): no tie-break, so the variants are equivalent.
+    EXPECT_TRUE(compareFolded("alice", "ALICE") == 0);
+    EXPECT_TRUE(compareFolded("\xC3\x89lodie", "\xC3\xA9LODIE") == 0); // Élodie, éLODIE
+    EXPECT_TRUE(compareFolded("alice", "alicex") < 0);
+    EXPECT_TRUE(compareFolded("bob", "Alice") > 0);
+}
+
 } // namespace
 } // namespace Platform
