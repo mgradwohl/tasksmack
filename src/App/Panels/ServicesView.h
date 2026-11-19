@@ -6,6 +6,7 @@
 
 #include "Domain/ServiceModel.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -86,9 +87,16 @@ struct ServicesViewState
 
     std::string unavailableHeading; ///< The empty state's heading when the list can't be read.
 
-    std::string selectedName;      ///< The selected row's service (#1577); empty when none.
+    std::string selectedName; ///< The selected row's service (#1577); empty when none.
+    /// The selected row's id (#4304): None when it was selected by name alone.
+    Platform::NativeId selectedNativeId = Platform::NativeId::None;
     bool scrollToSelected = false; ///< Scroll the selected row into view on the next draw (#1886)
 };
+
+/// The service the action bar acts on (#4304): the one row @p state's selection names. A selection by name alone
+/// (Show in Services) that one service answers to is pinned to its id in @p state; one that two or more answer to
+/// (names alike once shown as UTF-8) names none, until a row is clicked. Null when none answers.
+[[nodiscard]] const Platform::ServiceInfo* selectedService(std::span<const Platform::ServiceInfo> services, ServicesViewState& state);
 
 class ServiceActionsView;
 class ProcessIconView;

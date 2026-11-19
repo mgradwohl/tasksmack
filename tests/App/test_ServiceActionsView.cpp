@@ -9,6 +9,7 @@
 #include "App/Panels/ServiceActionsView.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 #include "Support/RestartOffered.h"
 #include "UI/IconsFontAwesome6.h"
 
@@ -25,7 +26,6 @@
 #include <stdexcept>
 #include <stop_token>
 #include <string>
-#include <string_view>
 #include <thread>
 
 namespace App
@@ -37,7 +37,12 @@ using Platform::ServiceState;
 namespace SvcDetail = ServiceActionsDetail;
 
 constexpr Platform::ServiceActionCapabilities ALL{
-    .canStart = true, .canStop = true, .canRestart = true, .canSetStartType = true, .elevated = false};
+    .canStart = true,
+    .canStop = true,
+    .canRestart = true,
+    .canSetStartType = true,
+    .elevated = false,
+};
 
 /// Answers every action with `result`, counting the calls (made on the action worker).
 class FakeServiceActions final : public Platform::IServiceActions
@@ -56,21 +61,25 @@ class FakeServiceActions final : public Platform::IServiceActions
     {
         return m_Caps;
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& /*service*/,
+                                                      const std::stop_token& /*stopToken*/) override
     {
         ++starts;
         return result;
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& /*service*/,
+                                                     const std::stop_token& /*stopToken*/) override
     {
         ++stops;
         return result;
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& /*service*/,
+                                                        const std::stop_token& /*stopToken*/) override
     {
         return result;
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType type) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& /*service*/,
+                                                             Platform::ServiceStartType type) override
     {
         lastStartType = type;
         ++startTypes;
@@ -98,19 +107,21 @@ class GatedServiceActions final : public Platform::IServiceActions
     {
         return ALL;
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& stopToken) override
+    [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& /*service*/, const std::stop_token& stopToken) override
     {
         return block(stopToken);
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& stopToken) override
+    [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& /*service*/, const std::stop_token& stopToken) override
     {
         return block(stopToken);
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& stopToken) override
+    [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& /*service*/,
+                                                        const std::stop_token& stopToken) override
     {
         return block(stopToken);
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& /*service*/,
+                                                             Platform::ServiceStartType /*type*/) override
     {
         return Platform::ServiceActionResult::succeeded();
     }
@@ -142,19 +153,23 @@ class ThrowingServiceActions final : public Platform::IServiceActions
     {
         return ALL;
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& /*service*/,
+                                                      const std::stop_token& /*stopToken*/) override
     {
         throw std::runtime_error("boom");
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& /*service*/,
+                                                     const std::stop_token& /*stopToken*/) override
     {
         throw std::runtime_error("boom");
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& /*service*/,
+                                                        const std::stop_token& /*stopToken*/) override
     {
         throw std::runtime_error("boom");
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& /*service*/,
+                                                             Platform::ServiceStartType /*type*/) override
     {
         throw std::runtime_error("boom");
     }
@@ -249,6 +264,14 @@ TEST(ServiceActionsDetailTest, DestructiveActionsConfirm)
     EXPECT_TRUE(SvcDetail::needsConfirm(SvcDetail::makeRequest(Restart, spooler)));
     EXPECT_TRUE(SvcDetail::needsConfirm(SvcDetail::makeRequest(SetStartType, spooler, Platform::ServiceStartType::Disabled)));
     EXPECT_FALSE(SvcDetail::needsConfirm(SvcDetail::makeRequest(SetStartType, spooler, Platform::ServiceStartType::Manual)));
+}
+
+// #4304: the request carries the listed service's id, which the actions resolve; never rebuilt from its name.
+TEST(ServiceActionsDetailTest, ARequestCarriesTheListedId)
+{
+    auto spooler = service("Spooler", ServiceState::Running);
+    spooler.nativeId = static_cast<Platform::NativeId>(42);
+    EXPECT_EQ(SvcDetail::makeRequest(ServiceActionKind::Stop, spooler).nativeId, spooler.nativeId);
 }
 
 // #2118: Manual on a critical service that starts at boot asks first -- after the next restart it won't
@@ -389,21 +412,25 @@ TEST(ServiceActionsViewTest, AStartTypeChangeThatThrowsAnythingElseIsAnUnknownEr
         {
             return ALL;
         }
-        [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+        [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& /*service*/,
+                                                          const std::stop_token& /*stopToken*/) override
         {
             return Platform::ServiceActionResult::succeeded();
         }
-        [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+        [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& /*service*/,
+                                                         const std::stop_token& /*stopToken*/) override
         {
             return Platform::ServiceActionResult::succeeded();
         }
-        [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+        [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& /*service*/,
+                                                            const std::stop_token& /*stopToken*/) override
         {
             return Platform::ServiceActionResult::succeeded();
         }
-        [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+        [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& /*service*/,
+                                                                 Platform::ServiceStartType /*type*/) override
         {
-            throw 42; // NOLINT(hicpp-exception-baseclass) - not a std::exception, on purpose
+            throw 42; // NOLINT(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - not a std::exception, on purpose
         }
     };
     ServiceActionsView view(std::make_shared<ThrowsAnything>());
@@ -433,19 +460,23 @@ class AdministratorOnlyServiceActions final : public Platform::IServiceActions
     {
         return ALL;
     }
-    [[nodiscard]] Platform::ServiceActionResult start(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult start(const Platform::ServiceTarget& /*service*/,
+                                                      const std::stop_token& /*stopToken*/) override
     {
         return refused();
     }
-    [[nodiscard]] Platform::ServiceActionResult stop(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult stop(const Platform::ServiceTarget& /*service*/,
+                                                     const std::stop_token& /*stopToken*/) override
     {
         return refused();
     }
-    [[nodiscard]] Platform::ServiceActionResult restart(std::string_view /*name*/, const std::stop_token& /*stopToken*/) override
+    [[nodiscard]] Platform::ServiceActionResult restart(const Platform::ServiceTarget& /*service*/,
+                                                        const std::stop_token& /*stopToken*/) override
     {
         return refused();
     }
-    [[nodiscard]] Platform::ServiceActionResult setStartType(std::string_view /*name*/, Platform::ServiceStartType /*type*/) override
+    [[nodiscard]] Platform::ServiceActionResult setStartType(const Platform::ServiceTarget& /*service*/,
+                                                             Platform::ServiceStartType /*type*/) override
     {
         return refused();
     }
@@ -583,7 +614,7 @@ class ServiceActionsViewRenderTest : public ::testing::Test
 
 TEST_F(ServiceActionsViewRenderTest, RowMenuEnablesOnlyTheActionsThatApply)
 {
-    auto fake = std::make_shared<FakeServiceActions>();
+    const auto fake = std::make_shared<FakeServiceActions>();
     ServiceActionsView view(fake);
     const auto running = service("Spooler", ServiceState::Running);
 
@@ -600,7 +631,7 @@ TEST_F(ServiceActionsViewRenderTest, RowMenuEnablesOnlyTheActionsThatApply)
 
 TEST_F(ServiceActionsViewRenderTest, StartFromTheMenuRunsWithoutAConfirm)
 {
-    auto fake = std::make_shared<FakeServiceActions>();
+    const auto fake = std::make_shared<FakeServiceActions>();
     ServiceActionsView view(fake);
     const auto stopped = service("Spooler", ServiceState::Stopped);
 
@@ -615,7 +646,7 @@ TEST_F(ServiceActionsViewRenderTest, StartFromTheMenuRunsWithoutAConfirm)
 
 TEST_F(ServiceActionsViewRenderTest, CriticalStopConfirmsCentredThenShowsTheResult)
 {
-    auto fake = std::make_shared<FakeServiceActions>();
+    const auto fake = std::make_shared<FakeServiceActions>();
     fake->result = Platform::ServiceActionResult::failed("Requires administrator");
     ServiceActionsView view(fake);
     const auto rpcss = service("RpcSs", ServiceState::Running);
@@ -651,7 +682,7 @@ TEST_F(ServiceActionsViewRenderTest, CriticalStopConfirmsCentredThenShowsTheResu
 // #1891: Restart, confirmed, runs on the worker and says so; its confirm button is labelled for it.
 TEST_F(ServiceActionsViewRenderTest, ARestartConfirmedRunsAndSaysItRestarted)
 {
-    auto fake = std::make_shared<FakeServiceActions>();
+    const auto fake = std::make_shared<FakeServiceActions>();
     ServiceActionsView view(fake);
     const auto running = service("Spooler", ServiceState::Running);
     view.request(SvcDetail::makeRequest(ServiceActionKind::Restart, running));
@@ -674,7 +705,7 @@ TEST_F(ServiceActionsViewRenderTest, ARestartConfirmedRunsAndSaysItRestarted)
 
 TEST_F(ServiceActionsViewRenderTest, ACancelledConfirmRunsNothing)
 {
-    auto fake = std::make_shared<FakeServiceActions>();
+    const auto fake = std::make_shared<FakeServiceActions>();
     ServiceActionsView view(fake);
     const auto running = service("Spooler", ServiceState::Running);
     view.request(SvcDetail::makeRequest(ServiceActionKind::Stop, running));

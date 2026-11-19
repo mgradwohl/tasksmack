@@ -7,10 +7,14 @@
 /// can't be listed or read). The registry is never read
 /// or written; the "Startup folders" are directories the test makes under its own temp directory.
 
+#include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
 #include "Platform/Windows/ComPtr.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsConversions.h"
+#include "Platform/Windows/WindowsNativeIds.h"
+#include "Platform/Windows/WindowsStartupActions.h"
 #include "Platform/Windows/WindowsStartupProbe.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
 
@@ -36,6 +40,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -43,6 +48,7 @@
 #include <format>
 #include <fstream>
 #include <ios>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -885,12 +891,16 @@ TEST_F(WindowsStartupProbeSeamsTest, ListsPackagedStartupTasksAsTaskManagerDoes)
     fake().packages.push_back({.family = CHAT_FAMILY, .fullName = CHAT_FULL, .folder = chat.wstring()});
     addTaskKey(CHAT_FAMILY,
                L"chat", // the registry's case needn't match the manifest's
-               {{.name = L"State", .type = REG_DWORD, .data = dwordData(1)},
-                {.name = L"LastDisabledTime", .type = REG_QWORD, .data = qwordData(DISABLED_AT)}});
+               {
+                   {.name = L"State", .type = REG_DWORD, .data = dwordData(1)},
+                   {.name = L"LastDisabledTime", .type = REG_QWORD, .data = qwordData(DISABLED_AT)},
+               });
     addTaskKey(CHAT_FAMILY,
                L"Policy",
-               {{.name = L"State", .type = REG_DWORD, .data = dwordData(4)},
-                {.name = L"LastDisabledTime", .type = REG_DWORD, .data = dwordData(1234)}}); // enabled: no time shown
+               {
+                   {.name = L"State", .type = REG_DWORD, .data = dwordData(4)},
+                   {.name = L"LastDisabledTime", .type = REG_DWORD, .data = dwordData(1234)},
+               }); // enabled: no time shown
     // A task the manifest no longer declares (Task Manager drops it too).
     addTaskKey(CHAT_FAMILY, L"OldLauncher", {{.name = L"State", .type = REG_DWORD, .data = dwordData(2)}});
 
@@ -973,10 +983,12 @@ TEST_F(WindowsStartupProbeSeamsTest, PackagedTasksThatCantBeResolvedAreSkipped)
     // they were sized; a folder with no manifest; and a manifest another handle holds exclusively.
     fake().familyFailingAfterSizing = L"Contoso.Listless_l1";
     fake().packages.push_back({.family = L"Contoso.Listless_l1", .fullName = L"Contoso.Listless_1_x64__l1", .folder = quirks.wstring()});
-    fake().packages.push_back({.family = L"Contoso.Pathless_p1",
-                               .fullName = L"Contoso.Pathless_1_x64__p1",
-                               .folder = quirks.wstring(),
-                               .pathFailsAfterSizing = true});
+    fake().packages.push_back({
+        .family = L"Contoso.Pathless_p1",
+        .fullName = L"Contoso.Pathless_1_x64__p1",
+        .folder = quirks.wstring(),
+        .pathFailsAfterSizing = true,
+    });
     fake().packages.push_back(
         {.family = L"Contoso.NoManifest_n1", .fullName = L"Contoso.NoManifest_1_x64__n1", .folder = makeFolder(L"empty").wstring()});
     const std::filesystem::path locked = makeFolder(L"locked");
@@ -1013,8 +1025,10 @@ TEST_F(WindowsStartupProbeSeamsTest, OddAnswersFromTheRegistryAndPackageApisList
     addTaskKey(L"Contoso.Short_s1", L"Word", {{.name = L"State", .type = REG_DWORD, .data = {2, 0}}});
     addTaskKey(L"Contoso.Short_s1",
                L"Qword",
-               {{.name = L"State", .type = REG_QWORD, .data = dwordData(2)},
-                {.name = L"LastDisabledTime", .type = REG_QWORD, .data = dwordData(1)}});
+               {
+                   {.name = L"State", .type = REG_QWORD, .data = dwordData(2)},
+                   {.name = L"LastDisabledTime", .type = REG_QWORD, .data = dwordData(1)},
+               });
     // A family whose task subkey can't be enumerated, and one whose key opens to no handle.
     addTaskKey(L"Contoso.Unlisted_u1", L"Task", enabled);
     ensureUserKey(std::format(L"{}\\Contoso.Unlisted_u1", Math::PACKAGED_TASKS_KEY)).enumKeyFails = {0};
@@ -1029,15 +1043,19 @@ TEST_F(WindowsStartupProbeSeamsTest, OddAnswersFromTheRegistryAndPackageApisList
     addTaskKey(L"Contoso.SizedEmpty_e1", L"Task", enabled);
     fake().familySizedEmpty = L"Contoso.SizedEmpty_e1";
     addTaskKey(L"Contoso.Unnamed_m1", L"Task", enabled);
-    fake().packages.push_back({.family = L"Contoso.Unnamed_m1",
-                               .fullName = L"Contoso.Unnamed_1.0.0.0_x64__m1",
-                               .folder = folder.wstring(),
-                               .listedWithoutName = true});
+    fake().packages.push_back({
+        .family = L"Contoso.Unnamed_m1",
+        .fullName = L"Contoso.Unnamed_1.0.0.0_x64__m1",
+        .folder = folder.wstring(),
+        .listedWithoutName = true,
+    });
     addTaskKey(L"Contoso.NoFolder_f1", L"Task", enabled);
-    fake().packages.push_back({.family = L"Contoso.NoFolder_f1",
-                               .fullName = L"Contoso.NoFolder_1.0.0.0_x64__f1",
-                               .folder = folder.wstring(),
-                               .pathSizedEmpty = true});
+    fake().packages.push_back({
+        .family = L"Contoso.NoFolder_f1",
+        .fullName = L"Contoso.NoFolder_1.0.0.0_x64__f1",
+        .folder = folder.wstring(),
+        .pathSizedEmpty = true,
+    });
 
     WindowsStartupProbe probe(fakeFunctions());
     EXPECT_TRUE(probe.enumerate().empty());
@@ -1091,5 +1109,114 @@ TEST_F(WindowsStartupProbeSeamsTest, AShortcutWithoutATargetReadsNothing)
     }
     EXPECT_FALSE(Windows::readShortcutCommand(shortcut).has_value());
 }
+// --- Native identities (#4304) --------------------------------------------------------------------------------
+
+/// What the actions' fake registry was asked to write: each StartupApproved value name, exactly.
+struct FakeWrites
+{
+    std::vector<std::wstring> names;
+    int open = 0; ///< Created minus closed.
+};
+
+FakeWrites& writes()
+{
+    static FakeWrites instance;
+    return instance;
+}
+
+LSTATUS WINAPI writeCreate(HKEY /*root*/,
+                           LPCWSTR /*subkey*/,
+                           DWORD /*reserved*/,
+                           LPWSTR /*cls*/,
+                           DWORD /*options*/,
+                           REGSAM /*access*/,
+                           LPSECURITY_ATTRIBUTES /*security*/,
+                           PHKEY result,
+                           LPDWORD /*disposition*/)
+{
+    ++writes().open;
+    *result = reinterpret_cast<HKEY>(std::uintptr_t{0x4304}); // NOLINT(performance-no-int-to-ptr): a fake handle
+    return ERROR_SUCCESS;
+}
+
+LSTATUS WINAPI writeOpen(HKEY /*root*/, LPCWSTR /*subkey*/, DWORD /*options*/, REGSAM /*access*/, PHKEY /*result*/)
+{
+    return ERROR_FILE_NOT_FOUND;
+}
+
+LSTATUS WINAPI writeQuery(HKEY /*key*/, LPCWSTR /*name*/, LPDWORD /*reserved*/, LPDWORD /*type*/, LPBYTE /*data*/, LPDWORD /*size*/)
+{
+    return ERROR_FILE_NOT_FOUND; // no record yet
+}
+
+LSTATUS WINAPI writeSet(HKEY /*key*/, LPCWSTR name, DWORD /*reserved*/, DWORD /*type*/, const BYTE* /*data*/, DWORD /*size*/)
+{
+    writes().names.emplace_back(name);
+    return ERROR_SUCCESS;
+}
+
+LSTATUS WINAPI writeClose(HKEY /*key*/)
+{
+    --writes().open;
+    return ERROR_SUCCESS;
+}
+
+void WINAPI writeNow(LPFILETIME time)
+{
+    *time = FILETIME{};
+}
+
+TEST_F(WindowsStartupProbeSeamsTest, RunValuesAreSwitchedByTheIdsTheProbeListedThemWith)
+{
+    // "Up<U+D800>date" and "Up<U+FFFD>date" show the same; "OneDrive\0x" hides behind the real OneDrive.
+    const std::wstring lone = std::wstring(L"Up") + static_cast<wchar_t>(0xD800) + L"date";
+    const std::wstring replaced = L"Up\uFFFDdate";
+    const std::wstring hidden(L"OneDrive\0x", 10);
+    const std::wstring oneDrive = L"OneDrive";
+    addKey(HKEY_CURRENT_USER, RUN_KEY).values = {
+        {.name = lone, .type = REG_SZ, .data = stringData(L"C:\\TaskSmack-4304\\a.exe")},
+        {.name = replaced, .type = REG_SZ, .data = stringData(L"C:\\TaskSmack-4304\\b.exe")},
+        {.name = hidden, .type = REG_SZ, .data = stringData(L"C:\\TaskSmack-4304\\c.exe")},
+        {.name = oneDrive, .type = REG_SZ, .data = stringData(L"C:\\TaskSmack-4304\\d.exe")},
+    };
+    const auto ids = std::make_shared<Windows::StartupIdTable>();
+    WindowsStartupProbe probe(fakeFunctions(), nullptr, [] { return std::chrono::steady_clock::now(); }, ids);
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 4U);
+    EXPECT_EQ(entries[0].registrationName, entries[1].registrationName) << "the same display text";
+    EXPECT_EQ(entries[2].registrationName,
+              "OneDrive\xE2\x90\x80"
+              "x")
+        << "the NUL shown, not cut at";
+
+    WindowsStartupActions actions(false,
+                                  {
+                                      .createKey = &writeCreate,
+                                      .openKey = &writeOpen,
+                                      .queryValue = &writeQuery,
+                                      .setValue = &writeSet,
+                                      .closeKey = &writeClose,
+                                      .now = &writeNow,
+                                  },
+                                  nullptr,
+                                  ids);
+    const std::vector<std::wstring> exact{lone, replaced, hidden, oneDrive};
+    for (std::size_t index = 0; index < entries.size(); ++index)
+    {
+        writes() = FakeWrites{};
+        EXPECT_NE(entries[index].nativeId, NativeId::None);
+        const StartupActionResult result = actions.setEnabled(entries[index], false);
+        if (exact[index] == hidden)
+        {
+            EXPECT_FALSE(result.ok) << "a NUL in the name is refused";
+            EXPECT_TRUE(writes().names.empty()) << "and the real OneDrive's record is untouched";
+            continue;
+        }
+        EXPECT_TRUE(result.ok) << result.message;
+        EXPECT_EQ(writes().names, (std::vector<std::wstring>{exact[index]})) << "recorded under its exact name";
+        EXPECT_EQ(writes().open, 0);
+    }
+}
+
 } // namespace
 } // namespace Platform
