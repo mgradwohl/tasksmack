@@ -2,9 +2,10 @@
 
 /// @file PeImageBuilder.h
 /// @brief A minimal PE file with a version resource, built byte by byte for the version resource walk's tests
-/// (#4057): VersionResourceMath::findVersionResource() on every platform, and Windows::heldFilePublisher() on a file
-/// a test writes. Only what the walk reads is filled in: the DOS header's e_lfanew, the PE signature, the file header's
-/// section count and optional header size, the optional header's magic and resource directory, one .rsrc section, and
+/// (#4057, #4373): VersionResourceMath::findVersionResource() and fixedFileVersion() on every platform, and
+/// Windows::heldFilePublisher() and heldFileVersion() on a file a test writes. Only what the walk reads is filled in:
+/// the DOS header's e_lfanew, the PE signature, the file header's section count and optional header size, the
+/// optional header's magic and resource directory, one .rsrc section, and
 /// the type, name and language directories down to each language's VS_VERSIONINFO block. The offsets of each piece
 /// are kept, so a test can break one. No Windows header.
 
@@ -84,12 +85,15 @@ struct VersionNode // NOLINT(misc-no-recursion) - a tree, built and written recu
 }
 
 /// A VS_VERSIONINFO block naming @p companyName in the US English Unicode table (040904B0), with a translation
-/// table that lists it.
-[[nodiscard]] inline std::vector<std::byte> versionInfoBlock(std::u16string_view companyName)
+/// table that lists it, and @p fileVersionMs and @p fileVersionLs as its VS_FIXEDFILEINFO's file version (#4373).
+[[nodiscard]] inline std::vector<std::byte>
+versionInfoBlock(std::u16string_view companyName, std::uint32_t fileVersionMs = 0, std::uint32_t fileVersionLs = 0)
 {
     std::vector<std::byte> fixed;
     put32(fixed, 0, 0xFEEF04BDU); // VS_FIXEDFILEINFO's dwSignature
     put32(fixed, 4, 0x00010000U); // dwStrucVersion
+    put32(fixed, 8, fileVersionMs);
+    put32(fixed, 12, fileVersionLs);
     fixed.resize(52);
     std::vector<std::byte> translation;
     put32(translation, 0, 0x04B00409U); // US English, Unicode
