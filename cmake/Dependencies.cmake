@@ -278,8 +278,8 @@ if(UNIX AND NOT APPLE)
         endif()
         if(TASKSMACK_REQUIRE_LIBDECOR AND NOT _tasksmack_libdecor_loaded)
             message(FATAL_ERROR "SDL was built without libdecor (${_tasksmack_sdl_build_config}), so native Wayland "
-                                "decorations would leave a window with no frame on GNOME (#4440). Install libdecor-0-dev "
-                                "(tools/setup-dev.sh does), or configure with -DTASKSMACK_REQUIRE_LIBDECOR=OFF.")
+                                "decorations would leave a window with no frame on GNOME (#4440). Install libdecor-0-dev, "
+                                "or configure with -DTASKSMACK_REQUIRE_LIBDECOR=OFF.")
         endif()
     endforeach()
     unset(_tasksmack_sdl_build_configs)
