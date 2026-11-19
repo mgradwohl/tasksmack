@@ -272,21 +272,22 @@ bool ROCmGPUProbe::Impl::loadROCmSMI()
 
 bool ROCmGPUProbe::Impl::loadSymbols()
 {
-    // Try to load librocm_smi64.so (dynamic loading for graceful fallback)
+    // Load ROCm SMI by any of its sonames, newest first (#4441): dynamic loading for graceful fallback.
     // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
     if (rocmHandle == nullptr)
     {
-        rocmHandle = dlopen("librocm_smi64.so.6", RTLD_NOW);
-    }
-    if (rocmHandle == nullptr)
-    {
-        rocmHandle = dlopen("librocm_smi64.so", RTLD_NOW);
-        if (rocmHandle == nullptr)
+        const auto [handle, name] = ROCmGPUProbeMath::openFirstLibrary(ROCmGPUProbeMath::ROCM_SMI_LIBRARY_NAMES,
+                                                                       [](const char* candidate) { return dlopen(candidate, RTLD_NOW); });
+        if (handle == nullptr)
         {
             // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() is safe in single-threaded init
-            spdlog::debug("ROCmGPUProbe: Failed to load librocm_smi64.so - {}", dlerror());
+            const char* error = dlerror();
+            spdlog::debug("ROCmGPUProbe: Failed to load ROCm SMI (librocm_smi64.so.7/.6/.5/.1, unversioned, /opt/rocm/lib) - {}",
+                          error != nullptr ? error : "not found");
             return false;
         }
+        rocmHandle = handle;
+        spdlog::info("ROCmGPUProbe: loaded {}", name);
     }
 
 // Load function pointers

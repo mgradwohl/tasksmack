@@ -32,6 +32,47 @@ namespace
 // missing-symbol branches the fixed-behavior mock library (tests/Mocks/ROCmMock.cpp) never
 // takes -- it always succeeds, so these paths are otherwise unreachable via ROCmGPUProbe itself.
 
+// #4441: a distribution's runtime package ships only a versioned name (librocm_smi64.so.1), so every soname is tried,
+// newest first, then the unversioned name and /opt/rocm.
+TEST(ROCmGPUProbeMathTest, LibraryNamesTryEverySonameNewestFirst)
+{
+    using ROCmGPUProbeMath::ROCM_SMI_LIBRARY_NAMES;
+    const std::vector<std::string_view> names(ROCM_SMI_LIBRARY_NAMES.begin(), ROCM_SMI_LIBRARY_NAMES.end());
+    EXPECT_EQ(names,
+              (std::vector<std::string_view>{"librocm_smi64.so.7",
+                                             "librocm_smi64.so.6",
+                                             "librocm_smi64.so.5",
+                                             "librocm_smi64.so.1",
+                                             "librocm_smi64.so",
+                                             "/opt/rocm/lib/librocm_smi64.so"}));
+}
+
+TEST(ROCmGPUProbeMathTest, OpenFirstLibraryTakesTheFirstNameThatOpens)
+{
+    static int marker = 0;
+    std::vector<std::string_view> tried;
+    const auto onlySo1 = [&tried](const char* name) -> void*
+    {
+        tried.emplace_back(name);
+        return std::string_view(name) == "librocm_smi64.so.1" ? &marker : nullptr;
+    };
+    const auto [handle, name] = ROCmGPUProbeMath::openFirstLibrary(ROCmGPUProbeMath::ROCM_SMI_LIBRARY_NAMES, onlySo1);
+    EXPECT_EQ(handle, &marker);
+    ASSERT_NE(name, nullptr);
+    EXPECT_STREQ(name, "librocm_smi64.so.1");
+    EXPECT_EQ(tried,
+              (std::vector<std::string_view>{"librocm_smi64.so.7", "librocm_smi64.so.6", "librocm_smi64.so.5", "librocm_smi64.so.1"}))
+        << "stops at the first that opens";
+
+    const auto none = [](const char* /*name*/) -> void*
+    {
+        return nullptr;
+    };
+    const auto [noHandle, noName] = ROCmGPUProbeMath::openFirstLibrary(ROCmGPUProbeMath::ROCM_SMI_LIBRARY_NAMES, none);
+    EXPECT_EQ(noHandle, nullptr);
+    EXPECT_EQ(noName, nullptr);
+}
+
 TEST(ROCmGPUProbeMathTest, ResolveErrorStringReturnsLibraryStringWhenAvailable)
 {
     const auto result = ROCmGPUProbeMath::resolveErrorString(7, [](std::uint32_t) -> const char* { return "Input out of bounds"; });
