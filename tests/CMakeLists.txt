@@ -109,6 +109,10 @@ if(WIN32)
         # errors from a non-ASCII byte (#4319): #Requires lines, ASCII-only newcomer scripts, the 5.1 parser.
         add_test(NAME Ps1CompatScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-ps1-compat.ps1)
+        # tools/iwyu.ps1 reads wslpath's UTF-8 output as UTF-8, so a non-ASCII user name survives (#4321).
+        # Stub wsl; WSL itself never runs.
+        add_test(NAME IwyuScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-iwyu.ps1)
         # tools/setup-dev.ps1 installs winget's newest version of a package, with a warning, when the
         # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
         add_test(NAME SetupDevScript

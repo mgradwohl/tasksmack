@@ -51,6 +51,31 @@ $ErrorActionPreference = 'Stop'
 # pwsh -File hands "-Files a.cpp,b.cpp" over as the one string "a.cpp,b.cpp" (#3615); split it.
 $Files = @($Files | ForEach-Object { $_ -split ',' } | ForEach-Object { $_.Trim() } | Where-Object { $_ })
 
+# What WSL prints is UTF-8 (a path under C:\Users\Jos<e acute> is /mnt/c/Users/Jos<e acute>), and PowerShell would
+# decode a native tool's output as the OEM code page (#4321). Decode the bytes as UTF-8 and ignore the console's.
+# Takes wsl.exe's path and a Windows path; returns the exit code and the translated path.
+function Get-WslPath {
+    param([Parameter(Mandatory)][string]$Wsl, [Parameter(Mandatory)][string]$Path)
+    $startInfo = [System.Diagnostics.ProcessStartInfo]::new($Wsl)
+    foreach ($argument in @('-e', 'wslpath', '-a', ($Path -replace '\\', '/'))) { $startInfo.ArgumentList.Add($argument) }
+    $startInfo.UseShellExecute = $false
+    $startInfo.RedirectStandardOutput = $true
+    $startInfo.StandardOutputEncoding = [System.Text.UTF8Encoding]::new($false)
+    $process = [System.Diagnostics.Process]::Start($startInfo)
+    try {
+        $output = $process.StandardOutput.ReadToEnd()
+        $process.WaitForExit()
+        return [pscustomobject]@{ ExitCode = $process.ExitCode; Path = $output.Trim() }
+    }
+    finally {
+        $process.Dispose()
+    }
+}
+
+# Same for what iwyu.sh prints, which names source files.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $scriptPath = Join-Path $scriptDir 'iwyu.sh'
 $projectRoot = Split-Path -Parent $scriptDir
@@ -69,8 +94,9 @@ if (-not $wsl) {
 }
 
 # The repository root as WSL sees it (honours a custom automount root, unlike a hard-coded /mnt/<drive>).
-$projectRootForBash = (& $wsl.Source -e wslpath -a ($projectRoot -replace '\\', '/') | Out-String).Trim()
-if ($LASTEXITCODE -ne 0 -or -not $projectRootForBash) {
+$translated = Get-WslPath -Wsl $wsl.Source -Path $projectRoot
+$projectRootForBash = $translated.Path
+if ($translated.ExitCode -ne 0 -or -not $projectRootForBash) {
     Write-Error "wslpath could not translate '$projectRoot' into a WSL path."
     exit 1
 }
