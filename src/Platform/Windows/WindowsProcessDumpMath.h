@@ -79,8 +79,14 @@ namespace Detail
     {
         std::size_t prefix = 0;
         const std::size_t length = Domain::Utf8Detail::sequenceAt(text, at, prefix);
-        units += (length == 4) ? 2 : (length != 0 ? 1 : prefix);
-        at += (length != 0) ? length : prefix;
+        if (length == 0)
+        {
+            units += prefix;
+            at += prefix;
+            continue;
+        }
+        units += (length == 4) ? 2 : 1;
+        at += length;
     }
     return units;
 }
