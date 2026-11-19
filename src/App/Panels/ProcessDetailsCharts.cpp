@@ -1911,7 +1911,7 @@ void ProcessDetailsCharts::renderNpuHistoryGraphs(const ProcessChartContext& ctx
             .value01 = smoothed.npuMemoryAvailable ? UI::Widgets::normalizeToUnitInterval(bytes, memAxisUpper) : 0.0,
             .color = color,
             .marker = ImPlotMarker_None,
-            .available = smoothed.gpuMemoryAvailable, // N/A is drawn hatched, not as a 0 bar (#1935)
+            .available = smoothed.npuMemoryAvailable, // N/A is drawn hatched, not as a 0 bar (#1935); the NPU's flag (#4380)
         };
     };
     const NowBar dedicatedBar = memBar(NPU_DEDICATED_LABEL, smoothed.npuDedicatedMemoryBytes, scheme.gpuMemory);

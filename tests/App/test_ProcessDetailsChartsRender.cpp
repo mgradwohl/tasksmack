@@ -1691,14 +1691,16 @@ TEST_F(ProcessDetailsChartsRenderTest, AGpuBarWithNoReadingIsDrawnUnavailable)
 }
 
 // #1935: the NPU tab's Dedicated and Shared memory bars likewise. An NPU that maps system RAM reads a
-// measured 0 B dedicated, which stays a zero bar.
+// measured 0 B dedicated, which stays a zero bar. #4380: the bars go by the NPU's own reading, not the
+// GPU's, so the GPU's is set the other way each time (an NPU read beside a GPU that isn't, and the reverse).
 TEST_F(ProcessDetailsChartsRenderTest, AnNpuMemoryBarWithNoReadingIsDrawnUnavailable)
 {
     for (const bool read : {true, false})
     {
         ChartInputs inputs(busyPoint);
         useTheNpu(inputs);
-        inputs.ctx.rateReadings.gpuPerProcess = read;
+        inputs.ctx.rateReadings.npuPerProcess = read;
+        inputs.ctx.rateReadings.gpuPerProcess = !read;
         resample(inputs);
         ProcessDetailsCharts charts;
         runFrame([&] { charts.renderNpuTab(inputs.ctx); });
