@@ -150,7 +150,7 @@ TEST(BrokerProtocolTest, CloseConnectionCarriesTheTcpEndpoints)
 // other endpoints.
 TEST(BrokerProtocolTest, AVersion25CloseConnectionIsRefused)
 {
-    static_assert(PROTOCOL_VERSION == 26);
+    static_assert(PROTOCOL_VERSION >= 26);
     const Request request{CloseConnectionRequest{
         .target = TARGET,
         .tcpConnection = {.localAddress = {10, 0, 0, 5}, .localPort = 52144, .remoteAddress = {142, 250, 80, 46}, .remotePort = 443},
@@ -564,8 +564,20 @@ TEST(BrokerProtocolTest, ModulesAndOpenFilesRoundTrip)
                                .sizeBytes = 2,
                                .version = ModuleVersion{.major = 10, .minor = 0, .build = 19041, .revision = 1},
                                .deleted = false});
+    // v27 (#4373): a module whose file isn't on a local drive says its version wasn't read.
+    modules.modules.push_back({
+        .path = R"(\\server\share\y.dll)",
+        .baseAddress = 3,
+        .sizeBytes = 4,
+        .version = std::nullopt,
+        .deleted = false,
+        .versionNotRead = true,
+    });
     const Response modulesReply = ModulesReply{.result = modules};
     EXPECT_EQ(roundTrip(modulesReply), modulesReply);
+    const Response decodedModules = roundTrip(modulesReply);
+    EXPECT_TRUE(std::get<ModulesReply>(decodedModules).result.modules[2].versionNotRead);
+    EXPECT_FALSE(std::get<ModulesReply>(decodedModules).result.modules[1].versionNotRead);
 
     OpenFilesReadResult files;
     files.status = OpenFilesReadStatus::Ok;

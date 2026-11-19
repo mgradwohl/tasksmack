@@ -92,7 +92,7 @@ class ProcessModulesView
     {
         Platform::ProcessModule module;
         std::string name;    ///< "ntdll.dll", "libc.so.6 (deleted)"
-        std::string version; ///< "10.0.26100.4202", or empty
+        std::string version; ///< "10.0.26100.4202", "Not read: not on a drive TaskSmack can check" (#4373), or empty
         std::string base;    ///< "0x7FF8A1B20000"
         std::string size;    ///< "2.4 MB"
         std::string path;    ///< module.path as well-formed UTF-8, for display (#4301)
@@ -178,7 +178,7 @@ class ProcessModulesView
             m_Rows.push_back({
                 .module = module,
                 .name = std::move(name),
-                .version = Domain::Modules::formatVersion(module.version),
+                .version = Domain::Modules::versionText(module),
                 .base = Domain::Modules::formatAddress(module.baseAddress),
                 .size = UI::Format::formatBytes(static_cast<double>(module.sizeBytes)),
                 .path = std::move(path),
@@ -217,10 +217,10 @@ class ProcessModulesView
             { return Platform::containsIgnoreCase(m_Rows[i].name, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].path, m_Filter); });
     }
 
-    /// Whether any module has a version: the Version column is left out when none does (Linux).
+    /// Whether any module has a version, or says why it has none: the Version column is left out when none does (Linux).
     [[nodiscard]] bool hasVersions() const noexcept
     {
-        return std::ranges::any_of(m_Rows, [](const Row& row) { return row.module.version.has_value(); });
+        return std::ranges::any_of(m_Rows, [](const Row& row) { return row.module.version.has_value() || row.module.versionNotRead; });
     }
 
     [[nodiscard]] bool hasRead() const noexcept

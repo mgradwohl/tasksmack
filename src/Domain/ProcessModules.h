@@ -43,4 +43,14 @@ namespace Domain::Modules
     return std::format("{}.{}.{}.{}", version->major, version->minor, version->build, version->revision);
 }
 
+/// What the Version column says for a module whose file wasn't opened for its version (#4373): it is on a network share,
+/// or on a device TaskSmack can't tell is a local drive (a container's or Windows Sandbox's virtual disk device, say).
+inline constexpr std::string_view VERSION_NOT_READ = "Not read: not on a drive TaskSmack can check";
+
+/// @p module's Version cell: its version, VERSION_NOT_READ when its file wasn't opened for one, else empty.
+[[nodiscard]] inline std::string versionText(const Platform::ProcessModule& module)
+{
+    return module.versionNotRead ? std::string(VERSION_NOT_READ) : formatVersion(module.version);
+}
+
 } // namespace Domain::Modules
