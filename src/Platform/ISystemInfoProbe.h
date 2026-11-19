@@ -559,6 +559,7 @@ struct CrashesInfo
     bool accessDenied = false;            ///< Not listed because reading it needs more permission.
     std::string unavailableReason;        ///< Why not listed, for the UI.
     bool capped = false;                  ///< More than CRASH_LIST_MAX matched; the newest are kept.
+    bool incomplete = false;              ///< Windows: the log's read failed or timed out partway; older ones may be missing (#4375)
     bool journalRead = false;             ///< Linux: systemd-coredump's journal entries were read too (#1674)
     std::string journalUnavailableReason; ///< Linux: why not, when a journal read was tried and failed
     /// Linux: other users' journal entries are hidden from this user (not root, nor in the systemd-journal,

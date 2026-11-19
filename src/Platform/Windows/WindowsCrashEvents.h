@@ -16,6 +16,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <format>
 #include <functional>
 #include <optional>
@@ -38,8 +39,9 @@ struct Functions
 {
     /// A newest-first query of the Application log; nullptr with the Win32 error in @p error on failure.
     void* (*openQuery)(const std::string& xpath, std::uint32_t& error) = nullptr;
-    /// The next event as XML (UTF-8); false at the end or on a failure.
-    bool (*nextEventXml)(void* query, std::string& xml) = nullptr;
+    /// The next event as XML (UTF-8): true with one, false at the end of the log, or the Win32 error when the read
+    /// failed or timed out (#4375), so a walk cut short isn't taken for a finished one.
+    std::expected<bool, std::uint32_t> (*nextEventXml)(void* query, std::string& xml) = nullptr;
     void (*closeQuery)(void* query) = nullptr;
 };
 
@@ -358,8 +360,18 @@ inline void readCrashes(CrashesInfo& info, const Functions& fns, std::size_t max
     }
     info.listed = true;
     std::string xml;
-    while (fns.nextEventXml(query, xml))
+    for (;;)
     {
+        const std::expected<bool, std::uint32_t> next = fns.nextEventXml(query, xml);
+        if (!next.has_value())
+        {
+            info.incomplete = true; // what was read is kept, marked as not the whole log (#4375)
+            break;
+        }
+        if (!*next)
+        {
+            break;
+        }
         std::optional<CrashEvent> event = parseEventXml(xml);
         if (!event.has_value())
         {

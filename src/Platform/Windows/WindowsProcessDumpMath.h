@@ -4,9 +4,11 @@
 // architecture can dump the process's (#2152), and what each failure says. Win32 error codes come in as plain integers and are compared
 // against this header's own constants, so it reaches no Windows header and its tests build and run on every platform (#1133).
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/AsciiCase.h"
 #include "WindowsProcessMachineMath.h"
 
+#include <cstddef>
 #include <cstdint>
 #include <format>
 #include <string>
@@ -61,9 +63,74 @@ struct DumpTime
     int second = 0;
 };
 
+/// The most UTF-16 units dumpFileStem() keeps (#4364). NTFS allows 255 in a file name, and dumpFileName() adds
+/// about 45 after the stem (the PID, the time, " (20)" and ".dmp"), so a stem this long still leaves room.
+inline constexpr std::size_t MAX_STEM_UTF16_UNITS = 150;
+
+namespace Detail
+{
+
+/// How many UTF-16 units @p text (UTF-8) converts to: two for a four-byte sequence, one for any other well-formed
+/// one, and one per byte of an ill-formed run (at least as many as its U+FFFD replacements, so never too few).
+[[nodiscard]] constexpr std::size_t utf16Units(std::string_view text) noexcept
+{
+    std::size_t units = 0;
+    for (std::size_t at = 0; at < text.size();)
+    {
+        std::size_t prefix = 0;
+        const std::size_t length = Domain::Utf8Detail::sequenceAt(text, at, prefix);
+        if (length == 0)
+        {
+            units += prefix;
+            at += prefix;
+            continue;
+        }
+        units += (length == 4) ? 2 : 1;
+        at += length;
+    }
+    return units;
+}
+
+/// @p text (well-formed UTF-8) cut to at most @p maxUnits UTF-16 units, on a code-point boundary.
+[[nodiscard]] constexpr std::string_view utf16Prefix(std::string_view text, std::size_t maxUnits) noexcept
+{
+    std::size_t units = 0;
+    std::size_t at = 0;
+    while (at < text.size())
+    {
+        std::size_t prefix = 0;
+        const std::size_t length = Domain::Utf8Detail::sequenceAt(text, at, prefix);
+        const std::size_t step = (length != 0) ? length : prefix;
+        const std::size_t cost = (length == 4) ? 2 : 1;
+        if (units + cost > maxUnits)
+        {
+            break;
+        }
+        units += cost;
+        at += step;
+    }
+    return text.substr(0, at);
+}
+
+/// FNV-1a over @p text: a short tag that tells two long names cut to the same prefix apart.
+[[nodiscard]] constexpr std::uint32_t fnv1a(std::string_view text) noexcept
+{
+    constexpr std::uint32_t OFFSET_BASIS = 2'166'136'261U;
+    constexpr std::uint32_t PRIME = 16'777'619U;
+    std::uint32_t hash = OFFSET_BASIS;
+    for (const char c : text)
+    {
+        hash = (hash ^ static_cast<unsigned char>(c)) * PRIME;
+    }
+    return hash;
+}
+
+} // namespace Detail
+
 /// The process's image name made safe to start a file name with: its directory and ".exe" dropped,
 /// and every character Windows forbids in a file name (and every control character) replaced by '_'.
-/// "process" when nothing is left.
+/// "process" when nothing is left. A name longer than MAX_STEM_UTF16_UNITS (#4364) is cut on a code-point
+/// boundary and ends in "~" and eight hex digits of a hash of the whole name, so the dump file's name fits.
 [[nodiscard]] inline std::string dumpFileStem(std::string_view imageName)
 {
     if (const std::size_t slash = imageName.find_last_of("\\/"); slash != std::string_view::npos)
@@ -88,7 +155,17 @@ struct DumpTime
     {
         stem.pop_back();
     }
-    return stem.empty() ? std::string("process") : stem;
+    if (stem.empty())
+    {
+        return "process";
+    }
+    if (Detail::utf16Units(stem) > MAX_STEM_UTF16_UNITS)
+    {
+        constexpr std::size_t TAG_UNITS = 9; // "~" and eight hex digits
+        const std::string whole = Domain::sanitizedUtf8(stem);
+        stem = std::format("{}~{:08x}", Detail::utf16Prefix(whole, MAX_STEM_UTF16_UNITS - TAG_UNITS), Detail::fnv1a(whole));
+    }
+    return stem;
 }
 
 /// The dump file's name: "notepad_1234_2026-10-13_14-05-09.dmp" -- the image name, the PID and the

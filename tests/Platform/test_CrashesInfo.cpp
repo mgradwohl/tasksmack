@@ -14,6 +14,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <format>
 #include <fstream>
@@ -201,13 +202,16 @@ std::size_t g_Next = 0;            // NOLINT(cppcoreguidelines-avoid-non-const-g
 bool g_Closed = false;             // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 std::string g_XPath;               // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
 int g_Handle = 0;                  // NOLINT(cppcoreguidelines-avoid-non-const-global-variables)
+std::uint32_t g_EndError = 0;      // NOLINT(cppcoreguidelines-avoid-non-const-global-variables): after the events, 0 ends the log
 
-[[nodiscard]] WindowsCrashEvents::Functions fakeFunctions(std::uint32_t openError, std::vector<std::string> events)
+[[nodiscard]] WindowsCrashEvents::Functions
+fakeFunctions(std::uint32_t openError, std::vector<std::string> events, std::uint32_t endError = 0)
 {
     g_OpenError = openError;
     g_Events = std::move(events);
     g_Next = 0;
     g_Closed = false;
+    g_EndError = endError;
     return {
         .openQuery = [](const std::string& xpath, std::uint32_t& error) -> void*
         {
@@ -215,11 +219,14 @@ int g_Handle = 0;                  // NOLINT(cppcoreguidelines-avoid-non-const-g
             error = g_OpenError;
             return g_OpenError == 0 ? &g_Handle : nullptr;
         },
-        .nextEventXml =
-            [](void* /*query*/, std::string& xml)
+        .nextEventXml = [](void* /*query*/, std::string& xml) -> std::expected<bool, std::uint32_t>
         {
             if (g_Next >= g_Events.size())
             {
+                if (g_EndError != 0)
+                {
+                    return std::unexpected(g_EndError);
+                }
                 return false;
             }
             xml = g_Events[g_Next++];
@@ -256,7 +263,34 @@ TEST(WindowsCrashEventsTest, CapsAtTheNewest)
     CrashesInfo exact;
     WindowsCrashEvents::readCrashes(exact, fakeFunctions(0, std::vector<std::string>(3, std::string(APP_ERROR_XML))), 3);
     EXPECT_FALSE(exact.capped);
+    EXPECT_FALSE(exact.incomplete);
     EXPECT_EQ(exact.events.size(), 3U);
+}
+
+TEST(WindowsCrashEventsTest, AReadThatFailsPartwayIsMarkedIncomplete)
+{
+    // #4375: EvtNext timed out (ERROR_TIMEOUT, 1460) after three events: those are kept, and the list says it isn't
+    // the whole log, rather than reading as complete.
+    constexpr std::uint32_t ERROR_TIMEOUT_CODE = 1460;
+    CrashesInfo info;
+    WindowsCrashEvents::readCrashes(info, fakeFunctions(0, std::vector<std::string>(3, std::string(APP_ERROR_XML)), ERROR_TIMEOUT_CODE));
+    EXPECT_TRUE(info.listed);
+    EXPECT_TRUE(info.incomplete);
+    EXPECT_FALSE(info.capped);
+    EXPECT_EQ(info.events.size(), 3U);
+    EXPECT_TRUE(g_Closed);
+
+    // A failure before any event: still listed, but not "none found".
+    CrashesInfo none;
+    WindowsCrashEvents::readCrashes(none, fakeFunctions(0, {}, ERROR_TIMEOUT_CODE));
+    EXPECT_TRUE(none.listed);
+    EXPECT_TRUE(none.incomplete);
+    EXPECT_TRUE(none.events.empty());
+
+    // The end of the log is no failure.
+    CrashesInfo whole;
+    WindowsCrashEvents::readCrashes(whole, fakeFunctions(0, {std::string(APP_ERROR_XML)}));
+    EXPECT_FALSE(whole.incomplete);
 }
 
 TEST(WindowsCrashEventsTest, AccessDeniedAndMissingLog)

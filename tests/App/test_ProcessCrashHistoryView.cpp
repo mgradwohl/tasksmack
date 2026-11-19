@@ -183,6 +183,21 @@ TEST(ProcessCrashLineTest, MoreThanTheTooltipShowsAreCounted)
     EXPECT_TRUE(line.tooltip.contains("200 newest")) << line.tooltip;
 }
 
+TEST(ProcessCrashLineTest, AnIncompleteReadDoesNotSayThereWereNone)
+{
+    // #4375: the event log stopped answering partway, so "none" is only what was read.
+    CrashesInfo info = listed(OsFamily::Windows, {crash("other.exe", 1'790'000'000)});
+    info.incomplete = true;
+    const Detail::CrashLine line = Detail::crashLineFor(snapshotOf(info), "app.exe");
+    EXPECT_EQ(line.value, "None found in the last 14 days (the log wasn't fully read)");
+    EXPECT_TRUE(line.tooltip.contains("stopped answering partway")) << line.tooltip;
+
+    info.incomplete = false;
+    const Detail::CrashLine whole = Detail::crashLineFor(snapshotOf(std::move(info)), "app.exe");
+    EXPECT_EQ(whole.value, "None in the last 14 days");
+    EXPECT_FALSE(whole.tooltip.contains("stopped answering")) << whole.tooltip;
+}
+
 TEST(ProcessCrashLineTest, LinuxSaysTheNameWasMatchedCut)
 {
     const Detail::CrashLine line =

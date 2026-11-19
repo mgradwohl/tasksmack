@@ -26,8 +26,10 @@
 #include "ProcessDetailsPanel_PriorityHelpers.h"
 #include "ProcessIoPriorityView.h"
 
+#include <chrono>
 #include <cstdint>
 #include <format>
+#include <limits>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -135,18 +137,55 @@ class ProcessPriorityView
         m_NiceValue = Domain::Priority::NORMAL_NICE;
         m_Changed = false;
         m_EditTarget = NO_TARGET;
+        m_AppliedNice.reset();
         m_Error.clear();
         m_IoPriorityView.onSelectionChanged();
     }
 
     /// While nothing is edited, the control follows the process's own nice value (@p currentNice, when
-    /// a snapshot has one).
+    /// a snapshot has one), except that a value just applied (appliedNice()) is shown in its place until a
+    /// sample taken after the apply confirms or contradicts it (takeProcessSample(), #4379): until the sampler
+    /// publishes again the snapshot still holds the old value, which put the slider back for up to an interval.
     void syncToProcess(std::optional<std::int32_t> currentNice) noexcept
     {
-        if (!m_Changed && currentNice.has_value())
+        if (m_Changed)
+        {
+            return;
+        }
+        if (m_AppliedNice.has_value())
+        {
+            m_NiceValue = *m_AppliedNice;
+        }
+        else if (currentNice.has_value())
         {
             m_NiceValue = *currentNice;
         }
+    }
+
+    /// From the panel's sample intake: a sample of the shown process, its nice value @p nice, stamped
+    /// @p sampleTimeSeconds (Domain::ProcessSample::sampleTimeSeconds, steady_clock seconds since its epoch).
+    /// One stamped after the last apply succeeded that shows the applied value confirms it and ends
+    /// appliedNice(). One that shows another value contradicts it only from the second such sample on: a
+    /// sample is stamped once its process list is read, so the first can hold counters read before the change.
+    /// Either way the control then follows the process's value again. A sample stamped before the apply
+    /// finished changes nothing.
+    void takeProcessSample(double sampleTimeSeconds, std::int32_t nice) noexcept
+    {
+        if (!m_AppliedNice.has_value() || sampleTimeSeconds <= m_AppliedAtSeconds)
+        {
+            return;
+        }
+        if (nice == *m_AppliedNice || ++m_ContradictingSamples >= CONTRADICTING_SAMPLES_TO_REVERT)
+        {
+            m_AppliedNice.reset();
+        }
+    }
+
+    /// The value an apply set (or is setting), shown in place of the snapshot's until a sample taken after
+    /// it (takeProcessSample()); nullopt otherwise (#4379).
+    [[nodiscard]] std::optional<std::int32_t> appliedNice() const noexcept
+    {
+        return m_AppliedNice;
     }
 
     /// The user picked @p nice (held to the nice range) for @p target. A value other than the shown one
@@ -203,7 +242,8 @@ class ProcessPriorityView
 
     /// Apply was pressed with @p liveTarget selected: set the edited value on that target through
     /// @p actions, captured now and checked against the process the edit was made for, on the apply
-    /// worker (#2305); update() takes the result in on a later frame. Success clears the error line;
+    /// worker (#2305); update() takes the result in on a later frame. The control shows the value meanwhile,
+    /// and after a success until a newer sample (takeProcessSample(), #4379). Success clears the error line;
     /// failure shows the platform's message and, unless the value has been edited again meanwhile, puts
     /// the control back at @p currentNice. Either way the edit is finished, so a second apply does
     /// nothing until the next edit. With no pending edit, one made for another process (dropped), a
@@ -222,6 +262,7 @@ class ProcessPriorityView
         const std::int32_t revertTo = currentNice.value_or(Domain::Priority::NORMAL_NICE);
         m_Changed = false;
         m_EditTarget = NO_TARGET;
+        holdApplied(nice);
         if (actions == nullptr)
         {
             finishApply(Platform::ProcessActionResult::error("Process actions unavailable"), revertTo);
@@ -305,6 +346,7 @@ class ProcessPriorityView
         }
         const Retry& retry = *taken;
         m_ApplyTarget = retry.action.target;
+        holdApplied(retry.action.nice);
         static_cast<void>(m_ApplyRun.start(
             std::format("Waiting for authorization to set the priority of PID {}...", retry.action.target.pid),
             [actions = retry.actions, action = retry.action](const std::stop_token& stopToken)
@@ -390,6 +432,8 @@ class ProcessPriorityView
 
   private:
     static constexpr Platform::ProcessTarget NO_TARGET{.pid = -1, .startTimeTicks = 0};
+    /// Samples after a successful apply that must show another value before the control shows it (#4379).
+    static constexpr int CONTRADICTING_SAMPLES_TO_REVERT = 2;
 
     /// Draws the priority slider (a stop per class on Windows); returns where it ends, for right-aligning Apply.
     float renderSlider(std::optional<std::int32_t> currentNice, const Platform::ProcessTarget& target);
@@ -423,14 +467,25 @@ class ProcessPriorityView
                                         actions->actionCapabilities().canAuthorizeInteractively));
     }
 
+    /// An apply of @p nice starts: shown until a sample taken after it succeeds (syncToProcess(), #4379).
+    void holdApplied(std::int32_t nice) noexcept
+    {
+        m_AppliedNice = nice;
+        m_AppliedAtSeconds = std::numeric_limits<double>::infinity(); // no sample ends it while it runs
+        m_ContradictingSamples = 0;
+    }
+
     /// An apply's result, on the UI thread.
     void finishApply(const Platform::ProcessActionResult& result, std::int32_t revertTo)
     {
         if (result.success)
         {
             m_Error.clear();
+            // A sample acquired from now on was taken after the change, so it says what the priority is.
+            m_AppliedAtSeconds = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
             return;
         }
+        m_AppliedNice.reset();
         m_Error = result.errorMessage; // Stays until the next edit, apply or selection change
         if (!m_Changed)
         {
@@ -441,8 +496,11 @@ class ProcessPriorityView
     std::int32_t m_NiceValue = Domain::Priority::NORMAL_NICE;
     bool m_Changed = false;
     Platform::ProcessTarget m_EditTarget = NO_TARGET;
-    std::string m_Error;            // Persistent error message for priority changes
-    std::uint64_t m_Generation = 0; // Bumped by a selection change: a running apply's result is then dropped
+    std::optional<std::int32_t> m_AppliedNice; // An applied value, shown until a newer sample (#4379)
+    double m_AppliedAtSeconds = 0.0;           // When its apply succeeded, on the samples' steady_clock timebase
+    int m_ContradictingSamples = 0;            // Samples since then showing another value (takeProcessSample())
+    std::string m_Error;                       // Persistent error message for priority changes
+    std::uint64_t m_Generation = 0;            // Bumped by a selection change: a running apply's result is then dropped
     ProcessIoPriorityView m_IoPriorityView;
     RefusalOffer<Retry> m_Offer;                       // The error line's Retry or Restart as administrator (#2308, #3669); no timeout
     const char* m_HoldReason = nullptr;                // Another priority change runs elsewhere: Apply waits, saying why (#3429, #3467)

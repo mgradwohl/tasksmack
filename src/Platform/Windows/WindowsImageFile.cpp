@@ -3,6 +3,7 @@
 #include "WinString.h"
 #include "WindowsHandles.h"
 #include "WindowsHeldFileVersion.h"
+#include "WindowsLocalNtFile.h"
 #include "WindowsNtQuery.h"
 
 // clang-format off
@@ -103,12 +104,18 @@ constexpr std::string_view PROTECTED_REFUSAL = "Its executable can't be read: Wi
     return std::format("Its executable couldn't be confirmed as the image it runs ({}){}{}", why, notDone.empty() ? "" : ", so ", notDone);
 }
 
-/// Opens the NT name @p ntName (\Device\HarddiskVolumeN\..., as GetMappedFileNameW writes it) through the Win32
-/// call, by \\?\GLOBALROOT, with @p access and @p share.
-[[nodiscard]] UniqueHandle openNtName(const std::wstring& ntName, DWORD access, DWORD share)
+/// Opens the NT name @p ntName (\Device\HarddiskVolumeN\..., as GetMappedFileNameW writes it) for @p access, by
+/// Windows::openLocalNtFile() through fns.localFile (#4482): no link on the way or at the name followed, no network
+/// share's name opened, identification-level security, and a handle off a local disk refused. Or why not, in words.
+[[nodiscard]] std::expected<UniqueHandle, std::string>
+openNtName(const ImageFileFunctions& fns, std::wstring_view ntName, const LocalFileAccess& access)
 {
-    const std::wstring path = L"\\\\?\\GLOBALROOT" + ntName;
-    return UniqueHandle(CreateFileW(path.c_str(), access, share, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    std::expected<UniqueHandle, LocalFileError> file = openLocalNtFile(ntName, access, fns.localFile);
+    if (!file.has_value())
+    {
+        return std::unexpected(describeLocalFileError(file.error()));
+    }
+    return std::move(*file);
 }
 
 /// Where @p process's image is mapped and its file's NT name now.
@@ -188,6 +195,7 @@ ImageFileFunctions systemImageFileFunctions() noexcept
         .virtualQueryEx = &VirtualQueryEx,
         .getExitCodeProcess = &GetExitCodeProcess,
         .getProcessInformation = &GetProcessInformation,
+        .localFile = systemLocalFileFunctions(),
     };
 }
 
@@ -264,11 +272,14 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
         }
         return std::unexpected(image.error());
     }
-    UniqueHandle file = openNtName(image->name, GENERIC_READ, FILE_SHARE_READ);
-    if (!file)
+    // Shared for read only, so the file held can't be renamed, deleted or written while it is held.
+    std::expected<UniqueHandle, std::string> opened =
+        openNtName(fns, image->name, {.access = GENERIC_READ, .share = FILE_SHARE_READ, .sequential = true});
+    if (!opened.has_value())
     {
-        return std::unexpected(std::format("Its executable can't be read: {}", describe(GetLastError())));
+        return std::unexpected(std::format("Its executable can't be read: {}", opened.error()));
     }
+    UniqueHandle file = std::move(*opened);
     const std::expected<std::wstring, DWORD> now = mappedFileName(fns, process, image->address);
     if (!now.has_value())
     {
@@ -283,13 +294,13 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
     {
         return std::unexpected(unconfirmed("the file's identity can't be read", notDone));
     }
-    const UniqueHandle there = openNtName(*now, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-    if (!there)
+    const std::expected<UniqueHandle, std::string> there = openNtName(
+        fns, *now, {.access = FILE_READ_ATTRIBUTES, .share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, .sequential = false});
+    if (!there.has_value())
     {
-        return std::unexpected(
-            unconfirmed(std::format("the file under its name now can't be opened: {}", describe(GetLastError())), notDone));
+        return std::unexpected(unconfirmed(std::format("the file under its name now can't be opened: {}", there.error()), notDone));
     }
-    const std::optional<FileIdentity> named = fileIdentity(there.get());
+    const std::optional<FileIdentity> named = fileIdentity(there->get());
     if (!named.has_value())
     {
         return std::unexpected(unconfirmed("the identity of the file under its name now can't be read", notDone));
