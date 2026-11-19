@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Reading the app's ResizePerf summary lines (Core/ResizePerfTrace.h's logResizePerfTraceSummary),
 # dot-sourced by measure-idle.ps1 and tested by test-resize-perf-summary.ps1 (#3210). Kept in step
 # with tools/resize-perf-summary.awk, measure-idle.sh's reader. Works on PowerShell 7.0 and later.

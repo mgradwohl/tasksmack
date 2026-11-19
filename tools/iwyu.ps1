@@ -24,6 +24,7 @@
 .EXAMPLE
     .\tools\iwyu.ps1 debug src\Domain\ProcessModel.cpp
 #>
+#Requires -Version 7
 param(
     [Parameter(Position = 0)]
     [ValidateSet('debug', 'relwithdebinfo')]

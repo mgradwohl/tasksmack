@@ -105,6 +105,10 @@ if(WIN32)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
+        # Windows PowerShell 5.1 gets a clear "needs PowerShell 7" message from the tools scripts, not parse
+        # errors from a non-ASCII byte (#4319): #Requires lines, ASCII-only newcomer scripts, the 5.1 parser.
+        add_test(NAME Ps1CompatScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-ps1-compat.ps1)
         # tools/setup-dev.ps1 installs winget's newest version of a package, with a warning, when the
         # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
         add_test(NAME SetupDevScript

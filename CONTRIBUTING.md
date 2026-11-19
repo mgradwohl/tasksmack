@@ -450,7 +450,12 @@ it on any new target. Third-party dependencies keep their own settings.
   hook (`tools/check-utf8.py`) fails on any staged text file that doesn't decode as strict UTF-8,
   reporting `file:line:column`. Binary files (the types `.gitattributes` marks binary) and the fuzz
   corpora under `tests/fuzz/corpus/` are skipped.
-- **PowerShell scripts need PowerShell 7 (`pwsh`)** and name the encoding on every write:
+- **PowerShell scripts need PowerShell 7 (`pwsh`)**: each `tools/*.ps1` starts with `#Requires -Version 7`, so
+  Windows PowerShell 5.1 says what to run it in. Only `tools/newcomer-check.ps1`, which runs on a clean Windows,
+  stays 5.1-compatible. 5.1 reads a script with no BOM as the ANSI code page, so a non-ASCII byte in a string can
+  break its parse: `setup-dev.ps1`, `check-prereqs.ps1` and `pgo.ps1` are ASCII-only (`[char]0x2713` for a mark),
+  and the `check-utf8` hook fails a `.ps1` with non-ASCII text and no `#Requires -Version 7`. A script names the
+  encoding on every write:
   `Set-Content`/`Add-Content`/`Out-File -Encoding utf8`, which in PowerShell 7 means UTF-8
   without a BOM (`utf8NoBOM` is the same thing). Use `-Encoding ascii` only for `.cmd` stubs that
   `cmd.exe` reads. A script that parses a native tool's output (git, cmake, clang-tidy, llvm-cov)

@@ -8,6 +8,7 @@
 .EXAMPLE
     pwsh tools/check-prereqs.ps1
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param()
 
@@ -44,7 +45,7 @@ function Write-Status {
     $requiredFormatted = if ($Required -like '=*') { "($Required)".PadRight(12) } elseif ($Required) { "(>= $Required)".PadRight(12) } else { "".PadRight(12) }
 
     if ($Status -eq "ok") {
-        Write-Host "✓ " -ForegroundColor Green -NoNewline
+        Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
         Write-Host $nameFormatted -NoNewline
         Write-Host $versionFormatted -ForegroundColor Green -NoNewline
     }
@@ -54,7 +55,7 @@ function Write-Status {
         Write-Host $versionFormatted -ForegroundColor Yellow -NoNewline
     }
     else {
-        Write-Host "✗ " -ForegroundColor Red -NoNewline
+        Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
         Write-Host $nameFormatted -NoNewline
         Write-Host $versionFormatted -ForegroundColor Red -NoNewline
     }
@@ -302,7 +303,7 @@ Write-Host "  Prerequisite Check" -ForegroundColor White
 Write-Host "========================================" -ForegroundColor White
 Write-Host ""
 Write-Host "Tool           Version      Required     Path" -ForegroundColor White
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 
 $AllOK = $true
 $clangVersionPattern = 'clang version (\d+)'
@@ -487,9 +488,9 @@ else {
     $AllOK = $false
 }
 
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 if ($script:LlvmCompilerMajor) {
-    Write-Host "✗ " -ForegroundColor Red -NoNewline
+    Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
     Write-Host "The win-* presets build with LLVM $PinnedLlvmMajor (.pre-commit-config.yaml), but this clang is LLVM $($script:LlvmCompilerMajor). pwsh tools/setup-dev.ps1 replaces it with LLVM $PinnedLlvmMajor." -ForegroundColor Red
 }
 if ($script:LlvmSkewSeen) {
@@ -506,55 +507,55 @@ Write-Host ""
 
 # Environment variables
 Write-Host "Environment Variables" -ForegroundColor White
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 
 if ($env:CMAKE_ROOT) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "CMAKE_ROOT      = " -NoNewline
     Write-Host $env:CMAKE_ROOT -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "$([char]0x25CB) " -ForegroundColor Yellow -NoNewline
     Write-Host "CMAKE_ROOT      = " -NoNewline
     Write-Host "(not set)" -ForegroundColor Yellow
 }
 
 # Required: the win-* presets derive the compiler paths from it (CMakePresets.json, windows-base).
 if ($env:LLVM_ROOT) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "LLVM_ROOT       = " -NoNewline
     Write-Host $env:LLVM_ROOT -ForegroundColor Blue
 }
 else {
-    Write-Host "✗ " -ForegroundColor Red -NoNewline
+    Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
     Write-Host "LLVM_ROOT       = " -NoNewline
     Write-Host "(not set; the win-* presets need it -- set it to your LLVM $(if ($PinnedLlvmMajor) { $PinnedLlvmMajor } else { $MIN_CLANG_VERSION }) install, e.g. C:\Program Files\LLVM)" -ForegroundColor Red
     $AllOK = $false
 }
 
 if ($env:CC) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "CC              = " -NoNewline
     Write-Host $env:CC -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "$([char]0x25CB) " -ForegroundColor Yellow -NoNewline
     Write-Host "CC              = " -NoNewline
     Write-Host "(not set, using default)" -ForegroundColor Yellow
 }
 
 if ($env:CXX) {
-    Write-Host "✓ " -ForegroundColor Green -NoNewline
+    Write-Host "$([char]0x2713) " -ForegroundColor Green -NoNewline
     Write-Host "CXX             = " -NoNewline
     Write-Host $env:CXX -ForegroundColor Blue
 }
 else {
-    Write-Host "○ " -ForegroundColor Yellow -NoNewline
+    Write-Host "$([char]0x25CB) " -ForegroundColor Yellow -NoNewline
     Write-Host "CXX             = " -NoNewline
     Write-Host "(not set, using default)" -ForegroundColor Yellow
 }
 
-Write-Host "──────────────────────────────────────────────────────────────────────────"
+Write-Host ('-' * 74)
 Write-Host ""
 
 # Summary

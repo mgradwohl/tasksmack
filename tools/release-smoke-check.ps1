@@ -51,6 +51,7 @@
     check), and the folder stays, for the uninstaller to remove. The last check is then that those DLLs
     delete, rather than the whole folder.
 #>
+#Requires -Version 7
 param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [Parameter(Mandatory)][string]$MesaDllDir,

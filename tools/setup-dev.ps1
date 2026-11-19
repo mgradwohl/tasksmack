@@ -1,4 +1,5 @@
-# tools/setup-dev.ps1 — Install TaskSmack development prerequisites on Windows.
+#Requires -Version 7
+# tools/setup-dev.ps1 - Install TaskSmack development prerequisites on Windows.
 #
 # Usage:
 #   pwsh tools/setup-dev.ps1              # Install what building and testing need (requires winget)
@@ -185,7 +186,7 @@ function Install-WinGetPackage {
     }
 }
 
-# ── LLVM: exactly one install, of the pinned major (#3041) ───────────────────────────────────────
+# -- LLVM: exactly one install, of the pinned major (#3041) ---------------------------------------
 # winget can't move an LLVM to another major: `winget install --version <pin>` over another version
 # answers 0x8A15010D, which Invoke-WinGet only warns about, so setup used to finish on the old major.
 # The installer type changes between majors too (22's is NSIS, 23's an MSI), and LLVM's MSIs install
@@ -471,15 +472,15 @@ Write-Host "CMake version: $CMakeVersion"
 Write-Host "Ninja version: $NinjaVersion"
 Write-Host "ccache version: $CcacheVersion"
 Write-Host "Python version: $PythonVersion"
-if ($DryRun) { Write-Host "(dry-run mode — nothing will be installed)" }
+if ($DryRun) { Write-Host "(dry-run mode - nothing will be installed)" }
 Write-Host ""
 
-# ── Verify winget is available ────────────────────────────────────────────────
+# -- Verify winget is available ------------------------------------------------
 if (-not (Get-Command winget -ErrorAction SilentlyContinue)) {
     throw "winget not found. Install it from the Microsoft Store or update Windows."
 }
 
-# ── Step 1: Core build tools ─────────────────────────────────────────────────
+# -- Step 1: Core build tools -------------------------------------------------
 # clang (LLVM_ROOT) targets the MSVC ABI, so it compiles against the MSVC C++ standard library
 # and CRT and the Windows SDK, and links their import and static libraries. It finds the MSVC
 # libraries through the Visual Studio installation, and the SDK through the Windows Kits
@@ -564,7 +565,7 @@ if (-not $DryRun) {
     $script:PythonExecutable = Resolve-Python
 }
 
-# ── Step 2: LLVM / Clang ─────────────────────────────────────────────────────
+# -- Step 2: LLVM / Clang -----------------------------------------------------
 Write-Host ""
 Write-Host "==> LLVM $LlvmVersion (one install of LLVM $LlvmTargetMajor in $LlvmDir)..."
 Install-PinnedLlvm
@@ -585,7 +586,7 @@ if ($DryRun) {
     Write-Host "  LLVM_ROOT set to: $llvmPath ($envScope scope)"
 }
 
-# ── Step 3: Project venv + jinja2 for GLAD ──────────────────────────────────
+# -- Step 3: Project venv + jinja2 for GLAD ----------------------------------
 # Into .venv, not the global Python, as setup-dev.sh does on Linux.
 Write-Host ""
 Write-Host "==> Creating the project Python environment (.venv)..."
@@ -597,7 +598,7 @@ Write-Host "==> Installing Python packages (jinja2 for GLAD generation)..."
 Invoke-VenvPython @("-m", "pip", "install", "--require-hashes", "-r", (Join-Path $RepoRoot "requirements-glad.txt"))
 
 if ($DevTools) {
-    # ── Step 4 (-DevTools): optional developer tools ───────────────────────
+    # -- Step 4 (-DevTools): optional developer tools -----------------------
     Write-Host ""
     Write-Host "==> Installing ccache $CcacheVersion (optional: faster rebuilds)..."
     Install-WinGetPackage -Id ccache.ccache -Version $CcacheVersion
