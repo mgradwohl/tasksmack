@@ -12,6 +12,7 @@
 #include "UI/EmptyState.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -90,7 +91,7 @@ void renderServiceTooltip(const Platform::ServiceInfo& service)
     ImGui::TextUnformatted(listed.data(), listed.data() + listed.size());
     if (listed != service.name)
     {
-        ImGui::TextColored(scheme.textMuted, "Service name: %s", service.name.c_str());
+        UI::Widgets::labelledTextColored(scheme.textMuted, "Service name: ", service.name);
     }
     if (!service.description.empty())
     {
@@ -98,15 +99,15 @@ void renderServiceTooltip(const Platform::ServiceInfo& service)
     }
     if (!service.binaryPath.empty())
     {
-        ImGui::Text("Command: %s", service.binaryPath.c_str());
+        UI::Widgets::labelledText("Command: ", service.binaryPath);
     }
     if (!service.group.empty())
     {
-        ImGui::Text("Group: %s", service.group.c_str());
+        UI::Widgets::labelledText("Group: ", service.group);
     }
     if (!service.serviceType.empty())
     {
-        ImGui::Text("Type: %s", service.serviceType.c_str());
+        UI::Widgets::labelledText("Type: ", service.serviceType);
     }
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
@@ -353,7 +354,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     if (publication->stale)
     {
         // The rows are the last good read; the latest one failed.
-        ImGui::TextColored(scheme.textMuted, ICON_FA_TRIANGLE_EXCLAMATION "  Out of date: %s", publication->failureReason.c_str());
+        UI::Widgets::labelledTextColored(scheme.textMuted, ICON_FA_TRIANGLE_EXCLAMATION "  Out of date: ", publication->failureReason);
     }
     if (actions != nullptr && actions->supported())
     {

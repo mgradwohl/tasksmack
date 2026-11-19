@@ -330,6 +330,11 @@ set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
 set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
 
+# The installer is a Unicode NSIS target and has no Add-to-PATH option (#4300): CPACK_NSIS_DEFINES starts with
+# `Unicode true` and CPACK_NSIS_MODIFY_PATH is gone. Pure Python, on every platform.
+add_test(NAME NsisUnicodeScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_unicode.py)
+set_tests_properties(NsisUnicodeScript PROPERTIES TIMEOUT 60)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)
@@ -446,6 +451,10 @@ add_test(NAME LcovExcludeScript
 # tools/check-cache-prune-triggers.py keeps cache-prune.yml's workflow_run list complete (#2410).
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
+
+# Heavy Checks' push-scope must cover everything benchmarks/*.cpp includes, and the build settings (#4195).
+add_test(NAME HeavyChecksPushScopeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
 
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript
@@ -647,6 +656,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
     UI/test_CellText.cpp
+    UI/test_LabelledText.cpp # a label and a value from outside, drawn whole past ImGui's 3 KB buffer (#4306)
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp

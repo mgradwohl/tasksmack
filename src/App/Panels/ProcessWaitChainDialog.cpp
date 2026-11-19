@@ -7,6 +7,7 @@
 #include "UI/ChromeWidgets.h"
 #include "UI/DialogMetrics.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 #include "UI/Widgets.h"
 
@@ -437,7 +438,7 @@ void ProcessWaitChainDialog::render()
     else
     {
         ImGui::PushTextWrapPos(0.0F);
-        ImGui::TextColored(theme.scheme().textMuted, "%s%s", m_Summary.c_str(), reading() ? ". Reading again..." : "");
+        UI::Widgets::labelledTextColored(theme.scheme().textMuted, {}, m_Summary, reading() ? ". Reading again..." : "");
         ImGui::PopTextWrapPos();
         renderThreads();
     }
