@@ -91,6 +91,10 @@ try {
     Assert-True ($row.Count -eq 1) "Expected one ccache row:`n$output"
     Assert-True ($row[0] -match '^\S+ ccache\s+4\.14\s') "ccache row: [$($row[0])]"
     Assert-True ($row[0] -like '*ccache.cmd*') "ccache row does not show the stub's path: [$($row[0])]"
+    # The MSVC STL row (#4354): present whether or not this machine has Visual Studio, with CI's floor.
+    $msvcRow = @($output -split '\r?\n' | Where-Object { $_ -match '^\S+ MSVC STL\s' })
+    Assert-True ($msvcRow.Count -eq 1) "Expected one MSVC STL row:`n$output"
+    Assert-True ($msvcRow[0] -match '\(>= 14\.51\)') "MSVC STL row lacks the 14.51 floor: [$($msvcRow[0])]"
 
     # The Python rows with a non-ASCII user name in the path (#4320): a copy of the checker under a directory
     # named with a CJK name and with an accented one, each holding a real venv, so sys.executable carries it.

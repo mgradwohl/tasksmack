@@ -142,8 +142,8 @@ foreach ($case in @(
 
 # ── No pin: the newest version, and -Arguments after the common switches ───────────────────────
 Set-Stub { param($Line) @{ ExitCode = 0; Output = @() } }
-$null = Install-WinGetPackage -Id Microsoft.VisualStudio.2022.BuildTools -Arguments @('--override', '--wait --passive') -WarningVariable warnings
-Assert-True ($calls.Count -eq 1 -and $calls[0] -eq "install --id Microsoft.VisualStudio.2022.BuildTools $switches --override --wait --passive") "no pin: calls [$($calls -join '; ')]"
+$null = Install-WinGetPackage -Id Microsoft.VisualStudio.BuildTools -Arguments @('--override', '--wait --passive') -WarningVariable warnings
+Assert-True ($calls.Count -eq 1 -and $calls[0] -eq "install --id Microsoft.VisualStudio.BuildTools $switches --override --wait --passive") "no pin: calls [$($calls -join '; ')]"
 Assert-True (@($warnings).Count -eq 0) "no pin: warned [$warnings]"
 
 # ── -DryRun: the command is printed, with the fallback it would take, and winget never runs ─────
@@ -384,9 +384,12 @@ try {
             '[dry-run]   (if 9.9.9 is no longer in the winget catalog'
             "[dry-run] winget install --id Ninja-build.Ninja --version 8.8.8 $switches"
             "[dry-run] winget install --id Python.Python.3.14 $switches"
+            # The Visual Studio CI builds with (windows-2025-vs2026), not 2022's: the STL clang compiles against (#4354).
+            "[dry-run] winget install --id Microsoft.VisualStudio.BuildTools $switches --override"
         )) {
         Assert-True ($output.Contains($expected)) "-DryRun output lacks [$expected]:`n$output"
     }
+    Assert-True ($output -notmatch 'VisualStudio\.20\d\d\.BuildTools') "-DryRun installs a year-specific Visual Studio package, not CI's:`n$output"
     # The LLVM step depends on this machine's LLVM: it installs the pin, or leaves the pinned major.
     Assert-True ($output.Contains('[dry-run] winget install --id LLVM.LLVM --version ') -or $output -match 'LLVM \d+ is already installed; leaving it\.') "-DryRun output has no LLVM install or keep line:`n$output"
 

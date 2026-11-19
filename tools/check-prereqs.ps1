@@ -27,6 +27,9 @@ $MIN_CLANG_VERSION = 23
 $MIN_CCACHE_VERSION = [Version]"4.9.1"
 $MIN_PYTHON_VERSION = [Version]"3.14"
 $MIN_GIT_VERSION = [Version]"2.30"
+# The oldest MSVC Build Tools (the standard library clang compiles against): VS 2026 18.6's 14.51, which first
+# shipped <flat_map> and <flat_set>, and what CI builds with (#4354). tools/setup-dev.ps1 installs VS 2026.
+$MIN_MSVC_TOOLSET_VERSION = [Version]"14.51"
 
 # The LLVM major CI builds and formats with (the clang-format rev in .pre-commit-config.yaml). The
 # compilers the win-* presets use (clang, clang++) fail on any other major: the presets require the
@@ -193,6 +196,29 @@ function Get-NinjaVersion {
     return $null
 }
 
+# The newest MSVC toolset (VC\Tools\MSVC\<version>) of any Visual Studio vswhere lists, or $null. clang takes the
+# MSVC standard library and CRT from it. Returns @{ Version = [Version]; Path = <toolset directory> }.
+function Get-MsvcToolset {
+    $vswhere = Join-Path ([Environment]::GetFolderPath('ProgramFilesX86')) 'Microsoft Visual Studio\Installer\vswhere.exe'
+    if (-not (Test-Path -LiteralPath $vswhere)) { return $null }
+    $best = $null
+    try {
+        $installs = @(& $vswhere -all -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath 2>$null)
+    }
+    catch { return $null }
+    foreach ($install in $installs) {
+        $toolsets = Join-Path "$install".Trim() 'VC\Tools\MSVC'
+        if (-not (Test-Path -LiteralPath $toolsets)) { continue }
+        foreach ($dir in Get-ChildItem -LiteralPath $toolsets -Directory -ErrorAction SilentlyContinue) {
+            $parsed = $null
+            if ([Version]::TryParse($dir.Name, [ref]$parsed) -and (-not $best -or $parsed -gt $best.Version)) {
+                $best = @{ Version = $parsed; Path = $dir.FullName }
+            }
+        }
+    }
+    return $best
+}
+
 # Find the RC compiler the same way cmake/RCCompiler.cmake does: the RC environment variable
 # first (an explicit override CMake always honors, may carry the compiler plus arguments, and
 # is skipped here if empty -- CMake treats an empty RC as unset too), then llvm-rc only, searched
@@ -322,6 +348,19 @@ if (-not (Write-LlvmToolStatus -Name "clang" -Path $clangPath -MissingHint (Get-
 $clangppPath = Get-PresetLlvmToolPath "clang++"
 if (-not (Write-LlvmToolStatus -Name "clang++" -Path $clangppPath -MissingHint (Get-PresetLlvmToolHint "clang++") -Major (Get-ToolVersion -Path $clangppPath -Pattern $clangVersionPattern) -RequirePinned)) {
     $AllOK = $false
+}
+
+# The MSVC standard library clang compiles against (#4354): the floor is CI's. An older one is a warning, not a
+# failure: it builds until the code uses a library feature only the newer STL has (<flat_map>, <flat_set>).
+$msvcToolset = Get-MsvcToolset
+if (-not $msvcToolset) {
+    Write-Status -Name "MSVC STL" -Status "warn" -Version $null -Path "(Visual Studio with the MSVC C++ libraries; pwsh tools/setup-dev.ps1 installs VS 2026)" -Required $MIN_MSVC_TOOLSET_VERSION
+}
+elseif ($msvcToolset.Version -ge $MIN_MSVC_TOOLSET_VERSION) {
+    Write-Status -Name "MSVC STL" -Status "ok" -Version $msvcToolset.Version.ToString() -Path $msvcToolset.Path -Required $MIN_MSVC_TOOLSET_VERSION
+}
+else {
+    Write-Status -Name "MSVC STL" -Status "warn" -Version $msvcToolset.Version.ToString() -Path "$($msvcToolset.Path) (older than CI's; pwsh tools/setup-dev.ps1 installs VS 2026)" -Required $MIN_MSVC_TOOLSET_VERSION
 }
 
 # Developer tools, not needed to build, test or run (#2618): a missing or old one is a warning, not a
