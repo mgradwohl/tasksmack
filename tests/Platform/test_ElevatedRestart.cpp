@@ -8,6 +8,7 @@
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/PinnedFolder.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Support/Junction.h"
 
@@ -140,7 +141,7 @@ TEST(ElevatedRestartTest, AnotherErrorIsAFailureThatSaysWhy)
         FakeShell::reset(error);
         const ElevatedRestartResult result = restart(CONFIG_DIR, nullptr, FAKES, 1, TICKS);
         EXPECT_EQ(result.outcome, ElevatedRestartResult::Outcome::Failed) << error;
-        EXPECT_EQ(result.detail, std::system_category().message(static_cast<int>(error))) << error;
+        EXPECT_EQ(result.detail, Platform::WinString::win32ErrorText(error)) << error;
     }
 }
 

@@ -2,6 +2,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
+#include "Platform/Windows/WinString.h"
 #include "WindowsSocketTables.h"
 #include "WindowsTcpRows.h"
 
@@ -12,7 +13,6 @@
 #include <format>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -87,7 +87,7 @@ ProcessActionResult closeTcpConnectionOf(const TcpCloseFunctions& fns, std::int3
     {
         return ProcessActionResult::error(std::format("PID {} no longer holds this connection", pid));
     }
-    std::string message = std::format("Windows refused to close it: {}", std::system_category().message(static_cast<int>(error)));
+    std::string message = std::format("Windows refused to close it: {}", Platform::WinString::win32ErrorText(error));
     spdlog::warn("{}", message);
     return ProcessActionResult::error(std::move(message));
 }

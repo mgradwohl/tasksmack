@@ -176,6 +176,19 @@ TEST(SystemInfoSectionsTest, ReportJsonHasTheRowsCopyHas)
     EXPECT_TRUE(SystemInfo::allSectionsJson(empty, false, "").contains("\"title\": \"Empty\",\n      \"rows\": []\n    }"));
 }
 
+TEST(SystemInfoSectionsTest, JsonStringIsAlwaysWellFormedUtf8)
+{
+    // #4305: a saved .json that isn't UTF-8 breaks RFC 8259, and json.load and jq refuse it. Each maximal
+    // ill-formed subpart becomes U+FFFD.
+    const std::string fffd = "\xEF\xBF\xBD";
+    EXPECT_EQ(SystemInfo::jsonString("\xFF"), "\"" + fffd + "\"") << "an unprogrammed SMBIOS byte";
+    EXPECT_EQ(SystemInfo::jsonString("Acme\xAE"), "\"Acme" + fffd + "\"") << "Latin-1 registered sign";
+    EXPECT_EQ(SystemInfo::jsonString("\x80"), "\"" + fffd + "\"") << "a lone continuation byte";
+    EXPECT_EQ(SystemInfo::jsonString("caf\xC3"), "\"caf" + fffd + "\"") << "a truncated sequence";
+    EXPECT_EQ(SystemInfo::jsonString("\xC0\xAF"), "\"" + fffd + fffd + "\"") << "an overlong form";
+    EXPECT_EQ(SystemInfo::jsonString("a\xFF\"b"), "\"a" + fffd + "\\\"b\"") << "and the escapes still apply";
+}
+
 TEST(SystemInfoSectionsTest, JsonStringEscapes)
 {
     EXPECT_EQ(SystemInfo::jsonString("plain"), "\"plain\"");

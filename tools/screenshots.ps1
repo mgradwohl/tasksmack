@@ -58,6 +58,7 @@
 .EXAMPLE
     .\tools\screenshots.ps1 -Exe C:\shots\TaskSmack.exe -Out C:\shots\out -Themes windows-dark,nord-light
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [string]$Exe = (Join-Path $PSScriptRoot "..\build\win-release\bin\TaskSmack.exe"),

@@ -7,6 +7,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/Sha256.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsImageFile.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 
@@ -589,8 +590,7 @@ TEST_F(WindowsImageSha256Test, AProtectedProcessOrOneWithNoImageSaysSo)
     FakeImage::memoryMapHidden = true;
     const auto unprotected = actions.imageSha256(TARGET, stop.get_token());
     ASSERT_FALSE(unprotected.has_value());
-    EXPECT_EQ(unprotected.error(),
-              "Its executable can't be read: " + std::system_category().message(static_cast<int>(ERROR_ACCESS_DENIED)));
+    EXPECT_EQ(unprotected.error(), "Its executable can't be read: " + Platform::WinString::win32ErrorText(ERROR_ACCESS_DENIED));
 
     // ...and for one that has exited, says so.
     FakeImage::reset(m_Image);

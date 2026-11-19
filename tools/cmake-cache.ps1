@@ -1,3 +1,4 @@
+#Requires -Version 7
 # CMakeCache.txt reading shared by the PowerShell tools (bench.ps1, profile-etw-common.ps1),
 # dot-sourced by them (#1479). Works on PowerShell 7.0 and later.
 

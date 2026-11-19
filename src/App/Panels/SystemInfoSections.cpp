@@ -6,6 +6,7 @@
 #include "Domain/SensorModel.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/ISystemInfoProbe.h"
@@ -2564,7 +2565,8 @@ std::string sectionText(const Section& section, bool showIdentifiers)
         text += item.available() ? item.shownValue(showIdentifiers) : "unavailable (" + item.shownUnavailableReason(showIdentifiers) + ")";
         text += '\n';
     }
-    return text;
+    // A backstop for any value that reached the model raw: Copy and the text report are well-formed UTF-8 (#4305).
+    return Domain::sanitizedUtf8(text);
 }
 
 std::string allSectionsText(std::span<const Section> sections, bool showIdentifiers)
@@ -2583,10 +2585,12 @@ std::string allSectionsText(std::span<const Section> sections, bool showIdentifi
 
 std::string jsonString(std::string_view text)
 {
+    // RFC 8259 text is UTF-8: an ill-formed sequence would make json.load and jq refuse the saved report (#4305).
+    const std::string wellFormed = Domain::sanitizedUtf8(text);
     std::string out;
-    out.reserve(text.size() + 2);
+    out.reserve(wellFormed.size() + 2);
     out += '"';
-    for (const char c : text)
+    for (const char c : wellFormed)
     {
         switch (c)
         {
@@ -2618,7 +2622,7 @@ std::string jsonString(std::string_view text)
             }
             else
             {
-                out += c; // UTF-8 bytes pass through
+                out += c; // well-formed UTF-8 passes through
             }
         }
     }

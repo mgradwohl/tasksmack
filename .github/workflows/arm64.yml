@@ -116,3 +116,33 @@ jobs:
     with:
       os: windows-11-arm
       build_type: debug
+
+  # Nightly and manual runs also build the release preset on both ARM64 targets (#4349): ThinLTO, -O3 and,
+  # on Linux, -mbranch-protection=standard and _FORTIFY_SOURCE=3 were otherwise first built by release.yml
+  # on the tag, where a break stops a release at its last step. Not on pushes or pull requests, so they add
+  # nothing to a PR's cost. Linux runs the ctest suite as the release job on x64 does; Windows only builds
+  # (run_tests: false) plus the benchmark target, since ARM64's debug leg already runs the Windows tests.
+  build-linux-arm64-release:
+    needs: detect
+    if: needs.detect.outputs.run == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: ubuntu-26.04-arm
+      build_type: release
+      build_benchmarks: true
+
+  build-windows-arm64-release:
+    needs: detect
+    if: needs.detect.outputs.run == 'true' && (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch')
+    permissions:
+      contents: read
+      checks: write
+    uses: ./.github/workflows/reusable-build-test.yml
+    with:
+      os: windows-11-arm
+      build_type: release
+      build_benchmarks: true
+      run_tests: false

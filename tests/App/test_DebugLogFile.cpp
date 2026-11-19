@@ -2,23 +2,27 @@
 // less-privileged side's writes it only to %ProgramData%\TaskSmack\Logs, made or taken over for Administrators and
 // SYSTEM, with no junction, link or hard link on the way. The folders are seams: every case runs for real in a temp
 // folder of this test's own, standing in for %ProgramData%, with junctions and hard links any user can make. Nothing
-// here is elevated, and no real user or system folder is touched.
+// here is elevated, and no real user or system folder is touched. The flush policy (#4419) runs on the temp folder's log
+// in that same folder: each line is read back from the file while its logger is still open.
 
 #include "App/DebugLogFile.h"
 
 #include <gtest/gtest.h>
+#include <spdlog/common.h>
 #include <spdlog/logger.h>
 
-#include <cstdint>
+#include <chrono>
 #include <filesystem>
 #include <format>
 #include <fstream>
 #include <ios>
 #include <iterator>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
+#include <thread>
 #include <utility>
 
 #ifdef _WIN32
@@ -40,9 +44,10 @@
 #include <algorithm>
 #include <array>
 #include <cstddef>
-#include <memory>
 #include <vector>
 #else
+#include <cstdint>
+
 #include <unistd.h>
 #endif
 
@@ -170,6 +175,114 @@ TEST(DebugLogFileTest, ATempFolderThatCantBeFoundSaysWhy)
     const auto opened = App::DebugLogFile::open(false, functions);
     ASSERT_FALSE(opened.has_value());
     EXPECT_TRUE(opened.error().contains("no temp folder")) << opened.error();
+}
+
+/// A logger at @p level on the temp folder's log in @p scratch, as runApp()'s is (#4419); null, and a failure, when the
+/// log can't be opened.
+[[nodiscard]] std::shared_ptr<spdlog::logger> fileLoggerIn(const ScratchFolder& scratch, spdlog::level::level_enum level)
+{
+    auto opened = App::DebugLogFile::open(false, functionsIn(scratch));
+    if (!opened.has_value())
+    {
+        ADD_FAILURE() << opened.error();
+        return nullptr;
+    }
+    auto logger = std::make_shared<spdlog::logger>("DebugLogFileFlushTest", std::move(opened->sink));
+    logger->set_level(level);
+    return logger;
+}
+
+/// The log's text, read again until it holds @p text or @p patience runs out.
+[[nodiscard]] std::string contentsOnceItHolds(const std::filesystem::path& file, std::string_view text, std::chrono::milliseconds patience)
+{
+    const auto deadline = std::chrono::steady_clock::now() + patience;
+    std::string contents = contentsOf(file);
+    while (!contents.contains(text) && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(20));
+        contents = contentsOf(file);
+    }
+    return contents;
+}
+
+/// A period no test waits out: only the flush level, or the policy's end, can write a line in time.
+constexpr std::chrono::milliseconds NEVER = std::chrono::hours(1);
+
+TEST(DebugLogFileTest, TheFlushPolicyIsWarnInAReleaseBuildEveryLineInADebugBuildAndTheRestEveryFewSeconds)
+{
+    EXPECT_EQ(App::DebugLogFile::RELEASE_FLUSH_LEVEL, spdlog::level::warn);
+    EXPECT_EQ(App::DebugLogFile::DEBUG_FLUSH_LEVEL, spdlog::level::debug);
+    EXPECT_GE(App::DebugLogFile::FLUSH_INTERVAL, std::chrono::seconds(1)) << "a wake-up a second at most";
+    EXPECT_LE(App::DebugLogFile::FLUSH_INTERVAL, std::chrono::seconds(5)) << "a crash loses a few seconds of lines at most";
+}
+
+// #4419: a release build's warning was in a FILE* buffer until a clean exit; a crash, a kill or a hang lost it.
+TEST(DebugLogFileTest, AWarningIsInTheFileAsItIsLoggedWithNoFlushAsked)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path log = scratch.temp() / App::DebugLogFile::FILE_NAME;
+    const auto logger = fileLoggerIn(scratch, spdlog::level::info);
+    ASSERT_NE(logger, nullptr);
+    const App::DebugLogFile::FlushPolicy policy(logger, App::DebugLogFile::RELEASE_FLUSH_LEVEL, NEVER);
+    logger->info("an info line");
+    EXPECT_FALSE(contentsOf(log).contains("an info line")) << "below the flush level, it waits in the buffer";
+    logger->warn("a warning");
+    const std::string text = contentsOf(log);
+    EXPECT_TRUE(text.contains("a warning")) << text;
+    EXPECT_TRUE(text.contains("an info line")) << "the warning's flush writes what was buffered before it: " << text;
+}
+
+TEST(DebugLogFileTest, AReleaseBuildsDefaultLevelHasNoPeriodicFlushToDo)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path log = scratch.temp() / App::DebugLogFile::FILE_NAME;
+    const auto logger = fileLoggerIn(scratch, spdlog::level::warn);
+    ASSERT_NE(logger, nullptr);
+    const App::DebugLogFile::FlushPolicy policy(logger, App::DebugLogFile::RELEASE_FLUSH_LEVEL);
+    EXPECT_FALSE(policy.periodic()) << "every line it logs is flushed as it is logged; nothing wakes an idle session";
+    logger->error("an error");
+    EXPECT_TRUE(contentsOf(log).contains("an error"));
+}
+
+TEST(DebugLogFileTest, ADebugBuildFlushesEveryLineAsItIsLogged)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path log = scratch.temp() / App::DebugLogFile::FILE_NAME;
+    const auto logger = fileLoggerIn(scratch, spdlog::level::debug);
+    ASSERT_NE(logger, nullptr);
+    const App::DebugLogFile::FlushPolicy policy(logger, App::DebugLogFile::DEBUG_FLUSH_LEVEL, NEVER);
+    EXPECT_FALSE(policy.periodic());
+    logger->debug("a debug line");
+    EXPECT_TRUE(contentsOf(log).contains("a debug line"));
+}
+
+// TASKSMACK_LOG_LEVEL=info in a release build: the lines below warn reach the file within the interval, on the worker.
+TEST(DebugLogFileTest, ALineBelowTheFlushLevelIsInTheFileWithinTheInterval)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path log = scratch.temp() / App::DebugLogFile::FILE_NAME;
+    const auto logger = fileLoggerIn(scratch, spdlog::level::info);
+    ASSERT_NE(logger, nullptr);
+    const App::DebugLogFile::FlushPolicy policy(logger, App::DebugLogFile::RELEASE_FLUSH_LEVEL, std::chrono::milliseconds(50));
+    EXPECT_TRUE(policy.periodic());
+    logger->info("Entering main loop");
+    const std::string text = contentsOnceItHolds(log, "Entering main loop", std::chrono::seconds(10));
+    EXPECT_TRUE(text.contains("Entering main loop")) << text;
+}
+
+// A clean exit: runApp() returns, the policy goes, and what was still buffered is written.
+TEST(DebugLogFileTest, ThePolicysEndFlushesWhatIsLeft)
+{
+    const ScratchFolder scratch;
+    const std::filesystem::path log = scratch.temp() / App::DebugLogFile::FILE_NAME;
+    const auto logger = fileLoggerIn(scratch, spdlog::level::info);
+    ASSERT_NE(logger, nullptr);
+    {
+        const App::DebugLogFile::FlushPolicy policy(logger, App::DebugLogFile::RELEASE_FLUSH_LEVEL, NEVER);
+        EXPECT_TRUE(policy.periodic());
+        logger->info("the last line");
+    }
+    EXPECT_TRUE(contentsOf(log).contains("the last line"));
 }
 
 TEST(DebugLogFileTest, TheElevatedLogFolderIsTaskSmackLogsUnderProgramData)
