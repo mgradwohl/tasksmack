@@ -77,15 +77,15 @@ TEST(Utf8CaseFoldTest, IllFormedBytesNeverCrashAndNeverMatchACharacter)
 TEST(Utf8CaseFoldTest, CompareSortsCaseVariantsTogetherThenByBytes)
 {
     // #4324: "Émile" and "émile" sorted far apart, both after "Zoe".
-    EXPECT_LT(compareFoldedCase("Émile", "Zoe"), 0);
-    EXPECT_LT(compareFoldedCase("émile", "Zoe"), 0);
-    EXPECT_LT(compareFoldedCase("Émile", "émile"), 0) << "the byte-wise tie-break: É (C3 89) before é (C3 A9)";
-    EXPECT_GT(compareFoldedCase("émile", "Émile"), 0);
-    EXPECT_EQ(compareFoldedCase("émile", "émile"), 0);
-    EXPECT_LT(compareFoldedCase("bits", "BITS2"), 0) << "a prefix sorts first";
-    EXPECT_LT(compareFoldedCase("Appinfo", "bits"), 0);
-    EXPECT_LT(compareFoldedCase("BITS", "bits"), 0) << "ASCII ties break by bytes too";
-    EXPECT_LT(compareFoldedCase("\u212A", "l"), 0) << "U+212A folds to k, which is before l";
+    EXPECT_TRUE(compareFoldedCase("Émile", "Zoe") < 0);
+    EXPECT_TRUE(compareFoldedCase("émile", "Zoe") < 0);
+    EXPECT_TRUE(compareFoldedCase("Émile", "émile") < 0) << "the byte-wise tie-break: É (C3 89) before é (C3 A9)";
+    EXPECT_TRUE(compareFoldedCase("émile", "Émile") > 0);
+    EXPECT_TRUE(compareFoldedCase("émile", "émile") == 0);
+    EXPECT_TRUE(compareFoldedCase("bits", "BITS2") < 0) << "a prefix sorts first";
+    EXPECT_TRUE(compareFoldedCase("Appinfo", "bits") < 0);
+    EXPECT_TRUE(compareFoldedCase("BITS", "bits") < 0) << "ASCII ties break by bytes too";
+    EXPECT_TRUE(compareFoldedCase("\u212A", "l") < 0) << "U+212A folds to k, which is before l";
 }
 
 } // namespace
