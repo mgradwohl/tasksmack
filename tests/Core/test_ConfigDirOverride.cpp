@@ -4,6 +4,7 @@
 #include "Core/ConfigDirOverride.h"
 #include "Core/Utf8Path.h"
 #include "Mocks/HandedOverTestFolder.h"
+#include "NonAsciiTestNames.h"
 #include "Platform/IHandedOverFolder.h"
 
 #include <SDL3/SDL_stdinc.h>
@@ -17,6 +18,7 @@
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <fstream>
 #include <map>
 #include <memory>
 #include <optional>
@@ -485,6 +487,63 @@ TEST_F(ReadHandedOverFilesTest, AFileThatCantBeReadIsSkippedAndLoggedAndTheRestA
     EXPECT_TRUE(logged.contains("it is hard-linked")) << logged;
     EXPECT_FALSE(logged.contains("gone.toml")) << "a file gone since the listing isn't worth a warning: " << logged;
 }
+
+#ifdef _WIN32
+// #4316: a relative TASKSMACK_CONFIG_DIR is made absolute from the working directory, and the text logged for it was
+// u8string(), which throws for a lone surrogate: out of active()'s static initialiser, so out of startup. The path is
+// kept exactly, and only the logged text shows U+FFFD.
+TEST(ConfigDirOverrideTest, ARelativeValueUnderALoneSurrogateFolderIsTakenExactlyAndNeverThrows)
+{
+    const TestSupport::LoneSurrogateTempDir dir;
+    if (!dir.created())
+    {
+        GTEST_SKIP() << "the filesystem refused a lone surrogate in a folder name";
+    }
+    std::error_code ec;
+    const std::filesystem::path previousCwd = std::filesystem::current_path(ec);
+    ASSERT_FALSE(ec) << ec.message();
+    std::filesystem::current_path(dir.path(), ec);
+    ASSERT_FALSE(ec) << ec.message();
+    struct RestoreCwd
+    {
+        std::filesystem::path path;
+        explicit RestoreCwd(std::filesystem::path previous) : path(std::move(previous))
+        {}
+        RestoreCwd(const RestoreCwd&) = delete;
+        RestoreCwd& operator=(const RestoreCwd&) = delete;
+        RestoreCwd(RestoreCwd&&) = delete;
+        RestoreCwd& operator=(RestoreCwd&&) = delete;
+        ~RestoreCwd()
+        {
+            std::error_code restoreError;
+            std::filesystem::current_path(path, restoreError);
+        }
+    };
+    const RestoreCwd restore{previousCwd};
+
+    std::optional<std::filesystem::path> taken;
+    ASSERT_NO_THROW(taken = takeTestHookValue("cfg"));
+    ASSERT_TRUE(taken.has_value());
+    EXPECT_EQ(taken.value_or(std::filesystem::path{}).native(), (dir.path() / "cfg").lexically_normal().native())
+        << "the exact folder, lone surrogate and all";
+    EXPECT_TRUE(std::filesystem::is_directory(dir.path() / "cfg"));
+
+    // A directory that can't be made (a file is in the way) is logged, by its display text.
+    {
+        const std::ofstream blocker(dir.path() / "blocker");
+    }
+    std::ostringstream logStream;
+    const auto previousLogger = spdlog::default_logger();
+    spdlog::set_default_logger(std::make_shared<spdlog::logger>("capture", std::make_shared<spdlog::sinks::ostream_sink_st>(logStream)));
+    ASSERT_NO_THROW(taken = takeTestHookValue("blocker/cfg"));
+    spdlog::set_default_logger(previousLogger);
+    ASSERT_TRUE(taken.has_value());
+    EXPECT_EQ(taken.value_or(std::filesystem::path{}).native(), (dir.path() / "blocker" / "cfg").lexically_normal().native());
+    const std::string logged = logStream.str();
+    EXPECT_TRUE(logged.contains("could not create")) << logged;
+    EXPECT_TRUE(logged.contains("\xEF\xBF\xBD")) << "the lone surrogate shown as U+FFFD: " << logged;
+}
+#endif
 
 } // namespace
 } // namespace Core::ConfigDirOverride

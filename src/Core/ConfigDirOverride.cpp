@@ -35,25 +35,7 @@ std::optional<std::filesystem::path>& current()
         {
             return std::nullopt;
         }
-        std::optional<std::filesystem::path> parsed = parse(Core::readEnv(ENV_VAR));
-        if (!parsed.has_value())
-        {
-            return std::nullopt;
-        }
-        std::error_code ec;
-        if (const std::filesystem::path absolute = std::filesystem::absolute(*parsed, ec); !ec)
-        {
-            parsed = absolute.lexically_normal();
-        }
-        const auto utf8 = parsed->u8string();
-        const std::string display(utf8.begin(), utf8.end());
-        ec.clear();
-        std::filesystem::create_directories(*parsed, ec);
-        if (ec)
-        {
-            spdlog::warn("{}: could not create {}: {}", ENV_VAR, display, ec.message());
-        }
-        return parsed;
+        return takeTestHookValue(Core::readEnv(ENV_VAR));
     }();
     return dir;
 }
@@ -80,6 +62,29 @@ bool& lessPrivilegedFlag()
 }
 
 } // namespace
+
+std::optional<std::filesystem::path> takeTestHookValue(const char* value)
+{
+    std::optional<std::filesystem::path> parsed = parse(value);
+    if (!parsed.has_value())
+    {
+        return std::nullopt;
+    }
+    std::error_code ec;
+    if (const std::filesystem::path absolute = std::filesystem::absolute(*parsed, ec); !ec)
+    {
+        parsed = absolute.lexically_normal();
+    }
+    ec.clear();
+    std::filesystem::create_directories(*parsed, ec);
+    if (ec)
+    {
+        // Display text only (#4316): pathToUtf8() never throws, where u8string() threw for a working directory whose
+        // name holds a lone surrogate, out of active()'s static initialiser and so out of startup.
+        spdlog::warn("{}: could not create {}: {}", ENV_VAR, Core::pathToUtf8(*parsed), ec.message());
+    }
+    return parsed;
+}
 
 const std::optional<std::filesystem::path>& active()
 {
