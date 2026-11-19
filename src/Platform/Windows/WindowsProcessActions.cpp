@@ -4,6 +4,7 @@
 #include "Platform/CpuAffinity.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IoPriorityTypes.h"
+#include "Platform/Windows/WinString.h"
 #ifndef TASKSMACK_NO_FILE_LOCATION
 #include "Platform/Sha256.h"
 #endif
@@ -59,7 +60,6 @@
 #include <string>
 #include <string_view>
 #ifndef TASKSMACK_NO_FILE_LOCATION
-#include <system_error>
 #endif
 #include <utility>
 #include <vector>
@@ -167,7 +167,7 @@ openVerified(const WindowsProcessFunctions& fns, const ProcessTarget& target, DW
     {
         return "Its executable can't be read: access is denied";
     }
-    return std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+    return std::format("Its executable can't be read: {}", Platform::WinString::win32ErrorText(error));
 }
 
 /// A verified process and the executable path read through its handle (#3863).
@@ -197,7 +197,7 @@ verifiedImagePath(const WindowsProcessFunctions& fns, const ProcessTarget& targe
     {
         // The kernel's own processes (Registry, Memory Compression, Secure System) have no image file.
         const DWORD error = GetLastError();
-        std::string message = std::format("Its executable can't be read: {}", std::system_category().message(static_cast<int>(error)));
+        std::string message = std::format("Its executable can't be read: {}", Platform::WinString::win32ErrorText(error));
         spdlog::warn("Not {} of PID {}: {}", doing, target.pid, message);
         return std::unexpected(ProcessActionResult::error(std::move(message)));
     }
@@ -207,7 +207,7 @@ verifiedImagePath(const WindowsProcessFunctions& fns, const ProcessTarget& targe
 /// Win32 error @p error as the system words it.
 [[nodiscard]] std::string imageHashError(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// The SHA-256 of the open @p file, read from its start in 1 MiB chunks; "Stopped" once @p stop is requested.

@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import re
 import sys
+from pathlib import Path
 
 _WIDE_BOMS = (
     (b"\xff\xfe\x00\x00", "UTF-32 LE"),
@@ -51,6 +52,28 @@ _CONTINUATIONS = "".join(char for byte in range(0x80, 0xC0) for char in _single_
 _MOJIBAKE = re.compile(f"[{re.escape(_LEADS)}][{re.escape(_CONTINUATIONS)}]{{1,3}}")
 
 
+# Windows PowerShell 5.1 reads a script with no BOM as the ANSI code page, so a non-ASCII byte in a string can end
+# it early and give parse errors instead of "run this in pwsh" (#4319). pre-commit strips BOMs, so a .ps1 with
+# non-ASCII text must declare `#Requires -Version 7`, which 5.1 reports cleanly; the rest stay ASCII-only.
+_REQUIRES_PWSH7 = re.compile(rb"(?im)^#Requires\s+-Version\s+(?:[7-9]|\d\d)(?:\.\d+)*\s*$")
+_NON_ASCII = re.compile(rb"[\x80-\xff]")
+
+
+def powershell_5_1_problem(path: str, data: bytes) -> list[str]:
+    """One message when a .ps1 holds non-ASCII text but doesn't require PowerShell 7 (empty otherwise)."""
+    if Path(path).suffix.lower() != ".ps1" or _REQUIRES_PWSH7.search(data):
+        return []
+    for line_number, line in enumerate(data.split(b"\n"), start=1):
+        found = _NON_ASCII.search(line)
+        if found:
+            return [
+                f"{path}:{line_number}:{found.start() + 1}: non-ASCII text in a .ps1 without `#Requires -Version 7`; "
+                "Windows PowerShell 5.1 reads it as the ANSI code page and fails to parse instead of saying to use "
+                "pwsh. Write it with [char]0x... or add the #Requires line (#4319)"
+            ]
+    return []
+
+
 def find_mojibake(text: str) -> list[tuple[int, str, str]]:
     """Returns (column, garbled text, what it was meant to be) for each double-encoded character in `text`."""
     found: list[tuple[int, str, str]] = []
@@ -76,7 +99,7 @@ def check_file(path: str) -> list[str]:
         if data.startswith(bom):
             return [f"{path}:1: starts with a {name} byte-order mark; convert the file to UTF-8 without a BOM"]
 
-    problems: list[str] = []
+    problems: list[str] = powershell_5_1_problem(path, data)
     for line_number, line in enumerate(data.split(b"\n"), start=1):
         try:
             text = line.decode("utf-8", errors="strict")

@@ -30,7 +30,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -106,7 +105,7 @@ constexpr std::size_t READ_PAGE_BYTES = 4096;
 /// The system's message for a Win32 error code ("Only part of a ReadProcessMemory ... was completed").
 [[nodiscard]] std::string errorText(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// @p address in the target, as ReadProcessMemory takes it: never dereferenced here.

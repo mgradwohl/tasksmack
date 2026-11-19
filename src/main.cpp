@@ -551,8 +551,9 @@ auto runApp(const App::LaunchOptions& launch) -> int
 
 #ifndef NDEBUG
     spdlog::set_level(spdlog::level::debug);
-    spdlog::flush_on(spdlog::level::debug);
+    constexpr spdlog::level::level_enum flushLevel = App::DebugLogFile::DEBUG_FLUSH_LEVEL;
 #else
+    constexpr spdlog::level::level_enum flushLevel = App::DebugLogFile::RELEASE_FLUSH_LEVEL;
     // In release builds, default to warn to silence info/debug noise while
     // preserving warnings, errors, and critical failures.
     // Override at runtime via TASKSMACK_LOG_LEVEL=trace|debug|info|warn|error|critical|off.
@@ -570,6 +571,9 @@ auto runApp(const App::LaunchOptions& launch) -> int
         spdlog::set_level(runtimeLevel);
     }
 #endif
+    // After the level, which it reads (#4419): the flush level's lines as they're logged, the rest every few seconds on a
+    // worker of its own while the level lets any through, and all of it once more when runApp() returns or throws.
+    const App::DebugLogFile::FlushPolicy flushPolicy(spdlog::default_logger(), flushLevel);
 
     spdlog::info("{} v{} ({} build)", tasksmack::Version::PROJECT_NAME, tasksmack::Version::FULL, tasksmack::Version::BUILD_TYPE);
     // Set first thing in runApp(), before logging was up, so logged here.

@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Dot-sourced by profile-etw.ps1. Collector and app deliberately run in separate terminals:
 # the elevated collector never executes a binary or command from the shared run manifest.
 Set-StrictMode -Version Latest

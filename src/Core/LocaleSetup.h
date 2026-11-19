@@ -47,6 +47,8 @@ struct CRuntime
     std::string (*userLocaleName)() = nullptr;
     /// nl_langinfo(CODESET) for the current LC_CTYPE (for example "UTF-8"). Used on Linux only.
     std::string (*codeset)() = nullptr;
+    /// GetACP(): the process's ANSI code page (65001 = UTF-8). Used on Windows only; nullptr elsewhere.
+    unsigned (*activeCodePage)() = nullptr;
 };
 
 /// What a C-locale selection did: the candidate setlocale accepted (empty when none was), and
@@ -58,6 +60,12 @@ struct CLocaleOutcome
     /// Linux: the user's LC_CTYPE was not UTF-8 and chosen replaced it.
     bool replacedCtype = false;
 };
+
+/// The process's ANSI code page through @p crt, with a warning in @p warnings when it isn't UTF-8 (65001):
+/// TaskSmack's manifest sets activeCodePage, so another code page means the manifest is missing or replaced
+/// (re-signing, mt.exe), or Windows is older than 10 1903, and the narrow CRT and A APIs use the legacy code
+/// page (#4334, #4299 R24). 0, with no warning, when @p crt has no activeCodePage (Linux).
+[[nodiscard]] unsigned checkActiveCodePage(const CRuntime& crt, std::vector<std::string>& warnings);
 
 /// Whether @p codeset names UTF-8 ("UTF-8", "utf8", any case).
 [[nodiscard]] bool isUtf8Codeset(std::string_view codeset) noexcept;

@@ -119,25 +119,53 @@ struct DeviceDescriptor
     int busType = 0;
 };
 
-/// The NUL-terminated ASCII string at @p offset in @p buffer, trimmed of spaces; empty for offset 0 (none)
-/// or one outside the buffer. A string missing its NUL ends at the buffer's end.
+/// The NUL-terminated string at @p offset in @p buffer, as display text (#4312); empty for offset 0 (none)
+/// or one outside the buffer. A string missing its NUL ends at the buffer's end. The descriptor's strings
+/// are ASCII bytes, but the drive (or a USB-SATA bridge) writes them, so they are checked, not trusted:
+/// the spaces and 0xFF bytes some drives pad with are trimmed from both ends, and any other byte outside
+/// printable ASCII (0x20-0x7E), a Latin-1 0xDC say, becomes U+FFFD (#4299 D1), so the Disk tab, System
+/// Information and Copy never carry invalid UTF-8. Nothing uses these strings as an identity.
+/// TODO(#4301): use Domain::sanitizedUtf8 for the non-ASCII bytes once the shared sanitizer (#4489) lands.
 [[nodiscard]] inline std::string descriptorString(std::span<const std::byte> buffer, DWORD offset)
 {
     if (offset == 0 || offset >= buffer.size())
     {
         return {};
     }
+    std::size_t end = offset;
+    while (end < buffer.size() && buffer[end] != std::byte{0})
+    {
+        ++end;
+    }
+    const auto isPadding = [](std::byte value)
+    {
+        return value == std::byte{0x20} || value == std::byte{0xFF};
+    };
+    std::size_t first = offset;
+    while (first < end && isPadding(buffer[first]))
+    {
+        ++first;
+    }
+    while (end > first && isPadding(buffer[end - 1]))
+    {
+        --end;
+    }
+    constexpr std::string_view REPLACEMENT = "\xEF\xBF\xBD"; // U+FFFD
     std::string text;
-    for (std::size_t i = offset; i < buffer.size() && buffer[i] != std::byte{0}; ++i)
+    text.reserve(end - first);
+    for (std::size_t i = first; i < end; ++i)
     {
-        text.push_back(static_cast<char>(buffer[i]));
+        const auto value = std::to_integer<unsigned char>(buffer[i]);
+        if (value >= 0x20 && value <= 0x7E)
+        {
+            text.push_back(static_cast<char>(value));
+        }
+        else
+        {
+            text += REPLACEMENT;
+        }
     }
-    const std::size_t first = text.find_first_not_of(' ');
-    if (first == std::string::npos)
-    {
-        return {};
-    }
-    return text.substr(first, text.find_last_not_of(' ') - first + 1);
+    return text;
 }
 
 /// A STORAGE_DEVICE_DESCRIPTOR buffer's model, firmware, serial and bus. The model is the product ID,

@@ -20,6 +20,7 @@
 .EXAMPLE
     .\coverage.ps1 -ShowDetails -OpenReport
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [string]$Preset = "win-coverage",

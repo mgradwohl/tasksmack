@@ -24,7 +24,6 @@
 #include <format>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #pragma comment(lib, "shell32.lib")
@@ -98,7 +97,7 @@ DWORD realShellExecute(const ShellRun& run)
     case ERROR_ACCESS_DENIED:
         return std::format("Windows refused to open {}: access is denied", program);
     default:
-        return std::system_category().message(static_cast<int>(error));
+        return Platform::WinString::win32ErrorText(error);
     }
 }
 

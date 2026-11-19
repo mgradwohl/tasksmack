@@ -205,7 +205,31 @@ std::string realCodeset()
 #endif
 }
 
+#ifdef _WIN32
+unsigned realActiveCodePage()
+{
+    return GetACP();
+}
+#endif
+
 } // namespace
+
+unsigned checkActiveCodePage(const CRuntime& crt, std::vector<std::string>& warnings)
+{
+    constexpr unsigned UTF8_CODE_PAGE = 65001; // CP_UTF8
+    if (crt.activeCodePage == nullptr)
+    {
+        return 0;
+    }
+    const unsigned codePage = crt.activeCodePage();
+    if (codePage != UTF8_CODE_PAGE)
+    {
+        warnings.emplace_back(std::format("the process code page is {}, not UTF-8 (65001): the manifest's activeCodePage is missing, "
+                                          "or Windows is older than 10 version 1903; narrow text APIs use that code page",
+                                          codePage));
+    }
+    return codePage;
+}
 
 bool isUtf8Codeset(const std::string_view codeset) noexcept
 {
@@ -375,7 +399,16 @@ const Summary& initialize(const NumericFacets numerics)
 {
     static Summary summary;
 
+#ifdef _WIN32
+    const CRuntime crt{
+        .setLocale = &realSetLocale,
+        .userLocaleName = &realUserLocaleName,
+        .codeset = &realCodeset,
+        .activeCodePage = &realActiveCodePage,
+    };
+#else
     const CRuntime crt{.setLocale = &realSetLocale, .userLocaleName = &realUserLocaleName, .codeset = &realCodeset};
+#endif
 
     // The C locale first: on Linux the C++ user locale takes its LC_CTYPE fallback from it.
 #ifdef _WIN32
@@ -422,9 +455,8 @@ const Summary& initialize(const NumericFacets numerics)
         summary.warnings.emplace_back(std::format("could not restore the C locale \"{}\"", cLocale));
     }
 
-#ifdef _WIN32
-    summary.activeCodePage = GetACP();
-#endif
+    // A warning, not only the info line below: release builds log at warn, so a missing manifest would go unseen (#4334).
+    summary.activeCodePage = checkActiveCodePage(crt, summary.warnings);
     const char* cAfter = crt.setLocale(LC_ALL, nullptr);
     summary.cLocale = cAfter != nullptr ? std::string(cAfter) : std::string();
     summary.globalLocaleName = std::locale().name();

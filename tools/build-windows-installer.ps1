@@ -34,6 +34,7 @@
 .PARAMETER Makensis
     makensis.exe (NSIS 3.08 or later). Omitted, $env:MAKENSIS, else the one on PATH.
 #>
+#Requires -Version 7
 param(
     [Parameter(Mandatory)][string]$ProjectDir,
     [Parameter(Mandatory)][string]$Zip,
