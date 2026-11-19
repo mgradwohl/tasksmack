@@ -2884,6 +2884,10 @@ TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
     notKept.pid = 7;
     notKept.signal = "SIGABRT";
     EXPECT_EQ(SystemInfo::formatCrashValue(notKept), "app crashed (SIGABRT), pid 7, core not kept");
+    // #4322: a comm decoded from systemd's \\xNN escapes can end in a lone lead byte; the text shown is well-formed.
+    Platform::CrashEvent cut = notKept;
+    cut.application = "Gr\xC3\xB6\xC3";
+    EXPECT_EQ(SystemInfo::formatCrashValue(cut), "Gr\xC3\xB6\xEF\xBF\xBD crashed (SIGABRT), pid 7, core not kept");
 
     // #1697: the Source row and the count say what was read.
     EXPECT_EQ(findRow(section, "Source")->value, "systemd-coredump's core files; the journal's details (signal, executable) weren't read");

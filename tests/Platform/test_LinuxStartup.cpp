@@ -90,6 +90,15 @@ TEST(XdgAutostartTest, ParsesTheDesktopEntryGroupOnly)
     EXPECT_FALSE(XdgAutostart::parse("Name=No group\n").has_value());
 }
 
+// #4322: a Latin-1 .desktop file's Name (0xE9 for é) is shown as well-formed UTF-8; the Exec line is kept as
+// it is, for the program lookup.
+TEST(XdgAutostartTest, ALatin1NameIsShownAsWellFormedUtf8)
+{
+    const XdgAutostart::Entry entry = parsed("[Desktop Entry]\nType=Application\nName=Caf\xE9\nExec=/opt/caf\xE9/run\n");
+    EXPECT_EQ(entry.name, "Caf\xEF\xBF\xBD");
+    EXPECT_EQ(entry.exec, "/opt/caf\xE9/run");
+}
+
 TEST(XdgAutostartTest, TheDesktopFiltersFollowXdgCurrentDesktop)
 {
     XdgAutostart::Entry entry;
@@ -352,6 +361,12 @@ TEST_F(LinuxStartupTest, ANameThatIsntAnAutostartFileIsRefused)
 
 // #3082: a unit file's description, first ExecStart (prefixes dropped), a timer's schedule and unit.
 // #3425: [Install] WantedBy= lists every target, across lines; an empty value resets it.
+TEST(SystemdUnitFileTest, ALatin1DescriptionIsShownAsWellFormedUtf8)
+{
+    const SystemdUnitFile::Unit unit = SystemdUnitFile::parse("[Unit]\nDescription=Sauvegarde \xE9t\xE9\n");
+    EXPECT_EQ(unit.description, "Sauvegarde \xEF\xBF\xBDt\xEF\xBF\xBD"); // #4322
+}
+
 TEST(SystemdUnitFileTest, ReadsWantedByAndWhetherItStartsWithTheSession)
 {
     SystemdUnitFile::Unit unit = SystemdUnitFile::parse("[Install]\nWantedBy=default.target  multi-user.target\nWantedBy=timers.target\n");
