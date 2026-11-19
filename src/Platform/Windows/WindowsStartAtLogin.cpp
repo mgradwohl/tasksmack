@@ -25,7 +25,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -55,7 +54,7 @@ using InjectableKey = std::unique_ptr<std::remove_pointer_t<HKEY>, InjectedKeyCl
 
 [[nodiscard]] std::string errorText(LSTATUS status)
 {
-    return std::system_category().message(static_cast<int>(status));
+    return Platform::WinString::win32ErrorText(static_cast<DWORD>(status));
 }
 
 /// The longest path the wide Win32 calls return, in characters (an extended-length path).

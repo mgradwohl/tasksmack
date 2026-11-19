@@ -9,6 +9,7 @@
 
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
 
@@ -31,7 +32,6 @@
 #include <ostream>
 #include <span>
 #include <string>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -312,7 +312,7 @@ TEST(WindowsProcessIdentity, ReaderStatusForEachRefusal)
     {
         const auto refused = statusOf(kind, ERROR_NOT_ENOUGH_MEMORY);
         EXPECT_EQ(refused.status, ModulesReadStatus::Failed);
-        EXPECT_EQ(refused.detail, std::system_category().message(static_cast<int>(ERROR_NOT_ENOUGH_MEMORY)));
+        EXPECT_EQ(refused.detail, Platform::WinString::win32ErrorText(ERROR_NOT_ENOUGH_MEMORY));
     }
 }
 

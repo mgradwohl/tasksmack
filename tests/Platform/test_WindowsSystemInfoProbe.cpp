@@ -17,6 +17,7 @@
 #include "Platform/SmbiosParser.h"
 #include "Platform/VulkanInfo.h"
 #include "Platform/Windows/DXGIGPUProbeMath.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsCommitPaging.h"
 #include "Platform/Windows/WindowsDevicePaths.h"
 #include "Platform/Windows/WindowsDevices.h"
@@ -529,6 +530,36 @@ TEST(WindowsSystemInfoProbeTest, LayoutParserMatchesWinIoctlStructs)
     header.Size = static_cast<DWORD>(buffer.size());
     std::memcpy(buffer.data(), &header, sizeof(header));
     return buffer;
+}
+
+// A USB-SATA bridge padding with 0xFF, or a Latin-1 0xDC in the product or serial (#4312): the strings stay valid UTF-8,
+// padding trimmed and any other byte outside printable ASCII shown as U+FFFD.
+TEST(WindowsSystemInfoProbeTest, DeviceDescriptorStringsAreValidUtf8)
+{
+    const auto parsed = WindowsStorage::parseDeviceDescriptor(deviceDescriptor("ATA",
+                                                                               "\xFF\xFF WD Blue \xFF\xFF",
+                                                                               "80.00\tA80",
+                                                                               " \xDC"
+                                                                               "BER-01 \xFF",
+                                                                               BusTypeSata));
+    ASSERT_TRUE(parsed.has_value());
+    const WindowsStorage::DeviceDescriptor descriptor = parsed.value_or(WindowsStorage::DeviceDescriptor{});
+    EXPECT_EQ(descriptor.model, "WD Blue"); // the 0xFF padding trimmed, "ATA" dropped
+    EXPECT_EQ(descriptor.firmware,
+              "80.00\xEF\xBF\xBD"
+              "A80"); // a control character is U+FFFD
+    EXPECT_EQ(descriptor.serial,
+              "\xEF\xBF\xBD"
+              "BER-01"); // the Latin-1 byte is U+FFFD, not a lone 0xDC
+    for (const std::string& text : {descriptor.model, descriptor.firmware, descriptor.serial})
+    {
+        EXPECT_FALSE(Platform::WinString::utf8ToWide(text).empty()) << text; // utf8ToWide() rejects invalid UTF-8
+    }
+
+    // A string of nothing but padding is empty, as one of spaces always was.
+    const auto blank = WindowsStorage::parseDeviceDescriptor(deviceDescriptor("", "\xFF\xFF\xFF", "  ", "", BusTypeUsb));
+    EXPECT_EQ(blank.value_or(WindowsStorage::DeviceDescriptor{}).model, "");
+    EXPECT_EQ(blank.value_or(WindowsStorage::DeviceDescriptor{}).firmware, "");
 }
 
 TEST(WindowsSystemInfoProbeTest, ParsesDeviceDescriptorsAndHealthLogs)

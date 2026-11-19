@@ -1687,6 +1687,11 @@ target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlo
                       Freetype::Freetype) # TabularDigits.cpp
 target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
                                                        TASKSMACK_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+if(WIN32)
+    # ThemeLoader.cpp's filesystem errors go through Core::errorCodeText(), which formats Win32 errors (#4308)
+    target_sources(TaskSmackThemeTests PRIVATE ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp)
+    target_compile_definitions(TaskSmackThemeTests PRIVATE NOMINMAX) # WinString.cpp includes <windows.h>, as the app's targets build it
+endif()
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)

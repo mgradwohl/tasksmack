@@ -24,7 +24,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -52,7 +51,7 @@ constexpr int MAX_ENUM_ATTEMPTS = 3;
 /// The system's message for a Win32 error code ("Only part of a ReadProcessMemory ... was completed").
 [[nodiscard]] std::string errorText(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// The NT devices of this run's local drive letters: fixed, removable, optical and RAM disks, never network drives

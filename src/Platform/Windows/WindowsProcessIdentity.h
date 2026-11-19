@@ -6,6 +6,7 @@
 // checked is made once. processImagePath() is the one read of a process's executable path (#3863).
 
 #include "Platform/IProcessActions.h"
+#include "Platform/Windows/WinString.h"
 #include "WindowsHandles.h"
 
 // clang-format off
@@ -22,7 +23,6 @@
 #include <expected>
 #include <optional>
 #include <string>
-#include <system_error>
 
 namespace Platform::Windows
 {
@@ -119,7 +119,7 @@ template<typename Status> [[nodiscard]] IdentityReadFailure<Status> toReadFailur
         return {.status = Status::PermissionDenied, .detail = {}};
     case IdentityFailureKind::OpenFailed:
     case IdentityFailureKind::TimesFailed:
-        return {.status = Status::Failed, .detail = std::system_category().message(static_cast<int>(failure.win32Error))};
+        return {.status = Status::Failed, .detail = Platform::WinString::win32ErrorText(failure.win32Error)};
     case IdentityFailureKind::InvalidPid:
     case IdentityFailureKind::ProcessGone:
     case IdentityFailureKind::Mismatch:
