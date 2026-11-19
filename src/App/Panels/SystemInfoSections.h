@@ -435,8 +435,9 @@ enum class ReportFormat : std::uint8_t
 
 /// The report's default file name: "tasksmack-system-info-<computer>-<date>.<txt|json>", @p date as
 /// "YYYY-MM-DD" (left out when empty). The computer name only with @p showIdentifiers (it is an
-/// identifier), and only its letters, digits, '-', '_' and '.' (others become '-'); "machine"
-/// otherwise or when none is left.
+/// identifier), and only its letters, digits, '-', '_' and '.', non-ASCII letters included (#4314); each
+/// other character, and each invalid UTF-8 sequence, becomes one '-'. "machine" otherwise or when none is
+/// left. The result is always valid UTF-8.
 [[nodiscard]] std::string reportFileName(std::string_view computerName, bool showIdentifiers, std::string_view date, ReportFormat format);
 
 /// The format to save @p path in: its typed extension when that is ".txt" or ".json" (#2144), else the

@@ -10,6 +10,7 @@
 // (#1942): middleEllipsize() fits it, keeping its tail, and cellTextKeepingTail() draws it.
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstddef>
 #include <string>
@@ -68,6 +69,72 @@ struct CellTextLayout
 /// The ellipsis middleEllipsize() puts in place of what it cuts: U+2026 HORIZONTAL ELLIPSIS.
 inline constexpr std::string_view MIDDLE_ELLIPSIS = "\xE2\x80\xA6";
 
+/// U+200D ZERO WIDTH JOINER: what binds the emoji of a family or a profession into one glyph.
+inline constexpr char32_t ZERO_WIDTH_JOINER = 0x200D;
+
+/// True for a code point that continues the grapheme before it: a combining mark (the common general
+/// category M blocks), a zero width joiner, or a variation selector. A cut never lands before one (#4313).
+[[nodiscard]] constexpr bool extendsGrapheme(char32_t codePoint) noexcept
+{
+    struct Range
+    {
+        char32_t first;
+        char32_t last;
+    };
+    constexpr std::array RANGES{
+        Range{.first = 0x0300, .last = 0x036F},   Range{.first = 0x0483, .last = 0x0489}, Range{.first = 0x0591, .last = 0x05BD},
+        Range{.first = 0x0610, .last = 0x061A},   Range{.first = 0x064B, .last = 0x065F}, Range{.first = 0x0670, .last = 0x0670},
+        Range{.first = 0x06D6, .last = 0x06DC},   Range{.first = 0x0900, .last = 0x0903}, Range{.first = 0x093A, .last = 0x094F},
+        Range{.first = 0x0E31, .last = 0x0E3A},   Range{.first = 0x0E47, .last = 0x0E4E}, Range{.first = 0x1AB0, .last = 0x1AFF},
+        Range{.first = 0x1DC0, .last = 0x1DFF},   Range{.first = 0x200D, .last = 0x200D}, Range{.first = 0x20D0, .last = 0x20FF},
+        Range{.first = 0x3099, .last = 0x309A},   Range{.first = 0xFE00, .last = 0xFE0F}, Range{.first = 0xFE20, .last = 0xFE2F},
+        Range{.first = 0xE0100, .last = 0xE01EF},
+    };
+    return std::ranges::any_of(RANGES,
+                               [codePoint](const Range& range) noexcept { return codePoint >= range.first && codePoint <= range.last; });
+}
+
+/// The code point whose UTF-8 sequence starts at @p text[@p index], or U+FFFD for a malformed one.
+[[nodiscard]] constexpr char32_t decodeCodePointAt(std::string_view text, std::size_t index) noexcept
+{
+    const auto byteAt = [&](std::size_t i) -> unsigned
+    {
+        return i < text.size() ? static_cast<unsigned char>(text[i]) : 0U;
+    };
+    const unsigned lead = byteAt(index);
+    std::size_t length = 1;
+    char32_t value = lead;
+    if (lead >= 0xF0U)
+    {
+        length = 4;
+        value = lead & 0x07U;
+    }
+    else if (lead >= 0xE0U)
+    {
+        length = 3;
+        value = lead & 0x0FU;
+    }
+    else if (lead >= 0xC0U)
+    {
+        length = 2;
+        value = lead & 0x1FU;
+    }
+    else if (lead >= 0x80U)
+    {
+        return 0xFFFD;
+    }
+    for (std::size_t k = 1; k < length; ++k)
+    {
+        const unsigned next = byteAt(index + k);
+        if ((next & 0xC0U) != 0x80U)
+        {
+            return 0xFFFD;
+        }
+        value = (value << 6U) | (next & 0x3FU);
+    }
+    return value;
+}
+
 /// @p text cut short in the middle to fit @p budgetPx: as much of its start as fits, an ellipsis, and
 /// its end, never fewer than its last @p tailBytes -- the part that tells one value from another, an
 /// endpoint's "]:50747" (#1942). What room there is beyond that tail is shared between the start and
@@ -76,7 +143,8 @@ inline constexpr std::string_view MIDDLE_ELLIPSIS = "\xE2\x80\xA6";
 ///
 /// The tail is given up last, from its front, only when not even "…<tail>" fits: what is left is
 /// still its end ("…50747"), and below that just the ellipsis. Cuts are made only at UTF-8
-/// character boundaries.
+/// character boundaries, and never inside a grapheme: not before a combining mark or variation selector,
+/// nor around a zero width joiner (#4313).
 ///
 /// @param measure   The pixel width of a string, e.g. ImGui::CalcTextSize(...).x; widths are taken
 ///                  to grow with the text, as a font's advances do.
@@ -91,14 +159,24 @@ template<typename Measure>
     }
 
     // Where each character starts, and the end: cuts go only there.
+    // A start that would split a grapheme is left out: a combining mark, a zero width joiner or a
+    // variation selector joins the character before it, and what follows a joiner joins what came
+    // before it (#4313). Offsets stay bytes.
     std::vector<std::size_t> starts;
     starts.reserve(text.size() + 1);
+    bool afterJoiner = false;
     for (std::size_t i = 0; i < text.size(); ++i)
     {
-        if ((static_cast<unsigned char>(text[i]) & 0xC0U) != 0x80U)
+        if ((static_cast<unsigned char>(text[i]) & 0xC0U) == 0x80U)
+        {
+            continue;
+        }
+        const char32_t codePoint = decodeCodePointAt(text, i);
+        if (starts.empty() || !(afterJoiner || extendsGrapheme(codePoint)))
         {
             starts.push_back(i);
         }
+        afterJoiner = codePoint == ZERO_WIDTH_JOINER;
     }
     starts.push_back(text.size());
     const std::size_t characters = starts.size() - 1;
