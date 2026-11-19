@@ -1,6 +1,7 @@
 #include "BrokerPipe.h"
 
 #include "Platform/BrokerProtocol.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -17,7 +18,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <utility>
 #include <vector>
@@ -50,7 +50,7 @@ struct LocalFreeDeleter
 
 [[nodiscard]] std::string lastErrorText(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// The errors that mean the other end has closed the pipe.

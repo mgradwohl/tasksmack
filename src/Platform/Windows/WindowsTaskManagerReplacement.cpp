@@ -13,7 +13,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 namespace Platform::Windows
@@ -70,7 +69,7 @@ static_assert(sameAscii(TaskManagerReplacement::CREATED_MARKER_VALUE, MARKER));
 
 [[nodiscard]] std::string failure(std::string_view what, LSTATUS status)
 {
-    return std::format("{} ({}, error {})", what, std::system_category().message(static_cast<int>(status)), status);
+    return std::format("{} ({}, error {})", what, Platform::WinString::win32ErrorText(static_cast<DWORD>(status)), status);
 }
 
 /// @p subKey of @p root opened in the 64-bit view with @p access; a key that isn't there is nullopt.

@@ -22,7 +22,6 @@
 #include <format>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 
 #pragma comment(lib, "shell32.lib")
@@ -190,7 +189,7 @@ ProcessActionResult revealInExplorer(const FileLocationFunctions& fns, const std
     const DWORD error = fns.startProcess(explorer, commandLine);
     if (error != ERROR_SUCCESS)
     {
-        std::string message = std::format("Explorer couldn't be started: {}", std::system_category().message(static_cast<int>(error)));
+        std::string message = std::format("Explorer couldn't be started: {}", Platform::WinString::win32ErrorText(error));
         spdlog::warn("Failed to start explorer.exe /select on {}: {}", utf8Path, message);
         return ProcessActionResult::error(std::move(message));
     }

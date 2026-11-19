@@ -21,7 +21,6 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -193,8 +192,7 @@ restart(const std::filesystem::path& configDir, HWND owner, const Functions& fun
     const std::optional<std::wstring> image = BrokerHelper::ownImage(functions.getModuleFileName);
     if (!image.has_value())
     {
-        return failed(
-            std::format("couldn't tell where TaskSmack is: {}", std::system_category().message(static_cast<int>(GetLastError()))));
+        return failed(std::format("couldn't tell where TaskSmack is: {}", Platform::WinString::win32ErrorText(GetLastError())));
     }
     if (!startTicks.has_value())
     {
@@ -227,7 +225,7 @@ restart(const std::filesystem::path& configDir, HWND owner, const Functions& fun
         {
             return {.outcome = ElevatedRestartResult::Outcome::Declined, .detail = {}};
         }
-        return failed(std::system_category().message(static_cast<int>(error)));
+        return failed(Platform::WinString::win32ErrorText(error));
     }
     const UniqueHandle process(info.hProcess);
     if (!process)
