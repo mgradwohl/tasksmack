@@ -658,6 +658,7 @@ set(COMMON_TEST_SOURCES
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
     Platform/test_DesktopEntryIcons.cpp
     UI/test_ChartWidgets.cpp
+    UI/test_Clipboard.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
     UI/test_FillPlotLayout.cpp

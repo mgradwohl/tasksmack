@@ -6,6 +6,7 @@
 // with a Copy button that puts the target on the clipboard, so the user can open it themselves.
 
 #include "App/PlatformOpen.h"
+#include "UI/Clipboard.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -38,7 +39,7 @@ inline void draw(std::string_view target, std::string_view notice)
     if (ImGui::SmallButton(COPY_FOLDER_LABEL))
     {
         const std::string copied(target);
-        ImGui::SetClipboardText(copied.c_str());
+        UI::setClipboardUtf8(copied);
     }
     ImGui::SetItemTooltip("Copy it, to open it yourself");
 }
@@ -58,7 +59,7 @@ inline void draw(std::string_view target)
     if (ImGui::SmallButton(COPY_LABEL))
     {
         const std::string text(target);
-        ImGui::SetClipboardText(text.c_str());
+        UI::setClipboardUtf8(text);
     }
     ImGui::SetItemTooltip("Copy it, to open it yourself");
 }

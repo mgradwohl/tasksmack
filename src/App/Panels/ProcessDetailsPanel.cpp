@@ -52,6 +52,7 @@
 #include "ProcessThreadsView.h"
 #include "ServicesView.h"
 #include "UI/ChartWidgets.h"
+#include "UI/Clipboard.h"
 #include "UI/EmptyState.h"
 #include "UI/FillPlotLayout.h"
 #include "UI/Format.h"
@@ -1075,7 +1076,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImVec2(layout[OverviewCard::Identity].width, std::max(cardHeight, heights[static_cast<std::size_t>(OverviewCard::Identity)])),
         ImGuiChildFlags_None,
         [&] { renderInfoTable("BasicInfoLeftTable", identityRows.view()); },
-        [&] { ImGui::SetClipboardText(ProcessOverviewCard::cardText("Identity", identityRows.view()).c_str()); });
+        [&] { UI::setClipboardUtf8(ProcessOverviewCard::cardText("Identity", identityRows.view())); });
 
     if (layout[OverviewCard::Runtime].sameLine)
     {
@@ -1090,7 +1091,7 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
         ImVec2(layout[OverviewCard::Runtime].width, std::max(cardHeight, heights[static_cast<std::size_t>(OverviewCard::Runtime)])),
         ImGuiChildFlags_None,
         [&] { renderInfoTable("BasicInfoRightTable", runtimeRows.view()); },
-        [&] { ImGui::SetClipboardText(ProcessOverviewCard::cardText("Runtime", runtimeRows.view()).c_str()); });
+        [&] { UI::setClipboardUtf8(ProcessOverviewCard::cardText("Runtime", runtimeRows.view())); });
 
     // The buttons, confirm dialog and result line are ProcessActionsView's, the priority and I/O
     // priority controls ProcessPriorityView's (#1179); both act through m_ProcessActions, which the

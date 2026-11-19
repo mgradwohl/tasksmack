@@ -29,6 +29,7 @@
 #include "TitleBarButtons.h"
 #include "TitleBarGeometry.h"
 #include "TitleBarLayer.h"
+#include "UI/Clipboard.h"
 #include "UI/DpiScale.h"
 #include "UI/Format.h"
 #include "UI/HistoryPlotHeight.h"
@@ -1016,7 +1017,7 @@ void ShellLayer::renderStatusBar()
     {
         // An elevated TaskSmack didn't open it (#3658): the tooltip said so, and this click copies the link for the
         // user to open, on the UI thread, as ImGui's clipboard asks.
-        ImGui::SetClipboardText(m_UpdateLinkOpen.withheld().c_str());
+        UI::setClipboardUtf8(m_UpdateLinkOpen.withheld());
         m_UpdateLinkOpen.clearWithheld();
     }
     else if (action == StatusBarView::Action::OpenUpdate && !m_UpdateNoticeUrl.empty())
