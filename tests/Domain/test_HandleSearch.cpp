@@ -7,10 +7,20 @@
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 
+#ifdef _WIN32
+// The brokered readers are Windows' alone (#3580): Linux has no helper, so its tests build without them.
+#include "Mocks/FakeBroker.h"
+#include "Platform/BrokerProtocol.h"
+#include "Platform/BrokeredProcessActions.h"
+
+#include <variant>
+#endif
+
 #include <gtest/gtest.h>
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <iterator>
 #include <map>
 #include <memory>
@@ -135,6 +145,27 @@ class FakeOpenFiles final : public Platform::IProcessOpenFilesReader
         return found != results.end() ? found->second : filesStatus(Platform::OpenFilesReadStatus::PermissionDenied);
     }
 
+    /// authorize()'s calls, and what it does: succeed, or fail with authorizeError, stopping stopDuringAuthorize first
+    /// when it is set (a Stop pressed while the prompt is up, #4420).
+    int authorizeCalls = 0;
+    std::string authorizeError;
+    int authorizeFailsFrom = 1; ///< The first call that fails with authorizeError: later ones, a helper lost mid-walk
+    std::stop_source* stopDuringAuthorize = nullptr;
+
+    [[nodiscard]] std::expected<void, std::string> authorize(const std::stop_token& /*stopToken*/) override
+    {
+        ++authorizeCalls;
+        if (stopDuringAuthorize != nullptr)
+        {
+            stopDuringAuthorize->request_stop();
+        }
+        if (!authorizeError.empty() && authorizeCalls >= authorizeFailsFrom)
+        {
+            return std::unexpected(authorizeError);
+        }
+        return {};
+    }
+
     [[nodiscard]] Platform::OpenFilesReadResult readAuthorized(const Platform::ProcessTarget& target,
                                                                const std::stop_token& /*stopToken*/) override
     {
@@ -180,15 +211,27 @@ class FakeModules final : public Platform::IProcessModulesReader
     }
 };
 
+TEST(HandleSearchTest, PathMatchesFoldsEveryLetterNotJustAscii)
+{
+    // #4303: Find handles folded A-Z only, so "ölfilter" found nothing open on Ölfilter.xlsx.
+    EXPECT_TRUE(pathMatches("C:\\Users\\Ana\\Documents\\\xC3\x96lfilter.xlsx", "\xC3\xB6lfilter")); // Ö, ö
+    EXPECT_TRUE(pathMatches("/home/ana/\xC3\xB6lfilter.xlsx", "\xC3\x96LFILTER"));
+    EXPECT_TRUE(pathMatches("/srv/\xCE\xA3\xCE\x9F\xCE\xA6\xCE\x99\xCE\x91", "\xCF\x83\xCE\xBF\xCF\x86")); // ΣΟΦΙΑ, σοφ
+    // A path holding U+FFFD (from a lone surrogate on Windows) still matches around it, and the
+    // replacement character matches itself.
+    EXPECT_TRUE(pathMatches("C:\\x\xEF\xBF\xBDy\\Report.ods", "report"));
+    EXPECT_TRUE(pathMatches("C:\\x\xEF\xBF\xBDy", "\xEF\xBF\xBDY"));
+}
+
 TEST(HandleSearchTest, PathMatchesIgnoresAsciiCaseAndAnEmptyQueryMatchesNothing)
 {
-    EXPECT_TRUE(pathMatches("/home/me/Report.ODS", lowered("report.ods")));
-    EXPECT_TRUE(pathMatches("/home/me/report.ods", lowered("ME/REP")));
-    EXPECT_FALSE(pathMatches("/home/me/report.ods", lowered("reports")));
+    EXPECT_TRUE(pathMatches("/home/me/Report.ODS", "report.ods"));
+    EXPECT_TRUE(pathMatches("/home/me/report.ods", "ME/REP"));
+    EXPECT_FALSE(pathMatches("/home/me/report.ods", "reports"));
     EXPECT_FALSE(pathMatches("/home/me/report.ods", ""));
     EXPECT_FALSE(pathMatches("", "a"));
-    // Bytes outside ASCII are compared as they are.
-    EXPECT_TRUE(pathMatches("/tmp/caf\xC3\xA9.txt", lowered("CAF\xC3\xA9")));
+    // Bytes outside ASCII fold too: é matches É.
+    EXPECT_TRUE(pathMatches("/tmp/caf\xC3\xA9.txt", "CAF\xC3\x89"));
 }
 
 TEST(HandleSearchTest, KindsFollowTheOpenFileKindAndModulesAreLibraries)
@@ -351,9 +394,198 @@ TEST(HandleSearchTest, AnAuthorizedRunReadsTheModulesAuthorizedToo)
 
     const std::shared_ptr<const SearchPublication> last = slot.load();
     ASSERT_NE(last, nullptr);
+    EXPECT_EQ(files.authorizeCalls, 1) << "once for the walk (#4420); the modules reader's default has nothing to start";
     EXPECT_EQ(files.authorizedReads, 1);
     ASSERT_EQ(last->matches.size(), 1U);
     EXPECT_EQ(last->matches[0].kind, HandleKind::Library);
+}
+
+#ifdef _WIN32
+/// Three processes whose open files and modules this run may not read, behind the brokered readers Process Details
+/// uses, both over @p broker (one helper session, as App wires them), and a first search of them that was refused.
+struct DeniedOverBroker
+{
+    explicit DeniedOverBroker(std::shared_ptr<Mocks::FakeBroker> fakeBroker)
+        : broker(std::move(fakeBroker)),
+          files(Platform::withPrivilegedBroker(std::make_unique<FakeOpenFiles>(), broker)),
+          mods(Platform::withPrivilegedBroker(std::make_unique<FakeModules>(), broker))
+    {
+        const std::stop_source stop;
+        run(processes, readers(), false, startFor("secret", processes.size(), 1), publishTo(slot), stop.get_token());
+    }
+
+    [[nodiscard]] Readers readers() const
+    {
+        return {.openFiles = files.get(), .modules = mods.get()};
+    }
+
+    std::shared_ptr<Mocks::FakeBroker> broker;
+    std::unique_ptr<Platform::IProcessOpenFilesReader> files;
+    std::unique_ptr<Platform::IProcessModulesReader> mods;
+    std::vector<SearchProcess> processes{process(1, "a"), process(2, "b"), process(3, "c")};
+    Domain::PublicationSlot<SearchPublication> slot;
+};
+
+// #4420: an administrator's search of three refused processes, whose prompt is dismissed, asks once, not once for each
+// process's open files and again for its modules (six prompts), and ends at once with one line saying why. The
+// processes stay refused, so the search is offered again.
+TEST(HandleSearchTest, ADismissedPromptEndsTheAdministratorSearchAfterOnePrompt)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    broker->setConnectFailure("the UAC prompt was dismissed");
+    DeniedOverBroker search(broker);
+    const std::shared_ptr<const SearchPublication> first = search.slot.load();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->denied.size(), 3U);
+    ASSERT_EQ(broker->connectCount(), 0) << "an ordinary search never prompts";
+
+    const std::stop_source stop;
+    run(processesOf(first->denied),
+        search.readers(),
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(search.slot),
+        stop.get_token(),
+        sourcesOf(first->denied));
+
+    const std::shared_ptr<const SearchPublication> last = search.slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(broker->connectCount(), 1);
+    EXPECT_TRUE(broker->requests().empty()) << "nothing is asked of a helper that didn't start";
+    EXPECT_TRUE(last->done);
+    EXPECT_TRUE(last->authorized);
+    EXPECT_EQ(last->failure, "The search as administrator didn't start: the UAC prompt was dismissed");
+    EXPECT_EQ(last->searched, 3U);
+    ASSERT_EQ(last->denied.size(), 3U);
+    for (std::size_t i = 0; i < last->denied.size(); ++i)
+    {
+        EXPECT_EQ(last->denied[i].process.target, first->denied[i].process.target);
+        EXPECT_EQ(last->denied[i].refused, first->denied[i].refused);
+    }
+    EXPECT_EQ(last->failed, 0U);
+}
+
+// #4420: and one whose prompt is answered starts the helper once for the whole walk, every process's open files and
+// modules then read through that one session.
+TEST(HandleSearchTest, AnAdministratorSearchStartsTheHelperOnceForEveryProcess)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    broker->setAnswer(
+        [](const Platform::Broker::Request& request) -> std::expected<Platform::Broker::Response, std::string>
+        {
+            if (std::holds_alternative<Platform::Broker::ModulesRequest>(request))
+            {
+                return Platform::Broker::Response{Platform::Broker::ModulesReply{.result = modules({"C:\\app\\secret.dll"})}};
+            }
+            return std::unexpected(std::string("not this one"));
+        });
+    DeniedOverBroker search(broker);
+    const std::shared_ptr<const SearchPublication> first = search.slot.load();
+    ASSERT_NE(first, nullptr);
+    ASSERT_EQ(first->denied.size(), 3U);
+
+    const std::stop_source stop;
+    run(processesOf(first->denied),
+        search.readers(),
+        true,
+        startAuthorizedAfter(*first, first->version + 1),
+        publishTo(search.slot),
+        stop.get_token(),
+        sourcesOf(first->denied));
+
+    const std::shared_ptr<const SearchPublication> last = search.slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(broker->connectCount(), 1);
+    EXPECT_EQ(broker->sessionsStarted(), 1U);
+    EXPECT_TRUE(last->done);
+    EXPECT_TRUE(last->failure.empty());
+    EXPECT_EQ(last->matches.size(), 3U) << "each process's modules came through the one helper";
+    EXPECT_TRUE(last->denied.empty());
+}
+#endif // _WIN32
+
+// #4420, on every platform (the brokered readers' own test above is Windows'): a dismissed prompt is asked for once for
+// the whole pass, whatever the number of processes, and nothing is read.
+TEST(HandleSearchTest, ADismissedAuthorizeIsAskedOnceAndReadsNothing)
+{
+    FakeOpenFiles files;
+    files.authorizeError = "the UAC prompt was dismissed";
+    FakeModules mods;
+    mods.authorizedResults[1] = modules({});
+    const std::vector<SearchProcess> processes{process(1, "a"), process(2, "b"), process(3, "c")};
+    Domain::PublicationSlot<SearchPublication> slot;
+    SearchPublication start = startFor("x", processes.size(), 1);
+    start.authorized = true;
+    const std::stop_source stop;
+    run(processes, {.openFiles = &files, .modules = &mods}, true, std::move(start), publishTo(slot), stop.get_token());
+
+    const std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(files.authorizeCalls, 1);
+    EXPECT_EQ(files.authorizedReads, 0);
+    EXPECT_TRUE(mods.authorizedRead.empty());
+    EXPECT_EQ(last->failure, "The search as administrator didn't start: the UAC prompt was dismissed");
+    EXPECT_EQ(last->denied.size(), 3U);
+}
+
+// #4420: Stop pressed while the prompt is up ends the search as stopped, not as failed, with the processes still
+// refused; a modules-only pass asks only the modules reader.
+TEST(HandleSearchTest, AStopDuringThePromptEndsTheSearchWithNoFailureAndKeepsItsProcessesRefused)
+{
+    FakeOpenFiles files;
+    files.authorizeError = "cancelled";
+    std::stop_source stop;
+    files.stopDuringAuthorize = &stop;
+    FakeModules mods;
+    const std::vector<SearchProcess> processes{process(1, "a"), process(2, "b")};
+    const std::vector<SearchSources> sources{{.openFiles = true, .modules = false}, {.openFiles = true, .modules = true}};
+    Domain::PublicationSlot<SearchPublication> slot;
+    SearchPublication start = startFor("x", processes.size(), 1);
+    start.authorized = true;
+    run(processes, {.openFiles = &files, .modules = &mods}, true, std::move(start), publishTo(slot), stop.get_token(), sources);
+
+    const std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(files.authorizeCalls, 1);
+    EXPECT_EQ(files.authorizedReads, 0);
+    EXPECT_TRUE(mods.authorizedRead.empty());
+    EXPECT_EQ(files.batchesBegun, 0) << "no table is walked for a pass that reads nothing";
+    EXPECT_TRUE(last->done);
+    EXPECT_TRUE(last->failure.empty());
+    ASSERT_EQ(last->denied.size(), 2U);
+    EXPECT_EQ(last->denied[0].refused, sources[0]);
+    EXPECT_EQ(last->denied[1].refused, sources[1]);
+    EXPECT_EQ(last->searched, 2U);
+}
+
+// #4420: a helper that goes during the walk (its idle exit) is started again once, before the next process; that
+// prompt dismissed, the pass stops there with one line, the processes it hadn't read still refused.
+TEST(HandleSearchTest, AHelperLostDuringTheWalkIsAskedForOnceMoreAndADismissalStopsThere)
+{
+    FakeOpenFiles files;
+    files.authorizedFiles[1] = openFiles({file(Platform::OpenFileKind::File, "C:\\srv\\data.db")});
+    files.authorizedFiles[2] = openFiles({});
+    files.authorizeError = "the UAC prompt was dismissed";
+    files.authorizeFailsFrom = 3; // the walk's, process 1's and process 2's pass; process 3's is dismissed
+    const std::vector<SearchProcess> processes{process(1, "a"), process(2, "b"), process(3, "c"), process(4, "d")};
+    const std::vector<SearchSources> sources(processes.size(), SearchSources{.openFiles = true, .modules = false});
+    Domain::PublicationSlot<SearchPublication> slot;
+    SearchPublication start = startFor("data", processes.size(), 1);
+    start.authorized = true;
+    const std::stop_source stop;
+    run(processes, {.openFiles = &files, .modules = nullptr}, true, std::move(start), publishTo(slot), stop.get_token(), sources);
+
+    const std::shared_ptr<const SearchPublication> last = slot.load();
+    ASSERT_NE(last, nullptr);
+    EXPECT_EQ(files.authorizeCalls, 3) << "once for the walk, once before each later process, until one is dismissed";
+    EXPECT_EQ(files.authorizedReads, 2);
+    EXPECT_EQ(last->matches.size(), 1U);
+    EXPECT_EQ(last->failure, "The search as administrator stopped: the UAC prompt was dismissed");
+    EXPECT_EQ(last->searched, 4U);
+    ASSERT_EQ(last->denied.size(), 2U);
+    EXPECT_EQ(last->denied[0].process.target.pid, 3);
+    EXPECT_EQ(last->denied[1].process.target.pid, 4);
+    EXPECT_EQ(last->denied[1].refused, sources[3]);
 }
 
 TEST(HandleSearchTest, AddProcessListsMatchingFilesAndModules)

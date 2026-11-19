@@ -3,7 +3,9 @@
 #include "App/BackgroundOpen.h"
 #include "App/FontSizeChange.h"
 #include "App/InterfaceScaleChange.h"
-#ifndef _WIN32
+#ifdef _WIN32
+#include "Core/ErrorCodeText.h" // Windows only: Linux reports NewFileOwner's text (#4308)
+#else
 #include "App/NewFileOwner.h"
 #endif
 #include "App/PanelPlatforms.h"
@@ -104,7 +106,7 @@ void makeUserThemesDir(const std::filesystem::path& dir)
     std::filesystem::create_directories(dir, ec);
     if (ec)
     {
-        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), ec.message());
+        spdlog::warn("Couldn't create user themes directory {}: {}", Core::pathToUtf8(dir), Core::errorCodeText(ec));
     }
 #endif
 }

@@ -1,5 +1,6 @@
 #include "HandleRelativeFile.h"
 
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcAddress.h"
 
@@ -19,7 +20,6 @@
 #include <random>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
 #include <vector>
 
@@ -75,7 +75,7 @@ std::string ntStatusText(NTSTATUS status)
 
 std::string lastErrorText()
 {
-    return std::system_category().message(static_cast<int>(GetLastError()));
+    return Platform::WinString::win32ErrorText(GetLastError());
 }
 
 std::expected<RelativeOpened, NTSTATUS>

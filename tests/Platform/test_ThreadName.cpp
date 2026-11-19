@@ -93,6 +93,7 @@ TEST(ThreadNameTest, EveryTaskSmackThreadNameFitsLinuxLimit)
         Platform::ELEVATED_RESTART_THREAD_NAME,
         Platform::SETTINGS_SAVE_THREAD_NAME,
         Platform::SIGNATURE_CHECK_THREAD_NAME,
+        Platform::LOG_FLUSH_THREAD_NAME,
     };
     for (const std::string_view name : NAMES)
     {

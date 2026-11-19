@@ -14,7 +14,6 @@
 #include <optional>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -215,7 +214,7 @@ MemoryMapReadResult WindowsProcessMemoryMapReader::readMemoryMap(const ProcessTa
             {
                 return failure(MemoryMapReadStatus::PermissionDenied);
             }
-            return failure(MemoryMapReadStatus::Failed, std::system_category().message(static_cast<int>(error)));
+            return failure(MemoryMapReadStatus::Failed, Platform::WinString::win32ErrorText(error));
         }
         if (info.State != MEM_FREE)
         {

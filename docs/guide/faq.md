@@ -161,7 +161,7 @@ for you to open.
 **Checklist:**
 
 1. Confirm the driver is installed: run `nvidia-smi` for NVIDIA, or `rocm-smi` for AMD on Linux with ROCm.
-2. For NVML or ROCm, check that the shared library is discoverable through the normal loader path.
+2. For NVML or ROCm, check that the shared library is discoverable through the normal loader path. For AMD, the runtime package is enough: TaskSmack loads `librocm_smi64.so.7`, `.so.6`, `.so.5` or `.so.1` (Ubuntu's and Debian's `librocm-smi64-1`), the unversioned `librocm_smi64.so`, or `/opt/rocm/lib/librocm_smi64.so`, and its log names the one it loaded.
 3. Restart TaskSmack after installing the driver.
 
 ---

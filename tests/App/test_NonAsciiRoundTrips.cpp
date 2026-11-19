@@ -9,6 +9,7 @@
 /// convert paths explicitly (Core/Utf8Path.h, W APIs, the native path), never through the code page.
 /// Everything is written under a fresh temporary directory with a non-ASCII name, removed afterwards.
 
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
@@ -571,7 +572,10 @@ TEST_F(NonAsciiProcessesPanelTest, TheTableDrawsNonAsciiAndInvalidNamesWithoutCr
                 probe->withProcess(std::move(counter));
             }
             return App::ProcessesPanelPlatform{
-                .probe = std::move(probe), .actions = std::make_unique<TestMocks::MockProcessActions>(), .icons = nullptr};
+                .probe = std::move(probe),
+                .actions = std::make_unique<TestMocks::MockProcessActions>(),
+                .icons = nullptr,
+            };
         });
     panel->onAttach();
     ASSERT_TRUE(panel->waitForFirstSample()); // the probe is built and the seed taken on the sampler thread (#2731)

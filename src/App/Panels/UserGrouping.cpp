@@ -6,6 +6,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/Format.h"
 
 #include <algorithm>
@@ -143,7 +144,7 @@ std::vector<std::string> sharedUserNames(const std::vector<Domain::ProcessSnapsh
             continue;
         }
         const auto [found, added] = byName.try_emplace(proc.user, Seen{.domain = proc.userDomain, .shared = false});
-        if (!added && !Platform::equalsIgnoreCase(found->second.domain, proc.userDomain))
+        if (!added && !Platform::equalsFoldedCase(found->second.domain, proc.userDomain))
         {
             found->second.shared = true;
         }
@@ -166,7 +167,7 @@ bool isSharedUserName(const std::vector<std::string>& shared, std::string_view u
         return false;
     }
     const auto found = std::ranges::lower_bound(shared, user, NameLess{});
-    return found != shared.end() && Platform::equalsIgnoreCase(*found, user);
+    return found != shared.end() && Platform::equalsFoldedCase(*found, user);
 }
 
 std::vector<ProcessGrouping::Group> buildUserGroups(const std::vector<Domain::ProcessSnapshot>& snapshots,

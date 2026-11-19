@@ -74,8 +74,13 @@ class NonAsciiTempDir
     {
         if (!m_Path.empty())
         {
-            std::error_code ec;
-            std::filesystem::remove_all(m_Path, ec); // best effort; never throws from a destructor
+            try
+            {
+                std::error_code ec;
+                std::filesystem::remove_all(m_Path, ec);
+            }
+            catch (...) // NOLINT(bugprone-empty-catch) - best effort; never throws from a destructor
+            {}
         }
     }
 

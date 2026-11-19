@@ -31,6 +31,12 @@ namespace
 /// Id of the built-in theme the constructor installs before any theme file is read.
 constexpr std::string_view FALLBACK_THEME_ID = "fallback";
 
+/// Whether @p themes is only the built-in fallback, no theme file loaded yet.
+[[nodiscard]] bool isOnlyFallback(const std::vector<DiscoveredTheme>& themes) noexcept
+{
+    return themes.size() == 1 && themes.front().id == FALLBACK_THEME_ID;
+}
+
 } // namespace
 
 auto Theme::get() -> Theme&
@@ -70,8 +76,17 @@ void Theme::loadThemes(const std::filesystem::path& themesDir)
 
     if (discovered.empty())
     {
-        spdlog::warn("No themes found in {}, using fallback", Core::pathToUtf8(themesDir));
-        return; // Keep the fallback theme
+        // Keep what is loaded. Only when that is the lone fallback is it worth a warning: an empty user folder
+        // (Settings' Open Themes Folder makes one) beside the built-ins is normal, so it is info, not a warning (#4427).
+        if (isOnlyFallback(m_DiscoveredThemes))
+        {
+            spdlog::warn("No themes found in {}, using fallback", Core::pathToUtf8(themesDir));
+        }
+        else
+        {
+            spdlog::info("No user themes in {}", Core::pathToUtf8(themesDir));
+        }
+        return;
     }
 
     // Load into temporary buffers so the existing (fallback) scheme remains available
@@ -149,8 +164,7 @@ void Theme::adoptThemes(std::vector<DiscoveredTheme> discoveredThemes,
     }
 
     const std::string currentId = m_DiscoveredThemes.empty() ? std::string{} : m_DiscoveredThemes[m_CurrentThemeIndex].id;
-    const bool onlyFallbackLoaded = (m_DiscoveredThemes.size() == 1) && (m_DiscoveredThemes.front().id == FALLBACK_THEME_ID);
-    if (onlyFallbackLoaded)
+    if (isOnlyFallback(m_DiscoveredThemes))
     {
         m_DiscoveredThemes = std::move(discoveredThemes);
         m_LoadedSchemes = std::move(loadedSchemes);

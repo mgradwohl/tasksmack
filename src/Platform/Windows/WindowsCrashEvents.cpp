@@ -10,6 +10,7 @@
 #pragma comment(lib, "wevtapi.lib")
 
 #include <cstdint>
+#include <expected>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -37,14 +38,24 @@ constexpr DWORD NEXT_TIMEOUT_MS = 10'000;
 }
 
 /// The next event, rendered as XML. An event that won't render comes back as empty text, which the parser
-/// skips, so the walk goes on.
-[[nodiscard]] bool nextEventXml(void* query, std::string& xml)
+/// skips, so the walk goes on. False at the end of the log (ERROR_NO_MORE_ITEMS); any other failure of EvtNext,
+/// a timeout (ERROR_TIMEOUT) among them, is its error (#4375).
+[[nodiscard]] std::expected<bool, std::uint32_t> nextEventXml(void* query, std::string& xml)
 {
     EVT_HANDLE event = nullptr;
     DWORD returned = 0;
-    if (EvtNext(query, 1, &event, NEXT_TIMEOUT_MS, 0, &returned) == FALSE || returned == 0 || event == nullptr)
+    if (EvtNext(query, 1, &event, NEXT_TIMEOUT_MS, 0, &returned) == FALSE)
     {
-        return false;
+        const DWORD error = GetLastError();
+        if (error == ERROR_NO_MORE_ITEMS)
+        {
+            return false;
+        }
+        return std::unexpected(static_cast<std::uint32_t>(error));
+    }
+    if (returned == 0 || event == nullptr)
+    {
+        return false; // succeeded with nothing: nothing more to read
     }
     DWORD used = 0;
     DWORD properties = 0;

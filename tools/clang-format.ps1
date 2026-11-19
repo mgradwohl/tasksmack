@@ -15,6 +15,7 @@
 .EXAMPLE
     .\clang-format.ps1 -ChangedOnly
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [switch]$ShowDetails,

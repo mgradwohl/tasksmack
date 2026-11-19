@@ -16,6 +16,7 @@
 
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -288,6 +289,60 @@ TEST(ProcessPriorityViewTest, SuccessClearsTheErrorAndEndsTheEdit)
     EXPECT_FALSE(view.hasPendingEdit());
     EXPECT_EQ(view.niceValue(), 5); // Shown until the next snapshot's value takes over
     EXPECT_EQ(view.editTarget().pid, -1);
+}
+
+// #4379: the applied value is held over the snapshot's older one until a sample stamped after the apply.
+// A confirming sample ends the hold at once; a contradicting one only from the second on, since a sample
+// is stamped after its counters are read. A failure or a selection change ends it too.
+TEST(ProcessPriorityViewTest, AnAppliedValueIsHeldUntilANewerSampleConfirmsOrContradictsIt)
+{
+    const auto newerThanNow = []
+    {
+        return std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1.0;
+    };
+
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    view.editNice(5, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    EXPECT_EQ(view.appliedNice(), 5); // Held while it runs, too
+    view.update(/*wait=*/true);
+    view.syncToProcess(NICE_OF_A);
+    EXPECT_EQ(view.niceValue(), 5);
+
+    view.takeProcessSample(0.0, 0); // Stamped before the apply finished
+    view.syncToProcess(NICE_OF_A);
+    EXPECT_EQ(view.niceValue(), 5);
+
+    view.takeProcessSample(newerThanNow(), 0); // The first contradicting sample: maybe read before the change
+    view.syncToProcess(NICE_OF_A);
+    EXPECT_EQ(view.niceValue(), 5);
+    view.takeProcessSample(newerThanNow(), 0); // The second: the change didn't take
+    view.syncToProcess(NICE_OF_A);
+    EXPECT_EQ(view.niceValue(), 0);
+    EXPECT_FALSE(view.appliedNice().has_value());
+
+    view.editNice(7, TARGET_A);
+    view.apply(&mock, TARGET_A, NICE_OF_A);
+    view.update(/*wait=*/true);
+    view.takeProcessSample(newerThanNow(), 7); // Confirmed at once
+    EXPECT_FALSE(view.appliedNice().has_value());
+
+    mock.setPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
+    view.editNice(-5, TARGET_A);
+    view.apply(&mock, TARGET_A, 7);
+    view.update(/*wait=*/true);
+    EXPECT_FALSE(view.appliedNice().has_value()); // A failure puts the control back at once
+    EXPECT_EQ(view.niceValue(), 7);
+
+    mock.setPriorityResult(Platform::ProcessActionResult::ok());
+    view.editNice(3, TARGET_A);
+    view.apply(&mock, TARGET_A, 7);
+    view.update(/*wait=*/true);
+    view.onSelectionChanged();
+    EXPECT_FALSE(view.appliedNice().has_value());
+    view.syncToProcess(11);
+    EXPECT_EQ(view.niceValue(), 11);
 }
 
 TEST(ProcessPriorityViewTest, FailureShowsThePlatformMessageAndRevertsTheControl)

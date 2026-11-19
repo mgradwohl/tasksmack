@@ -8,6 +8,7 @@
 #include "App/Panels/RunTaskHistory.h"
 #include "App/UserConfigHelpers.h"
 #include "Core/ConfigDirOverride.h"
+#include "Core/ErrorCodeText.h"
 #include "Core/ReadWholeFile.h"
 #include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
@@ -974,7 +975,7 @@ void UserConfig::load()
     {
         if (ec)
         {
-            spdlog::warn("Can't check config file {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), ec.message());
+            spdlog::warn("Can't check config file {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), Core::errorCodeText(ec));
         }
         else
         {
@@ -1114,7 +1115,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         std::filesystem::create_directories(configDir, ec);
         if (ec)
         {
-            spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), ec.message());
+            spdlog::error("Failed to create config directory {}: {}", Core::pathToUtf8(configDir), Core::errorCodeText(ec));
             return false;
         }
     }
@@ -1172,7 +1173,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     }
     if (ec)
     {
-        spdlog::error("Not saving settings: can't resolve the link {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+        spdlog::error("Not saving settings: can't resolve the link {}: {}", Core::pathToUtf8(m_ConfigPath), Core::errorCodeText(ec));
         return false;
     }
 
@@ -1184,7 +1185,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     const bool fileExists = std::filesystem::exists(destination, ec);
     if (ec)
     {
-        spdlog::error("Not saving settings: can't check {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+        spdlog::error("Not saving settings: can't check {}: {}", Core::pathToUtf8(m_ConfigPath), Core::errorCodeText(ec));
         return false;
     }
     if (fileExists)
@@ -1213,7 +1214,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         const std::filesystem::file_status status = std::filesystem::status(destination, ec);
         if (ec)
         {
-            spdlog::error("Not saving settings: can't read the permissions of {}: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+            spdlog::error(
+                "Not saving settings: can't read the permissions of {}: {}", Core::pathToUtf8(m_ConfigPath), Core::errorCodeText(ec));
             return false;
         }
         originalPermissions = status.permissions();
@@ -1398,7 +1400,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     }
     if (ec)
     {
-        spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), ec.message());
+        spdlog::error("Failed to replace {} with the new config: {}", Core::pathToUtf8(m_ConfigPath), Core::errorCodeText(ec));
         return false;
     }
 

@@ -187,11 +187,8 @@ struct SearchPublication
     std::string failure;     ///< Why the walk stopped early, when it failed (#3335); empty otherwise.
 };
 
-/// @p text in lower case (ASCII letters only, so a UTF-8 path keeps its other bytes).
-[[nodiscard]] std::string lowered(std::string_view text);
-
-/// Whether @p path contains @p loweredQuery, ignoring ASCII case. An empty query matches nothing.
-[[nodiscard]] bool pathMatches(std::string_view path, std::string_view loweredQuery);
+/// Whether @p path contains @p query by Unicode simple case folding (#4303). An empty query matches nothing.
+[[nodiscard]] bool pathMatches(std::string_view path, std::string_view query);
 
 /// The kind shown for an open descriptor or handle of @p kind.
 [[nodiscard]] HandleKind kindOf(Platform::OpenFileKind kind) noexcept;
@@ -208,7 +205,7 @@ struct SearchPublication
 void addProcess(const SearchProcess& process,
                 const Platform::OpenFilesReadResult& files,
                 const Platform::ModulesReadResult& modules,
-                std::string_view loweredQuery,
+                std::string_view query,
                 SearchPublication& into,
                 SearchSources asked = {});
 
@@ -228,8 +225,11 @@ using Publish = std::function<void(SearchPublication generation)>;
 /// readers should see the search begin, before handing it to a worker. @p start carries the version to begin
 /// at, the query, the total and anything found before: a fresh search's (startFor()) or the matches so far
 /// when an administrator searches the processes the first search was denied (startAuthorizedAfter()).
-/// @p authorized reads each process as an administrator (readAuthorized(): one password prompt for the
-/// walk). Stops between processes when @p stopToken is signalled, publishing what it has as done.
+/// @p authorized reads each process as an administrator (readAuthorized()), after one password prompt for the walk:
+/// each reader's authorize() first (#4420). When that fails (the prompt was dismissed, or the helper couldn't start),
+/// the pass reads nothing, its processes stay denied, and failure says why (nothing, when it was stopped). A helper
+/// that goes during the walk is started again once, before the next process, and the same holds from there on.
+/// Stops between processes when @p stopToken is signalled, publishing what it has as done.
 /// Throws nothing (#3335): a reader that throws, or an allocation (or a publication) that fails, ends the walk
 /// with a done publication that says why (failure), so the worker never takes TaskSmack down. When even that
 /// one can't be made, the last generation handed over stands, and the worker returning ends the search.

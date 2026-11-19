@@ -1,6 +1,7 @@
 #include "ConfigDirOverride.h"
 
 #include "Core/EnvRead.h"
+#include "Core/ErrorCodeText.h"
 #include "Core/Utf8Path.h"
 #include "Platform/IHandedOverFolder.h"
 
@@ -81,7 +82,7 @@ std::optional<std::filesystem::path> takeTestHookValue(const char* value)
     {
         // Display text only (#4316): pathToUtf8() never throws, where u8string() threw for a working directory whose
         // name holds a lone surrogate, out of active()'s static initialiser and so out of startup.
-        spdlog::warn("{}: could not create {}: {}", ENV_VAR, Core::pathToUtf8(*parsed), ec.message());
+        spdlog::warn("{}: could not create {}: {}", ENV_VAR, Core::pathToUtf8(*parsed), Core::errorCodeText(ec));
     }
     return parsed;
 }

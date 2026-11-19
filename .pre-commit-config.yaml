@@ -50,6 +50,14 @@ repos:
         language: python
         types: [text]
         exclude: '^tests/fuzz/corpus/'
+      # Win32 error text comes from FormatMessageW as UTF-8 (#4308): std::system_category().message() is
+      # FormatMessageA in the ANSI code page on Windows. Use Platform::WinString::win32ErrorText(), or
+      # Core::errorCodeText() for an std::error_code.
+      - id: no-system-category-message-windows
+        name: No std::system_category().message() in Windows sources
+        entry: 'system_category\(\)\.message\('
+        language: pygrep
+        files: '^src/Platform/Windows/'
       # AI-agent guidance drift (#2246): the two review SKILL.md copies must have identical bodies, and
       # CLAUDE.md must keep importing AGENTS.md.
       - id: check-guidance-sync

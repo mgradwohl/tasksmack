@@ -17,6 +17,11 @@ namespace Platform::WinString
 [[nodiscard]] std::string wideToDisplayUtf8(std::wstring_view wide);
 [[nodiscard]] std::wstring utf8ToWide(std::string_view utf8);
 
+/// The system's words for Win32 error @p error, as UTF-8 (#4308): FormatMessageW, never the ANSI code page's
+/// FormatMessageA that the standard library's system_category message calls, with the trailing period, spaces and line break
+/// trimmed. "error N" when the system has no text for it. @p error is a DWORD.
+[[nodiscard]] std::string win32ErrorText(unsigned long error);
+
 /// Whether @p wide holds an unpaired surrogate (#4310): then wideToUtf8() shows it as U+FFFD, and that text no longer
 /// names what @p wide names, so it must not be turned back into a path, a command or a registry value.
 [[nodiscard]] constexpr bool hasLoneSurrogate(std::wstring_view wide) noexcept

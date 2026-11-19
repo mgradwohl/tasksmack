@@ -44,7 +44,8 @@ Without `name`, the theme is listed under its file name.
 
 ### `[accents]` - Chart and UI Accent Colors
 
-8 colors for charts, legends, and highlights:
+8 colors for charts, legends, and highlights. A theme that gives fewer, or none, gets the rest from the
+built-in fallback theme (Arctic Fire's), and the log says so.
 
 ```toml
 [accents]

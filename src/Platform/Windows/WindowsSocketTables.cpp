@@ -1,13 +1,13 @@
 #include "WindowsSocketTables.h"
 
 #include "Platform/IProcessConnections.h"
+#include "Platform/Windows/WinString.h"
 
 #include <algorithm>
 #include <array>
 #include <bit>
 #include <cstddef>
 #include <cstdint>
-#include <system_error>
 #include <vector>
 
 namespace Platform::Windows
@@ -76,7 +76,7 @@ SocketTableCopy copySocketTable(const SocketTableFunctions& api, SocketTable tab
         }
         if (status != ERROR_INSUFFICIENT_BUFFER)
         {
-            return {.ok = false, .error = status, .detail = std::system_category().message(static_cast<int>(status))};
+            return {.ok = false, .error = status, .detail = Platform::WinString::win32ErrorText(status)};
         }
         // Room for the sockets opened before the next call, too.
         buffer.resize(static_cast<std::size_t>(size) + (static_cast<std::size_t>(size) / 4) + 1024);
