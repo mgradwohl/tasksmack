@@ -19,6 +19,7 @@
 #include "Core/Utf8Path.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/Utf8Sanitize.h"
 #include "Mocks/MockProbes.h"
 #include "NonAsciiTestNames.h"
 #include "Platform/ProcessTypes.h"
@@ -349,7 +350,7 @@ TEST(NonAsciiSelectTest, InvalidUtf8NamesCompareExactlyWithoutCrashing)
     return counters;
 }
 
-TEST(NonAsciiProcessTest, SnapshotsKeepNonAsciiNamesAndCommandsByteForByte)
+TEST(NonAsciiProcessTest, SnapshotsKeepValidNonAsciiTextAndReplaceIllFormedBytes)
 {
     const std::vector<Platform::ProcessCounters> counters = nonAsciiCounters();
     Domain::ProcessModel model(nullptr);
@@ -362,12 +363,21 @@ TEST(NonAsciiProcessTest, SnapshotsKeepNonAsciiNamesAndCommandsByteForByte)
     {
         const auto found = std::ranges::find_if(snapshots, [&](const auto& snapshot) { return snapshot.pid == counter.pid; });
         ASSERT_NE(found, snapshots.end());
-        // Sanitizing replaces only C0 controls and DEL, so every multi-byte sequence -- and every
-        // invalid byte, which the UI later draws as a replacement glyph -- passes through as it is.
-        EXPECT_EQ(found->name, counter.name);
-        EXPECT_EQ(found->command, counter.command);
+        // Every well-formed multi-byte sequence passes through as it is. An ill-formed one becomes U+FFFD per
+        // maximal subpart (#4301, the maintainer's D1), since ImGui would otherwise swallow the bytes after it;
+        // the counters keep the raw bytes for actions and lookups.
+        EXPECT_EQ(found->name, Domain::sanitizedUtf8(counter.name));
+        EXPECT_EQ(found->command, Domain::sanitizedUtf8(counter.command));
+        EXPECT_TRUE(Domain::isValidUtf8(found->name)) << found->name;
+        EXPECT_TRUE(Domain::isValidUtf8(found->command)) << found->command;
+        if (Domain::isValidUtf8(counter.name))
+        {
+            EXPECT_EQ(found->name, counter.name) << "valid text is kept byte for byte";
+        }
         EXPECT_EQ(found->user, counter.user);
     }
+    const auto invalid = std::ranges::find_if(snapshots, [](const auto& snapshot) { return snapshot.name.contains("\xEF\xBF\xBD"); });
+    EXPECT_NE(invalid, snapshots.end()) << "the ill-formed name shows U+FFFD";
 }
 
 class NonAsciiProcessesPanelTest : public ::testing::Test

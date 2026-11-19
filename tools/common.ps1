@@ -5,6 +5,7 @@
     Dot-source this file in other scripts: . "$PSScriptRoot\common.ps1"
     Counterpart of tools/common.sh for Windows scripts.
 #>
+#Requires -Version 7
 
 # Find an LLVM tool by name (without extension).
 # Search order: $env:LLVM_ROOT\bin, standard install locations, then PATH.

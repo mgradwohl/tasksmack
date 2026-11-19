@@ -11,8 +11,10 @@
 #include <cstdint>
 #include <cstring>
 #include <optional>
+#include <span>
 #include <string>
 #include <type_traits>
+#include <utility>
 
 namespace Platform::ROCmGPUProbeMath
 {
@@ -206,5 +208,32 @@ using DeviceIdLookupFn = std::uint32_t (*)(std::uint32_t, std::uint64_t*);
 }
 
 // The APU classification (isAmdApu and its tables) lives in AmdApu.h, shared with DRMGPUProbe (#1344).
+
+/// The ROCm SMI library names tried, newest soname first (#4441). A distribution's runtime package ships only the
+/// versioned name (Ubuntu 24.04's and Debian's librocm-smi64-1: librocm_smi64.so.1); the unversioned one comes only
+/// with -dev, and AMD's own packages install under /opt/rocm/lib. Any major loads safely: the rsmi_frequencies_t
+/// layout is picked from rsmi_version_get (frequenciesLayoutFor, #1088), not from the name.
+inline constexpr std::array<const char*, 6> ROCM_SMI_LIBRARY_NAMES{
+    "librocm_smi64.so.7",
+    "librocm_smi64.so.6",
+    "librocm_smi64.so.5",
+    "librocm_smi64.so.1",
+    "librocm_smi64.so",
+    "/opt/rocm/lib/librocm_smi64.so",
+};
+
+/// The first of @p names that @p open (dlopen, in the probe) gives a handle for, and that name; {nullptr, nullptr}
+/// when none does.
+template<typename Open> [[nodiscard]] std::pair<void*, const char*> openFirstLibrary(std::span<const char* const> names, const Open& open)
+{
+    for (const char* name : names)
+    {
+        if (void* handle = open(name); handle != nullptr)
+        {
+            return {handle, name};
+        }
+    }
+    return {nullptr, nullptr};
+}
 
 } // namespace Platform::ROCmGPUProbeMath

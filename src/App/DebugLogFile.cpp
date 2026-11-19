@@ -1,18 +1,26 @@
 #include "App/DebugLogFile.h"
 
 #include "Core/LogFileSink.h"
+#include "Domain/Worker.h"
+#include "Platform/ThreadName.h"
 #ifdef __linux__
 #include "Platform/Linux/SessionUser.h"
 #endif
 
 #include <spdlog/common.h>
+#include <spdlog/logger.h>
 
+#include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <exception>
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
+#include <mutex>
 #include <optional>
+#include <stop_token>
 #include <string>
 #include <utility>
 
@@ -35,8 +43,6 @@
 #include <spdlog/details/log_msg.h>
 #include <spdlog/sinks/base_sink.h>
 
-#include <memory>
-#include <mutex>
 #include <string_view>
 #else
 #include <spdlog/details/log_msg.h>
@@ -44,8 +50,6 @@
 
 #include <cerrno>
 #include <cstddef>
-#include <memory>
-#include <mutex>
 #include <system_error>
 
 #include <fcntl.h>
@@ -406,6 +410,70 @@ std::expected<Opened, std::string> open(bool lessPrivilegedEnvironment, const Fu
     {
         return std::unexpected(std::string("unknown error"));
     }
+}
+
+/// The periodic flush's worker (#4419): one job, which flushes the logger every interval until the worker stops.
+struct FlushPolicy::Flusher
+{
+    struct Run
+    {};
+    using FlushWorker = Domain::Worker<Run, bool>;
+
+    Flusher(std::shared_ptr<spdlog::logger> logger, std::chrono::milliseconds interval)
+        : worker({.threadName = Platform::LOG_FLUSH_THREAD_NAME, .capacity = 1, .admission = Domain::Admission::Refuse},
+                 [logger = std::move(logger), interval](Run& /*job*/, const std::stop_token& stop, FlushWorker::JobContext& /*context*/)
+                 {
+                     // Only the job's stop wakes it early (stop(), the destructor); nothing else notifies it.
+                     std::mutex mutex;
+                     std::condition_variable_any wake;
+                     std::unique_lock lock(mutex);
+                     while (!stop.stop_requested())
+                     {
+                         static_cast<void>(wake.wait_for(lock, stop, interval, [] { return false; }));
+                         if (!stop.stop_requested())
+                         {
+                             // spdlog catches what a sink's flush throws and hands it to the logger's error handler.
+                             logger->flush();
+                         }
+                     }
+                 })
+    {}
+
+    FlushWorker worker;
+};
+
+FlushPolicy::FlushPolicy(std::shared_ptr<spdlog::logger> logger, spdlog::level::level_enum flushLevel, std::chrono::milliseconds interval)
+    : m_Logger(std::move(logger))
+{
+    m_Logger->flush_on(flushLevel);
+    // A logger that logs nothing below the flush level flushes every line as it logs it: nothing to do periodically.
+    if (m_Logger->level() < flushLevel && interval > std::chrono::milliseconds::zero())
+    {
+        m_Flusher = std::make_unique<Flusher>(m_Logger, interval);
+        // Refused only when there was no memory to queue it, or no thread: the log is then flushed at the flush level and
+        // here at exit, as it would be with no worker.
+        if (m_Flusher->worker.submit(Flusher::Run{}) != Domain::SubmitResult::Queued)
+        {
+            m_Flusher.reset();
+        }
+    }
+}
+
+FlushPolicy::~FlushPolicy()
+{
+    // The worker first (it waits for a flush in flight), so nothing flushes after this last one.
+    m_Flusher.reset();
+    try
+    {
+        m_Logger->flush();
+    }
+    catch (...) // NOLINT(bugprone-empty-catch) - spdlog hands a sink's failure to its error handler; nothing to add at exit
+    {}
+}
+
+bool FlushPolicy::periodic() const noexcept
+{
+    return m_Flusher != nullptr && m_Flusher->worker.state() == Domain::WorkerState::Running;
 }
 
 } // namespace App::DebugLogFile

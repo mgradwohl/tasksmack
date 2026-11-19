@@ -63,6 +63,7 @@
 .EXAMPLE
     pwsh tools/analyze-etw.ps1 -TracePath .\run\trace.etl -SymbolPath .\run\bin -Overhead -RangeStartUs 12000000 -RangeEndUs 13064000
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [Parameter(Mandatory = $true)]

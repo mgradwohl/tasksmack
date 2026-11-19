@@ -130,6 +130,9 @@ inline constexpr std::string_view UDP_TRACE_SWITCH_THREAD_NAME = "ts-udp-switch"
 /// The worker that reads, and changes, whether TaskSmack replaces Task Manager (#3072): a registry read,
 /// or a UAC prompt and the administrator helper's answer.
 inline constexpr std::string_view TASK_MANAGER_THREAD_NAME = "ts-taskmgr";
+/// The worker that writes tasksmack-debug.log's buffered lines to disk every few seconds (#4419;
+/// App::DebugLogFile::FlushPolicy), when the log takes lines it doesn't flush as they're logged.
+inline constexpr std::string_view LOG_FLUSH_THREAD_NAME = "ts-log-flush";
 
 /// `name` cut to at most `maxLength` bytes, never in the middle of a UTF-8 sequence.
 [[nodiscard]] inline std::string truncateThreadName(std::string_view name, std::size_t maxLength = MAX_LINUX_THREAD_NAME_LENGTH)

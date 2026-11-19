@@ -122,6 +122,7 @@
 .EXAMPLE
     pwsh tools/profile-etw.ps1 resize -Phase Prepare -RunDirectory .\perf-data\resize-001 -Preset win-profile
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [ValidateSet('app', 'bench', 'resize')]

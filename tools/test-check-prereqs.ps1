@@ -91,6 +91,53 @@ try {
     Assert-True ($row.Count -eq 1) "Expected one ccache row:`n$output"
     Assert-True ($row[0] -match '^\S+ ccache\s+4\.14\s') "ccache row: [$($row[0])]"
     Assert-True ($row[0] -like '*ccache.cmd*') "ccache row does not show the stub's path: [$($row[0])]"
+    # The MSVC STL row (#4354): present whether or not this machine has Visual Studio, with CI's floor.
+    $msvcRow = @($output -split '\r?\n' | Where-Object { $_ -match '^\S+ MSVC STL\s' })
+    Assert-True ($msvcRow.Count -eq 1) "Expected one MSVC STL row:`n$output"
+    Assert-True ($msvcRow[0] -match '\(>= 14\.51\)') "MSVC STL row lacks the 14.51 floor: [$($msvcRow[0])]"
+
+    # The Python rows with a non-ASCII user name in the path (#4320): a copy of the checker under a directory
+    # named with a CJK name and with an accented one, each holding a real venv, so sys.executable carries it.
+    # Python writes a pipe in the ANSI code page unless run with -X utf8 (the CJK name is a UnicodeEncodeError,
+    # so every candidate is skipped and python3 shows as failed); the accented name decodes as mojibake if the
+    # checker reads it as the OEM code page. Run with a copy of common.ps1, which the checker dot-sources.
+    $basePython = $env:TASKSMACK_TEST_PYTHON
+    if (-not $basePython) {
+        $found = Get-Command python.exe -CommandType Application -ErrorAction SilentlyContinue | Where-Object { $_.Source -notlike '*\WindowsApps\*' } | Select-Object -First 1
+        if ($found) { $basePython = $found.Source }
+    }
+    if (-not $basePython) {
+        Write-Host 'no Python found for the non-ASCII path check; skipping it'
+    }
+    else {
+        # Read the child's UTF-8 output as UTF-8, whatever this session's console code page is.
+        $OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+        try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
+        # A developer's PYTHONIOENCODING or PYTHONUTF8 would hide the bug; the checker has to cope without them.
+        $savedPythonEnv = @{ PYTHONIOENCODING = $env:PYTHONIOENCODING; PYTHONUTF8 = $env:PYTHONUTF8 }
+        Remove-Item Env:PYTHONIOENCODING, Env:PYTHONUTF8 -ErrorAction SilentlyContinue
+        try {
+            foreach ($name in @(([string][char]0x738B + [char]0x4F1F), ('Jos' + [char]0xE9))) {
+                $repo = Join-Path $root $name
+                $toolsDir = Join-Path $repo 'tools'
+                New-Item -ItemType Directory -Path $toolsDir | Out-Null
+                Copy-Item -LiteralPath $checker, (Join-Path $PSScriptRoot 'common.ps1') -Destination $toolsDir
+                & $basePython -X utf8 -m venv (Join-Path $repo '.venv')
+                Assert-True ($LASTEXITCODE -eq 0) "Could not create a venv under $repo"
+                $venvPython = Join-Path $repo '.venv\Scripts\python.exe'
+                $output = & $pwsh -NoProfile -File (Join-Path $toolsDir 'check-prereqs.ps1') 2>&1 | Out-String
+                $pythonRow = @($output -split '\r?\n' | Where-Object { $_ -match '^\S+ python3\s' })
+                Assert-True ($pythonRow.Count -eq 1) "Expected one python3 row under $name`:`n$output"
+                Assert-True ($pythonRow[0] -notmatch 'NOT FOUND') "python3 not found under $name (a probe failed on the path?): [$($pythonRow[0])]"
+                Assert-True ($pythonRow[0].Contains($venvPython)) "python3 row doesn't show the venv's path under ${name}: [$($pythonRow[0])]"
+            }
+        }
+        finally {
+            foreach ($key in $savedPythonEnv.Keys) {
+                if ($null -ne $savedPythonEnv[$key]) { Set-Item -LiteralPath "Env:$key" -Value $savedPythonEnv[$key] }
+            }
+        }
+    }
 
     Write-Host 'check-prereqs.ps1 tests passed'
 }
