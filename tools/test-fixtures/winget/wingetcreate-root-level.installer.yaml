@@ -24,6 +24,9 @@ AppsAndFeaturesEntries:
   ProductCode: TaskSmack
 InstallationMetadata:
   DefaultInstallLocation: '%ProgramFiles%\TaskSmack'
+ExpectedReturnCodes:
+- InstallerReturnCode: 32
+  ReturnResponse: packageInUse
 Installers:
 - Architecture: x64
   InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v__VERSION__/TaskSmack-__VERSION__-win64.exe

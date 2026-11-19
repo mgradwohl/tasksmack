@@ -9,6 +9,7 @@
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
 
 #include <gtest/gtest.h>
 #include <imgui.h>
@@ -753,6 +754,51 @@ TEST_F(StartupViewRenderTest, HoveringTheImpactCellShowsTheMeasuredFigures)
     const std::string nameText = hoverUntil(publication, state, name, "Program: ");
     EXPECT_TRUE(nameText.contains("Program: ")) << nameText;
     EXPECT_FALSE(nameText.contains("CPU time:"));
+}
+
+// #4304: two entries shown by the same name ("Up<U+D800>date" and "Up<U+FFFD>date" both show as Up<U+FFFD>date) are
+// two rows, told apart by their ids: a click selects only the one clicked.
+TEST_F(StartupViewRenderTest, TwoEntriesShownAlikeAreSelectedByTheirIds)
+{
+    Domain::StartupPublication publication;
+    publication.version = 1;
+    publication.entries = {
+        entry("Up\xEF\xBF\xBD"
+              "date",
+              "Vendor",
+              StartupLocation::RunUser,
+              true),
+        entry("Up\xEF\xBF\xBD"
+              "date",
+              "Vendor",
+              StartupLocation::RunUser,
+              true),
+    };
+    publication.entries[0].nativeId = static_cast<Platform::NativeId>(7);
+    publication.entries[1].nativeId = static_cast<Platform::NativeId>(8);
+    StartupActionsView actions(std::make_shared<IdleStartupActions>());
+    StartupViewState state;
+
+    const ImVec2 row = firstRowCentre(publication, state, &actions);
+    ASSERT_GT(row.y, 0.0F);
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(row.x, row.y);
+    static_cast<void>(captureFrame(publication, state, &actions));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
+    static_cast<void>(captureFrame(publication, state, &actions));
+    io.AddMouseButtonEvent(ImGuiMouseButton_Right, false);
+    io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
+    static_cast<void>(captureFrame(publication, state, &actions));
+
+    EXPECT_EQ(state.selectedName, publication.entries[0].name);
+    EXPECT_TRUE(state.selectedNativeId == publication.entries[0].nativeId || state.selectedNativeId == publication.entries[1].nativeId)
+        << "the row clicked, by its id";
+    EXPECT_NE(state.selectedNativeId, Platform::NativeId::None);
+    EXPECT_FALSE(captureFrame(publication, state, &actions).contains("Select a startup app"));
+
+    // The other entry, alike in all but its id, is not the selection: an id no row has selects none.
+    state.selectedNativeId = static_cast<Platform::NativeId>(9);
+    EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
 }
 
 } // namespace

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Platform/IStartupProbe.h"
+#include "WindowsNativeIds.h"
 #include "WindowsScheduledTasks.h"
 
 // clang-format off
@@ -114,10 +115,13 @@ class WindowsStartupProbe : public IStartupProbe
     WindowsStartupProbe();
     /// Make every registry and known-folder call through @p functions (tests, #1722), and the Task Scheduler
     /// calls through @p scheduledTasks (#3424): none (null) lists no scheduled tasks. @p now times their cadence.
+    /// Each enumerate() publishes its entries' exact identities into @p ids (#4304) and sets each
+    /// StartupEntry::nativeId from it, for WindowsStartupActions; null publishes none.
     explicit WindowsStartupProbe(
         const Windows::StartupProbeFunctions& functions,
         Windows::ScheduledTaskApiFactory scheduledTasks = nullptr,
-        NowFunction now = [] { return Clock::now(); });
+        NowFunction now = [] { return Clock::now(); },
+        std::shared_ptr<Windows::StartupIdTable> ids = Windows::sharedStartupIds());
     ~WindowsStartupProbe() override;
 
     WindowsStartupProbe(const WindowsStartupProbe&) = delete;

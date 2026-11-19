@@ -462,6 +462,7 @@ jobs:
         uses: ./.github/actions/setup-llvm
         with:
           llvm-version: ${{ env.LLVM_VERSION }}
+          install-iwyu-build-deps: 'true'
 
       - name: Setup Python for GLAD
         uses: ./.github/actions/setup-python-glad
@@ -476,12 +477,9 @@ jobs:
       - name: Build include-what-you-use from source
         if: steps.cache-iwyu.outputs.cache-hit != 'true'
         run: |
-          # IWYU links against the static clang/LLVM libraries, which the
-          # base clang packages do not ship; install the -dev packages.
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            llvm-${{ env.LLVM_VERSION }}-dev \
-            libclang-${{ env.LLVM_VERSION }}-dev
+          # IWYU links against the static clang/LLVM libraries, whose -dev packages setup-llvm
+          # installed above (install-iwyu-build-deps) from the pinned apt.llvm.org source or its
+          # package cache. Ubuntu's own archive has no LLVM 23, so don't apt-get them here (#4481).
           # Pinned to an immutable commit SHA (env.IWYU_COMMIT_SHA above), not the mutable
           # clang_${{ env.LLVM_VERSION }} branch, for reproducible reruns.
           mkdir -p /tmp/iwyu-src

@@ -1,0 +1,11 @@
+# Known vulnerabilities the OSV gates accept for now, each with its reason and a date it lapses on (#4438).
+# osv-scanner reads this file; so does tools/cpp-deps-sbom.py's `osv` check of the pinned C/C++ commits,
+# which fails on any entry without a reason or an ignoreUntil date. When the date passes, the finding fails
+# the gate again: re-check it, then bump the pin, extend the date with a new reason, or remove the entry.
+
+[[IgnoredVulns]]
+id = "CVE-2026-102804"
+ignoreUntil = 2027-02-18
+reason = """stb's stb_hexwave.h (hexwave_init integer overflow, nothings/stb#1961). TaskSmack compiles only \
+stb_image.h and stb_image_write.h from the pinned stb commit, never stb_hexwave.h, so the flaw isn't in any \
+binary. Upstream has no fixed commit yet; bump the stb pin once it does."""

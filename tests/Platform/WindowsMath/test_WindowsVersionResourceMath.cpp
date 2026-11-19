@@ -2,7 +2,8 @@
 /// @brief The version resource walk the Publisher column reads a held file with (#4057):
 /// VersionResourceMath::findVersionResource() on PE files built byte by byte (tests/Support/PeImageBuilder.h), and on
 /// truncated, hostile and randomly damaged ones, where it must answer none or a span inside the file, never read
-/// outside it or loop. Built on every platform, so Linux's sanitizers run it too.
+/// outside it or loop; and fixedFileVersion(), the file version the Modules section reads out of the block (#4373).
+/// Built on every platform, so Linux's sanitizers run it too.
 
 #include "Platform/Windows/WindowsVersionResourceMath.h"
 #include "Support/PeImageBuilder.h"
@@ -23,6 +24,8 @@ namespace
 {
 
 using Platform::VersionResourceMath::findVersionResource;
+using Platform::VersionResourceMath::FixedFileVersion;
+using Platform::VersionResourceMath::fixedFileVersion;
 using TestSupport::buildPeImage;
 using TestSupport::PeImage;
 using TestSupport::put16;
@@ -345,6 +348,43 @@ TEST(VersionResourceMathTest, RandomlyDamagedFilesAnswerNoneOrASpanInsideTheFile
         }
     }
     EXPECT_GT(found, 0) << "most damage misses the walk's bytes, so some files still answer";
+}
+
+// #4373: the Modules section's version is the block's VS_FIXEDFILEINFO, right after its key.
+TEST(VersionResourceMathTest, TheFixedFileVersionIsReadFromTheBlock)
+{
+    const std::vector<std::byte> block = versionInfoBlock(u"Co", (10U << 16U) | 0U, (26100U << 16U) | 4202U);
+    const PeImage image = buildPeImage({{0x0409U, block}});
+    const std::optional<std::span<const std::byte>> found = find(image.bytes);
+    ASSERT_TRUE(found.has_value());
+    const std::span<const std::byte> foundBlock = found.value_or(std::span<const std::byte>{});
+    EXPECT_EQ(fixedFileVersion(foundBlock),
+              std::optional(FixedFileVersion{.mostSignificant = 10U << 16U, .leastSignificant = (26100U << 16U) | 4202U}));
+    EXPECT_EQ(fixedFileVersion(std::span<const std::byte>(block)), fixedFileVersion(foundBlock));
+}
+
+TEST(VersionResourceMathTest, AFixedFileVersionThatIsShortOrUnsignedIsNone)
+{
+    const std::vector<std::byte> good = versionInfoBlock(u"Co", 1, 2);
+    ASSERT_TRUE(fixedFileVersion(std::span<const std::byte>(good)).has_value());
+    EXPECT_FALSE(fixedFileVersion({}).has_value());
+    EXPECT_FALSE(fixedFileVersion(std::span<const std::byte>(good).first(40 + 51)).has_value()) << "cut inside the value";
+
+    std::vector<std::byte> unsignedBlock = good;
+    put32(unsignedBlock, 40, 0x12345678U); // not 0xFEEF04BD
+    EXPECT_FALSE(fixedFileVersion(std::span<const std::byte>(unsignedBlock)).has_value());
+
+    std::vector<std::byte> shortValue = good;
+    put16(shortValue, 2, 51); // wValueLength one short of a VS_FIXEDFILEINFO
+    EXPECT_FALSE(fixedFileVersion(std::span<const std::byte>(shortValue)).has_value());
+
+    std::vector<std::byte> longer = good;
+    put16(longer, 0, good.size() + 1); // wLength past the bytes there are
+    EXPECT_FALSE(fixedFileVersion(std::span<const std::byte>(longer)).has_value());
+
+    const std::vector<std::byte> noValue =
+        TestSupport::VersionNode{.key = u"VS_VERSION_INFO", .value = {}, .text = false, .children = {}}.bytes();
+    EXPECT_FALSE(fixedFileVersion(std::span<const std::byte>(noValue)).has_value());
 }
 
 } // namespace

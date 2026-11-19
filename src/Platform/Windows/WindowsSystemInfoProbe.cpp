@@ -106,9 +106,10 @@ constexpr const wchar_t* CURRENT_VERSION_KEY = L"SOFTWARE\\Microsoft\\Windows NT
         return {};
     }
     value.resize(bytes / sizeof(wchar_t));
-    while (!value.empty() && value.back() == L'\0')
+    // Up to the first NUL, as Windows reads a REG_SZ (#4307): text hidden past one isn't part of the value.
+    if (const std::size_t nul = value.find(L'\0'); nul != std::wstring::npos)
     {
-        value.pop_back();
+        value.resize(nul);
     }
     return WinString::wideToUtf8(value);
 }

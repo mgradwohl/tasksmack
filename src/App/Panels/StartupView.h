@@ -7,6 +7,7 @@
 #include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -126,6 +127,8 @@ struct StartupViewState
     std::string selectedName;
     Platform::StartupLocation selectedLocation = Platform::StartupLocation::RunUser;
     std::string selectedFamily; ///< The selected packaged task's family (#1873); empty for other entries.
+    /// The selected row's id (#4304); None when it was selected without one.
+    Platform::NativeId selectedNativeId = Platform::NativeId::None;
 };
 
 class StartupActionsView;

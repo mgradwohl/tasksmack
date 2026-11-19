@@ -7,7 +7,8 @@
 // checked against the file before it is read, the walk is the resource directory's fixed three levels (type, name,
 // language) with no recursion, so a directory that points back at itself can't loop, and the answer is either a span
 // inside the file or none. Plain bytes, so it reaches no Windows header and its tests build and run on every platform
-// (#1133); WindowsImageFile.cpp maps the file and reads the CompanyName out of the block with VerQueryValueW.
+// (#1133); WindowsHeldFileVersion.cpp maps the file, WindowsImageFile.cpp reads the CompanyName out of the block with
+// VerQueryValueW, and the Modules section reads the file version out of it with fixedFileVersion() (#4373).
 
 #include <array>
 #include <cstddef>
@@ -420,6 +421,46 @@ nodeChildren(std::span<const std::byte> block, std::uint64_t at, std::uint64_t e
         return std::nullopt;
     }
     return versionInfo;
+}
+
+/// VS_FIXEDFILEINFO's dwSignature, telling a real fixed-info block from garbage.
+inline constexpr std::uint32_t FIXED_FILE_INFO_SIGNATURE = 0xFEEF04BDU;
+/// VS_FIXEDFILEINFO's size: thirteen DWORDs.
+inline constexpr std::size_t FIXED_FILE_INFO_SIZE = 52;
+
+/// A file's version as VS_FIXEDFILEINFO holds it: dwFileVersionMS (major, minor) and dwFileVersionLS (build, revision).
+struct FixedFileVersion
+{
+    std::uint32_t mostSignificant = 0;
+    std::uint32_t leastSignificant = 0;
+
+    [[nodiscard]] friend constexpr bool operator==(const FixedFileVersion&, const FixedFileVersion&) noexcept = default;
+};
+
+/// The file version in the VS_VERSIONINFO @p block (as findVersionResource() finds it): its VS_FIXEDFILEINFO value,
+/// right after the "VS_VERSION_INFO" key, DWORD-aligned. nullopt when the block is too short, declares a value shorter
+/// than a VS_FIXEDFILEINFO, or the value's signature isn't 0xFEEF04BD (#4373: the Modules section reads a module's
+/// version this way, from a file it holds, never through GetFileVersionInfoW by a name).
+[[nodiscard]] constexpr std::optional<FixedFileVersion> fixedFileVersion(std::span<const std::byte> block) noexcept
+{
+    using Detail::readLe;
+    constexpr std::uint64_t VALUE_AT = (VERSION_INFO_MIN + 3U) & ~std::uint64_t{3}; // the header and key, DWORD-aligned
+    const std::optional<std::uint16_t> length = readLe<std::uint16_t>(block, 0);
+    const std::optional<std::uint16_t> valueLength = readLe<std::uint16_t>(block, 2);
+    if (!length.has_value() || !valueLength.has_value() || *valueLength < FIXED_FILE_INFO_SIZE || *length > block.size() ||
+        *length < VALUE_AT + FIXED_FILE_INFO_SIZE)
+    {
+        return std::nullopt;
+    }
+    const std::span<const std::byte> value = block.subspan(static_cast<std::size_t>(VALUE_AT), FIXED_FILE_INFO_SIZE);
+    const std::optional<std::uint32_t> signature = readLe<std::uint32_t>(value, 0);
+    const std::optional<std::uint32_t> mostSignificant = readLe<std::uint32_t>(value, 8);
+    const std::optional<std::uint32_t> leastSignificant = readLe<std::uint32_t>(value, 12);
+    if (signature != FIXED_FILE_INFO_SIGNATURE || !mostSignificant.has_value() || !leastSignificant.has_value())
+    {
+        return std::nullopt;
+    }
+    return FixedFileVersion{.mostSignificant = *mostSignificant, .leastSignificant = *leastSignificant};
 }
 
 } // namespace Platform::VersionResourceMath
