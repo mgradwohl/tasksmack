@@ -1,5 +1,6 @@
 #include "ThemeLoader.h"
 
+#include "Core/ErrorCodeText.h"
 #include "Core/Utf8Path.h"
 #include "FallbackTheme.h"
 #include "Theme.h"
@@ -754,7 +755,7 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     std::filesystem::directory_iterator it(themesDir, ec);
     if (ec)
     {
-        spdlog::warn("Can't list themes directory {}: {}", Core::pathToUtf8(themesDir), ec.message());
+        spdlog::warn("Can't list themes directory {}: {}", Core::pathToUtf8(themesDir), Core::errorCodeText(ec));
         return themes;
     }
     for (const std::filesystem::directory_iterator end; !ec && it != end; it.increment(ec))
@@ -770,7 +771,7 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
     }
     if (ec)
     {
-        spdlog::warn("Stopped listing themes directory {}: {}", Core::pathToUtf8(themesDir), ec.message());
+        spdlog::warn("Stopped listing themes directory {}: {}", Core::pathToUtf8(themesDir), Core::errorCodeText(ec));
     }
 
     // Sort by name for consistent UI ordering
@@ -781,7 +782,7 @@ auto ThemeLoader::discoverThemes(const std::filesystem::path& themesDir) -> std:
 
 auto ThemeLoader::userThemesSkippedMessage(const std::filesystem::path& userThemesDir, const std::error_code& error) -> std::string
 {
-    return "Skipping user themes in " + Core::pathToUtf8(userThemesDir) + ": " + error.message();
+    return "Skipping user themes in " + Core::pathToUtf8(userThemesDir) + ": " + Core::errorCodeText(error);
 }
 
 namespace

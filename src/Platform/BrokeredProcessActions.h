@@ -33,11 +33,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
 #include <stop_token>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -168,6 +170,10 @@ class BrokeredModulesReader final : public IProcessModulesReader
     {
         return m_Reader.canReadAuthorized();
     }
+    [[nodiscard]] std::expected<void, std::string> authorize(const std::stop_token& stopToken) override
+    {
+        return m_Reader.authorize(stopToken);
+    }
     [[nodiscard]] ModulesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override
     {
         return m_Reader.readAuthorized(target, stopToken);
@@ -285,6 +291,10 @@ class BrokeredOpenFilesReader final : public IProcessOpenFilesReader
     [[nodiscard]] bool canReadAuthorized() const override
     {
         return m_Reader.canReadAuthorized();
+    }
+    [[nodiscard]] std::expected<void, std::string> authorize(const std::stop_token& stopToken) override
+    {
+        return m_Reader.authorize(stopToken);
     }
     [[nodiscard]] std::size_t handlesScanned() const noexcept override;
     [[nodiscard]] OpenFilesReadResult readAuthorized(const ProcessTarget& target, const std::stop_token& stopToken) override;

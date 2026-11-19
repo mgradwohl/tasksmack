@@ -35,7 +35,6 @@
 #include <stop_token>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -101,7 +100,7 @@ class SessionGuard
 
 [[nodiscard]] std::string systemMessage(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// Process @p pid's start time in FILETIME ticks (ProcessTarget::startTimeTicks), read now; 0 when it

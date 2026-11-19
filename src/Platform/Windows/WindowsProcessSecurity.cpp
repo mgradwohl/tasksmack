@@ -15,7 +15,6 @@
 #include <mutex>
 #include <optional>
 #include <string>
-#include <system_error>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -51,7 +50,7 @@ constexpr DWORD INITIAL_PRIVILEGE_CHARS = 64;
 /// The system's message for a Win32 error code.
 [[nodiscard]] std::string errorText(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// A failed token query's result: PermissionDenied for ERROR_ACCESS_DENIED, else Failed with the error.

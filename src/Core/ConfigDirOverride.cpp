@@ -1,6 +1,7 @@
 #include "ConfigDirOverride.h"
 
 #include "Core/EnvRead.h"
+#include "Core/ErrorCodeText.h"
 #include "Core/Utf8Path.h"
 #include "Platform/IHandedOverFolder.h"
 
@@ -51,7 +52,7 @@ std::optional<std::filesystem::path>& current()
         std::filesystem::create_directories(*parsed, ec);
         if (ec)
         {
-            spdlog::warn("{}: could not create {}: {}", ENV_VAR, display, ec.message());
+            spdlog::warn("{}: could not create {}: {}", ENV_VAR, display, Core::errorCodeText(ec));
         }
         return parsed;
     }();
