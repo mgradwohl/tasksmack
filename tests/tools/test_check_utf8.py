@@ -60,8 +60,8 @@ class CheckFileTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def run_checker(self, data: bytes) -> subprocess.CompletedProcess:
-        path = self.tmp / "sample.cpp"
+    def run_checker(self, data: bytes, name: str = "sample.cpp") -> subprocess.CompletedProcess:
+        path = self.tmp / name
         path.write_bytes(data)
         return subprocess.run(
             [sys.executable, "-I", "-X", "utf8", str(SCRIPT), str(path)],
@@ -90,6 +90,23 @@ class CheckFileTest(unittest.TestCase):
             with self.subTest(data=data[:4]):
                 result = self.run_checker(data)
                 self.assertEqual(result.returncode, 1, result.stdout)
+
+    def test_a_ps1_with_non_ascii_text_needs_the_pwsh_7_requirement(self) -> None:
+        body = f'Write-Host "a {EM_DASH} b"\n'
+        bare = self.run_checker(body.encode("utf-8"), "tool.ps1")
+        self.assertEqual(bare.returncode, 1, bare.stdout)
+        self.assertIn("tool.ps1:1:", bare.stdout)
+        self.assertIn("#Requires -Version 7", bare.stdout)
+        for header in ("#Requires -Version 7\n", "#requires -version 7.4\r\n"):
+            with self.subTest(header=header):
+                declared = self.run_checker((header + body).encode("utf-8"), "tool.ps1")
+                self.assertEqual(declared.returncode, 0, declared.stdout)
+
+    def test_an_ascii_ps1_and_a_non_ps1_pass_without_the_requirement(self) -> None:
+        self.assertEqual(self.run_checker(b'Write-Host "ok"\n', "tool.ps1").returncode, 0)
+        self.assertEqual(self.run_checker(f"x {EM_DASH}\n".encode("utf-8"), "notes.md").returncode, 0)
+        old = self.run_checker(b"#Requires -Version 5.1\n" + f"x {EM_DASH}\n".encode("utf-8"), "tool.ps1")
+        self.assertEqual(old.returncode, 1, old.stdout)
 
 
 if __name__ == "__main__":

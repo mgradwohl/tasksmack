@@ -32,6 +32,7 @@
     Optional: the file names to check, each found once under PackageRoot (TASKSMACK_VERIFY_NAMES).
     Omitted, TaskSmack.exe and TaskSmackHelper.exe.
 #>
+#Requires -Version 7
 param(
     [Parameter(Mandatory)][string]$PackageRoot,
     [Parameter(Mandatory)][string]$ExpectedSigner,

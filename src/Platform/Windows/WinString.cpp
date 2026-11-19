@@ -1,6 +1,9 @@
 #include "WinString.h"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
+#include <format>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -113,6 +116,25 @@ namespace Platform::WinString
     }
     result.resize(static_cast<size_t>(written));
     return result;
+}
+
+[[nodiscard]] std::string win32ErrorText(unsigned long error)
+{
+    std::array<wchar_t, 512> text{};
+    const DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                        nullptr,
+                                        error,
+                                        0,
+                                        text.data(),
+                                        static_cast<DWORD>(text.size()),
+                                        nullptr);
+    std::wstring_view words(text.data(), std::min<std::size_t>(length, text.size()));
+    while (!words.empty() && (words.back() == L'\r' || words.back() == L'\n' || words.back() == L' ' || words.back() == L'.'))
+    {
+        words.remove_suffix(1);
+    }
+    const std::string utf8 = wideToUtf8(words);
+    return utf8.empty() ? std::format("error {}", error) : utf8;
 }
 
 } // namespace Platform::WinString
