@@ -24,6 +24,7 @@ build_fuzzer() {
         -finput-charset=UTF-8 \
         -fexec-charset=UTF-8 \
         -Isrc \
+        -I"$FUZZ_DEPS_DIR/generated" \
         -isystem "$FUZZ_DEPS_DIR/tomlplusplus/include" \
         -isystem "$FUZZ_DEPS_DIR/spdlog/include" \
         -isystem "$FUZZ_DEPS_DIR/imgui" \
