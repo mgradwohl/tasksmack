@@ -42,11 +42,14 @@
 // folder of its own, with junctions and hard links any user can make.
 
 #include <spdlog/common.h>
+#include <spdlog/logger.h>
 
+#include <chrono>
 #include <cstdint>
 #include <expected>
 #include <filesystem>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -137,5 +140,50 @@ struct Opened
 /// open() and its tests.
 [[nodiscard]] std::expected<void, std::string> secureFolder(const std::filesystem::path& folder, std::string_view sddl);
 #endif
+
+// When the log's lines reach the disk (#4419). The temp folder's sink writes through a buffered FILE*, and spdlog flushes
+// nothing unless it is told to, so a release build's file stayed empty until a clean exit: a crash, a kill from Task
+// Manager or a hang lost the warnings and errors it was kept for. (The elevated and root sessions' sinks write each line
+// straight through; flushing them costs nothing.)
+//   - A line at the flush level or above is flushed as it is logged, on the thread that logs it: warn and up in a release
+//     build, which at its default level (warn) is every line it logs; every line in a debug build. Warnings are rare, so
+//     the UI thread's share is a few fflush() calls a session, as a debug build has always paid for every line.
+//   - Everything else is flushed every FLUSH_INTERVAL on a worker of its own (Domain::Worker, LOG_FLUSH_THREAD_NAME),
+//     never the UI thread, and only while the logger logs below the flush level (TASKSMACK_LOG_LEVEL=info, the resize
+//     trace): otherwise nothing is ever left buffered, and an idle session gets no wake-up for it.
+//   - A clean exit flushes once more when the policy goes (runApp()'s return or its exception), after the worker stops.
+
+/// Lines at this level and above are flushed as they are logged in a release build.
+inline constexpr spdlog::level::level_enum RELEASE_FLUSH_LEVEL = spdlog::level::warn;
+/// A debug build flushes every line it logs (its level is debug).
+inline constexpr spdlog::level::level_enum DEBUG_FLUSH_LEVEL = spdlog::level::debug;
+/// How often the worker flushes the lines below the flush level: a crash loses at most this much of them.
+inline constexpr std::chrono::seconds FLUSH_INTERVAL{3};
+
+/// The flush policy above, for one logger, for as long as it lives. Build it after the logger's level is set.
+class FlushPolicy
+{
+  public:
+    /// Flushes @p logger as each line at @p flushLevel or above is logged, and, when @p logger logs below
+    /// @p flushLevel, all of it every @p interval on the worker. Throws std::bad_alloc.
+    FlushPolicy(std::shared_ptr<spdlog::logger> logger,
+                spdlog::level::level_enum flushLevel,
+                std::chrono::milliseconds interval = FLUSH_INTERVAL);
+    /// Stops the worker, waiting for a flush it is in, then flushes @p logger once more. The flush level stays.
+    ~FlushPolicy();
+
+    FlushPolicy(const FlushPolicy&) = delete;
+    FlushPolicy& operator=(const FlushPolicy&) = delete;
+    FlushPolicy(FlushPolicy&&) = delete;
+    FlushPolicy& operator=(FlushPolicy&&) = delete;
+
+    /// Whether the periodic flush runs: the logger logs below the flush level, and the worker took its job.
+    [[nodiscard]] bool periodic() const noexcept;
+
+  private:
+    struct Flusher;
+    std::shared_ptr<spdlog::logger> m_Logger;
+    std::unique_ptr<Flusher> m_Flusher; ///< Null when nothing is left to flush periodically
+};
 
 } // namespace App::DebugLogFile
