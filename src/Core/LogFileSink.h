@@ -27,6 +27,10 @@ namespace Core
 #ifdef _WIN32
 static_assert(std::is_same_v<spdlog::filename_t, std::wstring>,
               "Define SPDLOG_WCHAR_FILENAMES for this target: the log file must be opened by its UTF-16 path (#1648)");
+
+#ifndef SPDLOG_UTF8_TO_WCHAR_CONSOLE
+#error "Define SPDLOG_UTF8_TO_WCHAR_CONSOLE for this target: the console sink must write UTF-8 log text with WriteConsoleW (#4317)"
+#endif
 #endif
 
 /// A file sink writing to @p path (created with its directories if missing; truncated when
