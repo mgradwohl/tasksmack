@@ -10,8 +10,10 @@
     the version folder's three manifests: each one's ManifestVersion (and its schema header, when it has one) is
     -ManifestVersion, PackageIdentifier is TaskSmack.TaskSmack and PackageVersion is -Version; the installer
     manifest lists exactly the x64 and ARM64 NSIS installers at their release URLs for -Tag, and each
-    InstallerSha256 equals the SHA-256 of the installer of that name in -InstallerDir. Prints every problem and
-    exits 1; exits 0 when there is none. Nothing is downloaded and nothing is submitted.
+    InstallerSha256 equals the SHA-256 of the installer of that name in -InstallerDir. Each installer's
+    ExpectedReturnCodes (its own, else the manifest's) map exit code 32, the installer's "TaskSmack is running"
+    (#4436), to packageInUse. Prints every problem and exits 1; exits 0 when there is none. Nothing is
+    downloaded and nothing is submitted.
 .PARAMETER ManifestDir
     The version's folder (manifests\t\TaskSmack\TaskSmack\<version>), as winget-manifest.ps1 and
     `wingetcreate update --out` write it.
@@ -192,6 +194,22 @@ function Get-YamlScalars($Document, [string]$Key) {
     if ($Document.TryGetValue($Key, [ref]$value)) { return "$value" }
 }
 
+# Whether an ExpectedReturnCodes value is a list with an item mapping the installer's exit code for a running
+# TaskSmack (#4436: 32, TASKSMACK_IN_USE_EXIT_CODE in cmake/CPackProjectConfig.cmake.in) to WinGet's packageInUse.
+function Test-InUseReturnCode($Codes) {
+    $InUseExitCode = '32'
+    $InUseResponse = 'packageInUse'
+    if ($Codes -isnot [System.Collections.Generic.List[object]]) { return $false }
+    foreach ($item in $Codes) {
+        if ($item -isnot [System.Collections.Generic.Dictionary[string, object]]) { continue }
+        $code = $response = ''
+        [void]$item.TryGetValue('InstallerReturnCode', [ref]$code)
+        [void]$item.TryGetValue('ReturnResponse', [ref]$response)
+        if ("$code" -ceq $InUseExitCode -and "$response" -ceq $InUseResponse) { return $true }
+    }
+    return $false
+}
+
 # The problems with the manifests in $Directory, each a line of text; empty when there are none.
 function Test-WingetManifests([string]$Directory, [string]$Version, [string]$Tag, [string]$Repository,
     [string]$ManifestVersion, [string]$InstallerDir) {
@@ -224,10 +242,12 @@ function Test-WingetManifests([string]$Directory, [string]$Version, [string]$Tag
     }
     if ($installerFile.Count -eq 1) {
         $entries = @()
+        $rootCodes = $null
         try {
             $doc = ConvertFrom-ManifestYaml (Get-Content -LiteralPath $installerFile[0].FullName -Raw)
             $list = $null
             if ($doc.TryGetValue('Installers', [ref]$list) -and $list -is [System.Collections.Generic.List[object]]) { $entries = @($list) }
+            [void]$doc.TryGetValue('ExpectedReturnCodes', [ref]$rootCodes)
         } catch { $null = $_ }   # The loop above already reported the unreadable manifest.
         $expected = [ordered]@{ x64 = "TaskSmack-$Version-win64.exe"; arm64 = "TaskSmack-$Version-windows-arm64.exe" }
         $seen = @{}
@@ -241,6 +261,13 @@ function Test-WingetManifests([string]$Directory, [string]$Version, [string]$Tag
             if ($seen.ContainsKey($arch)) { $problems.Add("the $arch installer is listed twice"); continue }
             $seen[$arch] = $true
             $installer = $expected[$arch]
+            # #4436: the in-use exit code, from the installer's own ExpectedReturnCodes, which replace the root's.
+            $codes = $rootCodes
+            $own = $null
+            if ($entry.TryGetValue('ExpectedReturnCodes', [ref]$own)) { $codes = $own }
+            if (-not (Test-InUseReturnCode $codes)) {
+                $problems.Add("the $arch installer's ExpectedReturnCodes don't map InstallerReturnCode 32 to ReturnResponse packageInUse (#4436)")
+            }
             $wantUrl = "https://github.com/$Repository/releases/download/$Tag/$installer"
             if ($url -cne $wantUrl) { $problems.Add("the $arch InstallerUrl is [$url], not $wantUrl") }
             $path = Join-Path $InstallerDir $installer

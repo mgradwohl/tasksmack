@@ -323,6 +323,12 @@ endif()
 add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
 set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 
+# tools/cpp-deps-sbom.py: the source SBOM and the OSV gate list every FetchContent_Declare() pin, at its commit,
+# with its licence, and a pin missing from the SBOM fails (#4438). Pure Python and offline (OSV is a fake), so on
+# every platform.
+add_test(NAME CppDepsSbomScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cpp_deps_sbom.py)
+set_tests_properties(CppDepsSbomScript PROPERTIES TIMEOUT 60)
+
 # The NSIS uninstaller's start-at-sign-in step (#3093 part 2), cmake/CPackProjectConfig.cmake.in: it deletes
 # the HKCU Run value only when it starts this installation's TaskSmack.exe. Pure Python, on every platform.
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
@@ -338,6 +344,11 @@ set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
 # `Unicode true` and CPACK_NSIS_MODIFY_PATH is gone. Pure Python, on every platform.
 add_test(NAME NsisUnicodeScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_unicode.py)
 set_tests_properties(NsisUnicodeScript PROPERTIES TIMEOUT 60)
+
+# The installer and the uninstaller stop, before they change anything, while TaskSmack.exe or TaskSmackHelper.exe
+# runs (#4436): TaskSmackInUseCheck, run against a fake folder, and where both call it. Pure Python, on every platform.
+add_test(NAME NsisInUseCheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_in_use.py)
+set_tests_properties(NsisInUseCheck PROPERTIES TIMEOUT 60)
 
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
