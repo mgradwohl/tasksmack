@@ -223,6 +223,47 @@ TEST(MiddleEllipsizeTest, UsesTheEllipsisItIsGiven)
     EXPECT_EQ(middleEllipsize("abcdefghij:42", 3, 7.0F, characterCount, "~"), "ab~j:42");
 }
 
+TEST(MiddleEllipsizeTest, NeverCutsBetweenALetterAndItsCombiningMark)
+{
+    // "Cafe" + U+0301 (an NFD e-acute) + " menu.pdf": at no width does the cut split e from its accent (#4313).
+    const std::string text = "Cafe\xCC\x81 menu.pdf";
+    for (float budget = 2.0F; budget < 14.0F; budget += 1.0F)
+    {
+        const std::string shown = fitByCount(text, 0, budget);
+        EXPECT_EQ(shown.find(std::string("Cafe") + std::string(MIDDLE_ELLIPSIS)), std::string::npos) << "budget " << budget;
+        EXPECT_EQ(shown.find(std::string(MIDDLE_ELLIPSIS) + "\xCC\x81"), std::string::npos) << "budget " << budget;
+    }
+}
+
+TEST(MiddleEllipsizeTest, NeverCutsInsideAZeroWidthJoinerSequence)
+{
+    // ab + man ZWJ woman ZWJ girl + cdef: the family is kept whole or dropped whole, never halved (#4313).
+    const std::string man = "\xF0\x9F\x91\xA8";
+    const std::string woman = "\xF0\x9F\x91\xA9";
+    const std::string joiner = "\xE2\x80\x8D";
+    const std::string text = "ab" + man + joiner + woman + joiner + "\xF0\x9F\x91\xA7" + "cdef";
+    for (float budget = 2.0F; budget < 12.0F; budget += 1.0F)
+    {
+        const std::string shown = fitByCount(text, 0, budget);
+        const std::string ellipsis(MIDDLE_ELLIPSIS);
+        EXPECT_EQ(shown.find(man + ellipsis), std::string::npos) << "budget " << budget;
+        EXPECT_EQ(shown.find(joiner + ellipsis), std::string::npos) << "budget " << budget;
+        EXPECT_EQ(shown.find(ellipsis + joiner), std::string::npos) << "budget " << budget;
+        EXPECT_EQ(shown.find(ellipsis + woman), std::string::npos) << "budget " << budget;
+    }
+}
+
+TEST(MiddleEllipsizeTest, GraphemeExtendersAreRecognised)
+{
+    EXPECT_TRUE(extendsGrapheme(0x0301));
+    EXPECT_TRUE(extendsGrapheme(ZERO_WIDTH_JOINER));
+    EXPECT_TRUE(extendsGrapheme(0xFE0F));
+    EXPECT_TRUE(extendsGrapheme(0xE0100));
+    EXPECT_FALSE(extendsGrapheme(U'e'));
+    EXPECT_EQ(decodeCodePointAt("\xE2\x80\xA6", 0), char32_t{0x2026});
+    EXPECT_EQ(decodeCodePointAt("\xE2\x80", 0), char32_t{0xFFFD});
+}
+
 // ---- Drawn headless ----
 
 /// What one cellText() call drew.
