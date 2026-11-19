@@ -34,7 +34,8 @@ inline constexpr std::string_view HELPER_COULDNT_BE_ASKED = "The administrator h
 /// What a read through the helper says when the helper answered with another kind of reply.
 inline constexpr std::string_view HELPER_UNEXPECTED_ANSWER = "The administrator helper gave an unexpected answer";
 
-/// Process Details' environment (#2309): its failures carry no detail.
+/// Process Details' environment (#2309). The helper's reply carries no detail of its own (BrokerProtocol), so a
+/// failure's detail is the reason the helper couldn't be asked.
 struct EnvironmentReadTraits
 {
     using Reader = IProcessEnvironmentReader;
@@ -57,10 +58,10 @@ struct EnvironmentReadTraits
     {
         return {.status = EnvironmentReadStatus::PermissionDenied, .variables = {}};
     }
-    /// A read the helper didn't answer: EnvironmentReadResult has no detail to say why.
-    [[nodiscard]] static Result failed(const std::string& /*detail*/)
+    /// A read the helper didn't answer: @p detail says why, and the view draws it after the status line (#4423).
+    [[nodiscard]] static Result failed(std::string detail)
     {
-        return {.status = EnvironmentReadStatus::Failed, .variables = {}};
+        return {.status = EnvironmentReadStatus::Failed, .variables = {}, .truncated = false, .detail = std::move(detail)};
     }
 };
 
