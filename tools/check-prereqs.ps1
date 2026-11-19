@@ -15,6 +15,12 @@ param()
 . (Join-Path $PSScriptRoot "common.ps1")
 $RepoRoot = Split-Path -Parent $PSScriptRoot
 
+# The Python probes print sys.executable, which holds the user's name: decode their output as UTF-8 (#4320).
+# The probes also run with -X utf8 (below), since Python writes a pipe in the ANSI code page otherwise.
+# Without a console (a detached process) setting it throws; the default is kept then.
+$OutputEncoding = [System.Text.UTF8Encoding]::new($false)
+try { [Console]::OutputEncoding = $OutputEncoding } catch { Write-Verbose "Console encoding unchanged: $_" }
+
 # Required versions (minimum)
 $MIN_CMAKE_VERSION = [Version]"3.29"
 $MIN_CLANG_VERSION = 23
@@ -268,7 +274,7 @@ function Get-PythonInfo {
     $firstWorking = $null
     foreach ($candidate in $candidates) {
         try {
-            $output = (& $candidate.Exe @($candidate.Args + @('-c', 'import sys, platform; print(platform.python_version()); print(sys.executable)')) 2>&1) | Out-String
+            $output = (& $candidate.Exe @($candidate.Args + @('-X', 'utf8', '-c', 'import sys, platform; print(platform.python_version()); print(sys.executable)')) 2>&1) | Out-String
         }
         catch { continue }
         # platform.python_version() can carry a suffix (3.15.0a1); [Version] takes only the numbers.
@@ -287,7 +293,7 @@ function Get-Jinja2Version {
     param($PythonInfo)
     if (-not $PythonInfo) { return $null }
     try {
-        $result = & $PythonInfo.Exe @($PythonInfo.Args + @('-c', 'import jinja2; print(jinja2.__version__)')) 2>&1
+        $result = & $PythonInfo.Exe @($PythonInfo.Args + @('-X', 'utf8', '-c', 'import jinja2; print(jinja2.__version__)')) 2>&1
         if ($LASTEXITCODE -eq 0 -and "$result" -match '^\d+\.') {
             return "$result".Trim()
         }
