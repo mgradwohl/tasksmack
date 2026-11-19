@@ -1,9 +1,11 @@
 /// @file test_WindowsProcessModules.cpp
-/// @brief Platform::Windows::WindowsProcessModulesReader (#802) against fake kernel32/version calls:
-/// the modules listed with paths, bases, sizes and versions, the version read once per path, a
-/// denied open, a reused PID, a list that grows between the size query and the copy, a module
-/// unloaded mid-read, an enumeration that fails, and the handle closed exactly once. Plus one read of
-/// this test process through the real calls.
+/// @brief Platform::Windows::WindowsProcessModulesReader (#802) against fake kernel32 calls: the modules listed with
+/// paths, bases, sizes and versions, the version read once per file, a denied open, a reused PID, a list that grows
+/// between the size query and the copy, a module unloaded mid-read, an enumeration that fails, and the handle closed
+/// exactly once. And #4373: the path in the process's loader data is shown, never opened; the version comes from the
+/// file the kernel says the image was mapped from, and only from one on a local volume, so a module mapped from a
+/// network share or a device is listed, says its version wasn't read, and is never opened. Plus one read of this test
+/// process through the real calls.
 
 #include "Mocks/WindowsFakeProcessIdentity.h"
 #include "Platform/IProcessActions.h"
@@ -15,8 +17,8 @@
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
-#include <cstring>
-#include <cwchar>
+#include <functional>
+#include <map>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -30,11 +32,22 @@ namespace
 constexpr std::uint64_t START_TICKS = 0x01DB'0000'1234'5678ULL;
 constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = START_TICKS};
 
+constexpr std::wstring_view C_DEVICE = L"\\Device\\HarddiskVolume3";
+constexpr std::wstring_view D_DEVICE = L"\\Device\\CdRom0";
+constexpr std::wstring_view Z_DEVICE = L"\\Device\\LanmanRedirector\\;Z:0000000000012345\\server\\share";
+
+/// @p dosPath ("C:\x.dll") as the NT name GetMappedFileNameW gives a file on C:.
+[[nodiscard]] std::wstring onC(std::wstring_view dosPath)
+{
+    return std::wstring(C_DEVICE) + std::wstring(dosPath.substr(2));
+}
+
 struct FakeModule
 {
     std::uintptr_t base = 0;
     DWORD size = 0;
-    std::wstring path;
+    std::wstring path;     // the loader data's FullDllName (GetModuleFileNameExW), which the process can rewrite
+    std::wstring mapped;   // the file the image section was made from (GetMappedFileNameW); empty: it can't be named
     bool unloaded = false; // listed, but gone by the time it is queried
 };
 
@@ -47,8 +60,11 @@ struct FakeProcess
     DWORD exitCode = STILL_ACTIVE;
     int growOnFirstEnum = 0; // modules added after the first EnumProcessModulesEx call
     std::vector<FakeModule> modules;
+    /// The versions of the files there are, by NT name; a name not here has none.
+    std::map<std::wstring, ModuleVersion, std::less<>> files;
+    std::vector<std::wstring> versionReads; // every NT name readFileVersion was given, in order
     int enumCalls = 0;
-    int versionReads = 0;
+    int driveTypeCalls = 0;
     int opens = 0;
     int closes = 0;
 };
@@ -77,8 +93,8 @@ BOOL WINAPI fakeEnumProcessModulesEx(HANDLE /*process*/, HMODULE* modules, DWORD
         for (int i = 0; i < fake().growOnFirstEnum; ++i)
         {
             const auto base = 0x7FF900000000ULL + (static_cast<std::uintptr_t>(i) * 0x100000U);
-            fake().modules.push_back(
-                {.base = base, .size = 0x1000, .path = L"C:\\Late\\late" + std::to_wstring(i) + L".dll", .unloaded = false});
+            const std::wstring path = L"C:\\Late\\late" + std::to_wstring(i) + L".dll";
+            fake().modules.push_back({.base = base, .size = 0x1000, .path = path, .mapped = onC(path), .unloaded = false});
         }
     }
     *needed = static_cast<DWORD>(fake().modules.size() * sizeof(HMODULE));
@@ -90,23 +106,40 @@ BOOL WINAPI fakeEnumProcessModulesEx(HANDLE /*process*/, HMODULE* modules, DWORD
     return TRUE;
 }
 
-const FakeModule* findModule(HMODULE module)
+const FakeModule* findModule(std::uintptr_t base)
 {
-    const auto base = reinterpret_cast<std::uintptr_t>(module);
     const auto it = std::ranges::find(fake().modules, base, &FakeModule::base);
     return (it == fake().modules.end() || it->unloaded) ? nullptr : &*it;
+}
+
+const FakeModule* findModule(HMODULE module)
+{
+    return findModule(reinterpret_cast<std::uintptr_t>(module));
+}
+
+/// Copies @p text into @p buffer as the K32 calls do: its length, or 0 when it doesn't fit.
+DWORD copyOut(std::wstring_view text, LPWSTR buffer, DWORD size)
+{
+    if (text.empty() || text.size() >= size)
+    {
+        return 0;
+    }
+    std::ranges::copy(text, buffer);
+    buffer[text.size()] = L'\0';
+    return static_cast<DWORD>(text.size());
 }
 
 DWORD WINAPI fakeGetModuleFileNameEx(HANDLE /*process*/, HMODULE module, LPWSTR buffer, DWORD size)
 {
     const FakeModule* found = findModule(module);
-    if (found == nullptr || found->path.size() >= size)
-    {
-        return 0;
-    }
-    std::ranges::copy(found->path, buffer);
-    buffer[found->path.size()] = L'\0';
-    return static_cast<DWORD>(found->path.size());
+    return found == nullptr ? 0 : copyOut(found->path, buffer, size);
+}
+
+DWORD WINAPI fakeGetMappedFileName(HANDLE process, LPVOID address, LPWSTR buffer, DWORD size)
+{
+    EXPECT_EQ(process, Identity::handle());
+    const FakeModule* found = findModule(reinterpret_cast<std::uintptr_t>(address));
+    return found == nullptr ? 0 : copyOut(found->mapped, buffer, size);
 }
 
 BOOL WINAPI fakeGetModuleInformation(HANDLE /*process*/, HMODULE module, LPMODULEINFO info, DWORD /*bytes*/)
@@ -122,30 +155,60 @@ BOOL WINAPI fakeGetModuleInformation(HANDLE /*process*/, HMODULE module, LPMODUL
     return TRUE;
 }
 
-// Only paths under C:\Windows carry a version: 10.0.26100.<path length>.
-DWORD WINAPI fakeGetFileVersionInfoSize(LPCWSTR path, LPDWORD /*handle*/)
+/// C: a fixed disk, D: a CD-ROM drive, Z: a mapped network drive.
+DWORD WINAPI fakeGetLogicalDrives()
 {
-    return std::wstring_view(path).starts_with(L"C:\\Windows") ? static_cast<DWORD>(sizeof(VS_FIXEDFILEINFO)) : 0;
+    return (1U << 2U) | (1U << 3U) | (1U << 25U);
 }
 
-BOOL WINAPI fakeGetFileVersionInfo(LPCWSTR path, DWORD /*handle*/, DWORD bytes, LPVOID data)
+DWORD WINAPI fakeQueryDosDevice(LPCWSTR name, LPWSTR target, DWORD size)
 {
-    ++fake().versionReads;
-    VS_FIXEDFILEINFO fixed{};
-    fixed.dwSignature = 0xFEEF04BD;
-    fixed.dwFileVersionMS = 10U << 16U;
-    fixed.dwFileVersionLS = (26100U << 16U) | static_cast<DWORD>(std::wcslen(path));
-    EXPECT_GE(bytes, sizeof(fixed));
-    std::memcpy(data, &fixed, sizeof(fixed));
-    return TRUE;
+    const std::wstring_view drive(name);
+    std::wstring_view device;
+    if (drive == L"C:")
+    {
+        device = C_DEVICE;
+    }
+    else if (drive == L"D:")
+    {
+        device = D_DEVICE;
+    }
+    else if (drive == L"Z:")
+    {
+        device = Z_DEVICE;
+    }
+    // The NUL-separated list's own terminator after the first target.
+    const DWORD length = copyOut(device, target, size - 1);
+    if (length != 0)
+    {
+        target[length + 1] = L'\0';
+    }
+    return length == 0 ? 0 : length + 2;
 }
 
-BOOL WINAPI fakeVerQueryValue(LPCVOID block, LPCWSTR subBlock, LPVOID* buffer, PUINT length)
+UINT WINAPI fakeGetDriveType(LPCWSTR root)
 {
-    EXPECT_STREQ(subBlock, L"\\");
-    *buffer = const_cast<LPVOID>(block); // NOLINT(cppcoreguidelines-pro-type-const-cast) - VerQueryValueW's out-parameter
-    *length = sizeof(VS_FIXEDFILEINFO);
-    return TRUE;
+    ++fake().driveTypeCalls;
+    const std::wstring_view drive(root);
+    if (drive == L"C:\\")
+    {
+        return DRIVE_FIXED;
+    }
+    if (drive == L"D:\\")
+    {
+        return DRIVE_CDROM;
+    }
+    return drive == L"Z:\\" ? DRIVE_REMOTE : DRIVE_NO_ROOT_DIR;
+}
+
+std::optional<ModuleVersion> fakeReadFileVersion(const std::wstring& ntName)
+{
+    fake().versionReads.push_back(ntName);
+    if (const auto found = fake().files.find(ntName); found != fake().files.end())
+    {
+        return found->second;
+    }
+    return std::nullopt;
 }
 
 ProcessModuleFunctions fakeApi()
@@ -157,9 +220,20 @@ ProcessModuleFunctions fakeApi()
             .enumProcessModulesEx = &fakeEnumProcessModulesEx,
             .getModuleFileNameEx = &fakeGetModuleFileNameEx,
             .getModuleInformation = &fakeGetModuleInformation,
-            .getFileVersionInfoSize = &fakeGetFileVersionInfoSize,
-            .getFileVersionInfo = &fakeGetFileVersionInfo,
-            .verQueryValue = &fakeVerQueryValue};
+            .getMappedFileName = &fakeGetMappedFileName,
+            .getLogicalDrives = &fakeGetLogicalDrives,
+            .queryDosDevice = &fakeQueryDosDevice,
+            .getDriveType = &fakeGetDriveType,
+            .readFileVersion = &fakeReadFileVersion};
+}
+
+constexpr ModuleVersion NTDLL_64{.major = 10, .minor = 0, .build = 26100, .revision = 4202};
+constexpr ModuleVersion NTDLL_32{.major = 10, .minor = 0, .build = 26100, .revision = 4203};
+
+/// Whether readFileVersion was ever given a name that starts with @p prefix.
+[[nodiscard]] bool wasRead(std::wstring_view prefix)
+{
+    return std::ranges::any_of(fake().versionReads, [prefix](const std::wstring& name) { return name.starts_with(prefix); });
 }
 
 class WindowsProcessModulesTest : public ::testing::Test
@@ -168,9 +242,19 @@ class WindowsProcessModulesTest : public ::testing::Test
     void SetUp() override
     {
         fake() = {};
-        fake().modules = {{.base = 0x7FF6A0000000, .size = 0x52000, .path = L"C:\\Apps\\app.exe", .unloaded = false},
-                          {.base = 0x7FF8A1B20000, .size = 0x1F8000, .path = L"C:\\Windows\\System32\\ntdll.dll", .unloaded = false},
-                          {.base = 0x77A00000, .size = 0x1A000, .path = L"C:\\Windows\\SysWOW64\\ntdll.dll", .unloaded = false}};
+        fake().modules = {
+            {.base = 0x7FF6A0000000, .size = 0x52000, .path = L"C:\\Apps\\app.exe", .mapped = onC(L"C:\\Apps\\app.exe"), .unloaded = false},
+            {.base = 0x7FF8A1B20000,
+             .size = 0x1F8000,
+             .path = L"C:\\Windows\\System32\\ntdll.dll",
+             .mapped = onC(L"C:\\Windows\\System32\\ntdll.dll"),
+             .unloaded = false},
+            {.base = 0x77A00000,
+             .size = 0x1A000,
+             .path = L"C:\\Windows\\SysWOW64\\ntdll.dll",
+             .mapped = onC(L"C:\\Windows\\SysWOW64\\ntdll.dll"),
+             .unloaded = false}};
+        fake().files = {{onC(L"C:\\Windows\\System32\\ntdll.dll"), NTDLL_64}, {onC(L"C:\\Windows\\SysWOW64\\ntdll.dll"), NTDLL_32}};
     }
 
     void TearDown() override
@@ -190,17 +274,138 @@ TEST_F(WindowsProcessModulesTest, ListsEveryModuleWithItsPathBaseSizeAndVersion)
     EXPECT_EQ(result.modules[0].baseAddress, 0x7FF6A0000000U);
     EXPECT_EQ(result.modules[0].sizeBytes, 0x52000U);
     EXPECT_FALSE(result.modules[0].version.has_value());
-    EXPECT_EQ(result.modules[1].version, std::optional(ModuleVersion{.major = 10, .minor = 0, .build = 26100, .revision = 29}));
+    EXPECT_FALSE(result.modules[0].versionNotRead) << "a local file without a version was read, and has none";
+    EXPECT_EQ(result.modules[1].version, std::optional(NTDLL_64));
     EXPECT_EQ(result.modules[2].baseAddress, 0x77A00000U); // a WOW64 process's 32-bit modules too
+    EXPECT_EQ(result.modules[2].version, std::optional(NTDLL_32));
+    EXPECT_TRUE(std::ranges::none_of(result.modules, &ProcessModule::versionNotRead));
 }
 
-TEST_F(WindowsProcessModulesTest, ReadsEachPathsVersionOnce)
+TEST_F(WindowsProcessModulesTest, ReadsEachFilesVersionOnce)
 {
     WindowsProcessModulesReader reader(fakeApi());
     static_cast<void>(reader.readModules(TARGET));
     static_cast<void>(reader.readModules(TARGET));
-    EXPECT_EQ(fake().versionReads, 2); // the two C:\Windows paths, once each
+    EXPECT_EQ(fake().versionReads.size(), 3U); // each file once, the one without a version too
     EXPECT_EQ(reader.cachedVersionCount(), 3U);
+}
+
+// #4373: the loader data's FullDllName is the process's own memory, so it can point anywhere: a share on a host of its
+// choosing, a named pipe it serves, another file entirely. None of those is ever opened; the version is the file the
+// kernel says the image was mapped from, and the row still shows the path the process gave.
+TEST_F(WindowsProcessModulesTest, TheLoaderDataPathIsShownButNeverOpened)
+{
+    fake().modules[1].path = L"\\\\server\\share\\a.dll";
+    fake().modules[2].path = L"\\\\.\\pipe\\x";
+    fake().modules.push_back({.base = 0x7FF8B0000000,
+                              .size = 0x10000,
+                              .path = L"\\\\?\\UNC\\attacker\\share\\b.dll",
+                              .mapped = onC(L"C:\\Windows\\System32\\ntdll.dll"),
+                              .unloaded = false});
+    WindowsProcessModulesReader reader(fakeApi());
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.status, ModulesReadStatus::Ok);
+    ASSERT_EQ(result.modules.size(), 4U) << "every row is still listed";
+    EXPECT_EQ(result.modules[1].path, "\\\\server\\share\\a.dll");
+    EXPECT_EQ(result.modules[2].path, "\\\\.\\pipe\\x");
+    EXPECT_EQ(result.modules[1].version, std::optional(NTDLL_64)) << "the mapped image's version, not the named file's";
+    EXPECT_EQ(result.modules[2].version, std::optional(NTDLL_32));
+    EXPECT_EQ(result.modules[3].version, std::optional(NTDLL_64));
+    EXPECT_FALSE(wasRead(L"\\\\")) << "no loader-data path is ever opened";
+    for (const std::wstring& name : fake().versionReads)
+    {
+        EXPECT_TRUE(name.starts_with(C_DEVICE)) << "only the kernel's names of local files are opened";
+    }
+}
+
+// #4373: a decoy. The process says its module is a signed system file; the image it mapped is its own. The version is
+// the mapped file's, and the decoy is never opened.
+TEST_F(WindowsProcessModulesTest, ADecoyLoaderPathGetsTheMappedImagesVersion)
+{
+    constexpr ModuleVersion PAYLOAD{.major = 6, .minor = 6, .build = 6, .revision = 6};
+    const std::wstring payload = onC(L"C:\\Users\\Public\\payload.dll");
+    fake().files.emplace(payload, PAYLOAD);
+    fake().files.emplace(onC(L"C:\\Windows\\System32\\kernel32.dll"),
+                         ModuleVersion{.major = 10, .minor = 0, .build = 26100, .revision = 1});
+    fake().modules.push_back(
+        {.base = 0x7FF8C0000000, .size = 0x8000, .path = L"C:\\Windows\\System32\\kernel32.dll", .mapped = payload, .unloaded = false});
+    WindowsProcessModulesReader reader(fakeApi());
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.modules.size(), 4U);
+    EXPECT_EQ(result.modules[3].path, "C:\\Windows\\System32\\kernel32.dll");
+    EXPECT_EQ(result.modules[3].version, std::optional(PAYLOAD));
+    EXPECT_FALSE(wasRead(onC(L"C:\\Windows\\System32\\kernel32.dll")));
+}
+
+// #4373: a module whose image really was mapped from a network share (a UNC path, a mapped drive) or from a device
+// that isn't a local volume is listed and says its version wasn't read; its file is never opened, since that would
+// connect, with TaskSmack's credentials (or the elevated helper's), to wherever it is.
+TEST_F(WindowsProcessModulesTest, AModuleMappedFromANetworkShareOrADeviceIsListedButNeverOpened)
+{
+    fake().modules.push_back({.base = 0x10000000,
+                              .size = 0x1000,
+                              .path = L"\\\\server\\share\\a.dll",
+                              .mapped = L"\\Device\\Mup\\server\\share\\a.dll",
+                              .unloaded = false});
+    fake().modules.push_back({.base = 0x20000000,
+                              .size = 0x1000,
+                              .path = L"Z:\\tools\\z.dll",
+                              .mapped = std::wstring(Z_DEVICE) + L"\\tools\\z.dll",
+                              .unloaded = false});
+    fake().modules.push_back(
+        {.base = 0x30000000, .size = 0x1000, .path = L"\\\\.\\pipe\\x", .mapped = L"\\Device\\NamedPipe\\x", .unloaded = false});
+    fake().modules.push_back({.base = 0x40000000,
+                              .size = 0x1000,
+                              .path = L"C:\\Windows\\System32\\x.dll",
+                              .mapped = L"\\Device\\HarddiskVolume3\\..\\Mup\\server\\share\\x.dll",
+                              .unloaded = false});
+    WindowsProcessModulesReader reader(fakeApi());
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.status, ModulesReadStatus::Ok);
+    ASSERT_EQ(result.modules.size(), 7U);
+    for (std::size_t i = 3; i < 7; ++i)
+    {
+        EXPECT_TRUE(result.modules[i].versionNotRead) << i;
+        EXPECT_FALSE(result.modules[i].version.has_value()) << i;
+    }
+    EXPECT_EQ(result.modules[3].path, "\\\\server\\share\\a.dll");
+    EXPECT_FALSE(wasRead(L"\\Device\\Mup"));
+    EXPECT_FALSE(wasRead(Z_DEVICE));
+    EXPECT_FALSE(wasRead(L"\\Device\\NamedPipe"));
+    EXPECT_FALSE(wasRead(L"\\Device\\HarddiskVolume3\\.."));
+    EXPECT_EQ(fake().versionReads.size(), 3U) << "only the three local files";
+    EXPECT_EQ(fake().driveTypeCalls, 3) << "the drive letters are read once per read";
+}
+
+// A local optical drive's file, and a volume with no drive letter (mounted in a folder), are local.
+TEST_F(WindowsProcessModulesTest, ACdRomDrivesFileAndAnUnletteredVolumesFileAreRead)
+{
+    const std::wstring onD = std::wstring(D_DEVICE) + L"\\setup\\d.dll";
+    const std::wstring unlettered = L"\\Device\\HarddiskVolume12\\mnt\\e.dll";
+    fake().files.emplace(onD, ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4});
+    fake().files.emplace(unlettered, ModuleVersion{.major = 5, .minor = 6, .build = 7, .revision = 8});
+    fake().modules.push_back({.base = 0x10000000, .size = 0x1000, .path = L"D:\\setup\\d.dll", .mapped = onD, .unloaded = false});
+    fake().modules.push_back({.base = 0x20000000, .size = 0x1000, .path = L"C:\\mnt\\e.dll", .mapped = unlettered, .unloaded = false});
+    WindowsProcessModulesReader reader(fakeApi());
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.modules.size(), 5U);
+    EXPECT_EQ(result.modules[3].version, std::optional(ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4}));
+    EXPECT_EQ(result.modules[4].version, std::optional(ModuleVersion{.major = 5, .minor = 6, .build = 7, .revision = 8}));
+    EXPECT_FALSE(result.modules[3].versionNotRead);
+    EXPECT_FALSE(result.modules[4].versionNotRead);
+}
+
+// A module whose mapping can't be named (unmapped since the listing) keeps its row, with no version, and nothing is
+// opened for it: not by the loader data's path either.
+TEST_F(WindowsProcessModulesTest, AModuleWhoseMappingCantBeNamedHasNoVersion)
+{
+    fake().modules[1].mapped.clear();
+    WindowsProcessModulesReader reader(fakeApi());
+    const ModulesReadResult result = reader.readModules(TARGET);
+    ASSERT_EQ(result.modules.size(), 3U);
+    EXPECT_FALSE(result.modules[1].version.has_value());
+    EXPECT_FALSE(result.modules[1].versionNotRead);
+    EXPECT_FALSE(wasRead(onC(L"C:\\Windows\\System32\\ntdll.dll")));
 }
 
 TEST_F(WindowsProcessModulesTest, DeniedOpenIsPermissionDenied)
@@ -258,6 +463,8 @@ TEST_F(WindowsProcessModulesTest, FailedEnumerationSaysWhyOrThatTheProcessExited
     EXPECT_EQ(reader.readModules(TARGET).status, ModulesReadStatus::ProcessExited);
 }
 
+// The real calls on this test process: ntdll's version is read from the file its image was mapped from (named by
+// GetMappedFileNameW, opened through \\?\GLOBALROOT and read through the handle), and it is a local file.
 TEST(WindowsProcessModulesRealTest, ReadsThisProcess)
 {
     FILETIME creation{};
@@ -274,6 +481,45 @@ TEST(WindowsProcessModulesRealTest, ReadsThisProcess)
     ASSERT_NE(ntdll, result.modules.end());
     EXPECT_GT(ntdll->sizeBytes, 0U);
     EXPECT_TRUE(ntdll->version.has_value());
+    EXPECT_FALSE(ntdll->versionNotRead);
+}
+
+// readLocalFileVersion() on the real system: ntdll's NT name, as GetMappedFileNameW gives it, reads as the build and
+// revision GetFileVersionInfoW reads by its path; a name that doesn't exist reads as none. Not the major and minor:
+// GetFileVersionInfoW reports a system DLL's as 6.2 to a program whose manifest doesn't name Windows 10 (the version
+// lie), as this test program's doesn't. The file's own bytes say 10.0, which is what the Modules section always showed
+// TaskSmack, whose manifest does.
+TEST(WindowsProcessModulesRealTest, ReadsAFilesVersionThroughItsNtName)
+{
+    const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
+    ASSERT_NE(ntdll, nullptr);
+    std::wstring ntName(32768, L'\0');
+    const DWORD length = GetMappedFileNameW(GetCurrentProcess(), ntdll, ntName.data(), static_cast<DWORD>(ntName.size()));
+    ASSERT_GT(length, 0U) << GetLastError();
+    ntName.resize(length);
+    const std::optional<ModuleVersion> version = readLocalFileVersion(ntName);
+    ASSERT_TRUE(version.has_value());
+
+    std::wstring dosPath(32768, L'\0');
+    const DWORD dosLength = GetModuleFileNameW(ntdll, dosPath.data(), static_cast<DWORD>(dosPath.size()));
+    ASSERT_GT(dosLength, 0U);
+    dosPath.resize(dosLength);
+    DWORD ignored = 0;
+    const DWORD size = GetFileVersionInfoSizeW(dosPath.c_str(), &ignored);
+    ASSERT_GT(size, 0U);
+    std::vector<std::byte> block(size);
+    ASSERT_NE(GetFileVersionInfoW(dosPath.c_str(), 0, size, block.data()), 0);
+    void* data = nullptr;
+    UINT bytes = 0;
+    ASSERT_NE(VerQueryValueW(block.data(), L"\\", &data, &bytes), 0);
+    ASSERT_GE(bytes, sizeof(VS_FIXEDFILEINFO));
+    const auto* fixed = static_cast<const VS_FIXEDFILEINFO*>(data);
+    EXPECT_GE(version->major, HIWORD(fixed->dwFileVersionMS));
+    EXPECT_GE(version->major, 10U);
+    EXPECT_EQ(version->build, HIWORD(fixed->dwFileVersionLS));
+    EXPECT_EQ(version->revision, LOWORD(fixed->dwFileVersionLS));
+
+    EXPECT_FALSE(readLocalFileVersion(ntName + L".no-such-file").has_value());
 }
 
 } // namespace

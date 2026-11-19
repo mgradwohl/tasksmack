@@ -85,7 +85,9 @@ namespace Platform::Broker
 /// 26: what only the Linux helper used is gone from the requests left (#3784): CloseConnection's socket inode (a
 ///     Windows connection is named by its IPv4 TCP endpoints alone) and Signal's Hangup, Interrupt, Quit, User1 and
 ///     User2 (Windows has no POSIX signals). The kinds keep their numbers.
-inline constexpr std::uint16_t PROTOCOL_VERSION = 26;
+/// 27: a ModulesResult module ends with a version-not-read flag (#4373): its file isn't on a local drive, so the
+///     helper didn't open it for its version.
+inline constexpr std::uint16_t PROTOCOL_VERSION = 27;
 /// The largest frame either side accepts, header included.
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
@@ -317,7 +319,7 @@ struct ModulesReply
         const auto same = [](const ProcessModule& a, const ProcessModule& b)
         {
             return a.path == b.path && a.baseAddress == b.baseAddress && a.sizeBytes == b.sizeBytes && a.version == b.version &&
-                   a.deleted == b.deleted;
+                   a.deleted == b.deleted && a.versionNotRead == b.versionNotRead;
         };
         return left.result.status == right.result.status && left.result.detail == right.result.detail &&
                left.result.truncated == right.result.truncated && std::ranges::equal(left.result.modules, right.result.modules, same);

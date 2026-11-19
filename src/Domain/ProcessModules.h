@@ -43,4 +43,14 @@ namespace Domain::Modules
     return std::format("{}.{}.{}.{}", version->major, version->minor, version->build, version->revision);
 }
 
+/// What the Version column says for a module whose file wasn't opened for its version because it isn't on a local
+/// drive (#4373).
+inline constexpr std::string_view VERSION_NOT_READ = "Not read: not a local file";
+
+/// @p module's Version cell: its version, VERSION_NOT_READ when its file wasn't opened for one, else empty.
+[[nodiscard]] inline std::string versionText(const Platform::ProcessModule& module)
+{
+    return module.versionNotRead ? std::string(VERSION_NOT_READ) : formatVersion(module.version);
+}
+
 } // namespace Domain::Modules

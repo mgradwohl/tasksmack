@@ -447,7 +447,7 @@ template<typename Message>
 }
 
 /// ModulesResult: status, detail, truncated, count; a module: path, base, size, version flag and version,
-/// deleted. As many as fit a frame.
+/// deleted, version-not-read (v27, #4373). As many as fit a frame.
 [[nodiscard]] MessageKind encodePayload(Writer& writer, const ModulesReply& modules)
 {
     constexpr std::size_t ROOM = listRoom(1 + 4 + MAX_STRING_BYTES + 1 + 4);
@@ -455,7 +455,7 @@ template<typename Message>
                                              MAX_MODULES,
                                              ROOM,
                                              [](const ProcessModule& module) -> std::size_t
-                                             { return textBytes(module.path) + 8 + 8 + 1 + (module.version.has_value() ? 8 : 0) + 1; });
+                                             { return textBytes(module.path) + 8 + 8 + 1 + (module.version.has_value() ? 8 : 0) + 1 + 1; });
     writer.u8(static_cast<std::uint8_t>(modules.result.status));
     writer.text(modules.result.detail);
     writer.u8((modules.result.truncated || count < modules.result.modules.size()) ? 1 : 0);
@@ -475,6 +475,7 @@ template<typename Message>
             writer.u16(module.version->revision);
         }
         writer.u8(module.deleted ? 1 : 0);
+        writer.u8(module.versionNotRead ? 1 : 0);
     }
     return MessageKind::ModulesResult;
 }
@@ -779,7 +780,7 @@ constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SIZES{
 }
 
 /// A ModulesResult's payload: the status (refused past Failed), detail, truncated, a count (refused past
-/// MAX_MODULES), then each module's path, base, size, optional version and deleted flag.
+/// MAX_MODULES), then each module's path, base, size, optional version, deleted flag and version-not-read flag.
 [[nodiscard]] ModulesReply decodeModulesReply(Reader& reader)
 {
     ModulesReply reply;
@@ -815,6 +816,7 @@ constexpr std::array<std::optional<std::uint64_t> MemoryMapping::*, 8> SIZES{
             module.version = version;
         }
         module.deleted = reader.flag();
+        module.versionNotRead = reader.flag();
         reply.result.modules.push_back(std::move(module));
     }
     return reply;
