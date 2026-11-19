@@ -115,6 +115,10 @@ if(WIN32)
         add_test(NAME VerifyWindowsSignaturesScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-verify-windows-signatures.ps1)
         set_tests_properties(VerifyWindowsSignaturesScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}")
+        # tools/check-windows-imports.ps1 (#4439): a shipped PE importing the MSVC runtime, a UCRT API set or a
+        # DLL outside the allowlist fails the release check. PEs built from bytes, x64 and ARM64.
+        add_test(NAME CheckWindowsImportsScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-windows-imports.ps1)
         # The NSIS installer's second pass (#2302): only a .zip whose files are the ones the uninstaller
         # deletes is packaged, with the given uninstaller. Stub makensis; nothing is installed.
         add_test(NAME BuildWindowsInstallerScript

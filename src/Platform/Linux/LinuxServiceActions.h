@@ -10,7 +10,6 @@
 
 #include <filesystem>
 #include <stop_token>
-#include <string_view>
 
 namespace Platform
 {
@@ -23,10 +22,10 @@ class LinuxServiceActions final : public IServiceActions
     explicit LinuxServiceActions(const std::filesystem::path& root = "/", bool built = SystemdBus::built(), SystemdBus::UnitWait wait = {});
 
     [[nodiscard]] ServiceActionCapabilities capabilities() const override;
-    [[nodiscard]] ServiceActionResult start(std::string_view name, const std::stop_token& stopToken) override;
-    [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override;
-    [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override;
-    [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override;
+    [[nodiscard]] ServiceActionResult start(const ServiceTarget& service, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult stop(const ServiceTarget& service, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult restart(const ServiceTarget& service, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult setStartType(const ServiceTarget& service, ServiceStartType startType) override;
 
   private:
     bool m_Available = false;

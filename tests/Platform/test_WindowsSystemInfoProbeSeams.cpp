@@ -407,6 +407,15 @@ TEST_F(WindowsSystemInfoProbeSeamsTest, AValueOfOnlyTerminatorsReadsAsAbsent)
     EXPECT_EQ(info.build, "26100.4652") << "the other values still read";
 }
 
+TEST_F(WindowsSystemInfoProbeSeamsTest, AValueStopsAtItsFirstNul)
+{
+    // Text hidden past a NUL isn't part of a REG_SZ (#4307): Windows reads up to the NUL, and so does the probe.
+    fake().versionValues[L"DisplayVersion"] = std::wstring(L"24H2\0hidden", 11);
+    const OsInfo info = readOs();
+    EXPECT_EQ(info.version, "24H2");
+    EXPECT_FALSE(info.version.contains('\0'));
+}
+
 TEST_F(WindowsSystemInfoProbeSeamsTest, AMoreDataAnswerThatAsksForNoMoreRoomIsNotRetried)
 {
     // ERROR_MORE_DATA with a size no bigger than the buffer: a retry would fail the same way, so the

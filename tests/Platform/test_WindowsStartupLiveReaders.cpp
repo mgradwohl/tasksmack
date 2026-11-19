@@ -10,6 +10,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Windows/ComScope.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsBootPerformance.h"
 #include "Platform/Windows/WindowsScheduledTasks.h"
 #include "Platform/Windows/WindowsScheduledTasksMath.h"
@@ -43,8 +44,8 @@ namespace
 namespace Math = Windows::ScheduledTaskMath;
 
 // A task and a folder no machine has: the names carry this test's own marker.
-constexpr const char* NO_SUCH_TASK = "\\TaskSmackLiveReaderTest-NoSuchTask-7f3a9c";
-constexpr const char* NO_SUCH_FOLDER = "\\TaskSmackLiveReaderTest-NoSuchFolder-7f3a9c";
+constexpr const wchar_t* NO_SUCH_TASK = L"\\TaskSmackLiveReaderTest-NoSuchTask-7f3a9c";
+constexpr const wchar_t* NO_SUCH_FOLDER = L"\\TaskSmackLiveReaderTest-NoSuchFolder-7f3a9c";
 
 // ========== The sign-in measurement files ==========
 
@@ -115,12 +116,12 @@ class WindowsScheduledTasksLiveTest : public ::testing::Test
 
 TEST_F(WindowsScheduledTasksLiveTest, NothingIsReadBeforeItIsConnected)
 {
-    EXPECT_TRUE(m_Api->subfolders("\\").empty());
-    EXPECT_TRUE(m_Api->tasks("\\").empty());
-    const Windows::TaskReading task = m_Api->task("\\Anything");
+    EXPECT_TRUE(m_Api->subfolders(L"\\").empty());
+    EXPECT_TRUE(m_Api->tasks(L"\\").empty());
+    const Windows::TaskReading task = m_Api->task(L"\\Anything");
     ASSERT_FALSE(task.has_value());
     EXPECT_LT(task.error(), 0);
-    EXPECT_LT(m_Api->setEnabled("\\Anything", true), 0);
+    EXPECT_LT(m_Api->setEnabled(L"\\Anything", true), 0);
 }
 
 /// The same, connected to the local Task Scheduler; skipped when this machine's service can't be reached.
@@ -143,13 +144,13 @@ class WindowsScheduledTasksConnectedLiveTest : public WindowsScheduledTasksLiveT
 
 TEST_F(WindowsScheduledTasksConnectedLiveTest, TheRootFolderHasSubfolders)
 {
-    const std::vector<std::string> folders = m_Api->subfolders("\\");
+    const std::vector<std::wstring> folders = m_Api->subfolders(L"\\");
     EXPECT_FALSE(folders.empty()); // \Microsoft at least
-    for (const std::string& folder : folders)
+    for (const std::wstring& folder : folders)
     {
-        EXPECT_TRUE(folder.starts_with('\\')) << folder;
+        EXPECT_TRUE(folder.starts_with(L'\\')) << WinString::wideToUtf8(folder);
     }
-    EXPECT_NE(std::ranges::find(folders, "\\Microsoft"), folders.end());
+    EXPECT_NE(std::ranges::find(folders, L"\\Microsoft"), folders.end());
 }
 
 TEST_F(WindowsScheduledTasksConnectedLiveTest, AFolderThatIsNotThereListsNothing)
@@ -185,9 +186,11 @@ TEST_F(WindowsScheduledTasksConnectedLiveTest, StartupTasksReadAgainThroughTheir
         {
             continue; // a few are enough to prove the round trip
         }
-        const Windows::TaskReading again = m_Api->task(listed.path);
+        // By its exact path (#4304), as the switch reopens it.
+        const Windows::TaskReading again = m_Api->task(listed.nativePath);
         ASSERT_TRUE(again.has_value()) << listed.path;
         EXPECT_EQ(again->path, listed.path);
+        EXPECT_EQ(again->nativePath, listed.nativePath);
         EXPECT_EQ(again->enabled, listed.enabled) << listed.path;
         EXPECT_EQ(again->execPath, listed.execPath) << listed.path;
         EXPECT_EQ(again->userId, listed.userId) << listed.path;

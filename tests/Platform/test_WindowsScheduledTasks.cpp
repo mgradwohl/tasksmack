@@ -9,6 +9,9 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
+#include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsNativeIds.h"
 #include "Platform/Windows/WindowsScheduledTasks.h"
 #include "Platform/Windows/WindowsScheduledTasksMath.h"
 #include "Platform/Windows/WindowsStartupActions.h"
@@ -61,11 +64,15 @@ struct FakeScheduler
     std::int32_t writeResult = FAKE_S_OK;
     std::map<std::string, std::vector<std::string>> subfolders; ///< By folder path.
     std::map<std::string, std::vector<TaskRecord>> tasks;       ///< By folder path.
+    /// Folders and tasks by their exact UTF-16 paths (#4304), looked in first: names no UTF-8 key can hold.
+    std::map<std::wstring, std::vector<std::wstring>> nativeSubfolders;
+    std::map<std::wstring, std::vector<TaskRecord>> nativeTasks;
     std::vector<std::string> users{"S-1-5-21-1-2-3-1001", "PC\\alice", "alice"};
     int connects = 0;
     int apisMade = 0;
     std::vector<std::string> foldersRead;
     std::vector<std::pair<std::string, bool>> writes;
+    std::vector<std::wstring> nativeWrites; ///< Each write's exact path.
     /// Tasks whose enabled state reads as this error (IRegisteredTask::get_Enabled failing), by path.
     std::map<std::string, std::int32_t> unreadable;
 
@@ -79,11 +86,19 @@ struct FakeScheduler
         return task;
     }
 
-    [[nodiscard]] TaskRecord* find(const std::string& path)
+    /// The task at exact path @p path, in either map.
+    [[nodiscard]] TaskRecord* find(const std::wstring& path)
     {
+        for (auto& [folder, records] : nativeTasks)
+        {
+            if (const auto it = std::ranges::find(records, path, &TaskRecord::nativePath); it != records.end())
+            {
+                return &*it;
+            }
+        }
         for (auto& [folder, records] : tasks)
         {
-            if (const auto it = std::ranges::find(records, path, &TaskRecord::path); it != records.end())
+            if (const auto it = std::ranges::find(records, path, &TaskRecord::nativePath); it != records.end())
             {
                 return &*it;
             }
@@ -103,16 +118,34 @@ class FakeApi final : public Windows::ScheduledTaskApi
         ++m_State.connects;
         return m_State.connectResult;
     }
-    [[nodiscard]] std::vector<std::string> subfolders(const std::string& folder) override
+    [[nodiscard]] std::vector<std::wstring> subfolders(const std::wstring& folder) override
     {
-        const auto it = m_State.subfolders.find(folder);
-        return it == m_State.subfolders.end() ? std::vector<std::string>{} : it->second;
+        if (const auto native = m_State.nativeSubfolders.find(folder); native != m_State.nativeSubfolders.end())
+        {
+            return native->second;
+        }
+        std::vector<std::wstring> paths;
+        if (const auto it = m_State.subfolders.find(WinString::wideToUtf8(folder)); it != m_State.subfolders.end())
+        {
+            for (const std::string& path : it->second)
+            {
+                paths.push_back(WinString::utf8ToWide(path));
+            }
+        }
+        return paths;
     }
-    [[nodiscard]] std::vector<Windows::TaskReading> tasks(const std::string& folder) override
+    [[nodiscard]] std::vector<Windows::TaskReading> tasks(const std::wstring& folder) override
     {
-        m_State.foldersRead.push_back(folder);
+        m_State.foldersRead.push_back(WinString::wideToUtf8(folder));
         std::vector<Windows::TaskReading> readings;
-        if (const auto it = m_State.tasks.find(folder); it != m_State.tasks.end())
+        if (const auto native = m_State.nativeTasks.find(folder); native != m_State.nativeTasks.end())
+        {
+            for (const TaskRecord& task : native->second)
+            {
+                readings.push_back(m_State.reading(task));
+            }
+        }
+        else if (const auto it = m_State.tasks.find(WinString::wideToUtf8(folder)); it != m_State.tasks.end())
         {
             readings.reserve(it->second.size());
             for (const TaskRecord& task : it->second)
@@ -122,7 +155,7 @@ class FakeApi final : public Windows::ScheduledTaskApi
         }
         return readings;
     }
-    [[nodiscard]] Windows::TaskReading task(const std::string& path) override
+    [[nodiscard]] Windows::TaskReading task(const std::wstring& path) override
     {
         const TaskRecord* found = m_State.find(path);
         if (found == nullptr)
@@ -131,9 +164,10 @@ class FakeApi final : public Windows::ScheduledTaskApi
         }
         return m_State.reading(*found);
     }
-    [[nodiscard]] std::int32_t setEnabled(const std::string& path, bool enabled) override
+    [[nodiscard]] std::int32_t setEnabled(const std::wstring& path, bool enabled) override
     {
-        m_State.writes.emplace_back(path, enabled);
+        m_State.writes.emplace_back(WinString::wideToUtf8(path), enabled);
+        m_State.nativeWrites.push_back(path);
         if (m_State.writeResult != FAKE_S_OK)
         {
             return m_State.writeResult;
@@ -165,6 +199,7 @@ class FakeApi final : public Windows::ScheduledTaskApi
 [[nodiscard]] TaskRecord makeTask(std::string path, std::vector<Math::TaskTrigger> triggers, std::string userId = "alice")
 {
     TaskRecord task;
+    task.nativePath = WinString::utf8ToWide(path);
     task.path = std::move(path);
     task.triggers = std::move(triggers);
     task.userId = std::move(userId);
@@ -195,6 +230,12 @@ const Math::TaskTrigger LOGON_OFF{.type = Math::TRIGGER_LOGON, .enabled = false}
     entry.registrationName = std::move(path);
     entry.location = location;
     return entry;
+}
+
+/// Switches @p entry's task by its registered path, as a caller with no id does.
+[[nodiscard]] StartupActionResult switchTask(Windows::ScheduledTaskApi& api, const StartupEntry& entry, bool enabled)
+{
+    return Windows::setStartupTaskEnabled(api, entry, WinString::utf8ToWide(entry.registrationName), enabled);
 }
 
 class WindowsScheduledTasksTest : public ::testing::Test
@@ -272,10 +313,10 @@ TEST_F(WindowsScheduledTasksTest, AStateThatCantBeReadFailsTheSwitchWithoutAWrit
     m_Scheduler.unreadable["\\Mine"] = UNSPECIFIED_FAILURE;
     FakeApi api(m_Scheduler);
     const std::uint64_t before = Windows::scheduledTaskChanges().load();
-    const StartupActionResult enabled = Windows::setStartupTaskEnabled(api, taskEntryAt("\\Mine"), true);
+    const StartupActionResult enabled = switchTask(api, taskEntryAt("\\Mine"), true);
     EXPECT_FALSE(enabled.ok);
     EXPECT_EQ(enabled.message, "Task Scheduler error 0x80004005");
-    EXPECT_FALSE(Windows::setStartupTaskEnabled(api, taskEntryAt("\\Mine"), false).ok);
+    EXPECT_FALSE(switchTask(api, taskEntryAt("\\Mine"), false).ok);
     EXPECT_TRUE(m_Scheduler.writes.empty());
     EXPECT_EQ(Windows::scheduledTaskChanges().load(), before);
 }
@@ -286,9 +327,9 @@ TEST_F(WindowsScheduledTasksTest, DisablesAndEnablesByPathAndCountsTheChange)
     FakeApi api(m_Scheduler);
     const std::uint64_t before = Windows::scheduledTaskChanges().load();
 
-    const StartupActionResult off = Windows::setStartupTaskEnabled(api, taskEntryAt("\\Vendor\\Updater"), false);
+    const StartupActionResult off = switchTask(api, taskEntryAt("\\Vendor\\Updater"), false);
     EXPECT_TRUE(off.ok) << off.message;
-    const StartupActionResult on = Windows::setStartupTaskEnabled(api, taskEntryAt("\\Vendor\\Updater"), true);
+    const StartupActionResult on = switchTask(api, taskEntryAt("\\Vendor\\Updater"), true);
     EXPECT_TRUE(on.ok) << on.message;
 
     EXPECT_EQ(m_Scheduler.writes, (std::vector<std::pair<std::string, bool>>{{"\\Vendor\\Updater", false}, {"\\Vendor\\Updater", true}}));
@@ -303,7 +344,7 @@ TEST_F(WindowsScheduledTasksTest, ATaskAlreadySoIsNotWrittenButTheListIsReadAgai
     m_Scheduler.tasks["\\"] = {task};
     FakeApi api(m_Scheduler);
     const std::uint64_t before = Windows::scheduledTaskChanges().load();
-    EXPECT_TRUE(Windows::setStartupTaskEnabled(api, taskEntryAt("\\Off"), false).ok);
+    EXPECT_TRUE(switchTask(api, taskEntryAt("\\Off"), false).ok);
     EXPECT_TRUE(m_Scheduler.writes.empty());
     EXPECT_EQ(Windows::scheduledTaskChanges().load(), before + 1);
 }
@@ -312,8 +353,8 @@ TEST_F(WindowsScheduledTasksTest, WindowsOwnTasksAreRefusedWithoutAsking)
 {
     m_Scheduler.tasks[R"(\Microsoft\Windows\Setup)"] = {makeTask(R"(\Microsoft\Windows\Setup\Cleanup)", {BOOT}, "S-1-5-18")};
     FakeApi api(m_Scheduler);
-    const StartupActionResult refused = Windows::setStartupTaskEnabled(
-        api, taskEntryAt(R"(\microsoft\Windows\Setup\Cleanup)", StartupLocation::ScheduledTaskMachine), false);
+    const StartupActionResult refused =
+        switchTask(api, taskEntryAt(R"(\microsoft\Windows\Setup\Cleanup)", StartupLocation::ScheduledTaskMachine), false);
     EXPECT_FALSE(refused.ok);
     EXPECT_EQ(refused.message, Math::MICROSOFT_TASK_REASON);
     EXPECT_EQ(m_Scheduler.connects, 0);
@@ -325,26 +366,25 @@ TEST_F(WindowsScheduledTasksTest, RefusalsSayWhy)
     m_Scheduler.tasks["\\"] = {makeTask("\\System", {BOOT}, "S-1-5-18")};
     FakeApi api(m_Scheduler);
 
-    const StartupActionResult gone = Windows::setStartupTaskEnabled(api, taskEntryAt("\\Removed"), false);
+    const StartupActionResult gone = switchTask(api, taskEntryAt("\\Removed"), false);
     EXPECT_FALSE(gone.ok);
     EXPECT_EQ(gone.message, "The scheduled task is no longer registered");
 
     m_Scheduler.writeResult = ACCESS_DENIED;
-    const StartupActionResult denied =
-        Windows::setStartupTaskEnabled(api, taskEntryAt("\\System", StartupLocation::ScheduledTaskMachine), false);
+    const StartupActionResult denied = switchTask(api, taskEntryAt("\\System", StartupLocation::ScheduledTaskMachine), false);
     EXPECT_FALSE(denied.ok);
     EXPECT_EQ(denied.message, "Requires administrator");
 
     m_Scheduler.connectResult = RPC_UNAVAILABLE;
-    const StartupActionResult unreachable = Windows::setStartupTaskEnabled(api, taskEntryAt("\\System"), false);
+    const StartupActionResult unreachable = switchTask(api, taskEntryAt("\\System"), false);
     EXPECT_FALSE(unreachable.ok);
     EXPECT_EQ(unreachable.message, "Task Scheduler error 0x800706BA");
 
-    const StartupActionResult noPath = Windows::setStartupTaskEnabled(api, taskEntryAt(""), false);
+    const StartupActionResult noPath = switchTask(api, taskEntryAt(""), false);
     EXPECT_FALSE(noPath.ok);
     StartupEntry runEntry = taskEntryAt("\\System");
     runEntry.location = StartupLocation::RunUser;
-    EXPECT_FALSE(Windows::setStartupTaskEnabled(api, runEntry, false).ok);
+    EXPECT_FALSE(switchTask(api, runEntry, false).ok);
     EXPECT_EQ(m_Scheduler.writes.size(), 1U) << "only the denied write was tried";
 }
 
@@ -471,7 +511,7 @@ TEST_F(WindowsScheduledTasksTest, TheProbeWalksAtItsCadenceOrAfterASwitch)
 
     // A switch through TaskSmack is read at the next sample.
     FakeApi api(m_Scheduler);
-    ASSERT_TRUE(Windows::setStartupTaskEnabled(api, taskEntryAt("\\First"), false).ok);
+    ASSERT_TRUE(switchTask(api, taskEntryAt("\\First"), false).ok);
     const int connectsBefore = m_Scheduler.connects;
     const std::vector<StartupEntry> after = probe.enumerate();
     EXPECT_EQ(m_Scheduler.connects, connectsBefore + 1);
@@ -630,6 +670,67 @@ TEST_F(WindowsScheduledTasksTest, AProbeWithoutTheSeamListsNoTasks)
     WindowsStartupProbe probe(emptyRegistry());
     EXPECT_TRUE(probe.enumerate().empty());
     EXPECT_EQ(m_Scheduler.connects, 0);
+}
+
+// --- Native identities (#4304) --------------------------------------------------------------------------------
+
+/// A task at exact path @p nativePath, which isn't valid Unicode: its display path is what UTF-8 can show of it.
+[[nodiscard]] TaskRecord makeNativeTask(const std::wstring& nativePath, std::vector<Math::TaskTrigger> triggers)
+{
+    TaskRecord task = makeTask(WinString::wideToUtf8(nativePath), std::move(triggers));
+    task.nativePath = nativePath;
+    return task;
+}
+
+TEST_F(WindowsScheduledTasksTest, ALoneSurrogateFoldersTasksAreListedAndSwitchedByTheirExactPath)
+{
+    // "\Upd<U+D800>" (a lone surrogate) and "\Upd<U+FFFD>" read the same once shown as UTF-8; each holds an Updater.
+    const std::wstring lone = std::wstring(L"\\Upd") + static_cast<wchar_t>(0xD800);
+    const std::wstring replaced = L"\\Upd\uFFFD";
+    m_Scheduler.nativeSubfolders[L"\\"] = {lone, replaced};
+    m_Scheduler.nativeTasks[lone] = {makeNativeTask(lone + L"\\Updater", {LOGON})};
+    m_Scheduler.nativeTasks[replaced] = {makeNativeTask(replaced + L"\\Updater", {LOGON})};
+
+    const auto ids = std::make_shared<Windows::StartupIdTable>();
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler), [] { return std::chrono::steady_clock::now(); }, ids);
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 2U) << "the lone surrogate's folder is walked by its own path";
+    EXPECT_EQ(entries[0].registrationName, entries[1].registrationName) << "the same display text";
+    EXPECT_NE(entries[0].nativeId, NativeId::None);
+    EXPECT_NE(entries[1].nativeId, NativeId::None);
+    EXPECT_NE(entries[0].nativeId, entries[1].nativeId) << "yet two entries";
+
+    WindowsStartupActions actions(false, {}, factoryFor(m_Scheduler), ids);
+    for (const StartupEntry& entry : entries)
+    {
+        m_Scheduler.nativeWrites.clear();
+        const std::optional<Windows::StartupNativeKey> key = ids->resolve(entry.nativeId);
+        ASSERT_TRUE(key.has_value());
+        const StartupActionResult result = actions.setEnabled(entry, false);
+        EXPECT_TRUE(result.ok) << result.message;
+        EXPECT_EQ(m_Scheduler.nativeWrites, (std::vector<std::wstring>{key.value_or(Windows::StartupNativeKey{}).name}))
+            << "exactly that entry's task";
+    }
+    EXPECT_FALSE(m_Scheduler.nativeTasks[lone].front().enabled);
+    EXPECT_FALSE(m_Scheduler.nativeTasks[replaced].front().enabled);
+}
+
+TEST_F(WindowsScheduledTasksTest, AStaleTaskIdIsRefusedWithoutAWrite)
+{
+    m_Scheduler.tasks["\\"] = {makeTask("\\Gone", {LOGON})};
+    const auto ids = std::make_shared<Windows::StartupIdTable>();
+    WindowsStartupProbe probe(emptyRegistry(), factoryFor(m_Scheduler), [] { return std::chrono::steady_clock::now(); }, ids);
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 1U);
+
+    // The next snapshot no longer lists it: its id is retired.
+    static_cast<void>(ids->publish({}));
+    WindowsStartupActions actions(false, {}, factoryFor(m_Scheduler), ids);
+    const StartupActionResult refused = actions.setEnabled(entries[0], false);
+    EXPECT_FALSE(refused.ok);
+    EXPECT_EQ(refused.message, "The entry is no longer listed as it was. Try again once the list updates");
+    EXPECT_TRUE(m_Scheduler.writes.empty());
+    EXPECT_EQ(m_Scheduler.apisMade, 1) << "only the probe's walk: the refused switch reached no Task Scheduler";
 }
 
 } // namespace
