@@ -37,6 +37,7 @@
     CI's Windows clang-tidy runs this script. tools/clang-tidy.sh hands its arguments to it when it
     runs in Git Bash, MSYS2 or Cygwin (#3500), so a local run from either shell uses CI's flags.
 #>
+#Requires -Version 7
 [CmdletBinding()]
 param(
     [Parameter(Position = 0)]

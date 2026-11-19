@@ -277,8 +277,19 @@ jobs:
         # suites a real X11 display with a GL 3.3 core context, the same setup heavy-checks.yml's
         # coverage job already runs the suite under (#1132). The Mesa packages are listed
         # explicitly rather than relied on as transitive runner-image dependencies.
+        # Retried (#4496): archive.ubuntu.com drops connections now and then, and apt then exits 100 and fails the job.
         if: runner.os == 'Linux' && inputs.build
-        run: sudo timeout --kill-after=10s 300s apt-get install -y --no-install-recommends xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0
+        run: |
+          for attempt in 1 2 3; do
+            if sudo timeout --kill-after=10s 300s apt-get install -y -o Acquire::Retries=3 --no-install-recommends \
+              xvfb xauth libgl1-mesa-dri libglx-mesa0 libegl1 libegl-mesa0; then
+              break
+            fi
+            [[ "$attempt" -lt 3 ]] || exit 1
+            echo "::warning::apt-get install failed (attempt $attempt of 3); refreshing the package lists and retrying."
+            sudo timeout --kill-after=10s 120s apt-get update -q -o Acquire::Retries=3 || true
+            sleep 15
+          done
 
       - name: Test (Linux)
         if: runner.os == 'Linux' && inputs.build
@@ -303,8 +314,16 @@ jobs:
         if: runner.os == 'Linux' && inputs.build && inputs.build_type == 'debug'
         run: |
           set -o pipefail
-          sudo apt-get update -q
-          sudo apt-get install -y --no-install-recommends openbox
+          # Retried, with a timeout per try (#4496): a dropped archive.ubuntu.com connection made apt exit 100 here.
+          for attempt in 1 2 3; do
+            if sudo timeout --kill-after=10s 120s apt-get update -q -o Acquire::Retries=3 &&
+              sudo timeout --kill-after=10s 300s apt-get install -y -o Acquire::Retries=3 --no-install-recommends openbox; then
+              break
+            fi
+            [[ "$attempt" -lt 3 ]] || exit 1
+            echo "::warning::Installing openbox failed (attempt $attempt of 3); retrying."
+            sleep 15
+          done
           xvfb-run -a -s "-screen 0 1920x1080x24 -noreset" bash -c '
             set -o pipefail
             openbox & manager=$!

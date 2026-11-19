@@ -1,3 +1,4 @@
+#Requires -Version 7
 # tools/clean.ps1 — Remove TaskSmack build artifacts and caches (Windows).
 #
 # Usage:
