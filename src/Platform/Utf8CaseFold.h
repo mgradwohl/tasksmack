@@ -27,8 +27,7 @@ namespace Platform
         return static_cast<char32_t>(static_cast<unsigned char>(foldAscii(static_cast<char>(cp))));
     }
     const auto& table = UnicodeCaseFold::SIMPLE_FOLDS;
-    const auto found = std::lower_bound(
-        table.begin(), table.end(), static_cast<std::uint32_t>(cp), [](const auto& pair, std::uint32_t key) { return pair.first < key; });
+    const auto found = std::ranges::lower_bound(table, static_cast<std::uint32_t>(cp), {}, [](const auto& pair) { return pair.first; });
     return (found != table.end() && found->first == cp) ? static_cast<char32_t>(found->second) : cp;
 }
 
