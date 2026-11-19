@@ -68,7 +68,7 @@ constexpr const char* ROW_MENU_ID = "##ConnectionRowMenu";
     switch (column)
     {
     case ConnectionsColumn::Process:
-        return Platform::compareIgnoreCase(a.process, b.process);
+        return Platform::compareFoldedCase(a.process, b.process);
     case ConnectionsColumn::Pid:
         return a.connection.pid <=> b.connection.pid;
     case ConnectionsColumn::Protocol:

@@ -261,13 +261,13 @@ class ProcessModulesView
         switch (column)
         {
         case Detail::ModulesColumn::Name:
-            return Platform::compareIgnoreCase(a.name, b.name);
+            return Platform::compareFoldedCase(a.name, b.name);
         case Detail::ModulesColumn::Version:
             return a.module.version <=> b.module.version; // none sorts first
         case Detail::ModulesColumn::Size:
             return a.module.sizeBytes <=> b.module.sizeBytes;
         case Detail::ModulesColumn::Path:
-            return Platform::compareIgnoreCase(a.module.path, b.module.path);
+            return Platform::compareFoldedCase(a.module.path, b.module.path);
         case Detail::ModulesColumn::Base:
             break;
         }

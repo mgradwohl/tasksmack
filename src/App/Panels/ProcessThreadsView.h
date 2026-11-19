@@ -421,7 +421,7 @@ class ProcessThreadsView
         switch (column)
         {
         case Detail::ThreadsColumn::Name:
-            return Platform::compareIgnoreCase(a.thread.name, b.thread.name);
+            return Platform::compareFoldedCase(a.thread.name, b.thread.name);
         case Detail::ThreadsColumn::State:
             return a.state <=> b.state;
         case Detail::ThreadsColumn::Cpu:

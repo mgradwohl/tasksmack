@@ -40,7 +40,7 @@ namespace
 
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup apps...";
 
-using Platform::compareIgnoreCase;
+using Platform::compareFoldedCase;
 using Platform::containsFoldedCase;
 
 /// An entry's impact, or Not measured when @p impacts doesn't reach it.
@@ -68,7 +68,7 @@ using Platform::containsFoldedCase;
     switch (column)
     {
     case StartupColumn::Publisher:
-        return compareIgnoreCase(a.publisher, b.publisher);
+        return compareFoldedCase(a.publisher, b.publisher);
     case StartupColumn::Enabled:
         // Enabled first; the names within each group are ordered by buildStartupRows (#1597).
         if (a.enabled != b.enabled)
@@ -81,11 +81,11 @@ using Platform::containsFoldedCase;
     case StartupColumn::Location:
         return a.location <=> b.location;
     case StartupColumn::Command:
-        return compareIgnoreCase(a.command, b.command);
+        return compareFoldedCase(a.command, b.command);
     case StartupColumn::Impact: // by buildStartupRows, which has the impacts
     case StartupColumn::Name:
     default:
-        return compareIgnoreCase(a.name, b.name);
+        return compareFoldedCase(a.name, b.name);
     }
 }
 
@@ -93,7 +93,7 @@ using Platform::containsFoldedCase;
 /// by where the entry is registered, so two entries never compare equal by name alone.
 [[nodiscard]] std::strong_ordering compareByName(const Platform::StartupEntry& a, const Platform::StartupEntry& b)
 {
-    if (const std::strong_ordering order = compareIgnoreCase(a.name, b.name); order != 0)
+    if (const std::strong_ordering order = compareFoldedCase(a.name, b.name); order != 0)
     {
         return order;
     }

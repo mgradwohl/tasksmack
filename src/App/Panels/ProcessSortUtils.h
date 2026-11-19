@@ -6,9 +6,9 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/SchedPolicy.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
-#include <cctype>
 #include <compare>
 #include <optional>
 #include <string>
@@ -56,7 +56,7 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
     return ascending ? left < right : left > right;
 }
 
-/// The Services column's text as it sorts (#1880): A to Z ignoring case (Windows names services in
+/// The Services column's text as it sorts (#1880, #4324): A to Z ignoring case, by Unicode simple case folding (Windows names services in
 /// mixed case: "Appinfo", "BFE", "bits"), Z to A descending; a process hosting none sorts after every
 /// one hosting some in either direction, so the hosts stay together at the top. Equal texts, and two
 /// empty ones, compare false both ways.
@@ -66,12 +66,9 @@ template<typename T> [[nodiscard]] constexpr std::optional<T> readingSortKey(boo
     {
         return !a.empty();
     }
-    const auto lessIgnoringCase = [](std::string_view lhs, std::string_view rhs)
-    {
-        return std::ranges::lexicographical_compare(
-            lhs, rhs, [](unsigned char x, unsigned char y) { return std::tolower(x) < std::tolower(y); });
-    };
-    return ascending ? lessIgnoringCase(a, b) : lessIgnoringCase(b, a);
+    // Unicode simple case folding, then bytes (#4324): not std::tolower, which follows the C locale main() sets,
+    // so the app and the tests (in the "C" locale) could order the column differently.
+    return ascending ? Platform::compareFoldedCase(a, b) < 0 : Platform::compareFoldedCase(b, a) < 0;
 }
 
 /// The column's own key comparison, with no tie-breaker: equal keys compare false both ways.

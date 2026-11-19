@@ -11,6 +11,7 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/UnicodeCaseFoldTable.h"
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <string_view>
@@ -224,6 +225,38 @@ namespace Utf8CaseFoldDetail
         at += length;
     }
     return false;
+}
+
+/// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile", not
+/// after "Zoe"), then by their bytes, so case variants still sort in one stable order (the maintainer, #4324: the
+/// same fold as matching, with a byte-wise tie-break; not locale collation). ASCII text takes the ASCII compare.
+[[nodiscard]] constexpr std::strong_ordering compareFoldedCase(std::string_view a, std::string_view b) noexcept
+{
+    if (Utf8CaseFoldDetail::isAscii(a) && Utf8CaseFoldDetail::isAscii(b))
+    {
+        const std::strong_ordering folded = compareIgnoreCase(a, b);
+        return folded != 0 ? folded : a.compare(b) <=> 0;
+    }
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < a.size() && j < b.size())
+    {
+        std::size_t aLength = 0;
+        std::size_t bLength = 0;
+        const char32_t x = simpleCaseFold(Utf8CaseFoldDetail::decodeAt(a, i, aLength));
+        const char32_t y = simpleCaseFold(Utf8CaseFoldDetail::decodeAt(b, j, bLength));
+        if (x != y)
+        {
+            return x <=> y;
+        }
+        i += aLength;
+        j += bLength;
+    }
+    if (i < a.size() || j < b.size())
+    {
+        return (a.size() - i) <=> (b.size() - j);
+    }
+    return a.compare(b) <=> 0;
 }
 
 } // namespace Platform

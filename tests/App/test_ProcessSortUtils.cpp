@@ -11,6 +11,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <clocale>
 #include <cstdint>
 #include <string>
 #include <string_view>
@@ -143,6 +144,26 @@ TEST(ProcessSortUtilsTest, EqualSnapshotsNeverCompareLessForAnyColumn)
 // Column-specific edge cases not covered by the generic low/high pair
 // =============================================================================
 
+// #4324: the Services column's order folds by Unicode, whatever the C locale main() set: std::tolower made the
+// app (after LocaleSetup) and the tests (in "C") order it differently.
+TEST(ProcessSortUtilsTest, ServicesSortFoldsByUnicodeWhateverTheLocale)
+{
+    using ProcessSortUtils::compareServicesText;
+    const std::string previous = std::setlocale(LC_ALL, nullptr); // NOLINT(concurrency-mt-unsafe) - test thread
+    for (const char* locale : {"C", "de_DE.UTF-8", "tr_TR.UTF-8"})
+    {
+        if (std::setlocale(LC_ALL, locale) == nullptr) // NOLINT(concurrency-mt-unsafe) - test thread
+        {
+            continue;
+        }
+        EXPECT_TRUE(compareServicesText("\xC3\x89mile", "Zoe", true)) << locale; // Émile before Zoe
+        EXPECT_TRUE(compareServicesText("\xC3\xA9mile", "Zoe", true)) << locale; // émile before Zoe
+        EXPECT_TRUE(compareServicesText("Appinfo", "bits", true)) << locale;
+        EXPECT_TRUE(compareServicesText("ID", "ie", true)) << locale << ": I folds to i, not a Turkish dotless i";
+    }
+    std::setlocale(LC_ALL, previous.c_str()); // NOLINT(concurrency-mt-unsafe) - test thread
+}
+
 // #1880: the Services column sorts its text A to Z ignoring case, and keeps the processes hosting none
 // after those hosting some in both directions.
 TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
@@ -160,7 +181,8 @@ TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
     // Equal texts, two empty ones included, compare false both ways.
     EXPECT_FALSE(compareServicesText("", "", true));
     EXPECT_FALSE(compareServicesText("", "", false));
-    EXPECT_FALSE(compareServicesText("BFE", "bfe", true));
+    // Case variants: together, then by bytes for one stable order (#4324, the maintainer's decision).
+    EXPECT_TRUE(compareServicesText("BFE", "bfe", true));
     EXPECT_FALSE(compareServicesText("bfe", "BFE", true));
 
     ProcessSnapshot host = makeSnapshot(false);

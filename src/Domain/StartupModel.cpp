@@ -4,6 +4,7 @@
 #include "Domain/StartupImpact.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <chrono>
@@ -35,7 +36,7 @@ void StartupModel::sample()
     // ASCII letters fold, every other byte sorts as itself whatever the locale (#2566).
     const auto lessIgnoringCase = [](const Platform::StartupEntry& a, const Platform::StartupEntry& b)
     {
-        return Platform::compareIgnoreCase(a.name, b.name) < 0;
+        return Platform::compareFoldedCase(a.name, b.name) < 0;
     };
     std::ranges::stable_sort(next->entries, lessIgnoringCase);
     if (m_Capabilities.hasImpact)

@@ -69,8 +69,8 @@ struct AccountLess
 
     [[nodiscard]] bool operator()(const Names& a, const Names& b) const noexcept
     {
-        const auto byDomain = Platform::compareIgnoreCase(a.first, b.first);
-        return byDomain != 0 ? byDomain < 0 : Platform::compareIgnoreCase(a.second, b.second) < 0;
+        const auto byDomain = Platform::compareFoldedCase(a.first, b.first);
+        return byDomain != 0 ? byDomain < 0 : Platform::compareFoldedCase(a.second, b.second) < 0;
     }
 };
 
@@ -79,7 +79,7 @@ struct NameLess
 {
     [[nodiscard]] bool operator()(std::string_view a, std::string_view b) const noexcept
     {
-        return Platform::compareIgnoreCase(a, b) < 0;
+        return Platform::compareFoldedCase(a, b) < 0;
     }
 };
 
