@@ -854,6 +854,9 @@ function(tasksmack_apply_windows_definitions target)
         # so spdlog's templates agree across them; spdlog is consumed header-only
         # (spdlog::spdlog_header_only), so there is no prebuilt library whose ABI could disagree.
         SPDLOG_WCHAR_FILENAMES
+        # The console sink writes UTF-8 log text with WriteConsoleW (UTF-16), so a non-ASCII path or
+        # name prints right whatever the console's code page, with no SetConsoleOutputCP (#4317).
+        SPDLOG_UTF8_TO_WCHAR_CONSOLE
     )
 endfunction()
 

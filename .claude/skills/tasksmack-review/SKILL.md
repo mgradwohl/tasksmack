@@ -19,7 +19,16 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 ## 2. C++23 compliance
 
-- Suggest modern replacements for legacy patterns **only when the replacement preserves behavior and improves clarity**: `find()` used purely as a containment/prefix check → `contains()`/`starts_with()` (not when the position is needed, e.g., for `substr` parsing); raw loops → `std::ranges`/`std::views` when the loop has no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns); `fmt::format` → `std::format`; raw threads → `std::jthread`; C-style arrays → `std::array`/`std::span`.
+- Suggest modern replacements for legacy patterns **only when the replacement preserves behavior and improves clarity**: `find()` used purely as a containment/prefix check → `contains()`/`starts_with()` (not when the position is needed, e.g., for `substr` parsing); raw loops → `std::ranges`/`std::views` when the loop has no early exit or iterator dependence (not when iterators are needed, e.g., map erase patterns); `fmt::format` → `std::format`; raw threads → `Domain::Worker` (section 4); C-style arrays → `std::array`/`std::span`.
+- **Availability:** `docs/dev/cpp23.md` lists the C++23 library features both standard libraries have. Flag one that
+  libc++ lacks in shared or Linux code: `std::generator`, `std::stacktrace`, `std::move_only_function`,
+  `std::atomic<std::shared_ptr>`, `views::chunk`, `views::slide`. It compiles on Windows only.
+- Flag a result returned as `bool` plus out-parameters, or as a sentinel (`-1`, an empty string meaning success),
+  where `std::expected` or `std::optional` fits. An out-parameter buffer reused across samples is fine.
+- Flag `std::stoi`/`stoul`/`stod`, `strtol`, `atoi` and `sscanf`: parse with `std::from_chars`, checking the error
+  and that the whole field was consumed.
+- Flag a `std::string_view`, `std::span` or view pipeline stored beyond the life of what it refers to, and a
+  `string_view::data()` passed to a C API as if it were NUL-terminated.
 - Flag C-style casts; require the narrowest named cast with a comment explaining why it is safe.
 - Flag `using namespace` in headers.
 - Prefer `enum class` over plain `enum`, with an explicit underlying type (e.g., `: std::uint8_t`) when size matters. Do not flag C-style enums that intentionally mirror an external ABI (e.g., `src/Platform/NVMLTypes.h`), especially when marked with NOLINT and a rationale.
@@ -85,7 +94,9 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 
 - New Domain logic should have Google Test coverage in `tests/` (mirroring `src/`) using mocks from `tests/Mocks/MockProbes.h`.
 - Flag `EXPECT_EQ` on floating-point values (use `EXPECT_DOUBLE_EQ`).
-- Flag mocks defined inside anonymous namespaces when used with `std::make_unique`.
+- A mock or fake used by one test file goes in that file's anonymous namespace, and one that several share goes in
+  `tests/Mocks/`. Flag the same class name defined at namespace scope in two test files: one binary, two definitions.
+  A `friend struct FooTestAccessor` is the exception: it is defined in the namespace its production class names.
 - **On-display UI tests:** they derive from `TestSupport::ScratchConfigDirTest` (`tests/App/ScratchConfigDir.h`,
   #2932), so each test gets its own empty config dir. Flag a test that reads or writes the shared config, or that
   only passes because an earlier `--gtest_repeat` run saved a layout.
@@ -106,8 +117,7 @@ Flag: uninitialized members, missing `override`, `NULL`/`0` for pointers, `const
 - **spdlog in a `noexcept` function:** spdlog catches its own formatting and sink errors inside `log()`, so the
   repo's convention is a `NOLINTNEXTLINE(bugprone-exception-escape)` with that reason, not a try/catch around each
   call. See `src/App/CoalescingWriter.h`.
-- **Newer clang-tidy:** checks that only a newer LLVM than CI's runs, such as `readability-trailing-comma` on LLVM 23
-  while CI is on 22, aren't findings until CI's LLVM moves (#945).
+- **Newer clang-tidy:** a check that only a newer LLVM than CI's runs isn't a finding until CI's LLVM moves (#945).
 - **Header findings:** CI reports findings in the project headers a checked `.cpp` includes. On Windows, check
   with `pwsh tools/clang-tidy.ps1` (CI's script) or `tools/clang-tidy.sh` from Git Bash, which hands off to it;
   before #3500 the Git Bash run silently skipped every header.

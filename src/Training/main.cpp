@@ -2,8 +2,10 @@
 // renders and UiTrainingPlan.h for the workloads and their weights; tools/pgo.sh and tools/pgo.ps1 run
 // it after the benchmarks, once with the real probes and once with the synthetic large-UI machine.
 
+#include "Core/LocaleSetup.h"
 #include "Training/UiTrainingDriver.h"
 #include "Training/UiTrainingPlan.h"
+#include "UI/Format.h"
 
 #include <spdlog/common.h>
 #include <spdlog/spdlog.h>
@@ -20,6 +22,12 @@ int main(int argc, char** argv)
 {
     try
     {
+        // The same locale setup as TaskSmack.exe (#4335), so Linux is not left in the C locale; then a grouped
+        // punctuation, whatever the machine's locale: the run trains the grouping branch of UI::Format that
+        // en-US users run, not the classic no-grouping one (as benchmarks/bench_Format.cpp's GroupedPunctuation).
+        Core::LocaleSetup::initialize(Core::LocaleSetup::NumericFacets::Classic);
+        UI::Format::setDisplayPunctuation({.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"});
+
         const std::span<char*> argSpan(argv, static_cast<std::size_t>(argc));
         std::vector<std::string_view> args;
         for (const char* arg : argSpan.subspan(1))

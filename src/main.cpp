@@ -91,8 +91,8 @@
 
 namespace
 {
-/// Sets the C and C++ locales to the user's, with UTF-8 text (Core/LocaleSetup.h), and the console
-/// code pages to UTF-8. Runs before logging is up: the caller logs the returned summary once it is.
+/// Sets the C and C++ locales to the user's, with UTF-8 text (Core/LocaleSetup.h). Runs before logging is up: the caller logs the returned
+/// summary once it is.
 auto initializeLocale() -> const Core::LocaleSetup::Summary&
 {
     // The global C++ locale keeps the classic numeric facets, so streams, "{:L}" and parsing are
@@ -104,14 +104,9 @@ auto initializeLocale() -> const Core::LocaleSetup::Summary&
     std::cout.imbue(global);
     std::cerr.imbue(global);
     std::cin.imbue(global);
-
-#ifdef _WIN32
-    // LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
-    // On Windows, also set the console code page to UTF-8 for wide output.
-    SetConsoleOutputCP(CP_UTF8);
-    SetConsoleCP(CP_UTF8);
-    // LCOV_EXCL_STOP
-#endif
+    // No SetConsoleOutputCP here (#4317): this runs before AttachConsole/AllocConsole, so it set nothing
+    // on a console that did not exist yet and, once attached, would change the parent cmd's code page.
+    // The log's console sink writes UTF-16 (SPDLOG_UTF8_TO_WCHAR_CONSOLE), so no code page is needed.
     return summary;
 }
 
