@@ -458,7 +458,7 @@ TaskSmack combines operating-system GPU APIs with optional vendor libraries:
 | Vendor | Linux backend | Windows backend |
 |--------|---------------|-----------------|
 | NVIDIA | NVML (`libnvidia-ml.so`) | NVML (`nvml.dll`) with DXGI/PDH fallback data |
-| AMD | ROCm SMI (`librocm_smi64.so`) | DXGI/PDH capability-dependent data |
+| AMD | ROCm SMI (`librocm_smi64.so.*`, from the distribution's runtime package or `/opt/rocm`) | DXGI/PDH capability-dependent data |
 | Intel/generic | DRM/sysfs | DXGI/PDH |
 
 **Intel GPUs on Linux** (i915 and xe drivers) report what the kernel exposes for each card:
