@@ -15,6 +15,7 @@
 #include "Platform/IProcessActions.h"
 
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <stop_token>
 #include <string>
@@ -53,6 +54,10 @@ struct ProcessModule
     std::uint64_t sizeBytes = 0;          ///< Its image size (Linux: the sum of its mappings' spans).
     std::optional<ModuleVersion> version; ///< When the file carries one (Windows); Linux has none.
     bool deleted = false;                 ///< The file was deleted or replaced after it was mapped (Linux).
+    /// The file isn't on a drive TaskSmack can tell is local (a network share, another device), so it wasn't opened for
+    /// its version (Windows, #4373): opening a network file would connect, with TaskSmack's or its helper's
+    /// credentials, to where the file is.
+    bool versionNotRead = false;
 };
 
 /// The outcome of IProcessModulesReader::readModules(): a status, and the modules when Ok.
@@ -94,6 +99,17 @@ class IProcessModulesReader
     [[nodiscard]] virtual bool canReadAuthorized() const
     {
         return false;
+    }
+
+    /// Gets ready to readAuthorized() (#4420): starts the helper, after the password prompt, when it isn't running, so a
+    /// run of reads asks once, not once per read. The error says why there is no helper (the prompt was dismissed, the
+    /// helper isn't installed); a readAuthorized() after one would only be refused, so the caller stops there. Blocks
+    /// for as long as the prompt is up, so it runs on a worker. The default has nothing to start: readAuthorized()
+    /// reads as readModules() does.
+    [[nodiscard]] virtual std::expected<void, std::string> authorize(const std::stop_token& stopToken)
+    {
+        static_cast<void>(stopToken);
+        return {};
     }
 
     /// Reads @p target as an administrator, asking for the password first if need be (#2309). Blocks for

@@ -251,13 +251,28 @@ enum class GuardedAction : std::uint8_t
 /// PID 4 is the System process: the kernel's threads.
 inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
 
+/// Whether OpenProcess() given @p requested opens the process whose PID is @p actual (#2582). A process
+/// ID is a handle in the kernel's client-ID table, whose low two bits are tag bits that a lookup ignores,
+/// so OpenProcess(PID + 1) opens PID's process; a PID compared to refuse one process is compared the same.
+[[nodiscard]] constexpr bool isSamePid(std::uint32_t requested, std::uint32_t actual) noexcept
+{
+    constexpr std::uint32_t TAG_BITS = 0x3U;
+    return (requested & ~TAG_BITS) == (actual & ~TAG_BITS);
+}
+
+/// Whether @p pid names the System process: 4, or 5 to 7, which OpenProcess() opens it for too (isSamePid(), #4365).
+[[nodiscard]] constexpr bool isSystemPid(std::int32_t pid) noexcept
+{
+    return pid > 0 && isSamePid(static_cast<std::uint32_t>(pid), static_cast<std::uint32_t>(SYSTEM_PROCESS_PID));
+}
+
 /// Why @p action is refused for @p pid before anything is opened, or empty (#2556): PID 4 is the System
 /// process, the kernel's own, which can't be ended, and changing how it is scheduled starves the whole
 /// machine. Not a permission failure: running as administrator doesn't change the answer. PID 0, the
-/// System Idle Process, is refused as an invalid PID before this is asked.
+/// System Idle Process, is refused as an invalid PID before this is asked. PIDs 5 to 7 name it too (#4365).
 [[nodiscard]] inline std::string systemPidRefusal(int32_t pid, GuardedAction action)
 {
-    if (pid == SYSTEM_PROCESS_PID)
+    if (isSystemPid(pid))
     {
         return std::format("PID 4 is the System process; TaskSmack won't {}", guardedActionWording(action));
     }
@@ -299,15 +314,6 @@ inline constexpr int32_t SYSTEM_PROCESS_PID = 4;
                        pid,
                        (action == GuardedAction::Suspend || action == GuardedAction::SuspendThread) ? "suspend" : "end",
                        guardedActionWording(action));
-}
-
-/// Whether OpenProcess() given @p requested opens the process whose PID is @p actual (#2582). A process
-/// ID is a handle in the kernel's client-ID table, whose low two bits are tag bits that a lookup ignores,
-/// so OpenProcess(PID + 1) opens PID's process; a PID compared to refuse one process is compared the same.
-[[nodiscard]] constexpr bool isSamePid(std::uint32_t requested, std::uint32_t actual) noexcept
-{
-    constexpr std::uint32_t TAG_BITS = 0x3U;
-    return (requested & ~TAG_BITS) == (actual & ~TAG_BITS);
 }
 
 /// Suspend refused because @p pid is the process asked to do it (#2582): suspending TaskSmack freezes
@@ -362,7 +368,7 @@ threadActionRefusal(std::int32_t pid, std::int32_t tid, ThreadAction action, std
     {
         return std::format("Thread {} isn't a valid thread ID; nothing sent", tid);
     }
-    if (pid == SYSTEM_PROCESS_PID)
+    if (isSystemPid(pid))
     {
         return std::format("PID 4 is the System process, whose threads are the kernel's; TaskSmack won't {} them",
                            threadActionVerb(action));

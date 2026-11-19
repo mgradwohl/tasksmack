@@ -65,6 +65,10 @@ struct LinuxProcessSyscalls
     /// Where /proc/<pid>/exe points (readlink), or the errno that refused it (ENOENT for a kernel thread,
     /// EACCES for another user's process). Left null, the real link is read. LinuxProcessActions only (#3064).
     std::expected<std::string, int> (*executableLink)(std::int32_t pid) = nullptr;
+    /// The real uid on /proc/<pid>/status's Uid: line, nullopt when it can't be read: whose process it is, which a
+    /// non-dumpable one (set-id, prctl(PR_SET_DUMPABLE, 0)) keeps while /proc/<pid> itself turns root's. Words a
+    /// refused executable read (#4271). Left null, the real /proc is read. LinuxProcessActions only.
+    std::optional<uid_t> (*processRealUid)(std::int32_t pid) = nullptr;
     /// org.freedesktop.FileManager1.ShowItems for file:// URI @p uri on the session bus: true when a file
     /// manager took it. Left null, the real call is made (none without sd-bus, which is a false); tests
     /// fake it so no file manager opens. LinuxProcessActions only (#3064).

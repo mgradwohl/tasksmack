@@ -7,10 +7,13 @@
 #include "Domain/ServiceModel.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -35,7 +38,7 @@ namespace
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
 
 using Platform::compareIgnoreCase;
-using Platform::containsIgnoreCase;
+using Platform::containsFoldedCase;
 
 [[nodiscard]] std::strong_ordering compareBy(const Platform::ServiceInfo& a, const Platform::ServiceInfo& b, ServiceColumn column)
 {
@@ -89,7 +92,7 @@ void renderServiceTooltip(const Platform::ServiceInfo& service)
     ImGui::TextUnformatted(listed.data(), listed.data() + listed.size());
     if (listed != service.name)
     {
-        ImGui::TextColored(scheme.textMuted, "Service name: %s", service.name.c_str());
+        UI::Widgets::labelledTextColored(scheme.textMuted, "Service name: ", service.name);
     }
     if (!service.description.empty())
     {
@@ -97,15 +100,15 @@ void renderServiceTooltip(const Platform::ServiceInfo& service)
     }
     if (!service.binaryPath.empty())
     {
-        ImGui::Text("Command: %s", service.binaryPath.c_str());
+        UI::Widgets::labelledText("Command: ", service.binaryPath);
     }
     if (!service.group.empty())
     {
-        ImGui::Text("Group: %s", service.group.c_str());
+        UI::Widgets::labelledText("Group: ", service.group);
     }
     if (!service.serviceType.empty())
     {
-        ImGui::Text("Type: %s", service.serviceType.c_str());
+        UI::Widgets::labelledText("Type: ", service.serviceType);
     }
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
@@ -139,7 +142,39 @@ void rebuildRowsIfStale(const Domain::ServicePublication& publication, ServicesV
     state.rowsAscending = state.ascending;
 }
 
+/// Whether @p service is the selected row: by name, and by id too once a row was picked (#4304), so of two services
+/// shown by the same name only the one picked is. A selection by name alone (Show in Services) has no id.
+[[nodiscard]] bool isSelectedService(const Platform::ServiceInfo& service, const ServicesViewState& state)
+{
+    return service.name == state.selectedName &&
+           (state.selectedNativeId == Platform::NativeId::None || service.nativeId == state.selectedNativeId);
+}
+
 } // namespace
+
+const Platform::ServiceInfo* selectedService(std::span<const Platform::ServiceInfo> services, ServicesViewState& state)
+{
+    const Platform::ServiceInfo* match = nullptr;
+    for (const Platform::ServiceInfo& service : services)
+    {
+        if (!isSelectedService(service, state))
+        {
+            continue;
+        }
+        if (match != nullptr)
+        {
+            // A selection by name alone (Show in Services) that two services answer to (#4304): neither is
+            // acted on until a row is clicked, rather than whichever sorts first.
+            return nullptr;
+        }
+        match = &service;
+    }
+    if (match != nullptr)
+    {
+        state.selectedNativeId = match->nativeId; // the one service it named: pinned, by id from now on
+    }
+    return match;
+}
 
 std::string_view serviceStateLabel(Platform::ServiceState state) noexcept
 {
@@ -253,7 +288,7 @@ buildServiceRows(std::span<const Platform::ServiceInfo> services, std::string_vi
     rows.reserve(services.size());
     for (std::size_t i = 0; i < services.size(); ++i)
     {
-        if (containsIgnoreCase(services[i].name, filter) || containsIgnoreCase(services[i].displayName, filter))
+        if (containsFoldedCase(services[i].name, filter) || containsFoldedCase(services[i].displayName, filter))
         {
             rows.push_back(i);
         }
@@ -320,7 +355,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     if (publication->stale)
     {
         // The rows are the last good read; the latest one failed.
-        ImGui::TextColored(scheme.textMuted, ICON_FA_TRIANGLE_EXCLAMATION "  Out of date: %s", publication->failureReason.c_str());
+        UI::Widgets::labelledTextColored(scheme.textMuted, ICON_FA_TRIANGLE_EXCLAMATION "  Out of date: ", publication->failureReason);
     }
     if (actions != nullptr && actions->supported())
     {
@@ -329,8 +364,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
         const Platform::ServiceInfo* selected = nullptr;
         if (!state.selectedName.empty())
         {
-            const auto found = std::ranges::find(publication->services, state.selectedName, &Platform::ServiceInfo::name);
-            selected = (found != publication->services.end()) ? &*found : nullptr;
+            selected = selectedService(publication->services, state);
         }
         actions->renderActionBar(selected);
         actions->renderResultLine();
@@ -380,7 +414,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     {
         for (std::size_t row = 0; row < state.rows.size(); ++row)
         {
-            if (publication->services[state.rows[row]].name == state.selectedName)
+            if (isSelectedService(publication->services[state.rows[row]], state))
             {
                 scrollToRow = static_cast<int>(row);
                 clipper.IncludeItemByIndex(scrollToRow);
@@ -398,6 +432,8 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
             // Keyed by the service, not the row: a re-sort or a new sample must not move an open row
             // menu onto another service.
             ImGui::PushID(service.name.c_str());
+            // And by its id (#4304): two services shown by the same name are two rows.
+            ImGui::PushID(static_cast<int>(static_cast<std::uint32_t>(service.nativeId)));
 
             ImGui::TableNextColumn();
             if (icons != nullptr)
@@ -407,10 +443,11 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
             }
             // The selectable spans the row with no label of its own: the name is drawn after it, cut
             // short with an ellipsis when the column is too narrow (#1920).
-            if (ImGui::Selectable("##row", state.selectedName == service.name, ImGuiSelectableFlags_SpanAllColumns) ||
+            if (ImGui::Selectable("##row", isSelectedService(service, state), ImGuiSelectableFlags_SpanAllColumns) ||
                 ImGui::IsItemClicked(ImGuiMouseButton_Right))
             {
                 state.selectedName = service.name;
+                state.selectedNativeId = service.nativeId;
             }
             if (row == scrollToRow)
             {
@@ -447,6 +484,7 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
                 renderServiceTooltip(service);
             }
 
+            ImGui::PopID();
             ImGui::PopID();
         }
     }

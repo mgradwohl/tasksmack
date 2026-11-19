@@ -1526,6 +1526,14 @@ jobs:
             exit 1
           fi
           echo "${debs[0]}: Architecture $arch"
+          # The synopsis apt and the software centres show beside the name (#4442): never the name again.
+          package=$(dpkg-deb -f "${debs[0]}" Package)
+          synopsis=$(dpkg-deb -f "${debs[0]}" Description | head -n 1)
+          if [[ -z "$synopsis" || "${synopsis,,}" == "${package,,}"* ]]; then
+            echo "${debs[0]}: Description synopsis '$synopsis' is empty or starts with the package name '$package'." >&2
+            exit 1
+          fi
+          echo "${debs[0]}: Description $synopsis"
 
       - name: Verify .deb contains only the app's files
         # cmake/InstallRules.cmake's rules are shared with every bundled dependency's own
@@ -2077,6 +2085,7 @@ jobs:
           sparse-checkout: |
             cmake/VerifyWindowsSignatures.cmake
             tools/verify-windows-signatures.ps1
+            tools/check-windows-imports.ps1
             tools/release-smoke-check.ps1
             tests/App/fixtures/config-v0.8.0.toml
             tests/App/fixtures/config-v0.8.0.expected.txt
@@ -2141,6 +2150,16 @@ jobs:
         run: |
           & repo/tools/verify-windows-signatures.ps1 -PackageRoot $env:TASKSMACK_PKG_ROOT `
             -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify the .zip's executables import no MSVC runtime
+        # The CRT is linked statically (/MT), so the .zip needs no Visual C++ Redistributable, which these
+        # runners have installed and a clean PC may not (#1398). tools/check-windows-imports.ps1 reads each
+        # .exe's and .dll's import and delay-import tables and fails on vcruntime*, msvcp*, concrt*, vccorlib*,
+        # ucrtbase*, the UCRT API sets or any DLL outside its allowlist of Windows system DLLs (#4439).
+        shell: pwsh
+        run: |
+          & repo/tools/check-windows-imports.ps1 -Path $env:TASKSMACK_PKG_ROOT -List
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Verify the executable's architecture
@@ -2411,6 +2430,13 @@ jobs:
             -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+      - name: Verify the installed executables import no MSVC runtime
+        # The .zip's import check, on every file the installer installed, Uninstall.exe included (#4439).
+        shell: pwsh
+        run: |
+          & repo/tools/check-windows-imports.ps1 -Path $env:TASKSMACK_INSTALL_DIR -List
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Smoke-check the installed executable
         # The .zip's smoke check, on the installed TaskSmack.exe where it is (-InPlace), from config dirs
         # of its own (its own work folder); Mesa's DLLs go beside it for the launches only.
@@ -2524,6 +2550,62 @@ jobs:
             exit 1
           }
           Write-Host "Upgraded in place: the old uninstaller ran, the files are the .zip's again, and both values are kept ($debugger; $runValue)."
+
+      - name: Upgrade and uninstall while TaskSmack.exe is in use, and check both stop with 32 and change nothing
+        # #4436: the installer and its uninstaller check for a running TaskSmack.exe or TaskSmackHelper.exe before they
+        # change anything (TaskSmackInUseCheck, cmake/CPackProjectConfig.cmake.in): Windows won't open a running .exe
+        # for writing. This step holds the installed TaskSmack.exe open with read-only sharing, which refuses a write
+        # open the same way, rather than start TaskSmack (its launch here needs Mesa's DLLs copied into the folder).
+        # Then this installer with /S, and the installed Uninstall.exe with /S _?=<folder> (in place, as an upgrade
+        # runs it, so the exit code is its own rather than its %TEMP% copy's launcher's) must each exit with 32, the
+        # code WinGet's manifest declares as packageInUse, and leave the folder's files, the Uninstall key, both
+        # values the upgrade kept and the absent uninstall mark exactly as they were.
+        shell: pwsh
+        timeout-minutes: 5
+        run: |
+          $ErrorActionPreference = 'Stop'
+          function Get-State {
+            $state = [ordered]@{}
+            Get-ChildItem -LiteralPath $env:TASKSMACK_INSTALL_DIR -Recurse -File -Force | Sort-Object FullName | ForEach-Object {
+              $state["file $($_.FullName)"] = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash
+            }
+            foreach ($root in 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall', 'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall') {
+              Get-ChildItem -LiteralPath $root -ErrorAction SilentlyContinue | Where-Object PSChildName -Match 'TaskSmack' | ForEach-Object {
+                $key = $_
+                $key.GetValueNames() | Sort-Object | ForEach-Object { $state["$($key.Name) $_"] = "$($key.GetValue($_))" }
+              }
+            }
+            $hklm = [Microsoft.Win32.RegistryKey]::OpenBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine, [Microsoft.Win32.RegistryView]::Registry64)
+            $ifeo = $hklm.OpenSubKey('SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe')
+            $state['Debugger'] = if ($ifeo) { "$($ifeo.GetValue('Debugger'))" }
+            $run = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\Microsoft\Windows\CurrentVersion\Run')
+            $state['Run'] = if ($run) { "$($run.GetValue('TaskSmack'))" }
+            $mark = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Software\TaskSmack')
+            $state['Uninstalled'] = if ($mark) { "$($mark.GetValue('Uninstalled'))" }
+            return $state
+          }
+          $before = Get-State | ConvertTo-Json
+          $exe = Join-Path $env:TASKSMACK_INSTALL_DIR 'TaskSmack.exe'
+          $runs = @(
+            @{ What = 'The installer'; File = $env:TASKSMACK_INSTALLER; Arguments = '/S' },
+            @{ What = 'Uninstall.exe'; File = (Join-Path $env:TASKSMACK_INSTALL_DIR 'Uninstall.exe'); Arguments = "/S _?=$env:TASKSMACK_INSTALL_DIR" })
+          $failed = @()
+          $lock = [IO.File]::Open($exe, [IO.FileMode]::Open, [IO.FileAccess]::Read, [IO.FileShare]::Read)
+          try {
+            foreach ($run in $runs) {
+              $proc = Start-Process -FilePath $run.File -ArgumentList $run.Arguments -PassThru
+              $null = $proc.Handle
+              if (-not $proc.WaitForExit(120000)) { $failed += "$($run.What) didn't exit within 120 s while TaskSmack.exe was in use"; break }
+              if ($proc.ExitCode -ne 32) { $failed += "$($run.What) exited with $($proc.ExitCode) while TaskSmack.exe was in use, not 32" }
+            }
+          } finally { $lock.Dispose() }
+          $after = Get-State | ConvertTo-Json
+          if ($after -cne $before) { $failed += "the install changed while TaskSmack.exe was in use:`nbefore: $before`nafter: $after" }
+          if ($failed.Count) {
+            $failed | ForEach-Object { Write-Host "::error::$_" }
+            exit 1
+          }
+          Write-Host 'With TaskSmack.exe in use, the installer and Uninstall.exe both exited with 32 and changed nothing.'
 
       - name: Uninstall silently and check nothing is left
         # The installed Uninstall.exe with /S. NSIS's uninstaller copies itself to %TEMP% and runs from
@@ -2805,10 +2887,12 @@ jobs:
     timeout-minutes: 15
     # One release publishes at a time, whatever its tag (#3277): "Publish release" compares the tag with the
     # published ones, so two tags' runs (v0.9.3 and v0.10.0) reading before either publishes would both take
-    # Latest. The workflow's own group is per ref and doesn't serialise them; a run waiting here is queued,
-    # not cancelled.
+    # Latest. The workflow's own group is per ref and doesn't serialise them. The group holds one running and one
+    # pending job, and a third one queued cancels the pending one, so a dry run, which publishes nothing and
+    # needs no serialising, gets a group of its own per ref (#4447): it can never cancel a tag run's pending
+    # create-release, and a dry run on a ref still queues behind the one before it.
     concurrency:
-      group: release-publish
+      group: ${{ (github.event_name == 'workflow_dispatch' && inputs.dry_run) && format('release-publish-dry-{0}-{1}', github.ref, inputs.dry_run) || 'release-publish' }}
       cancel-in-progress: false
     outputs:
       # `sha256sum` of every file in dist/ (the release's files, SHA256SUMS and SHA256SUMS.bundle), for
@@ -2851,6 +2935,13 @@ jobs:
           format: spdx-json
           upload-artifact: false
           upload-release-assets: false
+
+      - name: Add the C/C++ dependencies to the source SBOM
+        # Syft has no CMake or FetchContent cataloger, so its document lists the Actions and the Python
+        # tooling but none of the libraries compiled into the binaries (#4438). This adds each
+        # FetchContent_Declare() pin (version, commit, pkg:github purl, licence; the test and benchmark
+        # ones marked as such) and the Linux build's pkg-config libraries.
+        run: python3 -I tools/cpp-deps-sbom.py merge --sbom "$RUNNER_TEMP/sbom.spdx.json"
 
       - name: Download packages (every OS and architecture)
         # linux-packages-{x64,arm64} and windows-packages-{x64,arm64}, merged into dist/; with signing
@@ -2919,6 +3010,13 @@ jobs:
         env:
           VERSION_LABEL: ${{ steps.version.outputs.label }}
         run: mv -- "${{ runner.temp }}/sbom.spdx.json" "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
+
+      - name: Check the source SBOM lists every pinned C/C++ dependency
+        # Before SHA256SUMS and signing: the staged file must list every FetchContent_Declare() at its pinned
+        # commit, and nothing no CMake file declares, so the published SBOM can't drift from the pins (#4438).
+        env:
+          VERSION_LABEL: ${{ steps.version.outputs.label }}
+        run: python3 -I tools/cpp-deps-sbom.py check --sbom "dist/tasksmack-${VERSION_LABEL}-source-sbom.spdx.json"
 
       - name: Write SHA256SUMS
         # One `sha256sum`-format line per release file ("<sha256>  <name>": two spaces, LF endings, sorted
@@ -3663,7 +3761,8 @@ jobs:
     # release-process.md, "Publishing to WinGet"). Only an update: the package's first version (v0.11.0's) is
     # submitted by hand, and until it's merged this job passes with a notice and submits nothing.
     #
-    # When: a tag run only, once the release is published and verify-published-release has checked what users
+    # When: a real release only (a tag push, or a dry_run=false dispatch against a tag that retries one, #4448),
+    # once the release is published and verify-published-release has checked what users
     # download, and only for a release "Publish release" made Latest (#3277): a patch to an older line, such as a
     # v0.9.x after v0.10.0, would make winget's newest version go backwards, and a pre-release never takes
     # Latest. A dry run publishes nothing, so create-release's `latest` is empty and this is skipped.
@@ -3683,7 +3782,7 @@ jobs:
     # daily that it merges.
     needs: [create-release, verify-published-release]
     if: >-
-      ${{ !cancelled() && github.event_name == 'push' && needs.create-release.result == 'success' &&
+      ${{ !cancelled() && !(github.event_name == 'workflow_dispatch' && inputs.dry_run) && needs.create-release.result == 'success' &&
       needs.verify-published-release.result == 'success' && needs.create-release.outputs.latest == 'true' }}
     runs-on: windows-2025
     timeout-minutes: 20

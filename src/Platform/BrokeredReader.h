@@ -268,6 +268,18 @@ template<BrokeredReadTraits Traits> class BrokeredReader
         return viaBroker(target, stopToken);
     }
 
+    /// Starts the helper if it isn't running, after the password prompt, for a run of readAuthorized() calls (#4420): one
+    /// prompt for them all. Nothing to start when no helper could read (canReadAuthorized() false): readAuthorized()
+    /// reads in-process then. The error is connect()'s: why there is no helper.
+    [[nodiscard]] std::expected<void, std::string> authorize(const std::stop_token& stopToken)
+    {
+        if (!canReadAuthorized() || m_Broker->connected())
+        {
+            return {};
+        }
+        return m_Broker->connect(stopToken);
+    }
+
     /// Whether the helper is connected, connecting it if need be; false when the prompt was dismissed or the helper
     /// couldn't start, and the refusal stands.
     [[nodiscard]] bool helperConnected(const std::stop_token& stopToken)

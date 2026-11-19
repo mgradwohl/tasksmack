@@ -446,6 +446,33 @@ TEST(BrokeredOpenFilesReaderTest, ARefusedReadGoesThroughARunningHelperAndADismi
     EXPECT_EQ(broker->requests().size(), 1U); // only the first
 }
 
+// #4420: authorize() starts the helper for a run of reads: one connect while it isn't running, none once it is or
+// when no helper could read, and a dismissed prompt's reason comes back as the error.
+TEST(BrokeredOpenFilesReaderTest, AuthorizeStartsTheHelperOnlyWhenItIsNeededAndSaysWhyItCouldNot)
+{
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    BrokeredOpenFilesReader openFiles(std::make_unique<TestMocks::MockProcessOpenFilesReader>(), broker);
+    BrokeredModulesReader modules(std::make_unique<TestMocks::MockProcessModulesReader>(), broker);
+
+    broker->setConnectFailure("the UAC prompt was dismissed");
+    const std::expected<void, std::string> dismissed = openFiles.authorize(std::stop_token{});
+    ASSERT_FALSE(dismissed.has_value());
+    EXPECT_EQ(dismissed.error(), "the UAC prompt was dismissed");
+    EXPECT_EQ(broker->connectCount(), 1);
+
+    broker->setConnectFailure({});
+    EXPECT_TRUE(openFiles.authorize(std::stop_token{}).has_value());
+    EXPECT_EQ(broker->connectCount(), 2);
+    EXPECT_TRUE(modules.authorize(std::stop_token{}).has_value()) << "the shared helper is running already";
+    EXPECT_TRUE(openFiles.authorize(std::stop_token{}).has_value());
+    EXPECT_EQ(broker->connectCount(), 2);
+
+    broker->setConnected(false);
+    broker->setReadsOtherUsers(false);
+    EXPECT_TRUE(modules.authorize(std::stop_token{}).has_value()) << "nothing to start: the reads are in-process";
+    EXPECT_EQ(broker->connectCount(), 2);
+}
+
 TEST(BrokeredConnectionsReaderTest, ARefusedReadGoesThroughARunningHelperAndOtherwiseWaitsForTheUi)
 {
     auto broker = std::make_shared<Mocks::FakeBroker>(true);

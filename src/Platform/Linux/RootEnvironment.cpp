@@ -112,36 +112,6 @@ bool loginUidAllows(uid_t uid)
     return login == UNSET || login == static_cast<std::uint32_t>(uid);
 }
 
-/// Opens @p path read-only as @p uid would (setfsuid/setfsgid to them and their primary group for the open, then back
-/// to root), without following a final link or blocking on a FIFO. -1 when it can't, or when the ids can't be put back.
-int openAsUser(const std::string& path, uid_t uid)
-{
-    passwd entry{};
-    passwd* found = nullptr;
-    std::vector<char> buffer(16384);
-    if (::getpwuid_r(uid, &entry, buffer.data(), buffer.size(), &found) != 0 || found == nullptr)
-    {
-        return -1;
-    }
-    static_cast<void>(::setfsgid(entry.pw_gid));
-    static_cast<void>(::setfsuid(uid));
-    const bool switched = ::setfsuid(static_cast<uid_t>(-1)) == static_cast<int>(uid);
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int file = switched ? ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) : -1;
-    static_cast<void>(::setfsuid(0));
-    static_cast<void>(::setfsgid(0));
-    if (::setfsuid(static_cast<uid_t>(-1)) != 0)
-    {
-        if (file >= 0)
-        {
-            ::close(file);
-        }
-        std::fputs("TaskSmack: couldn't restore root's filesystem uid; not starting\n", stderr);
-        std::_Exit(1);
-    }
-    return file;
-}
-
 /// root's own copy of the invoking user's Xauthority (the second #4187 review): the file XAUTHORITY names, or their
 /// ~/.Xauthority from their passwd entry, opened without following a link and used only if it's a plain file of
 /// theirs (and the login uid agrees whose), so no other account's cookie can be read and sent to a display the user chose; copied 0600 into
@@ -177,19 +147,9 @@ std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& 
     {
         return std::nullopt;
     }
-    std::string contents;
-    constexpr long long MOST_BYTES = 1LL << 20; // an Xauthority is a few hundred bytes
-    struct stat info = {};
-    if (::fstat(in, &info) == 0 && S_ISREG(info.st_mode) && info.st_uid == *uid && info.st_size <= MOST_BYTES)
-    {
-        std::array<char, 4096> chunk{};
-        for (auto got = ::read(in, chunk.data(), chunk.size()); got > 0; got = ::read(in, chunk.data(), chunk.size()))
-        {
-            contents.append(chunk.data(), static_cast<std::size_t>(got));
-        }
-    }
+    const std::optional<std::string> contents = readOwnedFile(in, *uid, MOST_XAUTHORITY_BYTES);
     ::close(in);
-    if (contents.empty())
+    if (!contents.has_value() || contents->empty())
     {
         return std::nullopt;
     }
@@ -197,8 +157,7 @@ std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& 
     if (!rootRuntimeDir.has_value())
     {
         static_cast<void>(::mkdir(folder.c_str(), S_IRWXU));
-        struct stat made = {};
-        if (::lstat(folder.c_str(), &made) != 0 || !S_ISDIR(made.st_mode) || made.st_uid != 0 || (made.st_mode & (S_IRWXG | S_IRWXO)) != 0)
+        if (!isPrivateFolderOf(folder, 0))
         {
             return std::nullopt;
         }
@@ -210,18 +169,112 @@ std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& 
     {
         return std::nullopt;
     }
-    const bool written = ::fchmod(out, S_IRUSR | S_IWUSR) == 0 &&
-                         ::write(out, contents.data(), contents.size()) == static_cast<decltype(::write(out, nullptr, 0))>(contents.size());
+    const bool written = ::fchmod(out, S_IRUSR | S_IWUSR) == 0 && ::write(out, contents->data(), contents->size()) ==
+                                                                      static_cast<decltype(::write(out, nullptr, 0))>(contents->size());
     ::close(out);
     return written ? std::optional(copy) : std::nullopt;
 }
 
 } // namespace
 
+int openAsUser(const std::string& path, uid_t uid)
+{
+    passwd entry{};
+    passwd* found = nullptr;
+    std::vector<char> buffer(16384);
+    if (::getpwuid_r(uid, &entry, buffer.data(), buffer.size(), &found) != 0 || found == nullptr)
+    {
+        return -1;
+    }
+    // Put back after the open: the effective ids, which the filesystem ids follow unless something set them (#4255): root's
+    // in a root session, a test's own otherwise.
+    const auto previousGid = static_cast<int>(::getegid());
+    const auto previousUid = static_cast<int>(::geteuid());
+    static_cast<void>(::setfsgid(entry.pw_gid));
+    static_cast<void>(::setfsuid(uid));
+    const bool switched = ::setfsuid(static_cast<uid_t>(-1)) == static_cast<int>(uid);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int file = switched ? ::open(path.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC) : -1;
+    static_cast<void>(::setfsuid(static_cast<uid_t>(previousUid)));
+    static_cast<void>(::setfsgid(static_cast<gid_t>(previousGid)));
+    if (::setfsuid(static_cast<uid_t>(-1)) != previousUid || ::setfsgid(static_cast<gid_t>(-1)) != previousGid)
+    {
+        if (file >= 0)
+        {
+            ::close(file);
+        }
+        std::fputs("TaskSmack: couldn't restore its filesystem uid; not starting\n", stderr);
+        std::_Exit(1);
+    }
+    return file;
+}
+
+std::optional<std::string> readOwnedFile(int fd, uid_t owner, long long mostBytes)
+{
+    struct stat info = {};
+    if (::fstat(fd, &info) != 0 || !S_ISREG(info.st_mode) || info.st_uid != owner || info.st_size > mostBytes)
+    {
+        return std::nullopt;
+    }
+    std::string contents;
+    std::array<char, 4096> chunk{};
+    for (auto got = ::read(fd, chunk.data(), chunk.size()); got > 0; got = ::read(fd, chunk.data(), chunk.size()))
+    {
+        contents.append(chunk.data(), static_cast<std::size_t>(got));
+        if (std::cmp_greater(contents.size(), mostBytes))
+        {
+            return std::nullopt; // it grew while being read
+        }
+    }
+    return contents;
+}
+
+bool isPrivateFolderOf(const std::string& folder, uid_t owner)
+{
+    struct stat made = {};
+    return ::lstat(folder.c_str(), &made) == 0 && S_ISDIR(made.st_mode) && made.st_uid == owner &&
+           (made.st_mode & (S_IRWXG | S_IRWXO)) == 0;
+}
+
+std::map<std::string, std::optional<std::string>, std::less<>>
+userSideValuesFrom(const std::function<std::optional<std::string>(std::string_view)>& env)
+{
+    std::map<std::string, std::optional<std::string>, std::less<>> values;
+    for (const std::string_view name : USER_SIDE_NAMES)
+    {
+        std::optional<std::string> value = env(name);
+        // Only XAUTHORITY is recorded unset (#4259): its process value is root's private copy. An unset PATH or
+        // XDG_DATA_DIRS isn't recorded, so the child gets the process's own, root's secure path, as before (the #4286 review).
+        if (value.has_value() || name == "XAUTHORITY")
+        {
+            values.emplace(name, std::move(value));
+        }
+    }
+    return values;
+}
+
 bool isKept(std::string_view name) noexcept
 {
     return std::ranges::find(KEPT, name) != KEPT.end() ||
            std::ranges::any_of(KEPT_PREFIXES, [name](std::string_view prefix) { return name.starts_with(prefix); });
+}
+
+bool isLocaleVariable(std::string_view name) noexcept
+{
+    // sudo's env_check list (LANG, LANGUAGE, LC_*, TERM, COLORTERM), and TaskSmack's own locale override.
+    return name == "LANG" || name == "LANGUAGE" || name.starts_with("LC_") || name == "TASKSMACK_LOCALE" || name == "TERM" ||
+           name == "COLORTERM";
+}
+
+bool isSafeLocale(std::string_view value) noexcept
+{
+    // Trimmed first, as LocaleSetup's override reader trims it (the #4293 review): " .." is "..".
+    std::string_view trimmed = value;
+    while (!trimmed.empty() && std::string_view(" \t\n\r\f\v").contains(trimmed.front()))
+    {
+        trimmed.remove_prefix(1);
+    }
+    return !value.contains('/') && !value.contains('%') && !trimmed.starts_with('.');
 }
 
 bool isSafeTimeZone(std::string_view value) noexcept
@@ -255,7 +308,7 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
             {
                 continue;
             }
-            if (!isKept(name) || (name == "TZ" && !isSafeTimeZone(value)))
+            if (!isKept(name) || (name == "TZ" && !isSafeTimeZone(value)) || (isLocaleVariable(name) && !isSafeLocale(value)))
             {
                 names.emplace_back(name);
             }
@@ -312,15 +365,8 @@ void applyToThisProcess(bool apply)
     {
         root.runtimeDir = "/run/user/0";
     }
-    // The user's own values, for the programs started as them (SessionUser::userSideValues()).
-    for (const char* name : {"PATH", "XDG_DATA_DIRS", "XAUTHORITY"})
-    {
-        // NOLINTNEXTLINE(concurrency-mt-unsafe) - first thing in main(), before any thread
-        if (const char* value = std::getenv(name); value != nullptr)
-        {
-            SessionUser::userSideValues()[name] = value;
-        }
-    }
+    // The user's own values, for the programs started as them (SessionUser::userSideValues()), an unset one too (#4259).
+    SessionUser::userSideValues() = userSideValuesFrom(&SessionUser::processVariable);
     root.xauthority = rootXauthorityCopy(root.runtimeDir);
     removedNames() = applyTo(
         environ,

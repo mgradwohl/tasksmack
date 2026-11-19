@@ -8,11 +8,14 @@
 #include "Domain/StartupModel.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/NativeId.h"
+#include "Platform/Utf8CaseFold.h"
 #include "UI/CellText.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
 #include "UI/IconsFontAwesome6.h"
+#include "UI/LabelledText.h"
 #include "UI/Theme.h"
 
 #include <imgui.h>
@@ -38,7 +41,7 @@ namespace
 constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup apps...";
 
 using Platform::compareIgnoreCase;
-using Platform::containsIgnoreCase;
+using Platform::containsFoldedCase;
 
 /// An entry's impact, or Not measured when @p impacts doesn't reach it.
 [[nodiscard]] Domain::StartupEntryImpact impactAt(std::span<const Domain::StartupEntryImpact> impacts, std::size_t index) noexcept
@@ -135,15 +138,15 @@ void renderStartupTooltip(const Platform::StartupEntry& entry)
     }
     if (!entry.command.empty())
     {
-        ImGui::Text("Command: %s", entry.command.c_str());
+        UI::Widgets::labelledText("Command: ", entry.command);
     }
     if (!entry.executablePath.empty())
     {
-        ImGui::Text("Program: %s", entry.executablePath.c_str());
+        UI::Widgets::labelledText("Program: ", entry.executablePath);
     }
     if (!entry.sourcePath.empty())
     {
-        ImGui::Text("Shortcut: %s", entry.sourcePath.c_str());
+        UI::Widgets::labelledText("Shortcut: ", entry.sourcePath);
     }
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
@@ -387,9 +390,9 @@ std::vector<std::size_t> buildStartupRows(std::span<const Platform::StartupEntry
         {
             continue;
         }
-        if (containsIgnoreCase(entry.name, filter) || containsIgnoreCase(entry.registrationName, filter) ||
-            containsIgnoreCase(entry.programName, filter) || containsIgnoreCase(entry.publisher, filter) ||
-            containsIgnoreCase(entry.command, filter))
+        if (containsFoldedCase(entry.name, filter) || containsFoldedCase(entry.registrationName, filter) ||
+            containsFoldedCase(entry.programName, filter) || containsFoldedCase(entry.publisher, filter) ||
+            containsFoldedCase(entry.command, filter))
         {
             rows.push_back(i);
         }
@@ -500,8 +503,10 @@ void applySortSpecs(StartupViewState& state)
 
 [[nodiscard]] bool isSelected(const Platform::StartupEntry& entry, const StartupViewState& state)
 {
+    // By id too once a row was picked (#4304): of two entries shown by the same name, only the one picked.
     return entry.location == state.selectedLocation && startupEntryKey(entry) == state.selectedName &&
-           entry.packageFamily == state.selectedFamily;
+           entry.packageFamily == state.selectedFamily &&
+           (state.selectedNativeId == Platform::NativeId::None || entry.nativeId == state.selectedNativeId);
 }
 
 /// What a row draws besides its entry: the action menu, and the icon (#1800) filed under iconKey.
@@ -555,6 +560,7 @@ void renderImpactTooltip(const Domain::StartupEntryImpact& impact, const Domain:
         state.selectedName = startupEntryKey(entry);
         state.selectedLocation = entry.location;
         state.selectedFamily = entry.packageFamily;
+        state.selectedNativeId = entry.nativeId;
     }
     const bool tooltipDue = ImGui::IsItemHovered(missing ? ImGuiHoveredFlags_None : ImGuiHoveredFlags_DelayNormal);
     if (extras.actions != nullptr)
@@ -672,6 +678,8 @@ void renderStartupRows(const Domain::StartupPublication& publication,
             const std::string_view key = startupEntryKey(entry);
             ImGui::PushID(entry.packageFamily.c_str());
             ImGui::PushID(key.data(), key.data() + key.size());
+            // And by its id (#4304): two entries shown by the same name are two rows.
+            ImGui::PushID(static_cast<int>(static_cast<std::uint32_t>(entry.nativeId)));
             const RowExtras extras{
                 .actions = actions,
                 .icons = icons,
@@ -680,6 +688,7 @@ void renderStartupRows(const Domain::StartupPublication& publication,
                 .iconKey = state.iconKeys[index],
             };
             renderStartupRow(entry, state.enabledLabels[index], capabilities, scheme, state, extras);
+            ImGui::PopID();
             ImGui::PopID();
             ImGui::PopID();
             ImGui::PopID();

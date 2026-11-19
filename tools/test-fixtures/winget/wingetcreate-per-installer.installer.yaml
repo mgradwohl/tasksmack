@@ -1,0 +1,48 @@
+# Created with YamlCreate.ps1 Dumplings Mod
+# yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
+
+PackageIdentifier: "TaskSmack.TaskSmack"
+PackageVersion: "__VERSION__"   # quoted, with a trailing comment
+InstallerLocale: en-US
+InstallModes:
+- interactive
+- silent
+UpgradeBehavior: install
+Installers:
+- InstallerType: nullsoft   # fields left on each installer, Architecture not first
+  Scope: machine
+  Architecture: x64
+  InstallerUrl: 'https://github.com/mgradwohl/tasksmack/releases/download/v__VERSION__/TaskSmack-__VERSION__-win64.exe'
+  InstallerSha256: "__SHA_X64__"
+  InstallerSwitches:
+    Silent: /S
+    Custom: /NCRC # a comment on a value
+  ExpectedReturnCodes:
+  - InstallerReturnCode: 1
+    ReturnResponse: cancelledByUser
+  - InstallerReturnCode: 32
+    ReturnResponse: packageInUse
+  ProductCode: TaskSmack
+  AppsAndFeaturesEntries:
+  - DisplayName: TaskSmack
+    Publisher: 'TaskSmack Contributors'
+    ProductCode: TaskSmack
+- InstallerType: nullsoft
+  Scope: machine
+  InstallerSha256: __SHA_ARM64__
+  Architecture: arm64
+  InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v__VERSION__/TaskSmack-__VERSION__-windows-arm64.exe
+  InstallerSwitches:
+    Silent: /S
+    Custom: /NCRC
+  ExpectedReturnCodes:
+  - InstallerReturnCode: 32
+    ReturnResponse: packageInUse
+  ProductCode: TaskSmack
+  AppsAndFeaturesEntries:
+  - DisplayName: TaskSmack
+    Publisher: 'TaskSmack Contributors'
+    ProductCode: TaskSmack
+ManifestType: installer
+ManifestVersion: 1.12.0
+ReleaseDate: 2026-12-01

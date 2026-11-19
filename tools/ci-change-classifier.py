@@ -189,6 +189,7 @@ DEV_TOOLS = {
     "perf-data/win-baseline.json": "bench.ps1's local baseline; no workflow reads it (CI's is linux-ci-baseline.json).",
     "perf-data/win-baseline.manifest.json": "win-baseline.json's manifest, read only by a local comparison.",
     # Their tests: what each runs is in DEV_TOOL_TESTS.
+    "tests/tools/test_heavy_checks_push_scope.py": "Heavy Checks' push-scope test (#4195), run by ctest and by dev-tools-checks.",
     "tests/tools/test_profile_perf_sh.py": "profile-perf.sh's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_pgo_sh.py": "pgo.sh's tool test, run by ctest and by dev-tools-checks.",
     "tests/tools/test_profile_heap_sh.py": "profile-heap.sh's tool test, run by ctest and by dev-tools-checks.",
@@ -207,6 +208,7 @@ DEV_TOOLS = {
     "tools/test-measure-idle.ps1": "measure-idle.ps1's and idle-sample.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-resize-perf-summary.ps1": "resize-perf-summary.ps1's tool test, run by ctest and by dev-tools-checks.",
     "tools/test-pgo.ps1": "pgo.ps1's tool test, run by ctest and by dev-tools-checks.",
+    "tools/test-ps1-compat.ps1": "the tools/*.ps1 PowerShell 5.1 test (#4319), run by ctest and by dev-tools-checks.",
 }
 
 # The tool tests the dev-tools-checks jobs run, by runner, in ctest's registrations' way (tests/CMakeLists.txt):
@@ -218,6 +220,7 @@ DEV_TOOL_TESTS = {
         "tests/tools/test_ci_change_classifier.py",
         "tests/tools/test_workflow_run_steps.py",
         "tests/tools/test_check_cache_prune_triggers.py",
+        "tests/tools/test_heavy_checks_push_scope.py",
         "tests/tools/test_profile_perf_sh.py",
         "tests/tools/test_pgo_sh.py",
         "tests/tools/test_profile_heap_sh.py",
@@ -238,6 +241,7 @@ DEV_TOOL_TESTS = {
         "tools/test-resize-perf-summary.ps1",
         "tools/test-cmake-cache.ps1",
         "tools/test-pgo.ps1",
+        "tools/test-ps1-compat.ps1",
     ),
 }
 

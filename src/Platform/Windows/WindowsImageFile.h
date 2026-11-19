@@ -6,10 +6,14 @@
 // creation, and a running image can be renamed (its section shares delete) and another file put at the old name.
 //
 // GetMappedFileNameW at the image's entry point (ProcessImageInformation's TransferAddress) names the image's file as
-// it is named now. That name is opened through \\?\GLOBALROOT without FILE_SHARE_DELETE, so the file held can't be
-// renamed or deleted while it is held. Then the image's name is read again, and the file at that name must be the held
-// one by identity (volume serial and file ID, never by name, so a mapped network drive's, a short 8.3 name's or another
-// case's form of the same name matches), and the held file must have the image's size.
+// it is named now. That name is opened without FILE_SHARE_DELETE, so the file held can't be renamed or deleted while
+// it is held, by Windows::openLocalNtFile() (WindowsLocalNtFile.h, #4482): NtCreateFile on the NT name itself, never
+// through \\?\GLOBALROOT, with no junction or symlink on the way or at the name followed and identification-level
+// security, so a link the process swaps in under its image's name can't make TaskSmack connect to a share; a network
+// share's image, or one on a device TaskSmack can't tell is a local disk, isn't opened or read, and so isn't hashed or
+// checked ("it isn't on a drive TaskSmack can check"). Then the image's name is read again, and the file at that name,
+// opened the same way, must be the held one by identity (volume serial and file ID, never by name, so a short 8.3
+// name's or another case's form of the same name matches), and the held file must have the image's size.
 //
 // What this can't rule out from user mode: a process that rewrites its own file after its image section was made
 // (Process Herpaderping: the section keeps the original pages while the file on disk holds other bytes, of any size
@@ -38,6 +42,7 @@
 // clang-format on
 
 #include "WindowsHandles.h"
+#include "WindowsLocalNtFile.h"
 #include "WindowsNtQuery.h"
 
 #include <cstdint>
@@ -52,8 +57,7 @@ namespace Platform::Windows
 
 // NOLINTBEGIN(misc-include-cleaner) - Win32 types come from windows.h sub-headers
 
-/// The calls openProcessImageFile() makes on the process's handle: kernel32's and ntdll's, or a test's fakes. The
-/// file itself is opened with CreateFileW either way.
+/// The calls openProcessImageFile() makes: kernel32's and ntdll's, or a test's fakes.
 struct ImageFileFunctions
 {
     /// ntdll's NtQueryInformationProcess, for ProcessImageInformation (the entry point and the image's size).
@@ -67,6 +71,9 @@ struct ImageFileFunctions
     /// GetProcessInformation(), for ProcessProtectionLevelInfo: whether a process whose image can't be found is a
     /// protected one, so the refusal says so (#4057). Nullable: then it reads as not protected.
     BOOL(WINAPI* getProcessInformation)(HANDLE process, PROCESS_INFORMATION_CLASS infoClass, LPVOID info, DWORD size) = nullptr;
+    /// The calls the image's file is opened by its NT name with (Windows::openLocalNtFile(), #4482): the held file and
+    /// the file under the image's name again. Without them nothing is opened, and the image reads as unreadable.
+    LocalFileFunctions localFile{};
 };
 
 /// The system's calls.

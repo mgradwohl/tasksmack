@@ -65,6 +65,15 @@ TEST(ProcessModulesDomainTest, FormatsNameAddressAndVersion)
     EXPECT_EQ(Domain::Modules::formatAddress(0x1000), "0x000000001000");
     EXPECT_EQ(Domain::Modules::formatVersion(ModuleVersion{.major = 10, .minor = 0, .build = 26100, .revision = 4202}), "10.0.26100.4202");
     EXPECT_EQ(Domain::Modules::formatVersion(std::nullopt), "");
+
+    // #4373: a module whose file isn't on a local drive says its version wasn't read, rather than that it has none.
+    ProcessModule remote{.path = R"(\\server\share\a.dll)", .baseAddress = 1, .sizeBytes = 2, .version = std::nullopt, .deleted = false};
+    EXPECT_EQ(Domain::Modules::versionText(remote), "");
+    remote.versionNotRead = true;
+    EXPECT_EQ(Domain::Modules::versionText(remote), Domain::Modules::VERSION_NOT_READ);
+    remote.version = ModuleVersion{.major = 1, .minor = 2, .build = 3, .revision = 4};
+    remote.versionNotRead = false;
+    EXPECT_EQ(Domain::Modules::versionText(remote), "1.2.3.4");
 }
 
 TEST(ProcessModulesViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
@@ -256,6 +265,14 @@ TEST_F(ProcessModulesViewRenderTest, PopulatedShowsTheCountColumnsAndRows)
     text = renderAndCapture(view, true);
     EXPECT_FALSE(text.contains("VERSION"));
     EXPECT_TRUE(text.contains("libgone.so (deleted)"));
+
+    // #4373: a module whose version wasn't read (its file is on a network share) keeps the column, and says so.
+    Platform::ModulesReadResult remote = sampleModules(false);
+    remote.modules[0].versionNotRead = true;
+    view.applyResult(remote);
+    text = renderAndCapture(view, true);
+    EXPECT_TRUE(text.contains("VERSION"));
+    EXPECT_TRUE(text.contains(Domain::Modules::VERSION_NOT_READ));
 
     view.setFilter("no-such-module");
     EXPECT_TRUE(renderAndCapture(view, true).contains("No modules match the filter"));

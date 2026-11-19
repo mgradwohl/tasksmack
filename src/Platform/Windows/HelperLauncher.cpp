@@ -4,6 +4,7 @@
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -162,7 +163,7 @@ std::string launchError(DWORD error)
     default:
         break;
     }
-    return std::format("couldn't start TaskSmackHelper.exe: {}", std::system_category().message(static_cast<int>(error)));
+    return std::format("couldn't start TaskSmackHelper.exe: {}", Platform::WinString::win32ErrorText(error));
 }
 
 std::expected<UniqueHandle, std::string>
@@ -175,8 +176,7 @@ launch(const std::wstring& pipeName, const std::stop_token& stopToken, const Fun
     const auto image = BrokerHelper::ownImage(functions.getModuleFileName);
     if (!image.has_value())
     {
-        return std::unexpected(
-            std::format("couldn't tell where TaskSmack is: {}", std::system_category().message(static_cast<int>(GetLastError()))));
+        return std::unexpected(std::format("couldn't tell where TaskSmack is: {}", Platform::WinString::win32ErrorText(GetLastError())));
     }
     const std::wstring helper = BrokerHelper::besidePath(*image, HELPER_FILE_NAME);
     if (helper.empty())

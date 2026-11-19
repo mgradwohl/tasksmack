@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Parsing and validity helpers for analyze-etw.ps1, dot-sourced by it and by test-analyze-etw.ps1.
 # Pure functions over xperf's text output and PE files, so they can be tested without a trace.
 

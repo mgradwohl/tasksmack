@@ -24,6 +24,7 @@
 #include <imgui_internal.h> // The frame's text log, the window's draw list, SetFocusID() on the slider
 
 #include <array>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -173,6 +174,35 @@ TEST_F(ProcessPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedProce
     click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); }); // Disabled again
     view.update(/*wait=*/true);                                               // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 1);
+}
+
+// #4379: after a successful Apply the slider keeps the applied value while the snapshot still holds the
+// old one, instead of jumping back until the sampler publishes again; a sample taken after the apply that
+// shows the applied value hands the control back to the process's value.
+TEST_F(ProcessPriorityViewRenderTest, TheSliderKeepsAnAppliedValueUntilANewerSample)
+{
+    TestMocks::MockProcessActions mock;
+    ProcessPriorityView view;
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
+    view.editNice(10, TARGET_A);
+
+    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
+    ASSERT_EQ(mock.setPriorityCount(), 1);
+
+    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); }); // The snapshot still says 0
+    EXPECT_EQ(view.niceValue(), 10);
+    EXPECT_FALSE(view.hasPendingEdit());
+
+    view.takeProcessSample(0.0, 0); // Sampled before the apply finished: still the old value
+    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    EXPECT_EQ(view.niceValue(), 10);
+
+    const double after = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1.0;
+    view.takeProcessSample(after, 10); // Sampled after it, and confirms it
+    EXPECT_FALSE(view.appliedNice().has_value());
+    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 3, TARGET_A); }); // The process's own value again
+    EXPECT_EQ(view.niceValue(), 3);
 }
 
 TEST_F(ProcessPriorityViewRenderTest, AnEditForAnotherProcessIsDroppedBeforeApply)

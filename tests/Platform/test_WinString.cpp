@@ -1,10 +1,16 @@
+#include "Core/ErrorCodeText.h"
 #include "NonAsciiTestNames.h"
 #include "Platform/Windows/WinString.h"
 
 #include <gtest/gtest.h>
 
+#include <array>
+#include <cerrno>
 #include <string>
 #include <string_view>
+#include <system_error>
+
+#include <windows.h>
 
 namespace Platform::WinString
 {
@@ -68,8 +74,34 @@ TEST(WinStringTest, WideToUtf8SpecialCharactersConvertsCorrectly)
 {
     // Newlines and tabs
     EXPECT_EQ(wideToUtf8(L"Line1\nLine2\tTab"), "Line1\nLine2\tTab");
-    // Null embedded (should stop at first null)
-    EXPECT_EQ(wideToUtf8(L"Before"), "Before");
+    // A C string stops at its first NUL, as a C string does.
+    EXPECT_EQ(wideToUtf8(L"Before\0After"), "Before");
+}
+
+TEST(WinStringTest, WideToUtf8WstringKeepsEmbeddedNuls)
+{
+    // All size() units (#4307): the std::wstring overload no longer stops at the first NUL.
+    const std::string converted = wideToUtf8(std::wstring(L"a\0b", 3));
+    EXPECT_EQ(converted, std::string("a\0b", 3));
+    EXPECT_EQ(converted.size(), 3U);
+    EXPECT_EQ(wideToUtf8(std::wstring(L"\0lead", 5)), std::string("\0lead", 5)) << "a leading NUL isn't an empty name";
+    // And back: the round trip keeps every unit.
+    EXPECT_EQ(utf8ToWide(converted), std::wstring(L"a\0b", 3));
+}
+
+TEST(WinStringTest, WideToDisplayUtf8ShowsEachNul)
+{
+    // "OneDrive\0x" shows as OneDrive<U+2400>x, never as a second "OneDrive" (#4307).
+    EXPECT_EQ(wideToDisplayUtf8(std::wstring_view(L"OneDrive\0x", 10)),
+              "OneDrive\xE2\x90\x80"
+              "x");
+    EXPECT_EQ(wideToDisplayUtf8(std::wstring_view(L"\0", 1)), "\xE2\x90\x80");
+    EXPECT_EQ(wideToDisplayUtf8(std::wstring_view(L"end\0", 4)), "end\xE2\x90\x80");
+    EXPECT_EQ(wideToDisplayUtf8(L"plain"), "plain");
+    EXPECT_EQ(wideToDisplayUtf8({}), "");
+    // A lone surrogate is U+FFFD, as wideToUtf8 shows it.
+    const std::wstring lone = std::wstring(L"a") + static_cast<wchar_t>(0xD800);
+    EXPECT_EQ(wideToDisplayUtf8(lone), "a\xEF\xBF\xBD");
 }
 
 // ========== wideToUtf8 (wstring_view) Tests ==========
@@ -227,17 +259,73 @@ TEST(WinStringTest, Utf8ToWideTruncatedSequenceReturnsEmpty)
 TEST(WinStringTest, WideToUtf8LongStringConvertsCorrectly)
 {
     // Test a longer string to verify buffer handling
-    std::wstring longWide(1000, L'A');
-    std::string longUtf8(1000, 'A');
+    const std::wstring longWide(1000, L'A');
+    const std::string longUtf8(1000, 'A');
     EXPECT_EQ(wideToUtf8(longWide), longUtf8);
 }
 
 TEST(WinStringTest, Utf8ToWideLongStringConvertsCorrectly)
 {
     // Test a longer string
-    std::string longUtf8(1000, 'B');
-    std::wstring longWide(1000, L'B');
+    const std::string longUtf8(1000, 'B');
+    const std::wstring longWide(1000, L'B');
     EXPECT_EQ(utf8ToWide(longUtf8), longWide);
+}
+
+// ========== win32ErrorText Tests (#4308) ==========
+
+// TaskSmackTests has no activeCodePage manifest, so on a cp1252 or cp932 system std::system_category().message() would
+// hand back code-page bytes here; win32ErrorText() must give UTF-8 whatever the code page.
+TEST(WinStringTest, Win32ErrorTextIsValidUtf8WithNoTrailingBreakOrPeriod)
+{
+    for (const DWORD code : {
+             DWORD{ERROR_ACCESS_DENIED},
+             DWORD{ERROR_FILE_NOT_FOUND},
+             DWORD{ERROR_INVALID_PARAMETER},
+             DWORD{ERROR_SHARING_VIOLATION},
+             DWORD{ERROR_NOT_ENOUGH_MEMORY},
+         })
+    {
+        const std::string text = win32ErrorText(code);
+        ASSERT_FALSE(text.empty()) << code;
+        // utf8ToWide() rejects invalid UTF-8 (MB_ERR_INVALID_CHARS) with an empty result.
+        EXPECT_FALSE(utf8ToWide(text).empty()) << code << ": " << text;
+        EXPECT_NE(text.back(), '\n') << code;
+        EXPECT_NE(text.back(), '\r') << code;
+        EXPECT_NE(text.back(), '.') << code;
+        EXPECT_NE(text.back(), ' ') << code;
+        EXPECT_FALSE(text.starts_with("error ")) << code << " has system text: " << text;
+    }
+}
+
+TEST(WinStringTest, Win32ErrorTextMatchesFormatMessageW)
+{
+    std::array<wchar_t, 512> wide{};
+    const DWORD length = FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                                        nullptr,
+                                        ERROR_ACCESS_DENIED,
+                                        0,
+                                        wide.data(),
+                                        static_cast<DWORD>(wide.size()),
+                                        nullptr);
+    ASSERT_GT(length, 0U);
+    const std::string expected = wideToUtf8(std::wstring_view(wide.data(), length));
+    EXPECT_TRUE(expected.starts_with(win32ErrorText(ERROR_ACCESS_DENIED))) << expected;
+}
+
+TEST(WinStringTest, Win32ErrorTextFallsBackToTheNumber)
+{
+    // A code in the customer range (bit 29) that no system message table has.
+    EXPECT_EQ(win32ErrorText(0x2000'FFFFUL), "error 536936447");
+}
+
+TEST(WinStringTest, ErrorCodeTextSendsSystemCategoryThroughFormatMessageW)
+{
+    const std::error_code denied(ERROR_ACCESS_DENIED, std::system_category());
+    EXPECT_EQ(Core::errorCodeText(denied), win32ErrorText(ERROR_ACCESS_DENIED));
+    // A generic (errno) code keeps message(): the CRT's table, not FormatMessage.
+    const std::error_code noEntry(ENOENT, std::generic_category());
+    EXPECT_EQ(Core::errorCodeText(noEntry), noEntry.message());
 }
 
 } // namespace

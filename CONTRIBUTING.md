@@ -140,7 +140,7 @@ Run these in PowerShell 7. Windows PowerShell (`powershell.exe`) refuses to run
 `.venv\Scripts\Activate.ps1` under its default execution policy (`Restricted`).
 
 The Windows setup installs only what building, testing and running need:
-- Visual Studio 2022 Build Tools with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
+- Visual Studio 2026 Build Tools (the Visual Studio CI builds with) with just the MSVC C++ libraries, and the Windows 11 SDK (10.0.26100) with just its desktop C++ headers and libraries (see [Windows Pre-Requisites](#windows-pre-requisites));
 - LLVM 23 (`-LlvmVersion` must stay on the pinned major), as the only LLVM in `C:\Program Files\LLVM` (see below);
 - CMake, Ninja and Python 3.14.
 
@@ -204,9 +204,10 @@ Example (Ubuntu/Debian):
 sudo apt install clang-23 clang-tidy-23 clang-format-23 lld-23 llvm-23 libc++-23-dev libc++abi-23-dev cmake ninja-build ccache
 # The compiler runtimes the coverage, PGO and sanitizer presets link (only a Recommends of clang-23)
 sudo apt install libclang-rt-23-dev
-# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL)
+# OpenGL, X11 and Wayland headers for SDL and the window (configure fails without OpenGL); libdecor's for
+# native Wayland decorations, which a Release build requires (#4440: -DTASKSMACK_REQUIRE_LIBDECOR=OFF opts out)
 sudo apt install libgl1-mesa-dev libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libxext-dev \
-    libwayland-dev libxkbcommon-dev
+    libwayland-dev libxkbcommon-dev libdecor-0-dev
 
 # Python 3.14 (Ubuntu 24.04's python3 is 3.12; tools/setup-dev.sh adds the deadsnakes PPA for it),
 # with GLAD's hash-locked dependencies in the project venv
@@ -244,7 +245,7 @@ sudo apt install libbpf-dev
 - Python 3.14+ with jinja2 (required for GLAD OpenGL loader generation)
 - git (CMake requires it, and fetches the dependencies with it)
 - FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
-- **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2022 Build Tools with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if it has `VC.Tools.x86.x64` and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
+- **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2026 Build Tools (winget `Microsoft.VisualStudio.BuildTools`, the Visual Studio of CI's `windows-2025-vs2026` image) with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if its MSVC toolset is 14.51 or newer (the floor: the standard library CI builds with, VS 2026 18.6, which first shipped `<flat_map>` and `<flat_set>`; `tools/check-prereqs.ps1` warns on an older one), it has `VC.Tools.x86.x64`, and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
 `TaskSmack.exe`; the DPI-awareness manifest is embedded separately at link time. `cmake/RCCompiler.cmake`
@@ -451,7 +452,12 @@ it on any new target. Third-party dependencies keep their own settings.
   hook (`tools/check-utf8.py`) fails on any staged text file that doesn't decode as strict UTF-8,
   reporting `file:line:column`. Binary files (the types `.gitattributes` marks binary) and the fuzz
   corpora under `tests/fuzz/corpus/` are skipped.
-- **PowerShell scripts need PowerShell 7 (`pwsh`)** and name the encoding on every write:
+- **PowerShell scripts need PowerShell 7 (`pwsh`)**: each `tools/*.ps1` starts with `#Requires -Version 7`, so
+  Windows PowerShell 5.1 says what to run it in. Only `tools/newcomer-check.ps1`, which runs on a clean Windows,
+  stays 5.1-compatible. 5.1 reads a script with no BOM as the ANSI code page, so a non-ASCII byte in a string can
+  break its parse: `setup-dev.ps1`, `check-prereqs.ps1` and `pgo.ps1` are ASCII-only (`[char]0x2713` for a mark),
+  and the `check-utf8` hook fails a `.ps1` with non-ASCII text and no `#Requires -Version 7`. A script names the
+  encoding on every write:
   `Set-Content`/`Add-Content`/`Out-File -Encoding utf8`, which in PowerShell 7 means UTF-8
   without a BOM (`utf8NoBOM` is the same thing). Use `-Encoding ascii` only for `.cmd` stubs that
   `cmd.exe` reads. A script that parses a native tool's output (git, cmake, clang-tidy, llvm-cov)
@@ -2979,6 +2985,12 @@ Packages are created in `dist/`. The NSIS run also copies the uninstaller it bui
 CPack's `project.nsi` in `dist/_CPack_Packages/<system>/NSIS/` (`cmake/CPackProjectConfig.cmake.in`), so a
 release can sign it; see [Windows code signing](#windows-code-signing).
 
+The installer is a Unicode (UTF-8/UTF-16) NSIS target: `CPACK_NSIS_DEFINES` starts with `Unicode true`, so makensis
+raises no warning 7998 (ANSI target) and non-ASCII paths and registry values aren't narrowed to the code page (#4300).
+It has no "Add to PATH" option: a GUI app doesn't need to be on `PATH`, and the old option rewrote a `PATH` entry
+outside the ANSI code page with `?`. The uninstaller CPack generates still removes a `PATH` entry an older
+installer added, so an upgraded or removed install leaves none behind.
+
 What a package contains, and what it depends on (#1398):
 
 - Only the executable, the runtime assets, the Linux desktop entries, icons and the Administrator launcher's
@@ -3024,8 +3036,10 @@ What a package contains, and what it depends on (#1398):
   installer's per-machine `C:\Program Files\TaskSmack`, but not from a `.zip` unpacked into a folder
   its user owns.
 - Windows builds other than Debug link the C and C++ runtime statically (`/MT`), so the `.zip`'s
-  `TaskSmack.exe` runs without the Visual C++ Redistributable: `llvm-objdump -p` on it should list
-  no `MSVCP140.dll`, `VCRUNTIME140*.dll` or `api-ms-win-crt-*.dll`. Debug keeps `/MDd`.
+  `TaskSmack.exe` runs without the Visual C++ Redistributable. `pwsh tools/check-windows-imports.ps1 -Path <file or folder> -List`
+  reads the import tables (x64 and ARM64) and fails on `MSVCP140.dll`, `VCRUNTIME140*.dll`, `api-ms-win-crt-*.dll`
+  or any DLL outside its allowlist; release.yml runs it on the `.zip` and the installed files (#4439). Debug keeps
+  `/MDd`, so it fails the check on purpose.
 
 ## Version Header
 
@@ -3195,7 +3209,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 ### Code Quality & Hygiene
 - **`pre-commit.yml`**: Runs the `pre-commit` framework (via Python) across all files to enforce syntax hygiene, formatting, and file-level rules configured in `.pre-commit-config.yaml` (pushes and PRs to `main` and `release/*`).
 - **`static-analysis.yml`**: Manual full `clang-tidy` run on Linux and on Windows, both blocking (manual dispatch only; `ci.yml`'s nightly schedule runs the full analysis on `main`).
-- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch product or test code: `src/Domain`, `src/UI`, `src/Platform`, `src/App`, `src/Core`, `src/main.cpp`, `tests`, or the benchmarks, their baseline and tools). On a push, the coverage jobs run for any of those, and `benchmark-regression` only when the push touched what the benchmarks measure (`src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory`, the benchmarks, their baseline and tools); the `push-scope` job decides, and every other event runs it as before (#3834). So a merge that drops the Linux floor fails main on that merge, not the next nightly run. The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
+- **`heavy-checks.yml`**: Runs expensive verifications that shouldn't block PR feedback loops, such as generating Coverage reports (nightly, manual dispatch, and pushes to `main` that touch product or test code: `src/Domain`, `src/UI`, `src/Platform`, `src/App`, `src/Core`, `src/main.cpp`, `tests`, or the benchmarks, their baseline and tools). On a push, the coverage jobs run for any of those, and `benchmark-regression` only when the push touched what the benchmarks measure (`src/Domain`, `src/UI`, `src/Platform`, `ProcessDetailsHistory`, the App headers and `tests/Mocks` the benchmarks include, the build settings `CMakePresets.json`, `cmake/CompilerOptions.cmake` and `tools/common.sh`, the benchmarks, their baseline and tools; `tests/tools/test_heavy_checks_push_scope.py` derives the includes from `benchmarks/*.cpp` and fails if the scope misses one, #4195); the `push-scope` job decides, and every other event runs it as before (#3834). So a merge that drops the Linux floor fails main on that merge, not the next nightly run. The coverage jobs report **line** coverage from `coverage/coverage.lcov` against a floor: the Linux job fails below 95% (#1891), the Windows job fails below 93% (#3842); `codecov.yml`'s `auto` target is the per-change ratchet (#1543). A manual dispatch with `scope: benchmark` runs only the benchmark-regression job, and one with `scope: coverage` only the two coverage jobs (#3148). The Linux coverage job also runs `tools/check-prereqs.sh` on a fresh image. Nightly (and in a `scope: all` dispatch), `ubuntu-2404-build` builds the release preset on ubuntu-24.04, where the release's Linux packages build and every other job uses 26.04, with release.yml's pinned LLVM release (#3821).
 - **`devcontainer.yml`**: Builds the dev container's image (`.devcontainer/Dockerfile`, from `tools/setup-dev.sh`) and, inside it, runs `tools/check-prereqs.sh` and configures the debug preset, whenever the image's inputs change (#136).
 - **`renovate-docs-sri.yml`**: On Renovate's docs-site PRs, regenerates `docs/index.html`'s `integrity=` hashes and `docs/cdn-integrity.json` (`tools/docs-sri.py --update`) and pushes them back with `RENOVATE_TOKEN`, so CI runs on the fixed commit (#3661).
 
@@ -3215,9 +3229,15 @@ blamed on the commit that caused it (#1187). `codeql.yml` doesn't cancel `main` 
 `pre-commit.yml` and `dependency-review.yml` also cancel a PR's superseded run.
 
 Dependabot updates GitHub Actions and Python dependencies weekly.
-[OSV Scanner](https://google.github.io/osv-scanner/) scans C++ FetchContent dependencies
-(via Syft SBOM generated from `CMakeLists.txt`) and all four Python dependency manifests against the
-[OSV vulnerability database](https://osv.dev) on pushes to `main` and `release/*` and the weekly scheduled run. Results appear in the repository's **Security → Code scanning** tab.
+[OSV Scanner](https://google.github.io/osv-scanner/) scans the Python dependency manifests against the
+[OSV vulnerability database](https://osv.dev), and `osv-scanner.yml` checks every C/C++ FetchContent pin there
+too, on pull requests that touch a dependency manifest, on pushes to `main` and `release/*`, in the merge queue
+and in the weekly scheduled run. Syft has no CMake cataloger, so `tools/cpp-deps-sbom.py` adds each
+`FetchContent_Declare()` (name, version, pinned commit, `pkg:github` purl, licence) to the Syft SBOM, fails if
+one is missing or can't be read, and asks OSV about each pinned commit (#4438). A vulnerable pin fails "OSV Scan
+Required" unless `osv-scanner.toml` lists it under `[[IgnoredVulns]]` with a reason and an `ignoreUntil` date;
+after the date it fails again. `python -I tools/cpp-deps-sbom.py list` prints the components. Results of the
+Python scan appear in the repository's **Security → Code scanning** tab.
 Release and CI builds install GLAD's Python dependencies from the hash-locked
 `requirements-glad.txt`; the LLVM bootstrap action also verifies the downloaded installer's
 SHA-256 digest before executing it.
@@ -3429,7 +3449,7 @@ Each GitHub release (triggered by a `v*.*.*` tag) includes:
   Windows SDK version, the runner image (`ImageOS`/`ImageVersion`), the compiler and the commit. Two
   builds of one commit with equal `inputs` should give the same bytes; see [Release
   Reproducibility](#release-reproducibility) for how a mismatch is read.
-- Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action). It lists components and licenses detected in the repository at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
+- Source SBOM: `tasksmack-<label>-source-sbom.spdx.json` (where `<label>` is the release tag with any non-`[a-zA-Z0-9._-]` characters replaced by `-`) — an SPDX-JSON Software Bill of Materials generated from the **source tree** (not from the built Linux/Windows packages) using [Syft](https://github.com/anchore/syft) via [`anchore/sbom-action`](https://github.com/anchore/sbom-action), with the C/C++ libraries added by `tools/cpp-deps-sbom.py` (#4438): every `FetchContent_Declare()` pin (SDL3, Dear ImGui, ImPlot, GLAD, FreeType, spdlog, toml++, stb; GoogleTest, RapidCheck and Google Benchmark marked as test and development dependencies) at its version and commit, with a `pkg:github` purl and its licence, and the Linux build's distribution libraries (libbpf, libsystemd, libcurl) with no version. `create-release` fails if the staged SBOM misses a pin. It lists components and licenses at the tagged commit to improve supply-chain transparency; it does not inventory the contents of the `.deb`/`.tar.gz`/`.zip` packages themselves.
 - Checksums: `SHA256SUMS` and `SHA256SUMS.bundle` (from v0.10.0, #3145) -- `SHA256SUMS` has one
   `sha256sum`-format line (`<sha256>  <name>`, sorted by name) for every file above, and
   `SHA256SUMS.bundle` is its Sigstore bundle, the release's only one. Up to v0.9.x each file had its

@@ -176,6 +176,19 @@ TEST(SystemInfoSectionsTest, ReportJsonHasTheRowsCopyHas)
     EXPECT_TRUE(SystemInfo::allSectionsJson(empty, false, "").contains("\"title\": \"Empty\",\n      \"rows\": []\n    }"));
 }
 
+TEST(SystemInfoSectionsTest, JsonStringIsAlwaysWellFormedUtf8)
+{
+    // #4305: a saved .json that isn't UTF-8 breaks RFC 8259, and json.load and jq refuse it. Each maximal
+    // ill-formed subpart becomes U+FFFD.
+    const std::string fffd = "\xEF\xBF\xBD";
+    EXPECT_EQ(SystemInfo::jsonString("\xFF"), "\"" + fffd + "\"") << "an unprogrammed SMBIOS byte";
+    EXPECT_EQ(SystemInfo::jsonString("Acme\xAE"), "\"Acme" + fffd + "\"") << "Latin-1 registered sign";
+    EXPECT_EQ(SystemInfo::jsonString("\x80"), "\"" + fffd + "\"") << "a lone continuation byte";
+    EXPECT_EQ(SystemInfo::jsonString("caf\xC3"), "\"caf" + fffd + "\"") << "a truncated sequence";
+    EXPECT_EQ(SystemInfo::jsonString("\xC0\xAF"), "\"" + fffd + fffd + "\"") << "an overlong form";
+    EXPECT_EQ(SystemInfo::jsonString("a\xFF\"b"), "\"a" + fffd + "\\\"b\"") << "and the escapes still apply";
+}
+
 TEST(SystemInfoSectionsTest, JsonStringEscapes)
 {
     EXPECT_EQ(SystemInfo::jsonString("plain"), "\"plain\"");
@@ -2902,6 +2915,13 @@ TEST(SystemInfoSectionsTest, CrashesRowsLinuxCappedAndUnreadable)
     none.family = Platform::OsFamily::Windows;
     none.listed = true;
     EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(none), "Last 14 days")->value, "No crashes or hangs");
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(none), "Older"), nullptr);
+
+    // #4375: the log's read failed or timed out partway, so the list says it may not be all.
+    Platform::CrashesInfo partial = none;
+    partial.incomplete = true;
+    EXPECT_EQ(findRow(SystemInfo::buildCrashesSection(partial), "Older")->unavailableReason,
+              "Not all read: the event log stopped answering partway, so older ones may be missing");
 }
 
 TEST(SystemInfoSectionsTest, CrashesSectionComesLast)

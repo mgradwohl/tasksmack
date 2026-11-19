@@ -19,6 +19,7 @@
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/PipeBroker.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
 
@@ -288,8 +289,7 @@ TEST(HelperLauncherTest, EachLaunchErrorIsSaidInWords)
     EXPECT_EQ(HelperLauncher::launchError(ERROR_PATH_NOT_FOUND), HelperLauncher::HELPER_MISSING);
     for (const DWORD error : {DWORD{ERROR_ACCESS_DENIED}, DWORD{ERROR_NO_ASSOCIATION}, DWORD{ERROR_ELEVATION_REQUIRED}})
     {
-        EXPECT_EQ(HelperLauncher::launchError(error),
-                  "couldn't start TaskSmackHelper.exe: " + std::system_category().message(static_cast<int>(error)));
+        EXPECT_EQ(HelperLauncher::launchError(error), "couldn't start TaskSmackHelper.exe: " + Platform::WinString::win32ErrorText(error));
     }
 }
 

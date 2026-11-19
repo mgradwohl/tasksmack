@@ -17,11 +17,13 @@
 // tests/App/test_ProcessOpenFilesViewRender.cpp.
 
 #include "Domain/ProcessOpenFiles.h"
+#include "Domain/Utf8Sanitize.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Utf8CaseFold.h"
 #include "ProcessEnvironmentView.h"
 #include "SectionCaches.h"
 
@@ -184,7 +186,8 @@ class ProcessOpenFilesView
         m_Rows.reserve(result.files.size());
         for (Platform::OpenFile& file : result.files)
         {
-            std::string path = file.path;
+            // The shown path is well-formed UTF-8 (#4301); file keeps the raw bytes.
+            std::string path = Domain::sanitizedUtf8(file.path);
             if (file.deleted)
             {
                 path += " (deleted)";
@@ -234,7 +237,7 @@ class ProcessOpenFilesView
             m_Rows.size(),
             m_Filter,
             [this](std::size_t i)
-            { return Platform::containsIgnoreCase(m_Rows[i].path, m_Filter) || Platform::containsIgnoreCase(m_Rows[i].type, m_Filter); });
+            { return Platform::containsFoldedCase(m_Rows[i].path, m_Filter) || Platform::containsFoldedCase(m_Rows[i].type, m_Filter); });
     }
 
     /// Whether any row has open flags: the Mode column is left out when none does (Windows).

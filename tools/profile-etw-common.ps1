@@ -1,3 +1,4 @@
+#Requires -Version 7
 # Helpers for profile-etw.ps1's app and bench modes, dot-sourced by it and by
 # test-profile-etw.ps1. Kept free of WPR calls so they can be tested without an ETW session.
 

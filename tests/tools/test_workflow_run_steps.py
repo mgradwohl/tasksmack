@@ -43,6 +43,9 @@
   package cache key with a restore-key, a pinned release keeps its exact key (#3393), and the script
   installs an exact hit without apt.llvm.org, refreshes an older entry and falls back to it when
   apt.llvm.org is down, and still fails a cold miss (#3635). sudo, apt-get, curl and dpkg are stubs.
+- ci.yml include-analysis (#4481): the IWYU build gets llvm-23-dev and libclang-23-dev from setup-llvm's pinned
+  apt.llvm.org source (install-iwyu-build-deps), never from a bare apt-get against Ubuntu's own archive, which
+  has no LLVM 23; setup-llvm keeps every other caller's cache key and adds the two packages to this one's.
 - Merge queue (#3818): every check the "Main Builds" ruleset requires (REQUIRED_CHECKS, kept in one place)
   comes from a workflow with the `merge_group` trigger, and none is skipped on a merge group. Each producing
   workflow's jobs are simulated from their own `if:` expressions (a small expression evaluator), with the detect
@@ -1607,6 +1610,59 @@ class RealSystemOnArm64Tests(unittest.TestCase):
         self.assertLess(run.index("$x64Skips = @{"), run.index("$unexpected = "))
 
 
+class ReleaseConfigurationBuiltBeforeTheTagTests(unittest.TestCase):
+    """#4349: the Windows benchmarks and the ARM64 release builds compile in nightly CI, not first on the tag."""
+
+    REUSABLE = WORKFLOWS / "reusable-build-test.yml"
+    ARM64 = WORKFLOWS / "arm64.yml"
+    NIGHTLY_ONLY = "github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'"
+
+    def job_block(self, workflow: Path, job: str) -> str:
+        text = workflow.read_text(encoding="utf-8")
+        return text.split(f"\n  {job}:\n", 1)[1].split("\n\n", 1)[0]
+
+    def test_the_windows_benchmark_step_builds_the_target_without_running_it(self):
+        step = find_step(self.REUSABLE, "Build benchmarks (Windows)")
+        for part in ("runner.os == 'Windows'", "inputs.build_benchmarks", "steps.build-windows.outcome == 'success'"):
+            self.assertIn(part, step.condition)
+        self.assertIn("-DTASKSMACK_BUILD_BENCHMARKS=ON", step.run)
+        self.assertIn("--target TaskSmackBenchmarks", step.run)
+        self.assertNotIn("TaskSmackBenchmarks.exe", step.run)
+
+    def test_the_windows_release_nightly_turns_the_benchmark_build_on(self):
+        block = self.job_block(WORKFLOWS / "ci.yml", "build-windows-release")
+        self.assertIn(self.NIGHTLY_ONLY, block)
+        self.assertIn("build_type: release", block)
+        self.assertIn("build_benchmarks: true", block)
+
+
+    def test_arm64_release_legs_run_on_the_schedule_and_manual_runs_only(self):
+        for job, os_name in (("build-linux-arm64-release", "ubuntu-26.04-arm"), ("build-windows-arm64-release", "windows-11-arm")):
+            with self.subTest(job=job):
+                block = self.job_block(self.ARM64, job)
+                self.assertIn("needs.detect.outputs.run == 'true'", block)
+                self.assertIn(self.NIGHTLY_ONLY, block)
+                self.assertNotIn("pull_request", block)
+                self.assertIn(f"os: {os_name}", block)
+                self.assertIn("build_type: release", block)
+                self.assertIn("build_benchmarks: true", block)
+
+    def test_the_windows_arm64_release_leg_builds_without_running_tests(self):
+        self.assertIn("run_tests: false", self.job_block(self.ARM64, "build-windows-arm64-release"))
+        self.assertNotIn("run_tests", self.job_block(self.ARM64, "build-linux-arm64-release"))
+        for name in ("Test (Windows)", "Test (Windows ARM64)", "Real-system tests (Windows)", "Software OpenGL for the display tests (Windows)"):
+            with self.subTest(step=name):
+                self.assertIn("inputs.run_tests", find_step(self.REUSABLE, name).condition)
+
+    def test_the_debug_arm64_legs_and_their_names_are_unchanged(self):
+        text = self.ARM64.read_text(encoding="utf-8")
+        for job in ("build-linux-arm64", "build-windows-arm64"):
+            block = self.job_block(self.ARM64, job)
+            self.assertIn("build_type: debug", block)
+            self.assertNotIn("build_benchmarks", block)
+        self.assertIn("name: ARM64\n", text)
+
+
 class SigningGalleryRegistrationTests(unittest.TestCase):
     """#3109: azure/artifact-signing-action's `Install-Module -Repository PSGallery` failed on a runner
     whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
@@ -1890,6 +1946,16 @@ class SetupLlvmCacheKeyTests(unittest.TestCase):
             keys.add(out["restore-keys"])
         self.assertEqual(len(keys), 4, keys)
 
+    def test_iwyu_build_deps_get_their_own_entry_and_leave_the_others_keys_alone(self):
+        _, plain = self.outputs()
+        _, off = self.outputs(INSTALL_IWYU_BUILD_DEPS="false")
+        result, deps = self.outputs(INSTALL_IWYU_BUILD_DEPS="true")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(plain["key"], off["key"])
+        self.assertNotEqual(plain["restore-keys"], deps["restore-keys"])
+        set_id = hashlib.sha256(b"format=false tidy=false iwyu-build-deps=true").hexdigest()[:12]
+        self.assertIn(f"-{set_id}-", deps["key"])
+
     def test_a_bad_version_or_release_fails(self):
         for inputs in ({"LLVM_VERSION": "23.1"}, {"EXPECT_RELEASE": "23.1"}, {"EXPECT_RELEASE": "22.1.8"}):
             with self.subTest(inputs=inputs):
@@ -2047,6 +2113,25 @@ class SetupLlvmInstallTests(unittest.TestCase):
         self.assertIn("clang-23_", install[0])
         self.assertIn("ninja-build", install[0])
 
+    def test_iwyu_build_deps_come_from_apt_llvm_org_or_the_cache(self):
+        # A set cached without them goes to apt.llvm.org, which installs them with the toolchain (#4481).
+        self.fill_cache(NEW_BUILD)
+        result, out, calls = self.run_install(CACHE_RESTORED="true", INSTALL_IWYU_BUILD_DEPS="true")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("The LLVM package cache has no llvm-23-dev", result.stdout)
+        self.assertEqual(out["cache-hit"], "false")
+        installs = [call for call in calls if call.startswith("apt-get install")]
+        self.assertIn("llvm-23-dev", installs[-1])
+        self.assertIn("libclang-23-dev", installs[-1])
+        # A set cached with them installs offline, from the cache.
+        self.fill_cache(NEW_BUILD, LLVM_NAMED + ["libllvm23", "llvm-23-dev", "libclang-23-dev"])
+        result, out, calls = self.run_install(CACHE_RESTORED="true", INSTALL_IWYU_BUILD_DEPS="true")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(out["cache-hit"], "true")
+        self.assertFalse([call for call in calls if "apt.llvm.org" in call or "llvm.sh" in call], calls)
+        installs = [call for call in calls if call.startswith("apt-get install")]
+        self.assertIn("libclang-23-dev_", installs[0])
+
     def test_an_exact_hit_missing_a_package_goes_to_apt_llvm_org(self):
         self.fill_cache(NEW_BUILD)
         result, out, calls = self.run_install(CACHE_RESTORED="true", INSTALL_CLANG_TIDY="true")
@@ -2118,6 +2203,41 @@ class SetupLlvmInstallTests(unittest.TestCase):
         self.assertIn("Staged 8 LLVM 23.1.6 .debs", result.stdout)
 
 
+class IwyuBuildToolchainTests(unittest.TestCase):
+    """#4481: include-analysis builds include-what-you-use against LLVM from setup-llvm's pinned source. Ubuntu
+    26.04's own archive has no LLVM 23, so a bare apt-get of libclang-23-dev there failed every IWYU cache miss."""
+
+    CI = WORKFLOWS / "ci.yml"
+
+    def job_text(self) -> str:
+        """The include-analysis job's text: from its header to the next job's."""
+        text = self.CI.read_text(encoding="utf-8")
+        start = text.index("\n  include-analysis:\n") + 1
+        following = re.search(r"^  [a-z][\w-]*:$", text[start + 1 :], re.MULTILINE)
+        return text[start:] if following is None else text[start : start + 1 + following.start()]
+
+    def test_the_job_installs_the_iwyu_build_deps_through_setup_llvm(self):
+        text = self.job_text()
+        setup = text[text.index("uses: ./.github/actions/setup-llvm") :]
+        setup = setup[: setup.index("\n\n")]
+        self.assertIn("install-iwyu-build-deps: 'true'", setup)
+
+    def test_no_step_installs_llvm_packages_from_the_distro_archive(self):
+        for name in step_names(self.CI, "include-analysis"):
+            run = find_step(self.CI, name, "include-analysis").run
+            with self.subTest(step=name):
+                self.assertNotRegex(run, r"apt(-get)?\s+install", "LLVM comes from setup-llvm's pinned source")
+                self.assertNotIn("libclang-", run)
+
+    def test_the_iwyu_cache_key_is_unchanged(self):
+        text = self.job_text()
+        self.assertIn(
+            "key: iwyu-llvm${{ env.LLVM_VERSION }}-${{ env.IWYU_COMMIT_SHA }}-${{ runner.os }}-ubuntu-26.04-v1", text
+        )
+        build = find_step(self.CI, "Build include-what-you-use from source", "include-analysis")
+        self.assertEqual(build.condition, "steps.cache-iwyu.outputs.cache-hit != 'true'")
+
+
 class WingetRehearsalTests(unittest.TestCase):
     """release.yml rehearse-winget (#3822): a dry run exercises the WinGet manifests without the means to submit."""
 
@@ -2178,7 +2298,18 @@ class WingetRehearsalTests(unittest.TestCase):
         self.assertEqual(holders, publish)
         self.assertEqual(len([line for line in self.job("publish-winget") if "WINGETCREATE submit" in line]), 1)
         condition = "".join(self.job("publish-winget")).split("if: >-")[1].split("runs-on:")[0]
-        self.assertIn("github.event_name == 'push'", condition)
+        self.assertIn("!(github.event_name == 'workflow_dispatch' && inputs.dry_run)", condition)
+        self.assertNotIn("github.event_name == 'push'", condition, "a dry_run=false retry must reach WinGet (#4448)")
+        self.assertIn("needs.create-release.outputs.latest == 'true'", condition, "still guarded by Latest only")
+
+    def test_a_dry_run_never_shares_the_publish_concurrency_group(self):
+        """#4447: the shared group keeps one pending job, so a dry run's create-release could cancel a tag run's."""
+        text = "\n".join(self.job("create-release"))
+        group = re.search(r"(?m)^      group: (.+)$", text.split("    concurrency:\n", 1)[1]).group(1)
+        self.assertIn("github.event_name == 'workflow_dispatch' && inputs.dry_run", group)
+        self.assertIn("format('release-publish-dry-{0}-{1}', github.ref, inputs.dry_run)", group)
+        self.assertTrue(group.endswith("|| 'release-publish' }}"), group)
+        self.assertIn("cancel-in-progress: false", text)
 
     def test_create_release_waits_for_the_rehearsal(self):
         lines = self.job("create-release")

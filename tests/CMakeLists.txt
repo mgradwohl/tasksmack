@@ -105,6 +105,14 @@ if(WIN32)
         # tools/check-prereqs.ps1 reads a two-component ccache version (#2350); one full checker run.
         add_test(NAME CheckPrereqsScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-prereqs.ps1)
+        # Windows PowerShell 5.1 gets a clear "needs PowerShell 7" message from the tools scripts, not parse
+        # errors from a non-ASCII byte (#4319): #Requires lines, ASCII-only newcomer scripts, the 5.1 parser.
+        add_test(NAME Ps1CompatScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-ps1-compat.ps1)
+        # tools/iwyu.ps1 reads wslpath's UTF-8 output as UTF-8, so a non-ASCII user name survives (#4321).
+        # Stub wsl; WSL itself never runs.
+        add_test(NAME IwyuScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-iwyu.ps1)
         # tools/setup-dev.ps1 installs winget's newest version of a package, with a warning, when the
         # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
         add_test(NAME SetupDevScript
@@ -115,6 +123,10 @@ if(WIN32)
         add_test(NAME VerifyWindowsSignaturesScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-verify-windows-signatures.ps1)
         set_tests_properties(VerifyWindowsSignaturesScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_CMAKE=${CMAKE_COMMAND}")
+        # tools/check-windows-imports.ps1 (#4439): a shipped PE importing the MSVC runtime, a UCRT API set or a
+        # DLL outside the allowlist fails the release check. PEs built from bytes, x64 and ARM64.
+        add_test(NAME CheckWindowsImportsScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-check-windows-imports.ps1)
         # The NSIS installer's second pass (#2302): only a .zip whose files are the ones the uninstaller
         # deletes is packaged, with the given uninstaller. Stub makensis; nothing is installed.
         add_test(NAME BuildWindowsInstallerScript
@@ -319,6 +331,12 @@ endif()
 add_test(NAME DocsSriScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_sri.py)
 set_tests_properties(DocsSriScript PROPERTIES TIMEOUT 60)
 
+# tools/cpp-deps-sbom.py: the source SBOM and the OSV gate list every FetchContent_Declare() pin, at its commit,
+# with its licence, and a pin missing from the SBOM fails (#4438). Pure Python and offline (OSV is a fake), so on
+# every platform.
+add_test(NAME CppDepsSbomScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_cpp_deps_sbom.py)
+set_tests_properties(CppDepsSbomScript PROPERTIES TIMEOUT 60)
+
 # The NSIS uninstaller's start-at-sign-in step (#3093 part 2), cmake/CPackProjectConfig.cmake.in: it deletes
 # the HKCU Run value only when it starts this installation's TaskSmack.exe. Pure Python, on every platform.
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
@@ -329,6 +347,16 @@ set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 # against fakes, through those steps' interpreters. Pure Python, on every platform.
 add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
 set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
+
+# The installer is a Unicode NSIS target and has no Add-to-PATH option (#4300): CPACK_NSIS_DEFINES starts with
+# `Unicode true` and CPACK_NSIS_MODIFY_PATH is gone. Pure Python, on every platform.
+add_test(NAME NsisUnicodeScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_unicode.py)
+set_tests_properties(NsisUnicodeScript PROPERTIES TIMEOUT 60)
+
+# The installer and the uninstaller stop, before they change anything, while TaskSmack.exe or TaskSmackHelper.exe
+# runs (#4436): TaskSmackInUseCheck, run against a fake folder, and where both call it. Pure Python, on every platform.
+add_test(NAME NsisInUseCheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_in_use.py)
+set_tests_properties(NsisInUseCheck PROPERTIES TIMEOUT 60)
 
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
@@ -446,6 +474,10 @@ add_test(NAME LcovExcludeScript
 # tools/check-cache-prune-triggers.py keeps cache-prune.yml's workflow_run list complete (#2410).
 add_test(NAME CheckCachePruneTriggersScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_check_cache_prune_triggers.py)
+
+# Heavy Checks' push-scope must cover everything benchmarks/*.cpp includes, and the build settings (#4195).
+add_test(NAME HeavyChecksPushScopeScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
 
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript
@@ -577,6 +609,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_ProcessMemoryMap.cpp  # a memory map's totals by kind and file (#3089)
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
+    Domain/test_Utf8Sanitize.cpp
     Domain/test_AccountName.cpp # a process owner's DOMAIN\user, written and matched (#3328)
     Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp  # split by feature (#3850): the helpers are in ProcessModelTestSupport.h
@@ -647,6 +680,7 @@ set(COMMON_TEST_SOURCES
     UI/test_RateAxis.cpp
     UI/test_InlineText.cpp
     UI/test_CellText.cpp
+    UI/test_LabelledText.cpp # a label and a value from outside, drawn whole past ImGui's 3 KB buffer (#4306)
     UI/test_BundledThemes.cpp
     UI/test_ColorContrast.cpp
     UI/test_ColorDifference.cpp
@@ -751,6 +785,7 @@ set(COMMON_TEST_SOURCES
     Platform/test_CpuAffinity.cpp
     Platform/test_AsciiTrim.cpp
     Platform/test_AsciiCase.cpp
+    Platform/test_Utf8CaseFold.cpp
     Platform/test_BatteryCapacity.cpp
     Platform/test_BrokerProtocol.cpp
     Platform/test_BrokerSessionRules.cpp  # each request kind's category trait (#3783)
@@ -987,6 +1022,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsProcessIconSource.cpp
     Platform/test_WindowsPackageLogo.cpp
     Platform/test_WindowsProcessModules.cpp
+    Platform/test_WindowsLocalNtFile.cpp  # the shared open by NT name: no link followed, no share opened, through fakes and a real junction (#4482)
     Platform/test_WindowsProcessMemoryMap.cpp  # the region walk through fakes, the decoding, device paths, this process's own (#3089)
     Platform/test_WindowsProcessOpenFiles.cpp
     Platform/test_WindowsProcessSecurity.cpp
@@ -1653,6 +1689,11 @@ target_link_libraries(TaskSmackThemeTests PRIVATE gtest gtest_main spdlog::spdlo
                       Freetype::Freetype) # TabularDigits.cpp
 target_compile_definitions(TaskSmackThemeTests PRIVATE TASKSMACK_SOURCE_THEMES_DIR="${CMAKE_SOURCE_DIR}/assets/themes"
                                                        TASKSMACK_SOURCE_ASSETS_DIR="${CMAKE_SOURCE_DIR}/assets")
+if(WIN32)
+    # ThemeLoader.cpp's filesystem errors go through Core::errorCodeText(), which formats Win32 errors (#4308)
+    target_sources(TaskSmackThemeTests PRIVATE ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp)
+    target_compile_definitions(TaskSmackThemeTests PRIVATE NOMINMAX) # WinString.cpp includes <windows.h>, as the app's targets build it
+endif()
 tasksmack_apply_linux_toolchain(TaskSmackThemeTests)
 tasksmack_apply_default_warnings(TaskSmackThemeTests)
 tasksmack_apply_text_encoding(TaskSmackThemeTests)

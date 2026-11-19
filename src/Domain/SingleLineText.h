@@ -6,6 +6,8 @@
 // ProcessTreeFlatten.h and ProcessTreeIndent.h do), so it is unit-testable directly rather than
 // only through a live probe.
 
+#include "Utf8Sanitize.h"
+
 #include <string>
 #include <string_view>
 
@@ -19,11 +21,11 @@ namespace Domain
     return value < 0x20U || value == 0x7FU;
 }
 
-/// True when @p text has no byte toSingleLine() would replace, i.e. it is already its own single-line
-/// form -- as almost every process name and command line is (#1624).
+/// True when @p text has nothing toSingleLine() would replace -- no control byte, and well-formed UTF-8 -- i.e.
+/// it is already its own single-line form, as almost every process name and command line is (#1624).
 ///
-/// The loop has no early exit, so the compiler can vectorize it: one read-only pass is far cheaper
-/// than the rewrite it lets the caller skip.
+/// The loops have no early exit, so the compiler can vectorize them: read-only passes are far cheaper than the
+/// rewrite they let the caller skip, and ASCII text is never decoded (isValidUtf8()).
 [[nodiscard]] constexpr bool isSingleLine(std::string_view text) noexcept
 {
     unsigned controls = 0;
@@ -31,14 +33,16 @@ namespace Domain
     {
         controls |= static_cast<unsigned>(isSingleLineControl(c));
     }
-    return controls == 0U;
+    return controls == 0U && isValidUtf8(text);
 }
 
 /// Writes the single-line form of @p text (see toSingleLine()) into @p out, reusing @p out's
 /// capacity, and returns whether it differs from @p text, i.e. whether any byte was replaced.
 inline bool toSingleLineInto(std::string& out, std::string_view text)
 {
-    out.assign(text);
+    out.clear();
+    // Ill-formed UTF-8 first (#4301): each maximal ill-formed subpart becomes U+FFFD, which has no control byte.
+    const bool replaced = appendSanitizedUtf8(out, text);
     // Branch-free, so it vectorizes like isSingleLine(): every byte is rewritten, to itself or a space.
     unsigned controls = 0;
     for (char& c : out)
@@ -47,7 +51,7 @@ inline bool toSingleLineInto(std::string& out, std::string_view text)
         controls |= static_cast<unsigned>(control);
         c = control ? ' ' : c;
     }
-    return controls != 0U;
+    return replaced || controls != 0U;
 }
 
 /// Collapse any control character in `text` to a space, returning a string safe to render in a
@@ -59,8 +63,9 @@ inline bool toSingleLineInto(std::string& out, std::string_view text)
 /// breaking the uniform-row-height assumption ImGuiListClipper relies on to map scroll offset to
 /// row index, so the whole table's scrolling is thrown off, not just the offending row (#919).
 ///
-/// Tabs and carriage returns are collapsed for the same reason. Bytes >= 0x80 are left untouched so
-/// UTF-8 sequences survive intact; only C0 controls and DEL are replaced.
+/// Tabs and carriage returns are collapsed for the same reason. Well-formed UTF-8 survives intact; an
+/// ill-formed sequence (a 15-byte Linux comm cut mid-character, a Latin-1 file name in a command line)
+/// becomes U+FFFD, one per maximal ill-formed subpart (Utf8Sanitize.h, #4301).
 [[nodiscard]] inline std::string toSingleLine(std::string_view text)
 {
     std::string out;

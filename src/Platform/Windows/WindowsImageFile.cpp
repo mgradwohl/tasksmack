@@ -2,8 +2,9 @@
 
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsHeldFileVersion.h"
+#include "WindowsLocalNtFile.h"
 #include "WindowsNtQuery.h"
-#include "WindowsVersionResourceMath.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -24,14 +25,11 @@
 #include <cwchar>
 #include <expected>
 #include <format>
-#include <memory>
 #include <optional>
 #include <span>
 #include <string>
 #include <string_view>
-#include <system_error>
 #include <utility>
-#include <vector>
 
 namespace Platform::Windows
 {
@@ -43,7 +41,7 @@ namespace
 /// Win32 error @p error as the system words it.
 [[nodiscard]] std::string describe(DWORD error)
 {
-    return std::system_category().message(static_cast<int>(error));
+    return Platform::WinString::win32ErrorText(error);
 }
 
 /// SECTION_IMAGE_INFORMATION, which NtQueryInformationProcess's ProcessImageInformation (class 37) fills from the
@@ -106,12 +104,18 @@ constexpr std::string_view PROTECTED_REFUSAL = "Its executable can't be read: Wi
     return std::format("Its executable couldn't be confirmed as the image it runs ({}){}{}", why, notDone.empty() ? "" : ", so ", notDone);
 }
 
-/// Opens the NT name @p ntName (\Device\HarddiskVolumeN\..., as GetMappedFileNameW writes it) through the Win32
-/// call, by \\?\GLOBALROOT, with @p access and @p share.
-[[nodiscard]] UniqueHandle openNtName(const std::wstring& ntName, DWORD access, DWORD share)
+/// Opens the NT name @p ntName (\Device\HarddiskVolumeN\..., as GetMappedFileNameW writes it) for @p access, by
+/// Windows::openLocalNtFile() through fns.localFile (#4482): no link on the way or at the name followed, no network
+/// share's name opened, identification-level security, and a handle off a local disk refused. Or why not, in words.
+[[nodiscard]] std::expected<UniqueHandle, std::string>
+openNtName(const ImageFileFunctions& fns, std::wstring_view ntName, const LocalFileAccess& access)
 {
-    const std::wstring path = L"\\\\?\\GLOBALROOT" + ntName;
-    return UniqueHandle(CreateFileW(path.c_str(), access, share, nullptr, OPEN_EXISTING, FILE_FLAG_SEQUENTIAL_SCAN, nullptr));
+    std::expected<UniqueHandle, LocalFileError> file = openLocalNtFile(ntName, access, fns.localFile);
+    if (!file.has_value())
+    {
+        return std::unexpected(describeLocalFileError(file.error()));
+    }
+    return std::move(*file);
 }
 
 /// Where @p process's image is mapped and its file's NT name now.
@@ -181,53 +185,6 @@ locateImage(const ImageFileFunctions& fns, HANDLE process, void* entryPoint, std
     return std::unexpected(std::format("Its executable can't be read: {}", describe(name.error())));
 }
 
-// Structured exception handling (__try/__except) is a Microsoft extension, which -Wpedantic warns of: it is what catches
-// an in-page error reading a mapped file, so it is allowed here, and only here.
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Wlanguage-extension-token"
-
-/// The VS_VERSIONINFO block of the mapped file @p view, copied into @p out; its length, or 0 when it has none or it
-/// doesn't fit. Never inlined, so an in-page error raised while it reads the mapping reaches copyVersionResource()'s
-/// handler through this call. Not noexcept, so nothing stands between that exception and the handler.
-[[nodiscard, clang::noinline]] std::size_t
-copyVersionResourceUnguarded(const std::byte* view, std::size_t size, BYTE* out, std::size_t room)
-{
-    const std::optional<std::span<const std::byte>> block = VersionResourceMath::findVersionResource(std::span(view, size));
-    if (!block.has_value() || block->size() > room)
-    {
-        return 0;
-    }
-    std::memcpy(out, block->data(), block->size());
-    return block->size();
-}
-
-/// copyVersionResourceUnguarded(), where an in-page error reading the mapping (a network file that went away, a read
-/// error on the disk) is no block rather than a crash. Nothing here needs unwinding, as __try requires.
-[[nodiscard]] std::size_t copyVersionResource(const std::byte* view, std::size_t size, BYTE* out, std::size_t room)
-{
-    std::size_t copied = 0;
-    __try
-    {
-        copied = copyVersionResourceUnguarded(view, size, out, room);
-    }
-    __except (GetExceptionCode() == EXCEPTION_IN_PAGE_ERROR ? EXCEPTION_EXECUTE_HANDLER : EXCEPTION_CONTINUE_SEARCH)
-    {
-        copied = 0;
-    }
-    return copied;
-}
-
-#pragma clang diagnostic pop
-
-/// Unmaps a view of a file mapping.
-struct ViewUnmapper
-{
-    void operator()(const void* view) const noexcept
-    {
-        UnmapViewOfFile(view);
-    }
-};
-
 } // namespace
 
 ImageFileFunctions systemImageFileFunctions() noexcept
@@ -238,6 +195,7 @@ ImageFileFunctions systemImageFileFunctions() noexcept
         .virtualQueryEx = &VirtualQueryEx,
         .getExitCodeProcess = &GetExitCodeProcess,
         .getProcessInformation = &GetProcessInformation,
+        .localFile = systemLocalFileFunctions(),
     };
 }
 
@@ -314,11 +272,14 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
         }
         return std::unexpected(image.error());
     }
-    UniqueHandle file = openNtName(image->name, GENERIC_READ, FILE_SHARE_READ);
-    if (!file)
+    // Shared for read only, so the file held can't be renamed, deleted or written while it is held.
+    std::expected<UniqueHandle, std::string> opened =
+        openNtName(fns, image->name, {.access = GENERIC_READ, .share = FILE_SHARE_READ, .sequential = true});
+    if (!opened.has_value())
     {
-        return std::unexpected(std::format("Its executable can't be read: {}", describe(GetLastError())));
+        return std::unexpected(std::format("Its executable can't be read: {}", opened.error()));
     }
+    UniqueHandle file = std::move(*opened);
     const std::expected<std::wstring, DWORD> now = mappedFileName(fns, process, image->address);
     if (!now.has_value())
     {
@@ -333,13 +294,13 @@ openProcessImageFile(const ImageFileFunctions& fns, HANDLE process, std::int32_t
     {
         return std::unexpected(unconfirmed("the file's identity can't be read", notDone));
     }
-    const UniqueHandle there = openNtName(*now, FILE_READ_ATTRIBUTES, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE);
-    if (!there)
+    const std::expected<UniqueHandle, std::string> there = openNtName(
+        fns, *now, {.access = FILE_READ_ATTRIBUTES, .share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, .sequential = false});
+    if (!there.has_value())
     {
-        return std::unexpected(
-            unconfirmed(std::format("the file under its name now can't be opened: {}", describe(GetLastError())), notDone));
+        return std::unexpected(unconfirmed(std::format("the file under its name now can't be opened: {}", there.error()), notDone));
     }
-    const std::optional<FileIdentity> named = fileIdentity(there.get());
+    const std::optional<FileIdentity> named = fileIdentity(there->get());
     if (!named.has_value())
     {
         return std::unexpected(unconfirmed("the identity of the file under its name now can't be read", notDone));
@@ -438,34 +399,12 @@ std::string versionInfoCompanyName(std::span<BYTE> block)
 }
 std::string heldFilePublisher(HANDLE file)
 {
-    LARGE_INTEGER size{};
-    if (GetFileSizeEx(file, &size) == 0 || size.QuadPart <= 0 || std::cmp_greater(size.QuadPart, SIZE_MAX))
-    {
-        return {}; // an empty file can't be mapped, and has no version info anyway
-    }
-    // A data mapping, read-only: nothing in it is run or relocated, and it is the held file's, whatever its name is now.
-    const UniqueHandle mapping(CreateFileMappingW(file, nullptr, PAGE_READONLY, 0, 0, nullptr));
-    if (!mapping)
+    HeldVersionBlock held = heldVersionBlock(file);
+    if (held.length == 0)
     {
         return {};
     }
-    const std::unique_ptr<const void, ViewUnmapper> view(MapViewOfFile(mapping.get(), FILE_MAP_READ, 0, 0, 0));
-    if (view == nullptr)
-    {
-        return {};
-    }
-    // VerQueryValueW is given twice the largest block's room, zeroed, as GetFileVersionInfoSizeW asks for: it may write
-    // after the block. Kept at that size whatever the block's own length, so a value that claims to run past the block
-    // still ends inside this buffer.
-    constexpr std::size_t MAX_BLOCK = 0xFFFF; // VS_VERSIONINFO's wLength is a WORD
-    std::vector<BYTE> block((2 * MAX_BLOCK) + 16, BYTE{0});
-    const std::size_t copied =
-        copyVersionResource(static_cast<const std::byte*>(view.get()), static_cast<std::size_t>(size.QuadPart), block.data(), MAX_BLOCK);
-    if (copied == 0)
-    {
-        return {};
-    }
-    return versionInfoCompanyName(block);
+    return versionInfoCompanyName(held.buffer);
 }
 
 // NOLINTEND(misc-include-cleaner)

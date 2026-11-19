@@ -23,7 +23,6 @@
 #include <random>
 #include <span>
 #include <string>
-#include <string_view>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -85,23 +84,10 @@ struct Query : PublicIpLookup::Outcome
 };
 
 /// The system's text for a Winsock error, without the trailing period and line break; "error N" when
-/// there is none.
+/// there is none. Winsock codes are Win32 error codes, so the shared formatter (#4308) has their text.
 [[nodiscard]] std::string errorText(int wsaError)
 {
-    std::array<wchar_t, 512> text{};
-    const DWORD length = ::FormatMessageW(FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                                          nullptr,
-                                          static_cast<DWORD>(wsaError),
-                                          0,
-                                          text.data(),
-                                          static_cast<DWORD>(text.size()),
-                                          nullptr);
-    std::wstring_view view(text.data(), length);
-    while (!view.empty() && (view.back() == L'\r' || view.back() == L'\n' || view.back() == L' ' || view.back() == L'.'))
-    {
-        view.remove_suffix(1);
-    }
-    return view.empty() ? std::format("error {}", wsaError) : WinString::wideToUtf8(view);
+    return WinString::win32ErrorText(static_cast<DWORD>(wsaError));
 }
 
 /// Opens a non-blocking UDP socket connected to @p resolver (so only its replies arrive) and sends it

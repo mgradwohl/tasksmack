@@ -12,6 +12,7 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/ServiceModel.h"
+#include "Platform/NativeId.h"
 #include "Platform/ThreadName.h"
 
 #include <imgui.h>
@@ -82,6 +83,7 @@ void ServicesPanel::onEvent(Core::Event& event)
         [this](Core::ShowServiceEvent& e)
         {
             m_ViewState.selectedName = e.name();
+            m_ViewState.selectedNativeId = Platform::NativeId::None; // by name alone
             m_ViewState.scrollToSelected = true;
             return false;
         });

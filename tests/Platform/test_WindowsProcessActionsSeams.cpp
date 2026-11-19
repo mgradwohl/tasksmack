@@ -687,6 +687,31 @@ TEST_F(WindowsProcessActionsSeamTest, TheSystemProcessAndTaskSmackItselfAreNever
     EXPECT_EQ(FailingWin::suspendCalls, 0);
 }
 
+TEST_F(WindowsProcessActionsSeamTest, PidsFiveToSevenAreTheSystemProcessToo)
+{
+    // #4365: OpenProcess(5), (6) and (7) open PID 4, as isSamePid() says, so the System-process guard compares
+    // the same way; PID 8 is another process.
+    for (const std::int32_t pid : {4, 5, 6, 7})
+    {
+        EXPECT_TRUE(isSystemPid(pid)) << pid;
+        EXPECT_FALSE(systemPidRefusal(pid, GuardedAction::Suspend).empty()) << pid;
+        EXPECT_FALSE(threadActionRefusal(pid, 1, ThreadAction::Suspend, FailingWin::OWN_PID, 0).empty()) << pid;
+    }
+    for (const std::int32_t pid : {-4, 0, 3, 8})
+    {
+        EXPECT_FALSE(isSystemPid(pid)) << pid;
+    }
+    EXPECT_TRUE(systemPidRefusal(8, GuardedAction::Suspend).empty());
+    EXPECT_TRUE(threadActionRefusal(8, 1, ThreadAction::Suspend, FailingWin::OWN_PID, 0).empty());
+
+    WindowsProcessActions actions(FailingWin::functions());
+    const ProcessActionResult suspended = actions.stop({.pid = 5, .startTimeTicks = FailingWin::TARGET_TICKS});
+    EXPECT_FALSE(suspended.success);
+    EXPECT_EQ(suspended.errorMessage, "PID 4 is the System process; TaskSmack won't suspend it");
+    EXPECT_EQ(FailingWin::opens, 0) << "refused before anything is opened";
+    EXPECT_EQ(FailingWin::suspendCalls, 0);
+}
+
 TEST_F(WindowsProcessActionsSeamTest, ASuspendOfTaskSmackItselfIsRefusedBeforeItsIdentityOrCriticalityIsAsked)
 {
     // The self-suspend guard comes first: a target that is TaskSmack's own PID is refused as such

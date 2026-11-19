@@ -1,9 +1,10 @@
-# tools/pgo.ps1 – End-to-end Profile-Guided Optimization workflow for Windows
+#Requires -Version 7
+# tools/pgo.ps1 - End-to-end Profile-Guided Optimization workflow for Windows
 #
 # Usage:
 #   pwsh tools/pgo.ps1             # Full PGO workflow (generate + merge + use)
 #   pwsh tools/pgo.ps1 generate    # Phase 1 only: instrumented build + run to collect data
-#   pwsh tools/pgo.ps1 merge       # Phase 2 only: merge *.profraw → profiles/tasksmack.profdata
+#   pwsh tools/pgo.ps1 merge       # Phase 2 only: merge *.profraw -> profiles/tasksmack.profdata
 #   pwsh tools/pgo.ps1 use         # Phase 3 only: build PGO-optimized binary
 #   pwsh tools/pgo.ps1 baseline    # The win-pgo-use build without profile data, to measure PGO against
 #
@@ -44,13 +45,13 @@ $UiTrainingBin = Join-Path $Root 'build\win-pgo-generate\bin\TaskSmackUiTraining
 
 . (Join-Path $ScriptDir 'common.ps1')
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+# -- helpers ------------------------------------------------------------------
 
 function Write-Step([string]$message) {
     Write-Host ''
-    Write-Host '──────────────────────────────────────────'
+    Write-Host ('-' * 42)
     Write-Host "  $message"
-    Write-Host '──────────────────────────────────────────'
+    Write-Host ('-' * 42)
 }
 
 # Invoke a native executable and abort if it returns a non-zero exit code.
@@ -76,10 +77,10 @@ function Invoke-Native {
     }
 }
 
-# ── phase 1: instrumented build and profiling run ─────────────────────────────
+# -- phase 1: instrumented build and profiling run -----------------------------
 
 function Invoke-Generate {
-    Write-Step 'Phase 1 – Instrumented PGO training build (win-pgo-generate preset; not a profiling build)'
+    Write-Step 'Phase 1 - Instrumented PGO training build (win-pgo-generate preset; not a profiling build)'
 
     Invoke-Native cmake --preset win-pgo-generate -S $Root
     Invoke-Native cmake --build --preset win-pgo-generate
@@ -91,7 +92,7 @@ function Invoke-Generate {
     # Remove stale profraw files so the merge step is deterministic
     Get-ChildItem -Path $ProfilesDir -Filter '*.profraw' -ErrorAction SilentlyContinue | Remove-Item -Force
 
-    Write-Step 'Phase 1 – Running benchmarks to collect profile data'
+    Write-Step 'Phase 1 - Running benchmarks to collect profile data'
 
     if (-not (Test-Path $BenchBin)) {
         Write-Error "Benchmark binary not found: $BenchBin"
@@ -107,7 +108,7 @@ function Invoke-Generate {
     try {
         Invoke-Native $BenchBin --benchmark_min_time=0.5s
 
-        Write-Step 'Phase 1 – UI training: the real panels, headless (TaskSmackUiTraining, #880)'
+        Write-Step 'Phase 1 - UI training: the real panels, headless (TaskSmackUiTraining, #880)'
 
         if (-not (Test-Path $UiTrainingBin)) {
             Write-Error "UI training binary not found: $UiTrainingBin"
@@ -141,7 +142,7 @@ function Invoke-Generate {
     Write-Host "Profile data written to: $ProfilesDir\*.profraw"
 }
 
-# ── phase 2: merge ────────────────────────────────────────────────────────────
+# -- phase 2: merge ------------------------------------------------------------
 
 # Resolve and version-validate llvm-profdata.exe, returning its path.
 # Extracted into a helper so the 'all' flow can call it up front (before the
@@ -185,7 +186,7 @@ function Resolve-LlvmProfdata {
 }
 
 function Invoke-Merge {
-    Write-Step "Phase 2 – Merging profraw files → $Profdata"
+    Write-Step "Phase 2 - Merging profraw files -> $Profdata"
 
     $llvmProfdata = Resolve-LlvmProfdata
 
@@ -204,10 +205,10 @@ function Invoke-Merge {
     Write-Host "  Size: $([Math]::Round($size, 1)) KB"
 }
 
-# ── phase 3: PGO-optimized build ──────────────────────────────────────────────
+# -- phase 3: PGO-optimized build ----------------------------------------------
 
 function Invoke-Use {
-    Write-Step 'Phase 3 – PGO-optimized build (win-pgo-use preset)'
+    Write-Step 'Phase 3 - PGO-optimized build (win-pgo-use preset)'
 
     if (-not (Test-Path $Profdata)) {
         Write-Error "Profile data not found: $Profdata. Run merge step first (pwsh tools/pgo.ps1 merge)."
@@ -227,10 +228,10 @@ function Invoke-Use {
     }
 }
 
-# ── baseline: the win-pgo-use build without profile data ─────────────────────
+# -- baseline: the win-pgo-use build without profile data ---------------------
 
 function Invoke-Baseline {
-    Write-Step 'Baseline – win-pgo-use flags without profile data (win-pgo-baseline preset)'
+    Write-Step 'Baseline - win-pgo-use flags without profile data (win-pgo-baseline preset)'
 
     Invoke-Native cmake --preset win-pgo-baseline -S $Root
     Invoke-Native cmake --build --preset win-pgo-baseline
@@ -240,15 +241,15 @@ function Invoke-Baseline {
     Write-Host 'Compare it with build\win-pgo-use: the two differ only in the profile data.'
 }
 
-# ── main ──────────────────────────────────────────────────────────────────────
+# -- main ----------------------------------------------------------------------
 
 function Write-PgoUsage {
     Write-Host 'Usage: pwsh tools/pgo.ps1 [generate|merge|use|baseline|all]'
-    Write-Host '  generate  – instrumented build + collect profile data (benchmarks + headless UI training)'
-    Write-Host '  merge     – merge *.profraw files into tasksmack.profdata'
-    Write-Host '  use       – build PGO-optimized binary from tasksmack.profdata'
-    Write-Host "  baseline  – build win-pgo-use's flags without profile data, to compare against"
-    Write-Host '  all       – run generate, merge and use in order (default)'
+    Write-Host '  generate  - instrumented build + collect profile data (benchmarks + headless UI training)'
+    Write-Host '  merge     - merge *.profraw files into tasksmack.profdata'
+    Write-Host '  use       - build PGO-optimized binary from tasksmack.profdata'
+    Write-Host "  baseline  - build win-pgo-use's flags without profile data, to compare against"
+    Write-Host '  all       - run generate, merge and use in order (default)'
 }
 
 $cmd = if ($args.Count -gt 0) { $args[0] } else { 'all' }

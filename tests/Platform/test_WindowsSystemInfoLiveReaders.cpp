@@ -27,6 +27,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <optional>
 #include <string>
 #include <vector>
@@ -63,7 +64,9 @@ TEST(WindowsCrashEventsLiveTest, QueryThatMatchesNothingEndsAtOnce)
     void* query = fns.openQuery(NO_EVENT_XPATH, error);
     ASSERT_NE(query, nullptr) << "the Application log is always there and readable; error " << error;
     std::string xml = "untouched";
-    EXPECT_FALSE(fns.nextEventXml(query, xml));
+    const std::expected<bool, std::uint32_t> next = fns.nextEventXml(query, xml);
+    ASSERT_TRUE(next.has_value()) << "the end of the log is no failure (#4375); error " << next.error_or(0);
+    EXPECT_FALSE(*next);
     EXPECT_EQ(xml, "untouched") << "nothing is rendered when there is no event";
     fns.closeQuery(query);
 }
@@ -75,7 +78,7 @@ TEST(WindowsCrashEventsLiveTest, NewestApplicationEventRendersAsXml)
     void* query = fns.openQuery("*", error);
     ASSERT_NE(query, nullptr) << "error " << error;
     std::string xml;
-    if (fns.nextEventXml(query, xml))
+    if (fns.nextEventXml(query, xml).value_or(false))
     {
         EXPECT_TRUE(xml.starts_with("<Event")) << xml.substr(0, 80);
         EXPECT_NE(xml.find("<System>"), std::string::npos);
