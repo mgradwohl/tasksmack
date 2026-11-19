@@ -82,6 +82,16 @@ try {
     Assert-True (Has-Problem $problems 'arm64 InstallerSha256 is 0{64}, but TaskSmack-1\.2\.3-windows-arm64\.exe hashes to') "A wrong hash wasn't named: $($problems -join '; ')"
     $problems = Test-Copy { param($d) Edit-File $d 'TaskSmack.TaskSmack.installer.yaml' '(?s)  - Architecture: arm64.*?(?=ManifestType)' '' }
     Assert-True (Has-Problem $problems 'lists no arm64 installer') "A missing installer wasn't named: $($problems -join '; ')"
+    # #4436: the installer's exit code for a running TaskSmack, 32, must be WinGet's packageInUse for both installers.
+    $problems = Test-Copy { param($d) Edit-File $d 'TaskSmack.TaskSmack.installer.yaml' '(?m)^ExpectedReturnCodes:\r?\n(  .*\r?\n)+' '' }
+    Assert-True ((Has-Problem $problems 'x64 installer''s ExpectedReturnCodes don''t map InstallerReturnCode 32') -and (Has-Problem $problems 'arm64 installer''s ExpectedReturnCodes')) "Missing ExpectedReturnCodes weren't named: $($problems -join '; ')"
+    $problems = Test-Copy { param($d) Edit-File $d 'TaskSmack.TaskSmack.installer.yaml' 'ReturnResponse: packageInUse' 'ReturnResponse: installInProgress' }
+    Assert-True (Has-Problem $problems 'x64 installer''s ExpectedReturnCodes') "installInProgress for 32 wasn't named: $($problems -join '; ')"
+    $problems = Test-Copy { param($d) Edit-File $d 'TaskSmack.TaskSmack.installer.yaml' 'InstallerReturnCode: 32' 'InstallerReturnCode: 2' }
+    Assert-True (Has-Problem $problems 'arm64 installer''s ExpectedReturnCodes') "Another exit code wasn't named: $($problems -join '; ')"
+    # An installer's own ExpectedReturnCodes replace the root's, so one without the code is named.
+    $problems = Test-Copy { param($d) Edit-File $d 'TaskSmack.TaskSmack.installer.yaml' '(?m)^(  - Architecture: arm64\r?\n)' "`$1    ExpectedReturnCodes:`n      - InstallerReturnCode: 1`n        ReturnResponse: cancelledByUser`n" }
+    Assert-True ((Has-Problem $problems 'arm64 installer''s ExpectedReturnCodes') -and -not (Has-Problem $problems 'x64 installer''s ExpectedReturnCodes')) "An installer's own ExpectedReturnCodes without 32 wasn't named: $($problems -join '; ')"
     $problems = Test-Copy { param($d) Remove-Item -LiteralPath (Join-Path $d 'TaskSmack.TaskSmack.locale.en-US.yaml') }
     Assert-True (Has-Problem $problems 'expected TaskSmack\.TaskSmack\.yaml') "A missing locale manifest wasn't named: $($problems -join '; ')"
     $problems = @(Test-WingetManifests $good '1.2.4' 'v1.2.4' $repository $manifestVersion $installers)
@@ -114,6 +124,8 @@ try {
             Assert-True (Has-Problem $problems 'arm64 InstallerSha256 is 0{64}, but') "$label, a wrong hash wasn't named: $($problems -join '; ')"
             $problems = Test-Fixture $name $eol { param($t) $t.Replace('Architecture: arm64', 'Architecture: x64') }
             Assert-True ((Has-Problem $problems 'x64 installer is listed twice') -and (Has-Problem $problems 'lists no arm64 installer')) "$label, a repeated architecture wasn't named: $($problems -join '; ')"
+            $problems = Test-Fixture $name $eol { param($t) $t.Replace('ReturnResponse: packageInUse', 'ReturnResponse: fileInUse') }
+            Assert-True ((Has-Problem $problems 'x64 installer''s ExpectedReturnCodes') -and (Has-Problem $problems 'arm64 installer''s ExpectedReturnCodes')) "$label, a wrong ReturnResponse for 32 wasn't named: $($problems -join '; ')"
             $problems = Test-Fixture $name $eol { param($t) $t.Replace('ManifestVersion: 1.12.0', 'ManifestVersion: 1.4.0') }
             Assert-True (Has-Problem $problems 'installer\.yaml is on ManifestVersion \[1\.4\.0\]') "$label, a wrong ManifestVersion wasn't named: $($problems -join '; ')"
         }

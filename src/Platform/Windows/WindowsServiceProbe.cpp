@@ -1,6 +1,7 @@
 #include "WindowsServiceProbe.h"
 
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 
 #include <spdlog/spdlog.h>
 
@@ -19,11 +20,13 @@
 
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsNativeIds.h"
 #include "WindowsServiceConfig.h"
 #include "WindowsServiceProbeMath.h"
 #include "WindowsStartupProbe.h"
 
 #include <chrono>
+#include <cstddef>
 #include <memory>
 #include <span>
 #include <string>
@@ -125,22 +128,26 @@ ServiceConfig readServiceConfig(const ServiceConfigFunctions& api, SC_HANDLE scm
 
 struct WindowsServiceProbe::Impl
 {
-    explicit Impl(const Windows::ServiceConfigFunctions& functions)
-        : api(functions), scm(nullptr, Windows::InjectedServiceHandleCloser{.close = functions.closeServiceHandle})
+    Impl(const Windows::ServiceConfigFunctions& functions, std::shared_ptr<Windows::ServiceIdTable> table)
+        : api(functions), scm(nullptr, Windows::InjectedServiceHandleCloser{.close = functions.closeServiceHandle}), ids(std::move(table))
     {}
 
     Windows::ServiceConfigFunctions api;
     Windows::InjectableServiceHandle scm; ///< Opened by the first enumerate(), on the sampler thread (#4184).
     /// Nonzero once OpenSCManagerW was refused with ERROR_ACCESS_DENIED, the one permanent refusal.
     DWORD scmOpenError = ERROR_SUCCESS;
-    std::unordered_map<std::string, CachedConfig> configs;
+    /// By the exact wide name (#4304): two names alike once shown as UTF-8 are two services.
+    std::unordered_map<std::wstring, CachedConfig> configs;
+    /// Where each enumerate() publishes its services' exact names, for WindowsServiceActions (#4304).
+    std::shared_ptr<Windows::ServiceIdTable> ids;
 };
 
-WindowsServiceProbe::WindowsServiceProbe() : WindowsServiceProbe(Windows::ServiceConfigFunctions{})
+WindowsServiceProbe::WindowsServiceProbe() : WindowsServiceProbe(Windows::ServiceConfigFunctions{}, Windows::sharedServiceIds())
 {}
 
 // No Service Control Manager call here: the panel builds the probe on the UI thread (#2731, #4184).
-WindowsServiceProbe::WindowsServiceProbe(const Windows::ServiceConfigFunctions& api) : m_Impl(std::make_unique<Impl>(api))
+WindowsServiceProbe::WindowsServiceProbe(const Windows::ServiceConfigFunctions& api, std::shared_ptr<Windows::ServiceIdTable> ids)
+    : m_Impl(std::make_unique<Impl>(api, std::move(ids)))
 {}
 
 WindowsServiceProbe::~WindowsServiceProbe() = default;
@@ -185,7 +192,8 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
     }
 
     std::vector<ServiceInfo> services;
-    std::unordered_set<std::string> seen;
+    std::vector<std::wstring> wideNames; ///< Each service's exact name, in services' order.
+    std::unordered_set<std::wstring> seen;
     const auto now = std::chrono::steady_clock::now();
     DWORD resume = 0;
     std::vector<ENUM_SERVICE_STATUS_PROCESSW> buffer;
@@ -214,14 +222,15 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
 
         for (const auto& entry : std::span(buffer.data(), count))
         {
+            const std::wstring wideName = (entry.lpServiceName != nullptr) ? std::wstring(entry.lpServiceName) : std::wstring();
             ServiceInfo info;
-            info.name = toUtf8(entry.lpServiceName);
+            info.name = WinString::wideToUtf8(wideName);
             info.displayName = toUtf8(entry.lpDisplayName);
             info.state = Windows::ServiceMath::stateFromCode(entry.ServiceStatusProcess.dwCurrentState);
             info.serviceType = Windows::ServiceMath::serviceTypeText(entry.ServiceStatusProcess.dwServiceType);
             info.pid = entry.ServiceStatusProcess.dwProcessId;
 
-            auto& cached = m_Impl->configs[info.name];
+            auto& cached = m_Impl->configs[wideName];
             // A denied or failed read leaves the fields empty until the next attempt, CONFIG_REFRESH later.
             if (Windows::ServiceMath::shouldRefreshConfig(cached.readAt, now, cached.attempted))
             {
@@ -237,7 +246,8 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
             info.account = cached.config.account;
             info.description = cached.config.description;
             info.group = cached.config.group;
-            seen.insert(info.name);
+            seen.insert(wideName);
+            wideNames.push_back(wideName);
             services.push_back(std::move(info));
         }
 
@@ -252,6 +262,15 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
 
     // Services that were deleted no longer need their configuration.
     std::erase_if(m_Impl->configs, [&seen](const auto& entry) { return !seen.contains(entry.first); });
+    // Each service's id for its exact name (#4304): the actions open that name, never one rebuilt from info.name.
+    if (m_Impl->ids)
+    {
+        const std::vector<NativeId> ids = m_Impl->ids->publish(wideNames);
+        for (std::size_t index = 0; index < services.size(); ++index)
+        {
+            services[index].nativeId = ids[index];
+        }
+    }
     return ServiceEnumeration::succeeded(std::move(services));
 }
 

@@ -11,6 +11,7 @@
 #include "App/Panels/BackgroundTask.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 #include "Platform/ThreadName.h"
 
 #include <cstdint>
@@ -36,6 +37,8 @@ struct ServiceActionRequest
 {
     ServiceActionKind kind = ServiceActionKind::Start;
     std::string name;
+    /// The probe's id for the service (#4304), passed back to the actions: never rebuilt from name.
+    Platform::NativeId nativeId = Platform::NativeId::None;
     std::string displayName;
     Platform::ServiceStartType startType = Platform::ServiceStartType::Unknown;     ///< SetStartType's target.
     Platform::ServiceStartType fromStartType = Platform::ServiceStartType::Unknown; ///< The start type when asked.

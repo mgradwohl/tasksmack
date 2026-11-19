@@ -18,9 +18,10 @@
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "WindowsNativeIds.h"
 
+#include <memory>
 #include <stop_token>
-#include <string_view>
 
 namespace Platform
 {
@@ -67,17 +68,23 @@ class WindowsServiceActions final : public IServiceActions
 {
   public:
     /// @param elevated Whether TaskSmack runs elevated, for capabilities().elevated.
-    explicit WindowsServiceActions(bool elevated, Windows::ServiceControlFunctions api = {});
+    /// @param ids The table WindowsServiceProbe publishes its services' exact names into (#4304), which an action's
+    /// ServiceTarget::nativeId is resolved through. A target with no id (a caller with only a name) is opened by its
+    /// name, unless that name is lossy (Windows::exactWideName()).
+    explicit WindowsServiceActions(bool elevated,
+                                   Windows::ServiceControlFunctions api = {},
+                                   std::shared_ptr<const Windows::ServiceIdTable> ids = Windows::sharedServiceIds());
 
     [[nodiscard]] ServiceActionCapabilities capabilities() const override;
-    [[nodiscard]] ServiceActionResult start(std::string_view name, const std::stop_token& stopToken) override;
-    [[nodiscard]] ServiceActionResult stop(std::string_view name, const std::stop_token& stopToken) override;
-    [[nodiscard]] ServiceActionResult restart(std::string_view name, const std::stop_token& stopToken) override;
-    [[nodiscard]] ServiceActionResult setStartType(std::string_view name, ServiceStartType startType) override;
+    [[nodiscard]] ServiceActionResult start(const ServiceTarget& service, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult stop(const ServiceTarget& service, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult restart(const ServiceTarget& service, const std::stop_token& stopToken) override;
+    [[nodiscard]] ServiceActionResult setStartType(const ServiceTarget& service, ServiceStartType startType) override;
 
   private:
     bool m_Elevated;
     Windows::ServiceControlFunctions m_Api;
+    std::shared_ptr<const Windows::ServiceIdTable> m_Ids;
 };
 
 } // namespace Platform

@@ -18,7 +18,10 @@
 
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
+#include "WindowsNativeIds.h"
 #include "WindowsScheduledTasks.h"
+
+#include <memory>
 
 namespace Platform
 {
@@ -65,9 +68,13 @@ class WindowsStartupActions final : public IStartupActions
   public:
     /// @param elevated Whether TaskSmack runs elevated, for capabilities().elevated.
     /// @param scheduledTasks Makes the Task Scheduler API a scheduled task's switch uses (tests: a fake).
+    /// @param ids The table WindowsStartupProbe publishes its entries' exact identities into (#4304): an entry's
+    /// StartupEntry::nativeId is resolved through it, and one no longer listed is refused. An entry with no id (built
+    /// by the caller) is switched by its UTF-8 names, unless they are lossy (Windows::exactWideName()).
     explicit WindowsStartupActions(bool elevated,
                                    Windows::StartupRegistryFunctions api = {},
-                                   Windows::ScheduledTaskApiFactory scheduledTasks = &Windows::makeTaskSchedulerApi);
+                                   Windows::ScheduledTaskApiFactory scheduledTasks = &Windows::makeTaskSchedulerApi,
+                                   std::shared_ptr<const Windows::StartupIdTable> ids = Windows::sharedStartupIds());
 
     [[nodiscard]] StartupActionCapabilities capabilities() const override;
     [[nodiscard]] StartupActionResult setEnabled(const StartupEntry& entry, bool enabled) override;
@@ -76,6 +83,7 @@ class WindowsStartupActions final : public IStartupActions
     bool m_Elevated;
     Windows::StartupRegistryFunctions m_Api;
     Windows::ScheduledTaskApiFactory m_ScheduledTasks;
+    std::shared_ptr<const Windows::StartupIdTable> m_Ids;
 };
 
 } // namespace Platform

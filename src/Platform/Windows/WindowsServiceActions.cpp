@@ -2,6 +2,7 @@
 
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/NativeId.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -18,14 +19,19 @@
 
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsNativeIds.h"
 #include "WindowsServiceActionsMath.h"
 
 #include <cstdint>
+#include <expected>
 #include <format>
+#include <memory>
+#include <optional>
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 namespace Platform
@@ -45,7 +51,7 @@ struct OpenedService
     DWORD error = ERROR_SUCCESS;
 };
 
-[[nodiscard]] OpenedService openService(const Windows::ServiceControlFunctions& api, std::string_view name, DWORD access)
+[[nodiscard]] OpenedService openService(const Windows::ServiceControlFunctions& api, const std::wstring& wideName, DWORD access)
 {
     const Windows::InjectedServiceHandleCloser closer{.close = api.closeServiceHandle};
     OpenedService opened{
@@ -58,7 +64,6 @@ struct OpenedService
         opened.error = GetLastError();
         return opened;
     }
-    const std::wstring wideName = WinString::utf8ToWide(name);
     opened.service.reset(api.openService(opened.scm.get(), wideName.c_str(), access));
     if (!opened.service)
     {
@@ -118,11 +123,11 @@ struct OpenedService
     }
 }
 
-/// The display names of @p name's running dependents, for a stop refused because of them. Empty when
+/// The display names of @p wideName's running dependents, for a stop refused because of them. Empty when
 /// they can't be listed: the caller then gives the plain "other services depend on it".
-[[nodiscard]] std::vector<std::string> runningDependents(const Windows::ServiceControlFunctions& api, std::string_view name)
+[[nodiscard]] std::vector<std::string> runningDependents(const Windows::ServiceControlFunctions& api, const std::wstring& wideName)
 {
-    const OpenedService opened = openService(api, name, SERVICE_ENUMERATE_DEPENDENTS);
+    const OpenedService opened = openService(api, wideName, SERVICE_ENUMERATE_DEPENDENTS);
     if (!opened.service)
     {
         return {};
@@ -152,9 +157,84 @@ struct OpenedService
     return names;
 }
 
+/// The exact name @p service names (#4304): the one its id was issued for, while WindowsServiceProbe still lists it;
+/// without an id, its name, when that can be exact. A refusal is the result to give: never another service's name.
+[[nodiscard]] std::expected<std::wstring, ServiceActionResult> resolveName(const Windows::ServiceIdTable* ids, const ServiceTarget& service)
+{
+    if (service.nativeId != NativeId::None)
+    {
+        std::optional<std::wstring> listed = (ids != nullptr) ? ids->resolve(service.nativeId) : std::nullopt;
+        if (!listed)
+        {
+            return std::unexpected(
+                ServiceActionResult::failed("The service is no longer listed as it was. Try again once the list updates"));
+        }
+        if (Windows::hasEmbeddedNul(*listed))
+        {
+            return std::unexpected(ServiceActionResult::failed("The service's name holds a NUL character, so it can't be opened by name"));
+        }
+        return std::move(*listed);
+    }
+    if (std::optional<std::wstring> exact = Windows::exactWideName(service.name))
+    {
+        return std::move(*exact);
+    }
+    return std::unexpected(ServiceActionResult::failed("The service's name couldn't be read exactly, so it isn't acted on"));
+}
+
+/// Starts @p wideName and waits until it runs, or until @p stopToken is stopped.
+[[nodiscard]] ServiceActionResult
+startService(const Windows::ServiceControlFunctions& api, const std::wstring& wideName, const std::stop_token& stopToken)
+{
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested(); // nothing sent yet, and nothing is
+    }
+    const OpenedService opened = openService(api, wideName, SERVICE_START | SERVICE_QUERY_STATUS);
+    if (opened.error != ERROR_SUCCESS)
+    {
+        return Math::errorResult(opened.error);
+    }
+    if (api.startService(opened.service.get(), 0, nullptr) == FALSE)
+    {
+        return lastError();
+    }
+    return waitForState(api, opened.service.get(), SERVICE_RUNNING, "start", stopToken);
+}
+
+/// Asks @p wideName to stop and waits until it has, or until @p stopToken is stopped. Running dependents fail it.
+[[nodiscard]] ServiceActionResult
+stopService(const Windows::ServiceControlFunctions& api, const std::wstring& wideName, const std::stop_token& stopToken)
+{
+    if (stopToken.stop_requested())
+    {
+        return ServiceActionResult::stopRequested(); // nothing sent yet, and nothing is
+    }
+    const OpenedService opened = openService(api, wideName, SERVICE_STOP | SERVICE_QUERY_STATUS);
+    if (opened.error != ERROR_SUCCESS)
+    {
+        return Math::errorResult(opened.error);
+    }
+    SERVICE_STATUS status{};
+    if (api.controlService(opened.service.get(), SERVICE_CONTROL_STOP, &status) == FALSE)
+    {
+        const DWORD error = GetLastError();
+        if (error == ERROR_DEPENDENT_SERVICES_RUNNING)
+        {
+            // Never stopped along with it: the user decides, knowing which they are.
+            return ServiceActionResult::failed(Math::dependentsText(runningDependents(api, wideName)));
+        }
+        return Math::errorResult(error);
+    }
+    return waitForState(api, opened.service.get(), SERVICE_STOPPED, "stop", stopToken);
+}
+
 } // namespace
 
-WindowsServiceActions::WindowsServiceActions(bool elevated, Windows::ServiceControlFunctions api) : m_Elevated(elevated), m_Api(api)
+WindowsServiceActions::WindowsServiceActions(bool elevated,
+                                             Windows::ServiceControlFunctions api,
+                                             std::shared_ptr<const Windows::ServiceIdTable> ids)
+    : m_Elevated(elevated), m_Api(api), m_Ids(std::move(ids))
 {}
 
 ServiceActionCapabilities WindowsServiceActions::capabilities() const
@@ -162,70 +242,50 @@ ServiceActionCapabilities WindowsServiceActions::capabilities() const
     return {.canStart = true, .canStop = true, .canRestart = true, .canSetStartType = true, .elevated = m_Elevated};
 }
 
-ServiceActionResult WindowsServiceActions::start(std::string_view name, const std::stop_token& stopToken)
+ServiceActionResult WindowsServiceActions::start(const ServiceTarget& service, const std::stop_token& stopToken)
 {
-    if (stopToken.stop_requested())
-    {
-        return ServiceActionResult::stopRequested(); // nothing sent yet, and nothing is
-    }
-    const OpenedService opened = openService(m_Api, name, SERVICE_START | SERVICE_QUERY_STATUS);
-    if (opened.error != ERROR_SUCCESS)
-    {
-        return Math::errorResult(opened.error);
-    }
-    if (m_Api.startService(opened.service.get(), 0, nullptr) == FALSE)
-    {
-        return lastError();
-    }
-    return waitForState(m_Api, opened.service.get(), SERVICE_RUNNING, "start", stopToken);
+    const std::expected<std::wstring, ServiceActionResult> name = resolveName(m_Ids.get(), service);
+    return name ? startService(m_Api, *name, stopToken) : name.error();
 }
 
-ServiceActionResult WindowsServiceActions::stop(std::string_view name, const std::stop_token& stopToken)
+ServiceActionResult WindowsServiceActions::stop(const ServiceTarget& service, const std::stop_token& stopToken)
 {
-    if (stopToken.stop_requested())
-    {
-        return ServiceActionResult::stopRequested(); // nothing sent yet, and nothing is
-    }
-    const OpenedService opened = openService(m_Api, name, SERVICE_STOP | SERVICE_QUERY_STATUS);
-    if (opened.error != ERROR_SUCCESS)
-    {
-        return Math::errorResult(opened.error);
-    }
-    SERVICE_STATUS status{};
-    if (m_Api.controlService(opened.service.get(), SERVICE_CONTROL_STOP, &status) == FALSE)
-    {
-        const DWORD error = GetLastError();
-        if (error == ERROR_DEPENDENT_SERVICES_RUNNING)
-        {
-            // Never stopped along with it: the user decides, knowing which they are.
-            return ServiceActionResult::failed(Math::dependentsText(runningDependents(m_Api, name)));
-        }
-        return Math::errorResult(error);
-    }
-    return waitForState(m_Api, opened.service.get(), SERVICE_STOPPED, "stop", stopToken);
+    const std::expected<std::wstring, ServiceActionResult> name = resolveName(m_Ids.get(), service);
+    return name ? stopService(m_Api, *name, stopToken) : name.error();
 }
 
-ServiceActionResult WindowsServiceActions::restart(std::string_view name, const std::stop_token& stopToken)
+ServiceActionResult WindowsServiceActions::restart(const ServiceTarget& service, const std::stop_token& stopToken)
 {
-    // stop() returns only once the service is STOPPED (or the wait failed): start is never sent to a
+    // Resolved once, so the start goes to the very service the stop did.
+    const std::expected<std::wstring, ServiceActionResult> name = resolveName(m_Ids.get(), service);
+    if (!name)
+    {
+        return name.error();
+    }
+    // stopService() returns only once the service is STOPPED (or the wait failed): start is never sent to a
     // service still stopping, and a slow but advancing stop is waited out rather than ending the
     // restart with the service left stopped (#2127).
-    if (ServiceActionResult stopped = stop(name, stopToken); !stopped.ok)
+    if (ServiceActionResult stopped = stopService(m_Api, *name, stopToken); !stopped.ok)
     {
         return stopped;
     }
-    // A stop requested once the service has stopped leaves it stopped: start() sends nothing then.
-    return start(name, stopToken);
+    // A stop requested once the service has stopped leaves it stopped: startService() sends nothing then.
+    return startService(m_Api, *name, stopToken);
 }
 
-ServiceActionResult WindowsServiceActions::setStartType(std::string_view name, ServiceStartType startType)
+ServiceActionResult WindowsServiceActions::setStartType(const ServiceTarget& service, ServiceStartType startType)
 {
     const auto code = Math::startTypeCode(startType);
     if (!code)
     {
         return ServiceActionResult::failed("That startup type can't be set here");
     }
-    const OpenedService opened = openService(m_Api, name, SERVICE_CHANGE_CONFIG);
+    const std::expected<std::wstring, ServiceActionResult> name = resolveName(m_Ids.get(), service);
+    if (!name)
+    {
+        return name.error();
+    }
+    const OpenedService opened = openService(m_Api, *name, SERVICE_CHANGE_CONFIG);
     if (opened.error != ERROR_SUCCESS)
     {
         return Math::errorResult(opened.error);
