@@ -522,6 +522,45 @@ guardRefusal(const WindowsProcessFunctions& fns, HANDLE process, const ProcessTa
     return fns.setProcessInformation(process, ProcessPowerThrottling, &state, sizeof(state));
 }
 
+/// @p process's power-throttling state, as GetProcessInformation(ProcessPowerThrottling) reads it through the seam;
+/// nullopt when it can't be read.
+[[nodiscard]] std::optional<PROCESS_POWER_THROTTLING_STATE> readPowerThrottling(const WindowsProcessFunctions& fns, HANDLE process)
+{
+    if (fns.getProcessInformation == nullptr)
+    {
+        return std::nullopt;
+    }
+    PROCESS_POWER_THROTTLING_STATE state{};
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    if (fns.getProcessInformation(process, ProcessPowerThrottling, &state, sizeof(state)) == FALSE)
+    {
+        return std::nullopt;
+    }
+    return state;
+}
+
+/// Undoes a setExecutionSpeedThrottling(on) whose Efficiency mode "on" was then refused (#4366): @p before, the
+/// state read before it, is put back, and nothing is sent when that was already execution-speed throttling on, so a
+/// throttle the process had (Windows', or another tool's) is kept. Unread, it is handed back to Windows, as before.
+void undoExecutionSpeedThrottling(const WindowsProcessFunctions& fns,
+                                  HANDLE process,
+                                  const std::optional<PROCESS_POWER_THROTTLING_STATE>& before)
+{
+    if (!before.has_value())
+    {
+        static_cast<void>(setExecutionSpeedThrottling(fns, process, false));
+        return;
+    }
+    constexpr ULONG ON = PROCESS_POWER_THROTTLING_EXECUTION_SPEED;
+    if (before->ControlMask == ON && before->StateMask == ON)
+    {
+        return; // the "on" changed nothing
+    }
+    PROCESS_POWER_THROTTLING_STATE state = *before;
+    state.Version = PROCESS_POWER_THROTTLING_CURRENT_VERSION;
+    static_cast<void>(fns.setProcessInformation(process, ProcessPowerThrottling, &state, sizeof(state)));
+}
+
 } // namespace
 
 WindowsProcessFunctions realWindowsProcessFunctions() noexcept
@@ -909,6 +948,9 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
     }
 
     const DWORD current = m_Fns.getPriorityClass(process.handle.get()); // 0 when it can't be read
+    // What a refused "on" puts back (#4366); an "off" needs no undo.
+    const std::optional<PROCESS_POWER_THROTTLING_STATE> throttlingBefore =
+        on ? readPowerThrottling(m_Fns, process.handle.get()) : std::nullopt;
     if (setExecutionSpeedThrottling(m_Fns, process.handle.get(), on) == FALSE)
     {
         const DWORD error = GetLastError();
@@ -921,7 +963,7 @@ ProcessActionResult WindowsProcessActions::setEfficiencyMode(const ProcessTarget
         if (m_Fns.setPriorityClass(process.handle.get(), IDLE_PRIORITY_CLASS) == FALSE)
         {
             const DWORD error = GetLastError();
-            static_cast<void>(setExecutionSpeedThrottling(m_Fns, process.handle.get(), false)); // a refused "on" changes nothing
+            undoExecutionSpeedThrottling(m_Fns, process.handle.get(), throttlingBefore); // a refused "on" changes nothing
             return callFailure(m_Fns,
                                process.handle.get(),
                                target,
