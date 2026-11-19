@@ -520,7 +520,11 @@ class ProcessesPanel : public Panel
         std::mutex mutex;
         std::optional<Contents> contents; ///< guarded by mutex; empty once taken
         std::atomic<bool> seeded{false};  ///< set last: the probe is in place and the model has its seed
+        /// Set when the hook failed before the model had a probe (#4412): what the panel shows instead of an empty table.
+        std::string failed;                 ///< guarded by mutex
+        std::atomic<bool> hasFailed{false}; ///< set after failed
     };
+    std::string m_PlatformFailure; ///< PlatformHandoff::failed, once adopted; UI thread
     std::shared_ptr<PlatformHandoff> m_Handoff;
     /// The hook's contents, once: empty when nothing is waiting or it was taken already.
     [[nodiscard]] std::optional<PlatformHandoff::Contents> takePlatformHandoff();
