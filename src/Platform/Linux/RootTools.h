@@ -8,6 +8,7 @@
 
 #include "Platform/Linux/SyscallTrace.h"
 
+#include <algorithm>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -93,9 +94,13 @@ struct RootFs
 /// @p pathList (colon-separated) with only the folders isRootOnlyFolder() accepts, in order (#4396): what TaskSmack
 /// searches for a tool as root, and the PATH it gives a program it runs as root. A /usr/local/bin another account can
 /// write (Debian's root:staff 2775, or a chown -R of /usr/local) is left out, so nothing there is found or run by name.
+/// Each folder is given as the canonical path that was checked, once (#4550): a folder named through a link (a
+/// staff-writable /usr/local holding "bin -> /usr/bin") would pass on its target, and every child resolving the PATH
+/// later would follow wherever the link had been re-pointed. On merged-usr, /bin and /usr/bin are one entry.
 [[nodiscard]] inline std::string trustedRootPath(std::string_view pathList, const RootFs& fs)
 {
     std::string out;
+    std::vector<std::string> listed;
     std::size_t start = 0;
     while (start <= pathList.size())
     {
@@ -105,9 +110,11 @@ struct RootFs
             end = pathList.size();
         }
         const std::string folder(pathList.substr(start, end - start));
-        if (folder.starts_with('/') && isRootOnlyFolder(folder, fs))
+        const std::optional<std::string> resolved = folder.starts_with('/') ? fs.canonical(folder) : std::nullopt;
+        if (resolved.has_value() && SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership) && !std::ranges::contains(listed, *resolved))
         {
-            out += out.empty() ? folder : ":" + folder;
+            out += out.empty() ? *resolved : ":" + *resolved;
+            listed.push_back(*resolved);
         }
         start = end + 1;
     }

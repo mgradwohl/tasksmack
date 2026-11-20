@@ -547,6 +547,22 @@ TEST(RootToolsTest, AFolderAnotherAccountCanWriteIsNotSearchedOrPassedOnAsRoot)
     EXPECT_EQ(RootTools::findRootTool("crontab", "/usr/local/bin:/usr/bin", fs), std::optional<std::string>("/usr/bin/crontab"));
 }
 
+// #4550: a trusted folder is given as the canonical path that was checked, once. A staff member's "bin -> /usr/bin"
+// in a staff-writable /usr/local passes on its target, so it must never reach the PATH as /usr/local/bin, which they
+// could re-point before a root child resolves a name through it; on merged-usr, /bin is /usr/bin.
+TEST(RootToolsTest, TrustedFoldersAreGivenAsTheirCanonicalPathOnce)
+{
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries.erase("/usr/local/bin");
+    tree.entries["/usr/local/bin"] = {.uid = 1000, .mode = 0120777};
+    tree.links["/usr/local/bin"] = "/usr/bin";
+    tree.entries["/bin"] = {.uid = 0, .mode = 0120777};
+    tree.links["/bin"] = "/usr/bin";
+    const RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/local/bin:/usr/bin:/bin", fs), "/usr/bin");
+    EXPECT_EQ(RootTools::trustedRootPath("/bin:/usr/local/bin", fs), "/usr/bin") << "the link's own name is never passed on";
+}
+
 TEST(RootToolsTest, ALinkInAFolderAnotherAccountCanWriteIsRefusedOnAnyHop)
 {
     const FakeTree tree = staffWritableUsrLocal();
