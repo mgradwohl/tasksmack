@@ -690,7 +690,7 @@ TEST(StorageModelTest, PerDiskHistoryAlignedToTimestamps)
     }
 }
 
-TEST(StorageModelTest, PerDiskHistoryRatesNonNegative)
+TEST(StorageModelTest, APerDiskRateIsAGapThenTheMeasuredRateNeverNegative)
 {
     auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
     Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
@@ -707,7 +707,8 @@ TEST(StorageModelTest, PerDiskHistoryRatesNonNegative)
     mockProbe->setNextCounters(counters);
 
     StorageModel model(std::move(mockProbeOwned));
-    model.sample();
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
 
     sda.readsCompleted = 200;
     sda.readSectors = 2000;
@@ -716,22 +717,16 @@ TEST(StorageModelTest, PerDiskHistoryRatesNonNegative)
     counters.disks.clear();
     counters.disks.push_back(sda);
     mockProbe->setNextCounters(counters);
-
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    model.sample();
+    model.sampleAt(start + std::chrono::seconds(1));
 
     const auto history = model.publication()->perDiskHistory;
     ASSERT_EQ(history.size(), 1U);
-    // Each rate is either a gap (no measured rate yet: the seed sample and a too-short seed
-    // transition, #1102) or a real, non-negative rate -- never negative.
-    for (const double rate : history[0].readBytesPerSec)
-    {
-        EXPECT_TRUE(std::isnan(rate) || rate >= 0.0) << rate;
-    }
-    for (const double rate : history[0].writeBytesPerSec)
-    {
-        EXPECT_TRUE(std::isnan(rate) || rate >= 0.0) << rate;
-    }
+    ASSERT_EQ(history[0].readBytesPerSec.size(), 2U);
+    ASSERT_EQ(history[0].writeBytesPerSec.size(), 2U);
+    EXPECT_TRUE(std::isnan(history[0].readBytesPerSec[0])) << "the seed is a gap";
+    EXPECT_TRUE(std::isnan(history[0].writeBytesPerSec[0])) << "the seed is a gap";
+    EXPECT_DOUBLE_EQ(history[0].readBytesPerSec[1], 1000.0 * 512.0);
+    EXPECT_DOUBLE_EQ(history[0].writeBytesPerSec[1], 500.0 * 512.0);
 }
 
 TEST(StorageModelTest, PerDiskHistoryPreservesInsertionOrder)
@@ -1191,7 +1186,7 @@ TEST(StorageModelTest, CapabilitiesWithNullProbe_ReturnsDefault)
 // Counter Wrap Tests
 // =============================================================================
 
-TEST(StorageModelTest, CounterWrapProducesZeroRate)
+TEST(StorageModelTest, ACounterThatWentBackwardsIsAGapNotAMeasuredZero)
 {
     auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
     Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
@@ -1209,27 +1204,47 @@ TEST(StorageModelTest, CounterWrapProducesZeroRate)
     mockProbe->setNextCounters(counters);
 
     StorageModel model(std::move(mockProbeOwned));
-    model.sample();
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
 
-    // Second sample: counters wrapped (current < prev)
-    disk.readsCompleted = 100; // wrapped below previous 1000
-    disk.readSectors = 100;    // wrapped below previous 10000
-    disk.writesCompleted = 50; // wrapped below previous 500
-    disk.writeSectors = 50;    // wrapped below previous 5000
+    // Second sample, a second later: the device was re-created, so its counters restarted below the previous ones
+    disk.readsCompleted = 100;
+    disk.readSectors = 100;
+    disk.writesCompleted = 50;
+    disk.writeSectors = 50;
     counters.disks.clear();
     counters.disks.push_back(disk);
     mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(1));
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    model.sample();
-
-    auto snap = model.publication()->snapshot;
+    const auto publication = model.publication();
+    const auto& snap = publication->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
-    // Wrapped counters should be clamped to zero — no negative rates
-    EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snap.disks[0].writeBytesPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snap.disks[0].readOpsPerSec, 0.0);
-    EXPECT_DOUBLE_EQ(snap.disks[0].writeOpsPerSec, 0.0);
+    EXPECT_FALSE(snap.disks[0].hasRates);
+    EXPECT_TRUE(snap.disks[0].ratesRejected) << "flagged, so the Total is a gap too";
+    EXPECT_FALSE(snap.totalsMeasured);
+    ASSERT_EQ(publication->perDiskHistory.size(), 1U);
+    const auto& perDisk = publication->perDiskHistory[0];
+    ASSERT_EQ(perDisk.readBytesPerSec.size(), 2U);
+    EXPECT_TRUE(std::isnan(perDisk.readBytesPerSec.back()));
+    EXPECT_TRUE(std::isnan(perDisk.writeBytesPerSec.back()));
+    ASSERT_EQ(publication->totalReadHistory.size(), 2U);
+    EXPECT_TRUE(std::isnan(publication->totalReadHistory.back()));
+    EXPECT_TRUE(std::isnan(publication->totalWriteHistory.back()));
+
+    // The next second, counting up from the new base, is measured again
+    disk.readSectors = 300;
+    disk.writeSectors = 150;
+    counters.disks.clear();
+    counters.disks.push_back(disk);
+    mockProbe->setNextCounters(counters);
+    model.sampleAt(start + std::chrono::seconds(2));
+    const auto next = model.publication();
+    ASSERT_EQ(next->snapshot.disks.size(), 1ULL);
+    EXPECT_TRUE(next->snapshot.disks[0].hasRates);
+    EXPECT_FALSE(next->snapshot.disks[0].ratesRejected);
+    EXPECT_DOUBLE_EQ(next->snapshot.disks[0].readBytesPerSec, 200.0 * 512.0);
+    EXPECT_DOUBLE_EQ(next->snapshot.disks[0].writeBytesPerSec, 100.0 * 512.0);
 }
 
 // =============================================================================
@@ -1286,7 +1301,7 @@ TEST(StorageModelTest, AverageIoTimesCalculatedFromDeltas)
     EXPECT_LE(snap.disks[0].utilizationPercent, 100.0);
 }
 
-TEST(StorageModelTest, AverageIoTimesZeroWhenNoOps)
+TEST(StorageModelTest, AnIdleDiskHasMeasuredZeroRatesAndNoAverageIoTimes)
 {
     auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
     Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
@@ -1306,17 +1321,19 @@ TEST(StorageModelTest, AverageIoTimesZeroWhenNoOps)
     mockProbe->setNextCounters(counters);
 
     StorageModel model(std::move(mockProbeOwned));
-    model.sample();
+    const auto start = std::chrono::steady_clock::now();
+    model.sampleAt(start);
 
     // Second sample: no new ops (idle disk)
     // (same counters — no delta in ops)
     mockProbe->setNextCounters(counters);
 
-    std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    model.sample();
+    model.sampleAt(start + std::chrono::seconds(1));
 
     auto snap = model.publication()->snapshot;
     ASSERT_EQ(snap.disks.size(), 1ULL);
+    EXPECT_TRUE(snap.disks[0].hasRates) << "an idle disk is a measured 0, not a gap";
+    EXPECT_DOUBLE_EQ(snap.disks[0].readBytesPerSec, 0.0);
     // No new ops → avgReadTimeMs and avgWriteTimeMs stay at their default 0.0
     EXPECT_DOUBLE_EQ(snap.disks[0].avgReadTimeMs, 0.0);
     EXPECT_DOUBLE_EQ(snap.disks[0].avgWriteTimeMs, 0.0);
