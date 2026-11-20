@@ -392,6 +392,55 @@ struct ScriptedStats
     return inodes;
 }
 
+// #4387, the #4581 review: the attribute walk had RTA_NEXT's same unsigned wrap. A socket whose last attribute's
+// length isn't a multiple of 4 must never take its byte counters from the stale bytes after it.
+TEST(NetlinkSocketStatsScriptedTest, AnUnpaddedLastAttributeNeverReadsTheBytesAfterIt)
+{
+    using namespace std::chrono_literals;
+    ScriptedStats scripted(0ms);
+    scripted.transport->onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        constexpr std::size_t ATTRS_AT = NLMSG_HDRLEN + sizeof(inet_diag_msg); // 88: where datagram 2's attributes start
+        // Datagram 1 (socket 999): at byte 96, past datagram 2's 5-byte attribute, a whole INET_DIAG_INFO.
+        inet_diag_msg filler{};
+        filler.idiag_inode = 999;
+        tcp_info info{};
+        info.tcpi_bytes_received = 12345;
+        info.tcpi_bytes_acked = 12345;
+        std::vector<std::byte> payload(sizeof(inet_diag_msg) + 8 + RTA_LENGTH(sizeof(info)));
+        std::memcpy(payload.data(), &filler, sizeof(filler));
+        rtattr skip{};
+        skip.rta_len = 8;
+        skip.rta_type = 0;
+        std::memcpy(payload.data() + sizeof(inet_diag_msg), &skip, sizeof(skip));
+        rtattr forged{};
+        forged.rta_len = static_cast<unsigned short>(RTA_LENGTH(sizeof(info)));
+        forged.rta_type = INET_DIAG_INFO;
+        std::memcpy(payload.data() + sizeof(inet_diag_msg) + 8, &forged, sizeof(forged));
+        std::memcpy(payload.data() + sizeof(inet_diag_msg) + 8 + RTA_LENGTH(0), &info, sizeof(info));
+        TestSupport::Datagram first;
+        TestSupport::appendMessage(first, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, payload);
+        // Datagram 2 (socket 7): one 5-byte attribute, the message unpadded.
+        inet_diag_msg seven{};
+        seven.idiag_inode = 7;
+        std::vector<std::byte> short5(sizeof(inet_diag_msg) + 5);
+        std::memcpy(short5.data(), &seven, sizeof(seven));
+        rtattr odd{};
+        odd.rta_len = 5;
+        odd.rta_type = 0;
+        std::memcpy(short5.data() + sizeof(inet_diag_msg), &odd, sizeof(odd));
+        TestSupport::Datagram second;
+        TestSupport::appendMessage(second, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, short5);
+        second.resize(ATTRS_AT + 5);
+        return ScriptedNetlinkTransport::Reply{first, second, doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID)};
+    };
+    const auto sockets = scripted.stats->queryAllSockets(nullptr);
+    for (const SocketStats& socket : sockets)
+    {
+        EXPECT_FALSE(socket.inode == 7 && socket.bytesReceived == 12345) << "socket 7 took socket 999's counters";
+    }
+}
+
 TEST(NetlinkSocketStatsScriptedTest, QueriesTcpOverBothFamiliesAndNeverUdp)
 {
     // #1101: a UDP sock_diag dump carries no byte counters, so the UDP dumps were pure overhead.
@@ -1044,9 +1093,15 @@ TEST(DumpInetSocketsTest, AHeaderOnlyErrorIsAFailedReading)
     ScriptedNetlinkTransport transport;
     transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
     {
+        // Datagram 1 leaves -ENOENT in the bytes just past datagram 2's header: read there, the dump was Unsupported.
+        TestSupport::Datagram first;
+        const int enoent = -ENOENT;
+        std::array<std::byte, sizeof(int)> code{};
+        std::memcpy(code.data(), &enoent, sizeof(enoent));
+        TestSupport::appendMessage(first, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, code);
         TestSupport::Datagram error;
         TestSupport::appendMessage(error, NLMSG_ERROR, request.sequence, ScriptedNetlinkTransport::PORT_ID, {});
-        return ScriptedNetlinkTransport::Reply{error};
+        return ScriptedNetlinkTransport::Reply{first, error};
     };
     std::vector<InetSockets::RawInetSocket> sockets;
     EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
@@ -1065,7 +1120,25 @@ TEST(DumpInetSocketsTest, AMessageLongerThanItsDatagramIsAFailedReading)
         std::memcpy(&header, datagram.data(), sizeof(header));
         header.nlmsg_len = 4096;
         std::memcpy(datagram.data(), &header, sizeof(header));
-        return ScriptedNetlinkTransport::Reply{datagram};
+        // A real NLMSG_DONE after it: the bad message must fail the dump, not be stepped over to a Complete.
+        return ScriptedNetlinkTransport::Reply{datagram, doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID)};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+}
+
+// #4387: bytes after the last message that can't be a message are a failed reading, not ignored.
+TEST(DumpInetSocketsTest, StrayBytesAfterTheLastMessageAreAFailedReading)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        // A socket's message, then 8 bytes, too few to be a message; NLMSG_DONE comes in the next datagram.
+        TestSupport::Datagram datagram;
+        const std::array<std::byte, 8> payload{};
+        TestSupport::appendMessage(datagram, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, payload);
+        datagram.resize(datagram.size() + 8);
+        return ScriptedNetlinkTransport::Reply{datagram, doneDatagram(request.sequence, ScriptedNetlinkTransport::PORT_ID)};
     };
     std::vector<InetSockets::RawInetSocket> sockets;
     EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
@@ -1115,6 +1188,36 @@ TEST(NetlinkSocketStatsScriptedTest, ARequestThatCantBeSentIsAFailedReading)
     std::chrono::steady_clock::time_point sampledAt;
     EXPECT_TRUE(scripted.stats->queryAllSockets(&sampledAt).empty());
     EXPECT_EQ(sampledAt, std::chrono::steady_clock::time_point{});
+}
+
+// #4387, the #4581 review: as root (CI's root pass), a datagram another socket sends this transport's port is never read:
+// only the kernel's replies are.
+TEST(NetlinkSocketStatsRootTest, ADatagramFromAnotherSocketIsNeverRead)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "sending to a sock_diag port needs CAP_NET_ADMIN: CI runs this suite under sudo";
+    }
+    const std::unique_ptr<INetlinkTransport> transport = makeSockDiagTransport();
+    ASSERT_NE(transport, nullptr);
+    const int sender = ::socket(AF_NETLINK, SOCK_RAW | SOCK_CLOEXEC, NETLINK_SOCK_DIAG);
+    ASSERT_GE(sender, 0) << std::strerror(errno);
+    TestSupport::Datagram datagram = doneDatagram(1, transport->portId());
+    sockaddr_nl to{};
+    to.nl_family = AF_NETLINK;
+    to.nl_pid = transport->portId();
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the sockets API
+    const ssize_t sent = ::sendto(sender, datagram.data(), datagram.size(), 0, reinterpret_cast<const sockaddr*>(&to), sizeof(to));
+    const int sendError = errno;
+    ::close(sender);
+    if (sent < 0)
+    {
+        GTEST_SKIP() << "this kernel refused a user socket's datagram to a sock_diag port: " << std::strerror(sendError);
+    }
+    std::array<std::byte, 4096> buffer{};
+    const NetlinkIoResult received = transport->receive(buffer, true);
+    EXPECT_LT(received.bytes, 0) << "the forged NLMSG_DONE was read";
+    EXPECT_EQ(received.error, EAGAIN);
 }
 
 } // namespace

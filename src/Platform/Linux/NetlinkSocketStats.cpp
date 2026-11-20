@@ -279,8 +279,11 @@ class SockDiagTransport final : public INetlinkTransport
     [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool nonBlocking) override
     {
         // Only the kernel's replies (#4387): another process may send this port a datagram (one with CAP_NET_ADMIN
-        // in this network namespace), and its sequence and port checks are guessable. Its datagrams are dropped.
-        for (;;)
+        // in this network namespace), and its sequence and port checks are guessable. Its datagrams are dropped, up
+        // to a bound (the #4581 review): a flood of them would otherwise keep the sampler reading for ever, past the
+        // drain's own limit, which counts only what this returns.
+        constexpr int MAX_DROPPED_DATAGRAMS = 1024;
+        for (int dropped = 0; dropped < MAX_DROPPED_DATAGRAMS; ++dropped)
         {
             sockaddr_nl from{};
             socklen_t fromLen = sizeof(from);
@@ -292,12 +295,13 @@ class SockDiagTransport final : public INetlinkTransport
                                            // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the sockets API
                                            reinterpret_cast<sockaddr*>(&from),
                                            &fromLen);
-            if (len >= 0 && fromLen >= sizeof(from) && from.nl_pid != 0)
+            if (len < 0 || (fromLen >= sizeof(from) && from.nl_pid == 0))
             {
-                continue; // not from the kernel
+                return {.bytes = len, .error = len < 0 ? errno : 0};
             }
-            return {.bytes = len, .error = len < 0 ? errno : 0};
+            // Not from the kernel, or a sender it couldn't name: dropped.
         }
+        return {.bytes = -1, .error = EAGAIN}; // as a timeout: this read gave nothing to trust
     }
 
     [[nodiscard]] std::uint32_t portId() const noexcept override
@@ -449,7 +453,7 @@ template<std::invocable<const void*, std::size_t> OnSocket>
             if (nlh->nlmsg_type == NLMSG_DONE)
             {
                 // NLMSG_DONE carries the dump's status: negative is an error part-way through.
-                if (NLMSG_PAYLOAD(nlh, 0) >= sizeof(int))
+                if (messageLen - NLMSG_HDRLEN >= sizeof(int))
                 {
                     int status = 0;
                     std::memcpy(&status, NLMSG_DATA(nlh), sizeof(status));
@@ -469,14 +473,13 @@ template<std::invocable<const void*, std::size_t> OnSocket>
                 {
                     return InetDumpOutcome::Failed;
                 }
-                nlmsgerr errValue{};
-                std::memcpy(&errValue.error, NLMSG_DATA(nlh), sizeof(errValue.error));
-                const nlmsgerr* err = &errValue;
-                if (err->error == 0)
+                int errorCode = 0; // nlmsgerr::error
+                std::memcpy(&errorCode, NLMSG_DATA(nlh), sizeof(errorCode));
+                if (errorCode == 0)
                 {
                     continue; // An ACK, not the end of the dump: keep reading until NLMSG_DONE
                 }
-                if (err->error == -ENOENT)
+                if (errorCode == -ENOENT)
                 {
                     // The family's (or protocol's) diag module is absent (IPv6 disabled): the dump is
                     // over and has no sockets.
@@ -485,7 +488,7 @@ template<std::invocable<const void*, std::size_t> OnSocket>
                 // Any other error (EBUSY, ENOMEM, ...) is a failed reading, not an empty one: taken as
                 // complete it would drop every socket's baseline and credit their lifetime bytes when
                 // they reappear.
-                spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-err->error));
+                spdlog::debug("Netlink error for family {}: {}", family, safeStrerror(-errorCode));
                 return InetDumpOutcome::Failed;
             }
 
