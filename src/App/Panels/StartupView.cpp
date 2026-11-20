@@ -131,6 +131,10 @@ void renderStartupTooltip(const Platform::StartupEntry& entry)
     {
         ImGui::TextColored(scheme.textWarning, ICON_FA_TRIANGLE_EXCLAMATION "  The program this entry starts was not found");
     }
+    else if (entry.target == Platform::StartupTargetState::NotChecked)
+    {
+        ImGui::TextColored(scheme.textMuted, "On a network or device path: not checked");
+    }
     else if (entry.target == Platform::StartupTargetState::Unresolved && !entry.sourcePath.empty() && entry.command.empty())
     {
         ImGui::TextColored(scheme.textMuted, "Shortcut target unresolved");
@@ -366,9 +370,9 @@ std::string_view startupIconPath(const Platform::StartupEntry& entry) noexcept
     {
         return entry.iconPath;
     }
-    if (entry.target == Platform::StartupTargetState::Missing)
+    if (entry.target == Platform::StartupTargetState::Missing || entry.target == Platform::StartupTargetState::NotChecked)
     {
-        return {}; // Nothing to read an icon from
+        return {}; // Nothing to read an icon from, or a share the probe never opens (#4374)
     }
     return entry.executablePath;
 }

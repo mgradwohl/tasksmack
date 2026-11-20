@@ -119,6 +119,8 @@ struct FakeSystem
     std::wstring userFolder;                                      ///< FOLDERID_Startup; the call fails when empty
     std::wstring commonFolder;                                    ///< FOLDERID_CommonStartup; the call fails when empty
     int opened = 0;                                               ///< Open minus closed.
+    /// Every path the probe stat'ed or read a version resource from (#4374); the calls go on to the real file system.
+    std::vector<std::wstring> filesOpened;
 };
 
 FakeSystem& fake()
@@ -417,6 +419,24 @@ HRESULT WINAPI fakeLoadIndirectString(PCWSTR source, PWSTR text, UINT textChars,
     return S_OK;
 }
 
+BOOL WINAPI recordedFileAttributes(LPCWSTR path, GET_FILEEX_INFO_LEVELS level, LPVOID data)
+{
+    fake().filesOpened.emplace_back(path);
+    return ::GetFileAttributesExW(path, level, data);
+}
+
+DWORD WINAPI recordedVersionInfoSize(LPCWSTR path, LPDWORD handle)
+{
+    fake().filesOpened.emplace_back(path);
+    return ::GetFileVersionInfoSizeW(path, handle);
+}
+
+BOOL WINAPI recordedVersionInfo(LPCWSTR path, DWORD handle, DWORD size, LPVOID data)
+{
+    fake().filesOpened.emplace_back(path);
+    return ::GetFileVersionInfoW(path, handle, size, data);
+}
+
 [[nodiscard]] Windows::StartupProbeFunctions fakeFunctions()
 {
     return {
@@ -429,6 +449,9 @@ HRESULT WINAPI fakeLoadIndirectString(PCWSTR source, PWSTR text, UINT textChars,
         .packagesByFamily = &fakePackagesByFamily,
         .packagePath = &fakePackagePath,
         .loadIndirectString = &fakeLoadIndirectString,
+        .fileAttributes = &recordedFileAttributes,
+        .versionInfoSize = &recordedVersionInfoSize,
+        .versionInfo = &recordedVersionInfo,
     };
 }
 
@@ -511,6 +534,44 @@ TEST_F(WindowsStartupProbeSeamsTest, NothingRegisteredListsNothing)
     // The common folder can't be found (fakeKnownFolder fails), and no key exists.
     WindowsStartupProbe probe(fakeFunctions());
     EXPECT_TRUE(probe.enumerate().empty());
+}
+
+// #4374: a Run value naming a network share or a device path is listed but never opened, while a local one is.
+TEST_F(WindowsStartupProbeSeamsTest, NetworkAndDevicePathsAreListedButNotOpened)
+{
+    const std::filesystem::path cmd = systemCmd();
+    addKey(HKEY_CURRENT_USER, RUN_KEY).values = {
+        {.name = L"Share", .type = REG_SZ, .data = stringData(L"\"\\\\tasksmack-4374.invalid\\tools\\agent.exe\" --tray")},
+        {.name = L"LongShare", .type = REG_SZ, .data = stringData(L"\\\\?\\UNC\\tasksmack-4374.invalid\\tools\\sync.exe")},
+        {.name = L"Local", .type = REG_SZ, .data = stringData(std::format(L"\"{}\" /c exit", cmd.wstring()))},
+    };
+
+    WindowsStartupProbe probe(fakeFunctions());
+    const std::vector<StartupEntry> entries = probe.enumerate();
+    ASSERT_EQ(entries.size(), 3U);
+
+    const StartupEntry* share = find(entries, "Share", StartupLocation::RunUser);
+    ASSERT_NE(share, nullptr);
+    EXPECT_EQ(share->executablePath, R"(\\tasksmack-4374.invalid\tools\agent.exe)");
+    EXPECT_EQ(share->target, StartupTargetState::NotChecked);
+    EXPECT_EQ(share->name, "agent.exe") << "named by its file name, as a missing program is";
+    EXPECT_TRUE(share->publisher.empty());
+
+    const StartupEntry* longShare = find(entries, "LongShare", StartupLocation::RunUser);
+    ASSERT_NE(longShare, nullptr);
+    EXPECT_EQ(longShare->target, StartupTargetState::NotChecked);
+
+    const StartupEntry* local = find(entries, "Local", StartupLocation::RunUser);
+    ASSERT_NE(local, nullptr);
+    EXPECT_EQ(local->target, StartupTargetState::Present);
+
+    // Only cmd.exe was opened: its attributes and its version resource, never the share.
+    ASSERT_FALSE(fake().filesOpened.empty());
+    for (const std::wstring& opened : fake().filesOpened)
+    {
+        EXPECT_FALSE(opened.starts_with(L"\\\\")) << WinString::wideToUtf8(opened);
+        EXPECT_EQ(lower(WinString::wideToUtf8(opened)), lower(WinString::wideToUtf8(cmd.wstring())));
+    }
 }
 
 TEST_F(WindowsStartupProbeSeamsTest, ReadsRunValuesAndSkipsWhatIsNotAnEntry)

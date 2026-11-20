@@ -52,6 +52,11 @@ struct StartupProbeFunctions
     using PackagePathFn = LONG(WINAPI*)(PCWSTR, UINT32*, PWSTR);
     /// SHLoadIndirectString: an "@{PackageFullName?ms-resource://...}" string from the package's resources.
     using LoadIndirectStringFn = HRESULT(WINAPI*)(PCWSTR, PWSTR, UINT, void**);
+    /// GetFileAttributesExW: whether an entry's program exists, and when it last changed (#4374).
+    using FileAttributesFn = BOOL(WINAPI*)(LPCWSTR, GET_FILEEX_INFO_LEVELS, LPVOID);
+    /// GetFileVersionInfoSizeW and GetFileVersionInfoW: a program's version resource (#4374).
+    using VersionInfoSizeFn = DWORD(WINAPI*)(LPCWSTR, LPDWORD);
+    using VersionInfoFn = BOOL(WINAPI*)(LPCWSTR, DWORD, DWORD, LPVOID);
 
     RegOpenKeyExFn openKey = &::RegOpenKeyExW;
     RegQueryInfoKeyFn queryInfoKey = &::RegQueryInfoKeyW;
@@ -62,6 +67,9 @@ struct StartupProbeFunctions
     PackagesByFamilyFn packagesByFamily = &::GetPackagesByPackageFamily;
     PackagePathFn packagePath = &::GetPackagePathByFullName;
     LoadIndirectStringFn loadIndirectString = &::SHLoadIndirectString;
+    FileAttributesFn fileAttributes = &::GetFileAttributesExW;
+    VersionInfoSizeFn versionInfoSize = &::GetFileVersionInfoSizeW;
+    VersionInfoFn versionInfo = &::GetFileVersionInfoW;
 };
 
 /// One windows.startupTask a package manifest declares (#1798). Strings are as written in the
