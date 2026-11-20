@@ -17,6 +17,7 @@
 #include "Platform/GpuMockLibraryTestUtils.h"
 #include "Platform/Linux/DRMGPUProbe.h"
 #include "Platform/Linux/LinuxGPUProbe.h"
+#include "Platform/Linux/SysfsValue.h"
 #include "Platform/ScopedTempDir.h"
 
 #include <algorithm>
@@ -686,6 +687,44 @@ TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonZeroTemp_IsIgnored)
     // A zero reading from the file should leave temperatureC at 0, marked unread (#1111)
     EXPECT_EQ(counters[0].temperatureC, 0);
     EXPECT_FALSE(counters[0].temperatureAvailable);
+}
+
+// #4390: the temperature is read signed: minus 5 °C is -5, not a wrapped 18446744073709546616; a reading under one
+// degree is 0 °C, not unavailable; and text that isn't a whole number is unread.
+TEST_F(DRMGPUProbeUnitTest, ReadGPUCounters_HwmonTemperatureIsReadSigned)
+{
+    const auto deviceDir = makeCard("card0", "i915");
+    writeFile(deviceDir / "vendor", "0x8086");
+    writeFile(deviceDir / "class", "0x030000");
+    makeHwmon(deviceDir);
+    writeHwmonFile(deviceDir, "hwmon0", "temp1_input", "65000"); // there when the probe finds its sensor
+    DRMGPUProbe probe(m_SysRoot.string());
+    ASSERT_TRUE(probe.isAvailable());
+
+    const auto read = [&](const char* value)
+    {
+        writeHwmonFile(deviceDir, "hwmon0", "temp1_input", value);
+        const auto counters = probe.readGPUCounters();
+        return counters.empty() ? GPUCounters{} : counters[0];
+    };
+    const GPUCounters cold = read("-5000\n");
+    EXPECT_TRUE(cold.temperatureAvailable);
+    EXPECT_EQ(cold.temperatureC, -5);
+    const GPUCounters nearZero = read("500\n");
+    EXPECT_TRUE(nearZero.temperatureAvailable) << "half a degree is a reading";
+    EXPECT_EQ(nearZero.temperatureC, 0);
+    EXPECT_FALSE(read("+65000").temperatureAvailable) << "not a plain number";
+    EXPECT_FALSE(read("65000x").temperatureAvailable);
+}
+
+TEST(SysfsValueTest, ParsesWholeNumbersOnly)
+{
+    EXPECT_EQ(SysfsValue::parse<std::int64_t>("-5000\n"), std::optional<std::int64_t>(-5000));
+    EXPECT_EQ(SysfsValue::parse<std::uint64_t>("-5000"), std::nullopt) << "no sign wrap";
+    EXPECT_EQ(SysfsValue::parse<std::uint64_t>("18446744073709551616"), std::nullopt) << "out of range";
+    EXPECT_EQ(SysfsValue::parse<std::uint64_t>(" 1"), std::nullopt);
+    EXPECT_EQ(SysfsValue::parse<std::uint64_t>(""), std::nullopt);
+    EXPECT_EQ(SysfsValue::parse<std::uint32_t>("42 \n"), std::optional<std::uint32_t>(42));
 }
 
 // xe has no temp1_input: its channel 1 has a label only, and the package temperature is temp2_input,

@@ -171,6 +171,8 @@ class DRMGPUProbe : public IGPUProbe
     [[nodiscard]] static uint64_t readSysfsUint64(const std::string& path);
     /// The file's unsigned value, or nullopt if it can't be read or parsed (where 0 is a real value).
     [[nodiscard]] static std::optional<uint64_t> readSysfsOptionalUint64(const std::string& path);
+    /// A signed attribute, such as a hwmon temperature in millidegrees (#4390); nullopt when it can't be read.
+    [[nodiscard]] static std::optional<std::int64_t> readSysfsOptionalInt64(const std::string& path);
     [[nodiscard]] static std::string findHwmonPath(const std::string& devicePath);
     /// "/dev/dri/renderDN" for the card's device/drm/renderDN entry, or "" if it has none.
     [[nodiscard]] static std::string findRenderNodePath(const std::string& devicePath);
