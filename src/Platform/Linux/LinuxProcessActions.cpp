@@ -13,6 +13,7 @@
 #include "ProcPrivileges.h"
 #include "RootDumpFolder.h"
 #include "RootTools.h"
+#include "RunProgramLookup.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
 
@@ -748,17 +749,36 @@ ProcessActionResult LinuxProcessActions::runProgram(const RunProgramRequest& req
     {
         return ProcessActionResult::error("Type the program to run");
     }
-    // The program as execvp would find it, looked up here so a typo is said at once rather than lost in
-    // the detached child.
-    const std::optional<std::string> program = SyscallTrace::findExecutable(words->front(), environmentValue("PATH"), isExecutableFile);
+    const bool root = ::geteuid() == 0;
+    // Root for another user (sudo, pkexec) and not asked for administrator: as that user, in their
+    // session (#2461), so the program isn't root's by accident.
+    const std::optional<DetachedSpawn::RunAs> user = request.asAdministrator ? std::nullopt : SessionUser::invokingUserSession();
+    using RunProgramLookup::RunsAs;
+    const RunsAs runsAs = RunProgramLookup::runsAsFor(root, request.asAdministrator, user.has_value());
+    // The program as the account it runs as would find it (#4532, #4400), looked up here so a typo is said at once
+    // rather than lost in the detached child.
+    const std::optional<std::string> program = RunProgramLookup::findProgram(
+        words->front(),
+        runsAs,
+        environmentValue("PATH"),
+        user.has_value() ? RunProgramLookup::pathIn(user->environment) : std::string_view{},
+        [](std::string_view name) { return RootTools::find(name, true, {}); },
+        [&user](const std::string& path)
+        { return user.has_value() && RunProgramLookup::executableBy(path, user->uid, user->gid, user->groups); });
     if (!program.has_value())
     {
-        return ProcessActionResult::error(std::format("{} wasn't found, or isn't a program", words->front()));
+        if (words->front().contains('/') && !words->front().starts_with('/'))
+        {
+            return ProcessActionResult::error(std::format("{} isn't a full path: type one starting with /", words->front()));
+        }
+        return ProcessActionResult::error(
+            runsAs == RunsAs::Root
+                ? std::format("{} wasn't found in the system's folders: type its full path, which is run as typed", words->front())
+                : std::format("{} wasn't found, or isn't a program", words->front()));
     }
     std::vector<std::string> argv = *words;
     argv.front() = *program;
 
-    const bool root = ::geteuid() == 0;
     // As administrator: through pkexec, which asks for the password itself; already root, as it is.
     if (request.asAdministrator && !root)
     {
@@ -768,9 +788,6 @@ ProcessActionResult LinuxProcessActions::runProgram(const RunProgramRequest& req
         }
         argv.insert(argv.begin(), m_TraceTools.elevatorPath);
     }
-    // Root for another user (sudo, pkexec) and not asked for administrator: as that user, in their
-    // session (#2461), so the program isn't root's by accident.
-    const std::optional<DetachedSpawn::RunAs> user = request.asAdministrator ? std::nullopt : SessionUser::invokingUserSession();
     const auto spawned = user.has_value() ? DetachedSpawn::spawnDetached(argv, *user) : DetachedSpawn::spawnDetached(argv);
     if (!spawned.has_value())
     {
