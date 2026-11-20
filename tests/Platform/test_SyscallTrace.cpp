@@ -439,6 +439,124 @@ TEST(SyscallTraceTest, ATerminalServerCantCarryTaskSmacksRootToStrace)
     EXPECT_FALSE(serverTerminalRefusal(42, fileCap, "/usr/bin/ptyxis").has_value());
 }
 
+// #4396: a link to a root-owned tool passed the check on its target, though the link itself sat in a folder another
+// account could write, and could be pointed elsewhere before the exec. Now such a link is refused, and as root the path
+// run is the canonical one checked.
+TEST(RootToolsTest, AsRootTheCanonicalPathCheckedIsThePathRun)
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack-4396-link";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::filesystem::path link = dir / "sh";
+    std::filesystem::create_symlink("/bin/sh", link, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::filesystem::path target = std::filesystem::canonical("/bin/sh", ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    EXPECT_FALSE(RootTools::rootTrustedPath(link.string()).has_value())
+        << "its target is root's, but the link sits in a folder this account can write, so it could choose or re-point it";
+    EXPECT_EQ(RootTools::rootTrustedPath(target.string()), std::optional<std::string>(target.string()));
+
+    const std::optional<std::string> found = RootTools::find("sh", true, "");
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(*found, std::filesystem::canonical(*found, ec).string()) << "no link left in the path run as root";
+    EXPECT_FALSE(std::filesystem::is_symlink(*found));
+    std::filesystem::remove_all(dir, ec);
+}
+
+/// A fake tree for the #4396 checks: each entry's owner and mode, and the links. /usr/local and /usr/local/bin are
+/// root:staff 2775, as Debian ships them (or as a chown -R of /usr/local leaves them).
+struct FakeTree
+{
+    std::map<std::string, SyscallTrace::PathOwnership> entries;
+    std::map<std::string, std::string> links; // absolute path -> absolute target
+
+    [[nodiscard]] RootTools::RootFs fs() const
+    {
+        return {
+            .ownership = [this](const std::string& path) -> std::optional<SyscallTrace::PathOwnership>
+            {
+                const auto found = entries.find(path);
+                return found == entries.end() ? std::nullopt : std::optional(found->second);
+            },
+            .readLink = [this](const std::string& path) -> std::optional<std::string>
+            {
+                const auto found = links.find(path);
+                return found == links.end() ? std::nullopt : std::optional(found->second);
+            },
+            .canonical = [this](const std::string& path) -> std::optional<std::string>
+            {
+                std::string at = path;
+                for (int hops = 0; hops < 40; ++hops)
+                {
+                    const auto found = links.find(at);
+                    if (found == links.end())
+                    {
+                        return entries.contains(at) ? std::optional(at) : std::nullopt;
+                    }
+                    at = found->second;
+                }
+                return std::nullopt;
+            },
+            .executable =
+                [this](const std::string& path)
+            {
+                const std::optional<std::string> resolved = fs().canonical(path);
+                return resolved.has_value() && (entries.at(*resolved).mode & 0111U) != 0 && (entries.at(*resolved).mode & 0040000U) == 0;
+            },
+        };
+    }
+};
+
+[[nodiscard]] FakeTree staffWritableUsrLocal()
+{
+    constexpr std::uint32_t DIR = 0040000;
+    FakeTree tree;
+    tree.entries = {
+        {"/", {.uid = 0, .mode = DIR | 0755}},
+        {"/usr", {.uid = 0, .mode = DIR | 0755}},
+        {"/usr/local", {.uid = 0, .mode = DIR | 02775}},
+        {"/usr/local/bin", {.uid = 0, .mode = DIR | 02775}},
+        {"/usr/bin", {.uid = 0, .mode = DIR | 0755}},
+        {"/usr/bin/python3", {.uid = 0, .mode = 0100755}},
+        {"/usr/bin/xdg-open", {.uid = 0, .mode = 0100755}},
+        {"/usr/bin/crontab", {.uid = 0, .mode = 0102755}},
+    };
+    tree.links = {
+        {"/usr/local/bin/xdg-open", "/usr/bin/python3"}, // planted by an account in the staff group
+        {"/usr/local/bin/crontab", "/usr/bin/crontab"},
+        {"/usr/bin/hop", "/usr/local/bin/xdg-open"}, // a root-only link whose next hop isn't
+    };
+    tree.entries["/usr/local/bin/xdg-open"] = {.uid = 1000, .mode = 0120777};
+    tree.entries["/usr/local/bin/crontab"] = {.uid = 1000, .mode = 0120777};
+    tree.entries["/usr/bin/hop"] = {.uid = 0, .mode = 0120777};
+    return tree;
+}
+
+// #4396, the security review: a staff-writable /usr/local/bin is left out of the root search and of a root child's
+// PATH, so an account there chooses neither which program runs nor a script's helpers.
+TEST(RootToolsTest, AFolderAnotherAccountCanWriteIsNotSearchedOrPassedOnAsRoot)
+{
+    const FakeTree tree = staffWritableUsrLocal();
+    const RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/local/bin:/usr/bin", fs), "/usr/bin");
+    EXPECT_EQ(RootTools::findRootTool("xdg-open", "/usr/local/bin:/usr/bin", fs), std::optional<std::string>("/usr/bin/xdg-open"))
+        << "the planted xdg-open -> python3 is never found: its folder isn't searched";
+    EXPECT_EQ(RootTools::findRootTool("crontab", "/usr/local/bin:/usr/bin", fs), std::optional<std::string>("/usr/bin/crontab"));
+}
+
+TEST(RootToolsTest, ALinkInAFolderAnotherAccountCanWriteIsRefusedOnAnyHop)
+{
+    const FakeTree tree = staffWritableUsrLocal();
+    const RootTools::RootFs fs = tree.fs();
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/local/bin/xdg-open", fs).has_value()) << "its own folder isn't root-only";
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/hop", fs).has_value()) << "a later hop sits in a staff-writable folder";
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/python3", fs), std::optional<std::string>("/usr/bin/python3"));
+    EXPECT_FALSE(RootTools::rootTrustedPath("bin/python3", fs).has_value()) << "relative paths are never trusted";
+}
+
 // #3760: a tool TaskSmack runs as root (crontab, every Startup sample) is found only in the system's directories, never
 // in a directory of the invoking user's PATH, and runs with an environment of TaskSmack's own; not as root, PATH decides.
 TEST(RootToolsTest, AsRootAToolIsNeverFoundOnTheUsersPath)
@@ -464,7 +582,7 @@ TEST(RootToolsTest, AsRootAToolIsNeverFoundOnTheUsersPath)
         EXPECT_TRUE(asRoot->starts_with('/'));
     }
     EXPECT_TRUE(RootTools::find("sh", true, pathEnv).has_value()) << "a system tool is still found as root";
-    EXPECT_EQ(RootTools::rootEnvironment(), (std::vector<std::string>{std::string("PATH=") + std::string(ROOT_TOOL_PATH)}));
+    EXPECT_EQ(RootTools::rootEnvironment(), (std::vector<std::string>{"PATH=" + RootTools::trustedRootPath()}));
 
     std::filesystem::remove_all(dir, ec);
 }
@@ -480,9 +598,9 @@ TEST(RootToolsTest, AsRootAChildKeepsTheEnvironmentButNotThePath)
               (std::vector<std::string>{"DISPLAY=:0",
                                         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
                                         "PATHLIKE=kept",
-                                        std::string("PATH=") + std::string(ROOT_TOOL_PATH)}));
+                                        "PATH=" + RootTools::trustedRootPath()}));
     std::array<const char*, 1> none{nullptr};
-    EXPECT_EQ(RootTools::withRootPath(none.data()), (std::vector<std::string>{std::string("PATH=") + std::string(ROOT_TOOL_PATH)}))
+    EXPECT_EQ(RootTools::withRootPath(none.data()), (std::vector<std::string>{"PATH=" + RootTools::trustedRootPath()}))
         << "a PATH is set even when there was none";
 }
 

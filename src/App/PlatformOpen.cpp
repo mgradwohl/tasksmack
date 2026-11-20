@@ -16,8 +16,8 @@
 
 #ifdef __linux__
 #include "Platform/Linux/DetachedSpawn.h"
+#include "Platform/Linux/RootTools.h"
 #include "Platform/Linux/SessionUser.h"
-#include "Platform/Linux/SyscallTrace.h"
 
 #include <array>
 #include <cstdlib>
@@ -61,10 +61,10 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
     const std::string targetStr = nativeTargetFromUtf8(target);
     const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on an open worker (#3155); nothing sets it
+    // As root, only a root-trusted xdg-open from the system's directories, at the canonical path checked (#4396), as
+    // every other tool TaskSmack runs as root is found; otherwise as execvp would.
     const std::optional<std::string> xdgOpen =
-        Platform::SyscallTrace::findExecutable("xdg-open",
-                                               pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{},
-                                               [](const std::string& path) { return ::access(path.c_str(), X_OK) == 0; });
+        Platform::RootTools::find("xdg-open", ::geteuid() == 0, pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{});
     if (!xdgOpen.has_value())
     {
         spdlog::warn("Can't open {}: xdg-open isn't installed", targetStr);
