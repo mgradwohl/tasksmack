@@ -21,6 +21,17 @@
   // docs/dev/labels.md's queue order.
   const CATEGORIES = ['CI', 'Tooling', 'Security', 'Bug', 'Perf', 'Testing', 'Docs', 'Refactor', 'Parity', 'Feature', 'Other'];
   const LANES = ['Windows', 'WSL', 'Shared', 'Dash', 'None'];
+  const LANE_WORDS = { Shared: 'Both lanes', None: 'No lane' };
+  // The GitHub search that lists a lane's issues (#4585). An issue with both lanes' labels is "Both lanes", so
+  // each lane's own search leaves the others out. "No lane" has none: its search would list the tracker too.
+  const LANE_SEARCH = {
+    Windows: 'label:agent:Windows -label:agent:WSL -label:agent:Dash',
+    WSL: 'label:agent:WSL -label:agent:Windows -label:agent:Dash',
+    Shared: 'label:agent:Windows label:agent:WSL',
+    Dash: 'label:agent:Dash -label:agent:Windows -label:agent:WSL',
+  };
+  const LIST_BY = [['kind', 'Kind'], ['lane', 'Lane']];
+  const LIST_BY_KEY = 'release-dashboard-list-by';
   const STAGES = [
     ['building', 'Building', 'Foundation, fixes, features'],
     ['freeze', 'Feature freeze', 'Review, hardening, docs'],
@@ -28,9 +39,26 @@
     ['released', 'Released', ''],
   ];
 
+  /** What this browser kept under @p key, or null: storage can be blocked, or refuse in a private window. */
+  function remembered(key) {
+    try {
+      return localStorage.getItem(key);
+    } catch (error) {
+      return null;
+    }
+  }
+
+  function remember(key, value) {
+    try {
+      localStorage.setItem(key, value);
+    } catch (error) {
+      // The choice then lasts for this visit only.
+    }
+  }
+
   const app = document.getElementById('app');
   const base = (document.querySelector('meta[name="release-data"]') || {}).content || '';
-  const view = { index: null, release: null, charts: [], width: 0 };
+  const view = { index: null, release: null, charts: [], width: 0, listBy: remembered(LIST_BY_KEY) === 'lane' ? 'lane' : 'kind' };
 
   // ---- small helpers -----------------------------------------------------------------------------
 
@@ -103,6 +131,12 @@
   }
 
   const issueLink = (n) => link('#' + n, '/issues/' + Number(n), { class: 'item-number' });
+  const laneName = (name) => LANE_WORDS[name] || name;
+
+  /** The names in @p groups: the ones @p order knows in its order, then any others by name. */
+  function ordered(order, groups) {
+    return order.filter((name) => groups.has(name)).concat(Array.from(groups.keys()).filter((name) => !order.includes(name)).sort());
+  }
 
   function icon(state) {
     const node = svg('svg', { class: 'icon icon-' + state, viewBox: '0 0 18 18', 'aria-hidden': 'true' });
@@ -274,11 +308,20 @@
     const percent = total ? Math.round((100 * closed) / total) : 0;
     const bar = el('span');
     bar.style.width = percent + '%';
-    const hero = el('div', null,
-      el('p', { class: 'hero-figure', text: number.format(open) }),
+    // Two rows (#4548): the large figure and its split by lane, then the sentences beside the pace table, so the
+    // table's caption is level with the line under the figure whatever the figure's size.
+    const top = el('div', { class: 'hero-top' }, el('p', { class: 'hero-figure', text: number.format(open) }), open ? laneFigures(release) : null);
+    const hero = el('div', { class: 'hero' },
       el('p', { class: 'hero-label' }, open === 1 ? 'issue open of ' : 'issues open of ', number.format(total), ' on the milestone · ', percent + '% closed'),
       el('div', { class: 'meter', role: 'img', 'aria-label': percent + '% of the milestone issues are closed' }, bar));
-    if (!release.pace) return el('section', { class: 'summary' }, hero);
+    // GitHub's milestone page counts more than this page does: say what, so the two figures can be reconciled.
+    const uncounted = el('p', { class: 'footnote' }, release.tracker
+      ? ['The release tracker, ', link('#' + release.tracker.number, '/issues/' + Number(release.tracker.number)), ', and pull requests aren’t counted here. GitHub’s milestone page counts both, so its figures are higher.']
+      : 'Pull requests aren’t counted here. GitHub’s milestone page counts them, so its figures can be higher.');
+    if (!release.pace) {
+      hero.append(uncounted);
+      return el('section', { class: 'summary' }, top, hero);
+    }
 
     const three = release.pace.find((rate) => rate.days === 3) || release.pace[0];
     const one = release.pace.find((rate) => rate.days === 1);
@@ -298,6 +341,7 @@
         ? 'The goal is ' + target.label + ', ' + away + '. Closing what is open by then takes a net ' + (Math.round((10 * open) / Math.max(left, 1)) / 10) + ' a day; the last 7 days ran at ' + signed(week.net_per_day) + '.'
         : 'The goal was ' + target.label + ', ' + days(Math.round(-left)) + ' ago.' }));
     }
+    hero.append(uncounted);
 
     const table = el('table', null,
       el('caption', { text: 'Pace, in issues a day' }),
@@ -306,9 +350,30 @@
         el('th', { scope: 'row', text: rate.days === 1 ? '24 hours' : rate.days + ' days' }),
         el('td', { text: rate.closed_per_day }), el('td', { text: rate.added_per_day }),
         el('td', { text: signed(rate.net_per_day) }), el('td', { text: rate.days_left == null ? 'not converging' : days(rate.days_left) })))));
-    return el('section', { class: 'summary' }, hero,
-      el('div', { class: 'block' }, el('div', { class: 'scroll' }, table),
+    return el('section', { class: 'summary' }, top, hero,
+      el('div', { class: 'block pace' }, el('div', { class: 'scroll' }, table),
         el('p', { class: 'footnote', text: 'Arithmetic on recent days, not a forecast. A review sweep that files many findings at once turns the net negative for a while.' })));
+  }
+
+  /**
+   * The open count split by lane (#4585): Windows and WSL always, any other lane only while it has open issues,
+   * so the figures add up to the large one beside them. Each links to the same list on GitHub.
+   */
+  function laneFigures(release) {
+    if (!release.by_lane) return null;
+    // The data leaves out a lane with nothing open and nothing moving in a week: the two lanes still get a 0.
+    const lanes = new Map(['Windows', 'WSL'].map((name) => [name, { name, open: 0 }]));
+    for (const entry of release.by_lane) lanes.set(entry.name, entry);
+    const title = release.milestone.title;
+    const names = ordered(LANES, lanes).filter((name) => name === 'Windows' || name === 'WSL' || lanes.get(name).open);
+    return el('ul', { class: 'lanes', 'aria-label': 'Open issues by lane' }, names.map((name) => {
+      const entry = lanes.get(name);
+      const search = TITLE.test(title) && LANE_SEARCH[name];
+      // The space is for a screen reader ("9 Windows"): the two are stacked, so it isn't drawn.
+      const parts = [el('span', { class: 'lane-figure', text: number.format(entry.open) }), ' ', el('span', { class: 'lane-name', text: laneName(name) })];
+      return el('li', { title: entry.open ? entry.todo + ' not started, ' + entry.progress + ' in progress, ' + entry.review + ' in review' : null },
+        search ? link(parts, '/issues?q=' + encodeURIComponent('is:issue is:open milestone:' + title + ' ' + search)) : parts);
+    }));
   }
 
   // ---- the ship list -----------------------------------------------------------------------------
@@ -354,9 +419,15 @@
     return String(text).replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ/g, (iso) => moment(seconds(iso)));
   }
 
-  function issueList(issues, now, side) {
-    const severity = { high: 0, medium: 1, low: 2 };
-    const sorted = side ? issues : issues.slice().sort((a, b) => (severity[a.sev] ?? 3) - (severity[b.sev] ?? 3) || (severity[a.pri] ?? 3) - (severity[b.pri] ?? 3) || a.n - b.n);
+  /** Most severe first, then the highest priority, then the oldest. */
+  function byUrgency(a, b) {
+    const level = { high: 0, medium: 1, low: 2 };
+    return (level[a.sev] ?? 3) - (level[b.sev] ?? 3) || (level[a.pri] ?? 3) - (level[b.pri] ?? 3) || a.n - b.n;
+  }
+
+  /** The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven). */
+  function issueList(issues, now, side, asGiven) {
+    const sorted = side || asGiven ? issues : issues.slice().sort(byUrgency);
     return el('ul', { class: 'items' }, sorted.map((issue) => {
       const chips = [];
       if (issue.phase !== 'todo') chips.push(chip(PHASE_WORDS[issue.phase], true));
@@ -840,13 +911,35 @@
     return lines.length ? el('div', { class: 'block' }, el('h3', { text: 'Labels to fix' }), el('ul', { class: 'plain' }, lines)) : null;
   }
 
+  /** Lists the open issues by kind or by lane, and keeps the choice for the next visit. */
+  function listBy(key) {
+    if (view.listBy === key) return;
+    view.listBy = key;
+    remember(LIST_BY_KEY, key);
+    render();
+    // The page was drawn again: the new lists start as the first ones did, with the first open, and the
+    // button that was pressed keeps the keyboard's place.
+    const first = app.querySelector('.open-lists details');
+    if (first) first.open = true;
+    const pressed = app.querySelector('.switch button[aria-pressed="true"]');
+    if (pressed) pressed.focus();
+  }
+
   function openWork(release, now) {
     const issues = release.open_issues;
     const byCategory = groupBy(issues, 'category');
     const phases = release.counts.phases;
     const legend = el('ul', { class: 'legend' }, [['review', 'In review'], ['progress', 'In progress'], ['todo', 'Not started']].map(([phase, text]) =>
       el('li', null, el('span', { class: 'key box k-' + phase }), text + ' (' + (phases[phase] || 0) + ')')));
-    const present = CATEGORIES.filter((name) => byCategory.has(name));
+    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work:
+    // the kinds in queue order, the most urgent first within each.
+    const kindRank = (issue) => (CATEGORIES.indexOf(issue.category) + 1) || CATEGORIES.length + 1;
+    const byLane = groupBy(issues, 'lane');
+    const groups = view.listBy === 'lane'
+      ? ordered(LANES, byLane).map((name) => ({ key: 'open-lane-' + name, name: laneName(name), issues: byLane.get(name).slice().sort((a, b) => kindRank(a) - kindRank(b) || byUrgency(a, b)), asGiven: true }))
+      : CATEGORIES.filter((name) => byCategory.has(name)).map((name) => ({ key: 'open-' + name, name, issues: byCategory.get(name), asGiven: false }));
+    const switcher = el('div', { class: 'switch', role: 'group', 'aria-label': 'List the open issues by' }, el('span', { 'aria-hidden': 'true', text: 'List by' }),
+      LIST_BY.map(([key, text]) => el('button', { type: 'button', 'data-by': key, 'aria-pressed': String(view.listBy === key), onclick: () => listBy(key) }, text)));
     // What has been in hand longest: the first place to look for something stuck.
     const started = issues.filter((issue) => issue.phase !== 'todo' && issue.started).sort((a, b) => seconds(a.started) - seconds(b.started)).slice(0, 5);
     const stuck = started.length ? el('div', { class: 'block' }, el('h3', { text: 'Longest in progress' }),
@@ -859,15 +952,15 @@
       // Four tables in one ruled grid: a faint line between the columns and between the rows.
       el('div', { class: 'quad' },
         el('div', { class: 'block' }, breakdown(release.by_category || [], CATEGORIES, 'Kind')),
-        el('div', { class: 'block' }, breakdown(release.by_lane || [], LANES, 'Lane', (name) => (name === 'None' ? 'No lane' : name === 'Shared' ? 'Both lanes' : name))),
+        el('div', { class: 'block' }, breakdown(release.by_lane || [], LANES, 'Lane', laneName)),
         bugTable ? el('div', { class: 'block' }, el('h3', { text: 'Bugs by severity' }), bugTable) : null, stuck),
       labelGaps(release),
-      el('div', null, present.map((name, index) => {
-        const group = byCategory.get(name);
-        const begun = group.filter((issue) => issue.phase !== 'todo').length;
-        return details('open-' + name, 'group', el('summary', null, el('span', null, name, el('span', { class: 'chevron', 'aria-hidden': 'true' })),
-          el('span', { text: count(group.length, 'issue') + (begun ? ', ' + begun + ' started' : '') })), issueList(group, now), index === 0);
-      })),
+      el('div', { class: 'open-lists' }, el('div', { class: 'list-head' }, el('h3', { text: 'Open issues' }), switcher),
+        groups.map((group, index) => {
+          const begun = group.issues.filter((issue) => issue.phase !== 'todo').length;
+          return details(group.key, 'group', el('summary', null, el('span', null, group.name, el('span', { class: 'chevron', 'aria-hidden': 'true' })),
+            el('span', { text: count(group.issues.length, 'issue') + (begun ? ', ' + begun + ' started' : '') })), issueList(group.issues, now, null, group.asGiven), index === 0);
+        })),
       release.recently_closed.length
         ? details('recent', 'group', el('summary', null, el('span', null, 'Closed in the last 24 hours', el('span', { class: 'chevron', 'aria-hidden': 'true' })), el('span', { text: count(release.recently_closed.length, 'issue') })),
           el('ul', { class: 'items' }, release.recently_closed.map((issue) => el('li', null, icon('done'),

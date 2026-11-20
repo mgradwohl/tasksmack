@@ -301,11 +301,33 @@ select {
 
 /* ---- summary --------------------------------------------------------------------------------- */
 
+/* Two rows at desktop widths (#4548): the large figure with its split by lane, then the sentences beside the
+   pace table. The table starts at the line under the figure, whatever the figure's size. */
 .summary {
   display: grid;
   grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-  gap: 20px 40px;
+  column-gap: 40px;
+  row-gap: 0;
   align-items: start;
+}
+
+.hero-top,
+.hero {
+  grid-column: 1;
+}
+
+.summary > .pace {
+  grid-column: 2;
+  grid-row: 2;
+  /* The label beside it has 6px above it and is a point larger: this puts the two lines of text level. */
+  margin-top: 7px;
+}
+
+.hero-top {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 10px 28px;
 }
 
 .hero-figure {
@@ -313,6 +335,48 @@ select {
   font-weight: 700;
   letter-spacing: -0.03em;
   line-height: 1;
+}
+
+/* The open count split by lane (#4585): small figures beside the large one, each over its lane's name. */
+.lanes {
+  list-style: none;
+  margin: 0;
+  padding: 0 0 2px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 22px;
+}
+
+.lanes li,
+.lanes a {
+  display: flex;
+  flex-direction: column;
+}
+
+.lane-figure {
+  color: var(--ink);
+  font-size: 22px;
+  font-weight: 650;
+  line-height: 1.15;
+  font-variant-numeric: tabular-nums;
+}
+
+.lane-name {
+  color: var(--ink-2);
+  font-size: 12.5px;
+  white-space: nowrap;
+}
+
+.lanes a .lane-name {
+  color: var(--link);
+}
+
+.lanes a:hover {
+  text-decoration: none;
+}
+
+.lanes a:hover .lane-name {
+  text-decoration: underline;
 }
 
 .hero-label {
@@ -339,6 +403,11 @@ select {
 .pace-line {
   margin-top: 14px;
   max-width: 46ch;
+}
+
+.hero .footnote {
+  margin-top: 14px;
+  max-width: 56ch;
 }
 
 table {
@@ -575,6 +644,60 @@ details[open] > summary .chevron {
 .chip.strong {
   color: var(--ink);
   border-color: var(--ink-2);
+  font-weight: 600;
+}
+
+/* The open issues' lists, and the switch that groups them by kind or by lane (#4585). */
+.list-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px 16px;
+  padding-bottom: 6px;
+}
+
+.switch {
+  display: flex;
+  align-items: center;
+  font-size: 13px;
+  color: var(--ink-2);
+}
+
+.switch > span {
+  margin-right: 8px;
+}
+
+.switch button {
+  font: inherit;
+  color: var(--ink-2);
+  background: transparent;
+  border: 1px solid var(--axis);
+  border-radius: var(--radius) 0 0 var(--radius);
+  padding: 3px 0;
+  min-width: 64px;
+  cursor: pointer;
+}
+
+.switch button + button {
+  border-radius: 0 var(--radius) var(--radius) 0;
+  margin-left: -1px;
+}
+
+.switch button:hover {
+  background: var(--wash);
+}
+
+/* The pressed one is drawn over its neighbour's edge, so its darker border is whole. */
+.switch button[aria-pressed="true"],
+.switch button:focus-visible {
+  position: relative;
+}
+
+.switch button[aria-pressed="true"] {
+  color: var(--ink);
+  border-color: var(--ink-2);
+  background: var(--surface);
   font-weight: 600;
 }
 
@@ -861,6 +984,13 @@ footer {
 
   .quad > * + * {
     border-top: 1px solid var(--rule);
+  }
+
+  /* One column: the pace table follows the sentences. */
+  .summary > .pace {
+    grid-column: 1;
+    grid-row: auto;
+    margin-top: 20px;
   }
 
   .masthead-side {

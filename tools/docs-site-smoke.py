@@ -13,8 +13,9 @@ sees:
   - the download link points at the latest release, which exists (not downloaded);
   - every section link on the sidebar's pages reaches a heading on its page;
   - an unknown route shows the custom 404 page, and its User Guide link recovers;
-  - the release dashboard under release/ (#4524) draws a made-up release, switches between releases, shows a
-    hostile issue title as text, and says so when its data can't be loaded;
+  - the release dashboard under release/ (#4524) draws a made-up release, splits its open count by lane and
+    lists the open issues by kind or by lane (#4585), switches between releases, shows a hostile issue title as
+    text, and says so when its data can't be loaded;
   - no JavaScript error, and no first-party request that fails.
 
 Usage: tools/docs-site-smoke.py [--docs DIR] [--offline] [--headed]
@@ -34,6 +35,7 @@ import sys
 import threading
 from collections.abc import Callable
 from pathlib import Path
+from urllib.parse import unquote
 
 from playwright.sync_api import Page, Request, Response, Route, sync_playwright
 
@@ -356,6 +358,8 @@ def _check_release_dashboard(page: Page, site: str) -> None:
         raise AssertionError(f"column headers off their columns: {off}")
     if page.locator(".hero-figure").text_content() != str(current["counts"]["open"]):
         raise AssertionError("the open-issue count isn't the fixture's")
+    _check_release_summary(page, current)
+    _check_release_lists(page, current)
 
     # An issue title is someone else's text: it's shown as written, and never becomes markup.
     hostile = next((issue["title"] for issue in current["open_issues"] if "<img" in issue["title"]), None)
@@ -394,6 +398,79 @@ def _check_release_dashboard(page: Page, site: str) -> None:
     echoed = page.evaluate("() => [document.body.innerHTML.includes('v9.9.9'), document.querySelectorAll('#app script').length]")
     if echoed != [False, 0]:
         raise AssertionError(f"the page echoed an unknown ?m= value: {echoed}")
+
+
+# Where the summary's two panes stand at a desktop width (#4548): the top of the text of the line under the large
+# figure, and of the pace table's caption beside it.
+SUMMARY_TEXT_TOPS = r"""
+() => {
+  const top = (selector) => {
+    const range = document.createRange();
+    range.selectNodeContents(document.querySelector(selector));
+    return Math.min(...[...range.getClientRects()].filter((rect) => rect.width > 0).map((rect) => rect.top));
+  };
+  return [top('.hero-label'), top('.summary caption')];
+}
+"""
+
+
+def _check_release_summary(page: Page, current: dict) -> None:
+    """The open count is split by lane (#4585), says what it leaves out, and the pace table starts under it (#4548)."""
+    lanes = {entry["name"]: entry["open"] for entry in current["by_lane"]}
+    shown = page.evaluate(
+        "() => [...document.querySelectorAll('.lanes li')].map(lane => "
+        "[lane.querySelector('.lane-name').textContent, Number(lane.querySelector('.lane-figure').textContent)])"
+    )
+    # The two lanes always, then any other group that has something open, under the page's name for it.
+    others = {"Shared": "Both lanes", "Dash": "Dash", "None": "No lane"}
+    expected = [[name, lanes.get(name, 0)] for name in ("Windows", "WSL")]
+    expected += [[text, lanes[name]] for name, text in others.items() if lanes.get(name)]
+    if len(expected) < 3:
+        raise AssertionError("the fixtures hold no open issue with both lanes' labels: tests/tools/test_release_dashboard.py")
+    if shown != expected:
+        raise AssertionError(f"the open count's lanes read {shown}, not {expected}")
+    if sum(count for _, count in shown) != current["counts"]["open"]:
+        raise AssertionError(f"the lanes' figures {shown} don't add up to the {current['counts']['open']} open issues")
+    # Each figure links to the search that lists the same issues on GitHub.
+    href = unquote(page.locator(".lanes a").first.get_attribute("href") or "")
+    search = f"/issues?q=is:issue is:open milestone:{current['milestone']['title']} label:agent:Windows -label:agent:WSL"
+    if search not in href:
+        raise AssertionError(f"the Windows lane's figure links to {href!r}")
+    # GitHub's milestone page counts the tracker and pull requests too: the page says why its own count is lower.
+    note = page.locator(".hero .footnote").text_content() or ""
+    if f"#{current['tracker']['number']}" not in note or "pull requests" not in note:
+        raise AssertionError(f"the note under the open count reads {note!r}, without the tracker or pull requests")
+    # The pace table's caption is level with the line under the large figure, not with the figure's top.
+    label, caption = page.evaluate(SUMMARY_TEXT_TOPS)
+    if abs(label - caption) > 3:
+        raise AssertionError(f"the pace table's caption is {caption - label:+.1f}px off the line under the open count")
+
+
+def _check_release_lists(page: Page, current: dict) -> None:
+    """The open issues are listed by kind, or by lane at a click (#4585), and every issue is in one list."""
+
+    def groups() -> list[list]:
+        return page.evaluate(
+            "() => [...document.querySelectorAll('.open-lists details')].map(group => "
+            "[group.dataset.key, group.querySelectorAll('.items > li').length, group.open])"
+        )
+
+    total = len(current["open_issues"])
+    kinds = groups()
+    if not kinds or any(not key.startswith("open-") or key.startswith("open-lane-") for key, _, _ in kinds):
+        raise AssertionError(f"the open issues aren't listed by kind to begin with: {kinds}")
+    page.locator(".switch button[data-by='lane']").click()
+    lanes = groups()
+    if [key for key, _, _ in lanes] != ["open-lane-Windows", "open-lane-WSL", "open-lane-Shared"]:
+        raise AssertionError(f"listed by lane, the groups are {lanes}")
+    if sum(count for _, count, _ in lanes) != total or sum(count for _, count, _ in kinds) != total:
+        raise AssertionError(f"the lists don't hold all {total} open issues: by kind {kinds}, by lane {lanes}")
+    if not lanes[0][2] or page.locator(".switch button[data-by='lane']").get_attribute("aria-pressed") != "true":
+        raise AssertionError("after the switch, the first lane's list isn't open or the Lane button isn't pressed")
+    # Back to kinds: the rest of this check, and the next visit, start from the page's default.
+    page.locator(".switch button[data-by='kind']").click()
+    if groups()[0][0] != kinds[0][0]:
+        raise AssertionError("the switch didn't go back to listing by kind")
 
 
 def check_release_dashboard_without_data(page: Page, site: str, offline: bool) -> None:
