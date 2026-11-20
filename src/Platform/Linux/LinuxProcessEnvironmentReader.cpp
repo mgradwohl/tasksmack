@@ -74,13 +74,21 @@ EnvironmentReadResult LinuxProcessEnvironmentReader::readEnvironment(const Proce
         return failure(ESRCH); // the PID now belongs to a different process
     }
 
-    const std::expected<std::string, int> block = ProcParsing::readWholeFileAt(dir.get(), "environ");
+    // Capped as the Windows reader is (#4386): the process sizes its own environ, and the kernel caps nothing.
+    std::expected<std::string, int> block = ProcParsing::readWholeFileAt(dir.get(), "environ", ENVIRON_READ_CAP_BYTES + 1);
     if (!block.has_value())
     {
         return failure(block.error());
     }
+    const bool truncated = block->size() > ENVIRON_READ_CAP_BYTES;
+    if (truncated)
+    {
+        // Up to the last whole entry within the cap, so no variable is shown cut.
+        const std::size_t lastEnd = block->rfind('\0', ENVIRON_READ_CAP_BYTES - 1);
+        block->resize(lastEnd == std::string::npos ? 0 : lastEnd + 1);
+    }
     // Never logged, at any level: the values are routinely secrets (#179).
-    return {.status = EnvironmentReadStatus::Ok, .variables = Environment::parseEnvironBlock(*block)};
+    return {.status = EnvironmentReadStatus::Ok, .variables = Environment::parseEnvironBlock(*block), .truncated = truncated};
 }
 
 } // namespace Platform

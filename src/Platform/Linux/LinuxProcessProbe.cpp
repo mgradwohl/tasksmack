@@ -60,6 +60,7 @@
 
 #include <dirent.h>
 #include <fcntl.h>
+#include <linux/limits.h>
 #include <pwd.h>
 #include <sys/syscall.h> // NOLINT(misc-include-cleaner): SYS_ioprio_get, which include-cleaner has no mapping for
 #include <sys/types.h>
@@ -115,10 +116,15 @@ using ProcParsing::readProcFileAt;
 using ProcParsing::readProcFileFull;
 using ProcParsing::readProcFileOnceAt;
 
-/// The longest command line kept in the command-line cache (#1425); a longer one (a JVM's classpath
-/// can run to hundreds of KiB) is read every sample, as before. Together with the one-entry-per-live-
-/// process eviction this bounds the cache's memory, beyond what the published snapshot already holds.
-constexpr std::size_t MAX_CACHED_CMDLINE_BYTES = std::size_t{64} * 1024;
+/// The most of a command line read (#4386): the process being read sizes /proc/<pid>/cmdline, and the kernel caps
+/// nothing, so a process could point its argument area at gigabytes and stall or exhaust every TaskSmack that samples
+/// it, a root session's included. A longer one is cut here and shown ending in an ellipsis. Every command line then
+/// fits the command-line cache (#1425), so none is read again each sample, and with the one-entry-per-live-process
+/// eviction this bounds the cache's memory.
+constexpr std::size_t MAX_CMDLINE_BYTES = std::size_t{64} * 1024;
+
+/// What a cut command line ends with (#4386): U+2026, after a space.
+constexpr std::string_view CMDLINE_CUT_MARK = " \xE2\x80\xA6";
 
 /// How long a command line read now is reused: half the TTL, plus a share of the other half that
 /// varies by PID (a multiplicative hash, so consecutive PIDs spread out). The processes first cached
@@ -933,10 +939,6 @@ void LinuxProcessProbe::readProcessCommand(
 
     std::string comm = counters.name;
     applyCmdline(counters, *rawCmdline);
-    if (rawCmdline->size() > MAX_CACHED_CMDLINE_BYTES)
-    {
-        return; // Too long to keep: read every sample, as before the cache
-    }
 
     std::string resolvedName = (counters.name != comm) ? counters.name : std::string{};
     CmdlineCacheEntry entry{
@@ -1037,11 +1039,11 @@ std::optional<std::vector<char>> LinuxProcessProbe::readCmdline(int pidDirFd)
     const FdGuard guard{fd}; // ensures fd is closed on all paths, including exception paths
                              // (buf.reserve / buf.insert can throw on OOM)
 
-    // Read until EOF so long command lines are not truncated.
+    // Read until EOF or one byte past MAX_CMDLINE_BYTES (#4386), so a longer one is known to be cut.
     std::vector<char> buf;
     buf.reserve(4096);
     std::array<char, 4096> chunk{};
-    for (;;)
+    while (buf.size() <= MAX_CMDLINE_BYTES)
     {
         const auto n = ::read(fd, chunk.data(), chunk.size());
         if (n == 0)
@@ -1075,15 +1077,17 @@ void LinuxProcessProbe::applyCmdline(ProcessCounters& counters, const std::vecto
     // The kernel caps the name in /proc/[pid]/stat at 15 characters. Where it has been cut, the
     // full name is usually recoverable from the arguments, which are still NUL-separated at this
     // point -- so this costs no extra read. See ProcessName.h for when the result is trusted (#951).
-    if (const std::string_view fullName =
-            ProcessName::resolveFullName(counters.name, std::string_view(rawCmdline.data(), rawCmdline.size()));
-        fullName.size() != counters.name.size())
+    const bool cut = rawCmdline.size() > MAX_CMDLINE_BYTES;
+    const std::size_t kept = cut ? MAX_CMDLINE_BYTES : rawCmdline.size();
+    // No longer than a file name may be (#4386): the arguments are the process's to write.
+    if (const std::string_view fullName = ProcessName::resolveFullName(counters.name, std::string_view(rawCmdline.data(), kept));
+        fullName.size() != counters.name.size() && fullName.size() <= NAME_MAX)
     {
         counters.name = std::string(fullName);
     }
 
     // Replace NUL argument separators with spaces, then trim trailing space.
-    std::string cmdline(rawCmdline.data(), rawCmdline.size());
+    std::string cmdline(rawCmdline.data(), kept);
     for (auto& c : cmdline)
     {
         if (c == '\0')
@@ -1094,6 +1098,10 @@ void LinuxProcessProbe::applyCmdline(ProcessCounters& counters, const std::vecto
     while (!cmdline.empty() && cmdline.back() == ' ')
     {
         cmdline.pop_back();
+    }
+    if (cut)
+    {
+        cmdline += CMDLINE_CUT_MARK;
     }
 
     counters.command = std::move(cmdline);

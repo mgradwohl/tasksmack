@@ -2947,20 +2947,34 @@ TEST(LinuxProcessProbeTest, AnUnreadableCommandLineIsTriedAgainNextSample)
     EXPECT_EQ(enumerateOne(probe, 4242).command, "app");
 }
 
-TEST(LinuxProcessProbeTest, ACommandLineTooLongToCacheIsReadEverySample)
+TEST(LinuxProcessProbeTest, AnOverlongCommandLineIsCutAtTheCapAndCached)
 {
-    // #1891: a command line over the cache's 64 KiB cap is not kept, so a change to it is seen at once
-    // even within the TTL.
+    // #4386: the process sizes its own /proc/<pid>/cmdline and the kernel caps nothing, so a 1 MiB one (a hostile
+    // process could point at gigabytes) is read only up to 64 KiB, shown ending in an ellipsis, and then cached like
+    // any other (#1891 read an overlong one again every sample).
     ScopedTempDir proc("ts_test_proc_cmdline_long");
-    const std::string longArg(std::size_t{70} * 1024, 'x');
+    const std::string longArg(std::size_t{1024} * 1024, 'x');
     writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", longArg, "--first"}));
 
     LinuxProcessProbe probe(proc.path);
     probe.setCmdlineCacheTtlForTesting(NEVER_EXPIRES);
-    EXPECT_TRUE(enumerateOne(probe, 4242).command.ends_with(" --first"));
+    const std::string command = enumerateOne(probe, 4242).command;
+    EXPECT_TRUE(command.starts_with("/usr/bin/app xxx"));
+    EXPECT_TRUE(command.ends_with(" \xE2\x80\xA6")) << "cut, and said so";
+    EXPECT_LE(command.size(), std::size_t{64} * 1024 + 4);
 
-    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", longArg, "--second"}));
-    EXPECT_TRUE(enumerateOne(probe, 4242).command.ends_with(" --second")) << "too long to cache: read again";
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({"/usr/bin/app", "--second"}));
+    EXPECT_EQ(enumerateOne(probe, 4242).command, command) << "cached within the TTL, not read again";
+}
+
+TEST(LinuxProcessProbeTest, AResolvedNameLongerThanAFileNameIsNotTaken)
+{
+    // #4386: the arguments are the process's to write, so a "full name" over NAME_MAX keeps the comm.
+    ScopedTempDir proc("ts_test_proc_cmdline_name");
+    const std::string longName = "/usr/bin/" + std::string(300, 'a');
+    writeCmdlineProcess(proc.path, 4242, std::string(15, 'a'), 'S', 100, cmdlineOf({longName}));
+    LinuxProcessProbe probe(proc.path);
+    EXPECT_EQ(enumerateOne(probe, 4242).name, std::string(15, 'a'));
 }
 
 TEST(LinuxProcessProbeTest, ACommandLineThatFailsToReadIsNotAKernelThread)
