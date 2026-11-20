@@ -137,15 +137,19 @@ TEST(TaskManagerReplacementReadTest, TheProgramIsTheValuesFirstWord)
              ProgramCase{.value = R"("C:\Program Files\TaskSmack\TaskSmack.exe" /extra)", .program = INSTALLED},
              ProgramCase{.value = R"("C:\unterminated\TaskSmack.exe)", .program = R"(C:\unterminated\TaskSmack.exe)"},
              ProgramCase{.value = R"(C:\Tools\procexp64.exe)", .program = R"(C:\Tools\procexp64.exe)"},
-             ProgramCase{.value = R"(C:\Program Files\Sysinternals\procexp64.exe /e)",
-                         .program = R"(C:\Program Files\Sysinternals\procexp64.exe)"},
+             ProgramCase{
+                 .value = R"(C:\Program Files\Sysinternals\procexp64.exe /e)",
+                 .program = R"(C:\Program Files\Sysinternals\procexp64.exe)",
+             },
              ProgramCase{.value = R"(C:\Tools\PROCEXP.EXE)", .program = R"(C:\Tools\PROCEXP.EXE)"},
              ProgramCase{.value = R"(C:\Tools\a.exefile.exe)", .program = R"(C:\Tools\a.exefile.exe)"}, // ".exe" mid-word isn't the end
              ProgramCase{.value = R"(C:\Tools\script.cmd /x)", .program = R"(C:\Tools\script.cmd)"},
-             ProgramCase{.value = "\t"
-                                  R"(C:\Tools\x.exe)"
-                                  "\t",
-                         .program = R"(C:\Tools\x.exe)"},
+             ProgramCase{
+                 .value = "\t"
+                          R"(C:\Tools\x.exe)"
+                          "\t",
+                 .program = R"(C:\Tools\x.exe)",
+             },
          })
     {
         EXPECT_EQ(programOf(c.value), c.program) << c.value;
@@ -389,7 +393,7 @@ namespace
 
 constexpr std::string_view SELF = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
 
-[[nodiscard]] TaskManagerReplacementSetup setupReading(std::shared_ptr<Mocks::FakeIfeoRegistry> registry)
+[[nodiscard]] TaskManagerReplacementSetup setupReading(const std::shared_ptr<Mocks::FakeIfeoRegistry>& registry)
 {
     TaskManagerReplacementSetup setup;
     setup.selfPath = std::string(SELF);
@@ -407,7 +411,7 @@ constexpr std::string_view SELF = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
 
 TEST(TaskManagerReplacementServiceTest, ReadSortsTheValueAndSaysWhetherTheOtherProgramExists)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto const registry = std::make_shared<Mocks::FakeIfeoRegistry>();
     TaskManagerReplacementService service(setupReading(registry));
     TaskManagerReplacementInfo info = service.read();
     EXPECT_EQ(info.status.state, TaskManagerReplacement::State::Off);
@@ -436,8 +440,8 @@ TEST(TaskManagerReplacementServiceTest, ReadWithoutAReaderFails)
 
 TEST(TaskManagerReplacementServiceTest, ChangesGoThroughTheHelperNamingThisCopy)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
-    auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    auto const registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto const broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
     TaskManagerReplacementSetup setup = setupReading(registry);
     setup.broker = broker;
     TaskManagerReplacementService service(std::move(setup));
@@ -490,7 +494,7 @@ TEST(TaskManagerReplacementServiceTest, AnImagePathThatCantBeWrittenExactlyRefus
 
 TEST(TaskManagerReplacementServiceTest, ADismissedPromptOrARefusalIsTheResult)
 {
-    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    auto const broker = std::make_shared<Mocks::FakeBroker>(false);
     broker->setConnectFailure("The operation was canceled by the user");
     TaskManagerReplacementSetup setup = setupReading(std::make_shared<Mocks::FakeIfeoRegistry>());
     setup.broker = broker;
@@ -519,7 +523,7 @@ TEST(TaskManagerReplacementServiceTest, ReadSaysWhetherThisCopyWritesTheKeyItsel
 
 TEST(TaskManagerReplacementServiceTest, AnElevatedCopyWritesTheRegistryItself)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto const registry = std::make_shared<Mocks::FakeIfeoRegistry>();
     TaskManagerReplacementSetup setup = setupReading(registry);
     setup.direct = registry;
     TaskManagerReplacementService service(std::move(setup));
@@ -613,7 +617,7 @@ TEST(TaskManagerReplacementServiceTest, WithNeitherItSaysWhy)
 
 TEST(TaskManagerReplacementServiceTest, ACopyWhosePathIsntValidNeverAsks)
 {
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    auto const broker = std::make_shared<Mocks::FakeBroker>(true);
     TaskManagerReplacementSetup setup = setupReading(std::make_shared<Mocks::FakeIfeoRegistry>());
     setup.selfPath = R"(\\server\share\TaskSmack.exe)";
     setup.broker = broker;

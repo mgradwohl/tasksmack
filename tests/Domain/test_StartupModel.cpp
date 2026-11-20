@@ -117,13 +117,15 @@ TEST(StartupModelTest, NullProbeThrows)
 
 [[nodiscard]] Platform::StartupCapabilities withImpact()
 {
-    return {.canEnumerate = true,
-            .hasEnabledState = true,
-            .hasDisabledTime = true,
-            .hasPublisher = true,
-            .canResolveShortcuts = true,
-            .hasImpact = true,
-            .unavailableReason = {}};
+    return {
+        .canEnumerate = true,
+        .hasEnabledState = true,
+        .hasDisabledTime = true,
+        .hasPublisher = true,
+        .canResolveShortcuts = true,
+        .hasImpact = true,
+        .unavailableReason = {},
+    };
 }
 
 /// A sign-in at which Busy.exe used 2 s of CPU and Quiet.exe 1 ms.
@@ -131,13 +133,15 @@ TEST(StartupModelTest, NullProbeThrows)
 {
     Platform::StartupImpactReading reading;
     reading.processes = {
-        {.path = R"(C:\Apps\Busy.exe)",
-         .pid = 10,
-         .parentPid = 1,
-         .startTicks = 5,
-         .parentStartTicks = 1,
-         .cpuUs = busyCpuUs,
-         .diskBytes = 0},
+        {
+            .path = R"(C:\Apps\Busy.exe)",
+            .pid = 10,
+            .parentPid = 1,
+            .startTicks = 5,
+            .parentStartTicks = 1,
+            .cpuUs = busyCpuUs,
+            .diskBytes = 0,
+        },
         {.path = R"(C:\Apps\Quiet.exe)", .pid = 11, .parentPid = 1, .startTicks = 6, .parentStartTicks = 1, .cpuUs = 1000, .diskBytes = 0},
     };
     reading.signInUnixSeconds = 1792774334;

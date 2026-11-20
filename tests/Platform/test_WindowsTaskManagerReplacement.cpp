@@ -257,14 +257,18 @@ TEST(TaskManagerHelperRequestTest, RefusesAnythingButThatFile)
              Refused{.path = std::string(INSTALLED), .beside = beside, .sameFile = &neverSame, .why = "the name, but not the file"},
              Refused{.path = std::string(INSTALLED), .beside = L"", .sameFile = &alwaysSame, .why = "no TaskSmack beside the helper"},
              Refused{.path = std::string(INSTALLED), .beside = beside, .sameFile = nullptr, .why = "no file check"},
-             Refused{.path = R"(C:\Windows\System32\cmd.exe)",
-                     .beside = L"C:\\Windows\\System32\\cmd.exe",
-                     .sameFile = &alwaysSame,
-                     .why = "not TaskSmack.exe"},
-             Refused{.path = R"(\\server\share\TaskSmack.exe)",
-                     .beside = L"\\\\server\\share\\TaskSmack.exe",
-                     .sameFile = &alwaysSame,
-                     .why = "UNC"},
+             Refused{
+                 .path = R"(C:\Windows\System32\cmd.exe)",
+                 .beside = L"C:\\Windows\\System32\\cmd.exe",
+                 .sameFile = &alwaysSame,
+                 .why = "not TaskSmack.exe",
+             },
+             Refused{
+                 .path = R"(\\server\share\TaskSmack.exe)",
+                 .beside = L"\\\\server\\share\\TaskSmack.exe",
+                 .sameFile = &alwaysSame,
+                 .why = "UNC",
+             },
              Refused{.path = R"(C:\TaskSmack.exe" C:\evil.exe ")", .beside = beside, .sameFile = &alwaysSame, .why = "quote injection"},
              Refused{.path = "TaskSmack.exe", .beside = L"TaskSmack.exe", .sameFile = &alwaysSame, .why = "relative"},
          })
@@ -682,19 +686,27 @@ TEST(TaskManagerInstallTest, AnObjectAnotherUserCanChangeIsRefusedThoughTheToken
         std::string_view expected;
         std::string_view why;
     };
-    const std::array<Case, 5> cases{{
-        {.sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;0x1301bf;;;" + std::wstring(ALICE) + L")",
-         .expected = "can change",
-         .why = "Alice has Modify"},
-        {.sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;WD;;;" + std::wstring(ALICE) + L")",
-         .expected = "can change",
-         .why = "Alice may rewrite its rights"},
-        {.sddl = L"O:" + std::wstring(ALICE) + L"G:SYD:PAI" + std::wstring(PROTECTED_ACES), .expected = "owns", .why = "Alice owns it"},
-        {.sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;GW;;;BU)",
-         .expected = "can change",
-         .why = "Users have generic write"},
-        {.sddl = L"O:BAG:SYD:NO_ACCESS_CONTROL", .expected = "can change", .why = "a null DACL lets anyone in, the token too"},
-    }};
+    const std::array<Case, 5> cases{
+        {
+            {
+                .sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;0x1301bf;;;" + std::wstring(ALICE) + L")",
+                .expected = "can change",
+                .why = "Alice has Modify",
+            },
+            {
+                .sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;WD;;;" + std::wstring(ALICE) + L")",
+                .expected = "can change",
+                .why = "Alice may rewrite its rights",
+            },
+            {.sddl = L"O:" + std::wstring(ALICE) + L"G:SYD:PAI" + std::wstring(PROTECTED_ACES), .expected = "owns", .why = "Alice owns it"},
+            {
+                .sddl = L"O:BAG:SYD:PAI" + std::wstring(PROTECTED_ACES) + L"(A;;GW;;;BU)",
+                .expected = "can change",
+                .why = "Users have generic write",
+            },
+            {.sddl = L"O:BAG:SYD:NO_ACCESS_CONTROL", .expected = "can change", .why = "a null DACL lets anyone in, the token too"},
+        },
+    };
     for (const Case& test : cases)
     {
         const OwnedDescriptor descriptor = descriptorOf(test.sddl);
@@ -732,7 +744,7 @@ TEST(WindowsIfeoRegistryFailureTest, ACallOnARootThatIsNoKeySaysWhatFailed)
     ASSERT_FALSE(created.has_value());
     expectFailure(created.error(), "couldn't create the key");
 
-    const auto written = registry.writeDebugger("C:\\Program Files\\TaskSmack\\TaskSmack.exe");
+    const auto written = registry.writeDebugger(R"(C:\Program Files\TaskSmack\TaskSmack.exe)");
     ASSERT_FALSE(written.has_value());
     expectFailure(written.error(), "couldn't open the key");
 
