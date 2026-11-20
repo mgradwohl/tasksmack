@@ -2232,6 +2232,17 @@ class ThemeInfoFromStringTest : public ::testing::Test
     std::shared_ptr<spdlog::logger> m_PreviousLogger;
 };
 
+#ifndef _WIN32
+// #4327: a theme's id is its file name, saved in config.toml when it's chosen; one that isn't valid UTF-8 is skipped.
+TEST_F(ThemeInfoFromStringTest, AThemeWhoseFileNameIsntValidUtf8IsSkipped)
+{
+    EXPECT_FALSE(
+        ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Caf\"\n", std::filesystem::path("themes/caf\xE9.toml")).has_value());
+    EXPECT_TRUE(
+        ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Caf\"\n", std::filesystem::path("themes/caf\xC3\xA9.toml")).has_value());
+}
+#endif
+
 TEST_F(ThemeInfoFromStringTest, AValidThemeIsNamedByItsMetaAndIdentifiedByItsFile)
 {
     const std::filesystem::path path = std::filesystem::path("handed-over") / "themes" / "my-theme.toml";
