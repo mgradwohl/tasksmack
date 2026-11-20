@@ -19,6 +19,7 @@
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 
@@ -647,6 +648,120 @@ TEST(BrokerHelperTest, AnInstallInAFolderOnlyAdministratorsChangePasses)
     const std::array<std::wstring, 2> files{systemFile(L"cmd.exe"), systemFile(L"kernel32.dll")};
     const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files);
     EXPECT_TRUE(checked.has_value()) << checked.error();
+}
+
+namespace
+{
+
+/// The final path checkUnchangeableBy() reads from each handle it holds (#4371), faked: the real answer,
+/// except where a test says one has moved. Plain function pointers can't capture, so the state is here;
+/// each test resets it.
+struct FinalPathFake
+{
+    int calls = 0;
+    HANDLE fileHandle = nullptr;
+    int moveCall = 0;            ///< The call, counted from 1, answered with another folder; 0 for none
+    bool moveFileReread = false; ///< Answer another path when the file's handle is read a second time
+    std::wstring replaced;       ///< The real path the moved answer stands in for
+};
+FinalPathFake g_FinalPathFake;
+
+/// Writes @p text as GetFinalPathNameByHandleW does: its length when it fits, else the length needed with the NUL.
+DWORD writeFinalPath(const std::wstring& text, LPWSTR buffer, DWORD size)
+{
+    if (text.size() >= size)
+    {
+        return static_cast<DWORD>(text.size() + 1);
+    }
+    std::ranges::copy(text, buffer);
+    buffer[text.size()] = L'\0';
+    return static_cast<DWORD>(text.size());
+}
+
+DWORD WINAPI fakeFinalPath(HANDLE handle, LPWSTR buffer, DWORD size, DWORD flags)
+{
+    std::wstring real(32'768, L'\0');
+    const DWORD length = ::GetFinalPathNameByHandleW(handle, real.data(), static_cast<DWORD>(real.size()), flags);
+    if (length == 0 || length >= real.size())
+    {
+        return 0;
+    }
+    real.resize(length);
+    FinalPathFake& fake = g_FinalPathFake;
+    ++fake.calls;
+    if (fake.calls == 1)
+    {
+        fake.fileHandle = handle; // the file is read first
+    }
+    else if (fake.calls == fake.moveCall)
+    {
+        fake.replaced = real.starts_with(LR"(\\?\)") ? real.substr(4) : real;
+        return writeFinalPath(LR"(\\?\C:\Elsewhere)", buffer, size);
+    }
+    else if (fake.moveFileReread && handle == fake.fileHandle)
+    {
+        return writeFinalPath(LR"(\\?\C:\Elsewhere\cmd.exe)", buffer, size);
+    }
+    return writeFinalPath(real, buffer, size);
+}
+
+constexpr std::string_view MOVED = " moved while it was checked";
+
+} // namespace
+
+TEST(BrokerHelperTest, AnInstallWhoseFinalPathsAreAsNamedPassesWithTheInjectedFinalPath)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    g_FinalPathFake = {};
+    const std::array<std::wstring, 1> files{systemFile(L"cmd.exe")};
+    BrokerHelper::InstallCheckFunctions functions;
+    functions.getFinalPath = &fakeFinalPath;
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files, functions);
+    EXPECT_TRUE(checked.has_value()) << checked.error();
+    EXPECT_GE(g_FinalPathFake.calls, 3) << "the file, a folder at least, and the file again";
+}
+
+TEST(BrokerHelperTest, AnInstallWhoseFolderMovedWhileItWasCheckedIsRefused)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    g_FinalPathFake = {};
+    g_FinalPathFake.moveCall = 2; // the file is the first call, its folder the second
+    const std::array<std::wstring, 1> files{systemFile(L"cmd.exe")};
+    BrokerHelper::InstallCheckFunctions functions;
+    functions.getFinalPath = &fakeFinalPath;
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files, functions);
+    ASSERT_FALSE(checked.has_value());
+    ASSERT_FALSE(g_FinalPathFake.replaced.empty());
+    EXPECT_EQ(checked.error(), WinString::wideToUtf8(g_FinalPathFake.replaced) + std::string(MOVED));
+}
+
+TEST(BrokerHelperTest, AnInstallWhoseFileMovedOnTheSecondReadIsRefused)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    g_FinalPathFake = {};
+    g_FinalPathFake.moveFileReread = true;
+    const std::wstring file = systemFile(L"cmd.exe");
+    const std::array<std::wstring, 1> files{file};
+    BrokerHelper::InstallCheckFunctions functions;
+    functions.getFinalPath = &fakeFinalPath;
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files, functions);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_EQ(checked.error(), WinString::wideToUtf8(file) + std::string(MOVED));
 }
 
 TEST(BrokerHelperTest, AnInstallInAFolderItsUserCanChangeIsRefused)

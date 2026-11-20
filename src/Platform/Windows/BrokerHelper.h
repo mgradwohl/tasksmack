@@ -148,6 +148,13 @@ inline constexpr DWORD ANCESTOR_CHANGE_RIGHTS = FILE_DELETE_CHILD | DELETE | WRI
 [[nodiscard]] std::expected<void, std::string>
 checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name);
 
+/// The call checkUnchangeableBy() makes to read a handle's final path: the system's, or a test's fake (#4371).
+struct InstallCheckFunctions
+{
+    using FinalPathFn = DWORD(WINAPI*)(HANDLE, LPWSTR, DWORD, DWORD);
+    FinalPathFn getFinalPath = &::GetFinalPathNameByHandleW;
+};
+
 /// Whether the user of @p token (an impersonation token, identification level is enough), and anyone
 /// but an administrator, can change none of @p files: checkDescriptor() with FILE_CHANGE_RIGHTS over
 /// each file, FOLDER_CHANGE_RIGHTS over its folder and ANCESTOR_CHANGE_RIGHTS over each folder above, up
@@ -155,7 +162,8 @@ checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std
 /// count too. The file and every folder are opened and held, unable to be renamed or deleted, and each
 /// folder's final path compared with its name, before the security is read from those same handles. So
 /// nothing can be swapped in between. Anything that can't be read is a refusal. The error names the path.
-[[nodiscard]] std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files);
+[[nodiscard]] std::expected<void, std::string>
+checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files, const InstallCheckFunctions& functions = {});
 
 /// checkUnchangeableBy() for @p file, which must also be its own final path, read from the handle the
 /// check holds: so the path a caller writes down is the file checked, with no link or junction on the way.
