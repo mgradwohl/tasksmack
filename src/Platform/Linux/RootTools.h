@@ -83,12 +83,38 @@ struct RootFs
     return (slash == 0 || slash == std::string::npos) ? std::string("/") : path.substr(0, slash);
 }
 
-/// Whether only root could change what is in the folder @p folder: its canonical path, and every folder above it, is
-/// root's and writable by no group or other user (SyscallTrace::onlyRootCouldPlace()).
+/// The canonical path of the folder @p folder when only root could change what is in it: that path, and every folder
+/// above it, is root's and writable by no group or other user (SyscallTrace::onlyRootCouldPlace()); nullopt otherwise.
+[[nodiscard]] inline std::optional<std::string> rootOnlyFolder(const std::string& folder, const RootFs& fs)
+{
+    std::optional<std::string> resolved = fs.canonical(folder);
+    if (!resolved.has_value() || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership))
+    {
+        return std::nullopt;
+    }
+    return resolved;
+}
+
+/// Whether rootOnlyFolder() accepts @p folder.
 [[nodiscard]] inline bool isRootOnlyFolder(const std::string& folder, const RootFs& fs)
 {
-    const std::optional<std::string> resolved = fs.canonical(folder);
-    return resolved.has_value() && SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership);
+    return rootOnlyFolder(folder, fs).has_value();
+}
+
+/// Whether every link among the folders on the way to @p path (as written, each prefix /a, /a/b, ...) sits in a folder
+/// only root could change (the #4551 review): a link there that another account can replace would choose where the
+/// rest of the path leads, whatever folder it leads to.
+[[nodiscard]] inline bool noForeignLinkOnTheWay(const std::string& path, const RootFs& fs)
+{
+    for (std::size_t slash = path.find('/', 1); slash != std::string::npos; slash = path.find('/', slash + 1))
+    {
+        const std::string prefix = path.substr(0, slash);
+        if (fs.readLink(prefix).has_value() && !isRootOnlyFolder(parentFolder(prefix), fs))
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /// @p pathList (colon-separated) with only the folders isRootOnlyFolder() accepts, in order (#4396): what TaskSmack
@@ -97,6 +123,9 @@ struct RootFs
 /// Each folder is given as the canonical path that was checked, once (#4550): a folder named through a link (a
 /// staff-writable /usr/local holding "bin -> /usr/bin") would pass on its target, and every child resolving the PATH
 /// later would follow wherever the link had been re-pointed. On merged-usr, /bin and /usr/bin are one entry.
+/// A trusted folder vouches for what is in it, not for where it points: a link root made in one (/usr/bin/foo ->
+/// /usr/local/bin/foo) is followed by a child that runs foo by name, unchecked. Only the tools TaskSmack finds itself
+/// (find()) have every hop checked.
 [[nodiscard]] inline std::string trustedRootPath(std::string_view pathList, const RootFs& fs)
 {
     std::string out;
@@ -110,8 +139,8 @@ struct RootFs
             end = pathList.size();
         }
         const std::string folder(pathList.substr(start, end - start));
-        const std::optional<std::string> resolved = folder.starts_with('/') ? fs.canonical(folder) : std::nullopt;
-        if (resolved.has_value() && SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership) && !std::ranges::contains(listed, *resolved))
+        const std::optional<std::string> resolved = folder.starts_with('/') ? rootOnlyFolder(folder, fs) : std::nullopt;
+        if (resolved.has_value() && !std::ranges::contains(listed, *resolved))
         {
             out += out.empty() ? *resolved : ":" + *resolved;
             listed.push_back(*resolved);
@@ -119,6 +148,17 @@ struct RootFs
         start = end + 1;
     }
     return out;
+}
+
+/// What a root child's PATH holds when no folder is trusted (the #4551 review): a folder in /proc, which nothing can
+/// create, so no name is found. Never an empty PATH, which glibc's execvp, dash and bash all read as "search the
+/// current directory", and never no PATH, which they read as /bin:/usr/bin, the folders that just failed the check.
+inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
+
+/// The "PATH=..." a root child gets for the trusted folders @p trusted (trustedRootPath()).
+[[nodiscard]] inline std::string rootPathVariable(const std::string& trusted)
+{
+    return "PATH=" + (trusted.empty() ? std::string(NO_TRUSTED_FOLDER_PATH) : trusted);
 }
 
 /// trustedRootPath() of SyscallTrace::ROOT_TOOL_PATH on this machine.
@@ -142,7 +182,7 @@ struct RootFs
     std::string hop = path;
     for (int hops = 0;; ++hops)
     {
-        if (hops > MAX_LINK_HOPS || !isRootOnlyFolder(parentFolder(hop), fs))
+        if (hops > MAX_LINK_HOPS || !isRootOnlyFolder(parentFolder(hop), fs) || !noForeignLinkOnTheWay(hop, fs))
         {
             return std::nullopt;
         }
@@ -213,7 +253,7 @@ struct RootFs
             out.emplace_back(variable);
         }
     }
-    out.push_back("PATH=" + trustedRootPath()); // root-only folders only (#4396): a script's helpers are found by name
+    out.push_back(rootPathVariable(trustedRootPath())); // root-only folders only (#4396): a script's helpers are found by name
     return out;
 }
 
@@ -221,7 +261,7 @@ struct RootFs
 /// (trustedRootPath()), so nothing the invoking user set (PATH, LD_*, locale or tool variables) reaches it.
 [[nodiscard]] inline std::vector<std::string> rootEnvironment()
 {
-    return {"PATH=" + trustedRootPath()}; // root-only folders only (#4396): gcore runs "#!/usr/bin/env bash"
+    return {rootPathVariable(trustedRootPath())}; // root-only folders only (#4396): gcore runs "#!/usr/bin/env bash"
 }
 
 } // namespace Platform::RootTools
