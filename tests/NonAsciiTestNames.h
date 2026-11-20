@@ -74,8 +74,13 @@ class NonAsciiTempDir
     {
         if (!m_Path.empty())
         {
-            std::error_code ec;
-            std::filesystem::remove_all(m_Path, ec); // best effort; never throws from a destructor
+            try
+            {
+                std::error_code ec;
+                std::filesystem::remove_all(m_Path, ec);
+            }
+            catch (...) // NOLINT(bugprone-empty-catch) - best effort; never throws from a destructor
+            {}
         }
     }
 
@@ -98,5 +103,73 @@ class NonAsciiTempDir
     static constexpr int MAX_ATTEMPTS = 16;
     std::filesystem::path m_Path;
 };
+
+#ifdef _WIN32
+/// An unpaired UTF-16 high surrogate (#4299, D1): NTFS takes it in a file name, but it has no UTF-8 form, so a path
+/// holding one that is taken through UTF-8 comes back as U+FFFD, which names another file.
+inline constexpr wchar_t LONE_SURROGATE = static_cast<wchar_t>(0xD800);
+
+/// A new, empty directory under the system temp directory whose name ends in LONE_SURROGATE, removed with everything
+/// in it on destruction. created() is false when the filesystem refused the name (GTEST_SKIP then).
+class LoneSurrogateTempDir
+{
+  public:
+    LoneSurrogateTempDir()
+    {
+        static std::atomic<std::uint32_t> counter{0};
+        std::random_device random;
+        std::error_code ec;
+        const std::filesystem::path base = std::filesystem::temp_directory_path(ec);
+        if (ec)
+        {
+            return;
+        }
+        for (int attempt = 0; attempt < MAX_ATTEMPTS; ++attempt)
+        {
+            std::wstring name = std::format(L"tasksmack-lone-{:08x}-{}-", random(), counter.fetch_add(1, std::memory_order_relaxed));
+            name.push_back(LONE_SURROGATE);
+            const std::filesystem::path candidate = base / name;
+            if (std::filesystem::create_directory(candidate, ec) && !ec)
+            {
+                m_Path = candidate;
+                return;
+            }
+        }
+    }
+
+    ~LoneSurrogateTempDir()
+    {
+        if (!m_Path.empty())
+        {
+            try
+            {
+                std::error_code ec;
+                std::filesystem::remove_all(m_Path, ec);
+            }
+            catch (...) // NOLINT(bugprone-empty-catch) - best effort; never throws from a destructor
+            {}
+        }
+    }
+
+    LoneSurrogateTempDir(const LoneSurrogateTempDir&) = delete;
+    LoneSurrogateTempDir& operator=(const LoneSurrogateTempDir&) = delete;
+    LoneSurrogateTempDir(LoneSurrogateTempDir&&) = delete;
+    LoneSurrogateTempDir& operator=(LoneSurrogateTempDir&&) = delete;
+
+    [[nodiscard]] bool created() const noexcept
+    {
+        return !m_Path.empty();
+    }
+
+    [[nodiscard]] const std::filesystem::path& path() const noexcept
+    {
+        return m_Path;
+    }
+
+  private:
+    static constexpr int MAX_ATTEMPTS = 16;
+    std::filesystem::path m_Path;
+};
+#endif
 
 } // namespace TestSupport

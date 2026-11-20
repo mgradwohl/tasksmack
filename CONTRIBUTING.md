@@ -513,7 +513,7 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target SSE4.2/POPCNT CPUs
 | `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs) |
 | `optimized` | `win-optimized` | LTO, march=x86-64-v3, stripped, whole-program vtables (Haswell 2013+) |
 | `coverage` | `win-coverage` | Debug + code coverage instrumentation |
-| `asan-ubsan` | — | AddressSanitizer + UBSan (Linux only) |
+| `asan-ubsan` | `win-asan-ubsan` | AddressSanitizer + UBSan (Windows: x64 only, nightly in Heavy Checks) |
 | `tsan` | — | ThreadSanitizer (Linux only) |
 | `msan` | — | MemorySanitizer: catches uninitialised-memory reads (Linux/Clang only). **Not CI-verified** — no workflow exercises this preset, and it requires an MSan-instrumented libc++ you build and link against yourself; without one it will report false positives from uninstrumented STL code. |
 | `unity` | `win-unity` | Unity (jumbo) build for fast end-to-end checks; trades incremental correctness for speed |
@@ -1268,7 +1268,33 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 > a failure too, so a broken CI display can't hide as skips (#1132). On Windows these suites open
 > windows on your desktop; set `TASKSMACK_SKIP_DISPLAY_TESTS=1` to skip them instead.
 
-## Sanitizers (Linux only)
+## Sanitizers
+
+TSan and MSan are Linux only; ASan + UBSan run on both platforms.
+
+### Windows ASan + UBSan (x64 only)
+
+```powershell
+cmake --preset win-asan-ubsan
+cmake --build --preset win-asan-ubsan --target TaskSmackTests
+cd build\win-asan-ubsan\tests
+.\TaskSmackTests.exe --gtest_filter=-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*
+```
+
+Heavy Checks runs it nightly (`windows-asan-ubsan`; dispatch it alone with `-f scope=windows-asan`). Notes:
+
+- clang's Windows ASan runtime is the DLL `clang_rt.asan_dynamic-x86_64.dll` (there is no static one, and no
+  ARM64 Windows runtime). Configuring copies it next to the test executables, and the build uses the release DLL
+  CRT (`/MD`) as that runtime requires.
+- `-D_DISABLE_STL_ANNOTATION` is set, so the MSVC STL's container annotations (which need Visual Studio's "C++
+  AddressSanitizer" component and `stl_asan.lib`) are off: a read past a vector's `size()` but inside its
+  capacity isn't caught; one past the allocation is.
+- CFG and CETCOMPAT are off under a sanitizer. LeakSanitizer doesn't exist on Windows.
+- Filter the display suites out as shown, and call `TaskSmackTests.exe` directly: the ctest test preset
+  (`win-asan-ubsan`) sets `UBSAN_OPTIONS` but runs everything.
+- The nightly job skips a few tests that fail on the first run; see the `$known` list in `heavy-checks.yml` and its issues.
+
+### Linux
 
 AddressSanitizer + UndefinedBehaviorSanitizer:
 

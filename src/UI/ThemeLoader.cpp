@@ -1,6 +1,7 @@
 #include "ThemeLoader.h"
 
 #include "Core/ErrorCodeText.h"
+#include "Core/ReadWholeFile.h"
 #include "Core/Utf8Path.h"
 #include "FallbackTheme.h"
 #include "Theme.h"
@@ -825,22 +826,29 @@ auto ThemeLoader::loadThemeInfoFromString(std::string_view tomlText, const std::
 
 auto ThemeLoader::loadThemeInfo(const std::filesystem::path& path) -> std::optional<ThemeInfo>
 {
-    try
+    // Read by the path itself, then parsed (#4315): parse_file() opened the UTF-8 name, which for a lone surrogate
+    // names another file.
+    const std::optional<std::string> text = Core::readWholeFile(path);
+    if (!text.has_value())
     {
-        return themeInfoOf(toml::parse_file(Core::pathToUtf8(path)), path);
-    }
-    catch (const toml::parse_error& err)
-    {
-        spdlog::error("Failed to parse theme {}: {}", Core::pathToUtf8(path), err.description());
+        spdlog::error("Failed to read theme {}: it couldn't be opened", Core::pathToUtf8(path));
         return std::nullopt;
     }
+    return loadThemeInfoFromString(*text, path);
 }
 
 auto ThemeLoader::loadTheme(const std::filesystem::path& path) -> std::optional<ColorScheme>
 {
+    // By the path itself, as loadThemeInfo() (#4315).
+    const std::optional<std::string> text = Core::readWholeFile(path);
+    if (!text.has_value())
+    {
+        spdlog::error("Failed to read theme {}: it couldn't be opened", Core::pathToUtf8(path));
+        return std::nullopt;
+    }
     try
     {
-        ColorScheme scheme = schemeFromTable(toml::parse_file(Core::pathToUtf8(path)));
+        ColorScheme scheme = schemeFromTable(toml::parse(*text, Core::pathToUtf8(path)));
         spdlog::info("Loaded theme: {} from {}", scheme.name, Core::pathToUtf8(path));
         return scheme;
     }

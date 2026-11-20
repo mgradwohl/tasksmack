@@ -3,6 +3,8 @@
 // The parts of a systemd unit file the Startup tab shows (#3082): what a user unit runs at sign-in, or what
 // a timer starts and when. Pure: the text is the caller's, so it is tested without a filesystem.
 
+#include "Domain/Utf8Sanitize.h"
+
 #include <algorithm>
 #include <array>
 #include <cstddef>
@@ -111,7 +113,7 @@ namespace Detail
         std::string_view value = Detail::trim(line.substr(equals + 1));
         if (section == "Unit" && key == "Description" && unit.description.empty())
         {
-            unit.description = value;
+            unit.description = Domain::sanitizedUtf8(value); // shown only (#4322)
         }
         else if (section == "Service" && key == "ExecStart" && unit.execStart.empty() && !value.empty())
         {

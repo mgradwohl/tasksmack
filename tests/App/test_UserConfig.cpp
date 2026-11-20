@@ -1,7 +1,10 @@
 // NOLINTBEGIN(cppcoreguidelines-avoid-magic-numbers,readability-magic-numbers)
+#include "App/ConfigFileProblem.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "Core/Utf8Path.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/Utf8Sanitize.h"
 #include "UI/FontPointSize.h"
 #include "UI/Theme.h"
 
@@ -18,6 +21,7 @@
 #include <filesystem>
 #include <fstream>
 #include <ios>
+#include <iterator>
 #include <memory>
 #include <optional>
 #include <random>
@@ -346,6 +350,115 @@ TEST_F(UserConfigLoadSaveTest, LoadHandlesTomlParseError)
     }
     UserConfig::get().load(); // should not throw
     EXPECT_EQ(UserConfig::get().settings().refreshIntervalMs, Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS);
+}
+
+// ========== A config.toml TaskSmack can't use (#4318) ==========
+
+[[nodiscard]] std::string fileBytes(const std::filesystem::path& path)
+{
+    std::ifstream file(path, std::ios::binary);
+    return {std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+}
+
+void writeBytes(const std::filesystem::path& path, std::string_view bytes)
+{
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file << bytes;
+}
+
+/// @p text as UTF-16LE with its byte-order mark, as Notepad's "Unicode" and Windows PowerShell 5.1's Out-File save it.
+[[nodiscard]] std::string utf16le(std::string_view text)
+{
+    std::string bytes = "\xFF\xFE";
+    for (const char c : text)
+    {
+        bytes.push_back(c);
+        bytes.push_back('\0');
+    }
+    return bytes;
+}
+
+TEST(ConfigFileProblemTest, Utf16IsToldByItsByteOrderMarkOrANul)
+{
+    static_assert(ConfigFileProblem::looksLikeUtf16("\xFF\xFE[\0"));
+    static_assert(ConfigFileProblem::looksLikeUtf16("\xFE\xFF\0["));
+    static_assert(ConfigFileProblem::looksLikeUtf16(std::string_view("[\0t\0", 4)));
+    static_assert(!ConfigFileProblem::looksLikeUtf16("[theme]\nid = \"x\"\n"));
+    static_assert(!ConfigFileProblem::looksLikeUtf16("\xEF\xBB\xBF[theme]"));
+    static_assert(!ConfigFileProblem::looksLikeUtf16("caf\xE9"));
+    static_assert(!ConfigFileProblem::looksLikeUtf16(""));
+}
+
+// A cp1252 "é" (a hand edit in an editor that doesn't save UTF-8): the file is kept, the defaults load, and the problem
+// is recorded for the status bar and Settings, naming the file, the line and the reason. A save while it stands writes
+// nothing; once the file is fixed, the next save writes it and the problem clears.
+TEST_F(UserConfigLoadSaveTest, AConfigThatIsntUtf8IsKeptAndItsProblemNamesTheFileTheLineAndTheReason)
+{
+    const std::string original = "[theme]\nid = \"caf\xE9\"\n";
+    writeBytes(m_ConfigPath, original);
+    auto& config = UserConfig::get();
+    const std::uint64_t before = config.fileProblemVersion();
+    config.load();
+
+    EXPECT_EQ(config.settings().themeId, UserSettings{}.themeId) << "the defaults, for this session";
+    EXPECT_NE(config.fileProblemVersion(), before);
+    const std::string problem = config.fileProblem();
+    EXPECT_TRUE(problem.contains(Core::pathToUtf8(m_ConfigPath))) << problem;
+    EXPECT_TRUE(problem.contains("line 2")) << problem;
+    EXPECT_TRUE(problem.contains("won't save over the file")) << problem;
+    EXPECT_EQ(Domain::sanitizedUtf8(problem), problem) << "display text is valid UTF-8";
+
+    config.settings().themeId = "changed";
+    config.save();
+    EXPECT_EQ(fileBytes(m_ConfigPath), original) << "never written over";
+    EXPECT_EQ(config.fileProblem(), problem) << "still standing";
+
+    writeBytes(m_ConfigPath, "[theme]\nid = \"cafe\"\n"); // fixed by hand
+    config.save();
+    EXPECT_TRUE(config.fileProblem().empty()) << config.fileProblem();
+    EXPECT_TRUE(fileBytes(m_ConfigPath).contains("id = 'changed'")) << "the session's change is saved now";
+}
+
+TEST_F(UserConfigLoadSaveTest, AUtf16ConfigIsKeptAndSaysToSaveItAsUtf8)
+{
+    const std::string original = utf16le("[theme]\nid = \"x\"\n");
+    writeBytes(m_ConfigPath, original);
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().themeId, UserSettings{}.themeId);
+    const std::string problem = config.fileProblem();
+    EXPECT_TRUE(problem.contains("is saved as UTF-16; save it as UTF-8")) << problem;
+    EXPECT_TRUE(problem.contains(Core::pathToUtf8(m_ConfigPath))) << problem;
+    config.save();
+    EXPECT_EQ(fileBytes(m_ConfigPath), original);
+}
+
+// R15: a config with a UTF-8 byte-order mark (Notepad's "UTF-8 with BOM") is read, and saved over, as any other.
+TEST_F(UserConfigLoadSaveTest, AUtf8ByteOrderMarkIsAccepted)
+{
+    writeBytes(m_ConfigPath, "\xEF\xBB\xBF[theme]\nid = \"bom-theme\"\n");
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().themeId, "bom-theme");
+    EXPECT_TRUE(config.fileProblem().empty()) << config.fileProblem();
+
+    config.settings().themeId = "after";
+    config.save();
+    EXPECT_TRUE(config.fileProblem().empty()) << config.fileProblem();
+    const std::string saved = fileBytes(m_ConfigPath);
+    EXPECT_TRUE(saved.contains("id = 'after'")) << saved;
+    EXPECT_FALSE(saved.starts_with("\xEF\xBB\xBF")) << "TaskSmack writes no byte-order mark (R14)";
+}
+
+TEST_F(UserConfigLoadSaveTest, AnyParseErrorIsRecordedWithItsLineAndColumn)
+{
+    writeBytes(m_ConfigPath, "[theme]\nid = \"unclosed\n");
+    auto& config = UserConfig::get();
+    config.load();
+    const std::string problem = config.fileProblem();
+    EXPECT_TRUE(problem.contains("couldn't be read: line 2, column")) << problem;
+    config.resetConfigPathForTesting(m_ConfigPath);
+    EXPECT_TRUE(config.fileProblem().empty()) << "a fresh start has none";
 }
 
 // Malformed config.toml inputs the fuzzers found that crashed inside toml++ instead of throwing

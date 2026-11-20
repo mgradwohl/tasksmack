@@ -1542,7 +1542,7 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     }
     std::ranges::stable_sort(sorted,
                              [](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
-                             { return Platform::compareIgnoreCase(a->name, b->name) < 0; });
+                             { return Platform::compareFolded(a->name, b->name) < 0; });
     if (windows)
     {
         addDriverProblemRows(rows, drivers.listed, sorted);
@@ -1587,6 +1587,8 @@ std::string_view exceptionCodeName(std::string_view code)
 
 std::string formatCrashValue(const Platform::CrashEvent& event)
 {
+    // Shown only: the event keeps its raw comm, which CrashHistory matches by its 15-byte prefix (#4322). A comm decoded
+    // from systemd's \\xNN escapes can end in a lone lead byte.
     const std::string app =
         joinNonEmpty({event.application.empty() ? std::string_view("Unknown application") : event.application, event.appVersion}, " ");
     const std::string pid = event.pid.has_value() ? std::format("pid {}", *event.pid) : std::string{};
@@ -1603,11 +1605,12 @@ std::string formatCrashValue(const Platform::CrashEvent& event)
         {
             core = event.coreBytes > 0 ? UI::Format::formatBytes(static_cast<double>(event.coreBytes)) : std::string{};
         }
-        return joinNonEmpty({headline, event.executable, pid, uid, core}, ", ");
+        return Domain::sanitizedUtf8(joinNonEmpty({headline, event.executable, pid, uid, core}, ", "));
     }
     if (event.hang)
     {
-        return joinNonEmpty({event.hangType.empty() ? app + " hung" : std::format("{} hung ({})", app, event.hangType), pid}, ", ");
+        return Domain::sanitizedUtf8(
+            joinNonEmpty({event.hangType.empty() ? app + " hung" : std::format("{} hung ({})", app, event.hangType), pid}, ", "));
     }
     const std::string module = joinNonEmpty({event.module, event.moduleVersion}, " ");
     const std::string_view name = exceptionCodeName(event.exceptionCode);
@@ -1616,7 +1619,8 @@ std::string formatCrashValue(const Platform::CrashEvent& event)
     {
         exception = name.empty() ? "exception " + event.exceptionCode : std::format("exception {} ({})", event.exceptionCode, name);
     }
-    return joinNonEmpty({module.empty() ? app + " crashed" : std::format("{} crashed in {}", app, module), exception, pid}, ", ");
+    return Domain::sanitizedUtf8(
+        joinNonEmpty({module.empty() ? app + " crashed" : std::format("{} crashed in {}", app, module), exception, pid}, ", "));
 }
 
 Section buildCrashesSection(const Platform::CrashesInfo& crashes, bool canRestart)

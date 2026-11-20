@@ -311,6 +311,12 @@ std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::s
     if (const auto image = Windows::BrokerHelper::ownImage(); image.has_value())
     {
         setup.selfPath = WinString::wideToUtf8(*image);
+        // The Debugger is written from selfPath, UTF-8, here or by the helper (#4310): a lone surrogate in the image's
+        // path would come back as U+FFFD, naming a file that doesn't exist, so such a copy doesn't offer to turn it on.
+        if (WinString::hasLoneSurrogate(*image))
+        {
+            setup.selfPathRefusal = "its path holds a character that can't be written as text (an unpaired UTF-16 surrogate)";
+        }
     }
     std::vector<std::string> folders = Windows::installFolders();
     const std::vector<std::string_view> folderViews(folders.begin(), folders.end());

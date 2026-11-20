@@ -74,5 +74,30 @@ TEST(Utf8CaseFoldTest, IllFormedBytesNeverCrashAndNeverMatchACharacter)
     EXPECT_FALSE(containsFoldedCase("caf\xC3", "caf\xC3\xA9")) << "the term runs past the text's end";
 }
 
+TEST(Utf8CaseFoldTest, CompareSortsCaseVariantsTogetherThenByBytes)
+{
+    // #4324: "Émile" and "émile" sorted far apart. Folded they sort side by side; both still come after "Zoe" in
+    // code point order (é is U+00E9), as folding is not collation.
+    EXPECT_TRUE(compareFoldedCase("Émile", "émile") < 0) << "the byte-wise tie-break: É (C3 89) before é (C3 A9)";
+    EXPECT_TRUE(compareFoldedCase("émile", "émilf") < 0) << "nothing that differs later sorts between them";
+    EXPECT_TRUE(compareFoldedCase("Émilf", "émile") > 0);
+    EXPECT_TRUE(compareFoldedCase("Zoe", "Émile") < 0);
+    EXPECT_TRUE(compareFoldedCase("émile", "Émile") > 0);
+    EXPECT_TRUE(compareFoldedCase("émile", "émile") == 0);
+    EXPECT_TRUE(compareFoldedCase("bits", "BITS2") < 0) << "a prefix sorts first";
+    EXPECT_TRUE(compareFoldedCase("Appinfo", "bits") < 0);
+    EXPECT_TRUE(compareFoldedCase("BITS", "bits") < 0) << "ASCII ties break by bytes too";
+    EXPECT_TRUE(compareFoldedCase("\u212A", "l") < 0) << "U+212A folds to k, which is before l";
+}
+
+TEST(Utf8CaseFoldTest, CompareFoldedTreatsCaseVariantsAsOneKey)
+{
+    // For keys such as Windows account names (#3310): no tie-break, so the variants are equivalent.
+    EXPECT_TRUE(compareFolded("alice", "ALICE") == 0);
+    EXPECT_TRUE(compareFolded("\xC3\x89lodie", "\xC3\xA9LODIE") == 0); // Élodie, éLODIE
+    EXPECT_TRUE(compareFolded("alice", "alicex") < 0);
+    EXPECT_TRUE(compareFolded("bob", "Alice") > 0);
+}
+
 } // namespace
 } // namespace Platform

@@ -1,9 +1,9 @@
 #include "ConnectionsModel.h"
 
 #include "Domain/ProcessConnections.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <chrono>
@@ -82,7 +82,7 @@ void ConnectionsModel::sample()
                                  {
                                      return b.pid == 0;
                                  }
-                                 if (const auto byName = Platform::compareIgnoreCase(a.processName, b.processName); byName != 0)
+                                 if (const auto byName = Platform::compareFolded(a.processName, b.processName); byName != 0)
                                  {
                                      return byName < 0;
                                  }

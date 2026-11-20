@@ -26,6 +26,9 @@ namespace Platform
 struct TaskManagerReplacementSetup
 {
     std::string selfPath;
+    /// Why @c selfPath can't be written as the Debugger (#4310), or empty when it can: on Windows, an image path with a
+    /// lone surrogate, whose UTF-8 text names its U+FFFD twin. A Set is refused, and read() says why; a Clear isn't.
+    std::string selfPathRefusal;
     /// The Debugger value: nullopt when there is none.
     std::function<std::expected<std::optional<std::string>, std::string>()> readDebugger;
     /// Whether a program the value names exists.

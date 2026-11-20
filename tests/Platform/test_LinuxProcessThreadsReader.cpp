@@ -71,6 +71,20 @@ TEST_F(LinuxProcessThreadsReaderTest, ReadsEachThreadsStat)
     EXPECT_EQ(result.bootTimeEpoch, 1761900000U);
 }
 
+// #4322: a thread's comm can end in the middle of a character, or hold a newline: the name shown is
+// well-formed UTF-8 on one line.
+TEST_F(LinuxProcessThreadsReaderTest, AThreadNameIsWellFormedOnOneLine)
+{
+    write("100/task/105/stat", "105 (Sicherung-Gr\xC3\xB6\xC3) R 1 100 100 0 -1 4194560 10 0 0 0 300 40 0 0 25 5 2 0 5000 1000 50\n");
+    write("100/task/100/stat", "100 (a\nb) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 2 0 4242 1000 50\n");
+    LinuxProcessThreadsReader reader(m_Proc.path.string());
+    const ThreadsReadResult result = reader.readThreads(TARGET);
+    ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
+    ASSERT_EQ(result.threads.size(), 2U);
+    EXPECT_EQ(result.threads[0].name, "a b");
+    EXPECT_EQ(result.threads[1].name, "Sicherung-Gr\xC3\xB6\xEF\xBF\xBD") << "the cut character is U+FFFD";
+}
+
 TEST_F(LinuxProcessThreadsReaderTest, AThreadWhoseStatCantBeReadIsLeftOut)
 {
     std::filesystem::create_directories(m_Proc.path / "100" / "task" / "106"); // exited: no stat

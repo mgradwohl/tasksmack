@@ -463,6 +463,28 @@ TEST(TaskManagerReplacementServiceTest, ChangesGoThroughTheHelperNamingThisCopy)
     EXPECT_TRUE(registry->calls.empty()) << "the helper writes, not TaskSmack";
 }
 
+// #4310: an image path the Debugger can't hold exactly (a lone surrogate, which its UTF-8 text shows as U+FFFD) is
+// never written: a Set is refused before the helper is asked, and read() says why. Giving Task Manager back still works.
+TEST(TaskManagerReplacementServiceTest, AnImagePathThatCantBeWrittenExactlyRefusesASetButNotAClear)
+{
+    const auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    const auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    TaskManagerReplacementSetup setup = setupReading(registry);
+    setup.broker = broker;
+    setup.selfPathRefusal = "its path holds a character that can't be written as text";
+    TaskManagerReplacementService service(std::move(setup));
+
+    const TaskManagerReplacementInfo info = service.read();
+    EXPECT_TRUE(info.turnOnUnavailableReason.contains("can't be written as text")) << info.turnOnUnavailableReason;
+    const ProcessActionResult on = service.change(Broker::TaskManagerChange::Set, false, std::stop_token{});
+    EXPECT_FALSE(on.success);
+    EXPECT_TRUE(on.errorMessage.contains("can't be written as text")) << on.errorMessage;
+    EXPECT_TRUE(broker->requests().empty()) << "no prompt, nothing written";
+
+    const ProcessActionResult off = service.change(Broker::TaskManagerChange::Clear, false, std::stop_token{});
+    EXPECT_TRUE(off.success) << off.errorMessage;
+}
+
 TEST(TaskManagerReplacementServiceTest, ADismissedPromptOrARefusalIsTheResult)
 {
     auto broker = std::make_shared<Mocks::FakeBroker>(false);

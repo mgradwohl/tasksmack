@@ -9,9 +9,21 @@
 # Set here, before Dependencies.cmake, so SDL3, FreeType, ImGui, googletest and every other
 # FetchContent target are compiled against the same runtime (CMAKE_POLICY_DEFAULT_CMP0091 makes
 # that hold for dependencies whose cmake_minimum_required predates the policy).
+#
+# Under a sanitizer (win-asan-ubsan) every configuration uses the release DLL runtime (/MD): clang's
+# only Windows ASan runtime is the dynamic one (clang_rt.asan_dynamic-x86_64.dll, which the link
+# brings in with its thunk), and it intercepts the release CRT's allocator, so /MDd (whose debug heap
+# it can't hook) fails to link or misreports. The test is the same -fsanitize match as
+# TASKSMACK_WINDOWS_HARDENED below, on the flags the preset sets.
 if(WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     set(CMAKE_POLICY_DEFAULT_CMP0091 NEW)
-    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
+    string(TOUPPER "${CMAKE_BUILD_TYPE}" _ts_crt_config)
+    if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_ts_crt_config}}" MATCHES "-fsanitize")
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
+    else()
+        set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:DebugDLL>")
+    endif()
+    unset(_ts_crt_config)
 endif()
 
 # Windows clang Debug builds: global type hashes in the CodeView debug info (-gcodeview-ghash), which
@@ -340,6 +352,17 @@ if(WIN32)
     if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_ts_hardening_config}}" MATCHES "-fsanitize")
         set(TASKSMACK_WINDOWS_HARDENED OFF)
         message(STATUS "TaskSmack and TaskSmackHelper: CFG and CETCOMPAT off under a sanitizer")
+        # clang's ASan runtime is a DLL (the only Windows flavour LLVM ships): copy it beside the executables so
+        # they start without PATH help. The test list step that runs after each link needs it too (0xc0000135).
+        execute_process(COMMAND "${CMAKE_CXX_COMPILER}" -print-file-name=clang_rt.asan_dynamic-x86_64.dll
+            OUTPUT_VARIABLE _ts_asan_dll OUTPUT_STRIP_TRAILING_WHITESPACE)
+        if(EXISTS "${_ts_asan_dll}")
+            file(COPY "${_ts_asan_dll}" DESTINATION "${CMAKE_BINARY_DIR}/tests")
+            file(COPY "${_ts_asan_dll}" DESTINATION "${CMAKE_BINARY_DIR}/bin")
+        else()
+            message(WARNING "ASan runtime DLL not found (${_ts_asan_dll}); the sanitizer executables need it on PATH")
+        endif()
+        unset(_ts_asan_dll)
     else()
         set(TASKSMACK_WINDOWS_HARDENED ON)
     endif()

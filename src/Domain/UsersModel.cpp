@@ -1,7 +1,7 @@
 #include "UsersModel.h"
 
-#include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <memory>
@@ -34,7 +34,7 @@ void UsersModel::sample()
     std::ranges::stable_sort(next->sessions,
                              [](const Platform::UserSession& a, const Platform::UserSession& b)
                              {
-                                 if (const auto byUser = Platform::compareIgnoreCase(a.user, b.user); byUser != 0)
+                                 if (const auto byUser = Platform::compareFolded(a.user, b.user); byUser != 0)
                                  {
                                      return byUser < 0;
                                  }

@@ -488,6 +488,15 @@ StorageModel::computeDiskSnapshot(const Platform::DiskCounters& current, DiskSta
         return snap;
     }
 
+    if (current.readSectors < state.prevCounters.readSectors || current.writeSectors < state.prevCounters.writeSectors)
+    {
+        // A counter that went backwards is a reinitialised or re-created device, not an idle disk: counterDelta
+        // would clamp it to 0 and publish a measured 0 B/s. The sample has no rates, flagged like an over-the-ceiling
+        // one (#1291) so the system Total is a gap too (#4406).
+        snap.ratesRejected = true;
+        return snap;
+    }
+
     const std::uint64_t deltaReadSectors = Numeric::counterDelta(current.readSectors, state.prevCounters.readSectors);
     const std::uint64_t deltaWriteSectors = Numeric::counterDelta(current.writeSectors, state.prevCounters.writeSectors);
     const std::uint64_t deltaReadOps = Numeric::counterDelta(current.readsCompleted, state.prevCounters.readsCompleted);

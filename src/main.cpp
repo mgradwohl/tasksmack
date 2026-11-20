@@ -238,7 +238,7 @@ auto runApp(const App::LaunchOptions& launch) -> int
                      describeHandoffWait(*handoffWait));
         if (launch.configDir.has_value())
         {
-            const std::filesystem::path handedOver = Core::utf8ToPath(*launch.configDir);
+            const std::filesystem::path& handedOver = *launch.configDir; // exactly as the command line gave it (#4310)
             if (handoffWait == Platform::HandoffWait::NotThatProcess)
             {
                 handoffDirRefused = "the process it names isn't the TaskSmack that restarted this one";
@@ -869,11 +869,17 @@ auto runAppGuarded(const App::LaunchOptions& launch) -> int
 
 #ifdef _WIN32
 // LCOV_EXCL_START - main.cpp runs only in TaskSmack.exe; no test binary links it (#2039)
-/// The command line's arguments, the program's path first, as UTF-8: WinMain's own is the ANSI code
-/// page's, which can't hold every path.
-auto commandLineArguments() -> std::vector<std::string>
+/// The command line's arguments, the program's path first: WinMain's own is the ANSI code page's, which can't hold
+/// every path.
+struct CommandLineArguments
 {
-    std::vector<std::string> arguments;
+    std::vector<std::string> utf8;             ///< As UTF-8, for the options (a lone surrogate shown as U+FFFD)
+    std::vector<std::filesystem::path> native; ///< As Windows gave them, for a path (--config-dir, #4310)
+};
+
+auto commandLineArguments() -> CommandLineArguments
+{
+    CommandLineArguments arguments;
     int count = 0;
     LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &count);
     if (argv == nullptr)
@@ -882,7 +888,8 @@ auto commandLineArguments() -> std::vector<std::string>
     }
     for (const wchar_t* const argument : std::span<LPWSTR>(argv, static_cast<std::size_t>(std::max(count, 0))))
     {
-        arguments.push_back(Platform::WinString::wideToUtf8(argument));
+        arguments.utf8.push_back(Platform::WinString::wideToUtf8(argument));
+        arguments.native.emplace_back(std::wstring(argument));
     }
     LocalFree(static_cast<HLOCAL>(argv));
     return arguments;
@@ -932,7 +939,8 @@ auto WINAPI WinMain(HINSTANCE /*hInstance*/, HINSTANCE /*hPrevInstance*/, LPSTR 
                     MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         return EXIT_FAILURE;
     }
-    return runAppGuarded(App::parseLaunchOptions(commandLineArguments()));
+    const CommandLineArguments arguments = commandLineArguments();
+    return runAppGuarded(App::parseLaunchOptions(arguments.utf8, arguments.native));
 }
 // LCOV_EXCL_STOP
 #else
