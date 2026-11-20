@@ -37,7 +37,8 @@ struct DiskSnapshot
     // transition too short to measure, whose rates read 0; their history records a gap (#1102). Also
     // false for a disk the probe listed without reading its counters (hasIoCounters, #2994).
     bool hasRates = false;
-    // The sample's rates were thrown out as a counter glitch (over MAX_SANE_DISK_RATE_BPS, #1291):
+    // The sample's rates were thrown out as a counter glitch (over MAX_SANE_DISK_RATE_BPS, #1291, or a
+    // read/write sector counter that went backwards, #4406):
     // unmeasured like a first sample, but the system Total must also be a gap rather than the sum of
     // the other disks, which would plot a false dip (#1327 review). A disk merely new to the sample
     // doesn't gap the Total.

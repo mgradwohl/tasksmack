@@ -7,6 +7,7 @@
 // a copy in ~/.config/autostart with Hidden=true. Pure parsing and rewriting here; LinuxStartupProbe and
 // LinuxStartupActions do the file system.
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/AsciiTrim.h"
 
 #include <algorithm>
@@ -104,7 +105,7 @@ struct Entry
         const std::string_view value = trimAscii(line.substr(equals + 1));
         if (key == "Name")
         {
-            entry.name = value;
+            entry.name = Domain::sanitizedUtf8(value); // shown only; a Latin-1 file has bytes that aren't UTF-8 (#4322)
         }
         else if (key == "Exec")
         {

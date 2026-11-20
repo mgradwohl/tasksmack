@@ -80,7 +80,8 @@ TEST(BrokeredReaderTraitsTest, TheRefusalCarriesNothingRead)
 TEST(BrokeredReaderTraitsTest, AFailedReadSaysWhyWhereItsResultCan)
 {
     EXPECT_EQ(EnvironmentReadTraits::failed("why").status, EnvironmentReadStatus::Failed);
-    EXPECT_TRUE(EnvironmentReadTraits::failed("why").variables.empty()) << "the environment's result has no detail";
+    EXPECT_TRUE(EnvironmentReadTraits::failed("why").variables.empty());
+    EXPECT_EQ(EnvironmentReadTraits::failed("why").detail, "why");
     EXPECT_EQ(ModulesReadTraits::failed("why").status, ModulesReadStatus::Failed);
     EXPECT_EQ(ModulesReadTraits::failed("why").detail, "why");
     EXPECT_EQ(OpenFilesReadTraits::failed("why").status, OpenFilesReadStatus::Failed);
