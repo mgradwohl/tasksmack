@@ -1,6 +1,7 @@
 #include "LinuxStartAtLogin.h"
 
 #include "Domain/StartAtLogin.h"
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/IStartAtLogin.h"
 #include "ReplaceFile.h"
 #include "XdgAutostart.h"
@@ -113,7 +114,10 @@ namespace
 std::optional<std::string> execValue(std::string_view command)
 {
     const std::optional<std::string> program = Domain::StartAtLogin::commandProgram(command);
-    if (!program.has_value() || command.contains('\n'))
+    // A desktop entry's values are UTF-8 (the Desktop Entry spec): GNOME's GKeyFile skips an entry whose Exec isn't, so
+    // a copy under a Latin-1 folder name would be dropped at sign-in while Settings showed the option on (#4329).
+    // Refused here, so write() says this copy's path can't be written to an autostart entry.
+    if (!program.has_value() || command.contains('\n') || !Domain::isValidUtf8(command))
     {
         return std::nullopt;
     }
