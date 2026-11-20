@@ -164,7 +164,7 @@ cmake --workflow --preset dev        # Linux: configure+build+test
 cmake --workflow --preset win-dev    # Windows equivalent
 ```
 Common presets have a `win-` twin: `debug`, `release`, `release-compatible`, `optimized`, `relwithdebinfo`,
-`coverage`, `unity`, `pgo-generate`/`pgo-use`/`pgo-baseline`, `profile`, `benchmark`. Linux-only: `asan-ubsan`, `tsan`, `msan`.
+`coverage`, `unity`, `pgo-generate`/`pgo-use`/`pgo-baseline`, `profile`, `benchmark`. `asan-ubsan` has a Windows x64 twin too (`win-asan-ubsan`). Linux-only: `tsan`, `msan`.
 
 Format/lint (required before a PR is ready). Each script under `tools/` that has a `.ps1` twin: run the `.ps1` on
 Windows and the `.sh` on Linux and WSL, as CI does. Git Bash, MSYS2 and Cygwin aren't supported shells for

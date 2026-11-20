@@ -870,6 +870,48 @@ TEST_F(ProcessesPanelRenderTest, APlatformNoFrameAdoptedIsReleasedOnDetach)
     EXPECT_TRUE(destroyed->load());
 }
 
+// #4412: the hand-off is published before the seed read and a failed CPU layout read is no layout, so a hook that
+// meets a failure after the probe is in place still gives the panel its row actions.
+TEST_F(ProcessesPanelRenderTest, ARowMenuStillOffersKillWhenTheCpuLayoutReadThrows)
+{
+    const auto panel = std::make_unique<ProcessesPanel>(
+        []
+        {
+            auto probe = std::make_unique<TestMocks::MockProcessProbe>();
+            probe->withProcess(TestMocks::makeProcessCounters(1, "init", 'S', 10, 5, 100, std::uint64_t{1} << 20U, 0));
+            auto actions = std::make_unique<TestMocks::MockAffinityLayoutActions>();
+            actions->setCapabilities({.canTerminate = true, .canKill = true, .canSetAffinity = true});
+            actions->throwFromAffinityLayout();
+            return ProcessesPanelPlatform{.probe = std::move(probe), .actions = std::move(actions), .icons = nullptr};
+        },
+        [](Core::Event& /*event*/) {});
+    attachAndSeed(*panel);
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+    renderUntilLoaded(*panel);
+
+    ASSERT_TRUE(openARowMenu(*panel).has_value());
+    EXPECT_NE(renderAndCapture(*panel).find("Kill"), std::string::npos) << "the row menu offers Kill";
+    panel->onDetach();
+}
+
+// #4412: a platform that could not be built leaves the model without a probe for the session; the panel says so
+// instead of drawing an empty table and "0 processes".
+TEST_F(ProcessesPanelRenderTest, AThrowingPlatformFactoryGivesTheUnavailableEmptyState)
+{
+    const auto panel = std::make_unique<ProcessesPanel>([] -> ProcessesPanelPlatform { throw std::runtime_error("no probe"); },
+                                                        [](Core::Event& /*event*/) {});
+    panel->onAttach();
+    EXPECT_FALSE(panel->waitForFirstSample()) << "never seeded, and it says so at once rather than waiting out the timeout";
+    Core::ActiveTabChangedEvent shown("Processes");
+    panel->onEvent(shown);
+
+    const std::string text = renderAndCapture(*panel);
+    EXPECT_NE(text.find("Process list unavailable"), std::string::npos) << text;
+    EXPECT_NE(text.find("could not be started"), std::string::npos) << text;
+    panel->onDetach();
+}
+
 // TASKSMACK_SELECT (#1559) for a process that never appears: after SelectOverride::MAX_SNAPSHOTS
 // snapshots it gives up, selecting nothing, rather than waiting for ever.
 TEST_F(ProcessesPanelRenderTest, AStartupSelectionThatNeverMatchesGivesUp)

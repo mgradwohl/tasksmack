@@ -13,8 +13,8 @@
 //    writes, not again until a write has succeeded; the sink logs each failure's own reason.
 //  - flush() waits until everything submitted is written (the exit path, a load(), a test). The
 //    destructor flushes too, so nothing submitted is lost.
-//  - No thread to run on (std::system_error): the snapshot stays pending, and the next submit() or
-//    flush() writes it.
+//  - No thread to run on (std::system_error, or std::bad_alloc for the thread's state): the snapshot stays
+//    pending, and the next submit() or flush() writes it (#4411).
 //
 // Free of ImGui; tested in tests/App/test_CoalescingWriter.cpp.
 
@@ -27,15 +27,24 @@
 #include <mutex>
 #include <optional>
 #include <string_view>
-#include <system_error>
 #include <thread>
 #include <utility>
 
 namespace App
 {
 
+/// Starts the worker's thread; the seam a test replaces to make the start fail (#4411).
+struct StartJthread
+{
+    template<typename Body> [[nodiscard]] static std::jthread start(Body&& body)
+    {
+        return std::jthread(std::forward<Body>(body));
+    }
+};
+
 /// @tparam Snapshot What one write writes: a copy, owned by the writer until it is written.
-template<typename Snapshot> class CoalescingWriter
+/// @tparam Starter  Starts a thread from a body (StartJthread); only a test passes another.
+template<typename Snapshot, typename Starter = StartJthread> class CoalescingWriter
 {
   public:
     /// Writes one snapshot, on the worker; true when it was written.
@@ -111,16 +120,16 @@ template<typename Snapshot> class CoalescingWriter
             // A raw jthread, not a Domain::Worker (#3343): it is one-shot, so no thread sits idle between saves,
             // and flush() waits for everything submitted to be written, which a Worker has no way to say.
             // Assigning joins the previous worker, which found nothing pending and is ending.
-            m_Worker = std::jthread(
+            m_Worker = Starter::start(
                 [this]
                 {
                     static_cast<void>(Platform::setCurrentThreadName(m_ThreadName));
                     drain();
                 });
         }
-        catch (const std::system_error& e)
+        catch (...) // std::system_error (no thread), or std::bad_alloc for its state: as Domain::Worker::startThreadLocked
         {
-            spdlog::warn("No thread to write on ({}); the write waits for the next one", e.what());
+            spdlog::warn("No thread to write on; the write waits for the next one");
             const std::scoped_lock lock(m_Mutex);
             m_Running = false;
         }

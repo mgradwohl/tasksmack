@@ -50,9 +50,9 @@ on:
         description: >-
           What to run. 'all' runs every job (the default, as before). 'benchmark' runs only
           benchmark-regression, which is all a performance PR's merge gate needs. 'coverage' runs
-          only the Linux and Windows coverage jobs (#3148).
+          only the Linux and Windows coverage jobs (#3148). 'windows-asan' runs only windows-asan-ubsan (#4345).
         type: choice
-        options: [all, benchmark, coverage]
+        options: [all, benchmark, coverage, windows-asan]
         default: all
       second_runner_benchmarks:
         description: >-
@@ -145,7 +145,9 @@ jobs:
           [[ "$benchmarks" == true ]] || echo "No benchmarked path changed: coverage only."
 
   coverage:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (inputs.scope != 'benchmark' && inputs.scope != 'windows-asan')
     runs-on: ubuntu-26.04
     # It takes 13-21 minutes warm; at 20 about one run in three was cancelled (#2859). A cold ccache
     # takes much longer: a change to the coverage compile flags (#3160's -runtime-counter-relocation)
@@ -288,7 +290,9 @@ jobs:
           fail_ci_if_error: false
 
   win-coverage:
-    if: github.event_name != 'workflow_dispatch' || inputs.scope != 'benchmark'
+    if: >-
+      github.event_name != 'workflow_dispatch' ||
+      (inputs.scope != 'benchmark' && inputs.scope != 'windows-asan')
     runs-on: windows-2025
     # 35 minutes left under 3 of headroom (#3148): on main (run 40468810077) "Generate coverage report",
     # which configures, builds, runs the tests and writes the reports (tools/coverage.ps1), took 1909 s
@@ -647,10 +651,107 @@ jobs:
           echo "Sanitizer detected issues. Failing the job."
           exit 1
 
+  # ASan + UBSan on the Windows platform layer (#4345): nothing else instruments Windows code. x64 only (clang has
+  # no ASan runtime for Windows ARM64). Runs the daytime filter: the display suites open windows, and the CI
+  # real-system suites aren't wanted here.
+  windows-asan-ubsan:
+    if: >-
+      github.event_name == 'schedule' ||
+      (github.event_name == 'workflow_dispatch' && (inputs.scope == 'all' || inputs.scope == 'windows-asan'))
+    runs-on: windows-2025
+    timeout-minutes: 90
+    permissions:
+      contents: read
+    env:
+      LLVM_ROOT: C:\Program Files\LLVM
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Setup Python for GLAD
+        uses: ./.github/actions/setup-python-glad
+
+      - name: Setup Windows LLVM
+        uses: ./.github/actions/setup-windows-llvm
+        with:
+          llvm-version: ${{ env.LLVM_SEMVER_VERSION }}
+
+      - name: Setup ccache
+        id: ccache
+        uses: ./.github/actions/setup-ccache
+        with:
+          key: windows-asan-ubsan-llvm${{ env.LLVM_SEMVER_VERSION }}
+          max-size: 1250M
+
+      - name: Configure ccache
+        if: steps.ccache.outputs.available == 'true'
+        shell: bash
+        run: ccache --set-config=inode_cache=true
+
+      # Restore only; reusable-build-test.yml's main-branch builds save it (#1406).
+      - name: Restore FetchContent dependencies
+        uses: ./.github/actions/fetchcontent-cache
+        with:
+          mode: restore
+
+      - name: Configure
+        shell: pwsh
+        run: cmake --preset win-asan-ubsan
+
+      - name: Build
+        shell: pwsh
+        run: cmake --build --preset win-asan-ubsan --target TaskSmackTests
+
+      - name: Test with sanitizers
+        id: sanitizer-test
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force sanitizer-logs | Out-Null
+          # The ASan runtime DLL sits beside the test exe: cmake/CompilerOptions.cmake copies it at configure time.
+          $env:UBSAN_OPTIONS = 'halt_on_error=1:print_stacktrace=1'
+          # The daytime filter, minus the tests the first sanitizer run found failing. Each has its own issue, and
+          # UBSan and ASan abort the process on the first finding, so a known one would hide every later one:
+          # #4516 busy-loop int overflow, #4517 destroyed temporary, #4518 throw on a worker thread, #4519
+          # bad_alloc vs Unknown error, #4520 helper copies can't load the ASan runtime. Drop a pattern when its issue closes.
+          $known = 'WindowsProcessProbeTest.TotalCpuTimeIsPositiveAndMonotonic:WindowsProcessProbeTest.CpuTimeIncreasesBetweenSamples:BrokerHelperTest.AnythingElseOnTheCommandLineIsRefused:ProcessWatchWorkerTest.AWatchThatThrows*:BackgroundTaskTest.AFailedResultThatCantBeBuiltOnTheWorkerIsNotRethrown:BackgroundTaskTest.AWorkerThatFailedPastTheWorkDoesNotHoldUpTheNextStart:TaskSmackHelperTest.Refuses*'
+          $filter = "-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*:$known"
+          & build/win-asan-ubsan/tests/TaskSmackTests.exe "--gtest_filter=$filter" *>&1 | Tee-Object -FilePath sanitizer-logs/win-asan-ubsan.log
+          "test_result=$LASTEXITCODE" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
+
+      - name: Summary
+        if: always()
+        shell: pwsh
+        run: |
+          Add-Content $env:GITHUB_STEP_SUMMARY "## win-asan-ubsan Sanitizer Results"
+          if ('${{ steps.sanitizer-test.outputs.test_result }}' -eq '0') {
+            Add-Content $env:GITHUB_STEP_SUMMARY "PASSED: no issues detected"
+          } else {
+            Add-Content $env:GITHUB_STEP_SUMMARY "FAILED"
+            Add-Content $env:GITHUB_STEP_SUMMARY '```'
+            if (Test-Path sanitizer-logs/win-asan-ubsan.log) {
+              Select-String -Path sanitizer-logs/win-asan-ubsan.log -Pattern 'ERROR: AddressSanitizer|runtime error:|SUMMARY:|\[  FAILED' |
+                Select-Object -First 20 | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_.Line }
+            }
+            Add-Content $env:GITHUB_STEP_SUMMARY '```'
+          }
+
+      - name: Upload sanitizer logs
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: win-asan-ubsan-report
+          path: sanitizer-logs/win-asan-ubsan.log
+          if-no-files-found: warn
+          retention-days: 5
+
+      - name: Fail job if sanitizer found issues
+        if: steps.sanitizer-test.outputs.test_result != '0'
+        shell: pwsh
+        run: exit 1
+
   benchmark-regression:
     needs: push-scope
     if: >-
-      (github.event_name != 'workflow_dispatch' || inputs.scope != 'coverage') &&
+      (github.event_name != 'workflow_dispatch' || (inputs.scope != 'coverage' && inputs.scope != 'windows-asan')) &&
       needs.push-scope.outputs.benchmarks == 'true'
     # On ubuntu-26.04 with the rest of CI (#3395): perf-data/linux-ci-baseline.json was re-captured there. Its
     # baseline is tied to the runner image, so an image move re-captures it (CONTRIBUTING.md, "Refreshing

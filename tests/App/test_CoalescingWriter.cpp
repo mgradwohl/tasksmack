@@ -9,12 +9,16 @@
 
 #include <gtest/gtest.h>
 
+#include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <mutex>
+#include <new>
 #include <stdexcept>
 #include <string_view>
+#include <system_error>
 #include <thread>
+#include <utility>
 #include <vector>
 
 namespace App
@@ -264,6 +268,88 @@ TEST(CoalescingWriterTest, ASaveAfterTheWorkerEndedStartsAnother)
     writer.flush();
 
     EXPECT_EQ(written.values(), (std::vector<int>{1, 2}));
+}
+
+/// A thread start that fails the first @c failures times with @c Failure, then starts a real thread.
+template<typename Failure> struct FailingStart
+{
+    static inline std::atomic<int> failures{0}; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the seam is static
+
+    template<typename Body> [[nodiscard]] static std::jthread start(Body&& body)
+    {
+        if (failures.fetch_sub(1) > 0)
+        {
+            throw Failure{};
+        }
+        return StartJthread::start(std::forward<Body>(body));
+    }
+};
+
+struct NoThread : std::system_error
+{
+    NoThread() : std::system_error(std::make_error_code(std::errc::resource_unavailable_try_again))
+    {}
+};
+
+template<typename Failure> void expectAFailedStartLeavesTheNextSubmitFree()
+{
+    using Starter = FailingStart<Failure>;
+    Starter::failures = 1;
+    Written written;
+    CoalescingWriter<int, Starter> writer(
+        THREAD_NAME,
+        [&written](const int& value)
+        {
+            written.record(value);
+            return true;
+        },
+        [] {});
+
+    EXPECT_NO_THROW(writer.submit(1));
+    EXPECT_TRUE(written.values().empty()) << "no thread started, so nothing is written yet";
+    EXPECT_TRUE(writer.busy()) << "the snapshot is still pending";
+
+    // The next submit() starts a worker (m_Running was reset) and it writes the newest snapshot, with no flush().
+    writer.submit(2);
+    const auto deadline = std::chrono::steady_clock::now() + WAIT_LIMIT;
+    while (writer.busy() && std::chrono::steady_clock::now() < deadline)
+    {
+        std::this_thread::yield();
+    }
+    EXPECT_FALSE(writer.busy());
+    EXPECT_EQ(written.values(), std::vector<int>{2});
+}
+
+// #4411: std::jthread's constructor also allocates, so a start can fail with bad_alloc, not only system_error.
+TEST(CoalescingWriterTest, AStartThatRunsOutOfMemoryLeavesTheWriterAbleToStartAnother)
+{
+    expectAFailedStartLeavesTheNextSubmitFree<std::bad_alloc>();
+}
+
+TEST(CoalescingWriterTest, AStartWithNoThreadLeavesTheWriterAbleToStartAnother)
+{
+    expectAFailedStartLeavesTheNextSubmitFree<NoThread>();
+}
+
+TEST(CoalescingWriterTest, AFlushWritesWhatAFailedStartLeftPending)
+{
+    using Starter = FailingStart<std::bad_alloc>;
+    Starter::failures = 1;
+    Written written;
+    CoalescingWriter<int, Starter> writer(
+        THREAD_NAME,
+        [&written](const int& value)
+        {
+            written.record(value);
+            return true;
+        },
+        [] {});
+
+    writer.submit(7);
+    writer.flush();
+
+    EXPECT_EQ(written.values(), std::vector<int>{7});
+    EXPECT_FALSE(writer.busy());
 }
 
 } // namespace
