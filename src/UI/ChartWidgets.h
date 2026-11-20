@@ -4,6 +4,7 @@
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
 #include "UI/ChartSmoothing.h" // IWYU pragma: export
+#include "UI/Clipboard.h"
 #include "UI/ColorContrast.h"
 #include "UI/Format.h"
 #include "UI/HistoryCsv.h"
@@ -3136,11 +3137,11 @@ class HistoryChart
     {
         try
         {
-            ImGui::SetClipboardText(HistoryCsv::build(m_Csv.series, std::chrono::system_clock::now()).c_str());
+            UI::setClipboardUtf8(HistoryCsv::build(m_Csv.series, std::chrono::system_clock::now()));
         }
         catch (...)
         {
-            ImGui::SetClipboardText(""); // Not the previous clipboard, passed off as this chart's data
+            UI::clearClipboard(); // Not the previous clipboard, passed off as this chart's data
         }
     }
 
