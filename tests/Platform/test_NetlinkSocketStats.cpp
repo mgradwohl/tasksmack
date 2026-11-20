@@ -1009,6 +1009,68 @@ TEST(DumpInetSocketsTest, AnOrderlyShutdownBeforeDoneIsAFailedDump)
     EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
 }
 
+// #4387: a last message whose length isn't a multiple of 4 wrapped NLMSG_NEXT's unsigned remainder, so the walk read
+// the stale bytes an earlier datagram left in the buffer: here a forged NLMSG_DONE that made a partial dump Complete.
+TEST(DumpInetSocketsTest, AnUnpaddedLastMessageNeverReadsTheBytesAfterIt)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        // Datagram 1: one 40-byte message whose payload holds, from the datagram's byte 20, a well-formed NLMSG_DONE.
+        nlmsghdr forged{};
+        forged.nlmsg_len = NLMSG_LENGTH(sizeof(int));
+        forged.nlmsg_type = NLMSG_DONE;
+        forged.nlmsg_seq = request.sequence;
+        forged.nlmsg_pid = ScriptedNetlinkTransport::PORT_ID;
+        std::array<std::byte, 24> payload{};
+        std::memcpy(payload.data() + 4, &forged, sizeof(forged));
+        TestSupport::Datagram first;
+        TestSupport::appendMessage(first, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, payload);
+        // Datagram 2: 18 bytes, nlmsg_len 18, unpadded.
+        TestSupport::Datagram second;
+        const std::array<std::byte, 2> two{};
+        TestSupport::appendMessage(second, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, two);
+        second.resize(NLMSG_LENGTH(two.size()));
+        return ScriptedNetlinkTransport::Reply{first, second};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_NE(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Complete)
+        << "the forged NLMSG_DONE in the stale bytes is never read";
+}
+
+// #4387: an NLMSG_ERROR too short to hold its error code is malformed, not read past its end.
+TEST(DumpInetSocketsTest, AHeaderOnlyErrorIsAFailedReading)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        TestSupport::Datagram error;
+        TestSupport::appendMessage(error, NLMSG_ERROR, request.sequence, ScriptedNetlinkTransport::PORT_ID, {});
+        return ScriptedNetlinkTransport::Reply{error};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+}
+
+// #4387: a message that claims more bytes than the datagram holds is a failed reading.
+TEST(DumpInetSocketsTest, AMessageLongerThanItsDatagramIsAFailedReading)
+{
+    ScriptedNetlinkTransport transport;
+    transport.onRequest = [](const ScriptedNetlinkTransport::Request& request)
+    {
+        TestSupport::Datagram datagram;
+        const std::array<std::byte, 8> payload{};
+        TestSupport::appendMessage(datagram, SOCK_DIAG_BY_FAMILY, request.sequence, ScriptedNetlinkTransport::PORT_ID, payload);
+        nlmsghdr header{};
+        std::memcpy(&header, datagram.data(), sizeof(header));
+        header.nlmsg_len = 4096;
+        std::memcpy(datagram.data(), &header, sizeof(header));
+        return ScriptedNetlinkTransport::Reply{datagram};
+    };
+    std::vector<InetSockets::RawInetSocket> sockets;
+    EXPECT_EQ(dumpInetSockets(transport, 1, IPPROTO_TCP, AF_INET, sockets), InetDumpOutcome::Failed);
+}
+
 TEST(DumpInetSocketsTest, AMessageTooShortForASocketIsSkipped)
 {
     ScriptedNetlinkTransport transport;

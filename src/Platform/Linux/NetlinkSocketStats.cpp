@@ -120,7 +120,7 @@ bool parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
 
     // Calculate where attributes start (after the inet_diag_msg)
     const auto* attrStart = reinterpret_cast<const std::uint8_t*>(diagMsg + 1);
-    std::size_t attrLen = (msgLen - sizeof(inet_diag_msg));
+    const std::size_t attrLen = (msgLen - sizeof(inet_diag_msg));
 
     // Ensure we have room for attributes
     if (attrLen < sizeof(rtattr))
@@ -136,8 +136,19 @@ bool parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
     // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-align"
-    for (const auto* rta = reinterpret_cast<const rtattr*>(attrStart); RTA_OK(rta, attrLen); rta = RTA_NEXT(rta, attrLen))
+    // Stepped by hand, not with RTA_OK/RTA_NEXT (#4387): those subtract from an unsigned remainder, which a last
+    // attribute whose length isn't a multiple of 4 wraps to about 2^64, so the walk ran on past the message.
+    std::size_t attrOffset = 0;
+    while (attrLen - attrOffset >= sizeof(rtattr))
     {
+        const auto* rta = reinterpret_cast<const rtattr*>(attrStart + attrOffset);
+        const std::size_t rtaLen = rta->rta_len;
+        if (rtaLen < sizeof(rtattr) || rtaLen > attrLen - attrOffset)
+        {
+            break; // malformed: no attribute past it can be trusted
+        }
+        const std::size_t step = RTA_ALIGN(rtaLen);
+        attrOffset = step >= attrLen - attrOffset ? attrLen : attrOffset + step;
         if (rta->rta_type == INET_DIAG_INFO)
         {
             // This attribute contains a tcp_info structure. Netlink attributes are only
@@ -145,7 +156,7 @@ bool parseTcpInfo(const inet_diag_msg* diagMsg, std::size_t msgLen, SocketStats&
             // alignment, so reading through a tcp_info* into the reply buffer is a misaligned
             // access (UB). Copy the payload prefix the kernel sent (bounded by RTA_PAYLOAD and
             // sizeof(tcp_info)) into an aligned, zeroed local and read the fields from that.
-            const std::size_t infoLen = RTA_PAYLOAD(rta);
+            const std::size_t infoLen = rtaLen - RTA_LENGTH(0);
             tcp_info tcpInfo{};
             std::memcpy(&tcpInfo, RTA_DATA(rta), std::min(infoLen, sizeof(tcpInfo)));
 
@@ -267,9 +278,26 @@ class SockDiagTransport final : public INetlinkTransport
 
     [[nodiscard]] NetlinkIoResult receive(std::span<std::byte> buffer, bool nonBlocking) override
     {
-        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection,misc-include-cleaner) - bounded by SO_RCVTIMEO; ssize_t POSIX
-        const ssize_t len = ::recv(m_Socket, buffer.data(), buffer.size(), nonBlocking ? MSG_DONTWAIT : 0);
-        return {.bytes = len, .error = len < 0 ? errno : 0};
+        // Only the kernel's replies (#4387): another process may send this port a datagram (one with CAP_NET_ADMIN
+        // in this network namespace), and its sequence and port checks are guessable. Its datagrams are dropped.
+        for (;;)
+        {
+            sockaddr_nl from{};
+            socklen_t fromLen = sizeof(from);
+            // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection,misc-include-cleaner) - bounded by SO_RCVTIMEO; ssize_t POSIX
+            const ssize_t len = ::recvfrom(m_Socket,
+                                           buffer.data(),
+                                           buffer.size(),
+                                           nonBlocking ? MSG_DONTWAIT : 0,
+                                           // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the sockets API
+                                           reinterpret_cast<sockaddr*>(&from),
+                                           &fromLen);
+            if (len >= 0 && fromLen >= sizeof(from) && from.nl_pid != 0)
+            {
+                continue; // not from the kernel
+            }
+            return {.bytes = len, .error = len < 0 ? errno : 0};
+        }
     }
 
     [[nodiscard]] std::uint32_t portId() const noexcept override
@@ -381,9 +409,28 @@ template<std::invocable<const void*, std::size_t> OnSocket>
         // NOLINTBEGIN(cppcoreguidelines-pro-type-reinterpret-cast)
 #pragma clang diagnostic push
 #pragma clang diagnostic ignored "-Wcast-align"
-        auto remainingLen = static_cast<std::size_t>(received.bytes);
-        for (auto* nlh = reinterpret_cast<nlmsghdr*>(buffer.data()); NLMSG_OK(nlh, remainingLen); nlh = NLMSG_NEXT(nlh, remainingLen))
+        // Stepped by hand, not with NLMSG_OK/NLMSG_NEXT (#4387): those subtract from an unsigned remainder, which a
+        // last message whose length isn't a multiple of 4 wraps to about 2^64, so the walk read stale bytes left in
+        // the buffer by earlier datagrams, and followed their lengths out of it. A message that doesn't fit, or bytes
+        // left over that can't be one, are a failed reading.
+        const auto total = static_cast<std::size_t>(received.bytes);
+        std::size_t offset = 0;
+        while (offset < total)
         {
+            if (total - offset < sizeof(nlmsghdr))
+            {
+                spdlog::debug("inet_diag reply for family {} ends in {} stray bytes", family, total - offset);
+                return InetDumpOutcome::Failed;
+            }
+            auto* nlh = reinterpret_cast<nlmsghdr*>(buffer.data() + offset);
+            const std::size_t messageLen = nlh->nlmsg_len;
+            if (messageLen < sizeof(nlmsghdr) || messageLen > total - offset)
+            {
+                spdlog::debug("inet_diag reply for family {} holds a message of {} bytes in {}", family, messageLen, total - offset);
+                return InetDumpOutcome::Failed;
+            }
+            const std::size_t step = NLMSG_ALIGN(messageLen);
+            offset = step >= total - offset ? total : offset + step;
             // Not a reply to this request: a stale message from an earlier dump, or not addressed
             // to this socket.
             if (nlh->nlmsg_seq != sequence || (portId != 0 && nlh->nlmsg_pid != portId))
@@ -417,7 +464,14 @@ template<std::invocable<const void*, std::size_t> OnSocket>
 
             if (nlh->nlmsg_type == NLMSG_ERROR)
             {
-                const auto* err = static_cast<const nlmsgerr*>(NLMSG_DATA(nlh));
+                // The error code is the payload's first int (#4387): one too short to hold it is malformed.
+                if (messageLen - NLMSG_HDRLEN < sizeof(int))
+                {
+                    return InetDumpOutcome::Failed;
+                }
+                nlmsgerr errValue{};
+                std::memcpy(&errValue.error, NLMSG_DATA(nlh), sizeof(errValue.error));
+                const nlmsgerr* err = &errValue;
                 if (err->error == 0)
                 {
                     continue; // An ACK, not the end of the dump: keep reading until NLMSG_DONE
@@ -437,7 +491,7 @@ template<std::invocable<const void*, std::size_t> OnSocket>
 
             if (nlh->nlmsg_type == SOCK_DIAG_BY_FAMILY)
             {
-                onSocket(static_cast<const void*>(NLMSG_DATA(nlh)), static_cast<std::size_t>(NLMSG_PAYLOAD(nlh, 0)));
+                onSocket(static_cast<const void*>(NLMSG_DATA(nlh)), messageLen - NLMSG_HDRLEN);
             }
         }
 #pragma clang diagnostic pop
