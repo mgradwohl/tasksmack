@@ -101,6 +101,23 @@ TEST(Utf8SanitizeTest, TheResultIsAlwaysWellFormed)
     EXPECT_TRUE(isValidUtf8(sanitizedUtf8(every)));
 }
 
+// #4525: isValidUtf8() checks ASCII eight bytes at a time; a high byte anywhere, in a word or in the tail, is seen.
+TEST(Utf8SanitizeTest, AHighByteIsSeenAtEveryPositionOfTheWordScan)
+{
+    for (std::size_t length = 1; length <= 24; ++length)
+    {
+        for (std::size_t at = 0; at < length; ++at)
+        {
+            std::string text(length, 'a');
+            text[at] = '\xFF';
+            EXPECT_FALSE(isValidUtf8(text)) << "length " << length << ", 0xFF at " << at;
+            EXPECT_FALSE(isSingleLine(text)) << "length " << length << ", 0xFF at " << at;
+        }
+        EXPECT_TRUE(isValidUtf8(std::string(length, 'a')));
+    }
+    static_assert(isValidUtf8("constant-evaluated, byte by byte"));
+}
+
 // --- Through the single-line helpers the process snapshot uses ---
 
 TEST(Utf8SanitizeTest, ToSingleLineReplacesInvalidBytesAndControls)
