@@ -9,6 +9,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <array>
 #include <cstdint>
 #include <filesystem>
@@ -473,6 +474,44 @@ struct FakeTree
     std::map<std::string, SyscallTrace::PathOwnership> entries;
     std::map<std::string, std::string> links; // absolute path -> absolute target
 
+    /// canonical(): each component in turn, following a link wherever one is met, a folder's included (#4551 review).
+    [[nodiscard]] std::optional<std::string> resolve(const std::string& path, int depth) const
+    {
+        if (depth > 40)
+        {
+            return std::nullopt;
+        }
+        std::string at;
+        std::size_t start = 1;
+        while (start <= path.size())
+        {
+            std::size_t end = path.find('/', start);
+            if (end == std::string::npos)
+            {
+                end = path.size();
+            }
+            if (end > start)
+            {
+                at += "/" + path.substr(start, end - start);
+                if (const auto link = links.find(at); link != links.end())
+                {
+                    const std::optional<std::string> target = resolve(link->second, depth + 1);
+                    if (!target.has_value())
+                    {
+                        return std::nullopt;
+                    }
+                    at = *target == "/" ? std::string() : *target;
+                }
+                else if (!entries.contains(at))
+                {
+                    return std::nullopt;
+                }
+            }
+            start = end + 1;
+        }
+        return at.empty() ? std::optional<std::string>("/") : std::optional(at);
+    }
+
     [[nodiscard]] RootTools::RootFs fs() const
     {
         return {
@@ -486,20 +525,7 @@ struct FakeTree
                 const auto found = links.find(path);
                 return found == links.end() ? std::nullopt : std::optional(found->second);
             },
-            .canonical = [this](const std::string& path) -> std::optional<std::string>
-            {
-                std::string at = path;
-                for (int hops = 0; hops < 40; ++hops)
-                {
-                    const auto found = links.find(at);
-                    if (found == links.end())
-                    {
-                        return entries.contains(at) ? std::optional(at) : std::nullopt;
-                    }
-                    at = found->second;
-                }
-                return std::nullopt;
-            },
+            .canonical = [this](const std::string& path) { return resolve(path, 0); },
             .executable =
                 [this](const std::string& path)
             {
@@ -547,6 +573,85 @@ TEST(RootToolsTest, AFolderAnotherAccountCanWriteIsNotSearchedOrPassedOnAsRoot)
     EXPECT_EQ(RootTools::findRootTool("crontab", "/usr/local/bin:/usr/bin", fs), std::optional<std::string>("/usr/bin/crontab"));
 }
 
+// #4550: a trusted folder is given as the canonical path that was checked, once. A staff member's "bin -> /usr/bin"
+// in a staff-writable /usr/local passes on its target, so it must never reach the PATH as /usr/local/bin, which they
+// could re-point before a root child resolves a name through it; on merged-usr, /bin is /usr/bin.
+TEST(RootToolsTest, TrustedFoldersAreGivenAsTheirCanonicalPathOnce)
+{
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries.erase("/usr/local/bin");
+    tree.entries["/usr/local/bin"] = {.uid = 1000, .mode = 0120777};
+    tree.links["/usr/local/bin"] = "/usr/bin";
+    tree.entries["/bin"] = {.uid = 0, .mode = 0120777};
+    tree.links["/bin"] = "/usr/bin";
+    const RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/local/bin:/usr/bin:/bin", fs), "/usr/bin");
+    EXPECT_EQ(RootTools::trustedRootPath("/bin:/usr/local/bin", fs), "/usr/bin") << "the link's own name is never passed on";
+}
+
+// The #4551 review: a hop's path is checked link by link, folders included. A staff member who swaps the folder link
+// /usr/local/lib/nodejs for one to another root-only folder holding bin/node would choose which root-owned program
+// /usr/bin/node runs; the same hop through root's own links (merged-usr /bin) is fine.
+TEST(RootToolsTest, AFolderLinkOnAHopsWayMustSitInARootOnlyFolder)
+{
+    constexpr std::uint32_t DIR = 0040000;
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries["/usr/local/lib"] = {.uid = 0, .mode = DIR | 02775};
+    tree.entries["/usr/local/lib/nodejs"] = {.uid = 1000, .mode = 0120777};
+    tree.links["/usr/local/lib/nodejs"] = "/opt/other";
+    tree.entries["/opt"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other/bin"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other/bin/node"] = {.uid = 0, .mode = 0100755};
+    tree.entries["/usr/bin/node"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/node"] = "/usr/local/lib/nodejs/bin/node";
+    tree.entries["/usr/bin/direct"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/direct"] = "/opt/other/bin/node";
+    tree.entries["/bin"] = {.uid = 0, .mode = 0120777};
+    tree.links["/bin"] = "/usr";
+    tree.entries["/usr/bin/merged"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/merged"] = "/bin/bin/python3"; // through root's /bin link
+    const RootTools::RootFs fs = tree.fs();
+
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/node", fs).has_value())
+        << "/usr/local/lib/nodejs is a link in a staff-writable folder: it chooses where the hop leads";
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/direct", fs), std::optional<std::string>("/opt/other/bin/node"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/python3"));
+}
+
+// The #4551 review: with no trusted folder, a root child's PATH finds nothing. An empty PATH would search the
+// current directory.
+TEST(RootToolsTest, WithNoTrustedFolderTheRootPathFindsNothing)
+{
+    EXPECT_EQ(RootTools::rootPathVariable(""), "PATH=/proc/nonexistent");
+    EXPECT_EQ(RootTools::rootPathVariable("/usr/sbin:/usr/bin"), "PATH=/usr/sbin:/usr/bin");
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries["/usr/sbin"] = {.uid = 0, .mode = 0040755};
+    const RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::trustedRootPath(":/usr/sbin:/usr/bin:.:relative:", fs), "/usr/sbin:/usr/bin")
+        << "order kept; empty and relative elements dropped";
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/local/bin", fs), "") << "nothing trusted";
+}
+
+// On this machine: every trusted folder is absolute, already canonical, and listed once.
+TEST(RootToolsTest, TheRealTrustedFoldersAreCanonicalAndUnique)
+{
+    const std::string trusted = RootTools::trustedRootPath();
+    std::vector<std::string> seen;
+    for (std::size_t start = 0; start < trusted.size();)
+    {
+        std::size_t end = trusted.find(':', start);
+        end = end == std::string::npos ? trusted.size() : end;
+        const std::string folder = trusted.substr(start, end - start);
+        std::error_code ec;
+        EXPECT_TRUE(folder.starts_with('/')) << folder;
+        EXPECT_EQ(std::filesystem::canonical(folder, ec).string(), folder);
+        EXPECT_FALSE(std::ranges::contains(seen, folder)) << folder;
+        seen.push_back(folder);
+        start = end + 1;
+    }
+}
+
 TEST(RootToolsTest, ALinkInAFolderAnotherAccountCanWriteIsRefusedOnAnyHop)
 {
     const FakeTree tree = staffWritableUsrLocal();
@@ -582,7 +687,7 @@ TEST(RootToolsTest, AsRootAToolIsNeverFoundOnTheUsersPath)
         EXPECT_TRUE(asRoot->starts_with('/'));
     }
     EXPECT_TRUE(RootTools::find("sh", true, pathEnv).has_value()) << "a system tool is still found as root";
-    EXPECT_EQ(RootTools::rootEnvironment(), (std::vector<std::string>{"PATH=" + RootTools::trustedRootPath()}));
+    EXPECT_EQ(RootTools::rootEnvironment(), (std::vector<std::string>{RootTools::rootPathVariable(RootTools::trustedRootPath())}));
 
     std::filesystem::remove_all(dir, ec);
 }
@@ -598,9 +703,9 @@ TEST(RootToolsTest, AsRootAChildKeepsTheEnvironmentButNotThePath)
               (std::vector<std::string>{"DISPLAY=:0",
                                         "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus",
                                         "PATHLIKE=kept",
-                                        "PATH=" + RootTools::trustedRootPath()}));
+                                        RootTools::rootPathVariable(RootTools::trustedRootPath())}));
     std::array<const char*, 1> none{nullptr};
-    EXPECT_EQ(RootTools::withRootPath(none.data()), (std::vector<std::string>{"PATH=" + RootTools::trustedRootPath()}))
+    EXPECT_EQ(RootTools::withRootPath(none.data()), (std::vector<std::string>{RootTools::rootPathVariable(RootTools::trustedRootPath())}))
         << "a PATH is set even when there was none";
 }
 
