@@ -384,6 +384,16 @@ TEST(UserGroupsTest, ABareNameJoinsItsAccountWhenTheAccountsProcessesAreFiltered
     }
 }
 
+// #4302/#4324: an account's key folds by Unicode, so one Windows account spelled in two cases is one group.
+TEST(SharedUserNamesTest, AnAccountKeyFoldsNonAsciiLettersToo)
+{
+    EXPECT_EQ(processAccountKey(processOf(1, "PC", "\xC3\x89lodie", 1.0)),
+              processAccountKey(processOf(2, "pc", "\xC3\xA9LODIE", 1.0))); // Élodie, éLODIE
+    EXPECT_EQ(processAccountKey(processOf(3, "PC", "alice", 1.0)), "pc\\alice");
+    EXPECT_NE(processAccountKey(processOf(4, "PC", "alice", 1.0)), processAccountKey(processOf(5, "CORP", "alice", 1.0)));
+    EXPECT_EQ(processAccountKey(process(6, "Root", 1.0, 100)), "Root") << "no domain: the name as it is";
+}
+
 // #3328: the names the User column writes with their domain are the ones two accounts with processes share,
 // counted ignoring ASCII case as Windows compares account names; a process with no domain counts for none.
 TEST(SharedUserNamesTest, ANameIsSharedOnlyWhenTwoAccountsHaveProcesses)

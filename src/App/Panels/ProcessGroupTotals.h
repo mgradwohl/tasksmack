@@ -7,8 +7,8 @@
 
 #include "App/ProcessColumnConfig.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -161,7 +161,7 @@ inline void sortGroups(std::vector<Group>& groups, ProcessColumn sortColumn, boo
                                      return ascending ? *ta < *tb : *ta > *tb;
                                  }
                                  // By name, A to Z, between equal totals; a column without totals sorts by name in its direction.
-                                 const auto byName = Platform::compareIgnoreCase(a.label, b.label);
+                                 const auto byName = Platform::compareFolded(a.label, b.label);
                                  return (ascending || ta.has_value()) ? byName < 0 : byName > 0;
                              });
 }

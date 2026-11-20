@@ -19,7 +19,6 @@
 #include "Domain/RateTracker.h"
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
 #include "Platform/ThreadName.h"
@@ -421,7 +420,7 @@ class ProcessThreadsView
         switch (column)
         {
         case Detail::ThreadsColumn::Name:
-            return Platform::compareIgnoreCase(a.thread.name, b.thread.name);
+            return Platform::compareFolded(a.thread.name, b.thread.name);
         case Detail::ThreadsColumn::State:
             return a.state <=> b.state;
         case Detail::ThreadsColumn::Cpu:
