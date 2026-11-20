@@ -21,8 +21,12 @@ old uninstaller runs, and reads that uninstaller's exit code. The check itself i
 folder in `busy` makes it exit with TASKSMACK_IN_USE_EXIT_CODE, as a silent run does.
 """
 
+import os
 import re
+import shutil
+import subprocess
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -34,6 +38,7 @@ import test_nsis_run_uninstall as run  # noqa: E402
 REPO = Path(__file__).resolve().parents[2]
 CONFIG = REPO / "cmake" / "CPackProjectConfig.cmake.in"
 PACKAGING = REPO / "cmake" / "Packaging.cmake"
+TRUST_SCRIPT = REPO / "cmake" / "nsis" / "TaskSmackUninstallerTrust.ps1"
 UNINSTALL_KEY = r"Software\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack"
 INSTDIR = r"C:\Program Files\TaskSmack"
 UNINSTALLER = INSTDIR + r"\Uninstall.exe"
@@ -65,12 +70,14 @@ class Installer:
         can_start: bool = True,
         busy: set[str] | None = None,
         exit_code: int = 0,
+        untrusted: set[str] | None = None,
     ) -> None:
         self.uninstall_string = uninstall_string
         self.files = {name.lower() for name in files}
         self.can_start = can_start
         self.busy = {name.lower() for name in busy or set()}
         self.exit_code = exit_code
+        self.untrusted = {name.lower() for name in untrusted or set()}
         self.vars = {"$INSTDIR": instdir, **REGISTERS, "${TASKSMACK_IN_USE_EXIT_CODE}": str(IN_USE_EXIT_CODE)}
         self.stack: list[str] = []
         self.error = False
@@ -81,6 +88,11 @@ class Installer:
         self.checked: list[str] = []
         self.error_level: int | None = None
         self.quit = False
+        self.trust_checks: list[tuple[str, str]] = []  # (mode, path) TaskSmackTrustCheck was asked
+        self.removed_installs: list[str] = []  # the folders TaskSmackRemoveOldInstall cleared
+        self.details: list[str] = []
+        self.deleted: list[str] = []
+        self.removed_dirs: list[str] = []
 
     def expand(self, word: str) -> str:
         for name in sorted(self.vars, key=len, reverse=True):
@@ -145,13 +157,29 @@ class Installer:
             elif op == "Goto":
                 nxt = jump(args[0])
             elif op == "DetailPrint":
-                pass
+                self.details.append(self.expand(args[0]))
+            elif op == "Delete":
+                path = self.expand(args[0])
+                self.files.discard(path.lower())
+                self.deleted.append(path)
+            elif op == "RMDir":
+                path = self.expand(args[0])
+                if not any(name.startswith(path.lower() + "\\") for name in self.files):  # NSIS removes an empty folder only
+                    self.removed_dirs.append(path)
             elif op == "ExecWait":
                 self.executed.append(self.expand(args[0]))
                 if not self.can_start:
                     self.error = True
                 elif len(args) > 1:
                     self.vars[args[1]] = str(self.exit_code)
+            elif op == "Call" and args[0] == "TaskSmackTrustCheck":
+                mode, path = self.stack.pop(), self.stack.pop()  # the path is pushed first, then the mode
+                self.trust_checks.append((mode, path))
+                self.stack.append("0" if path.lower() in self.untrusted else "1")
+            elif op == "Call" and args[0] == "TaskSmackRemoveOldInstall":
+                folder = self.stack.pop()
+                self.removed_installs.append(folder)
+                self.files = {name for name in self.files if not name.startswith(folder.lower() + "\\")}
             elif op == "Call":
                 if args[0] != "TaskSmackInUseCheck":
                     raise AssertionError(f"the step calls {args[0]}, not TaskSmackInUseCheck")
@@ -288,8 +316,11 @@ def install(
     can_start: bool = True,
     busy: set[str] | None = None,
     exit_code: int = 0,
+    untrusted: set[str] | None = None,
 ) -> Installer:
-    installer = Installer(uninstall_string, instdir, {UNINSTALLER} if files is None else files, can_start, busy, exit_code)
+    installer = Installer(
+        uninstall_string, instdir, {UNINSTALLER} if files is None else files, can_start, busy, exit_code, untrusted
+    )
     installer.run(step_lines())
     return installer
 
@@ -332,6 +363,82 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIsNone(machine.debugger())
         self.assertIsNone(machine.run_entry())
         self.assertEqual(machine.mark, {})
+
+        # #4445: its _?= run can't delete itself, so the installer deletes the old Uninstall.exe and the empty folder.
+        self.assertEqual(installer.deleted, [UNINSTALLER])
+        self.assertEqual(installer.removed_dirs, [INSTDIR])
+
+    def test_a_move_leaves_the_old_folder_when_the_old_uninstaller_fails(self) -> None:
+        installer = install(f'"{UNINSTALLER}"', instdir=r"D:\Apps\TaskSmack", exit_code=2)
+        self.assertTrue(installer.aborted)
+        self.assertEqual((installer.deleted, installer.removed_dirs), ([], []))
+
+    def test_a_move_keeps_a_folder_that_still_holds_files(self) -> None:
+        files = {UNINSTALLER, INSTDIR + r"\notes.txt"}
+        installer = install(f'"{UNINSTALLER}"', instdir=r"D:\Apps\TaskSmack", files=files)
+        self.assertEqual(installer.deleted, [UNINSTALLER])
+        self.assertEqual(installer.removed_dirs, [], "RMDir without /r leaves a folder that isn't empty")
+
+    def test_an_upgrade_in_place_deletes_nothing(self) -> None:
+        # The new files are about to go there: the old Uninstall.exe is the new one's to overwrite.
+        installer = install(f'"{UNINSTALLER}"')
+        self.assertEqual((installer.deleted, installer.removed_dirs), ([], []))
+
+    def test_an_upgrade_stays_in_a_custom_folder(self) -> None:
+        # #4445: with no /D=, InstallDirRegKey makes $INSTDIR the folder the last install recorded. The step then sees
+        # the same folder, so the old uninstaller keeps taskmgr.exe's Debugger and the Run value, and nothing is moved.
+        custom = r"D:\Apps\TaskSmack"
+        uninstaller = custom + r"\Uninstall.exe"
+        installer = install(f'"{uninstaller}"', instdir=custom, files={uninstaller})
+        self.assertEqual(installer.executed, [f'"{uninstaller}" /S /TASKSMACK_UPGRADE _?={custom}'])
+        self.assertEqual(installer.out_paths, [custom])
+        self.assertEqual((installer.deleted, installer.removed_dirs), ([], []))
+        machine = Machine(custom)
+        machine.uninstall(installer.executed[0])
+        self.assertEqual(machine.debugger(), ("REG_SZ", f'"{custom}\\TaskSmack.exe"'))
+        self.assertEqual(machine.run_entry(), machine.run_value)
+        self.assertEqual(machine.mark, {})
+
+    def test_the_default_install_folder_comes_from_the_registry(self) -> None:
+        text = CONFIG.read_text(encoding="utf-8")
+        self.assertIn('InstallDirRegKey HKLM "Software\\TaskSmack Contributors\\TaskSmack" ""', text)
+        # The key the template's WriteRegStr SHCTX writes, which InstallDirRegKey reads back.
+        self.assertIn('set(CPACK_PACKAGE_VENDOR "TaskSmack Contributors")', PACKAGING.read_text(encoding="utf-8"))
+
+    def test_an_unsafe_old_uninstaller_is_never_run(self) -> None:
+        # #4444: an unsigned Uninstall.exe in a folder users can write to. Whatever folder the new copy goes to, and
+        # however the upgrade got there, it isn't started: the install removes the old one by its own list instead.
+        unsafe = r"D:\Shared\TaskSmack"
+        uninstaller = unsafe + r"\Uninstall.exe"
+        for instdir in (unsafe, INSTDIR):
+            with self.subTest(instdir=instdir):
+                installer = install(f'"{uninstaller}"', instdir=instdir, files={uninstaller}, untrusted={uninstaller})
+                self.assertIn(("Uninstaller", uninstaller), installer.trust_checks)
+                self.assertEqual(installer.executed, [], "never run")
+                self.assertEqual(installer.removed_installs, [unsafe])
+                self.assertFalse(installer.aborted)
+                self.assertFalse(installer.quit)
+                self.assertEqual(installer.out_paths, [instdir], "the install goes on")
+                self.assertTrue(any("isn't run" in line for line in installer.details), "the log says why")
+                self.assert_registers_back(installer)
+
+    def test_every_upgrade_asks_before_it_runs_the_old_uninstaller(self) -> None:
+        for instdir in (INSTDIR, r"D:\Apps\TaskSmack"):
+            with self.subTest(instdir=instdir):
+                installer = install(f'"{UNINSTALLER}"', instdir=instdir)
+                self.assertEqual(installer.trust_checks[-1], ("Uninstaller", UNINSTALLER))
+                self.assertEqual(len(installer.executed), 1)
+                self.assertEqual(installer.removed_installs, [])
+        installer = install(None)
+        self.assertEqual(installer.trust_checks, [("Folder", INSTDIR)], "a first install only checks its folder")
+
+    def test_an_install_folder_that_isnt_admin_only_is_logged(self) -> None:
+        custom = r"D:\Apps\TaskSmack"
+        warned = install(f'"{UNINSTALLER}"', instdir=custom, untrusted={custom})
+        self.assertTrue(any(line.startswith("Warning:") and custom in line for line in warned.details))
+        self.assertEqual(len(warned.executed), 1, "a warning only: the trusted old uninstaller still runs")
+        quiet = install(f'"{UNINSTALLER}"')
+        self.assertFalse(any(line.startswith("Warning:") for line in quiet.details))
 
     def test_a_users_uninstall_still_removes_both(self) -> None:
         # What an uninstall from Settings > Apps runs, after NSIS copied it to %TEMP%.
@@ -419,6 +526,13 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertTrue(installer.aborted)
         self.assertEqual(installer.out_paths, [])
 
+    def test_it_is_embedded_and_run_without_a_profile_or_window(self) -> None:
+        text = CONFIG.read_text(encoding="utf-8")
+        self.assertIn('File "/oname=$PLUGINSDIR\\TaskSmackUninstallerTrust.ps1" "${TASKSMACK_TRUST_SCRIPT}"', text)
+        self.assertIn("-NoProfile -NonInteractive -ExecutionPolicy Bypass -File", text)
+        self.assertIn("cmake/nsis/TaskSmackUninstallerTrust.ps1", text)
+        self.assertTrue(TRUST_SCRIPT.is_file())
+
     def test_cpacks_own_uninstall_before_install_is_off(self) -> None:
         # CPack's .onInit call can't pass the flag: with it on, the old uninstaller would run first, without it.
         text = PACKAGING.read_text(encoding="utf-8")
@@ -431,6 +545,85 @@ class UpgradeStepTest(unittest.TestCase):
         step = text.index("set(CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS")
         block = text.rindex('if(CPACK_GENERATOR STREQUAL "NSIS")', 0, step)
         self.assertNotIn("endif()", text[block:step])
+
+
+def windows_powershell() -> str | None:
+    """Windows PowerShell 5.1, which the installer runs the script in (nsExec, $SYSDIR); only on Windows."""
+    if sys.platform != "win32":
+        return None
+    path = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32" / "WindowsPowerShell" / "v1.0" / "powershell.exe"
+    return str(path) if path.is_file() else None
+
+
+@unittest.skipUnless(windows_powershell(), "the trust script runs in Windows PowerShell")
+class TrustScriptTest(unittest.TestCase):
+    """cmake/nsis/TaskSmackUninstallerTrust.ps1 (#4444), run for real on temporary folders. It only reads ACLs
+    (Remove mode deletes what it is given), needs no elevation and installs nothing."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="tasksmack-trust-"))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def script(self, mode: str, path: Path | str) -> subprocess.CompletedProcess[str]:
+        command = [windows_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+        command += [str(TRUST_SCRIPT), "-Mode", mode, "-Path", str(path), "-Signer", "Matt Gradwohl"]
+        return subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+
+    def users_writable(self, name: str) -> Path:
+        """A folder with a fake, unsigned Uninstall.exe that any user (BUILTIN\\Users) may change."""
+        folder = self.root / name
+        folder.mkdir()
+        (folder / "Uninstall.exe").write_bytes(b"MZ not a real program")
+        grant = subprocess.run(["icacls", str(folder), "/grant", "*S-1-5-32-545:(OI)(CI)M"], capture_output=True, text=True, check=False)
+        self.assertEqual(grant.returncode, 0, grant.stdout + grant.stderr)
+        return folder
+
+    def test_an_unsigned_uninstaller_in_a_users_writable_folder_isnt_trusted(self) -> None:
+        folder = self.users_writable("TaskSmack")
+        result = self.script("Uninstaller", folder / "Uninstall.exe")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("is not trusted", result.stdout)
+        warned = self.script("Folder", folder)
+        self.assertEqual(warned.returncode, 1, warned.stdout + warned.stderr)
+
+    def test_a_missing_uninstaller_isnt_trusted(self) -> None:
+        result = self.script("Uninstaller", self.root / "nothing" / "Uninstall.exe")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+
+    def test_a_file_only_administrators_can_change_is_trusted(self) -> None:
+        # %SystemRoot%\System32 is owned by TrustedInstaller, and only SYSTEM, Administrators and TrustedInstaller may change it.
+        system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        result = self.script("Uninstaller", system / "cmd.exe")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(self.script("Folder", system).returncode, 0)
+
+    def test_the_folder_check_looks_above_a_folder_that_isnt_there_yet(self) -> None:
+        folder = self.users_writable("Fresh")
+        self.assertEqual(self.script("Folder", folder / "not" / "made" / "yet").returncode, 1)
+
+    def test_remove_deletes_the_install_by_the_list_and_never_follows_a_junction(self) -> None:
+        folder = self.root / "TaskSmack"
+        outside = self.root / "outside"
+        (folder / "share" / "tasksmack" / "assets").mkdir(parents=True)
+        outside.mkdir()
+        (outside / "keep.txt").write_text("not TaskSmack's", encoding="utf-8")
+        for name in ("TaskSmack.exe", "TaskSmackHelper.exe", "LICENSE.txt", "Uninstall.exe", "notes.txt"):
+            (folder / name).write_text("x", encoding="utf-8")
+        (folder / "share" / "tasksmack" / "assets" / "font.ttf").write_text("x", encoding="utf-8")
+        link = subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / "third_party_licenses"), str(outside)], capture_output=True, text=True, check=False)
+        self.assertEqual(link.returncode, 0, link.stdout + link.stderr)
+        result = self.script("Remove", folder)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["notes.txt"], "only its own files go, the junction too")
+        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "not TaskSmack's", "the junction's target is untouched")
+
+    def test_remove_takes_an_emptied_folder_too(self) -> None:
+        folder = self.root / "TaskSmack"
+        folder.mkdir()
+        (folder / "Uninstall.exe").write_text("x", encoding="utf-8")
+        self.assertEqual(self.script("Remove", folder).returncode, 0)
+        self.assertFalse(folder.exists())
+        self.assertEqual(self.script("Remove", folder).returncode, 0, "a folder that is gone is fine")
 
 
 if __name__ == "__main__":
