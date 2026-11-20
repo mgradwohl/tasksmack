@@ -14,10 +14,13 @@
 #include <filesystem>
 #include <fstream>
 #include <locale>
+#include <optional>
 #include <sstream>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
+#include <vector>
 
 namespace Platform
 {
@@ -27,22 +30,53 @@ LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath) : m_Diskstat
     spdlog::debug("LinuxDiskProbe: initialized");
 }
 
-LinuxDiskProbe::LinuxDiskProbe() : LinuxDiskProbe("/proc/diskstats")
+LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath, std::filesystem::path sysBlockPath)
+    : m_DiskstatsPath(std::move(diskstatsPath)), m_SysBlockPath(std::move(sysBlockPath))
+{
+    spdlog::debug("LinuxDiskProbe: initialized");
+}
+
+LinuxDiskProbe::LinuxDiskProbe() : LinuxDiskProbe("/proc/diskstats", "/sys/block")
 {}
+
+bool LinuxDiskProbe::isAlwaysExcluded(const std::string& deviceName)
+{
+    // Loop devices and RAM disks carry no disk I/O of their own; zram is compressed swap in memory; a device-mapper
+    // volume (dm-N: LVM, LUKS) is stacked on a disk that is already counted.
+    return deviceName.starts_with("loop") || deviceName.starts_with("ram") || deviceName.starts_with("zram") ||
+           deviceName.starts_with("dm-");
+}
+
+std::optional<std::vector<LinuxDiskProbe::WholeDevice>> LinuxDiskProbe::listWholeDevices(const std::filesystem::path& sysBlockPath)
+{
+    std::error_code error;
+    std::filesystem::directory_iterator entries(sysBlockPath, error);
+    if (error)
+    {
+        return std::nullopt;
+    }
+    std::vector<WholeDevice> devices;
+    for (; entries != std::filesystem::directory_iterator(); entries.increment(error))
+    {
+        if (error)
+        {
+            return std::nullopt;
+        }
+        WholeDevice device{.name = entries->path().filename().string()};
+        std::error_code slavesError;
+        const std::filesystem::directory_iterator slaves(entries->path() / "slaves", slavesError);
+        device.stacked = device.name.starts_with("zd") || (!slavesError && slaves != std::filesystem::directory_iterator());
+        devices.push_back(std::move(device));
+    }
+    return devices;
+}
 
 bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
 {
     // Filter out loop devices, ram disks, and partitions for a cleaner view
     // Users can still see partitions by checking detailed device info if needed
 
-    // Skip loop devices (loop0, loop1, etc.)
-    if (deviceName.starts_with("loop"))
-    {
-        return false;
-    }
-
-    // Skip ram disks
-    if (deviceName.starts_with("ram"))
+    if (isAlwaysExcluded(deviceName))
     {
         return false;
     }
@@ -92,6 +126,10 @@ SystemDiskCounters LinuxDiskProbe::read()
         return result;
     }
 
+    // /sys/block lists exactly the whole block devices, so md0, nbd0, rbd0, pmem0 or bcache0 (whole devices whose
+    // names end in a digit) aren't taken for partitions (#4391). The name rule is the fallback without it.
+    const std::optional<std::vector<WholeDevice>> wholeDevices = m_SysBlockPath.empty() ? std::nullopt : listWholeDevices(m_SysBlockPath);
+
     std::string line;
     while (std::getline(diskstats, line))
     {
@@ -129,8 +167,17 @@ SystemDiskCounters LinuxDiskProbe::read()
             continue;
         }
 
-        // Filter devices
-        if (!shouldIncludeDevice(deviceName))
+        bool stacked = false;
+        if (wholeDevices.has_value())
+        {
+            const auto whole = std::ranges::find(*wholeDevices, deviceName, &WholeDevice::name);
+            if (whole == wholeDevices->end() || isAlwaysExcluded(deviceName))
+            {
+                continue; // a partition, or a device left out either way
+            }
+            stacked = whole->stacked;
+        }
+        else if (!shouldIncludeDevice(deviceName))
         {
             continue;
         }
@@ -146,8 +193,8 @@ SystemDiskCounters LinuxDiskProbe::read()
         disk.ioInProgressMs = ioInProgress;
         disk.ioTimeMs = timeIo;
         disk.weightedIoTimeMs = weightedTimeIo;
-        disk.sectorSize = 512;        // Linux typically reports in 512-byte sectors
-        disk.isPhysicalDevice = true; // Filtered devices are considered "physical" for our purposes
+        disk.sectorSize = 512;            // Linux typically reports in 512-byte sectors
+        disk.isPhysicalDevice = !stacked; // a stacked device is shown but kept out of the totals (#4391)
 
         result.disks.push_back(disk);
     }
