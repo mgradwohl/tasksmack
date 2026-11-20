@@ -48,6 +48,7 @@
 #ifndef _WIN32
 #include <csignal>
 
+#include <pwd.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -3155,6 +3156,71 @@ TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveThatFailsAtAnyStepLeavesTheCo
             EXPECT_FALSE(entry.path().filename().string().starts_with(".tasksmack-config.")) << "step " << static_cast<int>(step);
         }
     }
+}
+
+/// As root only (CI's root pass, tools/common.sh root_test_filter; #4549): the run-as-root-for-a-user save hands what it
+/// makes to the folder's owner for real, which the unprivileged tests above can't see.
+class UserConfigRootTest : public UserConfigSaveLoadFixture
+{
+  protected:
+    void SetUp() override
+    {
+        UserConfigSaveLoadFixture::SetUp(); // first, so TearDown restores the path it saved even after a skip
+        if (::geteuid() != 0)
+        {
+            GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+        }
+    }
+};
+
+TEST_F(UserConfigRootTest, ANewConfigIsTheFolderOwnersAndAnotherAccountsIsRefused)
+{
+    // Another account to own the folder: the one sudo names (CI's runner user), else nobody.
+    uid_t account = 65534;
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - a test, one thread
+    if (const char* sudoUid = std::getenv("SUDO_UID"); sudoUid != nullptr && std::atoi(sudoUid) > 0)
+    {
+        account = static_cast<uid_t>(std::atoi(sudoUid));
+    }
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - a test, one thread
+    const passwd* entry = ::getpwuid(account);
+    if (entry == nullptr)
+    {
+        GTEST_SKIP() << "no passwd entry for uid " << account;
+    }
+    const gid_t group = entry->pw_gid;
+    const RestoreOverrideOnExit restore;
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+
+    const std::filesystem::path fresh = m_TempDir / "fresh";
+    std::filesystem::create_directories(fresh);
+    ASSERT_EQ(::chown(fresh.c_str(), account, group), 0);
+    config.resetConfigPathForTesting(fresh / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    struct stat info = {};
+    ASSERT_EQ(::stat((fresh / "config.toml").c_str(), &info), 0) << "the new config is written";
+    EXPECT_EQ(info.st_uid, account) << "the folder owner's, not root's (#2121, #4542)";
+    EXPECT_EQ(info.st_gid, group);
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+    for (const auto& file : std::filesystem::directory_iterator(fresh))
+    {
+        EXPECT_FALSE(file.path().filename().string().starts_with(".tasksmack-config.")) << "no staging file left";
+    }
+
+    // An existing config of another account's (root's here) in their folder is never read and rewritten as root.
+    const std::filesystem::path foreign = m_TempDir / "foreign";
+    std::filesystem::create_directories(foreign);
+    ASSERT_EQ(::chown(foreign.c_str(), account, group), 0);
+    const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+    writeFile(foreign / "config.toml", original); // root's: made by this root process
+    config.resetConfigPathForTesting(foreign / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_FALSE(config.fileProblem().empty()) << "the user is told the save was refused";
+    EXPECT_EQ(readFile(foreign / "config.toml"), original) << "left as it was";
+    config.resetConfigPathForTesting(m_ConfigPath);
 }
 #endif
 
