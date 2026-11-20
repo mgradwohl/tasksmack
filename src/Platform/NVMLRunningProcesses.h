@@ -38,6 +38,12 @@ inline constexpr std::size_t PROCESS_INFO_V1_SIZE = 16;
 inline constexpr std::size_t PROCESS_INFO_V2_SIZE = 24;
 inline constexpr std::size_t PROCESS_INFO_MEMORY_OFFSET = 8;
 
+/// The largest entry any driver has written (#4421): some R535 drivers' _v3 entry points wrote an
+/// nvmlProcessInfo_t with an extra usedGpuCcProtectedMemory field, 32 bytes, and a later driver
+/// reverted it. NVML is told an entry count, never a byte size, so every buffer is sized for this
+/// stride whatever the symbol: a driver that writes it can't run past the buffer.
+inline constexpr std::size_t PROCESS_INFO_LARGEST_SIZE = 32;
+
 /// Upper bound on the entries we allocate for, whatever the driver reports: a corrupt count must
 /// not drive the sampler into repeated multi-gigabyte allocations. Used by both probes.
 inline constexpr unsigned int MAX_PLAUSIBLE_PROCESS_COUNT = 65536;
@@ -50,10 +56,11 @@ struct RunningProcessesSymbol
     std::size_t entrySize = 0;
 };
 
-/// Picks the newest running-process entry point for `baseName` (for example
-/// "nvmlDeviceGetComputeRunningProcesses"): _v3, then _v2, both writing 24-byte entries, then
-/// the legacy unversioned symbol, which writes 16-byte entries (#1092). `resolve(name)` returns
-/// the symbol's address, or nullptr if it isn't exported.
+/// Picks the running-process entry point for `baseName` (for example
+/// "nvmlDeviceGetComputeRunningProcesses"): _v2, whose 24-byte layout never changed, then _v3, the
+/// same 24 bytes except on the R535 drivers that wrote 32 (#4421; every driver with _v3 also has
+/// _v2), then the legacy unversioned symbol, which writes 16-byte entries (#1092). `resolve(name)`
+/// returns the symbol's address, or nullptr if it isn't exported.
 template<typename Resolve>
 [[nodiscard]] RunningProcessesSymbol chooseRunningProcessesSymbol(std::string_view baseName, const Resolve& resolve)
 {
@@ -64,8 +71,8 @@ template<typename Resolve>
     };
     constexpr std::array<Candidate, 3> CANDIDATES{
         {
-            {.suffix = "_v3", .entrySize = PROCESS_INFO_V2_SIZE},
             {.suffix = "_v2", .entrySize = PROCESS_INFO_V2_SIZE},
+            {.suffix = "_v3", .entrySize = PROCESS_INFO_V2_SIZE},
             {.suffix = "", .entrySize = PROCESS_INFO_V1_SIZE},
         },
     };
@@ -101,6 +108,7 @@ struct RunningProcess
 /// process is running, and with NVML_SUCCESS only when none are. The list can also grow between
 /// the two calls, so the sized call is retried a few times with headroom. Counts are capped at
 /// MAX_PLAUSIBLE_PROCESS_COUNT; a list the driver says is longer than that is treated as unreadable.
+/// The buffer holds PROCESS_INFO_LARGEST_SIZE bytes per entry, whatever `entrySize` is (#4421).
 template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningProcesses(const Query& query, std::size_t entrySize)
 {
     constexpr int MAX_ATTEMPTS = 3;
@@ -118,6 +126,7 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
     }
 
     std::vector<std::byte> buffer;
+    unsigned int capacity = 0; // the entries the buffer was sized for
     result = NVML::NVML_ERROR_INSUFFICIENT_SIZE;
     for (int attempt = 0; attempt < MAX_ATTEMPTS && result == NVML::NVML_ERROR_INSUFFICIENT_SIZE; ++attempt)
     {
@@ -126,7 +135,8 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
             return {};
         }
         count = std::min(count + HEADROOM, MAX_PLAUSIBLE_PROCESS_COUNT);
-        buffer.assign(static_cast<std::size_t>(count) * entrySize, std::byte{0});
+        capacity = count;
+        buffer.assign(static_cast<std::size_t>(count) * std::max(entrySize, PROCESS_INFO_LARGEST_SIZE), std::byte{0});
         result = query(&count, buffer.data());
     }
     if (result != NVML::NVML_SUCCESS)
@@ -134,7 +144,7 @@ template<typename Query> [[nodiscard]] std::vector<RunningProcess> queryRunningP
         return {};
     }
 
-    const std::size_t entries = std::min(static_cast<std::size_t>(count), buffer.size() / entrySize);
+    const std::size_t entries = std::min(count, capacity);
     std::vector<RunningProcess> processes;
     processes.reserve(entries);
     for (std::size_t i = 0; i < entries; ++i)

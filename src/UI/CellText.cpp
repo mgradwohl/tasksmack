@@ -75,11 +75,26 @@ CellTextResult cellText(std::string_view text, float textWidthPx, const CellText
                     options,
                     [&](ImDrawList* drawList, const ImRect& bounds)
                     {
-                        // RenderTextEllipsis() cuts the text where the ellipsis fits, a whole character at
-                        // a time, so a multi-byte UTF-8 character is never split.
-                        const ImVec2 measuredSize(textWidthPx, bounds.GetHeight());
+                        // RenderTextEllipsis() cuts a code point at a time, which is safe unless the text has a
+                        // combining mark, joiner, variation selector or flag: then it can strand one, so cut at
+                        // a grapheme boundary here instead (#4313).
+                        if (!hasGraphemeJoiners(text))
+                        {
+                            const ImVec2 measuredSize(textWidthPx, bounds.GetHeight());
+                            ImGui::RenderTextEllipsis(
+                                drawList, bounds.Min, bounds.Max, bounds.Max.x, text.data(), text.data() + text.size(), &measuredSize);
+                            return;
+                        }
+                        std::array<char, 5> ellipsis{};
+                        const int ellipsisBytes = ImTextCharToUtf8(ellipsis.data(), ImGui::GetFont()->EllipsisChar);
+                        const std::string shown = prefixEllipsize(
+                            text,
+                            bounds.GetWidth(),
+                            [](std::string_view s) { return ImGui::CalcTextSize(s.data(), s.data() + s.size()).x; },
+                            std::string_view(ellipsis.data(), static_cast<std::size_t>(ellipsisBytes)));
+                        // Fitted to the cell, so this draws it whole; it still clips at the cell's edge.
                         ImGui::RenderTextEllipsis(
-                            drawList, bounds.Min, bounds.Max, bounds.Max.x, text.data(), text.data() + text.size(), &measuredSize);
+                            drawList, bounds.Min, bounds.Max, bounds.Max.x, shown.data(), shown.data() + shown.size(), nullptr);
                     });
 }
 
