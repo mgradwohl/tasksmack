@@ -431,11 +431,14 @@ def _check_release_summary(page: Page, current: dict) -> None:
         raise AssertionError(f"the open count's lanes read {shown}, not {expected}")
     if sum(count for _, count in shown) != current["counts"]["open"]:
         raise AssertionError(f"the lanes' figures {shown} don't add up to the {current['counts']['open']} open issues")
-    # Each figure links to the search that lists the same issues on GitHub.
-    href = unquote(page.locator(".lanes a").first.get_attribute("href") or "")
-    search = f"/issues?q=is:issue is:open milestone:{current['milestone']['title']} label:agent:Windows -label:agent:WSL"
-    if search not in href:
-        raise AssertionError(f"the Windows lane's figure links to {href!r}")
+    # Each figure links to the search that lists the same issues on GitHub: a lane's own leaves the other lanes'
+    # labels out, and "Both lanes" asks for any two, as the generator's lane() counts them.
+    links = [unquote(href) for href in page.evaluate("() => [...document.querySelectorAll('.lanes a')].map(a => a.getAttribute('href'))")]
+    search = f"/issues?q=is:issue is:open milestone:{current['milestone']['title']} "
+    if len(links) < 3 or search + "label:agent:Windows -label:agent:WSL -label:agent:Dash" not in links[0]:
+        raise AssertionError(f"the Windows lane's figure links to {links[:1]}")
+    if search + "((label:agent:Windows AND label:agent:WSL) OR " not in links[2]:
+        raise AssertionError(f"the Both lanes figure links to {links[2]!r}")
     # GitHub's milestone page counts the tracker and pull requests too: the page says why its own count is lower.
     note = page.locator(".hero .footnote").text_content() or ""
     if f"#{current['tracker']['number']}" not in note or "pull requests" not in note:
@@ -467,6 +470,27 @@ def _check_release_lists(page: Page, current: dict) -> None:
         raise AssertionError(f"the lists don't hold all {total} open issues: by kind {kinds}, by lane {lanes}")
     if not lanes[0][2] or page.locator(".switch button[data-by='lane']").get_attribute("aria-pressed") != "true":
         raise AssertionError("after the switch, the first lane's list isn't open or the Lane button isn't pressed")
+    # A lane's list runs in docs/dev/labels.md's queue order: the steps in turn (security and bugs are one), then
+    # the highest priority, then the most severe, then the oldest.
+    steps = ["CI", "Tooling", "Bug", "Perf", "Testing", "Docs", "Refactor", "Parity", "Feature", "Other"]
+    levels = {"high": 0, "medium": 1, "low": 2}
+
+    def queue(issue: dict) -> tuple[int, int, int, int]:
+        kind = "Bug" if issue["category"] == "Security" else issue["category"]
+        return (steps.index(kind), levels.get(issue["pri"], 3), levels.get(issue["sev"], 3), issue["n"])
+
+    for lane in ("Windows", "WSL", "Shared"):
+        expected = [f"#{issue['n']}" for issue in sorted((issue for issue in current["open_issues"] if issue["lane"] == lane), key=queue)]
+        listed = page.evaluate(
+            "key => [...document.querySelectorAll(`details[data-key='${key}'] .item-number`)].map(node => node.textContent)",
+            f"open-lane-{lane}",
+        )
+        if listed != expected:
+            raise AssertionError(f"the {lane} list runs {listed}, not in queue order {expected}")
+    # Under "Both lanes" an issue's chip says so, not the data's word for it.
+    chips = page.evaluate("() => [...document.querySelectorAll(\"details[data-key='open-lane-Shared'] .chip\")].map(node => node.textContent)")
+    if "Both lanes" not in chips or "Shared" in chips:
+        raise AssertionError(f"the Both lanes list's chips read {chips}")
     # Back to kinds: the rest of this check, and the next visit, start from the page's default.
     page.locator(".switch button[data-by='kind']").click()
     if groups()[0][0] != kinds[0][0]:

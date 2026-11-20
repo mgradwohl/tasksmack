@@ -207,8 +207,8 @@ fixed at its source:
 
 | The page shows | It reads |
 |---|---|
-| Scope, and what's open | the milestone's issues. The tracker itself isn't counted, and neither are pull requests. GitHub's milestone page counts both, so it reads one higher while the tracker is open: the page says so under the count. |
-| The open count by lane, and "Open issues" listed by lane | each open issue's `agent:*` labels: one label is that lane, two are "Both lanes". The figures add up to the open count, and each links to the same search on GitHub (#4585). |
+| Scope, and what's open | the milestone's issues. The tracker itself isn't counted, and neither are pull requests. GitHub's milestone page counts both, so it reads higher: by one while the tracker is open, and by one more for each pull request on the milestone. The page says so under the count. |
+| The open count by lane, and "Open issues" listed by lane | each open issue's `agent:*` labels: one label is that lane, two or more are "Both lanes". The figures add up to the open count, and each lane's links to the same search on GitHub ("No lane" has no link: its search would list the tracker). A lane's list runs in the lanes' queue order ([labels.md](labels.md), "Queue order") (#4585). |
 | In progress, in review | the `in progress` label or a draft pull request; a pull request that's ready for review |
 | "No high-severity bug open" | open `sev:high` and `sev:medium` issues on the milestone |
 | "Every feature merged, moved or cut" | open `enhancement` issues that aren't CI, tooling or security work |

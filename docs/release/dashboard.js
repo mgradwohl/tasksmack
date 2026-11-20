@@ -21,15 +21,19 @@
   // docs/dev/labels.md's queue order.
   const CATEGORIES = ['CI', 'Tooling', 'Security', 'Bug', 'Perf', 'Testing', 'Docs', 'Refactor', 'Parity', 'Feature', 'Other'];
   const LANES = ['Windows', 'WSL', 'Shared', 'Dash', 'None'];
-  const LANE_WORDS = { Shared: 'Both lanes', None: 'No lane' };
-  // The GitHub search that lists a lane's issues (#4585). An issue with both lanes' labels is "Both lanes", so
-  // each lane's own search leaves the others out. "No lane" has none: its search would list the tracker too.
-  const LANE_SEARCH = {
-    Windows: 'label:agent:Windows -label:agent:WSL -label:agent:Dash',
-    WSL: 'label:agent:WSL -label:agent:Windows -label:agent:Dash',
-    Shared: 'label:agent:Windows label:agent:WSL',
-    Dash: 'label:agent:Dash -label:agent:Windows -label:agent:WSL',
-  };
+  // Maps, not objects: a lane's name comes from a label, and "constructor" must not find Object's.
+  const LANE_WORDS = new Map([['Shared', 'Both lanes'], ['None', 'No lane']]);
+  // The GitHub search that lists a lane's issues (#4585), by the generator's own rule (lane() in
+  // tools/release-dashboard.py): one agent:* label is that lane, two or more are shared. So a lane's search
+  // leaves the other lanes' labels out, and the shared one asks for any two. "No lane" has none: its search
+  // would list the tracker too. A new agent:* label needs a line here.
+  const LANE_SEARCH = new Map([
+    ['Windows', 'label:agent:Windows -label:agent:WSL -label:agent:Dash'],
+    ['WSL', 'label:agent:WSL -label:agent:Windows -label:agent:Dash'],
+    ['Shared', '((label:agent:Windows AND label:agent:WSL) OR (label:agent:Windows AND label:agent:Dash) OR (label:agent:WSL AND label:agent:Dash))'],
+    ['Dash', 'label:agent:Dash -label:agent:Windows -label:agent:WSL'],
+  ]);
+  const LEVELS = new Map([['high', 0], ['medium', 1], ['low', 2]]);
   const LIST_BY = [['kind', 'Kind'], ['lane', 'Lane']];
   const LIST_BY_KEY = 'release-dashboard-list-by';
   const STAGES = [
@@ -131,7 +135,7 @@
   }
 
   const issueLink = (n) => link('#' + n, '/issues/' + Number(n), { class: 'item-number' });
-  const laneName = (name) => LANE_WORDS[name] || name;
+  const laneName = (name) => LANE_WORDS.get(name) || name;
 
   /** The names in @p groups: the ones @p order knows in its order, then any others by name. */
   function ordered(order, groups) {
@@ -368,7 +372,7 @@
     const names = ordered(LANES, lanes).filter((name) => name === 'Windows' || name === 'WSL' || lanes.get(name).open);
     return el('ul', { class: 'lanes', 'aria-label': 'Open issues by lane' }, names.map((name) => {
       const entry = lanes.get(name);
-      const search = TITLE.test(title) && LANE_SEARCH[name];
+      const search = TITLE.test(title) && LANE_SEARCH.get(name);
       // The space is for a screen reader ("9 Windows"): the two are stacked, so it isn't drawn.
       const parts = [el('span', { class: 'lane-figure', text: number.format(entry.open) }), ' ', el('span', { class: 'lane-name', text: laneName(name) })];
       return el('li', { title: entry.open ? entry.todo + ' not started, ' + entry.progress + ' in progress, ' + entry.review + ' in review' : null },
@@ -419,10 +423,21 @@
     return String(text).replace(/\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ/g, (iso) => moment(seconds(iso)));
   }
 
+  const level = (value) => LEVELS.get(value) ?? 3;
+
   /** Most severe first, then the highest priority, then the oldest. */
   function byUrgency(a, b) {
-    const level = { high: 0, medium: 1, low: 2 };
-    return (level[a.sev] ?? 3) - (level[b.sev] ?? 3) || (level[a.pri] ?? 3) - (level[b.pri] ?? 3) || a.n - b.n;
+    return level(a.sev) - level(b.sev) || level(a.pri) - level(b.pri) || a.n - b.n;
+  }
+
+  /**
+   * The order a lane takes its work in (docs/dev/labels.md, "Queue order"): the steps in turn, with security
+   * and bugs as one step; within a step the highest priority first, then the most severe, then the oldest.
+   * The data's kind already puts a sev:high or sev:medium item with the bugs.
+   */
+  function byQueue(a, b) {
+    const step = (issue) => (CATEGORIES.indexOf(issue.category === 'Security' ? 'Bug' : issue.category) + 1) || CATEGORIES.length + 1;
+    return step(a) - step(b) || level(a.pri) - level(b.pri) || level(a.sev) - level(b.sev) || a.n - b.n;
   }
 
   /** The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven). */
@@ -433,7 +448,7 @@
       if (issue.phase !== 'todo') chips.push(chip(PHASE_WORDS[issue.phase], true));
       if (issue.sev) chips.push(chip('sev: ' + issue.sev, issue.sev === 'high'));
       if (issue.pri) chips.push(chip('pri: ' + issue.pri, issue.pri === 'high'));
-      if (issue.lane !== 'None') chips.push(chip(issue.lane));
+      if (issue.lane !== 'None') chips.push(chip(laneName(issue.lane)));
       chips.push(chip(issue.category));
       for (const pr of issue.pull_requests) chips.push(link('PR #' + pr, '/pull/' + Number(pr), { class: 'chip' }));
       return el('li', null, icon(PHASE_ICONS[issue.phase] || 'todo'),
@@ -472,7 +487,7 @@
       const chips = [chip(pr.draft ? 'Draft' : 'Ready for ' + span((now - since(pr)) / HOUR), !pr.draft)];
       if (pr.waiting && !pr.draft) chips.push(chip('waiting on: ' + pr.waiting, failing));
       if (pr.auto_merge) chips.push(chip('auto-merge on'));
-      if (pr.lane !== 'None') chips.push(chip(pr.lane));
+      if (pr.lane !== 'None') chips.push(chip(laneName(pr.lane)));
       if (!pr.in_scope) chips.push(chip(pr.milestone ? pr.milestone : 'not on this milestone'));
       if (pr.base !== release.branch) chips.push(chip('into ' + pr.base));
       for (const n of pr.closes) chips.push(link('closes #' + n, '/issues/' + Number(n), { class: 'chip' }));
@@ -931,12 +946,10 @@
     const phases = release.counts.phases;
     const legend = el('ul', { class: 'legend' }, [['review', 'In review'], ['progress', 'In progress'], ['todo', 'Not started']].map(([phase, text]) =>
       el('li', null, el('span', { class: 'key box k-' + phase }), text + ' (' + (phases[phase] || 0) + ')')));
-    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work:
-    // the kinds in queue order, the most urgent first within each.
-    const kindRank = (issue) => (CATEGORIES.indexOf(issue.category) + 1) || CATEGORIES.length + 1;
+    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work.
     const byLane = groupBy(issues, 'lane');
     const groups = view.listBy === 'lane'
-      ? ordered(LANES, byLane).map((name) => ({ key: 'open-lane-' + name, name: laneName(name), issues: byLane.get(name).slice().sort((a, b) => kindRank(a) - kindRank(b) || byUrgency(a, b)), asGiven: true }))
+      ? ordered(LANES, byLane).map((name) => ({ key: 'open-lane-' + name, name: laneName(name), issues: byLane.get(name).slice().sort(byQueue), asGiven: true }))
       : CATEGORIES.filter((name) => byCategory.has(name)).map((name) => ({ key: 'open-' + name, name, issues: byCategory.get(name), asGiven: false }));
     const switcher = el('div', { class: 'switch', role: 'group', 'aria-label': 'List the open issues by' }, el('span', { 'aria-hidden': 'true', text: 'List by' }),
       LIST_BY.map(([key, text]) => el('button', { type: 'button', 'data-by': key, 'aria-pressed': String(view.listBy === key), onclick: () => listBy(key) }, text)));
