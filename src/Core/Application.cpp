@@ -25,6 +25,10 @@
 #include "Platform/ThreadName.h"
 #include "version.h"
 
+#ifndef _WIN32
+#include "Core/AppIdentity.h" // the app id SDL sends (#4451)
+#endif
+
 #include <SDL3/SDL.h>
 #include <spdlog/spdlog.h>
 
@@ -357,6 +361,14 @@ Application::Application(ApplicationSpecification spec) : m_Spec(std::move(spec)
         {
             spdlog::warn("Could not disable SDL_HINT_QUIT_ON_LAST_WINDOW_CLOSE: {}", SDL_GetError());
         }
+#ifndef _WIN32
+        // The Wayland app_id and X11 WM_CLASS (#4451): without it SDL falls back to the executable's name,
+        // "TaskSmack", which no installed desktop file is named for. Set before SDL_Init, which reads it.
+        if (!SDL_SetAppMetadata("TaskSmack", TASKSMACK_VERSION, Core::DESKTOP_APP_ID))
+        {
+            spdlog::warn("Could not set the app id {}: {}", Core::DESKTOP_APP_ID, SDL_GetError());
+        }
+#endif
         if (!SDL_Init(SDL_INIT_VIDEO))
         {
             spdlog::critical("Failed to initialize SDL: {}", SDL_GetError());

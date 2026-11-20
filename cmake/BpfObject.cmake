@@ -35,9 +35,11 @@ set(TASKSMACK_BPF_HEADER ${CMAKE_BINARY_DIR}/generated/UdpBytesBpfObject.h)
 add_custom_command(
     OUTPUT ${TASKSMACK_BPF_OBJECT}
     COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_BINARY_DIR}/bpf
+    # The text-encoding flags every TaskSmack source is compiled with (#4337, cmake/CompilerOptions.cmake): the
+    # source is read as UTF-8 and its strings kept UTF-8, whatever the build machine's locale.
     COMMAND ${TASKSMACK_BPF_CLANG} -target bpf -D__TARGET_ARCH_${TASKSMACK_BPF_TARGET_ARCH} -O2 -g -Wall -Werror
-            ${TASKSMACK_BPF_INCLUDES} -c ${TASKSMACK_BPF_SOURCE} -o ${TASKSMACK_BPF_OBJECT}
-    DEPENDS ${TASKSMACK_BPF_SOURCE}
+            ${TASKSMACK_TEXT_ENCODING_FLAGS} ${TASKSMACK_BPF_INCLUDES} -c ${TASKSMACK_BPF_SOURCE} -o ${TASKSMACK_BPF_OBJECT}
+    DEPENDS ${TASKSMACK_BPF_SOURCE} ${CMAKE_SOURCE_DIR}/cmake/BpfObject.cmake
     COMMENT "Compiling the eBPF UDP byte counter (#3366)"
     VERBATIM
 )
