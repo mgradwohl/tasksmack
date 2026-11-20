@@ -1542,7 +1542,7 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     }
     std::ranges::stable_sort(sorted,
                              [](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
-                             { return Platform::compareIgnoreCase(a->name, b->name) < 0; });
+                             { return Platform::compareFolded(a->name, b->name) < 0; });
     if (windows)
     {
         addDriverProblemRows(rows, drivers.listed, sorted);
@@ -2673,11 +2673,46 @@ std::string reportFileName(std::string_view computerName, bool showIdentifiers, 
     std::string machine;
     if (showIdentifiers)
     {
-        for (const char c : computerName)
+        // Walked by code point (#4314), so "Müller-PC" stays "Müller-PC" rather than "M--ller-PC": ASCII keeps
+        // letters, digits, '-', '_' and '.', and anything else (a space, a reserved \ / : * ? " < > |, a control)
+        // becomes one '-'. A non-ASCII character is kept unless it's a C1 control, a no-break space or an
+        // invalid sequence, which the shared sanitizer (#4301) has already made one U+FFFD.
+        const std::string name = Domain::sanitizedUtf8(computerName);
+        std::size_t at = 0;
+        while (at < name.size())
         {
-            const bool safe =
-                (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
-            machine += safe ? c : '-';
+            const auto lead = static_cast<unsigned char>(name[at]);
+            if (lead < 0x80U)
+            {
+                const char c = name[at];
+                const bool safe =
+                    (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.';
+                machine += safe ? c : '-';
+                ++at;
+                continue;
+            }
+            // The sanitized text is well-formed, so the lead byte gives the sequence length.
+            std::size_t length = 4;
+            if (lead < 0xE0U)
+            {
+                length = 2;
+            }
+            else if (lead < 0xF0U)
+            {
+                length = 3;
+            }
+            const std::string_view character = std::string_view{name}.substr(at, length);
+            const bool c1OrNoBreakSpace = lead == 0xC2U && static_cast<unsigned char>(character[1]) <= 0xA0U;
+            const bool unsafe = c1OrNoBreakSpace || character == Domain::UTF8_REPLACEMENT_CHARACTER;
+            if (unsafe)
+            {
+                machine += '-';
+            }
+            else
+            {
+                machine += character;
+            }
+            at += length;
         }
         // Not a hidden file, nor one that ends in a dot.
         while (!machine.empty() && (machine.front() == '.' || machine.front() == '-'))
