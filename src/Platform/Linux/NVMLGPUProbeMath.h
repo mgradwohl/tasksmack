@@ -37,6 +37,7 @@ using NVMLRunningProcesses::MAX_PLAUSIBLE_PROCESS_COUNT;
 using NVMLRunningProcesses::NO_INSTANCE_ID;
 using NVMLRunningProcesses::PROCESS_INFO_COMPUTE_INSTANCE_OFFSET;
 using NVMLRunningProcesses::PROCESS_INFO_GPU_INSTANCE_OFFSET;
+using NVMLRunningProcesses::PROCESS_INFO_LARGEST_SIZE;
 using NVMLRunningProcesses::PROCESS_INFO_MEMORY_OFFSET;
 using NVMLRunningProcesses::PROCESS_INFO_V1_SIZE;
 using NVMLRunningProcesses::PROCESS_INFO_V2_SIZE;

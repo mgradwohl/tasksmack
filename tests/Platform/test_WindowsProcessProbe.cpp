@@ -299,8 +299,8 @@ TEST(WindowsProcessProbeTest, TotalCpuTimeIsPositiveAndMonotonic)
     EXPECT_GT(time1, 0ULL);
 
     std::this_thread::sleep_for(std::chrono::milliseconds(10));
-    volatile int sum = 0;
-    for (int i = 0; i < 1'000'000; ++i)
+    volatile std::uint64_t sum = 0;
+    for (std::uint64_t i = 0; i < 1'000'000; ++i)
     {
         sum += i;
     }
@@ -699,12 +699,12 @@ TEST(WindowsProcessProbeTest, CpuTimeIncreasesBetweenSamples)
     const auto proc1 = findOurProcess(probe.enumerate());
 
     // Do significant CPU work to ensure measurable time increase
-    volatile int sum = 0;
+    volatile std::uint64_t sum = 0;
     for (int iteration = 0; iteration < CPU_WORK_ITERATIONS; ++iteration)
     {
         for (int i = 0; i < CPU_WORK_INNER_LOOP; ++i)
         {
-            sum += i;
+            sum += static_cast<std::uint64_t>(i);
         }
     }
 

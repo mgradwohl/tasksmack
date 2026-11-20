@@ -237,6 +237,51 @@ def check_not_found(page: Page, site: str, offline: bool) -> None:
     expect_page(page, "User Guide")
 
 
+# Every column header on the release dashboard whose text isn't on the same edge as its column's figures, as
+# "table | header | pixels off" (#4524: a two-row header's "24 h" took the first column's left alignment and sat
+# beside its figures, not over them). A header that spans columns is skipped. Tables inside closed <details> are
+# opened to be measured, then put back.
+HEADERS_OFF_THEIR_COLUMNS = r"""
+() => {
+  const edges = (cell) => {
+    const range = document.createRange();
+    range.selectNodeContents(cell);
+    const rects = [...range.getClientRects()].filter((rect) => rect.width > 0);
+    return rects.length ? [Math.min(...rects.map((rect) => rect.left)), Math.max(...rects.map((rect) => rect.right))] : null;
+  };
+  const closed = [...document.querySelectorAll('details:not([open])')];
+  closed.forEach((node) => { node.open = true; });
+  const off = [];
+  document.querySelectorAll('#app table').forEach((table, index) => {
+    const rows = [...table.querySelectorAll('tbody tr')].filter((row) => !row.classList.contains('divider'));
+    table.querySelectorAll('thead th').forEach((header) => {
+      const head = edges(header);
+      if (header.colSpan > 1 || !head) return;
+      const box = header.getBoundingClientRect();
+      const middle = (box.left + box.right) / 2;
+      const right = getComputedStyle(header).textAlign === 'right';
+      for (const row of rows) {
+        const cell = [...row.children].find((child) => {
+          const bounds = child.getBoundingClientRect();
+          return bounds.left <= middle && middle <= bounds.right;
+        });
+        const body = cell && cell.textContent.trim() ? edges(cell) : null;
+        if (!body) continue;
+        const sameSide = (getComputedStyle(cell).textAlign === 'right') === right;
+        const gap = sameSide ? Math.abs(right ? head[1] - body[1] : head[0] - body[0]) : Infinity;
+        if (gap > 1.5) {
+          off.push('table ' + index + ' | ' + header.textContent.trim() + ' | ' + (sameSide ? gap.toFixed(1) + 'px' : 'other side'));
+          break;
+        }
+      }
+    });
+  });
+  closed.forEach((node) => { node.open = false; });
+  return off;
+}
+"""
+
+
 def serve_release_data(page: Page, *, missing: bool = False) -> None:
     """Answers the dashboard's data requests from RELEASE_FIXTURES, or with 404 when @p missing."""
 
@@ -296,6 +341,19 @@ def _check_release_dashboard(page: Page, site: str) -> None:
         raise AssertionError(f"the Released stage reads {released!r}, with no goal or no 'Actual: TBD'")
     if page.locator(".chart svg path.line").count() != 2:
         raise AssertionError("the burn-up didn't draw its two lines")
+    if page.locator(".chart svg path.area").count() != 3:
+        raise AssertionError("the chart of the open work didn't draw its three bands")
+    # The section's three charts share one time axis: the same day labels, at the same places.
+    ticks = page.evaluate(
+        "() => [...document.querySelectorAll('.chart svg')].map(chart => [...chart.querySelectorAll("
+        "'text[text-anchor=middle]')].map(label => label.textContent + '@' + Math.round(label.getBoundingClientRect().left)))"
+    )
+    if len(ticks) != 3 or not ticks[0] or ticks[1] != ticks[0] or ticks[2] != ticks[0]:
+        raise AssertionError(f"the three charts' day labels don't line up: {ticks}")
+    # Every column header sits over its column's figures.
+    off = page.evaluate(HEADERS_OFF_THEIR_COLUMNS)
+    if off:
+        raise AssertionError(f"column headers off their columns: {off}")
     if page.locator(".hero-figure").text_content() != str(current["counts"]["open"]):
         raise AssertionError("the open-issue count isn't the fixture's")
 
