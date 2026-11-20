@@ -484,6 +484,11 @@ add_test(NAME CheckCachePruneTriggersScript
 add_test(NAME HeavyChecksPushScopeScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
 
+# tools/release-dashboard.py works out the Release Command Center's data from what the GitHub API returned, and
+# its output for a made-up repository is the fixture docs/release/ is tested against (#4524).
+add_test(NAME ReleaseDashboardScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_release_dashboard.py)
+
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_compose_release_notes.py)
