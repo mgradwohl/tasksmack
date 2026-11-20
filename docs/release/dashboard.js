@@ -440,12 +440,23 @@
     return step(a) - step(b) || level(a.pri) - level(b.pri) || level(a.sev) - level(b.sev) || a.n - b.n;
   }
 
+  /**
+   * The open issues that wait on the maintainer, as the ship list's row counts them (the `question` and
+   * `manual close` labels). A lane can't take one of these, whatever its place in the lane's list.
+   */
+  function heldForMaintainer(release) {
+    const row = release.ship_list.find((entry) => entry.id === 'maintainer');
+    return new Set((row && row.issues) || []);
+  }
+
   /** The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven). */
   function issueList(issues, now, side, asGiven) {
     const sorted = side || asGiven ? issues : issues.slice().sort(byUrgency);
+    const held = heldForMaintainer(view.release);
     return el('ul', { class: 'items' }, sorted.map((issue) => {
       const chips = [];
       if (issue.phase !== 'todo') chips.push(chip(PHASE_WORDS[issue.phase], true));
+      if (held.has(issue.n)) chips.push(chip('Waiting on the maintainer', true));
       if (issue.sev) chips.push(chip('sev: ' + issue.sev, issue.sev === 'high'));
       if (issue.pri) chips.push(chip('pri: ' + issue.pri, issue.pri === 'high'));
       if (issue.lane !== 'None') chips.push(chip(laneName(issue.lane)));

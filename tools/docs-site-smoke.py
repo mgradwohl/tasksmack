@@ -487,6 +487,16 @@ def _check_release_lists(page: Page, current: dict) -> None:
         )
         if listed != expected:
             raise AssertionError(f"the {lane} list runs {listed}, not in queue order {expected}")
+    # An issue the ship list counts as waiting on the maintainer says so in its lane's list: the lane can't take it.
+    held = next(row["issues"] for row in current["ship_list"] if row["id"] == "maintainer")
+    if not held:
+        raise AssertionError("the fixtures hold no issue waiting on the maintainer: tests/tools/test_release_dashboard.py")
+    marked = page.evaluate(
+        "() => [...document.querySelectorAll('.open-lists .items > li')].filter(row => [...row.querySelectorAll('.chip')]"
+        ".some(chip => chip.textContent === 'Waiting on the maintainer')).map(row => row.querySelector('.item-number').textContent)"
+    )
+    if sorted(marked) != sorted(f"#{number}" for number in held):
+        raise AssertionError(f"the issues marked as waiting on the maintainer are {marked}, not {held}")
     # Under "Both lanes" an issue's chip says so, not the data's word for it.
     chips = page.evaluate("() => [...document.querySelectorAll(\"details[data-key='open-lane-Shared'] .chip\")].map(node => node.textContent)")
     if "Both lanes" not in chips or "Shared" in chips:
