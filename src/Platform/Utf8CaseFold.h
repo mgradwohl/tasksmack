@@ -8,6 +8,7 @@
 // never matches one, and nothing past the input is read. ASCII-only text, the usual case, takes AsciiCase.h's
 // fast path. Platform is the lowest layer, so every layer can include it.
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/AsciiCase.h"
 #include "Platform/UnicodeCaseFoldTable.h"
 
@@ -112,12 +113,9 @@ namespace Utf8CaseFoldDetail
 
 [[nodiscard]] constexpr bool isAscii(std::string_view text) noexcept
 {
-    unsigned high = 0;
-    for (const char c : text)
-    {
-        high |= static_cast<unsigned char>(c);
-    }
-    return (high & 0x80U) == 0U;
+    // Eight bytes at a time (#4567): the filter calls this on every row's name and command line, and a byte at a
+    // time made process filtering 27-38% slower than the ASCII-only scan it replaced (#4492). The sanitizer's scan.
+    return Domain::Utf8Detail::isAscii(text);
 }
 
 /// Whether @p text, from byte @p at, starts with @p term, both folded; on a match @p end is the byte after it.

@@ -181,6 +181,7 @@ class RootTestFilterTests(unittest.TestCase):
         "RootDumpFolderRootTest.*",  # rootDumpRefusal() fails closed on a home under /tmp (#4262)
         "RootEnvironmentRootTest.*",  # the real openAsUser() as root (#4255)
         "UserConfigRootTest.*",  # the run-as-root-for-a-user config save hands the file to the folder's owner (#4549)
+        "NetlinkSocketStatsRootTest.*",  # a datagram from another socket is never read as the kernel's (#4387)
     )
 
     def test_the_filter_names_every_root_suite(self):

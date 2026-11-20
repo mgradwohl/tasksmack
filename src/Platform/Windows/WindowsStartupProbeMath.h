@@ -22,6 +22,30 @@
 namespace Platform::Windows::StartupMath
 {
 
+/// Whether @p path names something the Startup probe must never open just to list it (#4374): a UNC share
+/// (\\server\share\..., \\?\UNC\server\share\..., //server/share/...) or a device or object path (\\.\..., \\?\GLOBALROOT\...).
+/// Opening one can block for the SMB timeout while the server is unreachable (the list would stop updating), and
+/// an elevated TaskSmack, which lists other accounts' scheduled tasks, would authenticate to that host as the
+/// administrator every pass. A drive path (C:\..., or its long form \\?\C:\...) is local here; a mapped network
+/// drive letter isn't caught, since telling it apart needs a call of its own.
+[[nodiscard]] constexpr bool isNetworkOrDevicePath(std::string_view path) noexcept
+{
+    const auto separator = [](char c) noexcept
+    {
+        return c == '\\' || c == '/';
+    };
+    if (path.size() < 2 || !separator(path[0]) || !separator(path[1]))
+    {
+        return false;
+    }
+    const auto driveLetter = [](char c) noexcept
+    {
+        return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
+    };
+    const bool longDrivePath = path.size() >= 6 && path[2] == '?' && separator(path[3]) && driveLetter(path[4]) && path[5] == ':';
+    return !longDrivePath;
+}
+
 /// What one StartupApproved value says about its entry.
 struct ApprovedState
 {

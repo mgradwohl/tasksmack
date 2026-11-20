@@ -10,7 +10,6 @@
 #ifdef TASKSMACK_HAS_SDBUS
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/Linux/SdBusCall.h"
-#include "Platform/ProcessEnvironment.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -199,8 +198,8 @@ getObjectPath(sd_bus* bus, const char* object, const char* interface, const char
         std::size_t size = 0;
         if (sd_bus_message_read_array(ssidReply.get(), 'y', &bytes, &size) >= 0 && bytes != nullptr)
         {
-            // An SSID is up to 32 arbitrary bytes, not necessarily UTF-8.
-            link.ssid = Environment::escapeForDisplay(std::string_view(static_cast<const char*>(bytes), size));
+            // An SSID is up to 32 arbitrary bytes, not necessarily UTF-8: kept raw, and shown as nmcli shows it (#4328).
+            link.ssid = std::string(static_cast<const char*>(bytes), size);
         }
     }
     read.link = std::move(link);
@@ -257,7 +256,7 @@ readDhcpOptions(sd_bus* bus, const char* config, std::string& server, std::strin
         const char* value = nullptr;
         if (result >= 0 && target != nullptr && sd_bus_message_read(reply.get(), "v", "s", &value) >= 0)
         {
-            *target = value != nullptr ? Environment::escapeForDisplay(value) : std::string{};
+            *target = value != nullptr ? std::string(value) : std::string{}; // raw: the UI makes display text (#4328)
         }
         else if (result >= 0)
         {
