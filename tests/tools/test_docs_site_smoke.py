@@ -36,8 +36,9 @@ class DocsSiteServerTest(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         docs = Path(self._tmp.name) / "docs"
         (docs / "guide").mkdir(parents=True)
-        (docs / "index.html").write_text("<p>home</p>", encoding="utf-8")
-        (docs / "guide" / "user-guide.md").write_text("# User Guide\n", encoding="utf-8")
+        # Bytes, not write_text: on Windows text mode would write "\r\n", and the test compares what is served.
+        (docs / "index.html").write_bytes(b"<p>home</p>")
+        (docs / "guide" / "user-guide.md").write_bytes(b"# User Guide\n")
         self.server, self.site = self.smoke.serve(docs)
         self.origin = self.site[: -len(self.smoke.SITE_PATH)]
 
