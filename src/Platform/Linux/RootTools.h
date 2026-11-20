@@ -28,39 +28,54 @@ namespace Platform::RootTools
     return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && ::access(path.c_str(), X_OK) == 0;
 }
 
-/// As isExecutableFile(), for a tool TaskSmack runs as root (#3605): also one only root could have put where it
-/// resolves to (SyscallTrace::onlyRootCouldPlace()).
-[[nodiscard]] inline bool isRootTrustedExecutable(const std::string& path)
+/// For a tool TaskSmack runs as root (#3605): the canonical path @p path resolves to, when that is an executable file
+/// only root could have put there (SyscallTrace::onlyRootCouldPlace() on every component); nullopt otherwise. Run the
+/// path this returns, never @p path (#4396): @p path may be a link in a folder another account can write, which passes
+/// the check by pointing at a root-owned tool and can then be pointed at that account's own script before each exec.
+[[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path)
 {
     if (!isExecutableFile(path))
     {
-        return false;
+        return std::nullopt;
     }
     std::error_code ec;
     const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
-    if (ec)
+    if (ec || !isExecutableFile(resolved.native()))
     {
-        return false;
+        return std::nullopt;
     }
-    return SyscallTrace::onlyRootCouldPlace(resolved.native(),
-                                            [](const std::string& entry) -> std::optional<SyscallTrace::PathOwnership>
-                                            {
-                                                struct stat info{};
-                                                if (::lstat(entry.c_str(), &info) != 0)
-                                                {
-                                                    return std::nullopt;
-                                                }
-                                                return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
-                                            });
+    const bool trusted = SyscallTrace::onlyRootCouldPlace(resolved.native(),
+                                                          [](const std::string& entry) -> std::optional<SyscallTrace::PathOwnership>
+                                                          {
+                                                              struct stat info{};
+                                                              if (::lstat(entry.c_str(), &info) != 0)
+                                                              {
+                                                                  return std::nullopt;
+                                                              }
+                                                              return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
+                                                          });
+    if (!trusted)
+    {
+        return std::nullopt;
+    }
+    return resolved.native();
+}
+
+/// Whether rootTrustedPath() accepts @p path.
+[[nodiscard]] inline bool isRootTrustedExecutable(const std::string& path)
+{
+    return rootTrustedPath(path).has_value();
 }
 
 /// Where to run the tool @p name from: as root (@p root), only SyscallTrace::ROOT_TOOL_PATH's directories and only a file
-/// root alone could have placed; otherwise @p pathEnv ($PATH) and any executable file, as a shell would.
+/// root alone could have placed, answered as the canonical path that was checked (rootTrustedPath(), #4396); otherwise
+/// @p pathEnv ($PATH) and any executable file, as a shell would.
 [[nodiscard]] inline std::optional<std::string> find(std::string_view name, bool root, std::string_view pathEnv)
 {
     if (root)
     {
-        return SyscallTrace::findExecutable(name, SyscallTrace::ROOT_TOOL_PATH, &isRootTrustedExecutable);
+        const std::optional<std::string> found = SyscallTrace::findExecutable(name, SyscallTrace::ROOT_TOOL_PATH, &isRootTrustedExecutable);
+        return found.has_value() ? rootTrustedPath(*found) : std::nullopt;
     }
     return SyscallTrace::findExecutable(name, pathEnv, &isExecutableFile);
 }

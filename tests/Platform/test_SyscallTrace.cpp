@@ -441,6 +441,32 @@ TEST(SyscallTraceTest, ATerminalServerCantCarryTaskSmacksRootToStrace)
 
 // #3760: a tool TaskSmack runs as root (crontab, every Startup sample) is found only in the system's directories, never
 // in a directory of the invoking user's PATH, and runs with an environment of TaskSmack's own; not as root, PATH decides.
+// #4396: a link to a root-owned tool passes the check on its target, but the link itself may sit in a folder another
+// account can write, and be pointed elsewhere before the exec. As root, the path run is the canonical one checked.
+TEST(RootToolsTest, AsRootTheCanonicalPathCheckedIsThePathRun)
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack-4396-link";
+    std::error_code ec;
+    std::filesystem::remove_all(dir, ec);
+    std::filesystem::create_directories(dir, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::filesystem::path link = dir / "sh";
+    std::filesystem::create_symlink("/bin/sh", link, ec);
+    ASSERT_FALSE(ec) << ec.message();
+    const std::filesystem::path target = std::filesystem::canonical("/bin/sh", ec);
+    ASSERT_FALSE(ec) << ec.message();
+
+    const std::optional<std::string> trusted = RootTools::rootTrustedPath(link.string());
+    ASSERT_TRUE(trusted.has_value()) << "its target is root's";
+    EXPECT_EQ(*trusted, target.string()) << "the target checked, not the link, which another account could re-point";
+
+    const std::optional<std::string> found = RootTools::find("sh", true, "");
+    ASSERT_TRUE(found.has_value());
+    EXPECT_EQ(*found, std::filesystem::canonical(*found, ec).string()) << "no link left in the path run as root";
+    EXPECT_FALSE(std::filesystem::is_symlink(*found));
+    std::filesystem::remove_all(dir, ec);
+}
+
 TEST(RootToolsTest, AsRootAToolIsNeverFoundOnTheUsersPath)
 {
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack-3760-path";
