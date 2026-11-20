@@ -9,6 +9,7 @@
 #include "Platform/Linux/SyscallTrace.h"
 
 #include <filesystem>
+#include <functional>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -28,37 +29,134 @@ namespace Platform::RootTools
     return ::stat(path.c_str(), &info) == 0 && S_ISREG(info.st_mode) && ::access(path.c_str(), X_OK) == 0;
 }
 
+/// The filesystem calls the root checks make, injectable so a test can give them a tree with a group-writable
+/// /usr/local (#4396). systemRootFs() is the real one.
+struct RootFs
+{
+    /// lstat(): who owns @p path and its mode, nullopt when it can't be read.
+    std::function<std::optional<SyscallTrace::PathOwnership>(const std::string&)> ownership;
+    /// readlink(): where the link @p path points, nullopt when @p path isn't a link.
+    std::function<std::optional<std::string>(const std::string&)> readLink;
+    /// std::filesystem::canonical(), nullopt on failure.
+    std::function<std::optional<std::string>(const std::string&)> canonical;
+    /// isExecutableFile().
+    std::function<bool(const std::string&)> executable;
+};
+
+[[nodiscard]] inline RootFs systemRootFs()
+{
+    return {
+        .ownership = [](const std::string& path) -> std::optional<SyscallTrace::PathOwnership>
+        {
+            struct stat info{};
+            if (::lstat(path.c_str(), &info) != 0)
+            {
+                return std::nullopt;
+            }
+            return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
+        },
+        .readLink = [](const std::string& path) -> std::optional<std::string>
+        {
+            std::error_code ec;
+            if (!std::filesystem::is_symlink(path, ec))
+            {
+                return std::nullopt;
+            }
+            const std::filesystem::path target = std::filesystem::read_symlink(path, ec);
+            return ec ? std::nullopt : std::optional<std::string>(target.native());
+        },
+        .canonical = [](const std::string& path) -> std::optional<std::string>
+        {
+            std::error_code ec;
+            const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
+            return ec ? std::nullopt : std::optional<std::string>(resolved.native());
+        },
+        .executable = &isExecutableFile,
+    };
+}
+
+/// The folder holding @p path ("/" for a path directly under it).
+[[nodiscard]] inline std::string parentFolder(const std::string& path)
+{
+    const std::size_t slash = path.rfind('/');
+    return (slash == 0 || slash == std::string::npos) ? std::string("/") : path.substr(0, slash);
+}
+
+/// Whether only root could change what is in the folder @p folder: its canonical path, and every folder above it, is
+/// root's and writable by no group or other user (SyscallTrace::onlyRootCouldPlace()).
+[[nodiscard]] inline bool isRootOnlyFolder(const std::string& folder, const RootFs& fs)
+{
+    const std::optional<std::string> resolved = fs.canonical(folder);
+    return resolved.has_value() && SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership);
+}
+
+/// @p pathList (colon-separated) with only the folders isRootOnlyFolder() accepts, in order (#4396): what TaskSmack
+/// searches for a tool as root, and the PATH it gives a program it runs as root. A /usr/local/bin another account can
+/// write (Debian's root:staff 2775, or a chown -R of /usr/local) is left out, so nothing there is found or run by name.
+[[nodiscard]] inline std::string trustedRootPath(std::string_view pathList, const RootFs& fs)
+{
+    std::string out;
+    std::size_t start = 0;
+    while (start <= pathList.size())
+    {
+        std::size_t end = pathList.find(':', start);
+        if (end == std::string_view::npos)
+        {
+            end = pathList.size();
+        }
+        const std::string folder(pathList.substr(start, end - start));
+        if (folder.starts_with('/') && isRootOnlyFolder(folder, fs))
+        {
+            out += out.empty() ? folder : ":" + folder;
+        }
+        start = end + 1;
+    }
+    return out;
+}
+
+/// trustedRootPath() of SyscallTrace::ROOT_TOOL_PATH on this machine.
+[[nodiscard]] inline std::string trustedRootPath()
+{
+    return trustedRootPath(SyscallTrace::ROOT_TOOL_PATH, systemRootFs());
+}
+
 /// For a tool TaskSmack runs as root (#3605): the canonical path @p path resolves to, when that is an executable file
-/// only root could have put there (SyscallTrace::onlyRootCouldPlace() on every component); nullopt otherwise. Run the
-/// path this returns, never @p path (#4396): @p path may be a link in a folder another account can write, which passes
-/// the check by pointing at a root-owned tool and can then be pointed at that account's own script before each exec.
+/// only root could have put there; nullopt otherwise. Every link on the way must sit in a root-only folder too (#4396):
+/// a link in a folder another account can write passes on its target alone, so that account would choose which
+/// root-owned program runs (xdg-open -> python3, which runs a folder's __main__.py), and could re-point it before an
+/// exec. Run the path this returns, never @p path.
+[[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path, const RootFs& fs)
+{
+    if (!path.starts_with('/') || !fs.executable(path))
+    {
+        return std::nullopt;
+    }
+    constexpr int MAX_LINK_HOPS = 40; // the kernel's own limit on a path's links
+    std::string hop = path;
+    for (int hops = 0;; ++hops)
+    {
+        if (hops > MAX_LINK_HOPS || !isRootOnlyFolder(parentFolder(hop), fs))
+        {
+            return std::nullopt;
+        }
+        const std::optional<std::string> target = fs.readLink(hop);
+        if (!target.has_value())
+        {
+            break;
+        }
+        hop = target->starts_with('/') ? *target : parentFolder(hop) + "/" + *target;
+    }
+    std::optional<std::string> resolved = fs.canonical(path);
+    if (!resolved.has_value() || !fs.executable(*resolved) || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership))
+    {
+        return std::nullopt;
+    }
+    return resolved;
+}
+
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path)
 {
-    if (!isExecutableFile(path))
-    {
-        return std::nullopt;
-    }
-    std::error_code ec;
-    const std::filesystem::path resolved = std::filesystem::canonical(path, ec);
-    if (ec || !isExecutableFile(resolved.native()))
-    {
-        return std::nullopt;
-    }
-    const bool trusted = SyscallTrace::onlyRootCouldPlace(resolved.native(),
-                                                          [](const std::string& entry) -> std::optional<SyscallTrace::PathOwnership>
-                                                          {
-                                                              struct stat info{};
-                                                              if (::lstat(entry.c_str(), &info) != 0)
-                                                              {
-                                                                  return std::nullopt;
-                                                              }
-                                                              return SyscallTrace::PathOwnership{.uid = info.st_uid, .mode = info.st_mode};
-                                                          });
-    if (!trusted)
-    {
-        return std::nullopt;
-    }
-    return resolved.native();
+    return rootTrustedPath(path, systemRootFs());
 }
 
 /// Whether rootTrustedPath() accepts @p path.
@@ -67,23 +165,36 @@ namespace Platform::RootTools
     return rootTrustedPath(path).has_value();
 }
 
-/// Where to run the tool @p name from: as root (@p root), only SyscallTrace::ROOT_TOOL_PATH's directories and only a file
-/// root alone could have placed, answered as the canonical path that was checked (rootTrustedPath(), #4396); otherwise
+/// The tool @p name as root, searched for in trustedRootPath(@p pathList) only and answered as the canonical path that
+/// was checked (rootTrustedPath(), #4396), resolved once.
+[[nodiscard]] inline std::optional<std::string> findRootTool(std::string_view name, std::string_view pathList, const RootFs& fs)
+{
+    std::optional<std::string> verified;
+    const std::optional<std::string> found = SyscallTrace::findExecutable(name,
+                                                                          trustedRootPath(pathList, fs),
+                                                                          [&](const std::string& candidate)
+                                                                          {
+                                                                              verified = rootTrustedPath(candidate, fs);
+                                                                              return verified.has_value();
+                                                                          });
+    return found.has_value() ? verified : std::nullopt;
+}
+
+/// Where to run the tool @p name from: as root (@p root), findRootTool() over SyscallTrace::ROOT_TOOL_PATH; otherwise
 /// @p pathEnv ($PATH) and any executable file, as a shell would.
 [[nodiscard]] inline std::optional<std::string> find(std::string_view name, bool root, std::string_view pathEnv)
 {
     if (root)
     {
-        const std::optional<std::string> found = SyscallTrace::findExecutable(name, SyscallTrace::ROOT_TOOL_PATH, &isRootTrustedExecutable);
-        return found.has_value() ? rootTrustedPath(*found) : std::nullopt;
+        return findRootTool(name, SyscallTrace::ROOT_TOOL_PATH, systemRootFs());
     }
     return SyscallTrace::findExecutable(name, pathEnv, &isExecutableFile);
 }
 
 /// TaskSmack's environment @p env (NAME=value entries, null-terminated, as environ) for a program it starts as root and
 /// as itself (#3855): the same variables, the display and session bus included, which a terminal or xdg-open needs, but
-/// PATH set to SyscallTrace::ROOT_TOOL_PATH. gcore and xdg-open are scripts that run their own helpers by name; with the
-/// invoking user's PATH (sudo -E, su without -) a helper of theirs would run as root.
+/// PATH set to trustedRootPath(), ROOT_TOOL_PATH's root-only folders (#4396). gcore and xdg-open are scripts that run their own helpers by
+/// name; with the invoking user's PATH (sudo -E, su without -) a helper of theirs would run as root.
 [[nodiscard]] inline std::vector<std::string> withRootPath(const char* const* env)
 {
     std::vector<std::string> out;
@@ -95,15 +206,15 @@ namespace Platform::RootTools
             out.emplace_back(variable);
         }
     }
-    out.push_back(std::string("PATH=") + std::string(SyscallTrace::ROOT_TOOL_PATH));
+    out.push_back("PATH=" + trustedRootPath()); // root-only folders only (#4396): a script's helpers are found by name
     return out;
 }
 
-/// The environment a tool run as root gets in place of TaskSmack's own (#3760): only a PATH of the system's directories,
-/// so nothing the invoking user set (PATH, LD_*, locale or tool variables) reaches it.
+/// The environment a tool run as root gets in place of TaskSmack's own (#3760): only a PATH of the system's root-only directories
+/// (trustedRootPath()), so nothing the invoking user set (PATH, LD_*, locale or tool variables) reaches it.
 [[nodiscard]] inline std::vector<std::string> rootEnvironment()
 {
-    return {std::string("PATH=") + std::string(SyscallTrace::ROOT_TOOL_PATH)};
+    return {"PATH=" + trustedRootPath()}; // root-only folders only (#4396): gcore runs "#!/usr/bin/env bash"
 }
 
 } // namespace Platform::RootTools
