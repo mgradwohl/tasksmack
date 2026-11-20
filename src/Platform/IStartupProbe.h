@@ -47,6 +47,10 @@ enum class StartupTargetState : std::uint8_t
     Unresolved, ///< The executable could not be determined (e.g. a shortcut whose target was not read).
     Present,
     Missing, ///< The resolved executable does not exist.
+    /// The executable is on a network share or a device path (\\server\share, \\.\, \\?\UNC\), which the
+    /// probe never opens (#4374): it could block for the SMB timeout, or authenticate to that host as an
+    /// elevated TaskSmack.
+    NotChecked,
 };
 
 /// One startup entry, raw as the OS registers it. A field the probe could not read (its capability

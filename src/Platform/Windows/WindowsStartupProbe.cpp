@@ -406,16 +406,16 @@ readVersionString(std::span<const std::byte> block, const std::vector<std::pair<
 }
 
 /// The CompanyName and FileDescription from a file's version resource; empty when the file has none.
-[[nodiscard]] VersionStrings readVersionStrings(const std::wstring& path)
+[[nodiscard]] VersionStrings readVersionStrings(const Windows::StartupProbeFunctions& api, const std::wstring& path)
 {
     DWORD ignored = 0;
-    const DWORD size = GetFileVersionInfoSizeW(path.c_str(), &ignored);
+    const DWORD size = api.versionInfoSize(path.c_str(), &ignored);
     if (size == 0)
     {
         return {};
     }
     std::vector<std::byte> block(size);
-    if (GetFileVersionInfoW(path.c_str(), 0, size, block.data()) == FALSE)
+    if (api.versionInfo(path.c_str(), 0, size, block.data()) == FALSE)
     {
         return {};
     }
@@ -989,9 +989,17 @@ struct WindowsStartupProbe::Impl
         {
             return;
         }
+        // A network share or device path is never opened (#4374): every pass would block for the SMB timeout
+        // while the server is unreachable, and an elevated TaskSmack would authenticate to whatever host another
+        // account's task names. It is listed, named by its file name, but not checked.
+        if (Windows::StartupMath::isNetworkOrDevicePath(entry.executablePath))
+        {
+            entry.target = StartupTargetState::NotChecked;
+            return;
+        }
         const std::wstring path = WinString::utf8ToWide(entry.executablePath);
         WIN32_FILE_ATTRIBUTE_DATA attributes{};
-        if (GetFileAttributesExW(path.c_str(), GetFileExInfoStandard, &attributes) == FALSE ||
+        if (api.fileAttributes(path.c_str(), GetFileExInfoStandard, &attributes) == FALSE ||
             (attributes.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0)
         {
             entry.target = StartupTargetState::Missing;
@@ -1005,7 +1013,7 @@ struct WindowsStartupProbe::Impl
         auto [it, inserted] = versionStrings.try_emplace(key);
         if (inserted || it->second.lastWrite != lastWrite)
         {
-            it->second = {.lastWrite = lastWrite, .strings = readVersionStrings(path)};
+            it->second = {.lastWrite = lastWrite, .strings = readVersionStrings(api, path)};
         }
         entry.publisher = it->second.strings.companyName;
         nameEntry(entry, Windows::StartupMath::startupDisplayName(it->second.strings.fileDescription, entry.executablePath, fallbackName));
@@ -1097,10 +1105,15 @@ struct WindowsStartupProbe::Impl
         {
             return {};
         }
-        // Unknown (nullopt), not unset: an unknown folder might hold its own copy of a bare name (#3569).
-        const std::optional<std::string> workingDirectory = (otherAccount && TaskMath::usesAccountVariables(task.workingDirectory))
-                                                              ? std::nullopt
-                                                              : std::optional(Windows::expandEnvironmentStrings(task.workingDirectory));
+        // Unknown (nullopt), not unset: an unknown folder might hold its own copy of a bare name (#3569). A share or
+        // device folder is unknown too, since looking in it would open it (#4374).
+        std::optional<std::string> workingDirectory = (otherAccount && TaskMath::usesAccountVariables(task.workingDirectory))
+                                                        ? std::nullopt
+                                                        : std::optional(Windows::expandEnvironmentStrings(task.workingDirectory));
+        if (workingDirectory && Windows::StartupMath::isNetworkOrDevicePath(*workingDirectory))
+        {
+            workingDirectory.reset();
+        }
         std::array<wchar_t, MAX_PATH> system{};
         const UINT systemChars = GetSystemDirectoryW(system.data(), static_cast<UINT>(system.size()));
         const std::string systemDirectory = (systemChars > 0 && systemChars < system.size())
@@ -1111,6 +1124,10 @@ struct WindowsStartupProbe::Impl
                                          systemDirectory,
                                          [](const std::string& path)
                                          {
+                                             if (Windows::StartupMath::isNetworkOrDevicePath(path))
+                                             {
+                                                 return false; // never opened (#4374)
+                                             }
                                              const DWORD attributes = GetFileAttributesW(WinString::utf8ToWide(path).c_str());
                                              return attributes != INVALID_FILE_ATTRIBUTES && (attributes & FILE_ATTRIBUTE_DIRECTORY) == 0;
                                          });

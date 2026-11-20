@@ -525,6 +525,60 @@ TEST_F(WindowsScheduledTasksTest, TheProbeWalksAtItsCadenceOrAfterASwitch)
     EXPECT_TRUE(probe.enumerate().empty());
 }
 
+/// The paths the probe stat'ed through its seam (#4374), recorded and then refused, as a share that can't be reached.
+std::vector<std::wstring>& statedPaths()
+{
+    static std::vector<std::wstring> paths;
+    return paths;
+}
+
+BOOL WINAPI recordStat(LPCWSTR path, GET_FILEEX_INFO_LEVELS /*level*/, LPVOID /*data*/)
+{
+    statedPaths().emplace_back(path);
+    SetLastError(ERROR_BAD_NETPATH);
+    return FALSE;
+}
+
+// #4374: an elevated TaskSmack lists other accounts' tasks, so a task naming \\host\share\a.exe, or working in a
+// share, must not make the probe open that share every pass: the program is listed but not checked.
+TEST_F(WindowsScheduledTasksTest, TasksOnASharePathAreListedButNotOpened)
+{
+    TaskRecord share = makeTask("\\OnShare", {LOGON}, "SYSTEM");
+    share.execPath = R"(\\tasksmack-4374.invalid\share\a.exe)";
+    TaskRecord device = makeTask("\\OnDevice", {LOGON}, "SYSTEM");
+    device.execPath = R"(\\?\UNC\tasksmack-4374.invalid\share\b.exe)";
+    TaskRecord inShare = makeTask("\\InShare", {LOGON}, "SYSTEM");
+    inShare.execPath = "agent";
+    inShare.workingDirectory = R"(\\tasksmack-4374.invalid\share)";
+    TaskRecord local = makeTask("\\Local", {LOGON}, "SYSTEM");
+    local.execPath = R"(C:\No Such Folder\updater.exe)";
+    m_Scheduler.tasks["\\"] = {share, device, inShare, local};
+
+    statedPaths().clear();
+    Windows::StartupProbeFunctions functions = emptyRegistry();
+    functions.fileAttributes = &recordStat;
+    WindowsStartupProbe probe(functions, factoryFor(m_Scheduler));
+    const std::vector<StartupEntry> entries = probe.enumerate();
+
+    const StartupEntry* shareEntry = entryAt(entries, "\\OnShare");
+    ASSERT_NE(shareEntry, nullptr);
+    EXPECT_EQ(shareEntry->executablePath, R"(\\tasksmack-4374.invalid\share\a.exe)");
+    EXPECT_EQ(shareEntry->target, StartupTargetState::NotChecked);
+    const StartupEntry* deviceEntry = entryAt(entries, "\\OnDevice");
+    ASSERT_NE(deviceEntry, nullptr);
+    EXPECT_EQ(deviceEntry->target, StartupTargetState::NotChecked);
+    const StartupEntry* inShareEntry = entryAt(entries, "\\InShare");
+    ASSERT_NE(inShareEntry, nullptr);
+    EXPECT_TRUE(inShareEntry->executablePath.empty()) << "a share working directory is unknown: " << inShareEntry->executablePath;
+    EXPECT_EQ(inShareEntry->target, StartupTargetState::Unresolved);
+    const StartupEntry* localEntry = entryAt(entries, "\\Local");
+    ASSERT_NE(localEntry, nullptr);
+    EXPECT_EQ(localEntry->target, StartupTargetState::Missing) << "a local path is still checked";
+
+    ASSERT_EQ(statedPaths().size(), 1U) << "only the local program";
+    EXPECT_EQ(statedPaths()[0], LR"(C:\No Such Folder\updater.exe)");
+}
+
 /// Whether @p path ends with @p tail, ASCII case-insensitively.
 [[nodiscard]] bool endsWithIgnoreCase(std::string_view path, std::string_view tail)
 {

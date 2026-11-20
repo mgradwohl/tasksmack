@@ -9,6 +9,8 @@
 #include "Platform/Linux/SyscallTrace.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -47,7 +49,36 @@ struct RootFs
     /// The "= {}" lets a designated initializer leave it out without -Wmissing-designated-field-initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     std::function<bool(const std::string&)> onProcfs = {};
+    /// Whether @p path is on a filesystem whose owners and modes another account can make up (#4554):
+    /// untrustedFilesystem() of its statfs(), and a statfs that fails. Empty: none is.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::function<bool(const std::string&)> onUntrustedFilesystem = {};
 };
+
+/// Whether a filesystem of statfs type @p type, mounted with statfs flags @p flags, could show owners and modes another
+/// account chose (#4554, the #4572 review), so nothing on it is root-only whatever lstat() says:
+/// - a user's mount: nosuid, which udisks (a user's own disk image, its files root:0755 as they made them),
+///   fusermount and fstab "user" mounts all force, and a working /usr never is (sudo lives there);
+/// - FUSE (sshfs, fuseblk, glusterfs) reports any owner it likes, root's included, when mounted allow_other;
+/// - NFS, CIFS/SMB, CEPH, AFS and 9p carry owners and ACLs from elsewhere, which st_mode doesn't show.
+/// OverlayFS and ecryptfs keep their lower filesystem's real owners, and are trusted.
+[[nodiscard]] constexpr bool untrustedFilesystem(std::uint64_t type, std::uint64_t flags) noexcept
+{
+    constexpr std::uint64_t NOSUID = 2; // ST_NOSUID, <sys/statvfs.h>; statfs's f_flags uses the same bits
+    // <linux/magic.h>: FUSE_SUPER_MAGIC, NFS_SUPER_MAGIC, CIFS_SUPER_MAGIC, SMB2_SUPER_MAGIC, CEPH_SUPER_MAGIC,
+    // AFS_SUPER_MAGIC, AFS_FS_MAGIC (kAFS), V9FS_MAGIC.
+    constexpr std::array<std::uint64_t, 8> UNTRUSTED{
+        0x65735546U,
+        0x6969U,
+        0xFF534D42U,
+        0xFE534D42U,
+        0x00C36400U,
+        0x5346414FU,
+        0x6B414653U,
+        0x01021997U,
+    };
+    return (flags & NOSUID) != 0 || std::ranges::contains(UNTRUSTED, type & 0xFFFFFFFFU);
+}
 
 [[nodiscard]] inline RootFs systemRootFs()
 {
@@ -85,6 +116,17 @@ struct RootFs
             constexpr decltype(info.f_type) PROC_FS = 0x9fa0; // PROC_SUPER_MAGIC, <linux/magic.h>
             return ::statfs(path.c_str(), &info) == 0 && info.f_type == PROC_FS;
         },
+        .onUntrustedFilesystem =
+            [](const std::string& path)
+        {
+            struct statfs info{};
+            if (::statfs(path.c_str(), &info) != 0)
+            {
+                return true; // unknown: not trusted
+            }
+            return untrustedFilesystem(static_cast<std::uint64_t>(static_cast<std::uint32_t>(info.f_type)),
+                                       static_cast<std::uint64_t>(info.f_flags));
+        },
     };
 }
 
@@ -95,12 +137,35 @@ struct RootFs
     return (slash == 0 || slash == std::string::npos) ? std::string("/") : path.substr(0, slash);
 }
 
+/// Whether @p path, or any folder above it, is on a filesystem RootFs::onUntrustedFilesystem refuses: statfs() of a
+/// mount point reports what is mounted there, not what holds it, so a trusted filesystem mounted below a user's FUSE
+/// folder would pass on its own (the #4572 review).
+[[nodiscard]] inline bool onUntrustedMount(const std::string& path, const RootFs& fs)
+{
+    if (!fs.onUntrustedFilesystem)
+    {
+        return false;
+    }
+    if (fs.onUntrustedFilesystem(path))
+    {
+        return true;
+    }
+    for (std::size_t slash = path.rfind('/'); slash != std::string::npos && slash > 0; slash = path.rfind('/', slash - 1))
+    {
+        if (fs.onUntrustedFilesystem(path.substr(0, slash)))
+        {
+            return true;
+        }
+    }
+    return path != "/" && fs.onUntrustedFilesystem("/");
+}
+
 /// The canonical path of the folder @p folder when only root could change what is in it: that path, and every folder
 /// above it, is root's and writable by no group or other user (SyscallTrace::onlyRootCouldPlace()); nullopt otherwise.
 [[nodiscard]] inline std::optional<std::string> rootOnlyFolder(const std::string& folder, const RootFs& fs)
 {
     std::optional<std::string> resolved = fs.canonical(folder);
-    if (!resolved.has_value() || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership))
+    if (!resolved.has_value() || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership) || onUntrustedMount(*resolved, fs))
     {
         return std::nullopt;
     }
@@ -239,7 +304,8 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
         hop = target->starts_with('/') ? *target : parentFolder(hop) + "/" + *target;
     }
     std::optional<std::string> resolved = fs.canonical(path);
-    if (!resolved.has_value() || !fs.executable(*resolved) || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership))
+    if (!resolved.has_value() || !fs.executable(*resolved) || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership) ||
+        onUntrustedMount(*resolved, fs))
     {
         return std::nullopt;
     }

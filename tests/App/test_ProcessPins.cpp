@@ -44,6 +44,15 @@ TEST(ProcessPinsTest, TheConfigListIsFilteredAndWrittenBackSorted)
     EXPECT_EQ(pins.names(), (std::vector<std::string>{"game", "server"}));
 }
 
+// #4327: a pin is saved in config.toml, which holds no text that isn't valid UTF-8, so such a name can't be pinned.
+TEST(ProcessPinsTest, ANameThatIsntValidUtf8IsntPinned)
+{
+    Pins pins;
+    EXPECT_FALSE(pins.pin("caf\xE9.sh"));
+    EXPECT_TRUE(pins.empty());
+    EXPECT_TRUE(pins.pin("caf\xC3\xA9.sh"));
+}
+
 TEST(ProcessPinsTest, NoMoreThanMaxPins)
 {
     Pins pins;

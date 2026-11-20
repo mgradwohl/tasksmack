@@ -334,5 +334,40 @@ TEST(WindowsStartupProbeMathTest, ResourceUriRootsManifestReferences)
     EXPECT_EQ(resourceUri("", PACKAGE), "");
 }
 
+// #4374: network shares and device paths are never opened to list an entry; drive paths are.
+TEST(WindowsStartupProbeMathTest, NetworkAndDevicePathsAreNotOpened)
+{
+    for (const std::string_view path : {
+             R"(\\server\share\agent.exe)",
+             R"(\\corp.example\tools$\a.exe)",
+             "//server/share/agent.exe",
+             R"(\/server\share\a.exe)",
+             R"(\\?\UNC\server\share\agent.exe)",
+             R"(\\.\pipe\x)",
+             R"(\\.\C:\Windows\notepad.exe)",
+             R"(\\?\GLOBALROOT\Device\HarddiskVolume3\a.exe)",
+             R"(\\?\Volume{12345678-1234-1234-1234-123456789abc}\a.exe)",
+             R"(\\)",
+         })
+    {
+        EXPECT_TRUE(isNetworkOrDevicePath(path)) << path;
+    }
+    for (const std::string_view path : {
+             R"(C:\Program Files\Vendor\agent.exe)",
+             "c:/tools/a.exe",
+             R"(\\?\C:\Program Files\Vendor\agent.exe)",
+             R"(\\?\z:\a.exe)",
+             R"(\Windows\notepad.exe)",
+             "notepad.exe",
+             "",
+             R"(\)",
+         })
+    {
+        EXPECT_FALSE(isNetworkOrDevicePath(path)) << path;
+    }
+    static_assert(isNetworkOrDevicePath(R"(\\server\share)"));
+    static_assert(!isNetworkOrDevicePath(R"(C:\a.exe)"));
+}
+
 } // namespace
 } // namespace Platform::Windows::StartupMath

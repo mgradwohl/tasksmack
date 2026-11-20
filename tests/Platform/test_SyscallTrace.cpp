@@ -691,6 +691,76 @@ TEST(RootToolsTest, APathThroughAFolderLinkRunsCanonicallyAndANeighbourLinkKeeps
         << "without the filesystem type, the same link would keep its name";
 }
 
+// #4554: a FUSE (or NFS, CIFS) filesystem reports whatever owner it likes, root's included: nothing on one is trusted
+// as root's, neither a folder to search nor a tool to run.
+TEST(RootToolsTest, NothingOnAFilesystemThatMakesUpItsOwnersIsTrusted)
+{
+    const FakeTree tree = staffWritableUsrLocal();
+    RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/bin", fs), "/usr/bin");
+    EXPECT_TRUE(RootTools::rootTrustedPath("/usr/bin/python3", fs).has_value());
+    fs.onUntrustedFilesystem = [](const std::string& path)
+    {
+        return path.starts_with("/usr/bin");
+    }; // a FUSE mount
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/bin", fs), "") << "its root:0755 is whatever the mount says";
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/python3", fs).has_value());
+    EXPECT_FALSE(RootTools::findRootTool("xdg-open", "/usr/bin", fs).has_value());
+}
+
+// The #4572 review: #4554's own case. A FUSE filesystem on /usr/local/bin reports root:0755 for everything, so the mode
+// checks pass; only its filesystem refuses it, as a folder to search, a hop's folder, or anything below it.
+TEST(RootToolsTest, AFuseUsrLocalBinReportingRootOwnersIsRefusedOnlyByItsFilesystem)
+{
+    constexpr std::uint32_t DIR = 0040000;
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries["/usr/local"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/usr/local/bin"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/usr/local/bin/xdg-open"] = {.uid = 0, .mode = 0120777};
+    tree.entries["/usr/local/bin/crontab"] = {.uid = 0, .mode = 0120777};
+    RootTools::RootFs fs = tree.fs();
+    ASSERT_EQ(RootTools::trustedRootPath("/usr/local/bin:/usr/bin", fs), "/usr/local/bin:/usr/bin") << "the modes alone pass";
+    fs.onUntrustedFilesystem = [](const std::string& path)
+    {
+        return path.starts_with("/usr/local/bin");
+    };
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/local/bin:/usr/bin", fs), "/usr/bin");
+    EXPECT_EQ(RootTools::findRootTool("xdg-open", "/usr/local/bin:/usr/bin", fs), std::optional<std::string>("/usr/bin/xdg-open"));
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/local/bin/xdg-open", fs).has_value()) << "a hop's folder on FUSE";
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/hop", fs).has_value()) << "a later hop's folder on FUSE";
+
+    // Only the program itself on an untrusted filesystem: the final check refuses it.
+    fs.onUntrustedFilesystem = [](const std::string& path)
+    {
+        return path == "/usr/bin/python3";
+    };
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/python3", fs).has_value());
+    // An untrusted ancestor refuses what's mounted below it.
+    fs.onUntrustedFilesystem = [](const std::string& path)
+    {
+        return path == "/usr";
+    };
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/bin", fs), "") << "/usr/bin on a trusted mount below an untrusted /usr";
+}
+
+TEST(RootToolsTest, WhichFilesystemsCanMakeUpTheirOwners)
+{
+    constexpr std::uint64_t NOSUID = 2;
+    for (const std::uint64_t untrusted :
+         {0x65735546ULL, 0x6969ULL, 0xFF534D42ULL, 0xFE534D42ULL, 0x00C36400ULL, 0x5346414FULL, 0x6B414653ULL, 0x01021997ULL})
+    {
+        EXPECT_TRUE(RootTools::untrustedFilesystem(untrusted, 0)) << std::hex << untrusted;
+    }
+    EXPECT_FALSE(RootTools::untrustedFilesystem(0xEF53, 0)) << "ext4";
+    EXPECT_FALSE(RootTools::untrustedFilesystem(0x794C7630, 0)) << "overlayfs keeps real owners (containers, CI)";
+    EXPECT_TRUE(RootTools::untrustedFilesystem(0xEF53, NOSUID)) << "a user's udisks mount of their own ext4 image";
+    EXPECT_TRUE(RootTools::untrustedFilesystem(0xFFFFFFFFFF534D42ULL, 0)) << "a sign-extended CIFS magic";
+    // The real statfs: a path that isn't there is untrusted, and this machine's / isn't.
+    const RootTools::RootFs real = RootTools::systemRootFs();
+    EXPECT_TRUE(real.onUntrustedFilesystem("/nonexistent-4554"));
+    EXPECT_FALSE(real.onUntrustedFilesystem("/")) << "/ is a root filesystem, mounted with suid";
+}
+
 TEST(RootToolsTest, WithNoTrustedFolderTheRootPathFindsNothing)
 {
     EXPECT_EQ(RootTools::rootPathVariable(""), "PATH=/proc/nonexistent");

@@ -14,17 +14,24 @@
 // (toml++'s parse_file, stb_image with STBI_WINDOWS_UTF8, SDL), or a path read from UTF-8 input.
 // To open a file, pass the path itself (std::ifstream, std::filesystem) or path.wstring() to a W API.
 
+#ifndef _WIN32
+#include "Domain/Utf8Sanitize.h" // pathToUtf8Exact() on Linux
+#endif
+
 #include <cstddef>
 #include <filesystem>
+#include <optional>
 #include <string>
 #include <string_view>
 
 namespace Core
 {
 
-/// @p path as UTF-8. Never throws for an encoding reason: on Windows an unpaired UTF-16 surrogate
-/// (NTFS allows one in a file name) becomes U+FFFD, so the text is for display and UTF-8 APIs, not
-/// for rebuilding that exact path. On Linux the native bytes, unchanged.
+/// @p path as UTF-8 text, for a log line, a library that takes a UTF-8 name, or display. Never throws for an encoding
+/// reason: on Windows an unpaired UTF-16 surrogate (NTFS allows one in a file name) becomes U+FFFD, so the text
+/// can't rebuild that exact path. On Linux it is the native bytes, unchanged, which may not be valid UTF-8 (a
+/// Latin-1 folder name): pass it through Domain::sanitizedUtf8() before drawing it. Anything saved to be read back
+/// (config.toml) takes pathToUtf8Exact() instead (#4327).
 [[nodiscard]] inline std::string pathToUtf8(const std::filesystem::path& path)
 {
 #ifdef _WIN32
@@ -52,6 +59,36 @@ namespace Core
     const std::u8string text = std::filesystem::path(std::move(wide)).u8string();
     return {text.begin(), text.end()};
 #else
+    return path.native();
+#endif
+}
+
+/// @p path as UTF-8 text that names exactly that path again (utf8ToPath()), or nullopt when it can't: on Windows a
+/// path with an unpaired surrogate, on Linux one whose bytes aren't valid UTF-8 (#4327). For values saved to be read
+/// back: the D1 rule (#4299) writes no invalid text, and U+FFFD in its place would name a folder that isn't there.
+[[nodiscard]] inline std::optional<std::string> pathToUtf8Exact(const std::filesystem::path& path)
+{
+#ifdef _WIN32
+    const std::wstring& native = path.native();
+    for (std::size_t index = 0; index < native.size(); ++index)
+    {
+        const wchar_t unit = native[index];
+        if (unit >= 0xD800 && unit <= 0xDBFF && index + 1 < native.size() && native[index + 1] >= 0xDC00 && native[index + 1] <= 0xDFFF)
+        {
+            ++index; // a whole pair
+            continue;
+        }
+        if (unit >= 0xD800 && unit <= 0xDFFF)
+        {
+            return std::nullopt;
+        }
+    }
+    return pathToUtf8(path);
+#else
+    if (!Domain::isValidUtf8(path.native()))
+    {
+        return std::nullopt;
+    }
     return path.native();
 #endif
 }

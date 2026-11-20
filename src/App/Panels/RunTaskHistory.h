@@ -1,5 +1,7 @@
 #pragma once
 
+#include "Domain/Utf8Sanitize.h"
+
 // Run new task's recent commands (#3065): the last few command lines run, newest first, kept in
 // config.toml ([run_task] recent) and offered in the dialog. Pure, so tested without ImGui.
 
@@ -19,10 +21,11 @@ inline constexpr std::size_t MAX_RECENT = 10;
 inline constexpr std::size_t MAX_COMMAND_BYTES = 4096;
 
 /// @p recent with @p command first, any earlier copy of it removed, and no more than MAX_RECENT kept. A
-/// blank or over-long command leaves the list as it was.
+/// blank, over-long or not valid UTF-8 command leaves the list as it was: the list is saved in config.toml, which
+/// holds no text that isn't valid UTF-8 (#4327, D1).
 [[nodiscard]] inline std::vector<std::string> remember(std::vector<std::string> recent, std::string_view command)
 {
-    if (command.find_first_not_of(" \t\n") == std::string_view::npos || command.size() > MAX_COMMAND_BYTES)
+    if (command.find_first_not_of(" \t\n") == std::string_view::npos || command.size() > MAX_COMMAND_BYTES || !Domain::isValidUtf8(command))
     {
         return recent;
     }
