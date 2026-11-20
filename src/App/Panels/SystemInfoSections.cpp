@@ -1542,7 +1542,7 @@ Section buildDriversSection(const Platform::DriversInfo& drivers)
     }
     std::ranges::stable_sort(sorted,
                              [](const Platform::KernelDriver* a, const Platform::KernelDriver* b)
-                             { return Platform::compareIgnoreCase(a->name, b->name) < 0; });
+                             { return Platform::compareFolded(a->name, b->name) < 0; });
     if (windows)
     {
         addDriverProblemRows(rows, drivers.listed, sorted);

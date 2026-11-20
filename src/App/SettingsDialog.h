@@ -104,6 +104,9 @@ struct State
     /// Set by SettingsLayer: the file or folder an elevated TaskSmack didn't open (BackgroundOpen::withheld(),
     /// #3658), named under the buttons for the user to open; empty for none.
     std::string withheldPath;
+    /// Set by SettingsLayer from UserConfig::fileProblem() (#4318): why config.toml couldn't be used, said in the
+    /// warning colour above Edit Config File, which opens it to fix; empty for none.
+    std::string configProblem;
 
     // Previews for stored values that aren't among the options ("Custom (750 ms)"), built on open.
     std::string customThemePreview;

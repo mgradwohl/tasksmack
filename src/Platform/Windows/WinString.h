@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <string>
 #include <string_view>
 
@@ -20,5 +21,25 @@ namespace Platform::WinString
 /// FormatMessageA that the standard library's system_category message calls, with the trailing period, spaces and line break
 /// trimmed. "error N" when the system has no text for it. @p error is a DWORD.
 [[nodiscard]] std::string win32ErrorText(unsigned long error);
+
+/// Whether @p wide holds an unpaired surrogate (#4310): then wideToUtf8() shows it as U+FFFD, and that text no longer
+/// names what @p wide names, so it must not be turned back into a path, a command or a registry value.
+[[nodiscard]] constexpr bool hasLoneSurrogate(std::wstring_view wide) noexcept
+{
+    for (std::size_t i = 0; i < wide.size(); ++i)
+    {
+        const wchar_t unit = wide[i];
+        if (unit >= 0xD800 && unit <= 0xDBFF && i + 1 < wide.size() && wide[i + 1] >= 0xDC00 && wide[i + 1] <= 0xDFFF)
+        {
+            ++i; // a pair
+            continue;
+        }
+        if (unit >= 0xD800 && unit <= 0xDFFF)
+        {
+            return true;
+        }
+    }
+    return false;
+}
 
 } // namespace Platform::WinString

@@ -15,7 +15,8 @@
 // line (adoptHandedOver()), so the Administrator session keeps that user's settings; that one is no test hook.
 //
 // parse() and resolve() are pure and unit-tested (tests/Core/test_ConfigDirOverride.cpp);
-// ConfigDirOverride.cpp holds active(), the only part that reads the environment and touches the disk.
+// ConfigDirOverride.cpp holds active(), the only part that reads the environment, and takeTestHookValue(), which
+// makes the directory.
 
 #include "Core/EnvUtils.h"
 #include "Platform/AsciiTrim.h"
@@ -58,6 +59,12 @@ static_assert(Core::isKnownEnvHook(ENV_VAR)); // listed in KNOWN_ENV_HOOKS (#217
 {
     return override.value_or(platformDir);
 }
+
+/// What active() takes from a TASKSMACK_CONFIG_DIR @p value (UTF-8, nullptr when unset): parse()'s directory, made
+/// absolute from the working directory and normalised, and created when missing (a failure is logged as a warning).
+/// nullopt when parse() is. Never throws for an encoding reason (#4316): a working directory whose name holds a lone
+/// surrogate is kept exactly, and only the logged text shows it as U+FFFD (Core::pathToUtf8()).
+[[nodiscard]] std::optional<std::filesystem::path> takeTestHookValue(const char* value);
 
 /// The overriding directory, absolute; nullopt when TASKSMACK_CONFIG_DIR is unset or blank. Read on
 /// the first call, which also creates the directory (a failure is logged as a warning). Thread-safe.

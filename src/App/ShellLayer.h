@@ -239,6 +239,9 @@ class ShellLayer : public Core::Layer
     int m_StatusIntervalMs = -1;
     std::string m_StatusProcessText;
     std::string m_StatusIntervalText;
+    // Why config.toml couldn't be used (#4318), copied from UserConfig only when its version moves.
+    std::uint64_t m_ConfigProblemVersion = 0;
+    std::string m_ConfigProblem;
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
     bool m_ShowDetailsTabRequested = false;
