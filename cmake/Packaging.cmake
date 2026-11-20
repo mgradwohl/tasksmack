@@ -84,7 +84,9 @@ if(WIN32)
     # Per machine, in Program Files, by an administrator (#2550): the template's RequestExecutionLevel
     # admin, and the 64-bit Program Files named here rather than left to CPack's default. Only an install
     # TaskSmack's user can't change may use TaskSmackHelper.exe (#2572), so a copy in a folder the user
-    # picks instead, such as one under their profile, runs but can't act as an administrator.
+    # picks instead, such as one under their profile, runs but can't act as an administrator. An upgrade stays
+    # in the folder the installed copy is in (InstallDirRegKey, #4445), and the old Uninstall.exe runs only from
+    # an admin-only folder or when validly signed (#4444): cmake/CPackProjectConfig.cmake.in.
     set(CPACK_NSIS_INSTALL_ROOT "$PROGRAMFILES64")
     set(CPACK_PACKAGE_INSTALL_DIRECTORY "${PROJECT_NAME}")
     # A Start menu shortcut to the installed TaskSmack.exe, which is at the install's root (InstallRules.cmake).
