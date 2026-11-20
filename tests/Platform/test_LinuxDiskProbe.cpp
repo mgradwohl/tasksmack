@@ -20,6 +20,7 @@
 #include <fstream>
 #include <string>
 #include <thread>
+#include <vector>
 
 #include <unistd.h>
 
@@ -286,6 +287,46 @@ TEST_F(LinuxDiskProbeReadTest, PartitionLineIsFiltered)
     LinuxDiskProbe probe(m_DiskstatsPath);
     auto counters = probe.read();
 
+    ASSERT_EQ(counters.disks.size(), 1U);
+    EXPECT_EQ(counters.disks[0].deviceName, "sda");
+}
+
+// #4391: /sys/block decides what is a whole device, so md0, nbd0 and pmem0 are rows; partitions (nvme0n1p1,
+// mmcblk0boot0 isn't in /sys/block either) and the always-excluded kinds aren't; a stacked device (md0 has slaves)
+// is marked not physical, so the Domain keeps it out of the totals.
+TEST_F(LinuxDiskProbeReadTest, SysBlockDecidesWholeDevicesAndMarksStackedOnes)
+{
+    const std::filesystem::path sysBlock = m_DiskstatsPath.string() + "_sysblock";
+    for (const char* name : {"sda", "md0", "nbd0", "pmem0", "nvme0n1", "zram0", "loop0"})
+    {
+        std::filesystem::create_directories(sysBlock / name);
+    }
+    std::filesystem::create_directories(sysBlock / "md0" / "slaves");
+    std::ofstream(sysBlock / "md0" / "slaves" / "sda") << "";         // a link to the member in sysfs; any entry will do
+    std::filesystem::create_directories(sysBlock / "sda" / "slaves"); // empty: not stacked
+    writeDiskstats(makeLine("sda") + makeLine("sda1") + makeLine("md0") + makeLine("nbd0") + makeLine("pmem0") + makeLine("nvme0n1") +
+                   makeLine("nvme0n1p1") + makeLine("mmcblk0boot0") + makeLine("zram0") + makeLine("loop0"));
+
+    LinuxDiskProbe probe(m_DiskstatsPath, sysBlock);
+    const SystemDiskCounters counters = probe.read();
+    std::vector<std::string> names;
+    for (const DiskCounters& disk : counters.disks)
+    {
+        names.push_back(disk.deviceName);
+        EXPECT_EQ(disk.isPhysicalDevice, disk.deviceName != "md0") << disk.deviceName;
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"sda", "md0", "nbd0", "pmem0", "nvme0n1"}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sysBlock, ec);
+}
+
+// Without a /sys/block to list, the name rule is the fallback.
+TEST_F(LinuxDiskProbeReadTest, AnUnlistableSysBlockFallsBackToTheNameRule)
+{
+    writeDiskstats(makeLine("sda") + makeLine("sda1") + makeLine("md0"));
+    LinuxDiskProbe probe(m_DiskstatsPath, m_DiskstatsPath.string() + "_missing");
+    const SystemDiskCounters counters = probe.read();
     ASSERT_EQ(counters.disks.size(), 1U);
     EXPECT_EQ(counters.disks[0].deviceName, "sda");
 }
