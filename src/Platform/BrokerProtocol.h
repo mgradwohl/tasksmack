@@ -109,7 +109,8 @@ inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
     {
         --end;
     }
-    return value.substr(0, end);
+    value.remove_suffix(value.size() - end); // not substr(), which may throw: end is never past the end
+    return value;
 }
 /// The most environment variables an EnvironmentReply carries; a read with more keeps the first. Fewer
 /// fit when they are long: every list reply stops short of MAX_MESSAGE_BYTES and says it was cut (#2403).
