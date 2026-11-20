@@ -66,12 +66,14 @@
 #include "Platform/Linux/SessionUser.h"
 #include "Platform/Linux/UserNameLookup.h"
 
+#include <array>
 #include <cerrno>
 #include <functional>
 #include <vector>
 
 #include <fcntl.h>
 #include <pwd.h>
+#include <stdio.h> // NOLINT(modernize-deprecated-headers) - renameat is POSIX, declared only in stdio.h (#4542)
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <unistd.h>
@@ -837,7 +839,67 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
         }
     }
 }
+
+/// readAccessAcl() of the open file @p fd (#4542): no path is looked up again.
+[[nodiscard]] std::optional<std::vector<char>> readAccessAclAt(int fd)
+{
+    for (;;)
+    {
+        const auto size = ::fgetxattr(fd, POSIX_ACL_ACCESS_XATTR, nullptr, 0);
+        if (size < 0)
+        {
+            if (errno == ENODATA || errno == ENOTSUP)
+            {
+                return std::vector<char>{};
+            }
+            return std::nullopt;
+        }
+        std::vector<char> acl(static_cast<std::size_t>(size));
+        const auto read = ::fgetxattr(fd, POSIX_ACL_ACCESS_XATTR, acl.data(), acl.size());
+        if (read >= 0)
+        {
+            acl.resize(static_cast<std::size_t>(read));
+            return acl;
+        }
+        if (errno != ERANGE)
+        {
+            return std::nullopt;
+        }
+    }
+}
 #endif
+
+/// The most config.toml the descriptor save reads (#4542 review): a sparse or endless file of the user's must not make
+/// root read until memory runs out. Settings are a few KiB.
+constexpr std::size_t MAX_CONFIG_FILE_BYTES = std::size_t{4} * 1024U * 1024U;
+
+/// The rest of the open file @p fd, read to its end (EINTR retried), or nullopt on a read error or past @p maxBytes.
+[[nodiscard]] std::optional<std::string> readToEnd(int fd, std::size_t maxBytes)
+{
+    std::string out;
+    std::array<char, 16384> chunk{};
+    for (;;)
+    {
+        const auto n = ::read(fd, chunk.data(), chunk.size());
+        if (n < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            return std::nullopt;
+        }
+        if (n == 0)
+        {
+            return out;
+        }
+        if (out.size() + static_cast<std::size_t>(n) > maxBytes)
+        {
+            return std::nullopt;
+        }
+        out.append(chunk.data(), static_cast<std::size_t>(n));
+    }
+}
 
 /// Writes all of `contents` to `fd`, retrying short writes and EINTR, then sets @p owner (fchown),
 /// @p accessAcl and @p mode (fchmod) where given, all on the same descriptor -- after @p accessAcl if set (a raw POSIX access
@@ -855,7 +917,8 @@ using NewFileOwner::FileOwner;
                                     std::optional<FileOwner> owner,
                                     std::optional<mode_t> mode,
                                     const std::optional<std::vector<char>>& accessAcl,
-                                    const std::function<bool(UserConfig::SaveStep)>& fails)
+                                    const std::function<bool(UserConfig::SaveStep)>& fails,
+                                    bool syncBeforeClose = false)
 {
     using SaveStep = UserConfig::SaveStep;
     bool ok = true;
@@ -894,6 +957,11 @@ using NewFileOwner::FileOwner;
     (void) accessAcl;
 #endif
     if (ok && mode.has_value() && (fails(SaveStep::Chmod) || ::fchmod(fd, *mode) != 0))
+    {
+        ok = false;
+    }
+    // On disk before it is renamed over the config (#4542), so a crash can't leave an empty config.toml in its place.
+    if (ok && syncBeforeClose && ::fsync(fd) != 0)
     {
         ok = false;
     }
@@ -1095,6 +1163,16 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         {
             spdlog::error("Not saving settings: {}", folder->handOverError);
             return false;
+        }
+        if (m_AfterFolderCheckForTesting)
+        {
+            m_AfterFolderCheckForTesting();
+        }
+        // Run as root for a user, everything from here is relative to the folder just checked (#4542): by path, they
+        // could swap it for a link between that check and the write, and send root's write wherever they chose.
+        if (handedOver)
+        {
+            return writeIntoFolderFd(folder->fd.get(), settings, newFileOwner);
         }
     }
 #endif
@@ -1484,6 +1562,179 @@ bool UserConfig::writeIntoHandedOver(const Platform::IHandedOverFolder& folder, 
     m_IsLoaded = false; // the next load() reads it afresh, as after a save by path
     return true;
 }
+
+#ifndef _WIN32
+bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, std::optional<NewFileOwner::FileOwner> newFileOwner)
+{
+    const std::string name = m_ConfigPath.filename().string();
+    const std::string shown = Core::pathToUtf8(m_ConfigPath);
+    // A refusal the user is told about (#4318), not only logged: every later change would be lost without a word.
+    const auto refuse = [this, &shown](std::string_view why)
+    {
+        spdlog::error("Not saving settings: {} {}", shown, why);
+        setFileProblem(ConfigFileProblem::couldNotOpen(shown));
+        return false;
+    };
+
+    // Whose the folder is, from the descriptor that was checked, not by path (the #4542 review): what root makes here
+    // is theirs (#2121), and an existing config.toml must be theirs too. A path lookup could be pointed, for that one
+    // moment, at a folder of root's or another user's.
+    struct stat folderInfo = {};
+    if (::fstat(folderFd, &folderInfo) != 0)
+    {
+        return refuse("can't be saved: its folder can't be checked");
+    }
+    const uid_t effectiveUid = m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid();
+    if (effectiveUid == 0)
+    {
+        newFileOwner = folderInfo.st_uid != 0 ? std::optional(NewFileOwner::FileOwner{.uid = folderInfo.st_uid, .gid = folderInfo.st_gid})
+                                              : std::nullopt; // root's own folder: nothing to hand over
+    }
+
+    // Start from the file as it is, opened with no link followed. A link is refused, as the save by path refuses one
+    // here (#3759), and so is a hard link: root reading another file of theirs, or one it can read and they can't, and
+    // writing its text back as config.toml would hand it to them.
+    toml::table document;
+    bool fileExists = false;
+    std::optional<NewFileOwner::FileOwner> owner = newFileOwner;
+    std::optional<mode_t> mode;
+    std::optional<std::vector<char>> accessAcl;
+    {
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        const int existingFd = ::openat(folderFd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
+        if (existingFd < 0 && errno != ENOENT)
+        {
+            return refuse(errno == ELOOP ? std::string("is a link, which TaskSmack run as root doesn't follow")
+                                         : "can't be opened: " + std::system_category().message(errno));
+        }
+        if (existingFd >= 0)
+        {
+            const NewFileOwner::DirectoryFd closer(existingFd); // closes it on every way out
+            struct stat info = {};
+            if (saveStepFails(SaveStep::OwnerStat) || ::fstat(existingFd, &info) != 0)
+            {
+                spdlog::error("Not saving settings: can't read the owner of {}: {}", shown, std::system_category().message(errno));
+                return false;
+            }
+            if (!S_ISREG(info.st_mode) || info.st_nlink != 1)
+            {
+                return refuse("isn't a plain file of its own (a hard link, or not a file); fix or remove it");
+            }
+            // Theirs, as everything in their folder should be: a file of someone else's, linked in and its other name
+            // removed, is never read and rewritten as root (the #4542 review).
+            if (info.st_uid != folderInfo.st_uid)
+            {
+                return refuse("isn't owned by its folder's owner; fix or remove it");
+            }
+            if (info.st_size < 0 || std::cmp_greater(info.st_size, MAX_CONFIG_FILE_BYTES))
+            {
+                return refuse("is too large to be a settings file; fix or remove it");
+            }
+            const std::optional<std::string> existing = readToEnd(existingFd, MAX_CONFIG_FILE_BYTES);
+            if (!existing.has_value())
+            {
+                return refuse("can't be read; fix or remove it");
+            }
+            try
+            {
+                document = toml::parse(*existing, shown);
+            }
+            catch (const toml::parse_error& err)
+            {
+                spdlog::error("Not saving settings: {} can't be read or parsed ({}); fix or remove it", shown, err.what());
+                setFileProblem(ConfigFileProblem::couldNotParse(shown, *existing, err)); // #4318
+                return false;
+            }
+            fileExists = true;
+            owner = NewFileOwner::FileOwner{.uid = info.st_uid, .gid = info.st_gid};
+            mode = static_cast<mode_t>(info.st_mode & 07777U);
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+            accessAcl = saveStepFails(SaveStep::AclRead) ? std::nullopt : readAccessAclAt(existingFd);
+            if (!accessAcl.has_value())
+            {
+                spdlog::error(
+                    "Not saving settings: can't read the access control list of {}: {}", shown, std::system_category().message(errno));
+                return false;
+            }
+#endif
+        }
+    }
+
+    const std::optional<std::string> rendered = renderConfig(document, fileExists, settings, m_Synced);
+    if (!rendered.has_value())
+    {
+        return false;
+    }
+    // The VirusTotal API key's file is the user's alone (#3094), as the save by path makes it.
+    if (!settings.virusTotalApiKey.empty())
+    {
+        if (mode.has_value())
+        {
+            *mode &= static_cast<mode_t>(S_IRUSR | S_IWUSR);
+        }
+#if defined(__linux__) && __has_include(<sys/xattr.h>)
+        accessAcl = std::vector<char>{};
+#endif
+    }
+
+    // The staging file: made here, exclusively, owner-only, never through a link, and written through its descriptor.
+    std::random_device random;
+    std::string tempName;
+    int fd = -1;
+    for (int attempt = 0; attempt < 8 && fd < 0; ++attempt)
+    {
+        tempName = std::format(".tasksmack-config.{:08x}.tmp", m_TempNameSource ? m_TempNameSource() : random());
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+        fd = saveStepFails(SaveStep::CreateStaging)
+               ? -1
+               : ::openat(folderFd, tempName.c_str(), O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+        if (fd < 0 && errno != EEXIST)
+        {
+            break;
+        }
+    }
+    if (fd < 0)
+    {
+        spdlog::error("Failed to create a temporary file beside {}: {}", shown, std::system_category().message(errno));
+        return false;
+    }
+    const auto discard = [folderFd, &tempName]
+    {
+        ::unlinkat(folderFd, tempName.c_str(), 0);
+    };
+    // Theirs from the start (the #4542 review): a staging file they moved aside while it was root's would stay root's if
+    // the write then failed. writeAllAndClose() sets the owner again after writing, which changes nothing.
+    if (owner.has_value() && (saveStepFails(SaveStep::Chown) || ::fchown(fd, owner->uid, owner->gid) != 0))
+    {
+        spdlog::error("Not saving settings: the new {} can't be given to its user: {}", shown, std::system_category().message(errno));
+        ::close(fd);
+        discard();
+        return false;
+    }
+    if (!writeAllAndClose(fd, *rendered, owner, mode, accessAcl, [this](SaveStep step) { return saveStepFails(step); }, true))
+    {
+        spdlog::error("Not saving settings: couldn't write the new {} or give it the old one's owner and permissions", shown);
+        discard();
+        return false;
+    }
+    if (saveStepFails(SaveStep::Rename) || ::renameat(folderFd, tempName.c_str(), folderFd, name.c_str()) != 0)
+    {
+        spdlog::error("Failed to replace {} with the new config: {}", shown, std::system_category().message(errno));
+        discard();
+        return false;
+    }
+    // The rename itself on disk too. The folder descriptor is O_PATH, which fsync() can't use: reopen it for reading.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
+    if (const NewFileOwner::DirectoryFd folder(::openat(folderFd, ".", O_RDONLY | O_DIRECTORY | O_CLOEXEC)); folder.get() >= 0)
+    {
+        ::fsync(folder.get());
+    }
+    m_Synced = settings;
+    setFileProblem({}); // #4318
+    m_IsLoaded = false; // the next load() reads it afresh, as after a save by path
+    return true;
+}
+#endif
 
 bool UserConfig::writeIfMissing(const UserSettings& settings)
 {

@@ -27,6 +27,12 @@ class IHandedOverFolder;
 
 namespace App
 {
+#ifndef _WIN32
+namespace NewFileOwner
+{
+struct FileOwner;
+} // namespace NewFileOwner
+#endif
 
 /// The format of the config file TaskSmack writes, its top-level `config_version` key (#1376).
 ///  - 1 (no key): [process_columns] lists every column, whether or not the user chose it.
@@ -293,6 +299,7 @@ class UserConfig
         m_FailingSaveStep = SaveStep::None;
         m_FailingSaveErrno = 0;
         m_EffectiveUidForTesting.reset();
+        m_AfterFolderCheckForTesting = nullptr;
         setFileProblem({});
     }
 
@@ -334,6 +341,13 @@ class UserConfig
         m_FailingSaveErrno = errorNumber;
     }
 
+    /// Testing only: called once save() has opened and checked the config folder, before anything is read or written
+    /// there, so a test can swap the folder for a link in that gap (#4542). Reset by resetConfigPathForTesting().
+    void setAfterFolderCheckForTesting(std::function<void()> hook)
+    {
+        m_AfterFolderCheckForTesting = std::move(hook);
+    }
+
   private:
     UserConfig();
     ~UserConfig() = default;
@@ -350,6 +364,7 @@ class UserConfig
     SaveStep m_FailingSaveStep = SaveStep::None;     // Testing only (failSaveStepForTesting())
     int m_FailingSaveErrno = 0;
     std::optional<std::uint32_t> m_EffectiveUidForTesting; // Testing only (setEffectiveUidForTesting())
+    std::function<void()> m_AfterFolderCheckForTesting;    // Testing only (setAfterFolderCheckForTesting())
 
     // fileProblem()'s text, under its own lock: the UI thread reads it while a save on the worker may set it.
     mutable std::mutex m_FileProblemMutex;
@@ -369,6 +384,13 @@ class UserConfig
     /// writeSettings() for a config folder an elevated restart was handed and still holds (#3774): config.toml read
     /// and replaced only through @p folder, relative to the folder held. Called with m_WriteMutex held.
     [[nodiscard]] bool writeIntoHandedOver(const Platform::IHandedOverFolder& folder, const UserSettings& settings);
+#ifndef _WIN32
+    /// writeSettings() run as root for a user (#4542): config.toml read and replaced only relative to @p folderFd, the
+    /// config folder openDirectoryForUser() checked, never by a path a link of theirs could redirect. Its staging file
+    /// is made with openat(O_EXCL | O_NOFOLLOW) and given to @p newFileOwner when the config is new; a link or hard link
+    /// at config.toml is refused. Called with m_WriteMutex held.
+    [[nodiscard]] bool writeIntoFolderFd(int folderFd, const UserSettings& settings, std::optional<NewFileOwner::FileOwner> newFileOwner);
+#endif
     /// writeSettings() as the background writer's sink, on its worker.
     [[nodiscard]] bool writeInBackground(const UserSettings& settings);
     /// The background writer's failure report, once for a run of failed writes.
