@@ -88,70 +88,18 @@ TEST(ProcessEnvironmentParseTest, LeadingEqualsBelongsToTheName)
     EXPECT_EQ(vars[0].value, "C:\\dir");
 }
 
-TEST(ProcessEnvironmentParseTest, InvalidUtf8IsEscapedNotDropped)
+// #4328: the reader keeps the raw bytes; the UI makes display text (Domain::DisplayText, tested on its own).
+TEST(ProcessEnvironmentParseTest, InvalidUtf8AndControlsAreKeptRaw)
 {
-    // 0xFF is never valid; 0xC3 alone is a truncated two-byte sequence.
     const auto vars = parseEnvironBlock("BAD=a\xFF"
-                                        "b\0TRUNC=\xC3\0"sv);
-    ASSERT_EQ(vars.size(), 2U);
-    EXPECT_EQ(vars[0].value, "a\\xFFb");
-    EXPECT_EQ(vars[1].value, "\\xC3");
-}
-
-TEST(ProcessEnvironmentParseTest, ControlCharactersAreEscaped)
-{
-    const auto vars = parseEnvironBlock("BASH_FUNC_f%%=() {  echo hi\n}\0TABBED=a\tb\r\x1B[0m\0"sv);
-    ASSERT_EQ(vars.size(), 2U);
-    EXPECT_EQ(vars[0].name, "BASH_FUNC_f%%");
-    EXPECT_EQ(vars[0].value, "() {  echo hi\\n}");
-    EXPECT_EQ(vars[1].value, "a\\tb\\r\\x1B[0m");
-}
-
-TEST(ProcessEnvironmentParseTest, LargeBinaryValueIsEscapedWhole)
-{
-    // 1 MiB of 0x01: every byte becomes the four characters "\x01".
-    constexpr std::size_t VALUE_BYTES = std::size_t{1} << 20U;
-    std::string block = "BIN=";
-    block.append(VALUE_BYTES, '\x01');
-    block.push_back('\0');
-    const auto vars = parseEnvironBlock(block);
-    ASSERT_EQ(vars.size(), 1U);
-    EXPECT_EQ(vars[0].name, "BIN");
-    ASSERT_EQ(vars[0].value.size(), VALUE_BYTES * 4U);
-    EXPECT_EQ(vars[0].value.substr(0, 8), R"(\x01\x01)");
-    EXPECT_EQ(vars[0].value.substr(vars[0].value.size() - 4), R"(\x01)");
-}
-
-// ========== escapeForDisplay ==========
-
-TEST(ProcessEnvironmentEscapeTest, KeepsWellFormedUtf8)
-{
-    // 2-, 3- and 4-byte sequences: e-acute, the euro sign, and an emoji
-    const std::string text = "caf\xC3\xA9 \xE2\x82\xAC \xF0\x9F\x98\x80";
-    EXPECT_EQ(escapeForDisplay(text), text);
-}
-
-TEST(ProcessEnvironmentEscapeTest, EscapesMalformedSequences)
-{
-    struct Case
-    {
-        std::string_view input;
-        std::string_view expected;
-    };
-    const std::array<Case, 7> cases{{
-        {.input = "\x80", .expected = R"(\x80)"},                         // stray continuation byte
-        {.input = "\xC0\xAF", .expected = R"(\xC0\xAF)"},                 // overlong '/'
-        {.input = "\xE0\x80\xAF", .expected = R"(\xE0\x80\xAF)"},         // overlong 3-byte
-        {.input = "\xED\xA0\x80", .expected = R"(\xED\xA0\x80)"},         // UTF-16 surrogate
-        {.input = "\xF4\x90\x80\x80", .expected = R"(\xF4\x90\x80\x80)"}, // past U+10FFFF
-        {.input = "\xE2\x82", .expected = R"(\xE2\x82)"},                 // truncated
-        {.input = "\x7F", .expected = R"(\x7F)"},                         // DEL
-    }};
-    for (const Case& c : cases)
-    {
-        SCOPED_TRACE(std::string(c.expected));
-        EXPECT_EQ(escapeForDisplay(c.input), c.expected);
-    }
+                                        "b\0BASH_FUNC_f%%=() {  echo hi\n}\0TABBED=a\tb\r\x1B[0m\0"sv);
+    ASSERT_EQ(vars.size(), 3U);
+    EXPECT_EQ(vars[0].value,
+              "a\xFF"
+              "b");
+    EXPECT_EQ(vars[1].name, "BASH_FUNC_f%%");
+    EXPECT_EQ(vars[1].value, "() {  echo hi\n}");
+    EXPECT_EQ(vars[2].value, "a\tb\r\x1B[0m");
 }
 
 // ========== statusFromErrno ==========

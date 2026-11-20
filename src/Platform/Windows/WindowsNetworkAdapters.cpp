@@ -1,7 +1,6 @@
 #include "WindowsNetworkAdapters.h"
 
 #include "Platform/ISystemInfoProbe.h"
-#include "Platform/ProcessEnvironment.h"
 #include "Platform/Windows/WindowsProcAddress.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
@@ -434,7 +433,7 @@ void readWifi(const Functions& fns, HANDLE client, const GUID& guid, NetworkAdap
             const std::size_t length = std::min<std::size_t>(association.dot11Ssid.uSSIDLength, DOT11_SSID_MAX_LENGTH);
             const std::span<const UCHAR> ssid = std::span(association.dot11Ssid.ucSSID).first(length);
             // An SSID is any 32 bytes, so it is escaped for display, as on Linux.
-            link.ssid = Environment::escapeForDisplay(std::string(ssid.begin(), ssid.end()));
+            link.ssid = std::string(ssid.begin(), ssid.end()); // raw bytes: the UI shows them as nmcli does (#4328)
             link.signalQuality = static_cast<std::uint32_t>(association.wlanSignalQuality);
             link.bitrateKbps = static_cast<std::uint32_t>(association.ulTxRate);
             link.rxBitrateKbps = static_cast<std::uint32_t>(association.ulRxRate);

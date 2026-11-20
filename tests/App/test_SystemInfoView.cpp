@@ -1481,7 +1481,7 @@ TEST(SystemInfoSectionsTest, WifiNetworkAndLinkRows)
     wifi.up = true;
     wifi.wireless = true;
     wifi.wifiLink = Platform::WifiLink{
-        .ssid = "Cafe \\xFF",
+        .ssid = "Cafe \xFF", // raw bytes, not UTF-8 (#4328)
         .frequencyMhz = 5180,
         .bitrateKbps = 866'700,
         .signalQuality = std::nullopt,
@@ -1498,7 +1498,9 @@ TEST(SystemInfoSectionsTest, WifiNetworkAndLinkRows)
     const Section section = SystemInfo::buildNetworkAdaptersSection(network);
     const auto* name = findRow(section, "wlp3s0 Wi-Fi network");
     ASSERT_NE(name, nullptr);
-    EXPECT_EQ(name->value, "Cafe \\xFF");
+    EXPECT_EQ(name->value, "4361666520FF") << "not UTF-8: the whole name in hex, as nmcli shows it (#4328)";
+    EXPECT_EQ(name->action, SystemInfo::RowAction::CopyRawHex);
+    EXPECT_EQ(name->rawHex, "4361666520FF");
     EXPECT_TRUE(name->isIdentifier); // a network's name can place the machine
     EXPECT_EQ(findRow(section, "wlp3s0 Wi-Fi link")->value, "5 GHz, channel 36, 866.7 Mbit/s");
     EXPECT_FALSE(findRow(section, "wlp3s0 Wi-Fi link")->isIdentifier);

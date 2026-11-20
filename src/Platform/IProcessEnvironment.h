@@ -29,8 +29,8 @@ enum class EnvironmentReadStatus : std::uint8_t
     Failed,           ///< Any other error.
 };
 
-/// One NAME=VALUE entry, both already safe to draw: valid UTF-8 with control characters and invalid
-/// bytes escaped (Platform::Environment::escapeForDisplay()).
+/// One NAME=VALUE entry, both as the process's raw bytes (#4328): not necessarily valid UTF-8, and possibly holding
+/// control characters. The UI makes display text from them as it draws (Domain::DisplayText::escaped()).
 struct EnvironmentVariable
 {
     std::string name;

@@ -42,6 +42,10 @@ enum class RowAction : std::uint8_t
     /// TaskSmack can restart elevated (Windows, RestartAsAdministrator::offered()), opens the notice whose
     /// Restart as administrator... restarts it, after the UAC prompt.
     RestartAsAdministrator,
+    /// "Copy raw (hex)" (#4328): a Wi-Fi network's name as its exact bytes, which its display text may not hold
+    /// (malformed UTF-8 is U+FFFD there, and a control character an escape). Copies Row::rawHex. An identifier's:
+    /// offered only while identifiers are shown.
+    CopyRawHex,
 };
 
 /// The note beside the "Restart as administrator..." button (#3669).
@@ -84,6 +88,10 @@ struct Row
     /// /media/<user> or a crash under /home/<user> (#2120): the text shown and copied while identifiers
     /// are hidden. Such a row stays visible, unlike an identifier, since the rest of it names nothing.
     std::optional<RedactedText> redacted;
+    /// RowAction::CopyRawHex's text: the value's raw bytes in hex (Domain::DisplayText::hex()). Empty for every other
+    /// row. The "= {}" lets a designated initializer leave it out.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::string rawHex = {};
 
     [[nodiscard]] bool available() const noexcept
     {

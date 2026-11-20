@@ -11,7 +11,6 @@
 #ifdef TASKSMACK_HAS_SDBUS
 #include "Platform/Linux/NetworkdLinkJson.h"
 #include "Platform/Linux/SdBusCall.h"
-#include "Platform/ProcessEnvironment.h"
 
 #include <cerrno>
 #include <cstddef>
@@ -283,7 +282,7 @@ struct ResolvedSession
         result = sd_bus_message_read(reply.get(), "sb", &name, &routeOnly);
         if (result >= 0 && name != nullptr && *name != '\0')
         {
-            domains.push_back((routeOnly != 0 ? "~" : "") + Environment::escapeForDisplay(name));
+            domains.push_back((routeOnly != 0 ? "~" : "") + std::string(name)); // raw: the UI makes display text (#4328)
         }
         if (result >= 0)
         {
