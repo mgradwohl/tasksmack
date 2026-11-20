@@ -260,6 +260,10 @@ DOCS_SITE_CASES = [
     ("its lockfile", ["requirements-docs-site.txt"], True),
     ("its requirements input", ["requirements-docs-site.in"], True),
     ("a site page among source changes", ["src/main.cpp", "docs/_sidebar.md"], True),
+    # The release dashboard's page is tested against these (#4524); its generator alone can't change the test.
+    ("the release dashboard's fixtures", ["tests/tools/fixtures/release-dashboard/v1.1.0.json"], True),
+    ("the release dashboard's generator", ["tools/release-dashboard.py"], False),
+    ("another tool test's fixture", ["tests/tools/fixtures/clang-tidy-headers/a.h"], False),
     ("the README (not on the site)", ["README.md"], False),
     ("CONTRIBUTING (not on the site)", ["CONTRIBUTING.md"], False),
     ("source only", ["src/main.cpp"], False),

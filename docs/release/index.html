@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Release Command Center</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="description" content="What still has to happen before the next TaskSmack release ships, where each thing stands and how fast it's moving." />
+  <!--
+    The Release Command Center (#4524). A static page: dashboard.js reads the JSON that
+    tools/release-dashboard.py writes and .github/workflows/release-dashboard.yml publishes to the
+    data-only dashboard-data branch every 10 minutes. Nothing here is a second tracking system: the
+    milestone is the scope, the release tracker is the checklist, and the labels are the state
+    (docs/dev/release-process.md, "The release dashboard").
+
+    No library and no CDN. Issue and pull-request titles are other people's text, so the script builds
+    every node with textContent, and this policy allows no inline script or style and one data host.
+  -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; connect-src https://raw.githubusercontent.com; img-src 'self' data:; base-uri 'none'; form-action 'none'" />
+  <meta name="release-data" content="https://raw.githubusercontent.com/mgradwohl/tasksmack/dashboard-data/" />
+  <link rel="stylesheet" href="dashboard.css" />
+</head>
+<body>
+  <main id="app" class="page">
+    <p class="notice">Loading the release data…</p>
+  </main>
+  <noscript><p class="notice">This page needs JavaScript to read the release data. The same information is on the <a href="https://github.com/mgradwohl/tasksmack/milestones">milestones page</a>.</p></noscript>
+  <script src="dashboard.js"></script>
+</body>
+</html>

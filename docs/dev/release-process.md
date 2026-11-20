@@ -21,7 +21,9 @@ A release moves through nine stages, 0 to 8:
 
 ### 0. Plan and scope
 
-- **The milestone and a release tracker issue.** Open them first; for example, #3223 for v0.10.0.
+- **The milestone and a release tracker issue.** Open them first; for example, #3223 for v0.10.0. Title the
+  tracker `[RELEASE X.Y] vX.Y.0 release tracker` and put it on the milestone: [the release
+  dashboard](#the-release-dashboard) finds it by that title.
 - **The feature list.** Write down the features in scope.
 - **Outside dependencies with lead time.** List every one, and start them first:
   - signing vendors and certificates;
@@ -193,6 +195,69 @@ freeze.
 - **After the freeze:** it needs an exception.
 - **After the candidate is approved:** it can't join at all. It moves to the next minor, or to a patch release if
   it's a bug.
+
+## The release dashboard
+
+<https://mgradwohl.github.io/tasksmack/release/> shows, for one release, what still has to happen before it
+ships, where each of those things stands and how fast it's moving (#4524). It opens on the release in
+progress; the picker at the top shows any earlier or planned one, and `?m=v0.10.0` links to one directly.
+
+It keeps nothing of its own. Every figure is read from what this process already keeps, so a wrong figure is
+fixed at its source:
+
+| The page shows | It reads |
+|---|---|
+| Scope, and what's open | the milestone's issues. The tracker itself isn't counted. |
+| In progress, in review | the `in progress` label or a draft pull request; a pull request that's ready for review |
+| "No high-severity bug open" | open `sev:high` and `sev:medium` issues on the milestone |
+| "Every feature merged, moved or cut" | open `enhancement` issues that aren't CI, tooling or security work |
+| "Feature freeze declared" | the first one-line tracker comment that declares the feature freeze |
+| "Code-review findings closed" | the milestone's `code-review` issues |
+| "Performance issues closed" | the milestone's `performance` issues: stage 4's measure against the baselines files its regressions there |
+| "Tracker checklist" | the task list in the tracker's body |
+| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close` |
+| "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
+| "Pull requests merged" | the open pull requests on the milestone or closing one of its issues: how long each has been ready, and what it's waiting on (failing checks, a conflict, open review threads, a catch-up with its base, running checks) |
+| "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |
+| "Candidate approved" | the first one-line tracker comment after the freeze that approves the candidate or release |
+| "Release published" | the GitHub release tagged with the milestone's title |
+
+What that asks of the tracker:
+
+- **Start a checklist item with its issue number** (`- [ ] #3378 Update dependencies`) and the page ticks it when
+  that issue closes, so the box doesn't need ticking by hand. An item with no leading number is as its box says.
+- **Declare the freeze and approve the candidate in one line each,** as on #3223: "I declare the feature freeze",
+  "Approved for v0.10.0 release". The page links the comment it read. What it takes for each:
+  - the freeze: a line that says "feature freeze" and "declare" or "declared", or that opens with "Feature freeze";
+  - the approval: a line after the freeze that says "approved" and names the candidate, the release or the version;
+  - neither: a longer comment (the lanes' readiness reports), a line that hedges ("ready for the freeze?"), a line
+    that names an issue or an exception ("Approved: #4600 exception"), or a comment from someone who can't write
+    to the repository.
+- **A due date on the milestone** is the release's goal. The page shows it under "Released" beside the date it
+  really shipped, says what net closing rate the goal asks for, and marks it on the burn-up chart.
+
+The pace table is arithmetic on the last 1, 3 and 7 days, not a forecast. A review sweep that files a hundred
+findings in a day turns the net negative until they're worked off.
+
+The comparison table sets each release against the one before it on its line: a minor against the minor before,
+a patch against the release before it on its branch. A cycle runs from that earlier release's publication to its
+own. "Work started" there is the first linked pull request's open time for every release, since releases before
+2026-11-19 have no `in progress` label.
+
+How it's made:
+
+- `tools/release-dashboard.py` reads the API and writes one JSON file per `vX.Y.Z` milestone, plus an index. A
+  shipped release is written once and reused.
+- `.github/workflows/release-dashboard.yml` runs it every 10 minutes and publishes the files to the `dashboard-data`
+  branch, which holds that one commit and nothing else. To refresh now: `gh workflow run release-dashboard.yml`.
+- `docs/release/` is the page: static, no library, no CDN. If the data is more than 45 minutes old it says so.
+- The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
+  once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
+  used and what's left, and warns under a quarter.
+- To look at the data locally: `python -I -X utf8 tools/release-dashboard.py --out <folder>` (a read-only token
+  from `gh auth login` is enough).
+
+Coverage stays on Codecov, and the page links to it.
 
 ## Branches and tags
 
@@ -541,6 +606,7 @@ A patch happens only when a shipped bug warrants one.
 | Maintainer | scope and late-feature calls; declares the freeze; approves the candidate; manual checks; cuts the release branch; pushes the tag; merges the CHANGELOG PRs; SmartScreen submission; announcement |
 | Windows lane | Windows code and its review sweep; CI and the release pipeline; dry runs; Windows validation; post-publish verification; Windows screenshots; performance baselines |
 | WSL lane | Linux code and its review sweep; Linux packaging; Linux validation; the docs site; Linux screenshots |
+| agentDash | [the release dashboard](#the-release-dashboard): its generator, page and workflow (`agent:Dash`) |
 
 ## Why these steps
 
