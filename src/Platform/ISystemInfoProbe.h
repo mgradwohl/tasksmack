@@ -581,7 +581,9 @@ struct AdapterAddress
 /// A connected Wi-Fi adapter's link (#1518): the network it has joined and how fast.
 struct WifiLink
 {
-    std::string ssid;               ///< The network's name, made safe to draw; an identifier (it can place the machine)
+    /// The network's name as its raw bytes (up to 32, not necessarily UTF-8, #4328): the UI shows it as nmcli does
+    /// (Domain::DisplayText::ssid()). An identifier: it can place the machine.
+    std::string ssid;
     std::uint32_t frequencyMhz = 0; ///< The channel's centre frequency; 0 when unknown
     std::uint32_t bitrateKbps = 0;  ///< The current transmit rate in kbit/s; 0 when unknown
 

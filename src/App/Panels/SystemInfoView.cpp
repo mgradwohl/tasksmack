@@ -228,6 +228,18 @@ renderRowAction(const SystemInfo::Row& row, bool reading, SystemInfoViewState& s
         note = SystemInfo::PUBLIC_IP_NOTE;
         clickedFlag = &state.publicIpClicked;
         break;
+    case SystemInfo::RowAction::CopyRawHex:
+        // The value's exact bytes (#4328), shown only beside a value that is shown: an identifier's while identifiers are.
+        if (row.isIdentifier && !state.showIdentifiers)
+        {
+            return SystemInfo::RowAction::None;
+        }
+        if (ImGui::SmallButton(ICON_FA_COPY "  Copy raw (hex)"))
+        {
+            UI::setClipboardUtf8(row.rawHex);
+        }
+        ImGui::SetItemTooltip("Copy the network name's exact bytes, in hexadecimal");
+        return SystemInfo::RowAction::None;
     case SystemInfo::RowAction::RestartAsAdministrator:
         // No helper to read them (#3669): the restart, which opens the elevation notice. Never disabled by a press:
         // the notice can be closed and the button pressed again.
@@ -366,12 +378,18 @@ constexpr float SPARKLINE_WIDTH_EM = 10.0F;
             textView(row.shownLabel(state.showIdentifiers));
             ImGui::PopStyleColor();
             ImGui::TableNextColumn();
-            if (row.action == SystemInfo::RowAction::None)
+            // "Copy raw (hex)" sits beside the value it copies (#4328); every other action stands in for a value.
+            const bool besideValue = row.action == SystemInfo::RowAction::CopyRawHex;
+            if (row.action == SystemInfo::RowAction::None || besideValue)
             {
                 renderValue(row, state.showIdentifiers, scheme);
             }
-            else
+            if (row.action != SystemInfo::RowAction::None && (!besideValue || row.available()))
             {
+                if (besideValue)
+                {
+                    ImGui::SameLine();
+                }
                 ImGui::PushID(static_cast<int>(index));
                 if (const SystemInfo::RowAction clicked = renderRowAction(row, reading, state, scheme);
                     clicked != SystemInfo::RowAction::None)

@@ -301,7 +301,7 @@ TEST_F(WindowsProcessEnvironmentReaderTest, ReadsEveryVariableFromTheBlock)
     EXPECT_EQ(result.variables[1].value, "C:\\Windows;C:\\Windows\\System32");
     EXPECT_EQ(valueOf(result, "EMPTY"), std::optional<std::string>(""));
     EXPECT_EQ(valueOf(result, "UNICODE"), std::optional<std::string>("caf\xC3\xA9 \xC3\x9F \xF0\x9F\x98\x80"));
-    EXPECT_EQ(valueOf(result, "TAB"), std::optional<std::string>("a\\tb")); // escaped for display
+    EXPECT_EQ(valueOf(result, "TAB"), std::optional<std::string>("a\tb")); // the raw tab: the UI escapes it (#4328)
     EXPECT_EQ(valueOf(result, "NOEQUALS"), std::optional<std::string>(""));
     EXPECT_EQ(fake().reads, 4); // the three fields, then the block, which its first page holds whole
 }
