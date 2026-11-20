@@ -61,7 +61,7 @@ bool Detail::openWithSystemHandler(std::string_view target, const SessionLookup&
     // an exec failure reported back -- so the browser or file manager it starts holds nothing of ours.
     const std::string targetStr = nativeTargetFromUtf8(target);
     const char* const pathEnv = std::getenv("PATH"); // NOLINT(concurrency-mt-unsafe) - read on an open worker (#3155); nothing sets it
-    // As root, only a root-trusted xdg-open from the system's directories, at the canonical path checked (#4396), as
+        // As root, only a root-trusted xdg-open from the system's directories, at the path checked (#4396, #4531), as
     // every other tool TaskSmack runs as root is found; otherwise as execvp would.
     const std::optional<std::string> xdgOpen =
         Platform::RootTools::find("xdg-open", ::geteuid() == 0, pathEnv != nullptr ? std::string_view(pathEnv) : std::string_view{});

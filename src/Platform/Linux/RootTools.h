@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
 namespace Platform::RootTools
@@ -42,6 +43,10 @@ struct RootFs
     std::function<std::optional<std::string>(const std::string&)> canonical;
     /// isExecutableFile().
     std::function<bool(const std::string&)> executable;
+    /// Whether the folder @p path is on procfs (statfs()), wherever it is mounted; empty: only /proc itself counts.
+    /// The "= {}" lets a designated initializer leave it out without -Wmissing-designated-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::function<bool(const std::string&)> onProcfs = {};
 };
 
 [[nodiscard]] inline RootFs systemRootFs()
@@ -73,6 +78,13 @@ struct RootFs
             return ec ? std::nullopt : std::optional<std::string>(resolved.native());
         },
         .executable = &isExecutableFile,
+        .onProcfs =
+            [](const std::string& path)
+        {
+            struct statfs info{};
+            constexpr decltype(info.f_type) PROC_FS = 0x9fa0; // PROC_SUPER_MAGIC, <linux/magic.h>
+            return ::statfs(path.c_str(), &info) == 0 && info.f_type == PROC_FS;
+        },
     };
 }
 
@@ -167,11 +179,37 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     return trustedRootPath(SyscallTrace::ROOT_TOOL_PATH, systemRootFs());
 }
 
-/// For a tool TaskSmack runs as root (#3605): the canonical path @p path resolves to, when that is an executable file
-/// only root could have put there; nullopt otherwise. Every link on the way must sit in a root-only folder too (#4396):
-/// a link in a folder another account can write passes on its target alone, so that account would choose which
-/// root-owned program runs (xdg-open -> python3, which runs a folder's __main__.py), and could re-point it before an
-/// exec. Run the path this returns, never @p path.
+/// Whether @p path names each folder plainly: absolute, with no "." or ".." component and no empty one ("//").
+[[nodiscard]] inline bool isPlainAbsolutePath(std::string_view path)
+{
+    if (!path.starts_with('/') || path.ends_with('/'))
+    {
+        return false;
+    }
+    for (std::size_t start = 1; start <= path.size();)
+    {
+        std::size_t end = path.find('/', start);
+        end = end == std::string_view::npos ? path.size() : end;
+        const std::string_view part = path.substr(start, end - start);
+        if (part.empty() || part == "." || part == "..")
+        {
+            return false;
+        }
+        start = end + 1;
+    }
+    return true;
+}
+
+/// For a tool TaskSmack runs as root (#3605): the path to run for @p path, when it leads to an executable file only root
+/// could have put there; nullopt otherwise. Every link on the way, a folder's or a hop's, must sit in a folder only root
+/// could change (#4396, #4551): a link another account can replace would choose which root-owned program runs
+/// (xdg-open -> python3, which runs a folder's __main__.py), and could re-point it before the exec. So only root can
+/// change where @p path leads. @p path itself is what runs (#4531) when every hop's folder is named as it is, with no
+/// link in it: a multi-call program dispatches on its argv[0], so pkill run as /usr/bin/pgrep was pgrep. Otherwise the
+/// canonical path is answered (the #4564 review): a link nested inside a folder link's target (a root link to /opt/app,
+/// itself a link into a staff-writable folder) is checked only where it leads, not where it sits, and a /proc magic
+/// link changes with the process behind it, so the kernel's walk of such a path could be changed after the check.
+/// Run the path this returns.
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path, const RootFs& fs)
 {
     if (!path.starts_with('/') || !fs.executable(path))
@@ -180,12 +218,19 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     }
     constexpr int MAX_LINK_HOPS = 40; // the kernel's own limit on a path's links
     std::string hop = path;
+    bool namedAsItIs = isPlainAbsolutePath(path); // every hop's folder is its own canonical path: no folder link walked
     for (int hops = 0;; ++hops)
     {
-        if (hops > MAX_LINK_HOPS || !isRootOnlyFolder(parentFolder(hop), fs) || !noForeignLinkOnTheWay(hop, fs))
+        const std::string folder = parentFolder(hop);
+        const std::optional<std::string> folderResolved = rootOnlyFolder(folder, fs);
+        if (hops > MAX_LINK_HOPS || !folderResolved.has_value() || !noForeignLinkOnTheWay(hop, fs))
         {
             return std::nullopt;
         }
+        // A /proc magic link (/proc/<pid>/exe, .../fd/<n>) passes every root-only check, but leads to whatever the
+        // process holding that PID at the exec has (the #4564 re-review): never run by such a name.
+        const bool procfs = folder == "/proc" || folder.starts_with("/proc/") || (fs.onProcfs && fs.onProcfs(folder));
+        namedAsItIs = namedAsItIs && *folderResolved == folder && !procfs;
         const std::optional<std::string> target = fs.readLink(hop);
         if (!target.has_value())
         {
@@ -198,7 +243,7 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     {
         return std::nullopt;
     }
-    return resolved;
+    return namedAsItIs ? std::optional<std::string>(path) : resolved;
 }
 
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path)
@@ -212,8 +257,8 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     return rootTrustedPath(path).has_value();
 }
 
-/// The tool @p name as root, searched for in trustedRootPath(@p pathList) only and answered as the canonical path that
-/// was checked (rootTrustedPath(), #4396), resolved once.
+/// The tool @p name as root, searched for in trustedRootPath(@p pathList) only, and answered as the path rootTrustedPath()
+/// checked (#4396, #4531), checked once.
 [[nodiscard]] inline std::optional<std::string> findRootTool(std::string_view name, std::string_view pathList, const RootFs& fs)
 {
     std::optional<std::string> verified;

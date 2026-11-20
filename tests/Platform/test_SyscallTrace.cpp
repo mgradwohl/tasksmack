@@ -442,8 +442,8 @@ TEST(SyscallTraceTest, ATerminalServerCantCarryTaskSmacksRootToStrace)
 
 // #4396: a link to a root-owned tool passed the check on its target, though the link itself sat in a folder another
 // account could write, and could be pointed elsewhere before the exec. Now such a link is refused, and as root the path
-// run is the canonical one checked.
-TEST(RootToolsTest, AsRootTheCanonicalPathCheckedIsThePathRun)
+// run is the one checked: since #4531, the path found, every link on whose way only root could change.
+TEST(RootToolsTest, AsRootThePathCheckedIsThePathRun)
 {
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack-4396-link";
     std::error_code ec;
@@ -460,10 +460,14 @@ TEST(RootToolsTest, AsRootTheCanonicalPathCheckedIsThePathRun)
         << "its target is root's, but the link sits in a folder this account can write, so it could choose or re-point it";
     EXPECT_EQ(RootTools::rootTrustedPath(target.string()), std::optional<std::string>(target.string()));
 
+    // #4531: the path found is what runs, in a trusted folder (each one canonical, #4550), so a multi-call program
+    // keeps the name it dispatches on: /usr/bin/sh, not the dash or bash it links to.
     const std::optional<std::string> found = RootTools::find("sh", true, "");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(*found, std::filesystem::canonical(*found, ec).string()) << "no link left in the path run as root";
-    EXPECT_FALSE(std::filesystem::is_symlink(*found));
+    EXPECT_TRUE(found->ends_with("/sh")) << *found;
+    EXPECT_EQ(std::filesystem::path(*found).parent_path().string(),
+              std::filesystem::canonical(std::filesystem::path(*found).parent_path(), ec).string())
+        << "in a trusted folder, named canonically";
     std::filesystem::remove_all(dir, ec);
 }
 
@@ -615,12 +619,78 @@ TEST(RootToolsTest, AFolderLinkOnAHopsWayMustSitInARootOnlyFolder)
 
     EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/node", fs).has_value())
         << "/usr/local/lib/nodejs is a link in a staff-writable folder: it chooses where the hop leads";
-    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/direct", fs), std::optional<std::string>("/opt/other/bin/node"));
-    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/python3"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/direct", fs), std::optional<std::string>("/usr/bin/direct")) << "#4531";
+
+    // The #4564 review: a hop through a folder link is answered canonically. /usr/bin/merged's hop goes through root's
+    // /bin link (merged-usr), so it runs as the python3 it leads to.
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/python3"))
+        << "through a folder link: canonical";
+    EXPECT_TRUE(RootTools::isPlainAbsolutePath("/usr/bin/pkill"));
+    for (const std::string_view odd : {"/usr/bin/../bin/pkill", "/usr/./bin/pkill", "/usr//bin/pkill", "usr/bin/pkill", "/usr/bin/"})
+    {
+        EXPECT_FALSE(RootTools::isPlainAbsolutePath(odd)) << odd << ": answered in its canonical form instead";
+    }
 }
 
 // The #4551 review: with no trusted folder, a root child's PATH finds nothing. An empty PATH would search the
 // current directory.
+// The #4564 review: a link nested in a folder link's target is checked only where it leads. /usr/bin/two -> /opt/app/
+// bin/node, where root's /opt/app links into a staff-writable /usr/local/lib/nodejs, a link the staff member can swap:
+// run by its own name, the kernel would walk that link again at the exec. It is answered canonically, as is a /proc
+// magic link, which changes with the process behind it; a link to its neighbour (pkill -> pgrep) keeps its name.
+TEST(RootToolsTest, APathThroughAFolderLinkRunsCanonicallyAndANeighbourLinkKeepsItsName)
+{
+    constexpr std::uint32_t DIR = 0040000;
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries["/usr/local/lib"] = {.uid = 0, .mode = DIR | 02775};
+    tree.entries["/usr/local/lib/nodejs"] = {.uid = 1000, .mode = 0120777};
+    tree.links["/usr/local/lib/nodejs"] = "/opt/other";
+    tree.entries["/opt"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other/bin"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other/bin/node"] = {.uid = 0, .mode = 0100755};
+    tree.entries["/opt/app"] = {.uid = 0, .mode = 0120777};
+    tree.links["/opt/app"] = "/usr/local/lib/nodejs";
+    tree.entries["/usr/bin/two"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/two"] = "/opt/app/bin/node";
+    tree.entries["/usr/bin/pgrep"] = {.uid = 0, .mode = 0100755};
+    tree.entries["/usr/bin/pkill"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/pkill"] = "/usr/bin/pgrep";
+    tree.entries["/proc"] = {.uid = 0, .mode = DIR | 0555};
+    tree.entries["/proc/1"] = {.uid = 0, .mode = DIR | 0555};
+    tree.entries["/proc/1/cwd"] = {.uid = 0, .mode = 0120777};
+    tree.links["/proc/1/cwd"] = "/";
+    const RootTools::RootFs fs = tree.fs();
+
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/two", fs), std::optional<std::string>("/opt/other/bin/node"))
+        << "never by a name the kernel would walk through the staff member's link again";
+    EXPECT_EQ(RootTools::rootTrustedPath("/proc/1/cwd/usr/bin/pgrep", fs), std::optional<std::string>("/usr/bin/pgrep"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/pkill", fs), std::optional<std::string>("/usr/bin/pkill"))
+        << "#4531: pkill keeps the name it dispatches on";
+
+    // The #4564 re-review: /proc/<pid>/exe is a root-only link in a root-only folder, but leads to whatever the process
+    // holding that PID at the exec runs ($TERMINAL=/proc/<pid>/exe of a setuid program, its PID then reused).
+    FakeTree procTree = tree;
+    procTree.entries["/proc/123"] = {.uid = 0, .mode = DIR | 0555};
+    procTree.entries["/proc/123/exe"] = {.uid = 0, .mode = 0120777};
+    procTree.links["/proc/123/exe"] = "/usr/bin/pgrep";
+    EXPECT_EQ(RootTools::rootTrustedPath("/proc/123/exe", procTree.fs()), std::optional<std::string>("/usr/bin/pgrep"))
+        << "never by the magic link's name";
+    // procfs mounted elsewhere is found by its filesystem type.
+    procTree.entries["/srv"] = {.uid = 0, .mode = DIR | 0755};
+    procTree.entries["/srv/p"] = {.uid = 0, .mode = DIR | 0555};
+    procTree.entries["/srv/p/exe"] = {.uid = 0, .mode = 0120777};
+    procTree.links["/srv/p/exe"] = "/usr/bin/pgrep";
+    RootTools::RootFs onProc = procTree.fs();
+    onProc.onProcfs = [](const std::string& folder)
+    {
+        return folder.starts_with("/srv/p");
+    };
+    EXPECT_EQ(RootTools::rootTrustedPath("/srv/p/exe", onProc), std::optional<std::string>("/usr/bin/pgrep"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/srv/p/exe", procTree.fs()), std::optional<std::string>("/srv/p/exe"))
+        << "without the filesystem type, the same link would keep its name";
+}
+
 TEST(RootToolsTest, WithNoTrustedFolderTheRootPathFindsNothing)
 {
     EXPECT_EQ(RootTools::rootPathVariable(""), "PATH=/proc/nonexistent");
