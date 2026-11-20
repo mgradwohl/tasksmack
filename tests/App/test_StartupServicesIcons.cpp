@@ -112,9 +112,11 @@ class StartupServicesIconsTest : public ::testing::Test
         io.Fonts->AddFontDefault();
 
         m_Icons = std::make_unique<ProcessIconView>(
-            UI::IconTextureBackend{.create = [this](int /*width*/, int /*height*/, std::span<const std::uint8_t> /*rgba*/)
-                                   { return static_cast<std::uint32_t>(++m_Created); },
-                                   .destroy = [](std::uint32_t /*texture*/) {}},
+            UI::IconTextureBackend{
+                .create = [this](int /*width*/, int /*height*/, std::span<const std::uint8_t> /*rgba*/)
+                { return static_cast<std::uint32_t>(++m_Created); },
+                .destroy = [](std::uint32_t /*texture*/) {},
+            },
             Domain::ProcessIconCacheConfig{.startWorker = false});
         m_Icons->attach(std::make_unique<RecordingIconSource>(m_Log));
     }
@@ -141,12 +143,14 @@ class StartupServicesIconsTest : public ::testing::Test
 
     [[nodiscard]] static Platform::StartupCapabilities startupCapabilities()
     {
-        return {.canEnumerate = true,
-                .hasEnabledState = true,
-                .hasDisabledTime = false,
-                .hasPublisher = false,
-                .canResolveShortcuts = false,
-                .unavailableReason = {}};
+        return {
+            .canEnumerate = true,
+            .hasEnabledState = true,
+            .hasDisabledTime = false,
+            .hasPublisher = false,
+            .canResolveShortcuts = false,
+            .unavailableReason = {},
+        };
     }
 
     [[nodiscard]] static Platform::ServiceCapabilities serviceCapabilities()
@@ -176,6 +180,12 @@ TEST(StartupIconPathTest, AnEntrysIconIsItsLogoElseItsProgram)
     missing.target = Platform::StartupTargetState::Missing;
     EXPECT_TRUE(startupIconPath(missing).empty()) << "nothing to read: the generic icon";
 
+    // #4374: a program on a share is never opened, not even for its icon.
+    Platform::StartupEntry share = startup("Agent", Platform::StartupLocation::ScheduledTaskMachine);
+    share.executablePath = R"(\\corp\tools\agent.exe)";
+    share.target = Platform::StartupTargetState::NotChecked;
+    EXPECT_TRUE(startupIconPath(share).empty()) << "the generic icon, not the share's";
+
     Platform::StartupEntry unresolved;
     unresolved.name = "Shortcut";
     EXPECT_TRUE(startupIconPath(unresolved).empty());
@@ -197,9 +207,11 @@ TEST_F(StartupServicesIconsTest, StartupRowsLoadTheirProgramsAndLogosThenDrawThe
 {
     Domain::StartupPublication publication;
     publication.version = 2;
-    publication.entries = {startup("Discord", Platform::StartupLocation::RunUser),
-                           startup("Terminal", Platform::StartupLocation::PackagedApp),
-                           startup("Gone", Platform::StartupLocation::RunMachine)};
+    publication.entries = {
+        startup("Discord", Platform::StartupLocation::RunUser),
+        startup("Terminal", Platform::StartupLocation::PackagedApp),
+        startup("Gone", Platform::StartupLocation::RunMachine),
+    };
     publication.entries[1].iconPath = R"(C:\Packages\Terminal\Assets\Square44x44Logo.png)";
     publication.entries[2].target = Platform::StartupTargetState::Missing;
     m_Log->withIcon = {R"(C:\Apps\Discord.exe)", publication.entries[1].iconPath};
@@ -253,9 +265,11 @@ TEST_F(StartupServicesIconsTest, ServiceRowsLoadTheirProgramsButSvchostKeepsTheG
 {
     Domain::ServicePublication publication;
     publication.version = 5;
-    publication.services = {service("Spooler", R"(C:\Windows\System32\spoolsv.exe)"),
-                            service("EventLog", R"(C:\Windows\System32\svchost.exe)"),
-                            service("NoConfig", "")};
+    publication.services = {
+        service("Spooler", R"(C:\Windows\System32\spoolsv.exe)"),
+        service("EventLog", R"(C:\Windows\System32\svchost.exe)"),
+        service("NoConfig", ""),
+    };
     m_Log->withIcon = {R"(C:\Windows\System32\spoolsv.exe)"};
 
     ServicesViewState state;
