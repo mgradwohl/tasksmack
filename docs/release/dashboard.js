@@ -440,7 +440,7 @@
     const burn = el('div', { class: 'chart' });
     const daily = el('div', { class: 'chart' });
     const buckets = bucketed(release, start, end);
-    view.charts.push(() => drawBurnup(burn, release, start, end), () => drawDaily(daily, buckets));
+    view.charts.push(() => drawBurnup(burn, release, start, end), () => drawDaily(daily, buckets, release, start, end));
     const keys = (items) => el('ul', { class: 'legend' }, items.map(([cls, text]) => el('li', null, el('span', { class: 'key ' + cls }), text)));
     // The open work by where it stood: only when the data carries the lists it's drawn from.
     const flows = Boolean(release.events.flow_started && release.events.flow_review);
@@ -449,7 +449,7 @@
     const flowHead = ['Not started', 'In progress', 'In review'];
     return el('section', null,
       el('div', { class: 'section-head' }, el('h2', { text: 'Scope and progress' }),
-        el('p', { class: 'sub', text: 'Since ' + release.cycle.start_reason + ' on ' + day(start) + '. The gap between the two lines is the open work.' })),
+        el('p', { class: 'sub', text: 'Since ' + release.cycle.start_reason + ' on ' + day(start) + '. The gap between the two lines is the open work. The charts share one time axis.' })),
       el('div', { class: 'block' }, el('h3', { text: 'Issues on the milestone, and how many are closed' }), keys([['k-scope', 'In scope'], ['k-closed', 'Closed']]), burn),
       el('div', { class: 'block' }, el('h3', { text: 'Closed and added, per ' + buckets.unit }), keys([['box k-closed', 'Closed'], ['box k-scope', 'Added to the milestone']]), daily),
       flows ? el('div', { class: 'block' }, el('h3', { text: 'The open work, by where it stood' }),
@@ -471,6 +471,33 @@
     const review = Math.min(started, upTo(events.flow_review || [], t));
     const done = Math.min(review, upTo(events.done, t));
     return { todo: joined - started, progress: started - review, review: review - done };
+  }
+
+  /**
+   * The time axis the section's three charts share, so a day is at the same place in each: the same plot edges,
+   * and whole local days from the cycle's first to today's, or to the goal's while the release is open. The
+   * labels sit under the middle of their day, where the bar chart's bars are.
+   */
+  function timeAxis(release, start, end, width) {
+    const left = 44;
+    const right = width - 88; // room for the line charts' end labels; the bar chart keeps it too, to line up
+    const aim = release.cycle.end ? null : goal(release);
+    const first = new Date(start * 1000);
+    first.setHours(0, 0, 0, 0);
+    const beyond = new Date(Math.max(end, aim ? aim.end : end) * 1000);
+    beyond.setHours(24, 0, 0, 0);
+    const from = first.getTime() / 1000;
+    const to = beyond.getTime() / 1000;
+    const x = (t) => left + ((t - from) / Math.max(1, to - from)) * (right - left);
+    const middles = [];
+    for (const cursor = new Date(first); cursor.getTime() / 1000 < to; cursor.setDate(cursor.getDate() + 1)) {
+      const next = new Date(cursor);
+      next.setDate(next.getDate() + 1);
+      middles.push([(cursor.getTime() + next.getTime()) / 2000, dateFormat.format(cursor)]);
+    }
+    const every = Math.max(1, Math.ceil(middles.length / Math.max(2, Math.floor((right - left) / 56))));
+    const ticks = middles.filter((middle, index) => index % every === 0).map(([t, label]) => [x(t), label]);
+    return { left, right, from, to, x, ticks, aim };
   }
 
   /** How many of the sorted @p times are at or before @p t. */
@@ -505,6 +532,7 @@
       const to = Math.min(edges[Math.min(index + step, edges.length - 1)], end);
       rows.push({
         from: edges[index],
+        until: edges[Math.min(index + step, edges.length - 1)],
         closed: upTo(done, to) - upTo(done, from),
         added: upTo(joined, to) - upTo(joined, from),
         closedTotal: upTo(done, to),
@@ -558,14 +586,14 @@
   function drawBurnup(container, release, start, end) {
     const width = Math.max(280, container.clientWidth);
     const height = 250;
-    const box = { left: 44, right: width - 88, top: 14, bottom: height - 28 };
+    // The axis runs on to the goal while the release is open, so the room left is in the picture.
+    const axis = timeAxis(release, start, end, width);
+    const box = { left: axis.left, right: axis.right, top: 14, bottom: height - 28 };
     const joined = release.events.joined;
     const done = release.events.done;
     const yMax = niceMax(joined.length);
-    // The axis runs on to the goal while the release is open, so the room left is in the picture.
-    const aim = release.cycle.end ? null : goal(release);
-    const last = aim ? Math.max(end, aim.end) : end;
-    const x = (t) => box.left + ((t - start) / Math.max(1, last - start)) * (box.right - box.left);
+    const aim = axis.aim;
+    const x = axis.x;
     const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
 
     // A count only changes at an event, so each line is drawn as steps between them.
@@ -581,18 +609,9 @@
     const scope = steps(joined);
     const closed = steps(done);
 
-    const tickEvery = Math.max(1, Math.ceil((last - start) / DAY / Math.max(2, Math.floor((box.right - box.left) / 64))));
-    const xTicks = [];
-    const cursor = new Date(start * 1000);
-    cursor.setHours(24, 0, 0, 0);
-    for (let index = 0; cursor.getTime() / 1000 < last; index += 1) {
-      if (index % tickEvery === 0) xTicks.push([x(cursor.getTime() / 1000), dateFormat.format(cursor)]);
-      cursor.setDate(cursor.getDate() + 1);
-    }
-
     const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img',
       'aria-label': 'Burn-up: ' + scope.total + ' issues in scope, ' + closed.total + ' closed, ' + (scope.total - closed.total) + ' open. The table below has the numbers.' });
-    axes(chart, box, yMax, xTicks);
+    axes(chart, box, yMax, axis.ticks);
     const freeze = release.signals.freeze && seconds(release.signals.freeze.at);
     if (freeze && freeze > start && freeze < end) {
       chart.append(svg('line', { class: 'marker', x1: x(freeze), x2: x(freeze), y1: box.top, y2: box.bottom }),
@@ -603,7 +622,7 @@
       chart.append(svg('line', { class: 'marker', x1: x(aim.end), x2: x(aim.end), y1: box.top, y2: box.bottom }),
         svg('text', { x: x(aim.end) + (anchor === 'end' ? -5 : 5), y: box.top + 10, 'text-anchor': anchor, text: 'Goal ' + aim.label }));
     }
-    chart.append(svg('path', { class: 'f-closed-wash', d: closed.path + 'V' + box.bottom + 'H' + box.left + 'Z' }),
+    chart.append(svg('path', { class: 'f-closed-wash', d: closed.path + 'V' + box.bottom + 'H' + x(start).toFixed(1) + 'Z' }),
       svg('path', { class: 'line s-scope', d: scope.path }), svg('path', { class: 'line s-closed', d: closed.path }));
 
     // The end labels sit beside their dots; when the lines meet, the upper one moves up, not away.
@@ -635,7 +654,7 @@
     };
     target.addEventListener('pointermove', (event) => {
       const bounds = chart.getBoundingClientRect();
-      point(start + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (last - start));
+      point(axis.from + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (axis.to - axis.from));
     });
     target.addEventListener('pointerleave', leave);
     target.addEventListener('focus', () => point(at));
@@ -652,12 +671,11 @@
   function drawFlow(container, release, start, end) {
     const width = Math.max(280, container.clientWidth);
     const height = 220;
-    const box = { left: 44, right: width - 88, top: 12, bottom: height - 28 };
-    const aim = release.cycle.end ? null : goal(release);
-    const last = aim ? Math.max(end, aim.end) : end;  // the same axis as the burn-up above it
-    const x = (t) => box.left + ((t - start) / Math.max(1, last - start)) * (box.right - box.left);
+    const axis = timeAxis(release, start, end, width); // the same axis as the two charts above it
+    const box = { left: axis.left, right: axis.right, top: 12, bottom: height - 28 };
+    const x = axis.x;
     // One sample a pixel is as fine as the screen shows; the counts only change at events.
-    const samples = Math.max(2, Math.round(x(end) - box.left));
+    const samples = Math.max(2, Math.round(x(end) - x(start)));
     const points = [];
     for (let index = 0; index <= samples; index += 1) {
       const t = start + ((end - start) * index) / samples;
@@ -666,19 +684,11 @@
     const yMax = niceMax(Math.max(1, ...points.map((point) => point.todo + point.progress + point.review)));
     const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
 
-    const tickEvery = Math.max(1, Math.ceil((last - start) / DAY / Math.max(2, Math.floor((box.right - box.left) / 64))));
-    const xTicks = [];
-    const cursor = new Date(start * 1000);
-    cursor.setHours(24, 0, 0, 0);
-    for (let index = 0; cursor.getTime() / 1000 < last; index += 1) {
-      if (index % tickEvery === 0) xTicks.push([x(cursor.getTime() / 1000), dateFormat.format(cursor)]);
-      cursor.setDate(cursor.getDate() + 1);
-    }
     const now = points[points.length - 1];
     const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img',
       'aria-label': 'The open work over the cycle. ' + (release.cycle.end ? 'At the release: ' : 'Now: ') + number.format(now.todo) + ' not started, ' +
         number.format(now.progress) + ' in progress, ' + number.format(now.review) + ' in review. The table below has the numbers.' });
-    axes(chart, box, yMax, xTicks);
+    axes(chart, box, yMax, axis.ticks);
 
     // Each band lies between two running totals: the area from its lower edge to its upper one.
     const band = (cls, lower, upper) => {
@@ -717,7 +727,7 @@
     };
     target.addEventListener('pointermove', (event) => {
       const bounds = chart.getBoundingClientRect();
-      point(start + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (last - start));
+      point(axis.from + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (axis.to - axis.from));
     });
     target.addEventListener('pointerleave', leave);
     target.addEventListener('focus', () => point(at));
@@ -730,34 +740,34 @@
     });
   }
 
-  function drawDaily(container, buckets) {
+  function drawDaily(container, buckets, release, start, end) {
     const rows = buckets.rows;
     const width = Math.max(280, container.clientWidth);
     const height = 190;
-    const box = { left: 44, right: width - 8, top: 10, bottom: height - 28 };
+    const axis = timeAxis(release, start, end, width); // each bucket's bars stand on its own days of the shared axis
+    const box = { left: axis.left, right: axis.right, top: 10, bottom: height - 28 };
     const yMax = niceMax(Math.max(1, ...rows.map((row) => Math.max(row.closed, row.added))));
-    const band = (box.right - box.left) / Math.max(1, rows.length);
-    const bar = Math.max(2, Math.min(24, (band - 8) / 2));
     const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
-    const every = Math.max(1, Math.ceil(rows.length / Math.max(2, Math.floor((box.right - box.left) / 56))));
-    const xTicks = rows.map((row, index) => [box.left + band * (index + 0.5), day(row.from)]).filter((tick, index) => index % every === 0);
     const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Issues closed and added per ' + buckets.unit + '. The table below has the numbers.' });
-    axes(chart, box, yMax, xTicks);
+    axes(chart, box, yMax, axis.ticks);
     container.replaceChildren(chart);
     const tip = tooltipFor(container);
 
     // A column with a rounded top and a square foot on the baseline.
-    const column = (cls, left, value) => {
+    const column = (cls, left, value, bar) => {
       if (!value) return null;
       const top = y(value);
       const radius = Math.min(4, bar / 2, box.bottom - top);
       return svg('path', { class: cls, d: 'M' + left + ' ' + box.bottom + 'V' + (top + radius) + 'Q' + left + ' ' + top + ' ' + (left + radius) + ' ' + top +
         'H' + (left + bar - radius) + 'Q' + (left + bar) + ' ' + top + ' ' + (left + bar) + ' ' + (top + radius) + 'V' + box.bottom + 'Z' });
     };
-    rows.forEach((row, index) => {
-      const middle = box.left + band * (index + 0.5);
+    rows.forEach((row) => {
+      const from = axis.x(row.from);
+      const band = axis.x(row.until) - from;
+      const bar = Math.max(2, Math.min(24, (band - 6) / 2));
+      const middle = from + band / 2;
       const text = day(row.from) + ': ' + row.closed + ' closed, ' + row.added + ' added';
-      const target = svg('rect', { class: 'hit', x: box.left + band * index, y: box.top, width: band, height: box.bottom - box.top, tabindex: 0, 'aria-label': text });
+      const target = svg('rect', { class: 'hit', x: from, y: box.top, width: band, height: box.bottom - box.top, tabindex: 0, 'aria-label': text });
       const tell = () => tip.show((buckets.unit === 'week' ? 'Week of ' : '') + day(row.from),
         [['box k-closed', 'Closed', row.closed], ['box k-scope', 'Added', row.added], [null, 'Net', signed(row.closed - row.added)]], middle, box.top);
       target.addEventListener('pointerenter', tell);
@@ -765,7 +775,7 @@
       target.addEventListener('pointerleave', tip.hide);
       target.addEventListener('blur', tip.hide);
       chart.append(target);
-      for (const mark of [column('f-closed', middle - bar - 1, row.closed), column('f-scope', middle + 1, row.added)]) {
+      for (const mark of [column('f-closed', middle - bar - 1, row.closed, bar), column('f-scope', middle + 1, row.added, bar)]) {
         if (mark) chart.append(mark);
       }
     });
