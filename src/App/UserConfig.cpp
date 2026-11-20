@@ -28,7 +28,6 @@
 #include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
-#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstdint>
@@ -67,6 +66,7 @@
 #include "Platform/Linux/SessionUser.h"
 #include "Platform/Linux/UserNameLookup.h"
 
+#include <array>
 #include <cerrno>
 #include <functional>
 #include <vector>
