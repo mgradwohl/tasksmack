@@ -1009,6 +1009,12 @@ TEST_F(ProcessWatchWorkerTest, AFailedWaitStopsTheSession)
 // says why.
 TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
 {
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+    // clang 23's ASan runtime on Windows crashes ("stack-overflow", at a code address, not a stack one) on any bare
+    // `throw;`, which ProcessWatch::watch() does before the Worker records why (#4518). A stand-alone
+    // `try { throw X; } catch (...) { throw; }` does it; the watch's stack is the default 1 MiB. Normal builds run it.
+    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)";
+#endif
     m_Seam.then = WaitSeam::Then::Throw;
     const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
     std::promise<void> stopped;
@@ -1024,6 +1030,9 @@ TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
 
 TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsAnythingStopsTheSession)
 {
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)"; // see the test above
+#endif
     m_Seam.then = WaitSeam::Then::ThrowNonStd;
     const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
     std::promise<void> stopped;
@@ -1976,6 +1985,14 @@ class InstallFolder
         EXPECT_FALSE(error) << error.message();
         std::filesystem::copy_file(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH, taskSmack(), error);
         EXPECT_FALSE(error) << error.message();
+        // A sanitizer build's executables import clang's ASan runtime DLL, found beside them; the copies need it too (#4520).
+        const std::filesystem::path asanRuntime =
+            std::filesystem::path(TASKSMACK_WINDOWS_HELPER_PATH).parent_path() / L"clang_rt.asan_dynamic-x86_64.dll";
+        if (std::filesystem::exists(asanRuntime, error))
+        {
+            std::filesystem::copy_file(asanRuntime, m_Path / asanRuntime.filename(), error);
+            EXPECT_FALSE(error) << error.message();
+        }
     }
     ~InstallFolder()
     {
@@ -2357,15 +2374,15 @@ void expectHardenedImage(const std::filesystem::path& path)
 
     // Every DLL the imports load comes from System32 only (/DEPENDENTLOADFLAG:0x800), never the image's own folder:
     // the load configuration's DependentLoadFlags, which the loader uses for the imports in place of its default
-    // search. In every build, a sanitizer's too.
+    // search. Not in a sanitizer build, whose runtime DLL must load from beside the image (#4520).
+#ifndef TASKSMACK_WINDOWS_HARDENED
+    GTEST_SKIP() << "built without CFG, CETCOMPAT and /DEPENDENTLOADFLAG (a sanitizer build; cmake/CompilerOptions.cmake)";
+#else
     const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
     ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags) + sizeof(WORD)) << "no load configuration";
     const auto dependentLoadFlags = image.at<WORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
     EXPECT_EQ(dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32) << "no /DEPENDENTLOADFLAG:0x800";
 
-#ifndef TASKSMACK_WINDOWS_HARDENED
-    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; cmake/CompilerOptions.cmake)";
-#else
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
 
     // The load configuration's guard flags: the compiler's checks went in (-cfguard), and the linker's

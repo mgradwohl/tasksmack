@@ -338,8 +338,10 @@ endfunction()
 #                             never the image's own folder, which a portable TaskSmack may have unpacked somewhere
 #                             its user can write; main.cpp and HelperMain.cpp set the default DLL directories for
 #                             anything loaded later (tools/check-dll-loads.py checks they do)
-# CFG and CETCOMPAT are off under a sanitizer, whose runtime isn't built for CFG; TASKSMACK_WINDOWS_HARDENED tells
-# the tests (test_BrokerHelper.cpp) what to expect. One function for both images, so their flags can't drift.
+# CFG, CETCOMPAT and /DEPENDENTLOADFLAG are off under a sanitizer: its runtime isn't built for CFG, and it is a DLL
+# (clang_rt.asan_dynamic-x86_64.dll) that the loader must find beside the executable, which System32-only imports
+# would never do (the helper died with 0xC0000135, #4520). A sanitizer build is never shipped.
+# TASKSMACK_WINDOWS_HARDENED tells the tests (test_BrokerHelper.cpp) what to expect. One function for both images, so their flags can't drift.
 if(WIN32)
     string(TOUPPER "${CMAKE_BUILD_TYPE}" _ts_hardening_config)
     if("${CMAKE_CXX_FLAGS} ${CMAKE_CXX_FLAGS_${_ts_hardening_config}}" MATCHES "-fsanitize")
@@ -365,9 +367,8 @@ function(tasksmack_apply_privileged_hardening target)
     if(WIN32)
         if(TASKSMACK_WINDOWS_HARDENED)
             target_compile_options(${target} PRIVATE "SHELL:-Xclang -cfguard")
-            target_link_options(${target} PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT")
+            target_link_options(${target} PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT" "LINKER:/DEPENDENTLOADFLAG:0x800")
         endif()
-        target_link_options(${target} PRIVATE "LINKER:/DEPENDENTLOADFLAG:0x800")
         return()
     endif()
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
