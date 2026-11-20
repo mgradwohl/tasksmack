@@ -30,6 +30,7 @@
 #include <imgui.h>
 #include <imgui_internal.h>
 #include <implot.h>
+#include <spdlog/details/log_msg.h>
 #include <spdlog/logger.h>
 
 #include <algorithm>
@@ -414,6 +415,39 @@ TEST_F(NonAsciiRoundTripTest, LogFileIsCreatedAtTheExactNonAsciiPath)
     ASSERT_TRUE(std::filesystem::exists(logPath));
     EXPECT_EQ(entryNames(dir()), std::vector<std::string>{Core::pathToUtf8(logDir.filename())});
     EXPECT_TRUE(readWholeFile(logPath).contains(message));
+}
+
+// #4326: a message holding ill-formed UTF-8 (a comm cut mid-character, a Latin-1 path) is written as well-formed
+// UTF-8, U+FFFD in place of each ill-formed subpart, so a strict UTF-8 reader can open the log.
+TEST_F(NonAsciiRoundTripTest, LogFileIsAlwaysWellFormedUtf8)
+{
+    const std::filesystem::path logPath = dir() / "tasksmack-debug.log";
+    {
+        spdlog::logger logger("IllFormedLogTest", Core::makeLogFileSink(logPath, true));
+        logger.set_pattern("%v");
+        logger.info("pinned {}", std::string_view("datensicherung\xC3"));
+        logger.info("open {}", std::string_view("/mnt/old/Caf\xE9/app"));
+        logger.info("kept {}", allNonAsciiNames());
+        logger.flush();
+    }
+    const std::string text = readWholeFile(logPath);
+    EXPECT_TRUE(Domain::isValidUtf8(text)) << text;
+    EXPECT_TRUE(text.contains("pinned datensicherung\xEF\xBF\xBD"));
+    EXPECT_TRUE(text.contains("open /mnt/old/Caf\xEF\xBF\xBD/app"));
+    EXPECT_TRUE(text.contains(std::format("kept {}", allNonAsciiNames()))) << "well-formed text is written as it is";
+}
+
+TEST(LogFileSinkTest, WellFormedMessageCopiesOnlyWhenItMustSanitize)
+{
+    std::string storage;
+    spdlog::details::log_msg valid("test", spdlog::level::info, "caf\xC3\xA9");
+    const spdlog::details::log_msg same = Core::wellFormedMessage(valid, storage);
+    EXPECT_EQ(same.payload.data(), valid.payload.data()) << "well-formed text is not copied";
+    EXPECT_TRUE(storage.empty());
+
+    spdlog::details::log_msg cut("test", spdlog::level::info, "caf\xC3");
+    const spdlog::details::log_msg clean = Core::wellFormedMessage(cut, storage);
+    EXPECT_EQ(std::string_view(clean.payload.data(), clean.payload.size()), "caf\xEF\xBF\xBD");
 }
 
 // ========== Startup selection by process name (TASKSMACK_SELECT_NAME) ==========
