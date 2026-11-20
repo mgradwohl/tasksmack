@@ -145,7 +145,8 @@ jobs:
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add --all
           git commit --quiet --message "Release dashboard data, ${GITHUB_SHA::8} (run ${GITHUB_RUN_ID})"
-          # gh hands git the token, so it is never on a command line.
-          gh auth setup-git
-          git push --quiet --force "$REPO_URL" HEAD:refs/heads/dashboard-data
+          # A one-off credential helper hands git the token from the environment, so it is never on a command line.
+          git -c credential.helper= \
+            -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GH_TOKEN}"; }; f' \
+            push --quiet --force "$REPO_URL" HEAD:refs/heads/dashboard-data
           echo "Published $(find . -name '*.json' | wc -l) files to dashboard-data." >> "$GITHUB_STEP_SUMMARY"
