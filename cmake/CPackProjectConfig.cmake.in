@@ -139,10 +139,12 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     #     folder value, taskmgr.exe's Debugger and the Run value when they name that folder's TaskSmack.exe.
     # The step that calls them is CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS, below. Checked by
     # tests/tools/test_nsis_upgrade.py, which runs the step and, on Windows, the script.
+    # makensis's File finds no file by a path with forward slashes, so the script's path is made native here.
+    file(TO_NATIVE_PATH "@CMAKE_SOURCE_DIR@/cmake/nsis/TaskSmackUninstallerTrust.ps1" _ts_trust_script)
+    string(APPEND CPACK_NSIS_DEFINES "  !define TASKSMACK_TRUST_SCRIPT \"${_ts_trust_script}\"\n")
     string(APPEND CPACK_NSIS_DEFINES [=[
   ; TaskSmack's upgrade checks (#4444, #4445): BEGIN
   InstallDirRegKey HKLM "Software\TaskSmack Contributors\TaskSmack" ""
-  !define TASKSMACK_TRUST_SCRIPT "@CMAKE_SOURCE_DIR@/cmake/nsis/TaskSmackUninstallerTrust.ps1"
   !define TASKSMACK_EXPECTED_SIGNER_CN "@TASKSMACK_EXPECTED_SIGNER@"
   Function TaskSmackTrustCheck
     Exch $0
