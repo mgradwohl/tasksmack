@@ -1,0 +1,151 @@
+name: Release Dashboard
+
+# Generates the Release Command Center's data (#4524) and publishes it to the data-only `dashboard-data`
+# branch, which docs/release/ on the docs site reads (https://mgradwohl.github.io/tasksmack/release/).
+# tools/release-dashboard.py reads the milestones, their issues and pull requests, the release tracker, the
+# `ci-red-main` issues and the workflow runs, and writes one JSON file per release milestone plus an index.
+# docs/dev/release-process.md, "The release dashboard", says what the page shows and what it reads.
+#
+# Two jobs, so the token that can write never runs the generator:
+#   - generate: read-only. Runs the generator's tests, then the generator, and uploads what it wrote.
+#   - publish:  `contents: write`, and no repository code: it replaces dashboard-data's single commit with the
+#               uploaded files. The branch holds one commit, replaced on every run, so 48 runs a day don't grow
+#               the repository; every figure can be regenerated from the API, so no history is lost. The "Main
+#               Builds" ruleset covers only main and release/*, so the forced update is allowed there and
+#               nowhere else. A push made with GITHUB_TOKEN starts no workflow.
+#
+# A pull request that changes the generator, its tests or this file runs `generate` only, as that change's
+# proof: nothing is published from a pull request. A failed run publishes nothing, so the page keeps the last
+# good data and says how old it is.
+on:
+  schedule:
+    - cron: '7,37 * * * *'  # every 30 minutes, off the hour
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'tools/release-dashboard.py'
+      - 'tests/tools/test_release_dashboard.py'
+      - 'tests/tools/fixtures/release-dashboard/**'
+      - '.github/workflows/release-dashboard.yml'
+      # The generator reads this workflow's WATCHED list, so the two judge main by the same workflows.
+      - '.github/workflows/main-health.yml'
+
+# One publishing run at a time: a queued one replaces a waiting one, and reads fresher data anyway. A pull
+# request's runs only cancel each other.
+concurrency:
+  group: release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions: {}
+
+jobs:
+  generate:
+    name: Generate the data
+    runs-on: ubuntu-26.04
+    timeout-minutes: 10
+    permissions:
+      actions: read  # the watched workflows' runs, and release.yml's dry runs
+      contents: read  # the generator, and the published releases
+      issues: read  # milestones, their issues, the release tracker and the ci-red-main issues
+      pull-requests: read  # the open pull requests and the ones that close a milestone's issues
+    steps:
+      # Only what the generator and its tests read. A pull request runs its own copy; it has no token that writes.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: |
+            tools/release-dashboard.py
+            tests/tools/test_release_dashboard.py
+            tests/tools/fixtures/release-dashboard
+            .github/workflows/main-health.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Run the generator's tests
+        run: python3 -I -X utf8 tests/tools/test_release_dashboard.py
+
+      # A finished release is written once and copied from the last run, so a run costs about 30 REST calls
+      # and 40 GraphQL points. With no branch yet (the first run), everything is generated.
+      - name: Fetch the last published data
+        env:
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/previous"
+          if git ls-remote --exit-code --heads "$REPO_URL" dashboard-data > /dev/null; then
+            git fetch --quiet --depth 1 "$REPO_URL" dashboard-data
+            git archive FETCH_HEAD | tar -x -C "$RUNNER_TEMP/previous"
+            echo "Last published: $(git log -1 --format=%s FETCH_HEAD)"
+          else
+            echo "::notice title=Release dashboard::No dashboard-data branch yet: generating every release."
+          fi
+
+      - name: Generate
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous"
+
+      # The page reads index.json, then the file each release names: check they're all there and all JSON.
+      - name: Check what was written
+        run: |
+          set -euo pipefail
+          python3 -I -X utf8 - "$RUNNER_TEMP/data" <<'PY'
+          import json, pathlib, sys
+          data = pathlib.Path(sys.argv[1])
+          index = json.loads((data / "index.json").read_text(encoding="utf-8"))
+          titles = [release["title"] for release in index["releases"]]
+          if not titles or index["current"] not in titles:
+              sys.exit(f"::error title=Release dashboard::index.json names no current release ({index['current']!r} of {titles})")
+          for title in titles:
+              release = json.loads((data / f"{title}.json").read_text(encoding="utf-8"))
+              if release["milestone"]["title"] != title or release["schema"] != index["schema"]:
+                  sys.exit(f"::error title=Release dashboard::{title}.json doesn't match index.json")
+          print(f"{len(titles)} releases, current {index['current']}: {', '.join(titles)}")
+          PY
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-dashboard-data
+          path: ${{ runner.temp }}/data
+          if-no-files-found: error
+          retention-days: 3
+
+  publish:
+    name: Publish to dashboard-data
+    needs: generate
+    # Never from a pull request, and only main's copy of the generator publishes.
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-26.04
+    timeout-minutes: 5
+    permissions:
+      contents: write  # replace the dashboard-data branch
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: release-dashboard-data
+          path: data
+
+      - name: Replace the branch's one commit
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
+          SOURCE: ${{ github.server_url }}/${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          cd data
+          {
+            echo "# Release dashboard data"
+            echo
+            echo "Generated by [tools/release-dashboard.py]($SOURCE/blob/main/tools/release-dashboard.py) in"
+            echo "[this run]($RUN_URL), for [the Release Command Center](https://mgradwohl.github.io/tasksmack/release/)."
+            echo "This branch holds one commit, replaced every 30 minutes. Don't edit it or build on it."
+          } > README.md
+          git init --quiet --initial-branch dashboard-data
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add --all
+          git commit --quiet --message "Release dashboard data, ${GITHUB_SHA::8} (run ${GITHUB_RUN_ID})"
+          # gh hands git the token, so it is never on a command line.
+          gh auth setup-git
+          git push --quiet --force "$REPO_URL" HEAD:refs/heads/dashboard-data
+          echo "Published $(find . -name '*.json' | wc -l) files to dashboard-data." >> "$GITHUB_STEP_SUMMARY"

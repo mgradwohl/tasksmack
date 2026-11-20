@@ -38,7 +38,12 @@ The full scheme is in [docs/dev/labels.md](docs/dev/labels.md). The rules agents
 
 - **Every issue gets a kind and a lane.** The kind is one of `bug`, `enhancement`, `documentation`, `refactoring`,
   `performance`, `security` or `testing`. The lane is `agent:Windows`, `agent:WSL`, or both for two-platform work.
-  Add `parity` to any Windows/Linux gap.
+  Add `parity` to any Windows/Linux gap. `agent:Dash` marks the release dashboard session's own items (#4524):
+  neither lane picks those up or drives their pull requests.
+- **Put `in progress` on an issue when you start it (2026-11-19),** not when you plan it:
+  `gh issue edit <N> --add-label "in progress"`. Leave it on when the issue closes: open with the label means
+  started, closed with it means done. Take it off only if you put the issue down unfinished. The release
+  dashboard reads the time it was added as "work started"; pull requests don't need it.
 - **Severity is for bugs only.** Use `sev:high` (crash, data loss, security, broken build or release), `sev:medium`
   (a wrong result users notice, or broken on a common setup) or `sev:low`. Features get none.
 - **Priority is the maintainer's.** Every open issue on a release milestone carries `pri:high`, `pri:medium` or
@@ -99,6 +104,10 @@ The rules agents act on:
 - **Late features** go to the next minor by default. Agents never move an issue or PR onto a release milestone to
   get it in; scope is the maintainer's call.
 - **Candidate:** tag only a fully green, approved commit. Nothing joins the scope after approval.
+- **The release dashboard (#4524):** <https://mgradwohl.github.io/tasksmack/release/> shows what's left before the
+  release ships, read from the milestone, the tracker, the labels and CI every 30 minutes. It keeps nothing of
+  its own, so fix what it shows at the source. Start a tracker checklist item with its issue number and the
+  page ticks it when the issue closes ([release-process.md](docs/dev/release-process.md#the-release-dashboard)).
 - **Who controls what:** agents never declare the freeze, approve a candidate, cut a release branch or push a tag.
 - **Versions (#3371):** main is bumped to `X.(Y+1).0` right after `release/X.Y` is cut, patch bumps stay on the
   release branch, non-release builds read `X.Y.Z-dev`, and the version guard fails if a branch is below a published tag.

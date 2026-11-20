@@ -7,3 +7,4 @@
   - [Overview](/dev/developer-guide.md)
   - [Implemented Features](/dev/completed-features.md)
   - [Wayland Test Matrix](/dev/wayland-test-matrix.md)
+  - [Release dashboard](https://mgradwohl.github.io/tasksmack/release/)

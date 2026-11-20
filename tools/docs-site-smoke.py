@@ -13,6 +13,8 @@ sees:
   - the download link points at the latest release, which exists (not downloaded);
   - every section link on the sidebar's pages reaches a heading on its page;
   - an unknown route shows the custom 404 page, and its User Guide link recovers;
+  - the release dashboard under release/ (#4524) draws a made-up release, switches between releases, shows a
+    hostile issue title as text, and says so when its data can't be loaded;
   - no JavaScript error, and no first-party request that fails.
 
 Usage: tools/docs-site-smoke.py [--docs DIR] [--offline] [--headed]
@@ -26,6 +28,7 @@ from __future__ import annotations
 import argparse
 import functools
 import http.server
+import json
 import re
 import sys
 import tempfile
@@ -33,12 +36,22 @@ import threading
 from collections.abc import Callable
 from pathlib import Path
 
-from playwright.sync_api import Page, Request, Response, sync_playwright
+from playwright.sync_api import Page, Request, Response, Route, sync_playwright
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 SITE_PATH = "/tasksmack/"  # GitHub Pages serves the site from here
 LATEST_RELEASE = "https://github.com/mgradwohl/tasksmack/releases/latest"
+# The release dashboard (#4524) is a page of its own under the site, not a Docsify route. A relative sidebar
+# link, even one marked ':ignore', stays a route, and the search plugin fetches release/README.md for it, so
+# the sidebar links the page by its full address.
+RELEASE_DASHBOARD = "https://mgradwohl.github.io/tasksmack/release/"
 TIMEOUT_MS = 15_000
+
+# The release dashboard's data (#4524): tests/tools/test_release_dashboard.py builds a made-up repository and
+# keeps these files equal to what tools/release-dashboard.py writes for it, so the page is tested against the
+# generator's real schema. They stand in for the dashboard-data branch the page reads in production.
+RELEASE_FIXTURES = REPO_ROOT / "tests" / "tools" / "fixtures" / "release-dashboard"
+RELEASE_DATA = re.compile(r"^https://raw\.githubusercontent\.com/mgradwohl/tasksmack/dashboard-data/([\w.-]+\.json)$")
 
 # Requests Docsify makes that may 404 by design: loadSidebar looks for a _sidebar.md beside the page
 # before the root one, and the 404 check asks for a page that doesn't exist.
@@ -216,6 +229,104 @@ def check_not_found(page: Page, site: str, offline: bool) -> None:
     expect_page(page, "User Guide")
 
 
+def serve_release_data(page: Page, *, missing: bool = False) -> None:
+    """Answers the dashboard's data requests from RELEASE_FIXTURES, or with 404 when @p missing."""
+
+    def answer(route: Route) -> None:
+        match = RELEASE_DATA.match(route.request.url)
+        path = RELEASE_FIXTURES / match.group(1) if match else None
+        if missing or path is None or not path.is_file():
+            route.fulfill(status=404, body="", headers={"Access-Control-Allow-Origin": "*"})
+        else:
+            route.fulfill(
+                status=200,
+                content_type="application/json",
+                body=path.read_text(encoding="utf-8"),
+                headers={"Access-Control-Allow-Origin": "*"},
+            )
+
+    page.route("https://raw.githubusercontent.com/**", answer)
+
+
+def expect_release(page: Page, title: str) -> None:
+    page.wait_for_function("t => document.querySelector('#app h1')?.textContent === t", arg=title, timeout=TIMEOUT_MS)
+
+
+def check_release_dashboard(page: Page, site: str, offline: bool) -> None:
+    """docs/release/ draws the release in progress, from the generator's own output for a made-up repository."""
+    errors: list[str] = []  # a refused inline script or style (the page's Content-Security-Policy) lands here
+    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+    serve_release_data(page)
+    index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
+    current = json.loads((RELEASE_FIXTURES / f"{index['current']}.json").read_text(encoding="utf-8"))
+
+    page.goto(site + "release/")
+    expect_release(page, index["current"])
+    rows = page.locator(".ship > *")
+    if rows.count() != len(current["ship_list"]):
+        raise AssertionError(f"{rows.count()} ship-list rows, not {len(current['ship_list'])}")
+    stage = page.locator(".stages li[aria-current='step']").text_content() or ""
+    if not stage.startswith("Feature freeze"):
+        raise AssertionError(f"the current stage reads {stage!r}, not Feature freeze")
+    if page.locator(".chart svg path.line").count() != 2:
+        raise AssertionError("the burn-up didn't draw its two lines")
+    if page.locator(".hero-figure").text_content() != str(current["counts"]["open"]):
+        raise AssertionError("the open-issue count isn't the fixture's")
+
+    # An issue title is someone else's text: it's shown as written, and never becomes markup.
+    hostile = next(issue["title"] for issue in current["open_issues"] if "<img" in issue["title"])
+    shown = page.evaluate("() => [...document.querySelectorAll('.item-title')].map(node => node.textContent)")
+    if not any(hostile in text for text in shown):
+        raise AssertionError("the hostile issue title isn't shown as text")
+    injected = page.evaluate("() => [document.querySelectorAll('#app img, #app b').length, window.__xss ?? null]")
+    if injected != [0, None]:
+        raise AssertionError(f"an issue title became markup: {injected}")
+
+    # A row opens to its issues, and the links are built from the numbers.
+    page.locator("details[data-key='ship-severity'] > summary").click()
+    href = page.locator("details[data-key='ship-severity'] .item-number").first.get_attribute("href")
+    if href != "https://github.com/mgradwohl/tasksmack/issues/102":
+        raise AssertionError(f"the first severity issue links to {href!r}")
+
+    # The comparison table judges this release against the one before it.
+    if page.locator(".compare td.better, .compare td.worse").count() == 0:
+        raise AssertionError("the comparison table shows no change against the previous release")
+
+    # The picker switches release, and ?m= opens one directly. A planned release has only its scope.
+    page.select_option("#release-select", "v1.2.0")
+    expect_release(page, "v1.2.0")
+    if page.locator(".ship > *").count() != 1:
+        raise AssertionError("the planned release shows more than its scope")
+    page.goto(site + "release/?m=v1.0.0")
+    expect_release(page, "v1.0.0")
+    page.goto(site + "release/?m=v9.9.9%3Cscript%3E")
+    expect_release(page, index["current"])
+
+    if errors:
+        raise AssertionError(f"console errors: {errors}")
+
+
+def check_release_dashboard_without_data(page: Page, site: str, offline: bool) -> None:
+    """With no data to read (no branch yet, or GitHub is down), the page says so and links the milestones."""
+    serve_release_data(page, missing=True)
+    page.goto(site + "release/")
+    notice = page.locator("#app .notice")
+    notice.get_by_role("link", name="The milestones page").wait_for(timeout=TIMEOUT_MS)
+    if "couldn't be loaded" not in (notice.text_content() or ""):
+        raise AssertionError(f"unexpected notice: {notice.text_content()!r}")
+
+
+def check_release_dashboard_link(page: Page, site: str, offline: bool) -> None:
+    """The sidebar's Release dashboard link is the page's full address, which Docsify leaves alone."""
+    page.goto(site + "#/dev/developer-guide")
+    expect_page(page, "Developer Guide")
+    href = page.locator(".sidebar-nav").get_by_role("link", name="Release dashboard", exact=True).get_attribute("href")
+    if href != RELEASE_DASHBOARD:
+        raise AssertionError(f"the sidebar's Release dashboard link points at {href!r}, not {RELEASE_DASHBOARD}")
+    if not (REPO_ROOT / "docs" / "release" / "index.html").is_file():
+        raise AssertionError("docs/release/index.html, the page that address serves, is missing")
+
+
 CHECKS: list[tuple[str, Callable[[Page, str, bool], None]]] = [
     ("the root URL shows the User Guide and its screenshots", check_home),
     ("a FAQ link from the User Guide reaches its section", check_faq_link),
@@ -223,6 +334,9 @@ CHECKS: list[tuple[str, Callable[[Page, str, bool], None]]] = [
     ("the download link points at the latest release", check_download_link),
     ("every section link on the sidebar's pages reaches its heading", check_anchors),
     ("an unknown route shows the 404 page, which recovers", check_not_found),
+    ("the release dashboard draws a release and switches between them", check_release_dashboard),
+    ("the release dashboard says when its data can't be loaded", check_release_dashboard_without_data),
+    ("the sidebar links the release dashboard", check_release_dashboard_link),
 ]
 
 
