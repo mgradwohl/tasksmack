@@ -691,6 +691,23 @@ TEST(RootToolsTest, APathThroughAFolderLinkRunsCanonicallyAndANeighbourLinkKeeps
         << "without the filesystem type, the same link would keep its name";
 }
 
+// #4554: a FUSE (or NFS, CIFS) filesystem reports whatever owner it likes, root's included: nothing on one is trusted
+// as root's, neither a folder to search nor a tool to run.
+TEST(RootToolsTest, NothingOnAFilesystemThatMakesUpItsOwnersIsTrusted)
+{
+    const FakeTree tree = staffWritableUsrLocal();
+    RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/bin", fs), "/usr/bin");
+    EXPECT_TRUE(RootTools::rootTrustedPath("/usr/bin/python3", fs).has_value());
+    fs.onUntrustedFilesystem = [](const std::string& path)
+    {
+        return path.starts_with("/usr/bin");
+    }; // a FUSE mount
+    EXPECT_EQ(RootTools::trustedRootPath("/usr/bin", fs), "") << "its root:0755 is whatever the mount says";
+    EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/python3", fs).has_value());
+    EXPECT_FALSE(RootTools::findRootTool("xdg-open", "/usr/bin", fs).has_value());
+}
+
 TEST(RootToolsTest, WithNoTrustedFolderTheRootPathFindsNothing)
 {
     EXPECT_EQ(RootTools::rootPathVariable(""), "PATH=/proc/nonexistent");

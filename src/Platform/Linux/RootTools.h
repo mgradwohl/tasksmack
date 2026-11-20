@@ -9,6 +9,8 @@
 #include "Platform/Linux/SyscallTrace.h"
 
 #include <algorithm>
+#include <array>
+#include <cstdint>
 #include <filesystem>
 #include <functional>
 #include <optional>
@@ -47,6 +49,11 @@ struct RootFs
     /// The "= {}" lets a designated initializer leave it out without -Wmissing-designated-field-initializers.
     // NOLINTNEXTLINE(readability-redundant-member-init)
     std::function<bool(const std::string&)> onProcfs = {};
+    /// Whether @p path is on a filesystem whose owners and modes another account can make up (#4554): FUSE, NFS, CIFS
+    /// or SMB2 (statfs()). A user's FUSE mount mounted allow_other reports any owner it likes, root's included, and
+    /// NFS and CIFS ACLs grant write access st_mode doesn't show, so nothing on one is root-only. Empty: none is.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::function<bool(const std::string&)> onUntrustedFilesystem = {};
 };
 
 [[nodiscard]] inline RootFs systemRootFs()
@@ -85,6 +92,18 @@ struct RootFs
             constexpr decltype(info.f_type) PROC_FS = 0x9fa0; // PROC_SUPER_MAGIC, <linux/magic.h>
             return ::statfs(path.c_str(), &info) == 0 && info.f_type == PROC_FS;
         },
+        .onUntrustedFilesystem =
+            [](const std::string& path)
+        {
+            struct statfs info{};
+            if (::statfs(path.c_str(), &info) != 0)
+            {
+                return true; // unknown: not trusted
+            }
+            // <linux/magic.h>: FUSE_SUPER_MAGIC, NFS_SUPER_MAGIC, CIFS_SUPER_MAGIC (CIFS_MAGIC_NUMBER), SMB2_SUPER_MAGIC.
+            constexpr std::array<std::uint32_t, 4> UNTRUSTED{0x65735546U, 0x6969U, 0xFF534D42U, 0xFE534D42U};
+            return std::ranges::contains(UNTRUSTED, static_cast<std::uint32_t>(info.f_type));
+        },
     };
 }
 
@@ -100,7 +119,8 @@ struct RootFs
 [[nodiscard]] inline std::optional<std::string> rootOnlyFolder(const std::string& folder, const RootFs& fs)
 {
     std::optional<std::string> resolved = fs.canonical(folder);
-    if (!resolved.has_value() || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership))
+    if (!resolved.has_value() || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership) ||
+        (fs.onUntrustedFilesystem && fs.onUntrustedFilesystem(*resolved)))
     {
         return std::nullopt;
     }
@@ -239,7 +259,8 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
         hop = target->starts_with('/') ? *target : parentFolder(hop) + "/" + *target;
     }
     std::optional<std::string> resolved = fs.canonical(path);
-    if (!resolved.has_value() || !fs.executable(*resolved) || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership))
+    if (!resolved.has_value() || !fs.executable(*resolved) || !SyscallTrace::onlyRootCouldPlace(*resolved, fs.ownership) ||
+        (fs.onUntrustedFilesystem && fs.onUntrustedFilesystem(*resolved)))
     {
         return std::nullopt;
     }
