@@ -1078,7 +1078,38 @@ void LinuxProcessProbe::applyCmdline(ProcessCounters& counters, const std::vecto
     // full name is usually recoverable from the arguments, which are still NUL-separated at this
     // point -- so this costs no extra read. See ProcessName.h for when the result is trusted (#951).
     const bool cut = rawCmdline.size() > MAX_CMDLINE_BYTES;
-    const std::size_t kept = cut ? MAX_CMDLINE_BYTES : rawCmdline.size();
+    std::size_t kept = cut ? MAX_CMDLINE_BYTES : rawCmdline.size();
+    if (cut)
+    {
+        // Back to a character boundary: a UTF-8 character the cap ended inside is left out whole, so the cut mark
+        // isn't preceded by a U+FFFD (the security review). At most three continuation bytes, then their lead.
+        std::size_t lead = kept;
+        while (lead > 0 && kept - lead < 3 && (static_cast<unsigned char>(rawCmdline[lead - 1]) & 0xC0U) == 0x80U)
+        {
+            --lead;
+        }
+        if (lead > 0)
+        {
+            const auto first = static_cast<unsigned char>(rawCmdline[lead - 1]);
+            std::size_t length = 1;
+            if (first >= 0xF0U)
+            {
+                length = 4;
+            }
+            else if (first >= 0xE0U)
+            {
+                length = 3;
+            }
+            else if (first >= 0xC0U)
+            {
+                length = 2;
+            }
+            if (length > kept - (lead - 1)) // the character runs past the cap
+            {
+                kept = lead - 1;
+            }
+        }
+    }
     // No longer than a file name may be (#4386): the arguments are the process's to write.
     if (const std::string_view fullName = ProcessName::resolveFullName(counters.name, std::string_view(rawCmdline.data(), kept));
         fullName.size() != counters.name.size() && fullName.size() <= NAME_MAX)

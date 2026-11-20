@@ -2967,6 +2967,31 @@ TEST(LinuxProcessProbeTest, AnOverlongCommandLineIsCutAtTheCapAndCached)
     EXPECT_EQ(enumerateOne(probe, 4242).command, command) << "cached within the TTL, not read again";
 }
 
+TEST(LinuxProcessProbeTest, AnEndlessCommandLineIsReadOnlyUpToTheCap)
+{
+    // #4386, the security review: an output limit alone would pass the test above even if the read went on to EOF.
+    // /dev/zero never ends, so only a read that stops at the cap returns: about 17 reads of 4 KiB, all NULs, which
+    // become spaces, are trimmed, and leave only the cut mark.
+    ScopedTempDir proc("ts_test_proc_cmdline_endless");
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, std::nullopt);
+    std::filesystem::create_symlink("/dev/zero", proc.path / "4242" / "cmdline");
+    LinuxProcessProbe probe(proc.path);
+    EXPECT_EQ(enumerateOne(probe, 4242).command, " \xE2\x80\xA6");
+}
+
+TEST(LinuxProcessProbeTest, ACutCommandLineEndsOnACharacterBoundary)
+{
+    // The cap falls inside an é (C3 A9): the é is left out whole, so no U+FFFD comes before the cut mark.
+    ScopedTempDir proc("ts_test_proc_cmdline_boundary");
+    const std::string prefix = "/usr/bin/app";                  // 12 bytes, then its NUL
+    const std::string filler(std::size_t{65536} - 13 - 1, 'x'); // so the é's first byte is the cap's last
+    writeCmdlineProcess(proc.path, 4242, "app", 'S', 100, cmdlineOf({prefix, filler + "\xC3\xA9" + std::string(100, 'y')}));
+    LinuxProcessProbe probe(proc.path);
+    const std::string command = enumerateOne(probe, 4242).command;
+    EXPECT_TRUE(command.ends_with("x \xE2\x80\xA6")) << "cut before the \xC3, which isn't kept";
+    EXPECT_EQ(command.find('\xC3'), std::string::npos);
+}
+
 TEST(LinuxProcessProbeTest, AResolvedNameLongerThanAFileNameIsNotTaken)
 {
     // #4386: the arguments are the process's to write, so a "full name" over NAME_MAX keeps the comm.
