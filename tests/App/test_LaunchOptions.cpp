@@ -9,11 +9,30 @@
 
 #include <gtest/gtest.h>
 
+#include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <optional>
+#include <span>
 #include <string>
 #include <utility>
 #include <vector>
+
+#ifdef _WIN32
+#include "Platform/Windows/ElevatedRestart.h"
+#include "Platform/Windows/WinString.h"
+
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+#include <shellapi.h>
+// clang-format on
+#endif
 
 namespace App
 {
@@ -102,7 +121,8 @@ TEST(LaunchOptionsTest, AnElevatedRestartReadsTheHandOffAndTheConfigDirectory)
     });
     EXPECT_EQ(options.handoffPid, std::optional<std::uint32_t>{4242});
     EXPECT_EQ(options.handoffStartTicks, 133'000'000'000'000'000ULL);
-    EXPECT_EQ(options.configDir, std::optional<std::string>{R"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)"});
+    EXPECT_EQ(options.configDir,
+              std::optional<std::filesystem::path>{std::filesystem::path(u8R"(C:\Users\Pat Smith\AppData\Roaming\TaskSmack)")});
     EXPECT_TRUE(options.ignored.empty());
     EXPECT_FALSE(options.minimized);
 }
@@ -136,6 +156,44 @@ TEST(LaunchOptionsTest, AHandOffWithoutAWholePidAndStartIsIgnored)
     EXPECT_FALSE(noStart.handoffPid.has_value()) << "a PID without its creation time binds to nothing";
     EXPECT_EQ(noStart.ignored, (std::vector<std::string>{"--handoff", "42"}));
 }
+
+#ifdef _WIN32
+// #4310: the elevated copy read --config-dir as UTF-8 (wideToUtf8()), then made a path of that, so a folder whose name
+// holds a lone surrogate came back as its U+FFFD twin, which the folder check refused, and the session silently used
+// the administrator's own settings. The hand-off line ElevatedRestart builds is wide and quoted, losslessly; split as
+// the new copy splits it (CommandLineToArgvW()), the folder is taken from the wide arguments, exactly.
+TEST(LaunchOptionsTest, AHandedOverConfigDirectoryWithALoneSurrogateRoundTripsExactly)
+{
+    std::wstring folder = LR"(C:\Users\Pat)";
+    folder.push_back(static_cast<wchar_t>(0xD800)); // NTFS takes a lone surrogate in a name; UTF-8 has no form for it
+    folder += LR"(\AppData\Roaming\TaskSmack)";
+    const auto line = Platform::Windows::ElevatedRestart::parameters(4242, 133'000'000'000'000'000ULL, std::filesystem::path(folder));
+    ASSERT_TRUE(line.has_value()) << line.error();
+
+    int count = 0;
+    LPWSTR* argv = CommandLineToArgvW((LR"("C:\Program Files\TaskSmack\TaskSmack.exe" )" + *line).c_str(), &count);
+    ASSERT_NE(argv, nullptr);
+    std::vector<std::string> utf8;
+    std::vector<std::filesystem::path> native;
+    for (const wchar_t* const argument : std::span<LPWSTR>(argv, static_cast<std::size_t>(count)))
+    {
+        utf8.push_back(Platform::WinString::wideToUtf8(argument));
+        native.emplace_back(std::wstring(argument));
+    }
+    LocalFree(static_cast<HLOCAL>(argv));
+
+    const LaunchOptions options = parseLaunchOptions(utf8, native);
+    EXPECT_EQ(options.handoffPid, std::optional<std::uint32_t>{4242});
+    ASSERT_TRUE(options.configDir.has_value());
+    EXPECT_EQ(options.configDir.value_or(std::filesystem::path{}).native(), folder) << "the folder handed over, lone surrogate and all";
+    EXPECT_TRUE(options.ignored.empty());
+
+    // Its UTF-8 text alone names the U+FFFD twin: what was handed over before.
+    const LaunchOptions lossy = parseLaunchOptions(utf8);
+    ASSERT_TRUE(lossy.configDir.has_value());
+    EXPECT_NE(lossy.configDir.value_or(std::filesystem::path{}).native(), folder);
+}
+#endif
 
 } // namespace
 } // namespace App

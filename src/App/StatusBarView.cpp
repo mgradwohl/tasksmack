@@ -18,6 +18,12 @@
 namespace App::StatusBarView
 {
 
+namespace
+{
+/// The config problem's tooltip wraps at this many font heights (#4318): it names a path and a reason.
+constexpr float CONFIG_PROBLEM_TOOLTIP_WIDTH_EM = 30.0F;
+} // namespace
+
 Action render(const Input& input)
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -85,6 +91,26 @@ Action render(const Input& input)
             {
                 ImGui::SetTooltip("Per-process network counters are blocked on this system "
                                   "(TCP EStats access denied even when elevated)");
+            }
+            ImGui::SameLine();
+        }
+        // config.toml couldn't be used (#4318): TaskSmack runs on its defaults and saves nothing, so say so here, where
+        // it is seen, not only in the log. Settings says it too, beside Edit Config File.
+        if (!input.configProblem.empty())
+        {
+            ImGui::PushStyleColor(ImGuiCol_Text, theme.scheme().textWarning);
+            if (ImGui::SmallButton(CONFIG_PROBLEM_LABEL))
+            {
+                action = Action::Settings;
+            }
+            ImGui::PopStyleColor();
+            if (ImGui::IsItemHovered())
+            {
+                const std::string tooltip = std::string(input.configProblem) + "\nClick for Settings.";
+                ImGui::SetNextWindowSize(ImVec2(ImGui::GetFontSize() * CONFIG_PROBLEM_TOOLTIP_WIDTH_EM, 0.0F));
+                ImGui::BeginTooltip();
+                ImGui::TextWrapped("%s", tooltip.c_str());
+                ImGui::EndTooltip();
             }
             ImGui::SameLine();
         }
