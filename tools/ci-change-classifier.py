@@ -114,13 +114,16 @@ DOCS = (
 # main (#2130).
 LINUX_PLATFORM = ("src/Platform/Linux/**/*.cpp",)
 
-# The docs site's browser smoke test's inputs (#3103): the Docsify site under docs/, the test itself and
-# its hash-locked dependencies. Anything else can't change what tools/docs-site-smoke.py sees.
+# The docs site's browser smoke test's inputs (#3103): the Docsify site under docs/, the test itself, its
+# hash-locked dependencies, and the release dashboard's fixtures it serves to docs/release/ (#4524: a change
+# to tools/release-dashboard.py's output rewrites them and touches nothing under docs/). Anything else can't
+# change what tools/docs-site-smoke.py sees.
 DOCS_SITE = (
     "docs/**",
     "tools/docs-site-smoke.py",
     "requirements-docs-site.in",
     "requirements-docs-site.txt",
+    "tests/tools/fixtures/release-dashboard/**",
 )
 WINDOWS_PLATFORM = ("src/Platform/Windows/**/*.cpp",)
 

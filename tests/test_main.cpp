@@ -8,6 +8,10 @@
 #include <gtest/gtest.h>
 #include <spdlog/spdlog.h>
 
+#ifdef _WIN32
+#include <windows.h>
+#endif
+
 namespace
 {
 
@@ -41,6 +45,11 @@ TEST(SmokeTest, TestFrameworkWorks)
 
 int main(int argc, char** argv)
 {
+#ifdef _WIN32
+    // No modal dialog from this process or the helper executables the tests start (they inherit it) when a DLL won't
+    // load or one crashes: the exit code says so instead (an ASan runtime DLL left out put one on a desktop, #4520).
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOOPENFILEERRORBOX | SEM_NOGPFAULTERRORBOX);
+#endif
     ::testing::InitGoogleTest(&argc, argv);
     // Register the global log suppressor so all tests run with spdlog silenced.
     ::testing::AddGlobalTestEnvironment(new TestLogSuppressor());

@@ -11,6 +11,7 @@
 #include "Platform/ISystemInfoProbe.h"
 #include "UI/CellText.h"
 #include "UI/ChromeWidgets.h"
+#include "UI/Clipboard.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
@@ -106,7 +107,7 @@ void rebuildIfStale(const Domain::SystemInfoSnapshot& snapshot,
 void copy(std::string text, SystemInfoViewState& state)
 {
     state.copiedText = std::move(text);
-    ImGui::SetClipboardText(state.copiedText.c_str());
+    UI::setClipboardUtf8(state.copiedText);
 }
 
 /// What the toolbar's buttons asked for this frame.

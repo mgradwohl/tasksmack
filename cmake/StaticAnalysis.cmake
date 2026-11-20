@@ -34,7 +34,8 @@ find_program(CLANG_FORMAT_EXE NAMES clang-format
 
 if(CLANG_TIDY_EXE)
     # Generate a clean compile_commands.json for clang-tidy in a dedicated directory, stripping flags
-    # that clang-tidy cannot handle (C++20 module @*.modmap dependency files, PCH flags).
+    # that clang-tidy cannot handle (C++20 module @*.modmap dependency files, PCH flags). Module scanning is off (#4347), so no
+    # .modmap appears today; the stripping stays for the day a module is added.
     # Writing to a *separate* directory preserves the live compile_commands.json that clangd watches;
     # clang-tidy tools point -p at the dedicated directory so clangd is never disturbed.
     set(TASKSMACK_CLANG_TIDY_COMPDB_DIR "${CMAKE_BINARY_DIR}/clang-tidy-compdb")
