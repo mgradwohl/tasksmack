@@ -622,6 +622,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_Numeric.cpp
     Domain/test_SingleLineText.cpp
     Domain/test_Utf8Sanitize.cpp
+    Domain/test_DisplayText.cpp  # display text for raw OS bytes (#4328)
     Domain/test_AccountName.cpp # a process owner's DOMAIN\user, written and matched (#3328)
     Domain/test_ProcessEnergyAttribution.cpp
     Domain/test_ProcessModel.cpp  # split by feature (#3850): the helpers are in ProcessModelTestSupport.h

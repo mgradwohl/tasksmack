@@ -7,7 +7,7 @@ set -euo pipefail
 # and tools/coverage.sh's root pass both run exactly these, under sudo. Each suite skips when not root. A root suite
 # added later goes here, once.
 root_test_filter() {
-    printf '%s\n' 'DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*:RootDumpFolderRootTest.*:RootEnvironmentRootTest.*:UserConfigRootTest.*'
+    printf '%s\n' 'DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*:RootDumpFolderRootTest.*:RootEnvironmentRootTest.*:UserConfigRootTest.*:NetlinkSocketStatsRootTest.*'
 }
 
 # Check if a command exists and provide installation instructions if missing

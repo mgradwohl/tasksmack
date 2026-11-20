@@ -3,6 +3,7 @@
 #include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/Panels/ServicesView.h"
 #include "Core/GraphicsHostInfo.h"
+#include "Domain/DisplayText.h"
 #include "Domain/SensorModel.h"
 #include "Domain/SensorTracker.h"
 #include "Domain/SystemInfoModel.h"
@@ -1961,7 +1962,7 @@ std::string formatDhcpLease(const Platform::DhcpLease& lease)
     };
     if (!lease.server.empty())
     {
-        append("From " + lease.server);
+        append("From " + Domain::DisplayText::escaped(lease.server)); // raw from NetworkManager (#4328)
     }
     if (lease.leaseSeconds != 0)
     {
@@ -2043,7 +2044,7 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         std::string domains;
         for (const std::string& domain : network.searchDomains)
         {
-            domains += (domains.empty() ? "" : ", ") + domain;
+            domains += (domains.empty() ? "" : ", ") + Domain::DisplayText::escaped(domain); // raw from the OS (#4328)
         }
         // A search domain can name the organisation, like a domain name in the Operating system section.
         rows.push_back(row("Search domains", std::move(domains), NOT_REPORTED, true));
@@ -2119,7 +2120,13 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
         if (!adapter.linkSearchDomains.empty())
         {
             // Like the system-wide search domains, these can name the organisation: an identifier.
-            rows.push_back(row(adapter.name + " search domains", joined(adapter.linkSearchDomains, all), NOT_REPORTED, true));
+            std::vector<std::string> shown; // raw from the OS: display text (#4328)
+            shown.reserve(adapter.linkSearchDomains.size());
+            for (const std::string& domain : adapter.linkSearchDomains)
+            {
+                shown.push_back(Domain::DisplayText::escaped(domain));
+            }
+            rows.push_back(row(adapter.name + " search domains", joined(shown, all), NOT_REPORTED, true));
         }
         if (!adapter.mac.empty())
         {
@@ -2156,12 +2163,21 @@ Section buildNetworkAdaptersSection(const Platform::NetworkAdaptersInfo& network
             {
                 // The network's name can place the machine, like a MAC address: an identifier.
                 const std::string_view linkReason = adapter.wifiLinkUnavailable.empty() ? NOT_REPORTED : adapter.wifiLinkUnavailable;
-                rows.push_back(
-                    row(adapter.name + " Wi-Fi network", adapter.wifiLink ? adapter.wifiLink->ssid : std::string{}, linkReason, true));
+                // As nmcli shows it (#4328): text when the raw name is valid UTF-8, else the whole name in hex. Its
+                // exact bytes can be copied too.
+                const std::string rawSsid =
+                    adapter.wifiLink.transform([](const Platform::WifiLink& link) { return link.ssid; }).value_or(std::string{});
+                Row wifiNetwork = row(adapter.name + " Wi-Fi network", Domain::DisplayText::ssid(rawSsid), linkReason, true);
+                if (!rawSsid.empty())
+                {
+                    wifiNetwork.action = RowAction::CopyRawHex;
+                    wifiNetwork.rawHex = Domain::DisplayText::hex(rawSsid);
+                }
+                rows.push_back(std::move(wifiNetwork));
             }
-            if (adapter.wifiLink)
+            if (const std::optional<Platform::WifiLink>& link = adapter.wifiLink; link.has_value())
             {
-                rows.push_back(row(adapter.name + " Wi-Fi link", formatWifiLink(*adapter.wifiLink)));
+                rows.push_back(row(adapter.name + " Wi-Fi link", formatWifiLink(*link)));
             }
         }
     }

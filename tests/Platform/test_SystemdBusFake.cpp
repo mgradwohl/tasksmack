@@ -122,7 +122,7 @@ TEST_F(SystemdBusFakeTest, AJoinedAdapterGivesItsNetworkFrequencyAndRate)
     ASSERT_TRUE(wlan0.link.has_value()) << wlan0.error;
     const WifiLink link = wlan0.link.value_or(WifiLink{});
     EXPECT_TRUE(link.ssid.starts_with("Caf\xC3\xA9 ")) << link.ssid; // UTF-8 kept
-    EXPECT_FALSE(link.ssid.contains('\xFF')) << link.ssid;           // the stray byte made safe to draw
+    EXPECT_TRUE(link.ssid.contains('\xFF')) << link.ssid;            // the raw bytes: the UI shows them (#4328)
     EXPECT_EQ(link.frequencyMhz, 5180U);
     EXPECT_EQ(link.bitrateKbps, 866700U);
 }
