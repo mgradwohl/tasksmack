@@ -20,6 +20,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 namespace
@@ -85,6 +86,26 @@ ImFont* addBodyFont(UI::FontFileCache& fontFiles, const std::filesystem::path& p
     return addFontFromFile(fontFiles, path, sizePixels, &config);
 }
 
+/// U+FFFD REPLACEMENT CHARACTER, the one glyph merged from the Noto Sans subsets (#4573). Inter has none, and
+/// ImGui draws a missing glyph as its fallback character, which for Inter is '?': so every byte the UTF-8
+/// sanitizer replaced (#4489) looked exactly like a real question mark.
+// NOLINTNEXTLINE(cppcoreguidelines-avoid-c-arrays,modernize-avoid-c-arrays) - ImGui API requires a null-terminated C array
+constexpr ImWchar REPLACEMENT_CHARACTER_RANGES[] = {0xFFFD, 0xFFFD, 0};
+
+/// The Noto Sans files holding only U+FFFD, a regular and a bold weight to sit beside Inter's (#4573).
+constexpr std::string_view REPLACEMENT_GLYPH_REGULAR_FILE = "NotoSans-ReplacementCharacter-Regular.ttf";
+constexpr std::string_view REPLACEMENT_GLYPH_BOLD_FILE = "NotoSans-ReplacementCharacter-Bold.ttf";
+
+/// Merges U+FFFD from @p path into the font added just before, at @p sizePixels. Optional: a file that can't
+/// be read adds nothing (ImFontFlags_NoLoadError), and the font keeps ImGui's fallback for it.
+void mergeReplacementGlyph(UI::FontFileCache& fontFiles, const std::filesystem::path& path, float sizePixels)
+{
+    ImFontConfig config;
+    config.Flags = ImFontFlags_NoLoadError;
+    config.MergeMode = true;
+    (void) addFontFromFile(fontFiles, path, sizePixels, &config, REPLACEMENT_CHARACTER_RANGES);
+}
+
 } // namespace
 
 namespace UI
@@ -110,6 +131,8 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
     const auto fontPath = assetsDir / "fonts" / "Inter-Regular.ttf";
     const auto boldFontPath = assetsDir / "fonts" / "Inter-Bold.ttf";
     const auto iconFontPath = assetsDir / "fonts" / FONT_ICON_FILE_NAME_FAS;
+    const auto replacementGlyphPath = assetsDir / "fonts" / REPLACEMENT_GLYPH_REGULAR_FILE;
+    const auto replacementGlyphBoldPath = assetsDir / "fonts" / REPLACEMENT_GLYPH_BOLD_FILE;
 
     // Check if icon font exists. The error_code overloads here and below: this also runs when the
     // display scale changes (#943), after the old fonts are gone, and a filesystem error must
@@ -161,7 +184,7 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
         addFontFromFile(fontFiles, iconFontPath, sizePx, &iconConfig, ICON_RANGES);
     };
 
-    // Inter at sizePx with the icons merged in, or ImGui's embedded font when Inter can't be read.
+    // Inter at sizePx with the icons and U+FFFD merged in, or ImGui's embedded font when Inter can't be read.
     const auto addInterWithIcons = [&](float sizePx)
     {
         ImFont* font = addBodyFont(fontFiles, fontPath, sizePx, digitRatio);
@@ -173,6 +196,7 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
             font = imguiIO.Fonts->AddFontDefault(&defaultFontConfig);
         }
         mergeIcons(sizePx);
+        mergeReplacementGlyph(fontFiles, replacementGlyphPath, sizePx);
         return font;
     };
 
@@ -199,6 +223,7 @@ void loadAllFonts(FontFileCache& fontFiles, const std::filesystem::path& assetsD
     if (fontBold != nullptr)
     {
         mergeIcons(fontSizeRegular);
+        mergeReplacementGlyph(fontFiles, replacementGlyphBoldPath, fontSizeRegular);
     }
 
     // Chart text, a little smaller than the body text above 8 pt (chartFontPointSize()). At the
@@ -328,6 +353,10 @@ void loadFallbackFonts(FontFileCache& fontFiles, const std::filesystem::path& as
         config.SizePixels = computePointsToPixels(points, displayScale);
         ImFont* font = imguiIO.Fonts->AddFontDefault(&config);
         mergeIcons(config.SizePixels);
+        if (!assetsDir.empty())
+        {
+            mergeReplacementGlyph(fontFiles, assetsDir / "fonts" / REPLACEMENT_GLYPH_REGULAR_FILE, config.SizePixels);
+        }
         return font;
     };
     ImFont* regular = addDefault(fontCfg.regularPt);
