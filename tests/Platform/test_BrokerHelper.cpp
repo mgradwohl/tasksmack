@@ -19,6 +19,7 @@
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
+#include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 
@@ -308,6 +309,7 @@ TEST(BrokerHelperTest, AnythingElseOnTheCommandLineIsRefused)
         text.back() = L'A';
         return text;
     }();
+    const std::wstring longer = name + L"0"; // named: the views below must not outlive their storage
     const std::vector<std::vector<std::wstring_view>> refused{
         {},
         {L"--broker"},
@@ -317,7 +319,7 @@ TEST(BrokerHelperTest, AnythingElseOnTheCommandLineIsRefused)
         {L"--broker", L"\\\\.\\pipe\\SomethingElse", L"1234", L"99"},
         {L"--broker", L"\\\\.\\pipe\\TaskSmack.Broker.00", L"1234", L"99"},
         {L"--broker", upper, L"1234", L"99"},
-        {L"--broker", name + L"0", L"1234", L"99"},
+        {L"--broker", longer, L"1234", L"99"},
         {L"--broker", L"\\\\server\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcdef", L"1234", L"99"},
         {L"--broker", name, L"0", L"99"},
         {L"--broker", name, L"01234", L"99"},
@@ -646,6 +648,120 @@ TEST(BrokerHelperTest, AnInstallInAFolderOnlyAdministratorsChangePasses)
     const std::array<std::wstring, 2> files{systemFile(L"cmd.exe"), systemFile(L"kernel32.dll")};
     const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files);
     EXPECT_TRUE(checked.has_value()) << checked.error();
+}
+
+namespace
+{
+
+/// The final path checkUnchangeableBy() reads from each handle it holds (#4371), faked: the real answer,
+/// except where a test says one has moved. Plain function pointers can't capture, so the state is here;
+/// each test resets it.
+struct FinalPathFake
+{
+    int calls = 0;
+    HANDLE fileHandle = nullptr;
+    int moveCall = 0;            ///< The call, counted from 1, answered with another folder; 0 for none
+    bool moveFileReread = false; ///< Answer another path when the file's handle is read a second time
+    std::wstring replaced;       ///< The real path the moved answer stands in for
+};
+FinalPathFake g_FinalPathFake;
+
+/// Writes @p text as GetFinalPathNameByHandleW does: its length when it fits, else the length needed with the NUL.
+DWORD writeFinalPath(const std::wstring& text, LPWSTR buffer, DWORD size)
+{
+    if (text.size() >= size)
+    {
+        return static_cast<DWORD>(text.size() + 1);
+    }
+    std::ranges::copy(text, buffer);
+    buffer[text.size()] = L'\0';
+    return static_cast<DWORD>(text.size());
+}
+
+DWORD WINAPI fakeFinalPath(HANDLE handle, LPWSTR buffer, DWORD size, DWORD flags)
+{
+    std::wstring real(32'768, L'\0');
+    const DWORD length = ::GetFinalPathNameByHandleW(handle, real.data(), static_cast<DWORD>(real.size()), flags);
+    if (length == 0 || length >= real.size())
+    {
+        return 0;
+    }
+    real.resize(length);
+    FinalPathFake& fake = g_FinalPathFake;
+    ++fake.calls;
+    if (fake.calls == 1)
+    {
+        fake.fileHandle = handle; // the file is read first
+    }
+    else if (fake.calls == fake.moveCall)
+    {
+        fake.replaced = real.starts_with(LR"(\\?\)") ? real.substr(4) : real;
+        return writeFinalPath(LR"(\\?\C:\Elsewhere)", buffer, size);
+    }
+    else if (fake.moveFileReread && handle == fake.fileHandle)
+    {
+        return writeFinalPath(LR"(\\?\C:\Elsewhere\cmd.exe)", buffer, size);
+    }
+    return writeFinalPath(real, buffer, size);
+}
+
+constexpr std::string_view MOVED = " moved while it was checked";
+
+} // namespace
+
+TEST(BrokerHelperTest, AnInstallWhoseFinalPathsAreAsNamedPassesWithTheInjectedFinalPath)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    g_FinalPathFake = {};
+    const std::array<std::wstring, 1> files{systemFile(L"cmd.exe")};
+    BrokerHelper::InstallCheckFunctions functions;
+    functions.getFinalPath = &fakeFinalPath;
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files, functions);
+    EXPECT_TRUE(checked.has_value()) << checked.error();
+    EXPECT_GE(g_FinalPathFake.calls, 3) << "the file, a folder at least, and the file again";
+}
+
+TEST(BrokerHelperTest, AnInstallWhoseFolderMovedWhileItWasCheckedIsRefused)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    g_FinalPathFake = {};
+    g_FinalPathFake.moveCall = 2; // the file is the first call, its folder the second
+    const std::array<std::wstring, 1> files{systemFile(L"cmd.exe")};
+    BrokerHelper::InstallCheckFunctions functions;
+    functions.getFinalPath = &fakeFinalPath;
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files, functions);
+    ASSERT_FALSE(checked.has_value());
+    ASSERT_FALSE(g_FinalPathFake.replaced.empty());
+    EXPECT_EQ(checked.error(), WinString::wideToUtf8(g_FinalPathFake.replaced) + std::string(MOVED));
+}
+
+TEST(BrokerHelperTest, AnInstallWhoseFileMovedOnTheSecondReadIsRefused)
+{
+    if (const auto why = brokerRefusesThisUser())
+    {
+        GTEST_SKIP() << "the broker doesn't serve this user: " << *why;
+    }
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    g_FinalPathFake = {};
+    g_FinalPathFake.moveFileReread = true;
+    const std::wstring file = systemFile(L"cmd.exe");
+    const std::array<std::wstring, 1> files{file};
+    BrokerHelper::InstallCheckFunctions functions;
+    functions.getFinalPath = &fakeFinalPath;
+    const auto checked = BrokerHelper::checkUnchangeableBy(token.get(), files, functions);
+    ASSERT_FALSE(checked.has_value());
+    EXPECT_EQ(checked.error(), WinString::wideToUtf8(file) + std::string(MOVED));
 }
 
 TEST(BrokerHelperTest, AnInstallInAFolderItsUserCanChangeIsRefused)
@@ -1008,6 +1124,12 @@ TEST_F(ProcessWatchWorkerTest, AFailedWaitStopsTheSession)
 // says why.
 TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
 {
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+    // clang 23's ASan runtime on Windows crashes ("stack-overflow", at a code address, not a stack one) on any bare
+    // `throw;`, which ProcessWatch::watch() does before the Worker records why (#4518). A stand-alone
+    // `try { throw X; } catch (...) { throw; }` does it; the watch's stack is the default 1 MiB. Normal builds run it.
+    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)";
+#endif
     m_Seam.then = WaitSeam::Then::Throw;
     const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
     std::promise<void> stopped;
@@ -1023,6 +1145,9 @@ TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
 
 TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsAnythingStopsTheSession)
 {
+#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
+    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)"; // see the test above
+#endif
     m_Seam.then = WaitSeam::Then::ThrowNonStd;
     const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
     std::promise<void> stopped;
@@ -1975,6 +2100,14 @@ class InstallFolder
         EXPECT_FALSE(error) << error.message();
         std::filesystem::copy_file(TASKSMACK_WINDOWS_HELPER_TEST_PARENT_PATH, taskSmack(), error);
         EXPECT_FALSE(error) << error.message();
+        // A sanitizer build's executables import clang's ASan runtime DLL, found beside them; the copies need it too (#4520).
+        const std::filesystem::path asanRuntime =
+            std::filesystem::path(TASKSMACK_WINDOWS_HELPER_PATH).parent_path() / L"clang_rt.asan_dynamic-x86_64.dll";
+        if (std::filesystem::exists(asanRuntime, error))
+        {
+            std::filesystem::copy_file(asanRuntime, m_Path / asanRuntime.filename(), error);
+            EXPECT_FALSE(error) << error.message();
+        }
     }
     ~InstallFolder()
     {
@@ -2356,15 +2489,15 @@ void expectHardenedImage(const std::filesystem::path& path)
 
     // Every DLL the imports load comes from System32 only (/DEPENDENTLOADFLAG:0x800), never the image's own folder:
     // the load configuration's DependentLoadFlags, which the loader uses for the imports in place of its default
-    // search. In every build, a sanitizer's too.
+    // search. Not in a sanitizer build, whose runtime DLL must load from beside the image (#4520).
+#ifndef TASKSMACK_WINDOWS_HARDENED
+    GTEST_SKIP() << "built without CFG, CETCOMPAT and /DEPENDENTLOADFLAG (a sanitizer build; cmake/CompilerOptions.cmake)";
+#else
     const PeFile::Directory loadConfig = image.directory(IMAGE_DIRECTORY_ENTRY_LOAD_CONFIG);
     ASSERT_GE(loadConfig.size, offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags) + sizeof(WORD)) << "no load configuration";
     const auto dependentLoadFlags = image.at<WORD>(loadConfig.offset + offsetof(IMAGE_LOAD_CONFIG_DIRECTORY64, DependentLoadFlags));
     EXPECT_EQ(dependentLoadFlags, LOAD_LIBRARY_SEARCH_SYSTEM32) << "no /DEPENDENTLOADFLAG:0x800";
 
-#ifndef TASKSMACK_WINDOWS_HARDENED
-    GTEST_SKIP() << "built without CFG and CETCOMPAT (a sanitizer build; cmake/CompilerOptions.cmake)";
-#else
     EXPECT_NE(characteristics & IMAGE_DLLCHARACTERISTICS_GUARD_CF, 0) << "no /guard:cf";
 
     // The load configuration's guard flags: the compiler's checks went in (-cfguard), and the linker's

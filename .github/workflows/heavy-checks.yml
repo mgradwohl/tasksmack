@@ -708,12 +708,10 @@ jobs:
           New-Item -ItemType Directory -Force sanitizer-logs | Out-Null
           # The ASan runtime DLL sits beside the test exe: cmake/CompilerOptions.cmake copies it at configure time.
           $env:UBSAN_OPTIONS = 'halt_on_error=1:print_stacktrace=1'
-          # The daytime filter, minus the tests the first sanitizer run found failing. Each has its own issue, and
-          # UBSan and ASan abort the process on the first finding, so a known one would hide every later one:
-          # #4516 busy-loop int overflow, #4517 destroyed temporary, #4518 throw on a worker thread, #4519
-          # bad_alloc vs Unknown error, #4520 helper copies can't load the ASan runtime. Drop a pattern when its issue closes.
-          $known = 'WindowsProcessProbeTest.TotalCpuTimeIsPositiveAndMonotonic:WindowsProcessProbeTest.CpuTimeIncreasesBetweenSamples:BrokerHelperTest.AnythingElseOnTheCommandLineIsRefused:ProcessWatchWorkerTest.AWatchThatThrows*:BackgroundTaskTest.AFailedResultThatCantBeBuiltOnTheWorkerIsNotRethrown:BackgroundTaskTest.AWorkerThatFailedPastTheWorkDoesNotHoldUpTheNextStart:TaskSmackHelperTest.Refuses*'
-          $filter = "-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*:$known"
+          # The daytime filter. UBSan and ASan abort the process on the first finding, so a test that trips one
+          # belongs in the filter only while its issue is open (#4345). None is excluded now; the two tests that
+          # hit clang's ASan rethrow crash skip themselves under it (#4518).
+          $filter = "-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*"
           & build/win-asan-ubsan/tests/TaskSmackTests.exe "--gtest_filter=$filter" *>&1 | Tee-Object -FilePath sanitizer-logs/win-asan-ubsan.log
           "test_result=$LASTEXITCODE" | Out-File -Append -Encoding utf8 $env:GITHUB_OUTPUT
 

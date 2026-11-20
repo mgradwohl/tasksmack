@@ -304,6 +304,7 @@ template<typename Result> class BackgroundTask
     template<typename Work>
     [[nodiscard]] static Result runOrFailed(Work& work, const std::stop_token& stopToken, FailedFn failed, std::string_view unknown)
     {
+        std::string detail;
         try
         {
             if constexpr (std::is_invocable_v<Work&, std::stop_token>)
@@ -317,12 +318,16 @@ template<typename Result> class BackgroundTask
         }
         catch (const std::exception& e)
         {
-            return failed(std::string(e.what()));
+            detail = e.what();
         }
         catch (...)
         {
-            return failed(std::string(unknown));
+            detail = unknown;
         }
+        // Built outside the handlers: a Failed result that throws (bad_alloc) must leave this function, and under
+        // clang's AddressSanitizer on Windows an exception thrown inside a handler is caught by the try's other
+        // handler instead (#4519), which would hand the worker the bad_alloc's own text as the result.
+        return failed(std::move(detail));
     }
 
     /// poll() of an adopted answer.
