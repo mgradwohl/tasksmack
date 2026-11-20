@@ -18,6 +18,7 @@
 #include <vector>
 
 #include <sys/stat.h>
+#include <sys/vfs.h>
 #include <unistd.h>
 
 namespace Platform::RootTools
@@ -42,6 +43,10 @@ struct RootFs
     std::function<std::optional<std::string>(const std::string&)> canonical;
     /// isExecutableFile().
     std::function<bool(const std::string&)> executable;
+    /// Whether the folder @p path is on procfs (statfs()), wherever it is mounted; empty: only /proc itself counts.
+    /// The "= {}" lets a designated initializer leave it out without -Wmissing-designated-field-initializers.
+    // NOLINTNEXTLINE(readability-redundant-member-init)
+    std::function<bool(const std::string&)> onProcfs = {};
 };
 
 [[nodiscard]] inline RootFs systemRootFs()
@@ -73,6 +78,13 @@ struct RootFs
             return ec ? std::nullopt : std::optional<std::string>(resolved.native());
         },
         .executable = &isExecutableFile,
+        .onProcfs =
+            [](const std::string& path)
+        {
+            struct statfs info{};
+            constexpr decltype(info.f_type) PROC_FS = 0x9fa0; // PROC_SUPER_MAGIC, <linux/magic.h>
+            return ::statfs(path.c_str(), &info) == 0 && info.f_type == PROC_FS;
+        },
     };
 }
 
@@ -215,7 +227,10 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
         {
             return std::nullopt;
         }
-        namedAsItIs = namedAsItIs && *folderResolved == folder;
+        // A /proc magic link (/proc/<pid>/exe, .../fd/<n>) passes every root-only check, but leads to whatever the
+        // process holding that PID at the exec has (the #4564 re-review): never run by such a name.
+        const bool procfs = folder == "/proc" || folder.starts_with("/proc/") || (fs.onProcfs && fs.onProcfs(folder));
+        namedAsItIs = namedAsItIs && *folderResolved == folder && !procfs;
         const std::optional<std::string> target = fs.readLink(hop);
         if (!target.has_value())
         {

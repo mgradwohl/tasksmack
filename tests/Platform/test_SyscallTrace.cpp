@@ -667,6 +667,28 @@ TEST(RootToolsTest, APathThroughAFolderLinkRunsCanonicallyAndANeighbourLinkKeeps
     EXPECT_EQ(RootTools::rootTrustedPath("/proc/1/cwd/usr/bin/pgrep", fs), std::optional<std::string>("/usr/bin/pgrep"));
     EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/pkill", fs), std::optional<std::string>("/usr/bin/pkill"))
         << "#4531: pkill keeps the name it dispatches on";
+
+    // The #4564 re-review: /proc/<pid>/exe is a root-only link in a root-only folder, but leads to whatever the process
+    // holding that PID at the exec runs ($TERMINAL=/proc/<pid>/exe of a setuid program, its PID then reused).
+    FakeTree procTree = tree;
+    procTree.entries["/proc/123"] = {.uid = 0, .mode = DIR | 0555};
+    procTree.entries["/proc/123/exe"] = {.uid = 0, .mode = 0120777};
+    procTree.links["/proc/123/exe"] = "/usr/bin/pgrep";
+    EXPECT_EQ(RootTools::rootTrustedPath("/proc/123/exe", procTree.fs()), std::optional<std::string>("/usr/bin/pgrep"))
+        << "never by the magic link's name";
+    // procfs mounted elsewhere is found by its filesystem type.
+    procTree.entries["/srv"] = {.uid = 0, .mode = DIR | 0755};
+    procTree.entries["/srv/p"] = {.uid = 0, .mode = DIR | 0555};
+    procTree.entries["/srv/p/exe"] = {.uid = 0, .mode = 0120777};
+    procTree.links["/srv/p/exe"] = "/usr/bin/pgrep";
+    RootTools::RootFs onProc = procTree.fs();
+    onProc.onProcfs = [](const std::string& folder)
+    {
+        return folder.starts_with("/srv/p");
+    };
+    EXPECT_EQ(RootTools::rootTrustedPath("/srv/p/exe", onProc), std::optional<std::string>("/usr/bin/pgrep"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/srv/p/exe", procTree.fs()), std::optional<std::string>("/srv/p/exe"))
+        << "without the filesystem type, the same link would keep its name";
 }
 
 TEST(RootToolsTest, WithNoTrustedFolderTheRootPathFindsNothing)
