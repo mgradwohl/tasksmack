@@ -15,6 +15,8 @@
 #include <array>
 #include <cerrno>
 #include <cstdint>
+#include <expected>
+#include <format>
 #include <fstream>
 #include <ios>
 #include <iterator>
@@ -22,9 +24,12 @@
 #include <optional>
 #include <string>
 #include <string_view>
+#include <vector>
 
 // NOLINTNEXTLINE(modernize-deprecated-headers) - POSIX signal.h provides kill(), csignal does not
+#include <fcntl.h>
 #include <signal.h>
+#include <sys/resource.h>
 #include <sys/types.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -46,7 +51,9 @@ namespace
 class EnvironmentChild
 {
   public:
-    EnvironmentChild() : m_Pid(spawn())
+    /// @p bigVariables extra variables of 120 KiB each, under the kernel's 128 KiB per-string limit, and
+    /// @p smallVariables of a few bytes each (#4386).
+    explicit EnvironmentChild(int bigVariables = 0, int smallVariables = 0) : m_Pid(spawn(bigVariables, smallVariables))
     {}
 
     ~EnvironmentChild()
@@ -95,16 +102,27 @@ class EnvironmentChild
 
   private:
     /// Forks a child that execs /bin/sleep with exactly three variables; returns its PID (-1 on failure).
-    [[nodiscard]] static pid_t spawn()
+    [[nodiscard]] static pid_t spawn(int bigVariables, int smallVariables)
     {
         // Built before fork(): only async-signal-safe calls may run between fork and exec.
         std::string arg0 = "sleep";
         std::string arg1 = "60";
-        std::string var0 = "ZED=last";
-        std::string var1 = "MY_API_TOKEN=supersecret";
-        std::string var2 = "FOO=bar=baz";
+        std::vector<std::string> variables{"ZED=last", "MY_API_TOKEN=supersecret", "FOO=bar=baz"};
+        for (int i = 0; i < bigVariables; ++i)
+        {
+            variables.push_back(std::format("BIG{}=", i) + std::string(std::size_t{120} * 1024, 'x'));
+        }
+        for (int i = 0; i < smallVariables; ++i)
+        {
+            variables.push_back(std::format("S{}=1", i));
+        }
         std::array<char*, 3> argv{arg0.data(), arg1.data(), nullptr};
-        std::array<char*, 4> envp{var0.data(), var1.data(), var2.data(), nullptr};
+        std::vector<char*> envp;
+        for (std::string& variable : variables)
+        {
+            envp.push_back(variable.data());
+        }
+        envp.push_back(nullptr);
         const pid_t pid = ::fork();
         if (pid == 0)
         {
@@ -143,6 +161,76 @@ TEST(LinuxProcessEnvironmentReaderTest, ReadsAChildsEnvironment)
     EXPECT_EQ(result.variables[0].name, "ZED"); // block order; the view sorts
     EXPECT_EQ(valueOf(result, "MY_API_TOKEN"), "supersecret");
     EXPECT_EQ(valueOf(result, "FOO"), "bar=baz");
+}
+
+// #4386: the process sizes its own environ and the kernel caps nothing, so the read stops at the cap: whole entries
+// only, and marked truncated, as the Windows reader marks one.
+/// Whether execve here takes about @p bytes of environment: Linux allows a quarter of RLIMIT_STACK for the
+/// arguments and environment together, which a small `ulimit -s` brings under the test's 1.2 MiB.
+[[nodiscard]] bool execTakes(std::size_t bytes)
+{
+    rlimit stack{};
+    return ::getrlimit(RLIMIT_STACK, &stack) == 0 && (stack.rlim_cur == RLIM_INFINITY || stack.rlim_cur / 4 > bytes);
+}
+
+TEST(LinuxProcessEnvironmentReaderTest, AnEnvironmentOverTheCapIsCutAtAWholeEntryAndMarkedTruncated)
+{
+    if (!execTakes(std::size_t{1300} * 1024))
+    {
+        GTEST_SKIP() << "RLIMIT_STACK is too small for a 1.2 MiB environment (execve allows a quarter of it)";
+    }
+    const EnvironmentChild child(10); // about 1.2 MiB: over the 1 MiB cap
+    ASSERT_GT(child.pid(), 0);
+    ASSERT_TRUE(child.waitForExec());
+
+    LinuxProcessEnvironmentReader reader;
+    const EnvironmentReadResult result = reader.readEnvironment({.pid = child.pid(), .startTimeTicks = startTicksOf(child.pid())});
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok);
+    EXPECT_TRUE(result.truncated);
+    std::size_t bytes = 0;
+    for (const EnvironmentVariable& variable : result.variables)
+    {
+        bytes += variable.name.size() + 1 + variable.value.size() + 1;
+        if (variable.name.starts_with("BIG"))
+        {
+            EXPECT_EQ(variable.value.size(), std::size_t{120} * 1024) << variable.name << " is whole, not cut";
+        }
+    }
+    EXPECT_LE(bytes, ENVIRON_READ_CAP_BYTES);
+    EXPECT_EQ(valueOf(result, "ZED"), "last") << "the entries before the cap are all there";
+}
+
+// #4386, the security review: 1 MiB of tiny variables would be about 524,000 entries for the UI thread to build,
+// mask and sort; at most ENVIRON_VARIABLE_CAP are kept, as the Windows reader keeps.
+TEST(LinuxProcessEnvironmentReaderTest, AtMostTheVariableCapIsKept)
+{
+    const EnvironmentChild child(0, 5000);
+    ASSERT_GT(child.pid(), 0);
+    ASSERT_TRUE(child.waitForExec());
+    LinuxProcessEnvironmentReader reader;
+    const EnvironmentReadResult result = reader.readEnvironment({.pid = child.pid(), .startTimeTicks = startTicksOf(child.pid())});
+    ASSERT_EQ(result.status, EnvironmentReadStatus::Ok);
+    EXPECT_TRUE(result.truncated);
+    EXPECT_EQ(result.variables.size(), ENVIRON_VARIABLE_CAP);
+    EXPECT_EQ(valueOf(result, "ZED"), "last") << "the first entries are the ones kept";
+}
+
+TEST(ProcParsingTest, ReadWholeFileAtStopsAtItsLimitOnAnEndlessFile)
+{
+    // The read itself stops (#4386): /dev/zero never reaches EOF, so only the limit ends it, within one chunk.
+    const std::expected<std::string, int> read = ProcParsing::readWholeFileAt(AT_FDCWD, "/dev/zero", 100000);
+    ASSERT_TRUE(read.has_value());
+    EXPECT_GE(read->size(), 100000U);
+    EXPECT_LE(read->size(), std::size_t{100000} + 8192);
+}
+
+TEST(LinuxProcessEnvironmentReaderTest, ReadsAChildsEnvironmentWithoutMarkingItTruncated)
+{
+    const EnvironmentChild child;
+    ASSERT_GT(child.pid(), 0);
+    ASSERT_TRUE(child.waitForExec());
+    LinuxProcessEnvironmentReader reader;
+    EXPECT_FALSE(reader.readEnvironment({.pid = child.pid(), .startTimeTicks = startTicksOf(child.pid())}).truncated);
 }
 
 TEST(LinuxProcessEnvironmentReaderTest, UnknownStartTimeIsRefusedNotRead)

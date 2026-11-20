@@ -74,13 +74,36 @@ EnvironmentReadResult LinuxProcessEnvironmentReader::readEnvironment(const Proce
         return failure(ESRCH); // the PID now belongs to a different process
     }
 
-    const std::expected<std::string, int> block = ProcParsing::readWholeFileAt(dir.get(), "environ");
+    // Capped as the Windows reader is (#4386): the process sizes its own environ, and the kernel caps nothing.
+    std::expected<std::string, int> block = ProcParsing::readWholeFileAt(dir.get(), "environ", ENVIRON_READ_CAP_BYTES + 1);
     if (!block.has_value())
     {
         return failure(block.error());
     }
+    bool truncated = block->size() > ENVIRON_READ_CAP_BYTES;
+    if (truncated)
+    {
+        // Up to the last whole entry within the cap, so no variable is shown cut. An entry whose NUL is the byte just
+        // past the cap still fits: its text is within it.
+        const std::size_t lastEnd = block->rfind('\0', ENVIRON_READ_CAP_BYTES);
+        block->resize(lastEnd == std::string::npos ? 0 : lastEnd + 1);
+    }
+    // And at most ENVIRON_VARIABLE_CAP entries, cut before parsing so the rest are never built (the security review).
+    std::size_t entries = 0;
+    for (std::size_t at = 0; at < block->size(); ++at)
+    {
+        if ((*block)[at] == '\0' && ++entries == ENVIRON_VARIABLE_CAP)
+        {
+            if (at + 1 < block->size())
+            {
+                block->resize(at + 1);
+                truncated = true;
+            }
+            break;
+        }
+    }
     // Never logged, at any level: the values are routinely secrets (#179).
-    return {.status = EnvironmentReadStatus::Ok, .variables = Environment::parseEnvironBlock(*block)};
+    return {.status = EnvironmentReadStatus::Ok, .variables = Environment::parseEnvironBlock(*block), .truncated = truncated};
 }
 
 } // namespace Platform
