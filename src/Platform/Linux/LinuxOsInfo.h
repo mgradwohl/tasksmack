@@ -115,11 +115,11 @@ struct OsRelease
     return std::string(zone);
 }
 
-/// The session's locale as setlocale(LC_ALL, "") would pick it for messages: LC_ALL, else LANG,
-/// else "C". Null or empty variables are skipped.
-[[nodiscard]] inline std::string chooseLocale(const char* lcAll, const char* lang)
+/// The session's locale as setlocale(LC_ALL, "") would pick it for messages: LC_ALL, else LC_MESSAGES,
+/// else LANG, else "C", glibc's order (#4338). Null or empty variables are skipped.
+[[nodiscard]] inline std::string chooseLocale(const char* lcAll, const char* lcMessages, const char* lang)
 {
-    for (const char* value : {lcAll, lang})
+    for (const char* value : {lcAll, lcMessages, lang})
     {
         if (value != nullptr && *value != '\0')
         {
