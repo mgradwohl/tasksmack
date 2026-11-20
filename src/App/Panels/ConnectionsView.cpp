@@ -3,7 +3,6 @@
 #include "App/Panels/ProcessTableLayout.h"
 #include "Domain/ConnectionsModel.h"
 #include "Domain/ProcessConnections.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessConnections.h"
 #include "Platform/ISystemConnections.h"
@@ -68,7 +67,7 @@ constexpr const char* ROW_MENU_ID = "##ConnectionRowMenu";
     switch (column)
     {
     case ConnectionsColumn::Process:
-        return Platform::compareIgnoreCase(a.process, b.process);
+        return Platform::compareFolded(a.process, b.process);
     case ConnectionsColumn::Pid:
         return a.connection.pid <=> b.connection.pid;
     case ConnectionsColumn::Protocol:
