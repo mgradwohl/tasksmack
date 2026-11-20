@@ -17,6 +17,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -346,6 +347,8 @@ RAW = {
             pull(221, at(16), state="CLOSED"),
         ],
         "pr_ci": {"success": 30, "failure": 10, "merged": 8},
+        # The linked pull requests that aren't on the milestone: #211 was a draft for a day, #212 never was one.
+        "pull_request_ready": {"211": at(14), "212": None},
         "tracker": {
             "number": 100,
             "title": "[RELEASE 1.1] v1.1.0 release tracker",
@@ -895,9 +898,9 @@ class FigureTests(unittest.TestCase):
 
     def test_time_in_review_and_pull_request_ci(self):
         figures = build("v1.1.0")["figures"]
-        # Ready to merged: #201 was marked ready at 03:00 and merged at 06:00 (3 h); #211, #212 and #220 were never
-        # drafts, so they count from when they were opened (48 h, 30 h and 1 h).
-        self.assertEqual(figures["review_hours"], {"n": 4, "median": 16.5, "p90": 42.6})
+        # Ready to merged: #201 was marked ready at 03:00 and merged at 06:00 (3 h), and #211 a day after it was
+        # opened (24 h, not the 48 h since it was opened). #212 and #220 never were drafts: 30 h and 1 h.
+        self.assertEqual(figures["review_hours"], {"n": 4, "median": 13.5, "p90": 28.2})
         self.assertEqual(
             figures["pr_ci"], {"success": 30, "failure": 10, "merged": 8, "pass_percent": 75.0, "runs_per_merged": 5.0}
         )
@@ -914,7 +917,54 @@ class FigureTests(unittest.TestCase):
         self.assertEqual(dashboard.review_start(request(ready=when(4)), {}), when(4))
         self.assertEqual(dashboard.review_start(request(), {7: when(5)}), when(5))  # known from the milestone's list
         self.assertIsNone(dashboard.review_start(request(draft=True, state="open"), {7: when(5)}))  # still a draft
-        self.assertEqual(dashboard.review_start(request(draft=True, state="closed"), {}), when(3))
+        # Closed unmerged: abandoned, so no review started with it, draft or not.
+        self.assertIsNone(dashboard.review_start(request(draft=True, state="closed"), {}))
+        self.assertIsNone(dashboard.review_start(request(state="closed", ready=when(4)), {7: when(5)}))
+
+    def test_an_abandoned_pull_request_is_not_a_review(self):
+        # A draft closed unmerged on the 2nd, then a pull request opened ready on the 10th and still open.
+        node = issue(
+            1,
+            "x",
+            created=at(1),
+            pulls=(pull(2, at(1), state="CLOSED", draft=True), pull(3, at(10))),
+        )
+        release = dashboard.build_release(
+            {**RAW["v1.1.0"], "issues": [node], "tracker": None, "pull_requests": [], "pull_request_ready": {}},
+            published(),
+            RED_ISSUES,
+            CI_COUNTS,
+            None,
+            REPOSITORY,
+            NOW,
+            {(1, 1, 0)},
+        )
+        self.assertEqual(release["counts"]["phases"], {"todo": 0, "progress": 0, "review": 1, "done": 0})
+        # It started with its first pull request, on the 1st. It's in review from the second one, on the 10th: not
+        # from the abandoned draft.
+        self.assertEqual(release["events"]["flow_review"], [dashboard.epoch(when(10))])
+
+    def test_ready_times_are_asked_for_forty_at_a_time(self):
+        asked = []
+
+        class Fake:
+            def graphql(self, query, *, partial=False, **variables):
+                asked.append((query, partial))
+                numbers = [int(number) for number in re.findall(r"p(\d+):pullRequest", query)]
+                found = {
+                    f"p{number}": {"timelineItems": {"nodes": [{"createdAt": at(4)}] if number % 2 else []}}
+                    for number in numbers
+                }
+                found["p7"] = None  # a number that names no pull request
+                return {"repository": found}
+
+        found = dashboard.collect_ready_times(Fake(), list(range(1, 46)) + [3, 3])
+        self.assertEqual(len(asked), 2)  # 45 numbers, 40 to a query
+        self.assertTrue(all(partial for _, partial in asked))
+        self.assertIn("p1:pullRequest(number:1){timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:1)", asked[0][0])
+        self.assertEqual((found["1"], found["2"], found["7"], found["45"]), (at(4), None, None, at(4)))
+        self.assertEqual(len(found), 45)
+        self.assertEqual(dashboard.collect_ready_times(Fake(), []), {})
 
     def test_the_flow_lists_nest(self):
         release = build("v1.1.0")
@@ -941,6 +991,12 @@ class FigureTests(unittest.TestCase):
         self.assertEqual(
             flow(phase="progress", started=when(6), review=when(7)),
             {"started": [dashboard.epoch(when(6))], "review": []},
+        )
+        # In progress by its label, with no time recorded for it: since it joined.
+        self.assertEqual(flow(phase="progress"), {"started": [dashboard.epoch(when(5))], "review": []})
+        self.assertEqual(
+            flow(phase="review", started=when(6)),
+            {"started": [dashboard.epoch(when(6))], "review": [dashboard.epoch(when(6))]},
         )
         # A pull request closed unmerged put it back to not started.
         self.assertEqual(flow(started=when(6), review=when(7)), {"started": [], "review": []})
@@ -1292,6 +1348,9 @@ class BuildTests(unittest.TestCase):
         )
         self.assertEqual(release["figures"], {"issues": 2, "issues_open": 2, "issues_closed": 0})
         self.assertEqual([entry["name"] for entry in release["by_lane"]], ["Dash", "None"])
+        # #400 carries the label with no event for it: it's in progress in the counts, so it's started in the chart.
+        self.assertEqual(release["counts"]["phases"]["progress"], 1)
+        self.assertEqual(len(release["events"]["flow_started"]), 1)
         self.assertEqual(release["open_issues"][0]["lane"], "Dash")
 
     def test_index(self):

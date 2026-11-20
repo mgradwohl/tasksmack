@@ -27,17 +27,23 @@ Nothing here is a second tracking system. Every figure is read from what the rel
   - CI          the watched workflows' latest runs and pass counts (main-health.yml's WATCHED list);
   - dry run     release.yml's latest manual run on the branch.
 
-What a run costs matters, because the workflow's token shares one hourly budget with every other workflow
-in the repository. Three figures need a note. Time in review runs from when a pull request was last marked ready (or opened, if
-it never was a draft) to its merge. Pull request CI counts ci.yml's pull request runs in the cycle, passed
-and failed, over the pull requests merged into the branch in that time. The flow lists say when each issue
-started and went to review, so the page can chart the open work by where it stood.
+Three figures need a note:
 
-A closed milestone whose release is published is written once, marked `final`, and copied
-from --previous on later runs. A planned release and the cycle's pass counts are read once an hour. The
-latest runs come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50
-GraphQL points, and six runs an hour take about 56 and 300 of each budget. Every run prints what it used and
-what's left, and warns when that's under a quarter.
+  - time in review    from when a pull request was last marked ready for review (or opened, if it never was a
+                      draft) to its merge;
+  - pull request CI   ci.yml's pull request runs in the cycle, passed and failed, and those runs over the pull
+                      requests merged in that time. Both are the whole repository's, and the runs include those
+                      of pull requests still open, so it's runs per merge, not the runs one merged change took;
+  - the flow lists    when each issue started and went to review, so the page can chart the open work by
+                      where it stood.
+
+What a run costs matters, because the workflow's token shares one hourly budget with every other workflow
+in the repository. A closed milestone whose release is published is written once, marked `final`, and copied
+from --previous on later runs. A planned release and the cycle's pass counts are read once an hour: 14 calls
+for the branch's, and for a minor one search and two or more counts for the pull requests'. The latest runs
+come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50 GraphQL points,
+and six runs an hour take about 60 and 300 of each budget. Every run prints what it used and what's left, and
+warns when that's under a quarter.
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run
@@ -390,6 +396,26 @@ def collect_states(gh: GitHub, numbers: Iterable[int]) -> dict[str, dict[str, An
     return found
 
 
+def collect_ready_times(gh: GitHub, numbers: Iterable[int]) -> dict[str, str | None]:
+    """When each of @p numbers' pull requests was last marked ready for review, by number (as text: it's a JSON
+    key); None for one that never was a draft. Forty to a query, at about a point each."""
+    wanted = sorted(set(numbers))
+    found: dict[str, str | None] = {}
+    ready = "timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:1){nodes{... on ReadyForReviewEvent{createdAt}}}"
+    for start in range(0, len(wanted), 40):
+        chunk = wanted[start : start + 40]
+        fields = " ".join(f"p{number}:pullRequest(number:{number}){{{ready}}}" for number in chunk)
+        query = (
+            "query($owner:String!,$name:String!){rateLimit{cost remaining limit} "
+            "repository(owner:$owner,name:$name){" + fields + "}}"
+        )
+        repository = gh.graphql(query, partial=True).get("repository") or {}
+        for number in chunk:
+            nodes = ((repository.get(f"p{number}") or {}).get("timelineItems") or {}).get("nodes") or []
+            found[str(number)] = (nodes[-1] or {}).get("createdAt") if nodes else None
+    return found
+
+
 def count_runs(
     gh: GitHub,
     workflow: str,
@@ -416,7 +442,7 @@ def count_runs(
 def collect_pr_ci(gh: GitHub, start: datetime, end: datetime) -> dict[str, int]:
     """What CI cost the cycle's pull requests: how many of ci.yml's pull request runs passed and failed (a
     cancelled one was superseded by a push, and says nothing), and how many pull requests merged, all in
-    [start, end]. Runs over merges is how many CI runs a merged change took.
+    [start, end]. Runs over merges is the CI the cycle spent for each change it landed.
 
     Both counts are the whole repository's, since a run doesn't say which branch its pull request targets. So
     this is asked for a minor only: a patch's cycle runs alongside the next minor's work, and the figure would
@@ -534,10 +560,21 @@ def collect_milestone(gh: GitHub, milestone: dict[str, Any]) -> dict[str, Any]:
         for item in section["items"]
         for ref in item["refs"]
     }
+    # About a fifth of the pull requests that close a milestone's issues aren't on the milestone, and the list
+    # under an issue doesn't say when each was marked ready: ask for those (merged or open; an abandoned one
+    # isn't a review).
+    on_milestone = {node["number"] for node in pull_requests}
+    linked = {
+        pr["number"]
+        for node in issues
+        for pr in node["closedByPullRequestsReferences"]["nodes"]
+        if pr["state"] != "CLOSED"
+    }
     return {
         "milestone": milestone,
         "issues": issues,
         "pull_requests": pull_requests,
+        "pull_request_ready": collect_ready_times(gh, linked - on_milestone),
         "tracker": tracker,
         "states": collect_states(gh, referenced - known),
     }
@@ -669,10 +706,10 @@ def _pull_request(node: dict[str, Any]) -> dict[str, Any]:
 
 def review_start(pr: dict[str, Any], marked: dict[int, datetime]) -> datetime | None:
     """When a pull request became reviewable: when it was last marked ready for review, or when it was opened if
-    it never was a draft. None while it's still a draft. @p marked holds the marked-ready times by number: the
-    pull requests listed under an issue come without theirs, so one that isn't on the milestone itself counts
-    from when it was opened."""
-    if pr["draft"] and pr["state"] == "open":
+    it never was a draft. None while it's still a draft, and None for one closed unmerged: it was abandoned,
+    and neither it nor its issue was "in review" on its account. @p marked holds the marked-ready times by
+    number, for the pull requests whose own record doesn't carry one (those listed under an issue)."""
+    if pr["state"] == "closed" or (pr["draft"] and pr["state"] == "open"):
         return None
     return marked.get(pr["n"]) or pr.get("ready") or pr["created"]
 
@@ -690,8 +727,10 @@ def flow_events(issues: Iterable[dict[str, Any]]) -> dict[str, list[int]]:
     for issue in issues:
         joined, done = issue["joined"], issue["done"]
         if issue["open"]:
-            began = issue["started"] if issue["phase"] in ("progress", "review") else None
-            reviewed = issue.get("review") if issue["phase"] == "review" else None
+            # In progress with no time recorded (the label's event wasn't among those fetched): since it joined,
+            # so the chart's last point agrees with the page's count of what's in progress.
+            began = (issue["started"] or joined) if issue["phase"] in ("progress", "review") else None
+            reviewed = (issue.get("review") or began) if issue["phase"] == "review" else None
         else:
             began = issue["started"] or done
             reviewed = issue.get("review") or done
@@ -1111,7 +1150,8 @@ def release_figures(
 
 
 def _pr_ci_figures(counts: dict[str, Any] | None) -> dict[str, Any] | None:
-    """Pull request CI for the cycle: its pass rate, and how many runs each merged pull request took."""
+    """Pull request CI for the cycle: its pass rate, and its runs per merge. The runs are every pull request's,
+    merged or not, so pull requests held open through a freeze raise it: it isn't judged better or worse."""
     if not counts:
         return None
     success, failure, merged = counts.get("success", 0), counts.get("failure", 0), counts.get("merged", 0)
@@ -1568,6 +1608,9 @@ def build_release(
 
     # When each pull request became reviewable, and so when each issue first went to review.
     marked = {pr["n"]: pr["ready"] for pr in pull_requests if pr["ready"] is not None}
+    for number, moment in (raw.get("pull_request_ready") or {}).items():
+        if moment:
+            marked.setdefault(int(number), parse_time(moment))
     for pr in (live or {}).get("pull_requests", []):
         if pr["ready"] is not None:
             marked.setdefault(pr["n"], pr["ready"])

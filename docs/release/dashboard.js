@@ -676,7 +676,8 @@
     }
     const now = points[points.length - 1];
     const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img',
-      'aria-label': 'The open work over the cycle. Now: ' + now.todo + ' not started, ' + now.progress + ' in progress, ' + now.review + ' in review. The table below has the numbers.' });
+      'aria-label': 'The open work over the cycle. ' + (release.cycle.end ? 'At the release: ' : 'Now: ') + number.format(now.todo) + ' not started, ' +
+        number.format(now.progress) + ' in progress, ' + number.format(now.review) + ' in review. The table below has the numbers.' });
     axes(chart, box, yMax, xTicks);
 
     // Each band lies between two running totals: the area from its lower edge to its upper one.
@@ -902,7 +903,7 @@
       el('div', { class: 'scroll' }, table),
       release.figures.pr_ci && release.figures.pr_ci.pass_percent != null ? el('p', { class: 'sub' }, 'Pull request CI this cycle: ' + number.format(release.figures.pr_ci.success) + ' runs passed and ' +
         number.format(release.figures.pr_ci.failure) + ' failed (' + release.figures.pr_ci.pass_percent + '%)' +
-        (release.figures.pr_ci.runs_per_merged != null ? ', ' + release.figures.pr_ci.runs_per_merged + ' runs for each merged pull request.' : '.')) : null,
+        (release.figures.pr_ci.runs_per_merged != null ? ', ' + release.figures.pr_ci.runs_per_merged + ' runs for each merge (the runs of pull requests still open count too).' : '.')) : null,
       el('p', { class: 'footnote' }, 'Runs on ' + release.branch + ' since the cycle started, counted once an hour; cancelled runs are left out. Coverage is on ',
         el('a', { href: 'https://app.codecov.io/gh/' + (REPO.test(view.index.repo) ? view.index.repo : ''), text: 'Codecov' }), '.'));
   }
@@ -932,7 +933,8 @@
     ['Pull request opened to merged, median', (f) => span(median(f.merge_hours)), (f) => median(f.merge_hours), 'down'],
     ['Pull request ready to merged, median', (f) => span(median(f.review_hours)), (f) => median(f.review_hours), 'down'],
     ['Pull request CI pass rate', (f) => (f.pr_ci && f.pr_ci.pass_percent != null ? f.pr_ci.pass_percent + '%' : '–'), (f) => (f.pr_ci ? f.pr_ci.pass_percent : null), 'up'],
-    ['CI runs per merged pull request', (f) => (f.pr_ci && f.pr_ci.runs_per_merged != null ? String(f.pr_ci.runs_per_merged) : '–'), (f) => (f.pr_ci ? f.pr_ci.runs_per_merged : null), 'down'],
+    // Every pull request's runs over the merges, so pull requests held open through a freeze raise it: context, not judged.
+    ['Pull request CI runs per merge', (f) => (f.pr_ci && f.pr_ci.runs_per_merged != null ? String(f.pr_ci.runs_per_merged) : '–'), (f) => (f.pr_ci ? f.pr_ci.runs_per_merged : null), null],
     ['High-severity bug opened to closed, median', (f) => (f.bug_lead_hours.high ? span(f.bug_lead_hours.high.median) + ' (' + f.bug_lead_hours.high.n + ')' : '–'), (f) => median(f.bug_lead_hours.high), 'down'],
     ['Pull request size, median lines', (f) => (f.pull_request_lines ? number.format(Math.round(f.pull_request_lines.median)) : '–'), (f) => median(f.pull_request_lines), 'down'],
     ['Issues reopened', (f) => (f.reopened == null ? '–' : number.format(f.reopened)), (f) => f.reopened ?? null, 'down'],

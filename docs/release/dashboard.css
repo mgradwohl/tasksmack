@@ -673,11 +673,9 @@ details[open] > summary .chevron {
   fill: var(--phase-review);
 }
 
-/* Stacked bands: a hairline of the surface between them, not a border around them. */
+/* Stacked bands touch: a stroke between them would paint over a band one issue tall on a large milestone. */
 .area {
-  stroke: var(--surface);
-  stroke-width: 1;
-  stroke-linejoin: round;
+  stroke: none;
 }
 
 .dot {
