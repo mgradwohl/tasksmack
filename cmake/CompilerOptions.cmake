@@ -35,6 +35,13 @@ if(TASKSMACK_ENABLE_GHASH AND WIN32 AND CMAKE_CXX_COMPILER_ID MATCHES "Clang")
     add_link_options("$<$<CONFIG:Debug>:LINKER:/DEBUG:GHASH>")
 endif()
 
+# No C++20 module scanning: nothing in src/, tests/ or benchmarks/ has an `export module` or an `import`,
+# and with C++23 and cmake_minimum_required(3.29) CMake otherwise runs clang-scan-deps on every C++ file of
+# every build, cache hit or not (#4347). This runs before the first add_executable/add_library of this
+# project and of every FetchContent dependency (Dependencies.cmake comes after), and the variable seeds each
+# target's CXX_SCAN_FOR_MODULES. Remove it when the first `export module` or `import` is added.
+set(CMAKE_CXX_SCAN_FOR_MODULES OFF)
+
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
