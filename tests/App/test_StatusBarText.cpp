@@ -205,6 +205,19 @@ TEST(StatusBarTextTest, EllipsizeKeepsTheLongestPrefixThatFits)
     EXPECT_EQ(ellipsize("\xC3\xA9\xC3\xA9\xC3\xA9", 16.0F, measureText), "\xC3\xA9\xE2\x80\xA6");
 }
 
+TEST(StatusBarTextTest, EllipsizeNeverSplitsAGrapheme)
+{
+    // "Cafe" + U+0301 + " menu": 8 px per code point, the ellipsis included.
+    EXPECT_EQ(ellipsize("Cafe\xCC\x81 menu", 40.0F, measureText), "Caf\xE2\x80\xA6");
+    EXPECT_EQ(ellipsize("Cafe\xCC\x81 menu", 48.0F, measureText), "Cafe\xCC\x81\xE2\x80\xA6");
+    // A flag is two code points that are cut together or not at all.
+    EXPECT_EQ(ellipsize("ab\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+                        "cd",
+                        32.0F,
+                        measureText),
+              "ab\xE2\x80\xA6");
+}
+
 TEST(StatusBarTextTest, NoSegmentsLeavesOnlyTheReadout)
 {
     const auto fit = fitStatusBar(std::span<const float>{}, SEPARATOR_PX, READOUT_PX, GAP_PX, 200.0F);

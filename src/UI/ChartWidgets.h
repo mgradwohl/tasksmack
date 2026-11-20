@@ -3,6 +3,7 @@
 #include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/CellText.h"
 #include "UI/ChartSmoothing.h" // IWYU pragma: export
 #include "UI/Clipboard.h"
 #include "UI/ColorContrast.h"
@@ -2580,7 +2581,7 @@ template<typename Measure> [[nodiscard]] std::string fitSeriesName(std::string_v
     // Called every frame, so the search measures in one buffer rather than a string per probe.
     const auto isBoundary = [&](std::size_t i)
     {
-        return i == name.size() || (static_cast<unsigned char>(name[i]) & 0xC0U) != 0x80U;
+        return isGraphemeBoundary(name, i);
     };
     // The byte offset of the @p n-th code point boundary after the first code point (n from 0).
     const auto cutAt = [&](std::size_t n)

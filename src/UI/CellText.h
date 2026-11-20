@@ -135,6 +135,133 @@ inline constexpr char32_t ZERO_WIDTH_JOINER = 0x200D;
     return value;
 }
 
+/// True for a regional indicator, U+1F1E6..U+1F1FF: two of them in a row are one flag.
+[[nodiscard]] constexpr bool isRegionalIndicator(char32_t codePoint) noexcept
+{
+    return codePoint >= 0x1F1E6 && codePoint <= 0x1F1FF;
+}
+
+/// Whether @p text may be cut at byte offset @p index without splitting a grapheme (#4313): the ends
+/// always may; a UTF-8 continuation byte, a combining mark, a variation selector, what follows a zero
+/// width joiner and the second regional indicator of a flag pair may not. Regional indicators pair from
+/// the start of their run, so a run of three is a flag and half of another.
+[[nodiscard]] constexpr bool isGraphemeBoundary(std::string_view text, std::size_t index) noexcept
+{
+    if (index == 0 || index >= text.size())
+    {
+        return true;
+    }
+    if ((static_cast<unsigned char>(text[index]) & 0xC0U) == 0x80U)
+    {
+        return false;
+    }
+    const char32_t codePoint = decodeCodePointAt(text, index);
+    if (extendsGrapheme(codePoint))
+    {
+        return false;
+    }
+    // The start of the code point before the one starting at @p from.
+    const auto previousStart = [&](std::size_t from) noexcept
+    {
+        std::size_t p = from - 1;
+        while (p > 0 && (static_cast<unsigned char>(text[p]) & 0xC0U) == 0x80U)
+        {
+            --p;
+        }
+        return p;
+    };
+    std::size_t prev = previousStart(index);
+    if (decodeCodePointAt(text, prev) == ZERO_WIDTH_JOINER)
+    {
+        return false;
+    }
+    if (isRegionalIndicator(codePoint))
+    {
+        std::size_t run = 0;
+        while (isRegionalIndicator(decodeCodePointAt(text, prev)))
+        {
+            ++run;
+            if (prev == 0)
+            {
+                break;
+            }
+            prev = previousStart(prev);
+        }
+        return run % 2 == 0;
+    }
+    return true;
+}
+
+/// The largest grapheme-safe cut at or below byte offset @p byteLimit: @p text.substr(0, result) ends
+/// on a whole grapheme. 0 when not even the first grapheme fits under the limit. Byte-length semantics:
+/// ASCII text is cut at exactly @p byteLimit.
+[[nodiscard]] constexpr std::size_t graphemeSafeCut(std::string_view text, std::size_t byteLimit) noexcept
+{
+    std::size_t cut = std::min(byteLimit, text.size());
+    while (cut > 0 && !isGraphemeBoundary(text, cut))
+    {
+        --cut;
+    }
+    return cut;
+}
+
+/// Whether @p text has a code point that joins its neighbours into one grapheme (a combining mark, joiner,
+/// variation selector or regional indicator): only then can a cut between code points split a grapheme.
+[[nodiscard]] constexpr bool hasGraphemeJoiners(std::string_view text) noexcept
+{
+    for (std::size_t i = 0; i < text.size(); ++i)
+    {
+        if (static_cast<unsigned char>(text[i]) < 0xC0U)
+        {
+            continue; // ASCII or a continuation byte
+        }
+        const char32_t codePoint = decodeCodePointAt(text, i);
+        if (extendsGrapheme(codePoint) || isRegionalIndicator(codePoint))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @p text cut short at its end to fit @p budgetPx: the longest grapheme-safe prefix whose
+/// "<prefix><ellipsis>" fits, or just the ellipsis when none does. Text that fits is returned whole.
+/// What a cell draws in place of ImGui::RenderTextEllipsis()'s own cut, which can land between a base
+/// character and its combining mark or inside a flag (#4313).
+template<typename Measure>
+[[nodiscard]] std::string
+prefixEllipsize(std::string_view text, float budgetPx, const Measure& measure, std::string_view ellipsis = MIDDLE_ELLIPSIS)
+{
+    if (!isCellTextClipped(measure(text), budgetPx))
+    {
+        return std::string(text);
+    }
+    std::string candidate;
+    candidate.reserve(text.size() + ellipsis.size());
+    const auto fitsAt = [&](std::size_t cut)
+    {
+        candidate.assign(text.substr(0, cut)).append(ellipsis);
+        return !isCellTextClipped(measure(candidate), budgetPx);
+    };
+    // Widths grow with the prefix: the largest byte limit whose safe cut fits, by binary search.
+    std::size_t lo = 0;
+    std::size_t hi = text.size();
+    while (lo < hi)
+    {
+        const std::size_t mid = lo + ((hi - lo + 1) / 2);
+        if (fitsAt(graphemeSafeCut(text, mid)))
+        {
+            lo = mid;
+        }
+        else
+        {
+            hi = mid - 1;
+        }
+    }
+    static_cast<void>(fitsAt(graphemeSafeCut(text, lo)));
+    return candidate;
+}
+
 /// @p text cut short in the middle to fit @p budgetPx: as much of its start as fits, an ellipsis, and
 /// its end, never fewer than its last @p tailBytes -- the part that tells one value from another, an
 /// endpoint's "]:50747" (#1942). What room there is beyond that tail is shared between the start and
@@ -165,6 +292,7 @@ template<typename Measure>
     std::vector<std::size_t> starts;
     starts.reserve(text.size() + 1);
     bool afterJoiner = false;
+    std::size_t regionalRun = 0; // regional indicators in a row before this one: they pair from the run's start
     for (std::size_t i = 0; i < text.size(); ++i)
     {
         if ((static_cast<unsigned char>(text[i]) & 0xC0U) == 0x80U)
@@ -172,11 +300,13 @@ template<typename Measure>
             continue;
         }
         const char32_t codePoint = decodeCodePointAt(text, i);
-        if (starts.empty() || !(afterJoiner || extendsGrapheme(codePoint)))
+        const bool secondOfFlag = isRegionalIndicator(codePoint) && (regionalRun % 2 == 1);
+        if (starts.empty() || !(afterJoiner || secondOfFlag || extendsGrapheme(codePoint)))
         {
             starts.push_back(i);
         }
         afterJoiner = codePoint == ZERO_WIDTH_JOINER;
+        regionalRun = isRegionalIndicator(codePoint) ? regionalRun + 1 : 0;
     }
     starts.push_back(text.size());
     const std::size_t characters = starts.size() - 1;

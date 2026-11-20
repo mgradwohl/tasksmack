@@ -9,6 +9,7 @@
 // updates -- and the frame rate only while Render Metrics (Ctrl+Shift+M) is on, since it is a
 // diagnostic rather than something a user monitors.
 
+#include "UI/CellText.h"
 #include "UI/Format.h"
 
 #include <cmath>
@@ -67,12 +68,8 @@ template<typename Measure> [[nodiscard]] std::string ellipsize(std::string_view 
     std::string candidate;
     candidate.reserve(text.size() + ELLIPSIS.size());
     // Longest first; a status segment is a few dozen bytes, so a linear walk is plenty.
-    for (std::size_t cut = text.size(); cut > 0; --cut)
+    for (std::size_t cut = text.size(); cut > 0; cut = UI::Widgets::graphemeSafeCut(text, cut - 1))
     {
-        if (cut < text.size() && (static_cast<unsigned char>(text[cut]) & 0xC0U) == 0x80U)
-        {
-            continue; // inside a character
-        }
         candidate.assign(text.substr(0, cut)).append(ELLIPSIS);
         if (measure(candidate) <= budgetPx)
         {
