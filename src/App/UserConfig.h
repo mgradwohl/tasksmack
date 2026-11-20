@@ -378,6 +378,14 @@ class UserConfig
 
     static auto getConfigDirectory() -> std::filesystem::path;
 
+  public:
+    /// Testing only: getConfigDirectory(), the folder config.toml is read from (#4410).
+    [[nodiscard]] static auto configDirectoryForTesting() -> std::filesystem::path
+    {
+        return getConfigDirectory();
+    }
+
+  private:
     /// The file write behind save() and saveInBackground(): @p settings merged into the file as it is.
     /// Logs why when it fails. Serialised by m_WriteMutex; on success @p settings becomes m_Synced.
     [[nodiscard]] bool writeSettings(const UserSettings& settings);
