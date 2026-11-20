@@ -75,6 +75,7 @@
 #include "Platform/ThreadName.h"
 #include "ProcessesPanelActions.h"
 #include "UI/CellText.h"
+#include "UI/Clipboard.h"
 #include "UI/EmptyState.h"
 #include "UI/Format.h"
 #include "UI/FrameOutline.h"
@@ -2048,7 +2049,7 @@ void ProcessesPanel::renderContent()
         ImGui::SameLine();
         if (ImGui::SmallButton(WithheldOpenNotice::COPY_LABEL))
         {
-            ImGui::SetClipboardText(m_RowWithheldPath.c_str());
+            UI::setClipboardUtf8(m_RowWithheldPath);
         }
         ImGui::SetItemTooltip("Copy its path, to open it yourself");
     }

@@ -25,6 +25,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
 #include "Platform/IProcessActions.h"
+#include "UI/Clipboard.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -35,8 +36,6 @@
 #include <spdlog/spdlog.h>
 // clang-format on
 
-#include <array>
-#include <charconv>
 #include <cstddef>
 #include <format>
 #include <memory>
@@ -87,18 +86,15 @@ void ProcessesPanel::renderRowContextMenu(const Domain::ProcessSnapshot& proc)
     ImGui::Separator();
     if (ImGui::MenuItem(ICON_FA_COPY " Copy PID"))
     {
-        std::array<char, 16> pidText{};
-        const auto result = std::to_chars(pidText.data(), pidText.data() + pidText.size() - 1, proc.pid);
-        *result.ptr = '\0';
-        ImGui::SetClipboardText(pidText.data());
+        UI::setClipboardUtf8(std::to_string(proc.pid));
     }
     if (ImGui::MenuItem(ICON_FA_COPY " Copy Name"))
     {
-        ImGui::SetClipboardText(proc.name.c_str());
+        UI::setClipboardUtf8(proc.name);
     }
     if (ImGui::MenuItem(ICON_FA_COPY " Copy Command Line", nullptr, false, !proc.command.empty()))
     {
-        ImGui::SetClipboardText(proc.command.c_str());
+        UI::setClipboardUtf8(proc.command);
     }
 
     // No other process action while one runs on its worker (#2142, #2305): its result is still to come.

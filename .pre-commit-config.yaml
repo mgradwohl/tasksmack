@@ -58,6 +58,14 @@ repos:
         entry: 'system_category\(\)\.message\('
         language: pygrep
         files: '^src/Platform/Windows/'
+      # Clipboard text is well-formed UTF-8 (#4325): copy through UI::setClipboardUtf8() (src/UI/Clipboard.h),
+      # which sanitizes it, never the bare ImGui call.
+      - id: no-bare-imgui-clipboard
+        name: No bare ImGui::SetClipboardText (use UI::setClipboardUtf8)
+        entry: 'ImGui::SetClipboardText\('
+        language: pygrep
+        files: '^src/'
+        exclude: '^src/UI/Clipboard\.h$'
       # AI-agent guidance drift (#2246): the two review SKILL.md copies must have identical bodies, and
       # CLAUDE.md must keep importing AGENTS.md.
       - id: check-guidance-sync
