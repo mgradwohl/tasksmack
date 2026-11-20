@@ -69,6 +69,34 @@ TEST(LinuxProcessIconSourceTest, ANonPngIsNoIcon)
     EXPECT_FALSE(LinuxProcessIconSource::decodePng(dir.path / "missing.png").has_value());
 }
 
+// #4424: stb_image is built for PNG only, so a file named .png that holds another format is no icon, whatever the
+// decoder would have made of it. A 1x1, 24-bit BMP, which a build with every decoder reads.
+TEST(LinuxProcessIconSourceTest, ABmpNamedPngIsNoIcon)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_icon_bmp");
+    const std::vector<std::uint8_t> bmp{
+        'B', 'M', 58,   0,    0, 0, 0,    0,    0, 0, 54, 0, 0, 0,                                   // file header: 58 bytes, pixels at 54
+        40,  0,   0,    0,    1, 0, 0,    0,    1, 0, 0,  0, 1, 0, 24, 0, 0, 0, 0,    0,    4,    0, // info header: 1x1, 1 plane, 24 bpp
+        0,   0,   0x13, 0x0B, 0, 0, 0x13, 0x0B, 0, 0, 0,  0, 0, 0, 0,  0, 0, 0, 0xFF, 0x00, 0x00, 0x00, // one blue pixel, padded to 4 bytes
+    };
+    ASSERT_EQ(bmp.size(), 58U);
+    writeFile(dir.path / "icon.png", bmp);
+    EXPECT_FALSE(LinuxProcessIconSource::decodePng(dir.path / "icon.png").has_value());
+}
+
+// #4424: the side cap is pinned: a PNG one pixel wider than MAX_ICON_IMAGE_SIDE_PX is no icon, and one at it is.
+TEST(LinuxProcessIconSourceTest, APngWiderThanTheCapIsNoIcon)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_icon_wide");
+    const int side = MAX_ICON_IMAGE_SIDE_PX;
+    const std::vector<std::uint8_t> tooWideRgba(static_cast<std::size_t>(side + 1) * 4, 0xFF);
+    writeFile(dir.path / "wide.png", TestSupport::makePng(side + 1, 1, tooWideRgba));
+    EXPECT_FALSE(LinuxProcessIconSource::decodePng(dir.path / "wide.png").has_value());
+    const std::vector<std::uint8_t> atCapRgba(static_cast<std::size_t>(side) * 4, 0xFF);
+    writeFile(dir.path / "cap.png", TestSupport::makePng(side, 1, atCapRgba));
+    EXPECT_TRUE(LinuxProcessIconSource::decodePng(dir.path / "cap.png").has_value());
+}
+
 TEST(LinuxProcessIconSourceTest, FindsAProcesssIconThroughItsDesktopEntry)
 {
     const TestSupport::ScopedTempDir dir("tasksmack_icon_tree");

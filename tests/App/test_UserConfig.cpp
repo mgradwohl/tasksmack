@@ -2,6 +2,7 @@
 #include "App/ConfigFileProblem.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/UserConfig.h"
+#include "Core/ConfigDirOverride.h"
 #include "Core/Utf8Path.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/Utf8Sanitize.h"
@@ -31,6 +32,11 @@
 #include <utility>
 #include <vector>
 
+#ifndef _WIN32
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace App
 {
 namespace
@@ -39,6 +45,41 @@ namespace
 // ========== UserSettings Default Values ==========
 
 #ifndef _WIN32
+// #4410: started from a working directory that has since been removed, the config folder still comes from HOME; the
+// throwing current_path() threw out of UserConfig's constructor and TaskSmack exited. Forked: chdir() is process-wide.
+TEST(UserConfigDirectoryTest, ADeletedWorkingDirectoryDoesntStopTheConfigFolderBeingFound)
+{
+    const std::filesystem::path gone = std::filesystem::temp_directory_path() / ("tasksmack-4410-" + std::to_string(::getpid()));
+    std::filesystem::create_directories(gone);
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        int code = 0;
+        try
+        {
+            Core::ConfigDirOverride::setActiveForTesting(std::nullopt);
+            if (::chdir(gone.c_str()) != 0 || ::rmdir(gone.c_str()) != 0)
+            {
+                ::_exit(2);
+            }
+            const std::filesystem::path dir = App::UserConfig::configDirectoryForTesting();
+            code = dir.empty() ? 3 : 0;
+        }
+        catch (...)
+        {
+            code = 1;
+        }
+        ::_exit(code);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    std::error_code ec;
+    std::filesystem::remove_all(gone, ec);
+    ASSERT_TRUE(WIFEXITED(status));
+    EXPECT_EQ(WEXITSTATUS(status), 0) << "1: it threw; 2: the setup failed; 3: no folder";
+}
+
 // #4327: the text a saved path is written as names that path again, or there is none.
 TEST(Utf8PathTest, AnExactFormNamesThePathAgainOrIsRefused)
 {

@@ -507,7 +507,7 @@ cmake --preset release -DTASKSMACK_MARCH=x86-64-v2  # Target SSE4.2/POPCNT CPUs
 
 | Preset (Linux) | Preset (Windows) | Description |
 |----------------|------------------|-------------|
-| `debug` | `win-debug` | Debug symbols, no optimization, `-ftrivial-auto-var-init=pattern`; the release hardening flags (stack protector, `_FORTIFY_SOURCE`) are Release/RelWithDebInfo only |
+| `debug` | `win-debug` | Debug symbols, no optimization, `-ftrivial-auto-var-init=pattern`; the release hardening flags (stack protector, `_FORTIFY_SOURCE`, `-ftrivial-auto-var-init=zero`, #4342) are Release/RelWithDebInfo only |
 | `relwithdebinfo` | `win-relwithdebinfo` | Debug symbols + optimization |
 | `release` | `win-release` | Optimized, no debug symbols |
 | `release-compatible` | `win-release-compatible` | Release build for older CPUs (x86-64-v2: SSE4.2/POPCNT CPUs) |

@@ -64,6 +64,14 @@ TEST(Sha256Test, HashesAFileAndSaysWhyItCant)
     ASSERT_FALSE(missing.has_value());
     EXPECT_TRUE(missing.error().starts_with("couldn't open the file")) << missing.error();
 
+#ifndef _WIN32
+    // #4422: a read that fails is an error, not the end of the file. A directory opens, then every read fails (EISDIR):
+    // an ifstream took that as an empty file and gave the empty input's digest, e3b0c442...
+    const auto directory = hashFile(dir, std::stop_token{});
+    ASSERT_FALSE(directory.has_value()) << toHex(directory.value_or(Digest{}));
+    EXPECT_TRUE(directory.error().starts_with("couldn't read the file")) << directory.error();
+#endif
+
     std::stop_source stop;
     stop.request_stop();
     const auto stopped = hashFile(path, stop.get_token());
