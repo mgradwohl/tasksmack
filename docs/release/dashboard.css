@@ -661,6 +661,25 @@ details[open] > summary .chevron {
   fill: var(--closed-wash);
 }
 
+.f-todo {
+  fill: var(--phase-todo);
+}
+
+.f-progress {
+  fill: var(--phase-progress);
+}
+
+.f-review {
+  fill: var(--phase-review);
+}
+
+/* Stacked bands: a hairline of the surface between them, not a border around them. */
+.area {
+  stroke: var(--surface);
+  stroke-width: 1;
+  stroke-linejoin: round;
+}
+
 .dot {
   stroke: var(--surface);
   stroke-width: 2;

@@ -288,6 +288,8 @@ def _check_release_dashboard(page: Page, site: str) -> None:
         raise AssertionError(f"the Released stage reads {released!r}, with no goal or no 'Actual: TBD'")
     if page.locator(".chart svg path.line").count() != 2:
         raise AssertionError("the burn-up didn't draw its two lines")
+    if page.locator(".chart svg path.area").count() != 3:
+        raise AssertionError("the chart of the open work didn't draw its three bands")
     if page.locator(".hero-figure").text_content() != str(current["counts"]["open"]):
         raise AssertionError("the open-issue count isn't the fixture's")
 

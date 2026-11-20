@@ -28,7 +28,12 @@ Nothing here is a second tracking system. Every figure is read from what the rel
   - dry run     release.yml's latest manual run on the branch.
 
 What a run costs matters, because the workflow's token shares one hourly budget with every other workflow
-in the repository. A closed milestone whose release is published is written once, marked `final`, and copied
+in the repository. Three figures need a note. Time in review runs from when a pull request was last marked ready (or opened, if
+it never was a draft) to its merge. Pull request CI counts ci.yml's pull request runs in the cycle, passed
+and failed, over the pull requests merged into the branch in that time. The flow lists say when each issue
+started and went to review, so the page can chart the open work by where it stood.
+
+A closed milestone whose release is published is written once, marked `final`, and copied
 from --previous on later runs. A planned release and the cycle's pass counts are read once an hour. The
 latest runs come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50
 GraphQL points, and six runs an hour take about 56 and 300 of each budget. Every run prints what it used and
@@ -60,7 +65,7 @@ from typing import Any
 
 # Bump it when a field changes meaning or goes away: every finished release is then generated again, not
 # copied. A new field needs no bump as long as docs/release/dashboard.js copes with a file that lacks it.
-SCHEMA = 1
+SCHEMA = 2  # 2: time in review, pull request CI and the flow lists, for every release (#4524 phase 2)
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPO = "mgradwohl/tasksmack"
 API = "https://api.github.com"
@@ -74,6 +79,8 @@ IN_PROGRESS_SINCE = "2026-11-19T00:00:00Z"
 RED_LABEL = "ci-red-main"
 RED_TITLE = re.compile(r"^CI: (\S+) is red$")
 RELEASE_WORKFLOW = "release.yml"
+# The workflow whose pull request runs are "CI" to a contributor: every pull request runs it.
+PR_CI_WORKFLOW = "ci.yml"
 MAIN_HEALTH = Path(".github/workflows/main-health.yml")
 SOAK_HOURS = 24  # docs/dev/release-process.md, stage 6
 # How main-health.yml judges a watched workflow: by these events' runs, and these conclusions pass.
@@ -203,7 +210,9 @@ class GitHub:
 
     def rest(self, path: str, **params: Any) -> Any:
         query = urllib.parse.urlencode({key: value for key, value in params.items() if value is not None})
-        url = f"{self.api}/repos/{self.repo}/{path}" + (f"?{query}" if query else "")
+        # A path from the API's root starts with a slash (the search endpoint); the rest are the repository's.
+        base = f"{self.api}{path}" if path.startswith("/") else f"{self.api}/repos/{self.repo}/{path}"
+        url = base + (f"?{query}" if query else "")
         self.rest_calls += 1
         return self._call(f"GET {path}", url, None, lambda reply: reply)
 
@@ -315,7 +324,9 @@ query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String){
   rateLimit{cost remaining limit}
   repository(owner:$owner,name:$name){milestone(number:$number){pullRequests(first:$first,after:$cursor){
     pageInfo{hasNextPage endCursor}
-    nodes{number state isDraft createdAt mergedAt closedAt additions deletions}}}}
+    nodes{number state isDraft createdAt mergedAt closedAt additions deletions
+      ready:timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:1){nodes{
+        ... on ReadyForReviewEvent{createdAt}}}}}}}
 }"""
 
 OPEN_PULL_REQUESTS_QUERY = """
@@ -379,18 +390,45 @@ def collect_states(gh: GitHub, numbers: Iterable[int]) -> dict[str, dict[str, An
     return found
 
 
-def count_runs(gh: GitHub, workflow: str, branch: str, status: str, start: datetime, end: datetime) -> int:
-    """How many of @p workflow's runs on @p branch, created in [start, end], ended with @p status."""
+def count_runs(
+    gh: GitHub,
+    workflow: str,
+    branch: str | None,
+    status: str,
+    start: datetime,
+    end: datetime,
+    event: str | None = None,
+) -> int:
+    """How many of @p workflow's runs, created in [start, end], ended with @p status: on @p branch, or of
+    @p event on any branch."""
     created = f"{iso(start)}..{iso(end)}"
-    total = gh.rest(f"actions/workflows/{workflow}/runs", branch=branch, status=status, created=created, per_page=1)[
-        "total_count"
-    ]
+    total = gh.rest(
+        f"actions/workflows/{workflow}/runs", branch=branch, event=event, status=status, created=created, per_page=1
+    )["total_count"]
     if total < COUNT_CEILING or end - start <= timedelta(hours=1):
         return total
     middle = start + (end - start) / 2
-    return count_runs(gh, workflow, branch, status, start, middle) + count_runs(
-        gh, workflow, branch, status, middle + timedelta(seconds=1), end
+    return count_runs(gh, workflow, branch, status, start, middle, event) + count_runs(
+        gh, workflow, branch, status, middle + timedelta(seconds=1), end, event
     )
+
+
+def collect_pr_ci(gh: GitHub, start: datetime, end: datetime) -> dict[str, int]:
+    """What CI cost the cycle's pull requests: how many of ci.yml's pull request runs passed and failed (a
+    cancelled one was superseded by a push, and says nothing), and how many pull requests merged, all in
+    [start, end]. Runs over merges is how many CI runs a merged change took.
+
+    Both counts are the whole repository's, since a run doesn't say which branch its pull request targets. So
+    this is asked for a minor only: a patch's cycle runs alongside the next minor's work, and the figure would
+    be that work's."""
+    merged = gh.rest("/search/issues", q=f"repo:{gh.repo} is:pr is:merged merged:{iso(start)}..{iso(end)}", per_page=1)[
+        "total_count"
+    ]
+    return {
+        "success": count_runs(gh, PR_CI_WORKFLOW, None, "success", start, end, "pull_request"),
+        "failure": count_runs(gh, PR_CI_WORKFLOW, None, "failure", start, end, "pull_request"),
+        "merged": merged,
+    }
 
 
 def collect_ci_counts(
@@ -622,9 +660,54 @@ def _pull_request(node: dict[str, Any]) -> dict[str, Any]:
         "draft": bool(node["isDraft"]),
         "created": parse_time(node["createdAt"]),
         "merged": parse_time(node["mergedAt"]),
+        # When it was last marked ready for review; None if it never was a draft, or the query didn't ask.
+        "ready": parse_time((((node.get("ready") or {}).get("nodes") or [{}])[-1] or {}).get("createdAt")),
         # Lines added and removed: the project asks for small pull requests (CONTRIBUTING.md).
         "lines": None if node.get("additions") is None else node["additions"] + (node.get("deletions") or 0),
     }
+
+
+def review_start(pr: dict[str, Any], marked: dict[int, datetime]) -> datetime | None:
+    """When a pull request became reviewable: when it was last marked ready for review, or when it was opened if
+    it never was a draft. None while it's still a draft. @p marked holds the marked-ready times by number: the
+    pull requests listed under an issue come without theirs, so one that isn't on the milestone itself counts
+    from when it was opened."""
+    if pr["draft"] and pr["state"] == "open":
+        return None
+    return marked.get(pr["n"]) or pr.get("ready") or pr["created"]
+
+
+def flow_events(issues: Iterable[dict[str, Any]]) -> dict[str, list[int]]:
+    """When each issue started and when it went to review, as sorted Unix seconds, for the page's chart of the
+    open work over time. With the joined and done lists they nest: an issue is in a later list only if it's in
+    the earlier ones, at a time no earlier, so the chart can stack the differences between them.
+
+    A closed issue passes through every state, at its close if nothing recorded it sooner. An open one counts
+    as started or in review only if it is so now: a pull request closed unmerged put it back, and these lists
+    can't take an issue back out."""
+    started: list[int] = []
+    review: list[int] = []
+    for issue in issues:
+        joined, done = issue["joined"], issue["done"]
+        if issue["open"]:
+            began = issue["started"] if issue["phase"] in ("progress", "review") else None
+            reviewed = issue.get("review") if issue["phase"] == "review" else None
+        else:
+            began = issue["started"] or done
+            reviewed = issue.get("review") or done
+        if began is None:
+            continue
+        began = max(began, joined)  # its pull request can be older than its place on this milestone
+        if done is not None:
+            began = min(began, done)
+        started.append(epoch(began))
+        if reviewed is None:
+            continue
+        reviewed = max(reviewed, began)
+        if done is not None:
+            reviewed = min(reviewed, done)
+        review.append(epoch(reviewed))
+    return {"started": sorted(started), "review": sorted(review)}
 
 
 def _label_time(events: Iterable[dict[str, Any]], label: str) -> datetime | None:
@@ -953,6 +1036,7 @@ def release_figures(
     ci_counts: Sequence[dict[str, Any]],
     now: datetime,
     tracked_from: datetime | None = None,
+    pr_ci: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """One release's figures for the comparison table. "Started" is the first linked pull request's open time
     for every release, the `in progress` label's time for none: releases before the label have no other.
@@ -1008,6 +1092,11 @@ def release_figures(
             if issue["started_pr"] is not None
         ),
         "merge_hours": spread(hours_between(pr["created"], pr["merged"]) for pr in merged),
+        # Ready for review to merged: the wait a finished change has, which opened-to-merged hides in the work.
+        "review_hours": spread(
+            hours_between(pr["review"], pr["merged"]) for pr in merged if pr.get("review") is not None
+        ),
+        "pr_ci": _pr_ci_figures(pr_ci),
         "bug_lead_hours": {severity: spread(values) for severity, values in bugs.items()},
         "red": red_stats(periods, start, end),
         "ci": {
@@ -1018,6 +1107,20 @@ def release_figures(
                 {"name": entry["name"], "success": entry["success"], "failure": entry["failure"]} for entry in ci_counts
             ],
         },
+    }
+
+
+def _pr_ci_figures(counts: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Pull request CI for the cycle: its pass rate, and how many runs each merged pull request took."""
+    if not counts:
+        return None
+    success, failure, merged = counts.get("success", 0), counts.get("failure", 0), counts.get("merged", 0)
+    return {
+        "success": success,
+        "failure": failure,
+        "merged": merged,
+        "pass_percent": round(100.0 * success / (success + failure), 1) if success + failure else None,
+        "runs_per_merged": round((success + failure) / merged, 1) if merged else None,
     }
 
 
@@ -1404,6 +1507,12 @@ def waiting_on(pr: dict[str, Any]) -> str:
     return "ready to merge"
 
 
+def _stamps(moments: Iterable[datetime], now: datetime) -> list[int]:
+    """@p moments as sorted Unix seconds, none later than @p now."""
+    limit = epoch(now)
+    return sorted(min(epoch(moment), limit) for moment in moments)
+
+
 def _jsonable(value: Any) -> Any:
     if isinstance(value, datetime):
         return iso(value)
@@ -1456,6 +1565,18 @@ def build_release(
     live = None
     if live_raw is not None and not window["end"] and not planned:
         live = read_live(live_raw, {issue["n"] for issue in issues}, title, periods, repo, now)
+
+    # When each pull request became reviewable, and so when each issue first went to review.
+    marked = {pr["n"]: pr["ready"] for pr in pull_requests if pr["ready"] is not None}
+    for pr in (live or {}).get("pull_requests", []):
+        if pr["ready"] is not None:
+            marked.setdefault(pr["n"], pr["ready"])
+    for pr in pull_requests:
+        pr["review"] = review_start(pr, marked)
+    for issue in issues:
+        reviews = [review_start(pr, marked) for pr in issue["pull_requests"]]
+        issue["review"] = min((moment for moment in reviews if moment is not None), default=None)
+    flow = flow_events(issues)
 
     end = window["end"] or now
     opened = sorted((issue for issue in issues if issue["open"]), key=lambda issue: issue["n"])
@@ -1525,11 +1646,16 @@ def build_release(
                 for issue in recent
             ],
             # Unix seconds, sorted: the page draws the burn-up and the daily bars from these, in local time.
+            # None is later than the run's own time: an issue filed while the run was reading is in the counts
+            # above, so it's in the charts too, or the two would disagree by it.
             "events": {
-                "joined": sorted(epoch(issue["joined"]) for issue in issues),
-                "done": sorted(epoch(issue["done"]) for issue in issues if issue["done"] is not None),
-                "started": sorted(epoch(issue["started"]) for issue in issues if issue["started"] is not None),
-                "merged": sorted(epoch(pr["merged"]) for pr in pull_requests if pr["merged"] is not None),
+                "joined": _stamps((issue["joined"] for issue in issues), now),
+                "done": _stamps((issue["done"] for issue in issues if issue["done"] is not None), now),
+                "started": _stamps((issue["started"] for issue in issues if issue["started"] is not None), now),
+                "merged": _stamps((pr["merged"] for pr in pull_requests if pr["merged"] is not None), now),
+                # Nested with joined and done, for the chart of the open work: see flow_events().
+                "flow_started": [min(moment, epoch(now)) for moment in flow["started"]],
+                "flow_review": [min(moment, epoch(now)) for moment in flow["review"]],
             },
             "red_periods": [
                 {"n": period["n"], "start": period["start"], "end": period["end"]}
@@ -1539,9 +1665,17 @@ def build_release(
             "live": live,
             # The pass counts as counted, and when: the next run reuses them for SLOW_REFRESH.
             "ci_counts": list(ci_counts),
+            "pr_ci_counts": raw.get("pr_ci"),
             "ci_counted_at": raw.get("ci_counted_at") or now,
             "figures": release_figures(
-                issues, pull_requests, window, periods, ci_counts, now, parse_time(milestone["created_at"])
+                issues,
+                pull_requests,
+                window,
+                periods,
+                ci_counts,
+                now,
+                parse_time(milestone["created_at"]),
+                raw.get("pr_ci"),
             ),
         }
     )
@@ -1625,13 +1759,16 @@ def reusable(found: dict[str, Any] | None, window: dict[str, Any], now: datetime
 
 def earlier_ci_counts(
     found: dict[str, Any] | None, window: dict[str, Any], now: datetime
-) -> list[dict[str, Any]] | None:
-    """The earlier run's pass counts, when they were counted within SLOW_REFRESH for the same cycle."""
+) -> tuple[list[dict[str, Any]], dict[str, Any]] | None:
+    """The earlier run's pass counts, the branch's and the pull requests', when both were counted within
+    SLOW_REFRESH for the same cycle."""
     if found is None or not _recent(found, "ci_counted_at", now):
         return None
-    counts = found.get("ci_counts")
+    counts, pr_counts = found.get("ci_counts"), found.get("pr_ci_counts")
     same_cycle = (found.get("cycle") or {}).get("start") == iso(window["start"])
-    return counts if same_cycle and isinstance(counts, list) and counts else None
+    if same_cycle and isinstance(counts, list) and counts and isinstance(pr_counts, dict):
+        return counts, pr_counts
+    return None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1706,13 +1843,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             window = windows[title]
             if gh is not None:
                 raw = collect_milestone(gh, milestone)
-                raw["ci_counts"], raw["ci_counted_at"] = [], iso(now)
+                raw["ci_counts"], raw["pr_ci"], raw["ci_counted_at"] = [], None, iso(now)
                 if window["start"] is not None:
                     counted = earlier_ci_counts(before[title], window, now)
                     if counted is not None:
-                        raw["ci_counts"], raw["ci_counted_at"] = counted, before[title]["ci_counted_at"]
+                        raw["ci_counts"], raw["pr_ci"] = counted
+                        raw["ci_counted_at"] = before[title]["ci_counted_at"]
                     else:
-                        raw["ci_counts"] = collect_ci_counts(gh, watched, branch, window["start"], window["end"] or now)
+                        until = window["end"] or now
+                        raw["ci_counts"] = collect_ci_counts(gh, watched, branch, window["start"], until)
+                        raw["pr_ci"] = collect_pr_ci(gh, window["start"], until) if version[2] == 0 else {}
                     if not window["end"] and branch not in repo_raw["live"]:
                         repo_raw["live"][branch] = collect_live(gh, watched, branch, now)
                 if args.dump_raw:
