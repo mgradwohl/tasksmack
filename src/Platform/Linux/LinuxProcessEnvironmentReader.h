@@ -3,8 +3,18 @@
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessEnvironment.h"
 
+#include <cstddef>
+
 namespace Platform
 {
+
+/// The most of /proc/[pid]/environ read (#4386), as the Windows reader caps the block it reads: the process sizes
+/// its own environ, and the kernel caps nothing. A longer one is cut at its last whole entry and marked truncated.
+inline constexpr std::size_t ENVIRON_READ_CAP_BYTES = std::size_t{1024} * 1024;
+
+/// The most variables kept (#4386, the security review): as the Windows reader's ENVIRONMENT_VARIABLE_CAP. 1 MiB of
+/// "A\0A\0..." would otherwise be about 524,000 variables, each built, masked, sorted and drawn on the UI thread.
+inline constexpr std::size_t ENVIRON_VARIABLE_CAP = 4096;
 
 /// Linux IProcessEnvironmentReader: /proc/[pid]/environ, read through a handle on /proc/[pid] so the
 /// start-time check and the read hit the same process even if its PID is reused in between (#179).

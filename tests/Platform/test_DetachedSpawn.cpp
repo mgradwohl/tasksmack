@@ -5,6 +5,7 @@
 /// strace itself is never run.
 
 #include "Platform/Linux/DetachedSpawn.h"
+#include "Platform/Linux/RootTools.h"
 #include "Platform/Linux/SyscallTrace.h"
 #include "ScopedTempDir.h"
 
@@ -585,7 +586,7 @@ TEST(DetachedSpawnTest, AsRootAProgramGetsTheSystemsPath)
     const auto result = spawnDetached(argv);
     ::setenv("PATH", saved.c_str(), 1);
     ASSERT_TRUE(result.has_value()) << spawnFailureMessage(result.error(), argv[0]);
-    EXPECT_EQ(waitForFile(out).value_or(""), Platform::SyscallTrace::ROOT_TOOL_PATH);
+    EXPECT_EQ(waitForFile(out).value_or(""), Platform::RootTools::trustedRootPath()); // ROOT_TOOL_PATH's root-only folders (#4396)
 }
 
 TEST(DetachedSpawnTest, AUserItCantBecomeIsReportedAndStartsNothing)
