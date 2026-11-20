@@ -145,8 +145,8 @@ void writeString(const char* source, char* destination, unsigned int length)
 //   - a count-only call (null buffer) returns NVML_ERROR_INSUFFICIENT_SIZE and the needed count
 //     whenever any process is running, and NVML_SUCCESS only when none are;
 //   - a buffer smaller than the list also gets NVML_ERROR_INSUFFICIENT_SIZE;
-//   - the unversioned symbols write the 16-byte nvmlProcessInfo_v1_t, the _v3 symbols the
-//     24-byte nvmlProcessInfo_v2_t;
+//   - the unversioned symbols write the 16-byte nvmlProcessInfo_v1_t, the _v2 and _v3 symbols
+//     the 24-byte nvmlProcessInfo_v2_t (the probe picks _v2, #4421);
 //   - usedGpuMemory is NVML_VALUE_NOT_AVAILABLE (ULLONG_MAX) when it can't be read.
 // The probe must not share these layouts with the mock, or the mock can't catch a mismatch.
 
@@ -615,6 +615,18 @@ extern "C"
     nvmlDeviceGetGraphicsRunningProcesses(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
     {
         return listProcesses<ProcessInfoV1>(device, count, infos, GRAPHICS_PROCESSES);
+    }
+
+    NVML::nvmlReturn_t
+    nvmlDeviceGetComputeRunningProcesses_v2(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
+    {
+        return listProcesses<ProcessInfoV2>(device, count, infos, COMPUTE_PROCESSES);
+    }
+
+    NVML::nvmlReturn_t
+    nvmlDeviceGetGraphicsRunningProcesses_v2(NVML::nvmlDevice_t device, unsigned int* count, NVML::nvmlProcessInfoEntries* infos)
+    {
+        return listProcesses<ProcessInfoV2>(device, count, infos, GRAPHICS_PROCESSES);
     }
 
     NVML::nvmlReturn_t

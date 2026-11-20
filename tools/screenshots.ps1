@@ -8,15 +8,14 @@
     the startup hooks that pick the view (TASKSMACK_WINDOW, _TAB, _MACHINE_TAB, _SELECT_NAME,
     _DETAILS_TAB, _OPEN, and TASKSMACK_DEMO for the shots the startup hooks alone don't reach) and
     TASKSMACK_SCREENSHOT, which writes the frame in-app and quits (CONTRIBUTING.md, "Visual validation
-    without input"). Same matrix and names as screenshots.sh, less the Environment and Security
-    sections and the Processes table grouped by app, which only screenshots.sh takes so far (Windows
-    has all three too).
+    without input"). Same matrix and names as screenshots.sh, including the Environment and Security
+    sections and the Processes table grouped by app.
 
     Matrix: Overview in every theme; Processes and System in the first dark and the first light theme;
     the Processes table grouped by service (Unit, with the Services column shown, since that column is
-    what has Windows read the service list) and by user (#3068); the machine tab's CPU Cores, GPU and
+    what has Windows read the service list), by app and by user (#3068, #3377); the machine tab's CPU Cores, GPU and
     Network and I/O sub-tabs (cores, gpu, network; #2869), Process Details (overview, gpu, network, and
-    the Overview with its Modules and Connections sections expanded at -SectionWindow and its Open
+    the Overview with its Modules, Connections, Environment and Security sections expanded at -SectionWindow and its Open
     files section at -OpenFilesWindow) for one process, Services, Startup, Settings, About and
     Help in the first theme; and three
     frame sequences written as animated WebPs: overview-live (8 s of the Overview),
@@ -184,9 +183,10 @@ foreach ($t in @($Dark) + $Light) {
     Invoke-Shot "system-$t" $t @{ TASKSMACK_TAB = 'SystemInfo' }
 }
 # The Processes table grouped (#3068). Windows reads the service list Unit groups by only while something
-# shows services, so the unit shot shows the Services column. Windows has the App grouping too (package
-# family or AppUserModelID), but this set doesn't take processes-grouped-app yet; screenshots.sh does.
+# shows services, so the unit shot shows the Services column. The App grouping (package family or
+# AppUserModelID) needs no extra setting.
 Invoke-Shot "processes-grouped-unit-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "services = true`n[process_table]`ngroup_by = 'unit'`n"
+Invoke-Shot "processes-grouped-app-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "[process_table]`ngroup_by = 'app'`n"
 Invoke-Shot "processes-grouped-user-$Dark" $Dark @{ TASKSMACK_TAB = 'Processes' } -Toml "[process_table]`ngroup_by = 'user'`n"
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 foreach ($sub in 'cores', 'gpu', 'network') {
@@ -196,9 +196,8 @@ foreach ($tab in 'overview', 'gpu', 'network') {
     Invoke-Shot "details-$tab-$Dark" $Dark @{ TASKSMACK_SELECT_NAME = $Process; TASKSMACK_DETAILS_TAB = $tab }
 }
 # The Overview's collapsed sections, each drawn open by a one-step demo script a second after the
-# startup selection has settled. Windows reads the Environment and Security sections too, but only
-# screenshots.sh takes details-environment and details-security so far.
-foreach ($section in 'modules', 'openfiles', 'connections') {
+# startup selection has settled.
+foreach ($section in 'modules', 'openfiles', 'connections', 'environment', 'security') {
     $target = if ($section -eq 'connections' -and $ConnectionsPid -gt 0) { @{ TASKSMACK_SELECT_PID = "$ConnectionsPid" } } else { @{ TASKSMACK_SELECT_NAME = $Process } }
     $shotWindow = if ($section -eq 'openfiles') { $OpenFilesWindow } else { $SectionWindow }
     Invoke-Shot "details-$section-$Dark" $Dark ($target + @{ TASKSMACK_DETAILS_TAB = 'overview'; TASKSMACK_DEMO = "1:section=$section" }) -ShotWindow $shotWindow
