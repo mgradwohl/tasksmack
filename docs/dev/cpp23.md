@@ -170,7 +170,7 @@ Reviews needn't repeat these:
   -Wimplicit-fallthrough -Wnull-dereference -Wdouble-promotion -Wcast-align -Wundef` and a few more.
 - **clang-tidy on `src/`**, findings as errors: `bugprone`, `clang-analyzer`, `concurrency-mt-unsafe`,
   `cppcoreguidelines`, `misc`, `modernize`, `performance`, `portability`, `readability`.
-- **Sanitizers:** ASan and UBSan on every PR and TSan on `main`, on Linux; libFuzzer harnesses.
+- **Sanitizers:** ASan and UBSan on every PR and TSan on `main`, on Linux, and ASan+UBSan nightly on Windows x64 (`win-asan-ubsan`); libFuzzer harnesses.
 
 To suppress a finding, name the check and give the reason: `NOLINT(check-name) - why`. Don't name a check that
 `.clang-tidy` already disables.
