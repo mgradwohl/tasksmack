@@ -793,7 +793,7 @@ TEST_F(WindowsNetworkAdaptersTest, DecodesTheWifiLink)
     EXPECT_TRUE(adapter.wifiLinkUnavailable.empty());
 }
 
-TEST_F(WindowsNetworkAdaptersTest, SsidBytesAreEscapedForDisplay)
+TEST_F(WindowsNetworkAdaptersTest, SsidBytesAreKeptRaw)
 {
     FakeAdapter wifi(L"Wi-Fi", WIFI_GUID_TEXT, IF_TYPE_IEEE80211);
     g_State.adapters = {&wifi};
@@ -803,7 +803,7 @@ TEST_F(WindowsNetworkAdaptersTest, SsidBytesAreEscapedForDisplay)
     ssid.uSSIDLength = static_cast<ULONG>(bytes.size());
     NetworkAdaptersInfo info;
     readNetworkAdapters(info, fakeFunctions(), WITH_DETAILS);
-    EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "Cafe \\xFF");
+    EXPECT_EQ(wifiOf(info.adapters[0]).ssid, "Cafe \xFF") << "the raw bytes: the UI shows them as nmcli does (#4328)";
 }
 
 TEST_F(WindowsNetworkAdaptersTest, SixGigahertzIsWifi6E)

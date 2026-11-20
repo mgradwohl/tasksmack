@@ -20,6 +20,7 @@
 //
 // Environment values are never logged (#179).
 
+#include "Domain/DisplayText.h"
 #include "Domain/SamplingConfig.h"
 #include "LazyBackgroundRead.h"
 #include "Platform/AsciiCase.h"
@@ -191,10 +192,16 @@ class ProcessEnvironmentView
         m_Truncated = result.truncated;
         m_Rows.clear();
         m_Rows.reserve(result.variables.size());
-        for (Platform::EnvironmentVariable& variable : result.variables)
+        for (const Platform::EnvironmentVariable& variable : result.variables)
         {
+            // Judged by the raw bytes, then shown as display text (#4328, Domain::DisplayText::escaped()).
             const bool secret = Detail::isSecretEnvironmentVariable(variable.name, variable.value);
-            m_Rows.push_back({.name = std::move(variable.name), .value = std::move(variable.value), .secret = secret, .occurrence = 0});
+            m_Rows.push_back({
+                .name = Domain::DisplayText::escaped(variable.name),
+                .value = Domain::DisplayText::escaped(variable.value),
+                .secret = secret,
+                .occurrence = 0,
+            });
         }
         // Stable: duplicates of a name keep their read order, which the occurrence numbers follow.
         std::ranges::stable_sort(m_Rows, {}, &Row::name);
