@@ -21,6 +21,7 @@
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <expected>
 #include <format>
 #include <memory>
 #include <thread>
@@ -220,12 +221,33 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
     return started;
 }
 
-/// Whether the job at @p jobPath has finished: systemd removes a job's object once it is done.
-[[nodiscard]] bool jobGone(sd_bus* bus, const std::string& jobPath)
+/// Whether a failed call was answered with an error (a named D-Bus error that isn't a timeout), rather than not
+/// answered at all: timed out, or the connection gone (#4399).
+[[nodiscard]] bool answeredWithAnError(const BusError& error, int result) noexcept
+{
+    const sd_bus_error& raw = error.raw();
+    return raw.name != nullptr && !timedOut(raw, result);
+}
+
+enum class JobState : std::uint8_t
+{
+    Present, ///< Its object answered: still queued or running
+    Gone,    ///< Its object is gone: systemd removes a job's object once it is done
+    Unknown, ///< The read wasn't answered (timed out, connection gone): neither, so keep waiting (#4399)
+};
+
+/// Whether the job at @p jobPath has finished. Only an answered error (no such object) means gone: a read that
+/// times out while systemd is busy (a daemon-reload, heavy load) is no news, not "the job ended" (#4399).
+[[nodiscard]] JobState jobStateOf(sd_bus* bus, const std::string& jobPath)
 {
     BusError error;
     MallocString state;
-    return sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), std::out_ptr(state)) < 0;
+    const int result = sd_bus_get_property_string(bus, SYSTEMD, jobPath.c_str(), SYSTEMD_JOB, "State", error.get(), std::out_ptr(state));
+    if (result >= 0)
+    {
+        return JobState::Present;
+    }
+    return answeredWithAnError(error, result) ? JobState::Gone : JobState::Unknown;
 }
 
 /// Sends Manager.@p method (StartUnit or StopUnit) for @p name in "replace" mode and waits for @p goal.
@@ -279,7 +301,7 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
         // The job first, then the state: a job that finishes between the two reads would otherwise be paired with
         // the state from before it ("It didn't start (inactive)" for a restart that worked, #3520). Once the job is
         // gone, the state read after it is the final one.
-        const bool gone = jobPath.empty() || jobGone(bus, jobPath);
+        const bool gone = jobPath.empty() || jobStateOf(bus, jobPath) == JobState::Gone;
         const std::string state = activeStateOf(bus, unitObject);
         switch (SystemdActions::waitStep(goal, state, gone))
         {
@@ -316,15 +338,25 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
 
 /// The running units a stop of @p unitObject would take down: those that Requires= it (RequiredBy),
 /// BindsTo= it (BoundBy), are PartOf= it (ConsistsOf) or are Requisite= of it (RequisiteOf, #2124).
-[[nodiscard]] std::vector<std::string> runningDependents(sd_bus* bus, const std::string& unitObject)
+/// A list read that wasn't answered (timed out, connection gone) is the failure: the stop is refused rather than sent
+/// unguarded (#4399). One answered with an error (a property this systemd doesn't have) is an empty list, as before.
+[[nodiscard]] std::expected<std::vector<std::string>, ServiceActionResult> runningDependents(sd_bus* bus, const std::string& unitObject)
 {
     std::vector<std::string> running;
     for (const char* property : {"RequiredBy", "BoundBy", "ConsistsOf", "RequisiteOf"})
     {
         BusError error;
         MallocStrv names; // every entry and the array freed, even if a copy or a call below throws (#3338)
-        if (sd_bus_get_property_strv(bus, SYSTEMD, unitObject.c_str(), SYSTEMD_UNIT, property, error.get(), names.out()) < 0 ||
-            names.get() == nullptr)
+        if (const int result = sd_bus_get_property_strv(bus, SYSTEMD, unitObject.c_str(), SYSTEMD_UNIT, property, error.get(), names.out());
+            result < 0)
+        {
+            if (!answeredWithAnError(error, result))
+            {
+                return std::unexpected(actionFailure(error, result));
+            }
+            continue;
+        }
+        if (names.get() == nullptr)
         {
             continue;
         }
@@ -438,9 +470,14 @@ ServiceActionResult stopUnit(std::string_view name, const std::stop_token& stopT
         return std::move(*failed);
     }
     // Never stop running dependents with it (#2006): systemd would take every unit that Requires= it.
-    if (const std::vector<std::string> dependents = runningDependents(bus.get(), unitObject); !dependents.empty())
+    const std::expected<std::vector<std::string>, ServiceActionResult> dependents = runningDependents(bus.get(), unitObject);
+    if (!dependents.has_value())
     {
-        return ServiceActionResult::failed(SystemdActions::dependentsText(dependents));
+        return dependents.error(); // couldn't tell: never stop unguarded (#4399)
+    }
+    if (!dependents->empty())
+    {
+        return ServiceActionResult::failed(SystemdActions::dependentsText(*dependents));
     }
     return runJob(bus.get(), name, unitObject, "StopUnit", SystemdActions::Goal::Stopped, stopToken, wait);
 }
