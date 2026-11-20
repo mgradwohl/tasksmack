@@ -3,6 +3,7 @@
 /// refuses whatever isn't exactly a frame it knows. The helper reads what an unprivileged process
 /// sends, so the refusals matter as much as the round trips.
 
+#include "Domain/Utf8Sanitize.h"
 #include "Mocks/FakeBroker.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/CpuAffinity.h"
@@ -13,8 +14,10 @@
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
+#include "Platform/IProcessThreads.h"
 #include "Platform/IServiceActions.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/IoPriorityTypes.h"
 
 #include <gtest/gtest.h>
 
@@ -26,6 +29,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <ios>
 #include <iterator>
 #include <optional>
 #include <set>
@@ -184,19 +188,24 @@ TEST(BrokerProtocolTest, ThreadActionRoundTripsAndRefusesWhatIsntOne)
             ThreadActionRequest{.target = TARGET, .tid = 0x7FFF'FFFC, .threadCreateTime = 0x01DC'0123'4567'89ABULL, .action = action}};
         EXPECT_EQ(roundTrip(request), request);
     }
-    const std::vector<std::uint8_t> bytes = encodeRequest(
-        7,
-        Request{ThreadActionRequest{
-            .target = {.pid = 0x0102, .startTimeTicks = 3}, .tid = 0x0405, .threadCreateTime = 0x0706, .action = ThreadAction::End}});
+    const std::vector<std::uint8_t> bytes = encodeRequest(7,
+                                                          Request{ThreadActionRequest{
+                                                              .target = {.pid = 0x0102, .startTimeTicks = 3},
+                                                              .tid = 0x0405,
+                                                              .threadCreateTime = 0x0706,
+                                                              .action = ThreadAction::End,
+                                                          }});
     // The header, the target (PID, then start time), the TID, its creation time and the action.
-    const std::vector<std::uint8_t> expected{33, 0,  0, 0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
-                                             0,  25, 0, 7, 0,
-                                             0,  0,  2, 1, 0,
-                                             0,  3,  0, 0, 0,
-                                             0,  0,  0, 0, 5,
-                                             4,  0,  0, 6, 7,
-                                             0,  0,  0, 0, 0,
-                                             0,  2};
+    const std::vector<std::uint8_t> expected{
+        33, 0,  0, 0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
+        0,  25, 0, 7, 0,
+        0,  0,  2, 1, 0,
+        0,  3,  0, 0, 0,
+        0,  0,  0, 0, 5,
+        4,  0,  0, 6, 7,
+        0,  0,  0, 0, 0,
+        0,  2,
+    };
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::ThreadAction);
 
@@ -227,7 +236,10 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
 {
     for (const Request& request : {
              Request{TaskManagerReplacementRequest{
-                 .change = TaskManagerChange::Set, .path = R"(C:\Program Files\TaskSmack\TaskSmack.exe)", .replaceOther = false}},
+                 .change = TaskManagerChange::Set,
+                 .path = R"(C:\Program Files\TaskSmack\TaskSmack.exe)",
+                 .replaceOther = false,
+             }},
              Request{
                  TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = R"(C:\Zoë\TaskSmack.exe)", .replaceOther = true}},
              Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = R"(x" & calc.exe ")", .replaceOther = false}},
@@ -240,8 +252,9 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRoundTrips)
     const std::vector<std::uint8_t> bytes =
         encodeRequest(5, Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Set, .path = "ab", .replaceOther = true}});
     // The header, then the change, the path's length and bytes, and the flag.
-    const std::vector<std::uint8_t> expected{16, 0,   0,   0, static_cast<std::uint8_t>(PROTOCOL_VERSION), 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0,
-                                             0,  'a', 'b', 1};
+    const std::vector<std::uint8_t> expected{
+        16, 0, 0, 0, static_cast<std::uint8_t>(PROTOCOL_VERSION), 0, 23, 0, 5, 0, 0, 0, 0, 2, 0, 0, 0, 'a', 'b', 1,
+    };
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::TaskManagerReplacement);
 }
@@ -253,9 +266,19 @@ TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
 {
     for (const Request& request : {
              Request{SessionActionRequest{
-                 .action = SessionAction::SignOut, .sessionId = 2, .user = "alice", .domain = "PC", .logonUsec = 1'700'000'000'000'000ULL}},
+                 .action = SessionAction::SignOut,
+                 .sessionId = 2,
+                 .user = "alice",
+                 .domain = "PC",
+                 .logonUsec = 1'700'000'000'000'000ULL,
+             }},
              Request{SessionActionRequest{
-                 .action = SessionAction::Disconnect, .sessionId = 0xFFFFFFFFU, .user = "Zoë", .domain = "CORP", .logonUsec = ~0ULL}},
+                 .action = SessionAction::Disconnect,
+                 .sessionId = 0xFFFFFFFFU,
+                 .user = "Zoë",
+                 .domain = "CORP",
+                 .logonUsec = ~0ULL,
+             }},
              // The helper, not the decoder, refuses session 0 and a request that names no sign-in.
              Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 0, .user = {}, .domain = {}, .logonUsec = 0}},
          })
@@ -263,19 +286,23 @@ TEST(BrokerProtocolTest, SessionActionRoundTripsAndRefusesALock)
         EXPECT_EQ(roundTrip(request), request);
     }
     std::vector<std::uint8_t> bytes = encodeRequest(5,
-                                                    Request{SessionActionRequest{.action = SessionAction::Disconnect,
-                                                                                 .sessionId = 0x01020304U,
-                                                                                 .user = "ab",
-                                                                                 .domain = {},
-                                                                                 .logonUsec = 0x0102030405060708ULL}});
+                                                    Request{SessionActionRequest{
+                                                        .action = SessionAction::Disconnect,
+                                                        .sessionId = 0x01020304U,
+                                                        .user = "ab",
+                                                        .domain = {},
+                                                        .logonUsec = 0x0102030405060708ULL,
+                                                    }});
     // The header, then the action, the session's ID, the user, the domain and the sign-in time.
-    const std::vector<std::uint8_t> expected{31, 0,   0,   0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
-                                             0,  24,  0,   5, 0,
-                                             0,  0,   2,   4, 3,
-                                             2,  1,   2,   0, 0,
-                                             0,  'a', 'b', 0, 0,
-                                             0,  0,   8,   7, 6,
-                                             5,  4,   3,   2, 1};
+    const std::vector<std::uint8_t> expected{
+        31, 0,   0,   0, static_cast<std::uint8_t>(PROTOCOL_VERSION),
+        0,  24,  0,   5, 0,
+        0,  0,   2,   4, 3,
+        2,  1,   2,   0, 0,
+        0,  'a', 'b', 0, 0,
+        0,  0,   8,   7, 6,
+        5,  4,   3,   2, 1,
+    };
     EXPECT_EQ(bytes, expected);
     EXPECT_EQ(Detail::readFrame(bytes).value_or(Detail::Frame{}).kind, MessageKind::SessionAction);
 
@@ -303,7 +330,10 @@ TEST(BrokerProtocolTest, TaskManagerReplacementRefusesWhatIsntExactlyOne)
     {
         return encodeRequest(1,
                              Request{TaskManagerReplacementRequest{
-                                 .change = TaskManagerChange::Set, .path = std::move(path), .replaceOther = replaceOther}});
+                                 .change = TaskManagerChange::Set,
+                                 .path = std::move(path),
+                                 .replaceOther = replaceOther,
+                             }});
     };
     std::vector<std::uint8_t> bytes = set("ab", false);
     ASSERT_TRUE(decodeRequest(bytes).has_value());
@@ -527,7 +557,8 @@ TEST(BrokerProtocolTest, EnvironmentReadsRoundTrip)
     EXPECT_EQ(roundTrip(request), request);
 
     const Response ok = EnvironmentReply{
-        .result = {.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}, {.name = "EMPTY", .value = ""}}}};
+        .result = {.status = EnvironmentReadStatus::Ok, .variables = {{.name = "HOME", .value = "/root"}, {.name = "EMPTY", .value = ""}}},
+    };
     EXPECT_EQ(roundTrip(ok), ok);
     const Response gone = EnvironmentReply{.result = {.status = EnvironmentReadStatus::ProcessExited, .variables = {}}};
     EXPECT_EQ(roundTrip(gone), gone);
@@ -559,11 +590,13 @@ TEST(BrokerProtocolTest, ModulesAndOpenFilesRoundTrip)
     ModulesReadResult modules{.status = ModulesReadStatus::Ok, .modules = {}, .detail = {}};
     modules.modules.push_back(
         {.path = "/usr/lib/libc.so.6", .baseAddress = 0x7f0000, .sizeBytes = 0x1000, .version = std::nullopt, .deleted = true});
-    modules.modules.push_back({.path = "C:\\x.dll",
-                               .baseAddress = 1,
-                               .sizeBytes = 2,
-                               .version = ModuleVersion{.major = 10, .minor = 0, .build = 19041, .revision = 1},
-                               .deleted = false});
+    modules.modules.push_back({
+        .path = "C:\\x.dll",
+        .baseAddress = 1,
+        .sizeBytes = 2,
+        .version = ModuleVersion{.major = 10, .minor = 0, .build = 19041, .revision = 1},
+        .deleted = false,
+    });
     // v27 (#4373): a module whose file isn't on a local drive says its version wasn't read.
     modules.modules.push_back({
         .path = R"(\\server\share\y.dll)",
@@ -692,6 +725,50 @@ TEST(BrokerProtocolTest, EnvironmentPastOneFrameIsCutAndSaysSo)
     EXPECT_LT(result.variables.size(), MAX_ENVIRONMENT_VARIABLES);
     EXPECT_GT(result.variables.size(), MAX_ENVIRONMENT_VARIABLES / 4);
     EXPECT_EQ(result.variables.back().value, text);
+}
+
+// #4311: a string past MAX_STRING_BYTES is cut before the character that would straddle the limit, never inside
+// it, and an environment reply with a cut value says it was cut.
+TEST(BrokerProtocolTest, ALongStringIsCutOnACharacterAndTheReplySaysSo)
+{
+    // "€" is three bytes: the third starts one byte before the limit, so a plain cut would keep half of it.
+    std::string value(MAX_STRING_BYTES - 1, 'a');
+    for (int i = 0; i < 4; ++i)
+    {
+        value += "\xE2\x82\xAC";
+    }
+    ASSERT_GT(value.size(), MAX_STRING_BYTES);
+    EXPECT_EQ(cappedText(value).size(), MAX_STRING_BYTES - 1) << "the whole euro sign is left out";
+    EXPECT_TRUE(Domain::isValidUtf8(cappedText(value)));
+
+    // A four-byte character ending just past the limit moves the cut back three bytes, at most.
+    std::string emoji(MAX_STRING_BYTES - 3, 'b');
+    emoji += "\xF0\x9F\x98\x80";
+    EXPECT_EQ(cappedText(emoji).size(), MAX_STRING_BYTES - 3);
+    // A character ending exactly at the limit is kept whole.
+    std::string exact(MAX_STRING_BYTES - 3, 'c');
+    exact += "\xE2\x82\xAC";
+    exact += "tail";
+    EXPECT_EQ(cappedText(exact).size(), MAX_STRING_BYTES);
+    // Bytes that aren't UTF-8 (all continuation bytes) are cut within three of the limit, not scanned back further.
+    const std::string binary(MAX_STRING_BYTES + 10, '\x80');
+    EXPECT_EQ(cappedText(binary).size(), MAX_STRING_BYTES - 3);
+    // What fits is untouched.
+    EXPECT_EQ(cappedText("short"), "short");
+    static_assert(cappedText("ab").size() == 2);
+
+    EnvironmentReadResult environment{.status = EnvironmentReadStatus::Ok, .variables = {}};
+    environment.variables = {{.name = "SHORT", .value = "x"}, {.name = "LONG", .value = value}};
+    const Response reply = roundTrip(EnvironmentReply{.result = environment});
+    const EnvironmentReadResult& result = std::get<EnvironmentReply>(reply).result;
+    ASSERT_EQ(result.variables.size(), 2U);
+    EXPECT_TRUE(result.truncated) << "a cut value says so";
+    EXPECT_EQ(result.variables[1].value, std::string(MAX_STRING_BYTES - 1, 'a'));
+    EXPECT_TRUE(Domain::isValidUtf8(result.variables[1].value));
+
+    // Nothing cut, nothing said.
+    environment.variables = {{.name = "SHORT", .value = "x"}};
+    EXPECT_FALSE(std::get<EnvironmentReply>(roundTrip(EnvironmentReply{.result = environment})).result.truncated);
 }
 
 TEST(BrokerProtocolTest, ListsPastTheirCountCapSayTheyWereCut)
@@ -965,7 +1042,7 @@ TEST(BrokerProtocolTest, TheFuzzDictionaryHasTheVersionAndEveryKind)
     ASSERT_TRUE(file.is_open()) << dictionary;
     const auto token = [](std::uint16_t value)
     {
-        return std::format("\"\\x{:02x}\\x{:02x}\"", value & 0xFFU, (static_cast<unsigned>(value) >> 8U) & 0xFFU);
+        return std::format(R"("\x{:02x}\x{:02x}")", value & 0xFFU, (static_cast<unsigned>(value) >> 8U) & 0xFFU);
     };
     std::string version;
     std::set<std::string> kindTokens;
@@ -1008,7 +1085,8 @@ TEST(BrokerProtocolTest, ResultRepliesCompareByEveryField)
 {
     expectEveryFieldCompared(
         ServiceActionReply{
-            .result = {.ok = true, .message = "m", .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false}},
+            .result = {.ok = true, .message = "m", .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = false},
+        },
         [](ServiceActionReply& m) { m.result.ok = false; },
         [](ServiceActionReply& m) { m.result.message = "n"; },
         [](ServiceActionReply& m) { m.result.cancelled = true; },
@@ -1023,7 +1101,8 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
         .status = ModulesReadStatus::Ok,
         .modules = {ProcessModule{.path = "a.dll", .baseAddress = 1, .sizeBytes = 2, .version = ModuleVersion{}, .deleted = false}},
         .detail = "d",
-        .truncated = false};
+        .truncated = false,
+    };
     expectEveryFieldCompared(
         modules,
         [](ModulesReply& m) { m.result.status = ModulesReadStatus::Failed; },
@@ -1055,7 +1134,8 @@ TEST(BrokerProtocolTest, ListRepliesCompareByEveryFieldOfEveryEntry)
     ThreadsReply threads;
     threads.result.status = ThreadsReadStatus::Ok;
     threads.result.threads = {
-        ProcessThread{.tid = 1, .name = "a", .state = 'S', .userTicks = 1, .systemTicks = 1, .nice = 0, .startTicks = 1}};
+        ProcessThread{.tid = 1, .name = "a", .state = 'S', .userTicks = 1, .systemTicks = 1, .nice = 0, .startTicks = 1},
+    };
     threads.result.detail = "d";
     expectEveryFieldCompared(
         threads,
@@ -1169,13 +1249,29 @@ TEST(BrokerProtocolTest, EveryFlagAnEncoderWritesRoundTripsSet)
     EXPECT_TRUE(std::get<OpenFilesReply>(openFiles).result.truncated);
     EXPECT_TRUE(std::get<OpenFilesReply>(openFiles).result.hexDescriptors);
 
-    for (const ServiceActionResult& outcome :
-         {ServiceActionResult{
-              .ok = false, .message = "m", .cancelled = false, .needsAuthorization = true, .authorizationUnavailable = false},
-          ServiceActionResult{
-              .ok = false, .message = "m", .cancelled = false, .needsAuthorization = false, .authorizationUnavailable = true},
-          ServiceActionResult{
-              .ok = false, .message = "m", .cancelled = true, .needsAuthorization = false, .authorizationUnavailable = false}})
+    for (const ServiceActionResult& outcome : {
+             ServiceActionResult{
+                 .ok = false,
+                 .message = "m",
+                 .cancelled = false,
+                 .needsAuthorization = true,
+                 .authorizationUnavailable = false,
+             },
+             ServiceActionResult{
+                 .ok = false,
+                 .message = "m",
+                 .cancelled = false,
+                 .needsAuthorization = false,
+                 .authorizationUnavailable = true,
+             },
+             ServiceActionResult{
+                 .ok = false,
+                 .message = "m",
+                 .cancelled = true,
+                 .needsAuthorization = false,
+                 .authorizationUnavailable = false,
+             },
+         })
     {
         const Response service = roundTrip(Response{ServiceActionReply{.result = outcome}});
         ASSERT_TRUE(std::holds_alternative<ServiceActionReply>(service));
@@ -1206,17 +1302,18 @@ TEST(BrokerProtocolTest, ReplyListsPastTheirCapsOrWithAStrayFamilyAreRefused)
 // #3221: the requests the newest kinds name aren't responses, and a kind neither side knows is neither.
 TEST(BrokerProtocolTest, TheNewerRequestKindsAndAnUnknownKindAreNotResponses)
 {
-    for (const Request& request :
-         {Request{CloseConnectionRequest{.target = TARGET, .tcpConnection = {.localPort = 5}}},
-          Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Clear, .path = {}, .replaceOther = false}},
-          Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 2, .user = "u", .domain = "d", .logonUsec = 1}},
-          Request{ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::End}}})
+    for (const Request& request : {
+             Request{CloseConnectionRequest{.target = TARGET, .tcpConnection = {.localPort = 5}}},
+             Request{TaskManagerReplacementRequest{.change = TaskManagerChange::Clear, .path = {}, .replaceOther = false}},
+             Request{SessionActionRequest{.action = SessionAction::SignOut, .sessionId = 2, .user = "u", .domain = "d", .logonUsec = 1}},
+             Request{ThreadActionRequest{.target = TARGET, .tid = 9, .action = ThreadAction::End}},
+         })
     {
         const auto decoded = decodeResponse(encodeRequest(3, request));
         ASSERT_FALSE(decoded.has_value()) << request.index();
         EXPECT_EQ(decoded.error(), "Not a response");
     }
-    Detail::Writer empty;
+    Detail::Writer const empty;
     const std::vector<std::uint8_t> unknown = empty.frame(static_cast<MessageKind>(999), 1);
     EXPECT_FALSE(decodeResponse(unknown).has_value());
     EXPECT_FALSE(decodeRequest(unknown).has_value());
