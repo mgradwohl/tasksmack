@@ -754,24 +754,26 @@ ProcessActionResult LinuxProcessActions::runProgram(const RunProgramRequest& req
     // session (#2461), so the program isn't root's by accident.
     const std::optional<DetachedSpawn::RunAs> user = request.asAdministrator ? std::nullopt : SessionUser::invokingUserSession();
     using RunProgramLookup::RunsAs;
-    RunsAs runsAs = RunsAs::Self;
-    if (root)
-    {
-        runsAs = user.has_value() ? RunsAs::InvokingUser : RunsAs::Root;
-    }
+    const RunsAs runsAs = RunProgramLookup::runsAsFor(root, request.asAdministrator, user.has_value());
     // The program as the account it runs as would find it (#4532, #4400), looked up here so a typo is said at once
     // rather than lost in the detached child.
-    const std::optional<std::string> program =
-        RunProgramLookup::findProgram(words->front(),
-                                      runsAs,
-                                      environmentValue("PATH"),
-                                      user.has_value() ? RunProgramLookup::pathIn(user->environment) : std::string_view{},
-                                      [](std::string_view name) { return RootTools::find(name, true, {}); });
+    const std::optional<std::string> program = RunProgramLookup::findProgram(
+        words->front(),
+        runsAs,
+        environmentValue("PATH"),
+        user.has_value() ? RunProgramLookup::pathIn(user->environment) : std::string_view{},
+        [](std::string_view name) { return RootTools::find(name, true, {}); },
+        [&user](const std::string& path)
+        { return user.has_value() && RunProgramLookup::executableBy(path, user->uid, user->gid, user->groups); });
     if (!program.has_value())
     {
+        if (words->front().contains('/') && !words->front().starts_with('/'))
+        {
+            return ProcessActionResult::error(std::format("{} isn't a full path: type one starting with /", words->front()));
+        }
         return ProcessActionResult::error(
             runsAs == RunsAs::Root
-                ? std::format("{} wasn't found in the system's folders. As administrator, type its full path", words->front())
+                ? std::format("{} wasn't found in the system's folders: type its full path, which is run as typed", words->front())
                 : std::format("{} wasn't found, or isn't a program", words->front()));
     }
     std::vector<std::string> argv = *words;
