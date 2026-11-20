@@ -418,6 +418,11 @@ add_test(NAME BenchmarkBaselinesScript
 add_test(NAME BenchAcrossLaunchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_across_launches.py)
 
+# tools/docs-site-smoke.py's local server (#4528): the docs folder at /tasksmack/, with no symlink (which needed a
+# privilege on Windows); a stub stands in for Playwright.
+add_test(NAME DocsSiteSmokeServerScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_site_smoke.py)
+
 # tools/check-no-reverts.py, the revert guard (#3986, after #3972): a change whose diff undoes a recent merge is
 # found, on scratch git repositories.
 add_test(NAME CheckNoRevertsScript
@@ -1091,6 +1096,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_UdpByteCounter.cpp  # the eBPF UDP byte counter root loads (#3366, #3580)
     Platform/test_LinuxUdpTrafficCollector.cpp  # root's in-process UDP collector (#3580)
     Platform/test_SyscallTrace.cpp
+    Platform/test_RunProgramLookup.cpp  # Run new task finds the program as the account it runs as (#4532, #4400)
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_RootDumpFolder.cpp  # a root session's own default dump folder (#4181)
     Platform/test_DetachedSpawn.cpp

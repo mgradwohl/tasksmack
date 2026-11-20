@@ -8,6 +8,7 @@ clean under the checker it tests.
 """
 
 import importlib.util
+import re
 import subprocess
 import sys
 import tempfile
@@ -107,6 +108,61 @@ class CheckFileTest(unittest.TestCase):
         self.assertEqual(self.run_checker(f"x {EM_DASH}\n".encode("utf-8"), "notes.md").returncode, 0)
         old = self.run_checker(b"#Requires -Version 5.1\n" + f"x {EM_DASH}\n".encode("utf-8"), "tool.ps1")
         self.assertEqual(old.returncode, 1, old.stdout)
+
+
+class HookSelectionTest(unittest.TestCase):
+    """#4333: the pre-commit hook runs on a UTF-16 file that identify tags as binary, and on no real binary."""
+
+    @staticmethod
+    def hook() -> tuple[set[str], re.Pattern[str]]:
+        config = (REPO / ".pre-commit-config.yaml").read_text(encoding="utf-8")
+        block = re.search(r"- id: check-utf8\n(.*?)(?=\n\s*- id: )", config, re.S)
+        assert block is not None, "the check-utf8 hook is in .pre-commit-config.yaml"
+        types = re.search(r"^\s*types_or: \[([^\]]*)\]", block.group(1), re.M)
+        exclude = re.search(r"^\s*exclude: '([^']*)'", block.group(1), re.M)
+        assert types is not None and exclude is not None
+        return {t.strip() for t in types.group(1).split(",")}, re.compile(exclude.group(1))
+
+    def test_binary_tagged_files_are_selected(self) -> None:
+        types, _ = self.hook()
+        self.assertTrue({"text", "binary"} <= types, types)
+
+    def test_the_real_binaries_are_excluded_and_the_text_inputs_are_not(self) -> None:
+        _, exclude = self.hook()
+        for path in ("assets/icons/tasksmack.png", "docs/images/processes.webp", "assets/tasksmack.ico",
+                     "assets/fonts/Inter.ttf", "tests/fuzz/corpus/protocol/seed-1"):
+            self.assertIsNotNone(exclude.search(path), path)
+        for path in ("assets/tasksmack.rc.in", "tools/wpr/tasksmack.wprp", "packaging/linux/tasksmack.policy",
+                     "packaging/linux/tasksmack.desktop", "src/main.cpp"):
+            self.assertIsNone(exclude.search(path), path)
+
+    def test_a_utf16_rc_in_is_tagged_binary_selected_and_fails(self) -> None:
+        try:
+            from identify import identify  # pre-commit's own file-type library
+        except ImportError:
+            self.skipTest("identify isn't installed (it comes with pre-commit)")
+        types, exclude = self.hook()
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "tasksmack.rc.in"
+            path.write_bytes("\ufeff1 VERSIONINFO\r\n".encode("utf-16-le"))
+            tags = identify.tags_from_path(str(path))
+            self.assertIn("binary", tags, "the case the old `types: [text]` skipped")
+            self.assertTrue(tags & types and exclude.search("assets/tasksmack.rc.in") is None)
+            self.assertIn("UTF-16 LE byte-order mark", checker.check_file(str(path))[0])
+
+    def test_no_tracked_binary_reaches_the_hook(self) -> None:
+        try:
+            from identify import identify
+        except ImportError:
+            self.skipTest("identify isn't installed (it comes with pre-commit)")
+        _, exclude = self.hook()
+        listed = subprocess.run(["git", "ls-files", "-z"], cwd=REPO, capture_output=True, check=True).stdout
+        for name in filter(None, listed.decode("utf-8").split("\0")):
+            path = REPO / name
+            if path.is_symlink() or not path.is_file() or exclude.search(name):
+                continue
+            if "binary" in identify.tags_from_path(str(path)):
+                self.fail(f"{name} is binary but not excluded from check-utf8")
 
 
 if __name__ == "__main__":

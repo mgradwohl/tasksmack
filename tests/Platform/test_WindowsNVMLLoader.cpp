@@ -29,6 +29,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 namespace Platform
@@ -270,6 +271,13 @@ const std::vector<std::string>& requiredExports()
     return names;
 }
 
+/// The required exports the loader tries as _v2 first (#4378).
+const std::unordered_set<std::string>& versionedExports()
+{
+    static const std::unordered_set<std::string> names = {"nvmlInit", "nvmlDeviceGetCount", "nvmlDeviceGetHandleByIndex"};
+    return names;
+}
+
 class NVMLLoaderMissingExportTest : public NVMLLoaderTest, public ::testing::WithParamInterface<std::string>
 {};
 
@@ -279,6 +287,7 @@ TEST_P(NVMLLoaderMissingExportTest, AMissingRequiredExportFreesTheDllAndLeavesNV
 {
     const std::string& missing = GetParam();
     fakeLibrary().missingExports.insert(missing);
+    fakeLibrary().missingExports.insert(missing + "_v2"); // a versioned export falls back to the unversioned one (#4378)
 
     {
         const auto probe = makeProbe();
@@ -293,7 +302,20 @@ TEST_P(NVMLLoaderMissingExportTest, AMissingRequiredExportFreesTheDllAndLeavesNV
     const auto& exports = requiredExports();
     const auto position = std::ranges::find(exports, missing);
     ASSERT_NE(position, exports.end());
-    const std::vector<std::string> expected(exports.begin(), std::next(position));
+    std::vector<std::string> expected;
+    for (auto it = exports.begin(); it != std::next(position); ++it)
+    {
+        const bool versioned = versionedExports().contains(*it);
+        if (versioned)
+        {
+            expected.push_back(*it + "_v2");
+        }
+        // An earlier versioned export resolves as _v2 and isn't looked up unversioned; only the missing one falls back.
+        if (!versioned || it == position)
+        {
+            expected.push_back(*it);
+        }
+    }
     EXPECT_EQ(fakeLibrary().lookups, expected);
     EXPECT_EQ(fakeState().initCallCount, 0);
     EXPECT_EQ(fakeState().shutdownCallCount, 0);
@@ -337,6 +359,38 @@ TEST_F(NVMLLoaderTest, OneVideoEngineExportKeepsTheCapability)
     const auto probe = makeProbe();
     ASSERT_TRUE(probe->isAvailable());
     EXPECT_TRUE(probe->capabilities().hasEncoderDecoder);
+}
+
+// nvmlInit, the device count and the handle lookup bind the _v2 exports when the driver has them (#4378).
+TEST_F(NVMLLoaderTest, TheV2ExportsArePreferredWhenBothNamesExist)
+{
+    oneDevice();
+
+    const auto probe = makeProbe();
+    ASSERT_TRUE(probe->isAvailable());
+    for (const char* name : {"nvmlInit", "nvmlDeviceGetCount", "nvmlDeviceGetHandleByIndex"})
+    {
+        EXPECT_EQ(lookups(std::string{name} + "_v2"), 1U) << name;
+        EXPECT_EQ(lookups(name), 0U) << name << " is not looked up when its _v2 export exists";
+    }
+    EXPECT_EQ(probe->enumerateGPUs().size(), 1U);
+}
+
+// A driver with only the unversioned names still loads.
+TEST_F(NVMLLoaderTest, TheUnversionedExportsAreTheFallbackWithoutV2)
+{
+    oneDevice();
+    fakeLibrary().missingExports = {"nvmlInit_v2", "nvmlDeviceGetCount_v2", "nvmlDeviceGetHandleByIndex_v2"};
+
+    const auto probe = makeProbe();
+    ASSERT_TRUE(probe->isAvailable());
+    for (const char* name : {"nvmlInit", "nvmlDeviceGetCount", "nvmlDeviceGetHandleByIndex"})
+    {
+        EXPECT_EQ(lookups(std::string{name} + "_v2"), 1U) << name;
+        EXPECT_EQ(lookups(name), 1U) << name;
+    }
+    EXPECT_EQ(fakeState().initCallCount, 1);
+    EXPECT_EQ(probe->enumerateGPUs().size(), 1U);
 }
 
 // nvml.h maps nvmlDeviceGetPciInfo to the _v3 export; older drivers have only _v2.
