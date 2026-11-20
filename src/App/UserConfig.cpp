@@ -788,12 +788,21 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
     return Platform::WindowsPathProvider().getUserConfigDir();
 #else
     // Linux: XDG_CONFIG_HOME or ~/.config, decided by Platform::ConfigDirectory::configDirectoryFor() (#1891): run as
-    // root for a user (sudo, pkexec), that user's (#3580).
+    // root for a user (sudo, pkexec), that user's (#3580). The working directory is only the last fallback, read with
+    // the error_code overload (#4410): started from a folder that has since been removed, the throwing one threw out
+    // of UserConfig's constructor and TaskSmack exited, though HOME was fine. An empty path where it can't be read,
+    // as LinuxPathProvider has it.
+    std::error_code cwdError;
+    std::filesystem::path cwd = std::filesystem::current_path(cwdError);
+    if (cwdError)
+    {
+        cwd.clear();
+    }
     const UserConfigHelpers::ConfigDirectoryChoice choice = Platform::ConfigDirectory::configDirectoryFor(
         readEnvVarString("XDG_CONFIG_HOME"),
         readEnvVarString("HOME"),
         passwdHomeDirectory,
-        std::filesystem::current_path(),
+        cwd,
         Platform::SessionUser::invokingUserHome(),
         ::geteuid() == 0 && Platform::SessionUser::thisProcessMayHaveAnotherUsersEnvironment());
     if (!choice.warning.empty())
