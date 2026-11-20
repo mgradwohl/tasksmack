@@ -691,10 +691,10 @@
       el('div', { class: 'section-head' }, el('h2', { text: 'Open work' }),
         el('p', { class: 'sub', text: 'Kinds are in the order the lanes take them. An issue is in progress once it carries the `in progress` label or a draft pull request, and in review once a pull request for it is ready.' })),
       legend,
-      el('div', { class: 'two-up' },
+      // Four tables in one ruled grid: a faint line between the columns and between the rows.
+      el('div', { class: 'quad' },
         el('div', { class: 'block' }, breakdown(release.by_category || [], CATEGORIES, 'Kind')),
-        el('div', { class: 'block' }, breakdown(release.by_lane || [], LANES, 'Lane', (name) => (name === 'None' ? 'No lane' : name === 'Shared' ? 'Both lanes' : name)))),
-      el('div', { class: 'two-up' },
+        el('div', { class: 'block' }, breakdown(release.by_lane || [], LANES, 'Lane', (name) => (name === 'None' ? 'No lane' : name === 'Shared' ? 'Both lanes' : name))),
         bugTable ? el('div', { class: 'block' }, el('h3', { text: 'Bugs by severity' }), bugTable) : null, stuck),
       labelGaps(release),
       el('div', null, present.map((name, index) => {
