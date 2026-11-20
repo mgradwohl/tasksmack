@@ -879,5 +879,90 @@ TEST(WindowsImageSha256RealTest, TheTestProcesssOwnImageHashesAsItsFileDoes)
     EXPECT_EQ(hash->size(), 64U);
 }
 
+/// GetMappedFileNameW answering with a name that fills the whole buffer: it truncates silently, so that reads as an
+/// error, never as the name.
+DWORD WINAPI fullBufferMappedName(HANDLE /*process*/, LPVOID /*address*/, LPWSTR name, DWORD size)
+{
+    std::fill_n(name, size - 1, L'a');
+    return size - 1;
+}
+
+// A mapped name that may have been cut short isn't opened: the refusal says Windows' "file name is too long".
+TEST_F(WindowsImageSha256Test, AMappedNameThatFillsTheBufferIsRefusedNotTruncated)
+{
+    Windows::ImageFileFunctions fns = imageFunctions(TestMocks::FAKE_LOCAL_NT_FILE);
+    fns.getMappedFileName = &fullBufferMappedName;
+    TestMocks::localNtFile() = {};
+    const auto file = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(file.has_value());
+    EXPECT_EQ(file.error(), "Its executable can't be read: " + WinString::win32ErrorText(ERROR_FILENAME_EXCED_RANGE));
+    EXPECT_TRUE(TestMocks::localNtFile().opens.empty()) << "a name that may be cut short is never opened";
+    TestMocks::localNtFile() = {};
+}
+
+BOOL WINAPI protectionCallFails(HANDLE /*process*/, PROCESS_INFORMATION_CLASS /*infoClass*/, LPVOID /*info*/, DWORD /*size*/)
+{
+    SetLastError(ERROR_ACCESS_DENIED);
+    return FALSE;
+}
+
+// Whether a process is protected is asked of GetProcessInformation only: without the call, or when it fails, the
+// answer is "not protected", so a refusal never claims protection it didn't see.
+TEST_F(WindowsImageSha256Test, ProtectionReadsAsNoneWithoutAnAnswer)
+{
+    Windows::ImageFileFunctions fns = imageFunctions(TestMocks::FAKE_LOCAL_NT_FILE);
+
+    FakeImage::protectedProcess = true;
+    EXPECT_TRUE(Windows::isProtectedProcess(fns, GetCurrentProcess()));
+    FakeImage::protectedProcess = false;
+    EXPECT_FALSE(Windows::isProtectedProcess(fns, GetCurrentProcess()));
+
+    fns.getProcessInformation = &protectionCallFails;
+    FakeImage::protectedProcess = true; // never reached: the call fails
+    EXPECT_FALSE(Windows::isProtectedProcess(fns, GetCurrentProcess()));
+
+    fns.getProcessInformation = nullptr;
+    EXPECT_FALSE(Windows::isProtectedProcess(fns, GetCurrentProcess()));
+
+    // And the refusal for a process whose memory map is hidden is then the generic one, not "protected".
+    FakeImage::memoryMapHidden = true;
+    const auto hidden = Windows::openProcessImageFile(fns, GetCurrentProcess(), TARGET.pid, {});
+    ASSERT_FALSE(hidden.has_value());
+    EXPECT_TRUE(hidden.error().starts_with("Its executable can't be read: ")) << hidden.error();
+    EXPECT_FALSE(hidden.error().contains("protected process")) << hidden.error();
+}
+
+// A handle that can't be asked has no identity and no name: both read as nothing, never as a stale answer.
+TEST_F(WindowsImageSha256Test, ABadHandleHasNoIdentityAndNoName)
+{
+    EXPECT_FALSE(Windows::fileIdentity(INVALID_HANDLE_VALUE).has_value());
+    EXPECT_TRUE(Windows::heldFileName(INVALID_HANDLE_VALUE).empty());
+}
+
+// Two files differ in identity and one equals itself, by the volume and file ID the file system gives.
+TEST_F(WindowsImageSha256Test, FileIdentitySeparatesTwoFilesAndMatchesOneThroughTwoHandles)
+{
+    writeOther("abc");
+    const auto open = [](const std::filesystem::path& path)
+    {
+        return Windows::UniqueHandle(CreateFileW(path.c_str(),
+                                                 FILE_READ_ATTRIBUTES,
+                                                 FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                 nullptr,
+                                                 OPEN_EXISTING,
+                                                 FILE_ATTRIBUTE_NORMAL,
+                                                 nullptr));
+    };
+    const Windows::UniqueHandle first = open(m_Image);
+    const Windows::UniqueHandle again = open(m_Image);
+    const Windows::UniqueHandle other = open(m_Other);
+    ASSERT_TRUE(first && again && other);
+    const auto identity = Windows::fileIdentity(first.get());
+    ASSERT_TRUE(identity.has_value());
+    EXPECT_EQ(identity, Windows::fileIdentity(again.get()));
+    EXPECT_NE(identity, Windows::fileIdentity(other.get()));
+    EXPECT_FALSE(Windows::heldFileName(first.get()).empty());
+}
+
 } // namespace
 } // namespace Platform

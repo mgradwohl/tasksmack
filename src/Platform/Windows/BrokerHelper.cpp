@@ -321,10 +321,10 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
 }
 
 /// The final path of @p handle's file or folder, without the \\?\ prefix.
-[[nodiscard]] std::optional<std::wstring> finalPathOfHandle(HANDLE handle)
+[[nodiscard]] std::optional<std::wstring> finalPathOfHandle(HANDLE handle, const InstallCheckFunctions& functions)
 {
-    const auto final = readPath([handle](wchar_t* buffer, DWORD size)
-                                { return GetFinalPathNameByHandleW(handle, buffer, size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); });
+    const auto final = readPath([handle, &functions](wchar_t* buffer, DWORD size)
+                                { return functions.getFinalPath(handle, buffer, size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); });
     if (!final.has_value())
     {
         return std::nullopt;
@@ -359,14 +359,15 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
 /// checked, each folder's final path must be its name in the file's, and the file's final path is read
 /// again once they are held: so the names compared and the security read are of the same objects, and
 /// none can be swapped for another (a junction, say) in between.
-[[nodiscard]] std::expected<void, std::string> checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo)
+[[nodiscard]] std::expected<void, std::string>
+checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo, const InstallCheckFunctions& functions)
 {
     const UniqueHandle held = openHeld(file, false);
     if (!held)
     {
         return std::unexpected(std::format("couldn't open {}: {}", WinString::wideToUtf8(file), lastErrorText(GetLastError())));
     }
-    const auto final = finalPathOfHandle(held.get());
+    const auto final = finalPathOfHandle(held.get(), functions);
     if (!final.has_value())
     {
         return std::unexpected(std::format("couldn't tell where {} is", WinString::wideToUtf8(file)));
@@ -391,7 +392,7 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
             return std::unexpected(
                 std::format("couldn't open {}: {}", WinString::wideToUtf8(folder.wstring()), lastErrorText(GetLastError())));
         }
-        const auto folderFinal = finalPathOfHandle(handle.get());
+        const auto folderFinal = finalPathOfHandle(handle.get(), functions);
         if (!folderFinal.has_value() || !samePathText(*folderFinal, folder.wstring()))
         {
             return std::unexpected(std::format("{} moved while it was checked", WinString::wideToUtf8(folder.wstring())));
@@ -403,7 +404,7 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
         }
         folder = folder.parent_path();
     }
-    const auto again = finalPathOfHandle(held.get());
+    const auto again = finalPathOfHandle(held.get(), functions);
     if (!again.has_value() || !samePathText(*again, *final))
     {
         return std::unexpected(std::format("{} moved while it was checked", WinString::wideToUtf8(file)));
@@ -579,7 +580,8 @@ std::optional<std::wstring> finalPath(const std::wstring& path)
     return withoutExtendedPrefix(*final);
 }
 
-std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files)
+std::expected<void, std::string>
+checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files, const InstallCheckFunctions& functions)
 {
     if (files.empty())
     {
@@ -588,7 +590,7 @@ std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<con
     for (const std::wstring& file : files)
     {
         // The file itself, links resolved: the folders checked are where it really is.
-        if (auto checked = checkOne(token, file, false); !checked.has_value())
+        if (auto checked = checkOne(token, file, false, functions); !checked.has_value())
         {
             return checked;
         }
@@ -598,7 +600,7 @@ std::expected<void, std::string> checkUnchangeableBy(HANDLE token, std::span<con
 
 std::expected<void, std::string> checkUnchangeableNamed(HANDLE token, const std::wstring& file)
 {
-    return checkOne(token, file, true);
+    return checkOne(token, file, true, InstallCheckFunctions{});
 }
 
 std::expected<void, std::string> checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name)

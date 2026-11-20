@@ -31,7 +31,6 @@ import http.server
 import json
 import re
 import sys
-import tempfile
 import threading
 from collections.abc import Callable
 from pathlib import Path
@@ -58,16 +57,25 @@ RELEASE_DATA = re.compile(r"^https://raw\.githubusercontent\.com/mgradwohl/tasks
 EXPECTED_404 = re.compile(r"/_sidebar\.md$|/no-such-page[^/]*\.md$")
 
 
-class QuietHandler(http.server.SimpleHTTPRequestHandler):
+class SiteHandler(http.server.SimpleHTTPRequestHandler):
+    """Serves the docs folder at SITE_PATH, as GitHub Pages does, and answers 404 for anything outside it. No symlink
+    to the folder (#4528): making one needs a privilege on Windows, so the test couldn't start in an ordinary shell."""
+
+    def translate_path(self, path: str) -> str:
+        bare = path.split("?", 1)[0].split("#", 1)[0]
+        prefix = SITE_PATH.rstrip("/")
+        if bare == prefix or bare.startswith(SITE_PATH):
+            # "/tasksmack" maps to the folder itself, and the base class redirects it to "/tasksmack/".
+            return super().translate_path(path[len(prefix) :] or "/")
+        return str(Path(self.directory) / ".outside-the-site")  # a name no docs file has: 404
+
     def log_message(self, format: str, *args: object) -> None:  # noqa: A002 - the base class's name
         pass
 
 
 def serve(docs: Path) -> tuple[http.server.ThreadingHTTPServer, str]:
     """Serves @p docs at SITE_PATH on a free localhost port; returns the server and the site URL."""
-    root = Path(tempfile.mkdtemp(prefix="docs-site-"))
-    (root / SITE_PATH.strip("/")).symlink_to(docs.resolve(), target_is_directory=True)
-    handler = functools.partial(QuietHandler, directory=str(root))
+    handler = functools.partial(SiteHandler, directory=str(docs.resolve()))
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     return server, f"http://127.0.0.1:{server.server_address[1]}{SITE_PATH}"
