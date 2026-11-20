@@ -72,6 +72,12 @@ RED_TITLE = re.compile(r"^CI: (\S+) is red$")
 RELEASE_WORKFLOW = "release.yml"
 MAIN_HEALTH = Path(".github/workflows/main-health.yml")
 SOAK_HOURS = 24  # docs/dev/release-process.md, stage 6
+# How main-health.yml judges a watched workflow: by these events' runs, and these conclusions pass.
+JUDGED_EVENTS = ("push", "schedule")
+PASSING = ("success", "neutral")
+# Whose one-line tracker comments can declare the freeze or approve the candidate: anyone can comment on a
+# public repository's issue, so an outsider's line is never read as either.
+TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
 # GitHub's list endpoints stop counting at a round number (2,500 seen on 2026-11-19); a count this high is
 # split by date instead of trusted.
 COUNT_CEILING = 1000
@@ -301,7 +307,7 @@ query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String){
     number title body
     comments(first:$first,after:$cursor){
       pageInfo{hasNextPage endCursor}
-      nodes{body createdAt url}}}}
+      nodes{body createdAt url authorAssociation}}}}
 }"""
 
 
@@ -367,17 +373,21 @@ def collect_live(gh: GitHub, watched: Sequence[tuple[str, str]], branch: str) ->
     on @p branch, and release.yml's manual runs there (a dry run: a real release runs on a tag)."""
     latest = []
     for file, name in watched:
-        runs = gh.rest(f"actions/workflows/{file}/runs", branch=branch, status="completed", per_page=10)
-        # As main-health.yml judges it: the branch's own runs, and a cancelled or skipped one says nothing.
-        run = next(
-            (
-                run
-                for run in runs["workflow_runs"]
-                if run["event"] != "pull_request" and run["conclusion"] not in ("cancelled", "skipped")
-            ),
-            None,
-        )
-        latest.append({"file": file, "name": name, "run": _run_summary(run)})
+        # As main-health.yml's judge_branch does (#2131): the latest finished push run and the latest finished
+        # schedule run, apart, since some jobs only run nightly and a later push run would hide a red one. A
+        # cancelled or skipped run says nothing, and a manual dispatch isn't judged. (Its per-job rule for
+        # CI's Sunday unity build, WATCHED_JOBS, isn't repeated here: the red-main issue carries that.)
+        runs = []
+        for event in JUDGED_EVENTS:
+            found = gh.rest(
+                f"actions/workflows/{file}/runs", branch=branch, event=event, status="completed", per_page=10
+            )
+            run = next(
+                (run for run in found["workflow_runs"] if run["conclusion"] not in ("cancelled", "skipped")), None
+            )
+            if run is not None:
+                runs.append(_run_summary(run))
+        latest.append({"file": file, "name": name, "runs": runs})
     dispatched = gh.rest(
         f"actions/workflows/{RELEASE_WORKFLOW}/runs", branch=branch, event="workflow_dispatch", per_page=10
     )["workflow_runs"]
@@ -635,8 +645,10 @@ def attributed_pull_requests(
 
 _HEADING = re.compile(r"^#{1,6}\s+(.*\S)\s*$")
 _TASK = re.compile(r"^\s*[-*]\s+\[([ xX])\]\s+(.*\S)\s*$")
-_REF = re.compile(r"(?<![\w/&#])#(\d+)\b")
-_LEAD_REF = re.compile(r"^[\s*_~`(\[]*#(\d+)\b")
+# Up to nine digits: an issue number. A longer one is something else (a workflow run's id), and as a GraphQL
+# Int it would be refused and fail the whole lookup.
+_REF = re.compile(r"(?<![\w/&#])#(\d{1,9})\b")
+_LEAD_REF = re.compile(r"^[\s*_~`(\[]*#(\d{1,9})\b")
 _FENCE = re.compile(r"^\s*(```|~~~)")
 
 
@@ -713,6 +725,8 @@ _HEDGE = re.compile(
     re.IGNORECASE,
 )
 _FREEZE = re.compile(r"\bfeature freeze\b", re.IGNORECASE)
+_DECLARES = re.compile(r"\bdeclare[ds]?\b|^\W*feature freeze\b", re.IGNORECASE)
+_EXCEPTION = re.compile(r"#\d|\bexceptions?\b", re.IGNORECASE)
 _APPROVAL = re.compile(r"\bapprove[ds]?\b", re.IGNORECASE)
 _APPROVAL_OF = re.compile(r"\b(candidate|release)\b", re.IGNORECASE)
 
@@ -721,25 +735,33 @@ def _one_line_comments(comments: Iterable[dict[str, Any]]) -> Iterator[tuple[dat
     for comment in sorted(comments, key=lambda comment: comment["createdAt"]):
         text = (comment.get("body") or "").strip()
         moment = parse_time(comment["createdAt"])
-        if moment is not None and text and "\n" not in text and len(text) <= _SIGNAL_LIMIT and not _HEDGE.search(text):
+        trusted = comment.get("authorAssociation") in TRUSTED_AUTHORS
+        if moment is None or not trusted or not text or "\n" in text or len(text) > _SIGNAL_LIMIT:
+            continue
+        if not _HEDGE.search(text):
             yield moment, comment, text
 
 
 def find_freeze(comments: Iterable[dict[str, Any]]) -> dict[str, Any] | None:
-    """The freeze declaration: the first one-line comment that says "feature freeze" and nothing that hedges
-    it. The lanes' readiness reports are long, and say they aren't a declaration."""
+    """The freeze declaration: the first one-line comment, from someone who can write to the repository, that
+    declares the feature freeze ("I declare the feature freeze") or opens with it ("Feature freeze."), and
+    says nothing that hedges it. The lanes' readiness reports are long and say they aren't a declaration, and
+    a line that only mentions the freeze ("all features merged for the feature freeze") isn't one either."""
     for moment, comment, text in _one_line_comments(comments):
-        if _FREEZE.search(text):
+        if _FREEZE.search(text) and _DECLARES.search(text):
             return {"at": moment, "url": comment.get("url"), "text": text}
     return None
 
 
 def find_approval(comments: Iterable[dict[str, Any]], title: str, after: datetime | None) -> dict[str, Any] | None:
     """The candidate's approval: the first one-line comment after the freeze that approves the candidate, the
-    release or this version. A bare "Approved" isn't one: the tracker also carries exception requests."""
+    release or this version. A bare "Approved" isn't one, and nor is a line that names an issue or an
+    exception: the tracker also carries exception requests ("Approved: #4600 exception for v0.11.0")."""
     version = title.removeprefix("v")
     for moment, comment, text in _one_line_comments(comments):
         if after is not None and moment <= after:
+            continue
+        if _EXCEPTION.search(text):
             continue
         if _APPROVAL.search(text) and (_APPROVAL_OF.search(text) or version in text):
             return {"at": moment, "url": comment.get("url"), "text": text}
@@ -1129,7 +1151,7 @@ def ship_list(
                     f"Signed release dry run on {live['branch']}",
                     "todo",
                     "none this cycle",
-                    note="gh workflow run release.yml --ref main -f dry_run=true",
+                    note=f"gh workflow run release.yml --ref {live['branch']} -f dry_run=true",
                 )
             )
         else:
@@ -1254,9 +1276,12 @@ def read_live(
     main["workflows"] = [
         {
             "name": entry["name"],
-            "conclusion": entry["run"]["conclusion"] if entry["run"] else None,
-            "at": entry["run"]["updated_at"] if entry["run"] else None,
-            "run": entry["run"]["id"] if entry["run"] else None,
+            # Red while either its latest push run or its latest nightly run failed; none yet is neither.
+            "passing": all(run["conclusion"] in PASSING for run in entry["runs"]) if entry["runs"] else None,
+            "runs": [
+                {"event": run["event"], "conclusion": run["conclusion"], "at": run["updated_at"], "run": run["id"]}
+                for run in entry["runs"]
+            ],
         }
         for entry in raw["latest_runs"]
     ]
@@ -1323,7 +1348,8 @@ def build_release(
 
     comments = tracker["comments"] if tracker else []
     freeze = find_freeze(comments)
-    signals = {"freeze": freeze, "approval": find_approval(comments, title, freeze["at"] if freeze else None)}
+    # No approval without a freeze: a candidate can't be approved before one, so an earlier line isn't it.
+    signals = {"freeze": freeze, "approval": find_approval(comments, title, freeze["at"]) if freeze else None}
 
     closed = milestone["state"] == "closed"
     live = None
@@ -1420,8 +1446,11 @@ def build_release(
 def build_index(releases: Sequence[dict[str, Any]], repo: str, now: datetime) -> dict[str, Any]:
     """The list of releases, the one the page opens on, and each one's figures for the comparison table."""
     ordered = sorted(releases, key=lambda release: version_of(release["milestone"]["title"]) or (0, 0, 0))
-    unreleased = [release for release in ordered if release["stage"] not in ("released", "planned")]
-    current = (unreleased or ordered[-1:] or [None])[0]
+    under_way = [release for release in ordered if release["stage"] not in ("released", "planned")]
+    # The minor main is building comes first: an open patch milestone sorts lower and would otherwise take the
+    # page for as long as it stays open. A patch is the page's release only when no minor is under way.
+    minors = [release for release in under_way if (version_of(release["milestone"]["title"]) or (0, 0, 1))[2] == 0]
+    current = (minors or under_way or ordered[-1:] or [None])[0]
     return {
         "schema": SCHEMA,
         "generated_at": iso(now),

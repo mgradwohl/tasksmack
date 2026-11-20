@@ -774,36 +774,6 @@ details[open] > summary .chevron {
   min-width: 0;
 }
 
-.workflows {
-  list-style: none;
-  margin: 0;
-  padding: 0;
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
-  gap: 6px 24px;
-  font-size: 13.5px;
-}
-
-.workflows li {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  min-width: 0;
-}
-
-.workflows .icon {
-  width: 16px;
-  height: 16px;
-  margin: 0;
-}
-
-.workflows .when {
-  margin-left: auto;
-  color: var(--ink-2);
-  font-size: 12.5px;
-  white-space: nowrap;
-}
-
 .compare th[scope="col"].now {
   color: var(--ink);
 }
@@ -1006,4 +976,21 @@ tfoot td {
 
 .compare tbody th {
   min-width: 150px;
+}
+
+.run-name {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.run-name .icon {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+}
+
+.runs td.worse a {
+  color: var(--worse);
+  font-weight: 600;
 }

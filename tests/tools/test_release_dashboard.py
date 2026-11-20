@@ -137,14 +137,30 @@ READINESS = """**Windows lane: features complete for v1.1.0.**
 This is a readiness report, not a freeze declaration; declaring the feature freeze is the maintainer's call."""
 
 TRACKER_COMMENTS = [
-    {"body": READINESS, "createdAt": at(17), "url": f"https://github.com/{REPOSITORY}/issues/100#issuecomment-1"},
-    {"body": "Approved for v1.1.0 release", "createdAt": at(17, 1), "url": "https://example.invalid/early"},
+    {
+        "body": READINESS,
+        "authorAssociation": "OWNER",
+        "createdAt": at(17),
+        "url": f"https://github.com/{REPOSITORY}/issues/100#issuecomment-1",
+    },
+    {
+        "body": "Approved for v1.1.0 release",
+        "authorAssociation": "OWNER",
+        "createdAt": at(17, 1),
+        "url": "https://example.invalid/early",
+    },
     {
         "body": "I declare the feature freeze",
+        "authorAssociation": "OWNER",
         "createdAt": at(18, 9),
         "url": f"https://github.com/{REPOSITORY}/issues/100#issuecomment-2",
     },
-    {"body": "Approved", "createdAt": at(18, 10), "url": f"https://github.com/{REPOSITORY}/issues/100#issuecomment-3"},
+    {
+        "body": "Approved",
+        "authorAssociation": "OWNER",
+        "createdAt": at(18, 10),
+        "url": f"https://github.com/{REPOSITORY}/issues/100#issuecomment-3",
+    },
 ]
 
 HOSTILE_TITLE = '[Testing] <img src=x onerror="window.__xss=1"> & "quotes" </script><b>bold</b>'
@@ -228,12 +244,20 @@ RED_ISSUES = [
 ]
 
 
-def run(run_id: int, conclusion: str | None, updated: str, *, status: str = "completed", sha: str = "a" * 40) -> dict:
+def run(
+    run_id: int,
+    conclusion: str | None,
+    updated: str,
+    *,
+    status: str = "completed",
+    sha: str = "a" * 40,
+    event: str = "push",
+) -> dict:
     return {
         "id": run_id,
         "status": status,
         "conclusion": conclusion,
-        "event": "push",
+        "event": event,
         "sha": sha,
         "created_at": updated,
         "updated_at": updated,
@@ -270,9 +294,14 @@ LIVE = {
         open_pull(250, "chore: bump a pin", draft=True, checks="FAILURE", closes=(400,), on="v1.2.0", bot=True),
     ],
     "latest_runs": [
-        {"file": "ci.yml", "name": "CI", "run": run(900, "success", at(20, 11))},
-        {"file": "codeql.yml", "name": "CodeQL Security Analysis", "run": run(901, "failure", at(20, 10))},
-        {"file": "arm64.yml", "name": "ARM64", "run": None},
+        # CI's nightly run failed and a later push run passed: main-health.yml keeps the branch red for that.
+        {
+            "file": "ci.yml",
+            "name": "CI",
+            "runs": [run(900, "success", at(20, 11)), run(899, "failure", at(20, 4), event="schedule")],
+        },
+        {"file": "codeql.yml", "name": "CodeQL Security Analysis", "runs": [run(901, "neutral", at(20, 10))]},
+        {"file": "arm64.yml", "name": "ARM64", "runs": []},
     ],
     "dry_runs": [
         run(910, None, at(20, 11), status="in_progress"),
@@ -594,6 +623,11 @@ class ChecklistTests(unittest.TestCase):
         self.assertEqual(section["items"][0]["refs"], [4, 5])
         self.assertIsNone(section["items"][0]["lead"])
 
+    def test_a_number_too_long_for_an_issue_is_not_a_reference(self):
+        # A workflow run's id written with a # would be refused as a GraphQL Int and fail the whole lookup.
+        (section,) = dashboard.parse_checklist("- [ ] #40434773436 dry run green, see #123456789 and #1234567890\n")
+        self.assertEqual((section["items"][0]["refs"], section["items"][0]["lead"]), ([123456789], None))
+
     def test_empty(self):
         self.assertEqual(dashboard.parse_checklist(""), [])
         self.assertEqual(dashboard.parse_checklist(None), [])
@@ -613,8 +647,11 @@ class ChecklistTests(unittest.TestCase):
 
 
 class SignalTests(unittest.TestCase):
-    def comments(self, *texts):
-        return [{"body": text, "createdAt": at(1, hour), "url": f"u{hour}"} for hour, text in enumerate(texts)]
+    def comments(self, *texts, author="OWNER"):
+        return [
+            {"body": text, "createdAt": at(1, hour), "url": f"u{hour}", "authorAssociation": author}
+            for hour, text in enumerate(texts)
+        ]
 
     def test_the_v0_10_0_declaration(self):
         found = dashboard.find_freeze(TRACKER_COMMENTS)
@@ -627,6 +664,8 @@ class SignalTests(unittest.TestCase):
             "Ready for the feature freeze?",
             "No feature freeze until #5 merges",
             "Windows lane: ready for feature freeze",
+            "Windows lane: all features merged for the feature freeze",  # mentions it, doesn't declare it
+            "The feature freeze is close",
             "feature freeze " + "x" * 120,
             "freeze",
             "",
@@ -642,6 +681,21 @@ class SignalTests(unittest.TestCase):
             "  Feature Freeze declared  ",
         ):
             self.assertIsNotNone(dashboard.find_freeze(self.comments(text)), text)
+
+    def test_only_someone_who_can_write_to_the_repository_declares_or_approves(self):
+        # Anyone can comment on a public repository's issue.
+        for author in ("NONE", "CONTRIBUTOR", "FIRST_TIME_CONTRIBUTOR", None):
+            self.assertIsNone(
+                dashboard.find_freeze(self.comments("I declare the feature freeze", author=author)), author
+            )
+            outsiders = self.comments("Approved for v0.10.0 release", author=author)
+            self.assertIsNone(dashboard.find_approval(outsiders, "v0.10.0", None), author)
+        for author in ("OWNER", "MEMBER", "COLLABORATOR"):
+            self.assertIsNotNone(
+                dashboard.find_freeze(self.comments("I declare the feature freeze", author=author)), author
+            )
+        bare = [{"body": "I declare the feature freeze", "createdAt": at(1), "url": "u"}]  # an older dump: no author
+        self.assertIsNone(dashboard.find_freeze(bare))
 
     def test_the_first_declaration_counts(self):
         found = dashboard.find_freeze(self.comments("nothing", "feature freeze", "Feature freeze, again"))
@@ -661,7 +715,14 @@ class SignalTests(unittest.TestCase):
             "Approved: 0.10.0",
         ):
             self.assertIsNotNone(dashboard.find_approval(self.comments(text), "v0.10.0", None), text)
-        for text in ("Approved", "Not approved for release yet", "Is the candidate approved?", "Approved for v0.9.9"):
+        for text in (
+            "Approved",
+            "Not approved for release yet",
+            "Is the candidate approved?",
+            "Approved for v0.9.9",
+            "Approved: #4600 exception for the v0.10.0 release",  # an exception, not the candidate
+            "Exception approved for the v0.10.0 release",
+        ):
             self.assertIsNone(dashboard.find_approval(self.comments(text), "v0.10.0", None), text)
 
 
@@ -898,8 +959,8 @@ class ShipListTests(unittest.TestCase):
         window = {"start": when(10, 12), "start_reason": "x", "end": end, "release_tag": None}
         return {row["id"]: row for row in dashboard.ship_list(read, [], signals or {}, live, window, False, NOW)}
 
-    def live(self, *, main, dry_run=None, pulls=()):
-        return {"branch": "main", "pull_requests": list(pulls), "main": main, "dry_run": dry_run}
+    def live(self, *, main, dry_run=None, pulls=(), branch="main"):
+        return {"branch": branch, "pull_requests": list(pulls), "main": main, "dry_run": dry_run}
 
     def test_an_open_high_severity_bug_blocks(self):
         found = self.case(
@@ -939,6 +1000,10 @@ class ShipListTests(unittest.TestCase):
     def test_dry_run_states(self):
         green = {"state": "green", "hours": 30.0}
         self.assertEqual(self.case(live=self.live(main=green))["dry_run"]["state"], "todo")
+        # A patch is dry-run on its own branch, and the row says so.
+        patch = self.case(live=self.live(main=green, branch="release/1.0"))["dry_run"]
+        self.assertEqual(patch["title"], "Signed release dry run on release/1.0")
+        self.assertEqual(patch["note"], "gh workflow run release.yml --ref release/1.0 -f dry_run=true")
         at_head = {"conclusion": "success", "at": when(19), "url": "u", "behind": 0}
         found = self.case(live=self.live(main=green, dry_run=at_head))["dry_run"]
         self.assertEqual((found["state"], found["summary"]), ("done", "passed 2026-01-19T00:00:00Z at the head"))
@@ -1008,6 +1073,14 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(release["milestone"]["due_on"], "2026-02-01T08:00:00Z")
         json.dumps(release)  # every value is JSON
 
+    def test_no_freeze_means_no_approval(self):
+        # "Approved for v1.1.0 release" alone, with no freeze declared: nothing can have been approved yet.
+        tracker = {**RAW["v1.1.0"]["tracker"], "comments": [TRACKER_COMMENTS[1]]}
+        raw = {**RAW["v1.1.0"], "tracker": tracker}
+        release = dashboard.build_release(raw, published(), RED_ISSUES, CI_COUNTS, LIVE, REPOSITORY, NOW, {(1, 1, 0)})
+        self.assertEqual((release["signals"], release["stage"]), ({"freeze": None, "approval": None}, "building"))
+        self.assertIsNotNone(dashboard.find_approval(tracker["comments"], "v1.1.0", None))
+
     def test_the_tracker_is_not_scope(self):
         release = build("v1.1.0")
         self.assertNotIn(100, [entry["n"] for entry in release["open_issues"]])
@@ -1030,8 +1103,14 @@ class BuildTests(unittest.TestCase):
             (live["main"]["state"], live["main"]["since"], live["main"]["hours"]),
             ("green", "2026-01-20T02:00:00Z", 10.0),
         )
+        # CI is red for its failed nightly run though a later push run passed; neutral passes; no run is neither.
+        self.assertEqual([workflow["passing"] for workflow in live["main"]["workflows"]], [False, True, None])
         self.assertEqual(
-            [workflow["conclusion"] for workflow in live["main"]["workflows"]], ["success", "failure", None]
+            live["main"]["workflows"][0]["runs"],
+            [
+                {"event": "push", "conclusion": "success", "at": "2026-01-20T11:00:00Z", "run": 900},
+                {"event": "schedule", "conclusion": "failure", "at": "2026-01-20T04:00:00Z", "run": 899},
+            ],
         )
         # The newest finished dry run: the one in progress and the cancelled one are passed over.
         self.assertEqual(
@@ -1096,6 +1175,23 @@ class BuildTests(unittest.TestCase):
         self.assertEqual([entry["title"] for entry in index["releases"]], ["v1.0.0", "v1.1.0", "v1.2.0"])
         self.assertEqual([entry["stage"] for entry in index["releases"]], ["released", "freeze", "planned"])
         self.assertEqual((index["releases"][1]["open"], index["releases"][1]["issues"]), (6, 10))
+
+    def test_index_opens_on_the_minor_main_is_building_not_on_an_open_patch(self):
+        def stub(title, stage):
+            return {
+                "milestone": {"title": title, "state": "closed" if stage == "released" else "open"},
+                "stage": stage,
+                "cycle": {"start": None, "end": None},
+                "counts": {"open": 0, "issues": 0},
+                "figures": {},
+            }
+
+        # v0.11.0 shipped, then a v0.11.1 patch milestone was opened while main builds v0.12.0.
+        releases = [stub("v0.11.0", "released"), stub("v0.11.1", "building"), stub("v0.12.0", "building")]
+        self.assertEqual(dashboard.build_index(releases, REPOSITORY, NOW)["current"], "v0.12.0")
+        # With no minor under way, the patch is the page's release.
+        releases = [stub("v0.11.0", "released"), stub("v0.11.1", "freeze"), stub("v0.12.0", "planned")]
+        self.assertEqual(dashboard.build_index(releases, REPOSITORY, NOW)["current"], "v0.11.1")
 
     def test_index_with_nothing_under_way_opens_on_the_newest(self):
         index = dashboard.build_index([build("v1.0.0"), build("v1.2.0")], REPOSITORY, NOW)

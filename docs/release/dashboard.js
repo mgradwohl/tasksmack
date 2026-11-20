@@ -157,13 +157,17 @@
       const index = await load('index.json');
       const pick = title || (view.release && view.release.milestone.title) || wanted(index);
       if (!TITLE.test(pick || '')) throw new Error('no release to show');
-      if (quiet && view.index && view.index.generated_at === index.generated_at) return;
+      if (quiet && view.release && view.index && view.index.generated_at === index.generated_at) return;
       const release = await load(pick + '.json');
       view.index = index;
       view.release = release;
       render();
     } catch (error) {
-      if (view.release) return; // keep what's on screen; the next refresh tries again
+      if (view.release) {
+        // Keep what's on screen (a failed switch puts the picker back on it); the next refresh tries again.
+        if (!quiet) render();
+        return;
+      }
       app.replaceChildren(
         el('p', { class: 'notice' }, "The release data couldn't be loaded (" + String(error.message || error) + '). ',
           el('a', { href: GITHUB + 'mgradwohl/tasksmack/milestones' }, 'The milestones page'), ' has the same scope.')
@@ -180,12 +184,19 @@
     const first = !app.querySelector('details');
     view.charts = [];
 
-    const parts = [masthead(release, now), stages(release)];
-    const age = (Date.now() / 1000 - now) / 60;
-    if (!window.__RELEASE_DATA__ && release.stage !== 'released' && age > STALE_MINUTES) {
-      parts.push(el('p', { class: 'banner' }, 'This data is ' + span(age / 60) + ' old. It should refresh every 30 minutes: check the ',
-        link('Release Dashboard workflow', '/actions/workflows/release-dashboard.yml'), '.'));
-    }
+    // The two things that depend on the clock, not on the data: how long ago it was generated, and the
+    // warning when that's too long. clock() keeps them right on a page left open.
+    const stamp = el('span', { title: moment(now) });
+    const age = el('span');
+    const stale = el('p', { class: 'banner', hidden: true }, 'This data is ', age, ' old. It should refresh every 30 minutes: check the ',
+      link('Release Dashboard workflow', '/actions/workflows/release-dashboard.yml'), '.');
+    view.clock = () => {
+      const minutes = (Date.now() / 1000 - now) / 60;
+      stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
+      age.textContent = span(minutes / 60);
+      stale.hidden = Boolean(window.__RELEASE_DATA__) || release.stage === 'released' || minutes <= STALE_MINUTES;
+    };
+    const parts = [masthead(release, stamp), stages(release), stale];
     if (release.stage !== 'planned') parts.push(summary(release));
     parts.push(shipList(release, now));
     if (release.stage !== 'planned') parts.push(movement(release, now));
@@ -197,11 +208,12 @@
     if (!first) {
       for (const node of app.querySelectorAll('details')) node.open = open.has(node.dataset.key);
     }
+    view.clock();
     view.width = app.clientWidth;
     for (const draw of view.charts) draw();
   }
 
-  function masthead(release, now) {
+  function masthead(release, stamp) {
     const select = el('select', { id: 'release-select', onchange: (event) => choose(event.target.value) },
       view.index.releases.map((entry) => el('option', { value: entry.title, selected: entry.title === release.milestone.title },
         entry.title + (entry.stage === 'released' ? '' : entry.stage === 'planned' ? ' (planned)' : ' (in progress)'))));
@@ -213,7 +225,7 @@
         el('p', { class: 'links' }, links)),
       el('div', { class: 'masthead-side' },
         el('label', { for: 'release-select' }, 'Release', select),
-        el('span', { title: moment(now) }, 'Updated ' + ago(now, Date.now() / 1000)),
+        stamp,
         release.milestone.due_on ? el('span', null, 'Due ' + day(seconds(release.milestone.due_on))) : null));
   }
 
@@ -224,7 +236,6 @@
     } catch (error) {
       // Some hosts don't allow it; the page still switches.
     }
-    view.release = null;
     show(title);
   }
 
@@ -261,6 +272,7 @@
     let sentence;
     if (!open) sentence = 'Every milestone issue is closed.';
     else if (three.days_left != null) sentence = "At the last 3 days' pace, the open issues would take about " + days(three.days_left) + '.';
+    else if (three.net_per_day === 0) sentence = "Over the last 3 days the open count didn't move: " + three.added_per_day + ' added and ' + three.closed_per_day + ' closed a day.';
     else sentence = 'Over the last 3 days, more issues were added than closed: ' + three.added_per_day + ' added and ' + three.closed_per_day + ' closed a day.';
     if (open && three.days_left == null && one && one.days_left != null) sentence += ' The last 24 hours did better: about ' + days(one.days_left) + ' at that rate.';
     hero.append(el('p', { class: 'pace-line', text: sentence }));
@@ -378,15 +390,24 @@
     }));
   }
 
+  /** Each watched workflow's latest push run and latest nightly run, the failing ones first. */
   function workflows(release, now) {
-    const urgency = (workflow) => (workflow.conclusion == null ? 1 : workflow.conclusion === 'success' ? 2 : 0);
+    // As main-health.yml judges them: a workflow is red while its latest push run or its latest nightly run failed.
+    const passed = (run) => run.conclusion === 'success' || run.conclusion === 'neutral';
+    const words = { failure: 'failed', timed_out: 'timed out', startup_failure: "didn't start", action_required: 'needs action' };
+    const urgency = (workflow) => (workflow.passing === false ? 0 : workflow.passing == null ? 1 : 2);
     const list = release.live.main.workflows.slice().sort((a, b) => urgency(a) - urgency(b) || a.name.localeCompare(b.name));
-    return el('ul', { class: 'workflows' }, list.map((workflow) => {
-      const passed = workflow.conclusion === 'success';
-      const name = workflow.run ? link(workflow.name, '/actions/runs/' + Number(workflow.run)) : workflow.name;
-      return el('li', null, icon(workflow.conclusion == null ? 'todo' : passed ? 'done' : 'blocked'), el('span', null, name),
-        el('span', { class: 'when', text: workflow.conclusion == null ? 'no run' : (passed ? 'passed ' : workflow.conclusion + ' ') + ago(seconds(workflow.at), now) }));
-    }));
+    const cell = (workflow, event) => {
+      const run = (workflow.runs || []).find((entry) => entry.event === event);
+      if (!run) return el('td', { text: '–' });
+      const text = (passed(run) ? 'passed' : words[run.conclusion] || run.conclusion) + ' ' + ago(seconds(run.at), now);
+      return el('td', { class: passed(run) ? null : 'worse' }, link(text, '/actions/runs/' + Number(run.run)));
+    };
+    return el('div', { class: 'scroll' }, el('table', { class: 'runs' },
+      el('thead', null, el('tr', null, ['Workflow on ' + release.branch, 'Latest push run', 'Latest nightly run'].map((text) => el('th', { scope: 'col', text })))),
+      el('tbody', null, list.map((workflow) => el('tr', null,
+        el('th', { scope: 'row' }, el('span', { class: 'run-name' }, icon(workflow.passing == null ? 'todo' : workflow.passing ? 'done' : 'blocked'), workflow.name)),
+        cell(workflow, 'push'), cell(workflow, 'schedule'))))));
   }
 
   // ---- movement: the burn-up and the daily bars --------------------------------------------------
@@ -744,7 +765,7 @@
       el('div', { class: 'block' },
         el('ul', { class: 'legend' }, el('li', null, el('span', { class: 'key box k-red' }), 'Red: a watched workflow failed on ' + release.branch)),
         strip, el('div', { class: 'strip-ends' }, el('span', { text: day(start) }), el('span', { text: release.cycle.end ? day(end) : 'now' }))),
-      release.live ? el('div', { class: 'block' }, el('h3', { text: 'Latest run of each watched workflow' }), workflows(release, now)) : null,
+      release.live ? el('div', { class: 'block' }, el('h3', { text: 'Latest runs of each watched workflow' }), workflows(release, now)) : null,
       el('div', { class: 'scroll' }, table),
       el('p', { class: 'footnote' }, 'Runs on ' + release.branch + ' since the cycle started; cancelled runs are left out. Coverage is on ',
         el('a', { href: 'https://app.codecov.io/gh/' + (REPO.test(view.index.repo) ? view.index.repo : ''), text: 'Codecov' }), '.'));
@@ -877,6 +898,9 @@
   setInterval(() => {
     if (document.visibilityState === 'visible' && !window.__RELEASE_DATA__) show(null, true);
   }, REFRESH_MS);
+  setInterval(() => {
+    if (view.clock) view.clock();
+  }, 60 * 1000);
 
   show(null);
 })();

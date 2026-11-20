@@ -211,11 +211,11 @@ fixed at its source:
 | In progress, in review | the `in progress` label or a draft pull request; a pull request that's ready for review |
 | "No high-severity bug open" | open `sev:high` and `sev:medium` issues on the milestone |
 | "Every feature merged, moved or cut" | open `enhancement` issues that aren't CI, tooling or security work |
-| "Feature freeze declared" | the first one-line comment on the tracker that says "feature freeze" |
+| "Feature freeze declared" | the first one-line tracker comment that declares the feature freeze |
 | "Code-review findings closed" | the milestone's `code-review` issues |
 | "Tracker checklist" | the task list in the tracker's body |
 | "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close` |
-| "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period |
+| "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
 | "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |
 | "Candidate approved" | the first one-line tracker comment after the freeze that approves the candidate or release |
 | "Release published" | the GitHub release tagged with the milestone's title |
@@ -225,8 +225,12 @@ What that asks of the tracker:
 - **Start a checklist item with its issue number** (`- [ ] #3378 Update dependencies`) and the page ticks it when
   that issue closes, so the box doesn't need ticking by hand. An item with no leading number is as its box says.
 - **Declare the freeze and approve the candidate in one line each,** as on #3223: "I declare the feature freeze",
-  "Approved for v0.10.0 release". The page links the comment it read. A longer comment isn't read as either
-  (the lanes' readiness reports are long), and nor is one that hedges ("ready for the freeze?").
+  "Approved for v0.10.0 release". The page links the comment it read. What it takes for each:
+  - the freeze: a line that says "feature freeze" and "declare" or "declared", or that opens with "Feature freeze";
+  - the approval: a line after the freeze that says "approved" and names the candidate, the release or the version;
+  - neither: a longer comment (the lanes' readiness reports), a line that hedges ("ready for the freeze?"), a line
+    that names an issue or an exception ("Approved: #4600 exception"), or a comment from someone who can't write
+    to the repository.
 - **A due date on the milestone** is optional. The page shows it when it's there.
 
 The pace table is arithmetic on the last 1, 3 and 7 days, not a forecast. A review sweep that files a hundred
