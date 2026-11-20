@@ -471,6 +471,11 @@ class LabelTests(unittest.TestCase):
         cases = [
             ({"bug", "security", "ci"}, "Security"),
             ({"bug", "ci", "testing"}, "Bug"),
+            # Severity beats kind (docs/dev/labels.md): a sev:high or sev:medium item is taken with the bugs.
+            ({"ci", "sev:medium"}, "Bug"),
+            ({"testing", "sev:high"}, "Bug"),
+            ({"testing", "sev:low"}, "Testing"),
+            ({"security", "sev:high"}, "Security"),
             ({"enhancement", "ci", "release"}, "CI"),
             ({"enhancement", "release"}, "Tooling"),
             ({"dependencies"}, "Tooling"),
@@ -911,6 +916,7 @@ class ShipListTests(unittest.TestCase):
                 "features",
                 "freeze",
                 "review",
+                "performance",
                 "checklist",
                 "maintainer",
                 "pull_requests",
@@ -943,7 +949,8 @@ class ShipListTests(unittest.TestCase):
         self.assertEqual((found["checklist"]["state"], found["checklist"]["summary"]), ("active", "3 of 6 done"))
         self.assertEqual((found["maintainer"]["state"], found["maintainer"]["issues"]), ("active", [108]))
         self.assertEqual(
-            (found["pull_requests"]["state"], found["pull_requests"]["summary"]), ("active", "1 open: 1 ready, 0 draft")
+            (found["pull_requests"]["state"], found["pull_requests"]["summary"]),
+            ("active", "1 open: 1 ready (longest 9 h), 0 draft"),
         )
         # Main went green at 02:00 and it's 12:00: ten of the 24 hours.
         self.assertEqual((found["main"]["state"], found["main"]["summary"]), ("active", "green for 10 h"))
@@ -961,6 +968,47 @@ class ShipListTests(unittest.TestCase):
 
     def live(self, *, main, dry_run=None, pulls=(), branch="main"):
         return {"branch": branch, "pull_requests": list(pulls), "main": main, "dry_run": dry_run}
+
+    def test_open_performance_issues_are_their_own_line(self):
+        found = self.case(
+            issues=[
+                issue(1, "x", labels=("performance",), created=at(11)),
+                issue(2, "y", labels=("performance", "bug"), created=at(11), closed=at(12)),
+            ]
+        )
+        self.assertEqual(
+            (found["performance"]["state"], found["performance"]["summary"], found["performance"]["issues"]),
+            ("active", "1 open of 2", [1]),
+        )
+        self.assertEqual(self.case()["performance"]["state"], "done")
+
+    def test_the_longest_ready_pull_request_is_in_the_summary(self):
+        pulls = [
+            {"in_scope": True, "draft": False, "checks": "SUCCESS", "ready_since": when(20, 7)},
+            {"in_scope": True, "draft": False, "checks": "SUCCESS", "ready_since": when(18, 12)},
+            {"in_scope": True, "draft": True, "checks": None, "ready_since": None},
+            {"in_scope": False, "draft": False, "checks": "SUCCESS", "ready_since": when(1)},  # another release's
+        ]
+        found = self.case(live=self.live(main={"state": "green", "hours": 1.0}, pulls=pulls))
+        self.assertEqual(found["pull_requests"]["summary"], "3 open: 2 ready (longest 2 days), 1 draft")
+
+    def test_what_a_pull_request_is_waiting_on(self):
+        def waiting(**changes):
+            base = {"draft": False, "checks": "SUCCESS", "merge_state": "CLEAN", "threads": 0}
+            return dashboard.waiting_on({**base, **changes})
+
+        self.assertEqual(waiting(), "ready to merge")
+        self.assertEqual(waiting(draft=True, checks="FAILURE"), "a draft")
+        self.assertEqual(waiting(checks="FAILURE", merge_state="BEHIND", threads=2), "checks failing")
+        self.assertEqual(waiting(checks="ERROR"), "checks failing")
+        self.assertEqual(waiting(merge_state="DIRTY", threads=1), "conflicts with its base")
+        self.assertEqual(waiting(threads=1), "1 review thread open")
+        self.assertEqual(waiting(threads=3, merge_state="BEHIND"), "3 review threads open")
+        self.assertEqual(waiting(merge_state="BEHIND", checks="PENDING"), "behind its base: needs a catch-up")
+        self.assertEqual(waiting(checks="PENDING", merge_state="BLOCKED"), "checks running")
+        self.assertEqual(waiting(checks=None, merge_state="UNKNOWN"), "no checks yet")
+        self.assertEqual(waiting(merge_state="BLOCKED"), "a required check or review")
+        self.assertEqual(waiting(merge_state="UNKNOWN"), "ready to merge")
 
     def test_an_open_high_severity_bug_blocks(self):
         found = self.case(
@@ -1122,6 +1170,12 @@ class BuildTests(unittest.TestCase):
             ),
             (908, "success", 3, True),
         )
+
+    def test_live_pull_requests_say_what_they_wait_on(self):
+        scoped, other = build("v1.1.0")["live"]["pull_requests"]
+        # #202 was marked ready at 03:00 and has an unresolved review thread; #250 is a draft.
+        self.assertEqual((scoped["waiting"], scoped["ready_since"]), ("1 review thread open", "2026-01-20T03:00:00Z"))
+        self.assertEqual((other["waiting"], other["ready_since"]), ("a draft", None))
 
     def test_main_red_now(self):
         red = [*RED_ISSUES, {"number": 310, "title": "CI: main is red", "created_at": at(20, 11), "closed_at": None}]

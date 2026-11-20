@@ -255,7 +255,21 @@ def expect_release(page: Page, title: str) -> None:
 def check_release_dashboard(page: Page, site: str, offline: bool) -> None:
     """docs/release/ draws the release in progress, from the generator's own output for a made-up repository."""
     errors: list[str] = []  # a refused inline script or style (the page's Content-Security-Policy) lands here
-    page.on("console", lambda message: errors.append(message.text) if message.type == "error" else None)
+
+    def on_console(message) -> None:  # noqa: ANN001 - Playwright's ConsoleMessage
+        if message.type == "error":
+            errors.append(message.text)
+
+    page.on("console", on_console)
+    try:
+        _check_release_dashboard(page, site)
+    finally:
+        page.remove_listener("console", on_console)  # a later check on this page reports its own errors
+    if errors:
+        raise AssertionError(f"console errors: {errors}")
+
+
+def _check_release_dashboard(page: Page, site: str) -> None:
     serve_release_data(page)
     index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
     current = json.loads((RELEASE_FIXTURES / f"{index['current']}.json").read_text(encoding="utf-8"))
@@ -278,7 +292,9 @@ def check_release_dashboard(page: Page, site: str, offline: bool) -> None:
         raise AssertionError("the open-issue count isn't the fixture's")
 
     # An issue title is someone else's text: it's shown as written, and never becomes markup.
-    hostile = next(issue["title"] for issue in current["open_issues"] if "<img" in issue["title"])
+    hostile = next((issue["title"] for issue in current["open_issues"] if "<img" in issue["title"]), None)
+    if hostile is None:
+        raise AssertionError("the fixtures hold no issue title with markup in it: tests/tools/test_release_dashboard.py")
     shown = page.evaluate("() => [...document.querySelectorAll('.item-title')].map(node => node.textContent)")
     if not any(hostile in text for text in shown):
         raise AssertionError("the hostile issue title isn't shown as text")
@@ -306,11 +322,12 @@ def check_release_dashboard(page: Page, site: str, offline: bool) -> None:
     shipped = page.locator(".stages li").last.text_content() or ""
     if "Actual: " not in shipped or "TBD" in shipped:
         raise AssertionError(f"the shipped release's Released stage reads {shipped!r}, with no date")
+    # An unknown ?m= falls back to the release in progress, and what it said is nowhere on the page.
     page.goto(site + "release/?m=v9.9.9%3Cscript%3E")
     expect_release(page, index["current"])
-
-    if errors:
-        raise AssertionError(f"console errors: {errors}")
+    echoed = page.evaluate("() => [document.body.innerHTML.includes('v9.9.9'), document.querySelectorAll('#app script').length]")
+    if echoed != [False, 0]:
+        raise AssertionError(f"the page echoed an unknown ?m= value: {echoed}")
 
 
 def check_release_dashboard_without_data(page: Page, site: str, offline: bool) -> None:

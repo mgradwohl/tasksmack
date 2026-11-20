@@ -213,9 +213,11 @@ fixed at its source:
 | "Every feature merged, moved or cut" | open `enhancement` issues that aren't CI, tooling or security work |
 | "Feature freeze declared" | the first one-line tracker comment that declares the feature freeze |
 | "Code-review findings closed" | the milestone's `code-review` issues |
+| "Performance issues closed" | the milestone's `performance` issues: stage 4's measure against the baselines files its regressions there |
 | "Tracker checklist" | the task list in the tracker's body |
 | "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close` |
 | "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
+| "Pull requests merged" | the open pull requests on the milestone or closing one of its issues: how long each has been ready, and what it's waiting on (failing checks, a conflict, open review threads, a catch-up with its base, running checks) |
 | "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |
 | "Candidate approved" | the first one-line tracker comment after the freeze that approves the candidate or release |
 | "Release published" | the GitHub release tagged with the milestone's title |

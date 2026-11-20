@@ -368,7 +368,7 @@
       return el('li', null, icon(PHASE_ICONS[issue.phase] || 'todo'),
         el('span', { class: 'item-title' }, issueLink(issue.n), issue.title),
         side ? el('span', { class: 'item-side', text: side(issue) })
-          : el('span', { class: 'item-side', title: 'On the milestone since ' + moment(seconds(issue.joined)), text: span((now - seconds(issue.joined)) / HOUR) }),
+          : el('span', { class: 'item-side', title: 'On the milestone since ' + moment(seconds(issue.joined)), text: span((now - seconds(issue.joined)) / HOUR) + ' on milestone' }),
         el('span', { class: 'chips' }, chips));
     }));
   }
@@ -392,14 +392,14 @@
   }
 
   function pullRequests(release, now) {
-    const checks = { SUCCESS: 'checks passing', FAILURE: 'checks failing', ERROR: 'checks failing', PENDING: 'checks running', EXPECTED: 'checks running' };
-    const urgency = (pr) => (pr.checks === 'FAILURE' || pr.checks === 'ERROR' ? 0 : pr.draft ? 2 : 1);
-    const list = release.live.pull_requests.slice().sort((a, b) => Number(b.in_scope) - Number(a.in_scope) || urgency(a) - urgency(b) || a.n - b.n);
+    // This release's first, then the ones that have been ready longest: a pull request sitting for hours is
+    // what nobody sees until they open it. Drafts last.
+    const since = (pr) => (pr.ready_since ? seconds(pr.ready_since) : Infinity);
+    const list = release.live.pull_requests.slice().sort((a, b) => Number(b.in_scope) - Number(a.in_scope) || since(a) - since(b) || a.n - b.n);
     return el('ul', { class: 'items' }, list.map((pr) => {
       const failing = pr.checks === 'FAILURE' || pr.checks === 'ERROR';
-      const chips = [chip(pr.draft ? 'Draft' : 'Ready', !pr.draft)];
-      if (checks[pr.checks]) chips.push(chip(checks[pr.checks], failing));
-      if (pr.threads) chips.push(chip(count(pr.threads, 'open thread')));
+      const chips = [chip(pr.draft ? 'Draft' : 'Ready for ' + span((now - since(pr)) / HOUR), !pr.draft)];
+      if (pr.waiting && !pr.draft) chips.push(chip('waiting on: ' + pr.waiting, failing));
       if (pr.auto_merge) chips.push(chip('auto-merge on'));
       if (pr.lane !== 'None') chips.push(chip(pr.lane));
       if (!pr.in_scope) chips.push(chip(pr.milestone ? pr.milestone : 'not on this milestone'));
@@ -407,7 +407,7 @@
       for (const n of pr.closes) chips.push(link('closes #' + n, '/issues/' + Number(n), { class: 'chip' }));
       return el('li', null, icon(failing ? 'blocked' : pr.draft ? 'todo' : 'active'),
         el('span', { class: 'item-title' }, link('#' + pr.n, '/pull/' + Number(pr.n), { class: 'item-number' }), pr.title),
-        el('span', { class: 'item-side', title: 'Opened ' + moment(seconds(pr.created)), text: span((now - seconds(pr.created)) / HOUR) }),
+        el('span', { class: 'item-side', title: 'Opened ' + moment(seconds(pr.created)), text: 'open ' + span((now - seconds(pr.created)) / HOUR) }),
         el('span', { class: 'chips' }, chips));
     }));
   }
@@ -505,7 +505,9 @@
   }
 
   function tooltipFor(container) {
-    const tip = el('div', { class: 'tooltip', hidden: true, role: 'status' });
+    // Hidden from screen readers: the hit target's label and the "Show the numbers" table carry the same figures,
+    // and a live region would announce every pointer move.
+    const tip = el('div', { class: 'tooltip', hidden: true, 'aria-hidden': 'true' });
     container.append(tip);
     return {
       show(title, rows, x, y) {

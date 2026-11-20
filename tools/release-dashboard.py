@@ -98,7 +98,8 @@ COUNT_CEILING = 1000
 # docs/dev/labels.md's queue order, as one category per issue. The first label that matches decides.
 CATEGORIES: tuple[tuple[str, Callable[[set[str]], bool]], ...] = (
     ("Security", lambda labels: "security" in labels),
-    ("Bug", lambda labels: "bug" in labels),
+    # "Severity beats kind": a sev:high or sev:medium item is taken with the bugs whatever else it's labelled.
+    ("Bug", lambda labels: "bug" in labels or bool(labels & {"sev:high", "sev:medium"})),
     ("CI", lambda labels: "ci" in labels),
     ("Tooling", lambda labels: bool(labels & {"tooling", "release", "dependencies"})),
     ("Perf", lambda labels: "performance" in labels),
@@ -1140,6 +1141,22 @@ def ship_list(
         )
     )
 
+    perf = [issue for issue in issues if "performance" in issue["labels"]]
+    perf_open = [issue for issue in perf if issue["open"]]
+    rows.append(
+        _row(
+            "performance",
+            "Performance issues closed",
+            "done" if not perf_open else "active",
+            f"{len(perf_open)} open of {len(perf)}",
+            note="Issues labelled `performance`. A regression against the cycle's baselines is a bug for this "
+            "milestone; the others may move to the next minor.",
+            issues=perf_open,
+            moved_from=perf,
+            now=now,
+        )
+    )
+
     items = [item for section in checklist for item in section["items"]]
     if has_tracker and items:
         finished = sum(1 for item in items if item["state"] == "done")
@@ -1170,7 +1187,9 @@ def ship_list(
         drafts = sum(1 for pr in scoped if pr["draft"])
         summary = "none open"
         if scoped:
-            summary = f"{len(scoped)} open: {len(scoped) - drafts} ready, {drafts} draft"
+            waits = [hours_between(pr["ready_since"], now) for pr in scoped if pr.get("ready_since") is not None]
+            longest = f" (longest {_duration(max(waits))})" if waits else ""
+            summary = f"{len(scoped)} open: {len(scoped) - drafts} ready{longest}, {drafts} draft"
             if failing:
                 summary += f", {failing} failing checks"
         rows.append(_row("pull_requests", "Pull requests merged", "done" if not scoped else "active", summary))
@@ -1183,7 +1202,7 @@ def ship_list(
                     f"{live['branch']} green for {SOAK_HOURS} hours",
                     "blocked",
                     f"red for {_duration(health['hours'])}",
-                    note="The candidate needs every push check and nightly job green for a day.",
+                    note="The candidate needs every push check and nightly job green for a day, Heavy Checks' nightly run included.",
                     link=health.get("issue_url"),
                 )
             )
@@ -1195,7 +1214,7 @@ def ship_list(
                     f"{live['branch']} green for {SOAK_HOURS} hours",
                     "done" if soaked else "active",
                     "green" if health["hours"] is None else f"green for {_duration(health['hours'])}",
-                    note="The candidate needs every push check and nightly job green for a day.",
+                    note="The candidate needs every push check and nightly job green for a day, Heavy Checks' nightly run included.",
                 )
             )
 
@@ -1311,6 +1330,10 @@ def read_live(
                 or any(number in issue_numbers for number in closes),
             }
         )
+        latest = pull_requests[-1]
+        latest["waiting"] = waiting_on(latest)
+        # Ready since it was marked ready, or since it was opened if it never was a draft.
+        latest["ready_since"] = None if latest["draft"] else (latest["ready"] or latest["created"])
 
     open_period = next((period for period in reversed(periods) if period["end"] is None), None)
     if open_period is not None:
@@ -1357,6 +1380,28 @@ def read_live(
             "running": any(run["status"] != "completed" for run in raw["dry_runs"]),
         }
     return {"branch": raw["branch"], "pull_requests": pull_requests, "main": main, "dry_run": dry_run}
+
+
+def waiting_on(pr: dict[str, Any]) -> str:
+    """What an open pull request is waiting on: the first of these that holds. A pull request that sits ready for
+    hours is invisible until someone opens it, so the page says which kind of waiting it is."""
+    if pr["draft"]:
+        return "a draft"
+    if pr["checks"] in ("FAILURE", "ERROR"):
+        return "checks failing"
+    if pr["merge_state"] == "DIRTY":
+        return "conflicts with its base"
+    if pr["threads"]:
+        return _count(pr["threads"], "review thread") + " open"
+    if pr["merge_state"] == "BEHIND":
+        return "behind its base: needs a catch-up"
+    if pr["checks"] in ("PENDING", "EXPECTED"):
+        return "checks running"
+    if pr["checks"] is None:
+        return "no checks yet"
+    if pr["merge_state"] == "BLOCKED":
+        return "a required check or review"
+    return "ready to merge"
 
 
 def _jsonable(value: Any) -> Any:
