@@ -1096,6 +1096,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_UdpByteCounter.cpp  # the eBPF UDP byte counter root loads (#3366, #3580)
     Platform/test_LinuxUdpTrafficCollector.cpp  # root's in-process UDP collector (#3580)
     Platform/test_SyscallTrace.cpp
+    Platform/test_RunProgramLookup.cpp  # Run new task finds the program as the account it runs as (#4532, #4400)
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_RootDumpFolder.cpp  # a root session's own default dump folder (#4181)
     Platform/test_DetachedSpawn.cpp
