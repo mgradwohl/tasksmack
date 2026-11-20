@@ -128,6 +128,9 @@ TEST(RunTaskHistoryTest, RememberPutsTheCommandFirstOnceAndCaps)
     EXPECT_EQ(recent.size(), RunTaskHistory::MAX_RECENT);
     EXPECT_EQ(recent.front(), std::format("cmd{}", RunTaskHistory::MAX_RECENT + 2));
     EXPECT_EQ(RunTaskHistory::remember({}, std::string(RunTaskHistory::MAX_COMMAND_BYTES + 1, 'x')), std::vector<std::string>{});
+    // #4327: config.toml holds no text that isn't valid UTF-8, so such a command isn't remembered.
+    EXPECT_EQ(RunTaskHistory::remember({"htop"}, "./caf\xE9.sh"), std::vector<std::string>{"htop"});
+    EXPECT_EQ(RunTaskHistory::remember({"htop"}, "./caf\xC3\xA9.sh"), (std::vector<std::string>{"./caf\xC3\xA9.sh", "htop"}));
 }
 
 TEST(RunTaskResultTest, ShortNameAndResultLines)

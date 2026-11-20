@@ -6,6 +6,7 @@
 // (test_ProcessPins.cpp).
 
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/Utf8Sanitize.h"
 
 #include <algorithm>
 #include <cstddef>
@@ -48,10 +49,11 @@ class Pins
         return m_Names.empty();
     }
 
-    /// Pins @p name. False when it already was, or can't be (empty, too long, MAX_PINS reached).
+    /// Pins @p name. False when it already was, or can't be (empty, too long, not valid UTF-8, MAX_PINS reached). A
+    /// pin is saved in config.toml, which holds no text that isn't valid UTF-8 (#4327, D1): one couldn't match again.
     bool pin(std::string_view name)
     {
-        if (name.empty() || name.size() > MAX_NAME_BYTES || m_Names.size() >= MAX_PINS)
+        if (name.empty() || name.size() > MAX_NAME_BYTES || m_Names.size() >= MAX_PINS || !Domain::isValidUtf8(name))
         {
             return false;
         }

@@ -38,6 +38,17 @@ namespace
 
 // ========== UserSettings Default Values ==========
 
+#ifndef _WIN32
+// #4327: the text a saved path is written as names that path again, or there is none.
+TEST(Utf8PathTest, AnExactFormNamesThePathAgainOrIsRefused)
+{
+    EXPECT_EQ(Core::pathToUtf8Exact("/home/u/caf\xC3\xA9"), std::optional<std::string>("/home/u/caf\xC3\xA9"));
+    EXPECT_EQ(Core::pathToUtf8Exact("/home/u/caf\xE9"), std::nullopt) << "Latin-1: not valid UTF-8";
+    EXPECT_EQ(Core::pathToUtf8Exact("/home/u/\xE2\x82"), std::nullopt) << "a truncated sequence";
+    EXPECT_EQ(Core::pathToUtf8("/home/u/caf\xE9"), "/home/u/caf\xE9") << "the display form keeps the bytes";
+}
+#endif
+
 TEST(UserSettingsTest, DefaultThemeId)
 {
     const UserSettings settings;

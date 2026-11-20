@@ -3,6 +3,7 @@
 #include "Core/ErrorCodeText.h"
 #include "Core/ReadWholeFile.h"
 #include "Core/Utf8Path.h"
+#include "Domain/Utf8Sanitize.h"
 #include "FallbackTheme.h"
 #include "Theme.h"
 #include "UI/ColorContrast.h"
@@ -794,7 +795,10 @@ namespace
 {
     ThemeInfo info;
     info.path = path;
-    info.id = Core::pathToUtf8(path.stem()); // filename without extension
+    // The file name without its extension, as valid UTF-8 (#4327, D1): the id is saved in config.toml when the theme is
+    // chosen. A name that isn't valid UTF-8 gets U+FFFD in its id, as a lone surrogate does on Windows (#4315), so the
+    // id saved is the one the next run lists again, and the theme is still read by its own path.
+    info.id = Domain::sanitizedUtf8(Core::pathToUtf8(path.stem()));
     // Index through node_view, which is null-safe: table::get() returns nullptr for a missing key, and calling
     // value_or() on that crashed at startup (#1095).
     if (const auto* meta = tbl["meta"].as_table())
