@@ -94,19 +94,18 @@ jobs:
       #    ccache only ever cached the bitcode. Release builds (Linux on every PR, Windows nightly)
       #    still build with LTO.
       #  - ghash: -gcodeview-ghash objects plus lld-link /DEBUG:GHASH, a faster PDB type merge.
-      #  - No C++20 module scanning: nothing here uses modules, and CMake otherwise runs
-      #    clang-scan-deps on every C++ file of every build, cache hit or not.
+      #  - No C++20 module scanning: cmake/CompilerOptions.cmake turns it off for every build (#4347).
       WIN_DEBUG_CI_ARGS: >-
         ${{ startsWith(inputs.os, 'windows') && inputs.build_type == 'debug' &&
-        '-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF' || '' }}
-      # Linux Debug gets the same two of those (#3102): no ThinLTO, whose debug links took up to 224 s,
-      # and no module scanning (658 clang-scan-deps edges a build). Linux Release keeps its LTO, and the
+        '-DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON' || '' }}
+      # Linux Debug gets the same of those (#3102): no ThinLTO, whose debug links took up to 224 s
+      # (module scanning is off everywhere, #4347). Linux Release keeps its LTO, and the
       # sanitizer and coverage jobs, which configure their own presets elsewhere, are unchanged. On the
       # ARM64 Linux runners too (ubuntu-*-arm). static-analysis.yml's Linux configure matches it, so
       # the clang-tidy result cache sees the same compile commands from either.
       LINUX_DEBUG_CI_ARGS: >-
         ${{ startsWith(inputs.os, 'ubuntu') && inputs.build_type == 'debug' &&
-        '-DTASKSMACK_ENABLE_IPO=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF' || '' }}
+        '-DTASKSMACK_ENABLE_IPO=OFF' || '' }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
