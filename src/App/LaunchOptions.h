@@ -12,15 +12,19 @@
 // ticks> --config-dir <directory>": the Standard TaskSmack to wait for, its creation time, and the launching user's
 // config directory. The directory is taken only with a hand-off, so --config-dir alone is ignored, as is a hand-off
 // whose PID or creation time isn't a whole, non-zero number. main.cpp still checks the directory before it uses it
-// (Platform::checkHandedOverConfigDir()): the command line is the less-privileged side's.
+// (Platform::checkHandedOverConfigDir()): the command line is the less-privileged side's. The directory is taken from
+// the argument as the OS gave it (#4310): on Windows the wide text CommandLineToArgvW() splits, so a folder whose name
+// holds a lone surrogate, which has no UTF-8 form, is handed over exactly, not as its U+FFFD twin.
 
 #include "App/TaskManagerLaunch.h"
+#include "Core/Utf8Path.h"
 #include "Domain/StartAtLogin.h"
 #include "Platform/IElevatedRestart.h"
 
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
+#include <filesystem>
 #include <memory>
 #include <optional>
 #include <span>
@@ -35,12 +39,12 @@ namespace App
 /// What the command line asked for.
 struct LaunchOptions
 {
-    std::vector<std::string> ignored;        ///< Arguments TaskSmack doesn't take, for the log
-    bool minimized = false;                  ///< --minimized: start minimized, without taking the focus
-    bool asTaskManager = false;              ///< Windows started TaskSmack in place of Task Manager (#3072)
-    std::optional<std::uint32_t> handoffPid; ///< --handoff: the Standard TaskSmack this elevated one replaces (#2728)
-    std::uint64_t handoffStartTicks = 0;     ///< --handoff's second value: that process's creation time
-    std::optional<std::string> configDir;    ///< --config-dir, with a hand-off: the launching user's (UTF-8)
+    std::vector<std::string> ignored;               ///< Arguments TaskSmack doesn't take, for the log
+    bool minimized = false;                         ///< --minimized: start minimized, without taking the focus
+    bool asTaskManager = false;                     ///< Windows started TaskSmack in place of Task Manager (#3072)
+    std::optional<std::uint32_t> handoffPid;        ///< --handoff: the Standard TaskSmack this elevated one replaces (#2728)
+    std::uint64_t handoffStartTicks = 0;            ///< --handoff's second value: that process's creation time
+    std::optional<std::filesystem::path> configDir; ///< --config-dir, with a hand-off: the launching user's, exactly
 };
 
 namespace Detail
@@ -59,9 +63,13 @@ template<typename Number> [[nodiscard]] std::optional<Number> parsePositive(cons
 }
 } // namespace Detail
 
-/// Reads @p arguments, the program's own path first (argv[0]), which is skipped.
-[[nodiscard]] inline LaunchOptions parseLaunchOptions(std::span<const std::string> arguments)
+/// Reads @p arguments, the program's own path first (argv[0]), which is skipped. @p native is the same arguments as the
+/// OS gave them (Windows: the wide text, which may hold a lone surrogate that the UTF-8 text shows as U+FFFD): a value
+/// that names a path (--config-dir) is taken from it when it has one per argument (#4310); otherwise from the UTF-8 text.
+[[nodiscard]] inline LaunchOptions parseLaunchOptions(std::span<const std::string> arguments,
+                                                      std::span<const std::filesystem::path> native = {})
 {
+    const bool haveNative = native.size() == arguments.size();
     LaunchOptions options;
     const std::span<const std::string> own = arguments.subspan(arguments.empty() ? 0 : 1);
     if (TaskManagerLaunch::isTaskManagerLaunch(own))
@@ -69,8 +77,10 @@ template<typename Number> [[nodiscard]] std::optional<Number> parsePositive(cons
         options.asTaskManager = true; // taskmgr.exe and its arguments: none of them is TaskSmack's
         return options;
     }
-    std::optional<std::string> configDir;
-    // Each argument and the values it takes are consumed from the front of what is left.
+    std::optional<std::filesystem::path> configDir;
+    // Each argument and the values it takes are consumed from the front of what is left; @c index is where it starts
+    // in @p arguments (and @p native).
+    std::size_t index = arguments.size() - own.size();
     for (std::span<const std::string> rest = own; !rest.empty();)
     {
         const std::string& argument = rest.front();
@@ -88,7 +98,7 @@ template<typename Number> [[nodiscard]] std::optional<Number> parsePositive(cons
         }
         else if (argument == Platform::CONFIG_DIR_ARGUMENT && rest.size() >= 2 && !rest[1].empty())
         {
-            configDir = rest[1];
+            configDir = haveNative ? native[index + 1] : Core::utf8ToPath(rest[1]);
             used = 2;
         }
         else
@@ -96,6 +106,7 @@ template<typename Number> [[nodiscard]] std::optional<Number> parsePositive(cons
             options.ignored.push_back(argument);
         }
         rest = rest.subspan(used);
+        index += used;
     }
     if (configDir.has_value())
     {

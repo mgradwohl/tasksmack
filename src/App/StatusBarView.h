@@ -35,17 +35,23 @@ inline constexpr const char* ADMINISTRATOR_CHIP_LABEL = ICON_FA_SHIELD_HALVED " 
 inline constexpr const char* UPDATE_NOTICE_ID = "###UpdateNotice";
 inline constexpr const char* DISMISS_UPDATE_LABEL = ICON_FA_XMARK "##DismissUpdate";
 
+/// The warning that config.toml couldn't be used (#4318): a glyph, its reason in the tooltip; a click opens Settings.
+inline constexpr const char* CONFIG_PROBLEM_LABEL = ICON_FA_TRIANGLE_EXCLAMATION "##ConfigProblem";
+
 /// What the bar shows this frame.
 struct Input
 {
     /// The access chip (#2728), which both platforms show; nullopt draws none (a test's bar).
     std::optional<AccessChip> access;
     bool networkCountersBlocked = false; ///< The network icon: per-process network counters are blocked (#1358)
-    std::string_view processText;        ///< "N processes", with its glyph; empty to leave it out
-    std::string_view intervalText;       ///< "Updates every 1 s", with its glyph; empty to leave it out
-    bool showControls = false;           ///< Settings and Help, when the custom title bar isn't there
-    std::optional<float> fps;            ///< The frame-rate readout, while Render Metrics is on
-    float frameTimeSeconds = 0.0F;       ///< Shown beside it, in milliseconds
+    /// Why config.toml couldn't be used (#4318, UserConfig::fileProblem()): a warning glyph whose tooltip says it, and
+    /// whose click is Action::Settings, where Edit Config File opens it. Empty for none.
+    std::string_view configProblem;
+    std::string_view processText;  ///< "N processes", with its glyph; empty to leave it out
+    std::string_view intervalText; ///< "Updates every 1 s", with its glyph; empty to leave it out
+    bool showControls = false;     ///< Settings and Help, when the custom title bar isn't there
+    std::optional<float> fps;      ///< The frame-rate readout, while Render Metrics is on
+    float frameTimeSeconds = 0.0F; ///< Shown beside it, in milliseconds
     /// The update notice's label (#3093), ending in UPDATE_NOTICE_ID; null for none. Clicking it is
     /// Action::OpenUpdate, its X Action::DismissUpdate.
     const char* updateNotice = nullptr;

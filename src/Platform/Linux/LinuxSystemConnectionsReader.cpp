@@ -1,5 +1,6 @@
 #include "LinuxSystemConnectionsReader.h"
 
+#include "Domain/SingleLineText.h"
 #include "InetSocketTable.h"
 #include "Platform/ISystemConnections.h"
 #include "Platform/PlatformConfig.h"
@@ -31,7 +32,8 @@ namespace Platform
 namespace
 {
 
-/// A process's name from <procRoot>/<pid>/comm, without its newline; empty if it can't be read.
+/// A process's name from <procRoot>/<pid>/comm, without its newline, as well-formed UTF-8 on one line (#4322: shown,
+/// filtered and sorted only; actions go by PID and start time); empty if it can't be read.
 [[nodiscard]] std::string processName(const std::string& procRoot, std::int32_t pid)
 {
     const std::string path = procRoot + "/" + std::to_string(pid) + "/comm";
@@ -41,7 +43,7 @@ namespace
     {
         --len;
     }
-    return {buf.data(), len};
+    return Domain::toSingleLine(std::string_view(buf.data(), len));
 }
 
 } // namespace

@@ -40,6 +40,7 @@ class StatusBarViewRenderTest : public ::testing::Test
         m_Input = {
             .access = std::nullopt,
             .networkCountersBlocked = false,
+            .configProblem = {},
             .processText = PROCESSES,
             .intervalText = INTERVAL,
             .showControls = false,
@@ -123,6 +124,17 @@ TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStand
     press(StatusBarView::ADMINISTRATOR_CHIP_LABEL);
     static_cast<void>(frame());
     EXPECT_EQ(m_LastAction, Action::None);
+}
+
+// #4318: a config.toml TaskSmack couldn't use shows a warning, whose click opens Settings (where Edit Config File is).
+TEST_F(StatusBarViewRenderTest, AConfigProblemShowsAWarningThatOpensSettings)
+{
+    EXPECT_FALSE(frame().contains(ICON_FA_TRIANGLE_EXCLAMATION)) << "none without a problem";
+    m_Input.configProblem = "config.toml couldn't be read: line 2, column 7";
+    EXPECT_TRUE(frame().contains(ICON_FA_TRIANGLE_EXCLAMATION));
+    press(StatusBarView::CONFIG_PROBLEM_LABEL);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::Settings);
 }
 
 TEST_F(StatusBarViewRenderTest, TheFrameRateReadoutShowsWhileRenderMetricsIsOn)

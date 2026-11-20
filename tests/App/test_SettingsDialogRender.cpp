@@ -309,6 +309,22 @@ TEST_F(SettingsDialogRenderTest, UnderWslAutoExplainsWslgsHundredPercent)
     EXPECT_FALSE(text.contains("WSLg reports")) << "a picked scale needs no explanation";
 }
 
+// #4318: why config.toml couldn't be used is said in the Advanced section, above Edit Config File; nothing without one.
+TEST_F(SettingsDialogRenderTest, AConfigProblemIsSaidAboveEditConfigFile)
+{
+    static_cast<void>(openAndSettle());
+    std::string text = runFrameText();
+    EXPECT_FALSE(text.contains("line 2, column 7")) << text;
+
+    m_State.configProblem = "config.toml: line 2, column 7";
+    text = runFrameText();
+    const std::size_t problem = text.find("config.toml: line 2, column 7");
+    ASSERT_NE(problem, std::string::npos) << text;
+    const std::size_t button = text.find("Edit Config File");
+    ASSERT_NE(button, std::string::npos) << text;
+    EXPECT_LT(problem, button) << "said above the button that opens the file";
+}
+
 // #3376 review: a hand-edited scale with no preset (interface_scale = 180) reads Custom (180%), not Auto, and under WSL
 // gets no Auto note, since the setting is in force.
 TEST_F(SettingsDialogRenderTest, AHandEditedScaleReadsCustomAndGetsNoAutoNote)

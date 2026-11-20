@@ -1000,9 +1000,16 @@ void ShellLayer::renderStatusBar()
     // is Windows' way to Administrator.
     const std::optional<StatusBarView::AccessChip> access =
         isAdministratorSession(capabilities) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
+    // config.toml's problem (#4318): a load or a save on its worker may set or clear it; copied only when it changed.
+    if (const std::uint64_t version = UserConfig::get().fileProblemVersion(); version != m_ConfigProblemVersion)
+    {
+        m_ConfigProblemVersion = version;
+        m_ConfigProblem = UserConfig::get().fileProblem();
+    }
     const StatusBarView::Action action = StatusBarView::render({
         .access = access,
         .networkCountersBlocked = capabilities.networkCountersBlocked,
+        .configProblem = m_ConfigProblem,
         .processText = m_StatusProcessText,
         .intervalText = m_StatusIntervalText,
         .showControls = !m_Host->isBorderless(),

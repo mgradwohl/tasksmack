@@ -1,5 +1,6 @@
 #include "UserConfig.h"
 
+#include "App/ConfigFileProblem.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowMeter.h"
@@ -8,6 +9,7 @@
 #include "App/UserConfigHelpers.h"
 #include "Core/ConfigDirOverride.h"
 #include "Core/ErrorCodeText.h"
+#include "Core/ReadWholeFile.h"
 #include "Core/Utf8Path.h"
 #include "Core/WindowConstants.h"
 #include "Core/WindowGeometry.h"
@@ -26,6 +28,7 @@
 #include <spdlog/spdlog.h>
 #include <toml++/toml.hpp>
 
+#include <atomic>
 #include <cstddef>
 #include <cstdint>
 #include <cstdlib>
@@ -954,11 +957,13 @@ void UserConfig::load()
         {
             readSettings(toml::parse(**text, Core::pathToUtf8(m_ConfigPath)), m_Settings);
             m_Synced = m_Settings;
+            setFileProblem({});
             spdlog::info("Loaded config from {}", Core::pathToUtf8(m_ConfigPath));
         }
         catch (const toml::parse_error& err)
         {
             spdlog::error("Failed to parse config file: {}", err.what());
+            setFileProblem(ConfigFileProblem::couldNotParse(Core::pathToUtf8(m_ConfigPath), **text, err)); // #4318
         }
         return;
     }
@@ -979,16 +984,45 @@ void UserConfig::load()
         return;
     }
 
+    // Read by the path itself, then parsed (#4315): parse_file() opened the UTF-8 name, which for a folder holding a
+    // lone surrogate names another file, or none.
+    const std::optional<std::string> text = Core::readWholeFile(m_ConfigPath);
+    if (!text.has_value())
+    {
+        spdlog::error("Not reading {}: it couldn't be opened; using defaults", Core::pathToUtf8(m_ConfigPath));
+        setFileProblem(ConfigFileProblem::couldNotOpen(Core::pathToUtf8(m_ConfigPath))); // #4318
+        return;
+    }
     try
     {
-        const auto config = toml::parse_file(Core::pathToUtf8(m_ConfigPath));
+        const auto config = toml::parse(*text, Core::pathToUtf8(m_ConfigPath));
         readSettings(config, m_Settings);
         m_Synced = m_Settings;
+        setFileProblem({});
         spdlog::info("Loaded config from {}", Core::pathToUtf8(m_ConfigPath));
     }
     catch (const toml::parse_error& err)
     {
+        // The file is kept as it is (#1122), and save() won't write over it, so the user is told, not just the log
+        // (#4318): the status bar and Settings show this until it is fixed.
         spdlog::error("Failed to parse config file: {}", err.what());
+        setFileProblem(ConfigFileProblem::couldNotParse(Core::pathToUtf8(m_ConfigPath), *text, err));
+    }
+}
+
+std::string UserConfig::fileProblem() const
+{
+    const std::scoped_lock lock(m_FileProblemMutex);
+    return m_FileProblem;
+}
+
+void UserConfig::setFileProblem(std::string problem)
+{
+    const std::scoped_lock lock(m_FileProblemMutex);
+    if (m_FileProblem != problem)
+    {
+        m_FileProblem = std::move(problem);
+        m_FileProblemVersion.fetch_add(1, std::memory_order_release);
     }
 }
 
@@ -1156,14 +1190,23 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     }
     if (fileExists)
     {
+        // By the path itself, as load() reads it (#4315).
+        const std::optional<std::string> existing = Core::readWholeFile(destination);
+        if (!existing.has_value())
+        {
+            spdlog::error("Not saving settings: {} can't be opened; fix or remove it", Core::pathToUtf8(m_ConfigPath));
+            setFileProblem(ConfigFileProblem::couldNotOpen(Core::pathToUtf8(m_ConfigPath))); // #4318
+            return false;
+        }
         try
         {
-            document = toml::parse_file(Core::pathToUtf8(destination));
+            document = toml::parse(*existing, Core::pathToUtf8(m_ConfigPath));
         }
         catch (const toml::parse_error& err)
         {
             spdlog::error(
                 "Not saving settings: {} can't be read or parsed ({}); fix or remove it", Core::pathToUtf8(m_ConfigPath), err.what());
+            setFileProblem(ConfigFileProblem::couldNotParse(Core::pathToUtf8(m_ConfigPath), *existing, err)); // #4318
             return false;
         }
         // Fail closed: a file whose permissions can't be read must not be replaced by one with the
@@ -1363,6 +1406,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
 
     stagingGuard.published();
     m_Synced = settings;
+    setFileProblem({}); // the file is TaskSmack's again (#4318)
 
     // Reset so that the next load() call re-reads from disk (e.g., for test round-trips
     // or any future live-reload use case).
@@ -1421,6 +1465,7 @@ bool UserConfig::writeIntoHandedOver(const Platform::IHandedOverFolder& folder, 
         {
             spdlog::error(
                 "Not saving settings: {} can't be read or parsed ({}); fix or remove it", Core::pathToUtf8(m_ConfigPath), err.what());
+            setFileProblem(ConfigFileProblem::couldNotParse(Core::pathToUtf8(m_ConfigPath), **existing, err)); // #4318
             return false;
         }
     }
@@ -1435,6 +1480,7 @@ bool UserConfig::writeIntoHandedOver(const Platform::IHandedOverFolder& folder, 
         return false;
     }
     m_Synced = settings;
+    setFileProblem({}); // #4318
     m_IsLoaded = false; // the next load() reads it afresh, as after a save by path
     return true;
 }

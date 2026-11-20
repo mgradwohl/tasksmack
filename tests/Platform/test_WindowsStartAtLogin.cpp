@@ -309,6 +309,43 @@ TEST_F(WindowsStartAtLoginTest, WriteThenReadRoundTripsAQuotedPathWithSpaces)
               Domain::StartAtLogin::State::On);
 }
 
+// #4310: Settings builds the entry from read()'s executable, which is UTF-8 and shows a lone surrogate in the image's
+// path as U+FFFD. Written from that text, the Run value named the U+FFFD twin, a file that doesn't exist, while
+// Settings read it back as on for this copy. This copy's own entry is written from the exact wide image.
+TEST_F(WindowsStartAtLoginTest, ALoneSurrogateImageIsWrittenByItsExactPath)
+{
+    std::wstring image = L"D:\\Tools\\Task";
+    image.push_back(static_cast<wchar_t>(0xD800));
+    image += L"\\TaskSmack.exe";
+    fake().module = image;
+
+    auto read = entry().read();
+    ASSERT_TRUE(read.has_value()) << read.error();
+    EXPECT_TRUE(read->executable.contains("\xEF\xBF\xBD")) << "the display text shows U+FFFD";
+    ASSERT_TRUE(entry().write(Domain::StartAtLogin::runCommand(read->executable)).has_value());
+    EXPECT_EQ(fake().values.at(L"TaskSmack").second, stringBytes(L"\"" + image + L"\" --minimized")) << "the exact image";
+
+    read = entry().read();
+    ASSERT_TRUE(read.has_value()) << read.error();
+    EXPECT_EQ(Domain::StartAtLogin::classify(read->command, read->executable, read->installed, read->caseInsensitivePaths).state,
+              Domain::StartAtLogin::State::On);
+
+    // A value naming the U+FFFD twin (as the old write left it) reads the same as UTF-8, but isn't this copy's.
+    std::wstring twin = image;
+    twin[13] = static_cast<wchar_t>(0xFFFD);
+    fake().values[L"TaskSmack"] = {REG_SZ, stringBytes(L"\"" + twin + L"\" --minimized")};
+    read = entry().read();
+    ASSERT_TRUE(read.has_value()) << read.error();
+    EXPECT_NE(Domain::StartAtLogin::classify(read->command, read->executable, read->installed, read->caseInsensitivePaths).state,
+              Domain::StartAtLogin::State::On);
+}
+
+TEST_F(WindowsStartAtLoginTest, AnotherCommandThatIsntUtf8IsRefusedNotWrittenEmpty)
+{
+    EXPECT_FALSE(entry().write("\"C:\\a\xFF.exe\" --minimized").has_value());
+    EXPECT_FALSE(fake().values.contains(L"TaskSmack"));
+}
+
 TEST_F(WindowsStartAtLoginTest, AnExpandStringIsReadAndAValueThatIsntTextReadsAsEmpty)
 {
     fake().values[L"TaskSmack"] = {REG_EXPAND_SZ, stringBytes(L"%LOCALAPPDATA%\\TaskSmack.exe")};

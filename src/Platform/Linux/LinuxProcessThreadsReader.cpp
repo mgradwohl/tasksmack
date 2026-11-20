@@ -1,5 +1,6 @@
 #include "LinuxProcessThreadsReader.h"
 
+#include "Domain/SingleLineText.h"
 #include "LinuxOsInfo.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
@@ -157,7 +158,9 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
         }
         result.threads.push_back({
             .tid = *tid,
-            .name = std::string(fields->comm),
+            // Shown, filtered and sorted only (actions go by tid): well-formed UTF-8 on one line (#4322), as a
+            // 15-byte comm can end mid-character and a thread may name itself with a newline (#919).
+            .name = Domain::toSingleLine(fields->comm),
             .state = fields->state,
             .userTicks = fields->userTime,
             .systemTicks = fields->systemTime,
