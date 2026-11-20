@@ -54,6 +54,8 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from typing import Any
 
+# Bump it when a field changes meaning or goes away: every finished release is then generated again, not
+# copied. A new field needs no bump as long as docs/release/dashboard.js copes with a file that lacks it.
 SCHEMA = 1
 REPO_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_REPO = "mgradwohl/tasksmack"

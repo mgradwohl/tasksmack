@@ -189,10 +189,6 @@ h3 {
   max-width: 68ch;
 }
 
-.num {
-  font-variant-numeric: tabular-nums;
-}
-
 section {
   display: flex;
   flex-direction: column;
@@ -660,26 +656,6 @@ details[open] > summary .chevron {
   fill: var(--closed-wash);
 }
 
-.f-todo {
-  fill: var(--phase-todo);
-}
-
-.f-progress {
-  fill: var(--phase-progress);
-}
-
-.f-review {
-  fill: var(--phase-review);
-}
-
-.f-red {
-  fill: var(--critical);
-}
-
-.f-track {
-  fill: var(--hairline);
-}
-
 .dot {
   stroke: var(--surface);
   stroke-width: 2;
@@ -791,13 +767,6 @@ details[open] > summary .chevron {
   padding-left: 12px;
 }
 
-.two-up {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 24px 40px;
-  align-items: start;
-}
-
 .block {
   display: flex;
   flex-direction: column;
@@ -853,10 +822,6 @@ footer {
   gap: 6px;
 }
 
-.stale {
-  opacity: 0.55;
-}
-
 /* Four blocks in a ruled two-by-two: faint lines between the columns and between the rows. */
 .quad {
   display: grid;
@@ -884,7 +849,6 @@ footer {
 
 @media (max-width: 720px) {
   .summary,
-  .two-up,
   .quad {
     grid-template-columns: minmax(0, 1fr);
   }
