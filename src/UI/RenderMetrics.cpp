@@ -1,6 +1,7 @@
 #include "RenderMetrics.h"
 
 #include "Domain/SamplerTimingBoard.h"
+#include "UI/Clipboard.h"
 #include "UI/FrameOutline.h"
 #include "UI/LineLayout.h"
 
@@ -165,7 +166,7 @@ void RenderMetrics::renderOverlay(bool* open)
 
     if (ImGui::Button("Copy CSV"))
     {
-        ImGui::SetClipboardText(toCsv().c_str());
+        UI::setClipboardUtf8(toCsv());
     }
 
     ImGui::Separator();

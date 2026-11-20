@@ -76,7 +76,8 @@ class HandleFileSink final : public spdlog::sinks::base_sink<std::mutex>
     void sink_it_(const spdlog::details::log_msg& msg) override
     {
         spdlog::memory_buf_t formatted;
-        formatter_->format(msg, formatted);
+        std::string storage; // the sanitized text, when the message had ill-formed UTF-8 (#4326)
+        formatter_->format(Core::wellFormedMessage(msg, storage), formatted);
         DWORD written = 0;
         static_cast<void>(WriteFile(m_File.get(), formatted.data(), static_cast<DWORD>(formatted.size()), &written, nullptr));
     }
@@ -226,7 +227,8 @@ class FdFileSink final : public spdlog::sinks::base_sink<std::mutex>
     void sink_it_(const spdlog::details::log_msg& msg) override
     {
         spdlog::memory_buf_t formatted;
-        formatter_->format(msg, formatted);
+        std::string storage; // the sanitized text, when the message had ill-formed UTF-8 (#4326)
+        formatter_->format(Core::wellFormedMessage(msg, storage), formatted);
         const char* data = formatted.data();
         std::size_t left = formatted.size();
         while (left > 0)

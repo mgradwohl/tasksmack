@@ -3245,6 +3245,25 @@ TEST(FitSeriesNameTest, CutsOnlyAtCodePointBoundaries)
     EXPECT_EQ(fitSeriesName("\u00e9\u00e9\u00e9", 30.0F, tenPerCodePoint), "\u00e9\u00e9\u00e9");
 }
 
+TEST(FitSeriesNameTest, NeverCutsBetweenALetterAndItsCombiningMark)
+{
+    // "Cafe" + U+0301 (NFD e acute) + " menu.pdf": tenPerCodePoint counts the ellipsis as one.
+    const std::string_view nfd = "Cafe\xCC\x81 menu.pdf";
+    EXPECT_EQ(fitSeriesName(nfd, 50.0F, tenPerCodePoint), "Caf\u2026");
+    EXPECT_EQ(fitSeriesName(nfd, 60.0F, tenPerCodePoint), "Cafe\xCC\x81\u2026");
+}
+
+TEST(FitSeriesNameTest, NeverCutsInsideAFlagOrAJoinerSequence)
+{
+    const std::string_view flag = "ab\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+                                  "cdefgh";
+    EXPECT_EQ(fitSeriesName(flag, 40.0F, tenPerCodePoint), "ab\u2026");
+    EXPECT_EQ(fitSeriesName(flag, 50.0F, tenPerCodePoint), "ab\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\u2026");
+    const std::string_view family = "A\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9"
+                                    "BCDEFG";
+    EXPECT_EQ(fitSeriesName(family, 30.0F, tenPerCodePoint), "A\u2026");
+}
+
 // ========== Grid cells' time axis (#1206) ==========
 
 TEST(HistoryChartXAxisFlagsTest, GridCellsDropTheTimeTickLabelsOnly)

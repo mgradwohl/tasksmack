@@ -10,6 +10,7 @@
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Support/CiRealSystem.h"
 #include "Support/Junction.h"
 
 #include <gtest/gtest.h>
@@ -23,6 +24,7 @@
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -40,6 +42,7 @@
 #endif
 #include <windows.h>
 #include <shellapi.h>
+#include <shlobj.h>
 // clang-format on
 
 namespace Platform::Windows::ElevatedRestart
@@ -1003,6 +1006,42 @@ TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderUnderAJunctionIsNotMade)
     EXPECT_TRUE(held.error().contains("its parent can't be held")) << held.error();
     EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
     EXPECT_TRUE(std::filesystem::is_empty(target)) << "no TaskSmack folder made behind the junction";
+}
+
+// currentUserProfileDirectory() (#4371): the anchor an elevated session's own config folder must sit inside. Read only: it
+// asks the token's profile folder (HKLM's ProfileList) and changes nothing.
+TEST(ElevatedRestartOwnConfigDirTest, TheCurrentUserProfileDirectoryIsAnAbsoluteRealFolderHoldingRoamingAppData)
+{
+    const auto profile = currentUserProfileDirectory();
+    ASSERT_TRUE(profile.has_value()) << "this account's profile folder wasn't read";
+    EXPECT_TRUE(profile->is_absolute()) << WinString::wideToUtf8(profile->native());
+    EXPECT_FALSE(profile->native().empty());
+    EXPECT_EQ(profile->native().find(L'\0'), std::wstring::npos) << "the buffer's padding was trimmed off";
+    EXPECT_TRUE(std::filesystem::is_directory(*profile)) << WinString::wideToUtf8(profile->native());
+
+    wchar_t* roamingRaw = nullptr;
+    const HRESULT result = SHGetKnownFolderPath(FOLDERID_RoamingAppData, 0, nullptr, &roamingRaw);
+    const std::unique_ptr<wchar_t, decltype(&::CoTaskMemFree)> owned(roamingRaw, &::CoTaskMemFree);
+    ASSERT_TRUE(SUCCEEDED(result) && owned != nullptr) << "the roaming AppData folder wasn't read";
+    EXPECT_TRUE(pathIsInside(owned.get(), *profile)) << "the roaming AppData " << WinString::wideToUtf8(owned.get())
+                                                     << " isn't inside the profile " << WinString::wideToUtf8(profile->native());
+}
+
+// holdOwnConfigDir() (#4371) makes %APPDATA%\TaskSmack when it isn't there, so it runs on a disposable CI runner only.
+class CiRealSystemOwnConfigDirTest : public TestSupport::CiRealSystemTest
+{};
+
+TEST_F(CiRealSystemOwnConfigDirTest, HoldOwnConfigDirHoldsRoamingAppDataTaskSmackInsideTheProfile)
+{
+    const auto profile = currentUserProfileDirectory();
+    ASSERT_TRUE(profile.has_value());
+    const OwnConfigDir own = holdOwnConfigDir();
+    ASSERT_TRUE(own.held.has_value()) << own.held.error();
+    EXPECT_EQ(own.path.filename(), std::filesystem::path(L"TaskSmack"));
+    EXPECT_TRUE(pathIsInside(own.path, *profile)) << WinString::wideToUtf8(own.path.native());
+    EXPECT_TRUE(std::filesystem::is_directory(own.path));
+    ASSERT_NE(own.held->get(), nullptr);
+    EXPECT_EQ((*own.held)->path(), own.path) << "the folder held is the one named";
 }
 
 } // namespace

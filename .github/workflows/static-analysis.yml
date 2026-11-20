@@ -55,7 +55,7 @@ jobs:
       # its clang-tidy run analyzes (#2047), so both compute the same per-file result-cache keys
       # from the same compile commands.
       - name: Configure
-        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF -DTASKSMACK_ENABLE_IPO=OFF -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+        run: cmake --preset debug -DPython3_EXECUTABLE="$(which python)" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF -DTASKSMACK_ENABLE_IPO=OFF
 
       # The generated headers the sources include: the GL loader, and the eBPF UDP counter's object (#3366).
       - name: Build GLAD
@@ -135,7 +135,7 @@ jobs:
         # Strawberry Perl puts on the image PATH. The other options match ci.yml's Windows debug
         # build, whose tree its clang-tidy run analyzes (#1875), so both compute the same per-file
         # result-cache keys from the same compile commands.
-        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF -DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON -DCMAKE_CXX_SCAN_FOR_MODULES=OFF
+        run: cmake --preset win-debug -DPython3_EXECUTABLE="$env:pythonLocation\python.exe" -DTASKSMACK_ENABLE_CCACHE=OFF -DTASKSMACK_ENABLE_PCH=OFF -DTASKSMACK_ENABLE_IPO=OFF -DTASKSMACK_ENABLE_GHASH=ON
 
       - name: Build GLAD
         shell: pwsh

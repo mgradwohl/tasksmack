@@ -344,9 +344,11 @@ set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 
 # The NSIS installer's upgrade step (#3276), cmake/CPackProjectConfig.cmake.in: it runs the old uninstaller with
 # /TASKSMACK_UPGRADE when it installs to the same folder, and the two steps above then keep their values; run
-# against fakes, through those steps' interpreters. Pure Python, on every platform.
+# against fakes, through those steps' interpreters. It also gates the old uninstaller on its folder being admin-only
+# or the file validly signed (#4444) and keeps an upgrade in its folder (#4445), and on Windows runs
+# cmake/nsis/TaskSmackUninstallerTrust.ps1 on temporary folders. Pure Python, no install, no elevation, no makensis.
 add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
-set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
+set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 180)
 
 # The installer is a Unicode NSIS target and has no Add-to-PATH option (#4300): CPACK_NSIS_DEFINES starts with
 # `Unicode true` and CPACK_NSIS_MODIFY_PATH is gone. Pure Python, on every platform.
@@ -418,6 +420,11 @@ add_test(NAME BenchmarkBaselinesScript
 add_test(NAME BenchAcrossLaunchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_across_launches.py)
 
+# tools/docs-site-smoke.py's local server (#4528): the docs folder at /tasksmack/, with no symlink (which needed a
+# privilege on Windows); a stub stands in for Playwright.
+add_test(NAME DocsSiteSmokeServerScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_site_smoke.py)
+
 # tools/check-no-reverts.py, the revert guard (#3986, after #3972): a change whose diff undoes a recent merge is
 # found, on scratch git repositories.
 add_test(NAME CheckNoRevertsScript
@@ -478,6 +485,11 @@ add_test(NAME CheckCachePruneTriggersScript
 # Heavy Checks' push-scope must cover everything benchmarks/*.cpp includes, and the build settings (#4195).
 add_test(NAME HeavyChecksPushScopeScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_heavy_checks_push_scope.py)
+
+# tools/release-dashboard.py works out the Release Command Center's data from what the GitHub API returned, and
+# its output for a made-up repository is the fixture docs/release/ is tested against (#4524).
+add_test(NAME ReleaseDashboardScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_release_dashboard.py)
 
 # tools/compose-release-notes.py writes a release's notes over release.yml's placeholder (#3144).
 add_test(NAME ComposeReleaseNotesScript
@@ -658,6 +670,7 @@ set(COMMON_TEST_SOURCES
     # Linux desktop-entry icon lookup (#1800): pure std::filesystem, run on every platform
     Platform/test_DesktopEntryIcons.cpp
     UI/test_ChartWidgets.cpp
+    UI/test_Clipboard.cpp
     UI/test_ChartGridLayout.cpp
     UI/test_HistoryPlotHeight.cpp
     UI/test_FillPlotLayout.cpp
@@ -1085,6 +1098,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_UdpByteCounter.cpp  # the eBPF UDP byte counter root loads (#3366, #3580)
     Platform/test_LinuxUdpTrafficCollector.cpp  # root's in-process UDP collector (#3580)
     Platform/test_SyscallTrace.cpp
+    Platform/test_RunProgramLookup.cpp  # Run new task finds the program as the account it runs as (#4532, #4400)
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_RootDumpFolder.cpp  # a root session's own default dump folder (#4181)
     Platform/test_DetachedSpawn.cpp

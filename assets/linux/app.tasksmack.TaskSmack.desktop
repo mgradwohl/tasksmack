@@ -10,4 +10,4 @@ Terminal=false
 Categories=System;Monitor;
 Keywords=system;monitor;task;manager;cpu;memory;process;
 StartupNotify=true
-StartupWMClass=TaskSmack
+StartupWMClass=app.tasksmack.TaskSmack

@@ -48,6 +48,7 @@
 #ifndef _WIN32
 #include <csignal>
 
+#include <pwd.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <sys/wait.h>
@@ -2965,6 +2966,261 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderSwappedForALinkIsNotSavedIn
     EXPECT_EQ(parsed(real / "config.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "nothing saved through the link";
     std::filesystem::remove(m_TempDir, ec);
     std::filesystem::rename(real, m_TempDir, ec);
+}
+/// Puts Core::ConfigDirOverride back as it was when it dies, so a failed assertion in a test that marked a
+/// less-privileged folder doesn't leave the next test running as root for a user (#4542 review).
+class RestoreOverrideOnExit
+{
+  public:
+    RestoreOverrideOnExit() : m_Previous(Core::ConfigDirOverride::active())
+    {}
+    ~RestoreOverrideOnExit()
+    {
+        Core::ConfigDirOverride::setActiveForTesting(m_Previous);
+        UserConfig::get().setAfterFolderCheckForTesting(nullptr);
+    }
+    RestoreOverrideOnExit(const RestoreOverrideOnExit&) = delete;
+    RestoreOverrideOnExit& operator=(const RestoreOverrideOnExit&) = delete;
+    RestoreOverrideOnExit(RestoreOverrideOnExit&&) = delete;
+    RestoreOverrideOnExit& operator=(RestoreOverrideOnExit&&) = delete;
+
+  private:
+    std::optional<std::filesystem::path> m_Previous;
+};
+
+// #4542: run as root for a user, the save is relative to the config folder it checked. Swapping that folder for a link
+// between the check and the write (the race a by-path save had) sends nothing to the link's target: the file is
+// written into the folder that was checked, wherever it now is.
+TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveGoesToTheFolderCheckedNotALinkSwappedIn)
+{
+    const std::filesystem::path folder = m_TempDir / "cfg";
+    const std::filesystem::path moved = m_TempDir / "cfg.moved";
+    const std::filesystem::path elsewhere = m_TempDir / "elsewhere";
+    std::filesystem::create_directories(folder);
+    std::filesystem::create_directories(elsewhere);
+    writeFile(folder / "config.toml", "kept_key = 7\n[theme]\nid = \"arctic-fire\"\n");
+    writeFile(elsewhere / "config.toml", "decoy_key = 1\n");
+
+    const RestoreOverrideOnExit restore;
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    config.resetConfigPathForTesting(folder / "config.toml");
+    config.load();
+    config.settings().themeId = "mocha";
+    bool swapped = false;
+    config.setAfterFolderCheckForTesting(
+        [&]
+        {
+            std::error_code moveError;
+            std::filesystem::rename(folder, moved, moveError);
+            std::error_code linkError;
+            std::filesystem::create_directory_symlink(elsewhere, folder, linkError);
+            swapped = !moveError && !linkError;
+        });
+    config.save();
+    config.resetConfigPathForTesting(m_ConfigPath);
+
+    ASSERT_TRUE(swapped);
+    const toml::table there = parsed(elsewhere / "config.toml");
+    EXPECT_EQ(there["decoy_key"].value<int>(), 1) << "the file where the link points is left alone";
+    EXPECT_FALSE(there.contains("theme")) << "nothing written where the link points";
+    const toml::table saved = parsed(moved / "config.toml");
+    EXPECT_EQ(saved["theme"]["id"].value<std::string>(), "mocha") << "saved in the folder checked";
+    EXPECT_EQ(saved["kept_key"].value<int>(), 7) << "merged into the file read from the folder checked, not the decoy";
+    EXPECT_FALSE(saved.contains("decoy_key"));
+    for (const auto& dir : {moved, elsewhere})
+    {
+        for (const auto& entry : std::filesystem::directory_iterator(dir))
+        {
+            EXPECT_FALSE(entry.path().filename().string().starts_with(".tasksmack-config.")) << "no staging file left in " << dir;
+        }
+    }
+}
+
+// #4542: the descriptor save keeps what the save by path keeps: a new config is owner-only, an existing one keeps its
+// mode, and a link or a hard link at config.toml is never read or replaced.
+TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveKeepsModesAndRefusesLinks)
+{
+    const RestoreOverrideOnExit restore;
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+
+    const std::filesystem::path fresh = m_TempDir / "fresh";
+    std::filesystem::create_directories(fresh);
+    config.resetConfigPathForTesting(fresh / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    struct stat info = {};
+    ASSERT_EQ(::stat((fresh / "config.toml").c_str(), &info), 0) << "a new config is written";
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+    EXPECT_EQ(info.st_uid, ::geteuid());
+
+    const std::filesystem::path kept = m_TempDir / "kept";
+    std::filesystem::create_directories(kept);
+    writeFile(kept / "config.toml", "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::permissions(kept / "config.toml", std::filesystem::perms(0644));
+    config.resetConfigPathForTesting(kept / "config.toml");
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+    ASSERT_EQ(::stat((kept / "config.toml").c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777U, 0644U) << "an existing config keeps its mode";
+    EXPECT_EQ(parsed(kept / "config.toml")["theme"]["id"].value<std::string>(), "mocha");
+
+    const std::filesystem::path linked = m_TempDir / "linked";
+    std::filesystem::create_directories(linked);
+    writeFile(m_TempDir / "secret.toml", "[theme]\nid = \"arctic-fire\"\n");
+    std::error_code ec;
+    std::filesystem::create_hard_link(m_TempDir / "secret.toml", linked / "config.toml", ec);
+    ASSERT_FALSE(ec) << ec.message();
+    config.resetConfigPathForTesting(linked / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(parsed(m_TempDir / "secret.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "a hard link is left alone";
+    EXPECT_EQ(std::filesystem::hard_link_count(linked / "config.toml"), 2U) << "and isn't replaced";
+    EXPECT_FALSE(config.fileProblem().empty()) << "and the user is told the save was refused (#4318)";
+
+    // The VirusTotal API key's file is the user's alone (#3094): an existing 0644 config becomes 0600.
+    config.resetConfigPathForTesting(kept / "config.toml");
+    config.load();
+    config.settings().virusTotalApiKey = "0123456789abcdef";
+    config.save();
+    ASSERT_EQ(::stat((kept / "config.toml").c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+
+    config.resetConfigPathForTesting(m_ConfigPath);
+}
+
+// #4542 review: at config.toml, a symlink, a FIFO or a file far too large to be settings is refused, never read (a
+// FIFO would block, a sparse terabyte would exhaust memory), and the user is told.
+TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveRefusesALinkAFifoAndAHugeFile)
+{
+    const RestoreOverrideOnExit restore;
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    writeFile(m_TempDir / "target.toml", "[theme]\nid = \"arctic-fire\"\n");
+
+    const auto refused = [&](const std::filesystem::path& dir)
+    {
+        config.resetConfigPathForTesting(dir / "config.toml");
+        config.settings().themeId = "mocha";
+        config.save();
+        const bool told = !config.fileProblem().empty();
+        config.resetConfigPathForTesting(m_ConfigPath);
+        return told;
+    };
+
+    const std::filesystem::path linkDir = m_TempDir / "link";
+    std::filesystem::create_directories(linkDir);
+    std::filesystem::create_symlink(m_TempDir / "target.toml", linkDir / "config.toml");
+    EXPECT_TRUE(refused(linkDir));
+    EXPECT_EQ(parsed(m_TempDir / "target.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through";
+
+    const std::filesystem::path fifoDir = m_TempDir / "fifo";
+    std::filesystem::create_directories(fifoDir);
+    ASSERT_EQ(::mkfifo((fifoDir / "config.toml").c_str(), 0600), 0);
+    EXPECT_TRUE(refused(fifoDir)) << "refused at once, not blocked on the FIFO";
+
+    const std::filesystem::path hugeDir = m_TempDir / "huge";
+    std::filesystem::create_directories(hugeDir);
+    writeFile(hugeDir / "config.toml", "");
+    std::filesystem::resize_file(hugeDir / "config.toml", 5U * 1024U * 1024U); // sparse: no real space
+    EXPECT_TRUE(refused(hugeDir));
+    EXPECT_EQ(std::filesystem::file_size(hugeDir / "config.toml"), 5U * 1024U * 1024U) << "left as it was";
+}
+
+// #4542 review: every step of the descriptor save that fails leaves the config as it was and no staging file behind,
+// as AnyStepOfSaveThatFailsLeavesTheConfigIntact checks for the save by path.
+TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveThatFailsAtAnyStepLeavesTheConfigIntact)
+{
+    using Step = UserConfig::SaveStep;
+    const RestoreOverrideOnExit restore;
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    const std::string original = "kept_key = 7\n[theme]\nid = \"arctic-fire\"\n";
+    for (const Step step :
+         {Step::OwnerStat, Step::AclRead, Step::CreateStaging, Step::Write, Step::Chown, Step::Acl, Step::Chmod, Step::Close, Step::Rename})
+    {
+        const std::filesystem::path dir = m_TempDir / ("step" + std::to_string(static_cast<int>(step)));
+        std::filesystem::create_directories(dir);
+        writeFile(dir / "config.toml", original);
+        config.resetConfigPathForTesting(dir / "config.toml");
+        config.load();
+        config.settings().themeId = "mocha";
+        config.failSaveStepForTesting(step, EIO);
+        config.save();
+        config.resetConfigPathForTesting(m_ConfigPath); // also clears the failing step
+        EXPECT_EQ(readFile(dir / "config.toml"), original) << "step " << static_cast<int>(step);
+        for (const auto& entry : std::filesystem::directory_iterator(dir))
+        {
+            EXPECT_FALSE(entry.path().filename().string().starts_with(".tasksmack-config.")) << "step " << static_cast<int>(step);
+        }
+    }
+}
+
+/// As root only (CI's root pass, tools/common.sh root_test_filter; #4549): the run-as-root-for-a-user save hands what it
+/// makes to the folder's owner for real, which the unprivileged tests above can't see.
+class UserConfigRootTest : public UserConfigSaveLoadFixture
+{
+  protected:
+    void SetUp() override
+    {
+        UserConfigSaveLoadFixture::SetUp(); // first, so TearDown restores the path it saved even after a skip
+        if (::geteuid() != 0)
+        {
+            GTEST_SKIP() << "needs root: CI runs this suite under sudo";
+        }
+    }
+};
+
+TEST_F(UserConfigRootTest, ANewConfigIsTheFolderOwnersAndAnotherAccountsIsRefused)
+{
+    // Another account to own the folder: the one sudo names (CI's runner user), else nobody.
+    uid_t account = 65534;
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - a test, one thread
+    if (const char* sudoUid = std::getenv("SUDO_UID"); sudoUid != nullptr && std::atoi(sudoUid) > 0)
+    {
+        account = static_cast<uid_t>(std::atoi(sudoUid));
+    }
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - a test, one thread
+    const passwd* entry = ::getpwuid(account);
+    if (entry == nullptr)
+    {
+        GTEST_SKIP() << "no passwd entry for uid " << account;
+    }
+    const gid_t group = entry->pw_gid;
+    const RestoreOverrideOnExit restore;
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+
+    const std::filesystem::path fresh = m_TempDir / "fresh";
+    std::filesystem::create_directories(fresh);
+    ASSERT_EQ(::chown(fresh.c_str(), account, group), 0);
+    config.resetConfigPathForTesting(fresh / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    struct stat info = {};
+    ASSERT_EQ(::stat((fresh / "config.toml").c_str(), &info), 0) << "the new config is written";
+    EXPECT_EQ(info.st_uid, account) << "the folder owner's, not root's (#2121, #4542)";
+    EXPECT_EQ(info.st_gid, group);
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+    for (const auto& file : std::filesystem::directory_iterator(fresh))
+    {
+        EXPECT_FALSE(file.path().filename().string().starts_with(".tasksmack-config.")) << "no staging file left";
+    }
+
+    // An existing config of another account's (root's here) in their folder is never read and rewritten as root.
+    const std::filesystem::path foreign = m_TempDir / "foreign";
+    std::filesystem::create_directories(foreign);
+    ASSERT_EQ(::chown(foreign.c_str(), account, group), 0);
+    const std::string original = "[theme]\nid = \"arctic-fire\"\n";
+    writeFile(foreign / "config.toml", original); // root's: made by this root process
+    config.resetConfigPathForTesting(foreign / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_FALSE(config.fileProblem().empty()) << "the user is told the save was refused";
+    EXPECT_EQ(readFile(foreign / "config.toml"), original) << "left as it was";
+    config.resetConfigPathForTesting(m_ConfigPath);
 }
 #endif
 

@@ -46,9 +46,11 @@ struct Account
     std::vector<gid_t> groups; ///< Every group the user is in, the primary included (getgrouplist()); empty: unknown
 };
 
-/// Variables kept from TaskSmack's own environment: how to reach the user's display and their locale.
+/// Variables kept from TaskSmack's own environment: how to reach the user's display and their locale, every one of
+/// glibc's locale categories included (#4336: LC_CTYPE, LC_TIME and the rest were dropped, so xdg-open and the
+/// programs it starts lost the user's character set and formats; RootEnvironment keeps the whole LC_ prefix).
 /// Everything else (LD_PRELOAD, SUDO_*, root's HOME) is dropped.
-inline constexpr std::array<std::string_view, 12> KEPT_VARIABLES{
+inline constexpr std::array<std::string_view, 24> KEPT_VARIABLES{
     "PATH",
     "DISPLAY",
     "WAYLAND_DISPLAY",
@@ -56,6 +58,18 @@ inline constexpr std::array<std::string_view, 12> KEPT_VARIABLES{
     "LANG",
     "LANGUAGE",
     "LC_ALL",
+    "LC_CTYPE",
+    "LC_NUMERIC",
+    "LC_TIME",
+    "LC_COLLATE",
+    "LC_MONETARY",
+    "LC_MESSAGES",
+    "LC_PAPER",
+    "LC_NAME",
+    "LC_ADDRESS",
+    "LC_TELEPHONE",
+    "LC_MEASUREMENT",
+    "LC_IDENTIFICATION",
     "TZ",
     "XDG_SESSION_TYPE",
     "XDG_CURRENT_DESKTOP",

@@ -64,6 +64,9 @@ TEST(SessionUserTest, ARunAsRootForAUserOpensAsThatUserInTheirSession)
                                                                     {"DISPLAY", ":0"},
                                                                     {"WAYLAND_DISPLAY", "wayland-0"},
                                                                     {"LANG", "de_DE.UTF-8"},
+                                                                    {"LC_CTYPE", "de_DE.UTF-8"},
+                                                                    {"LC_TIME", "en_GB.UTF-8"},
+                                                                    {"LC_IDENTIFICATION", "de_DE.UTF-8"},
                                                                     {"PATH", "/usr/sbin:/usr/bin"},
                                                                     {"LD_PRELOAD", "/tmp/evil.so"},
                                                                     {"SUDO_COMMAND", "/usr/bin/tasksmack"},
@@ -81,6 +84,10 @@ TEST(SessionUserTest, ARunAsRootForAUserOpensAsThatUserInTheirSession)
     EXPECT_TRUE(has(environment, "DISPLAY=:0"));
     EXPECT_TRUE(has(environment, "WAYLAND_DISPLAY=wayland-0"));
     EXPECT_TRUE(has(environment, "LANG=de_DE.UTF-8"));
+    // #4336: every locale category, not only LANG, LANGUAGE and LC_ALL.
+    EXPECT_TRUE(has(environment, "LC_CTYPE=de_DE.UTF-8"));
+    EXPECT_TRUE(has(environment, "LC_TIME=en_GB.UTF-8"));
+    EXPECT_TRUE(has(environment, "LC_IDENTIFICATION=de_DE.UTF-8"));
     EXPECT_TRUE(has(environment, "PATH=/usr/sbin:/usr/bin"));
     EXPECT_TRUE(has(environment, "XDG_RUNTIME_DIR=/run/user/1000")) << "the user's, not root's";
     EXPECT_TRUE(has(environment, "DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus"));

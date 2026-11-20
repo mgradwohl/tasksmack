@@ -1097,7 +1097,8 @@ if(WIN32)
     #   the helper's definitions and libraries (the lists above);
     #   the app's manifest: asInvoker (so only the launcher's "runas" elevates it, and Windows' installer
     #   detection never does), long paths and the UTF-8 code page;
-    #   /DEPENDENTLOADFLAG:0x800: its imports load from System32 only (as tasksmack_apply_privileged_hardening()).
+    #   /DEPENDENTLOADFLAG:0x800: its imports load from System32 only (as tasksmack_apply_privileged_hardening(),
+    #   so not under a sanitizer, whose runtime DLL has to load from beside it, #4520).
     function(tasksmack_configure_windows_helper target)
         target_compile_features(${target} PRIVATE cxx_std_23)
         tasksmack_apply_default_warnings(${target})
@@ -1108,8 +1109,10 @@ if(WIN32)
         target_link_libraries(${target} PRIVATE ${TASKSMACK_WINDOWS_HELPER_LIBRARIES})
         target_link_options(${target} PRIVATE
             "LINKER:/MANIFESTINPUT:${TASKSMACK_MANIFEST_OUT}"
-            "LINKER:/DEPENDENTLOADFLAG:0x800"
         )
+        if(TASKSMACK_WINDOWS_HARDENED)
+            target_link_options(${target} PRIVATE "LINKER:/DEPENDENTLOADFLAG:0x800")
+        endif()
     endfunction()
 
     add_executable(TaskSmackHelper WIN32

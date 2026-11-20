@@ -122,6 +122,33 @@ class MdLinkAuditTest(unittest.TestCase):
         self.assertIn("Broken internal link findings: 1", result.stdout)
         self.assertIn("docs/_sidebar.md:1: /guide/gone.md", result.stdout)
 
+    def test_a_heading_with_non_ascii_letters_keeps_them_in_its_anchor(self):
+        # #4332: the slug dropped every non-ASCII letter, so a right link failed and a wrong one passed.
+        (self.root / "README.md").write_text(
+            textwrap.dedent(
+                """\
+                # Title
+
+                ## Café settings
+
+                ## 設定の概要
+
+                ## Naïve – approach
+
+                Right: [a](#café-settings), [b](#caf%C3%A9-settings), [c](#設定の概要), [d](#naïve--approach).
+
+                Wrong: [e](#caf-settings), [f](#-settings).
+                """
+            ),
+            encoding="utf-8",
+        )
+        result = self.audit()
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("Broken internal link findings: 2", result.stdout)
+        self.assertIn("caf-settings", result.stdout)
+        for right in ("café-settings", "設定の概要", "naïve--approach"):
+            self.assertNotIn(right, result.stdout)
+
 
 @unittest.skipUnless(PWSH, "TASKSMACK_TEST_PWSH not set")
 class MdLinkAuditPs1Test(MdLinkAuditTest):

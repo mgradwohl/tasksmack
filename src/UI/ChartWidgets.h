@@ -3,7 +3,9 @@
 #include "Core/AnimationRequest.h"
 #include "Domain/Numeric.h"
 #include "Domain/SamplingConfig.h"
+#include "UI/CellText.h"
 #include "UI/ChartSmoothing.h" // IWYU pragma: export
+#include "UI/Clipboard.h"
 #include "UI/ColorContrast.h"
 #include "UI/Format.h"
 #include "UI/HistoryCsv.h"
@@ -2579,7 +2581,7 @@ template<typename Measure> [[nodiscard]] std::string fitSeriesName(std::string_v
     // Called every frame, so the search measures in one buffer rather than a string per probe.
     const auto isBoundary = [&](std::size_t i)
     {
-        return i == name.size() || (static_cast<unsigned char>(name[i]) & 0xC0U) != 0x80U;
+        return isGraphemeBoundary(name, i);
     };
     // The byte offset of the @p n-th code point boundary after the first code point (n from 0).
     const auto cutAt = [&](std::size_t n)
@@ -3136,11 +3138,11 @@ class HistoryChart
     {
         try
         {
-            ImGui::SetClipboardText(HistoryCsv::build(m_Csv.series, std::chrono::system_clock::now()).c_str());
+            UI::setClipboardUtf8(HistoryCsv::build(m_Csv.series, std::chrono::system_clock::now()));
         }
         catch (...)
         {
-            ImGui::SetClipboardText(""); // Not the previous clipboard, passed off as this chart's data
+            UI::clearClipboard(); // Not the previous clipboard, passed off as this chart's data
         }
     }
 

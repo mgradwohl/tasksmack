@@ -11,11 +11,11 @@ description gives its meaning.
 | **Kind**: what it is | GitHub defaults | `bug`, `enhancement`, `documentation`, `refactoring`, `performance`, `security`, `testing` | whoever files it |
 | **Severity**: how bad (bugs only) | orange, dark to light | `sev:high`, `sev:medium`, `sev:low` | the filer or the triager |
 | **Priority**: when | greyscale, dark to light | `pri:high`, `pri:medium`, `pri:low` | the maintainer |
-| **Lane and planning** | purple | `agent:Windows`, `agent:WSL`, `parity` | the triager |
+| **Lane and planning** | purple | `agent:Windows`, `agent:WSL`, `agent:Dash`, `parity` | the triager |
 | **Area** | teal | `windows`, `linux`, `ui`, `gpu`, `networking`, `architecture`, `accessibility`, `globalization` | the filer, or the PR labeler |
 | **Automation** | green | `ci`, `ci:arm64`, `ci:revert-ok`, `tooling`, `release`, `dependencies` | the PR labeler, Dependabot, Renovate, or by hand |
 | **Alert** | red | `ci-red-main` | `main-health.yml` only |
-| **Process** | magenta | `code-review`, `manual close`, `merging`, `question` | see below |
+| **Process** | magenta | `code-review`, `in progress`, `manual close`, `merging`, `question` | see below |
 | **Outside contributors** | GitHub defaults | `good first issue`, `help wanted` | the maintainer |
 
 ## Severity: bugs only
@@ -76,6 +76,9 @@ The release tracker (`[RELEASE X.Y]`) lists the cycle's own order.
   - `agent:WSL` for Linux probes, Linux packaging and the docs site.
   - Work with a half on each platform carries both, and its body says who does which half.
   - Keep the filer's lane unless it's clearly wrong, and say why in a comment if you change it.
+- **`agent:Dash`** (maintainer, 2026-11-19) marks the items of agentDash, the session that builds and runs the
+  [release dashboard](release-process.md#the-release-dashboard) (#4524). It stands in for a lane label there.
+  Neither lane picks those items up or drives their pull requests, and agentDash doesn't touch product code.
 - **`parity`** marks a Windows/Linux gap. It goes ahead of new features (maintainer, 2026-11-03). Each parity issue
   names the platform that has the feature (file:line) and the half to build. The AGENTS.md parity rule says when a
   gap needs an issue and when it needs a Platform Differences row instead.
@@ -108,6 +111,11 @@ The release tracker (`[RELEASE X.Y]`) lists the cycle's own order.
 - **`code-review`:** every issue a code-review sweep or audit files, so each batch can be triaged with one query:
   a general audit's findings have no milestone (`gh issue list --label code-review --search "no:milestone"`), and
   a release sweep's are on that release's milestone (`gh issue list --label code-review --milestone vX.Y.0`).
+- **`in progress`** (maintainer, 2026-11-19): work on the issue has started. The agent that picks an issue up adds
+  it then, not at planning, and leaves it on when the issue closes: open with the label means started, closed
+  with it means done. Take it off only when the issue is put down unfinished. It goes on any issue an agent
+  starts, not only bugs; pull requests don't carry it. The release dashboard reads the time it was added as
+  "work started", and falls back to the first linked pull request's open time where it's missing.
 - **`manual close`:** a person must verify it by hand (a real desktop, hardware or a compositor) before it's closed.
 - **`question`:** it needs the maintainer's answer before work continues. Triage adds it when an issue's claim
   looks wrong; agents never close those issues.

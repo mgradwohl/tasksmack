@@ -295,7 +295,7 @@ class InUseCheckTest(unittest.TestCase):
     def test_the_installer_checks_before_it_writes_or_uninstalls(self) -> None:
         program = commands(composed("CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS"))
         self.assertEqual(program[:2], [["Push", "$INSTDIR"], ["Call", "TaskSmackInUseCheck"]])
-        calls = [i for i, words in enumerate(program) if words[0] == "Call"]
+        calls = [i for i, words in enumerate(program) if words == ["Call", "TaskSmackInUseCheck"]]  # not #4444's trust checks
         execs = [i for i, words in enumerate(program) if words[0] == "ExecWait"]
         self.assertEqual(len(calls), 2)
         self.assertTrue(execs and all(i > calls[1] for i in execs), "the installed copy's folder is checked before its uninstaller runs")

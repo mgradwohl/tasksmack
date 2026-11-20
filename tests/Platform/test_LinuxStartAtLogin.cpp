@@ -42,6 +42,15 @@ TEST(LinuxStartAtLoginEntryTest, TheExecValueQuotesAndEscapesTheProgramAndReadsB
     EXPECT_EQ(execValue("/usr/bin/TaskSmack"), std::optional<std::string>(R"("/usr/bin/TaskSmack")")) << "no arguments, unquoted";
     EXPECT_EQ(execValue(""), std::nullopt);
     EXPECT_EQ(execValue("\"/a\nb\" --minimized"), std::nullopt) << "an Exec can't hold a newline";
+    // #4329: a desktop entry is UTF-8, and GNOME skips one whose Exec isn't: a Latin-1 folder name is refused.
+    EXPECT_EQ(execValue("\"/home/u/T\xE9l\xE9"
+                        "chargements/TaskSmack\" --minimized"),
+              std::nullopt);
+    EXPECT_EQ(execValue("\"/home/u/T\xC3\xA9l\xC3\xA9"
+                        "chargements/TaskSmack\""),
+              std::optional<std::string>("\"/home/u/T\xC3\xA9l\xC3\xA9"
+                                         "chargements/TaskSmack\""))
+        << "the same folder in UTF-8 is written";
 }
 
 TEST(LinuxStartAtLoginEntryTest, AnExecWrittenElsewhereReadsAsACommand)
@@ -130,6 +139,11 @@ TEST(LinuxStartAtLoginTest, NoHomeOrAnUnwritableFolderSaysWhy)
     const TestSupport::ScopedTempDir home("tasksmack_start_at_login_bad");
     LinuxStartAtLogin entry(home.path / "autostart", "/usr/bin/TaskSmack");
     EXPECT_FALSE(entry.write("\"/a\nb\"").has_value()) << "a command an Exec can't hold";
+    const auto latin1 = entry.write("\"/home/u/T\xE9l\xE9"
+                                    "chargements/TaskSmack\" --minimized");
+    ASSERT_FALSE(latin1.has_value()) << "#4329: an Exec that isn't UTF-8, which GNOME would skip";
+    EXPECT_EQ(latin1.error(), "This copy's path can't be written to an autostart entry");
+    EXPECT_FALSE(std::filesystem::exists(home.path / "autostart")) << "nothing written";
     // A file where the autostart folder should be: it can't be made.
     std::ofstream(home.path / "autostart") << "in the way\n";
     const auto blocked = entry.write(R"("/usr/bin/TaskSmack" --minimized)");

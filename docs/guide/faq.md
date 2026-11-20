@@ -46,7 +46,7 @@ If either check fails, don't use the file. See the user guide's [Verifying a Rel
 
 **Cause:** Per-process I/O counters come from `/proc/[pid]/io`, and FD counts from `/proc/[pid]/fd`, which are readable only by the process owner or root. Network rates are attributed to a process through its `/proc/[pid]/fd` too. For other users' processes these values show as a dimmed **—** in the Processes table and N/A in Process Details (not 0), and the system FD and network totals leave them out.
 
-**Fix (option 1 — start TaskSmack as administrator):** choose **TaskSmack (Administrator)** in your applications menu (the `.deb` and `.rpm` install it), which starts TaskSmack as root through `pkexec` after one administrator's password, or run it with `sudo` (from the extracted `.tar.gz`, `sudo ./bin/TaskSmack`):
+**Fix (option 1 — start TaskSmack as administrator):** choose **TaskSmack (Administrator)** in your applications menu (the `.deb` installs it; so does an `.rpm` you build yourself with `rpmbuild`, since none is published), which starts TaskSmack as root through `pkexec` after one administrator's password, or run it with `sudo` (from the extracted `.tar.gz`, `sudo ./bin/TaskSmack`):
 
 ```bash
 sudo ./bin/TaskSmack

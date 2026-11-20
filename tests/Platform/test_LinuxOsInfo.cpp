@@ -124,9 +124,12 @@ TEST(LinuxOsInfoTest, TimeZoneFromLocaltimeTarget)
 
 TEST(LinuxOsInfoTest, ChoosesLocaleLikeSetlocale)
 {
-    EXPECT_EQ(chooseLocale("de_DE.UTF-8", "en_US.UTF-8"), "de_DE.UTF-8");
-    EXPECT_EQ(chooseLocale("", "en_US.UTF-8"), "en_US.UTF-8");
-    EXPECT_EQ(chooseLocale(nullptr, nullptr), "C");
+    EXPECT_EQ(chooseLocale("de_DE.UTF-8", "fr_FR.UTF-8", "en_US.UTF-8"), "de_DE.UTF-8");
+    EXPECT_EQ(chooseLocale("", "", "en_US.UTF-8"), "en_US.UTF-8");
+    EXPECT_EQ(chooseLocale(nullptr, nullptr, nullptr), "C");
+    // #4338: glibc's order for messages is LC_ALL, then LC_MESSAGES, then LANG.
+    EXPECT_EQ(chooseLocale(nullptr, "fr_FR.UTF-8", "en_US.UTF-8"), "fr_FR.UTF-8");
+    EXPECT_EQ(chooseLocale("de_DE.UTF-8", "fr_FR.UTF-8", nullptr), "de_DE.UTF-8") << "LC_ALL still wins";
 }
 
 TEST(LinuxOsInfoTest, ParsesBootTime)

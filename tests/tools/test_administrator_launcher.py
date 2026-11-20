@@ -71,6 +71,19 @@ class AdministratorLauncherTest(unittest.TestCase):
         for key in ("Icon", "StartupWMClass", "Categories"):
             self.assertEqual(self.entry[key], standard[key], key)
 
+    def test_the_window_class_is_the_app_id_taskSmack_sets(self):
+        # #4451: SDL sends Core::DESKTOP_APP_ID as the Wayland app_id and the X11 WM_CLASS. A desktop file
+        # named for it, with it as StartupWMClass, is how a compositor or dock pairs the window with its launcher.
+        header = (REPO_ROOT / "src" / "Core" / "AppIdentity.h").read_text(encoding="utf-8")
+        match = re.search(r'DESKTOP_APP_ID = "([^"]+)"', header)
+        self.assertIsNotNone(match)
+        app_id = match.group(1)
+        self.assertEqual(STANDARD.name, app_id + ".desktop")
+        for path in (STANDARD, LAUNCHER):
+            self.assertEqual(desktop_entry(path)["StartupWMClass"], app_id, path.name)
+        source = (REPO_ROOT / "src" / "Core" / "Application.cpp").read_text(encoding="utf-8")
+        self.assertRegex(source, r"SDL_SetAppMetadata\([^;]*DESKTOP_APP_ID\)", "the app id reaches SDL")
+
     def test_only_the_system_packages_install_both_files(self):
         rules = INSTALL_RULES.read_text(encoding="utf-8")
         for name in (LAUNCHER.name, POLICY.name):

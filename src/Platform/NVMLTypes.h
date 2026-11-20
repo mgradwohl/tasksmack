@@ -118,7 +118,7 @@ struct nvmlProcessUtilizationSample_t
 /// Opaque element type of the array nvmlDevice{Compute,Graphics}RunningProcesses{,_v2,_v3}
 /// write (#1306). Which struct each entry is depends on the symbol: the legacy unversioned export
 /// writes 16-byte nvmlProcessInfo_v1_t entries, _v2/_v3 write 24-byte nvmlProcessInfo_v2_t ones
-/// (#1092, #1313), parsed by size in NVMLRunningProcesses.h. The library declares the parameter as
+/// (#1092, #1313; some R535 _v3 builds wrote 32, #4421), parsed by size in NVMLRunningProcesses.h. The library declares the parameter as
 /// a pointer to that struct; any object pointer has the same ABI, so callers that size the entries
 /// at run time pass their byte buffer through this one incomplete type. Every definition of these
 /// entry points that a probe may call (the test mock included) must declare its
