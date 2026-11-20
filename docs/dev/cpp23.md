@@ -17,7 +17,7 @@ TaskSmack builds with clang only, as `-std=c++23` with no GNU extensions, agains
 |---|---|---|
 | Compiler | clang 23 | clang 23, target `x86_64-pc-windows-msvc` (and ARM64) |
 | Standard library | libc++ 23 | MSVC STL, Build Tools 14.51 or later (what CI's runner images have) |
-| Library hardening | `_LIBCPP_HARDENING_MODE_FAST` in the app, tests and fuzzers | none yet ([#4341](https://github.com/mgradwohl/tasksmack/issues/4341)) |
+| Library hardening | `_LIBCPP_HARDENING_MODE_FAST` in the app, tests and fuzzers | `_MSVC_STL_HARDENING=1` in the app, the elevated images and the tests ([#4341](https://github.com/mgradwohl/tasksmack/issues/4341)) |
 
 The two libraries don't implement the same subset of C++23. Code in `Platform/Linux`, and all shared code
 (`Domain`, `Core`, `UI`, `App`, and `Platform`'s top level), has to compile on both, so libc++ is the limit.
