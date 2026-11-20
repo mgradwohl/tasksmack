@@ -795,7 +795,10 @@ namespace
 {
     ThemeInfo info;
     info.path = path;
-    info.id = Core::pathToUtf8(path.stem()); // filename without extension (valid UTF-8: loadThemeInfoFromString())
+    // The file name without its extension, as valid UTF-8 (#4327, D1): the id is saved in config.toml when the theme is
+    // chosen. A name that isn't valid UTF-8 gets U+FFFD in its id, as a lone surrogate does on Windows (#4315), so the
+    // id saved is the one the next run lists again, and the theme is still read by its own path.
+    info.id = Domain::sanitizedUtf8(Core::pathToUtf8(path.stem()));
     // Index through node_view, which is null-safe: table::get() returns nullptr for a missing key, and calling
     // value_or() on that crashed at startup (#1095).
     if (const auto* meta = tbl["meta"].as_table())
@@ -814,13 +817,6 @@ namespace
 
 auto ThemeLoader::loadThemeInfoFromString(std::string_view tomlText, const std::filesystem::path& path) -> std::optional<ThemeInfo>
 {
-    // The file's name is the theme's id, saved in config.toml when it's chosen, which holds no text that isn't valid
-    // UTF-8 (#4327, D1): a theme whose name isn't would be saved as one that names no file, so it isn't offered.
-    if (!Core::pathToUtf8Exact(path.stem()).has_value())
-    {
-        spdlog::warn("Skipping theme {}: its file name isn't valid UTF-8", Domain::sanitizedUtf8(Core::pathToUtf8(path)));
-        return std::nullopt;
-    }
     try
     {
         return themeInfoOf(toml::parse(tomlText, Core::pathToUtf8(path)), path);

@@ -2233,13 +2233,15 @@ class ThemeInfoFromStringTest : public ::testing::Test
 };
 
 #ifndef _WIN32
-// #4327: a theme's id is its file name, saved in config.toml when it's chosen; one that isn't valid UTF-8 is skipped.
-TEST_F(ThemeInfoFromStringTest, AThemeWhoseFileNameIsntValidUtf8IsSkipped)
+// #4327: a theme's id is its file name, saved in config.toml when it's chosen. One that isn't valid UTF-8 gets U+FFFD,
+// as a lone surrogate does on Windows (#4315): valid to save, the same id next run, and the theme read by its own path.
+TEST_F(ThemeInfoFromStringTest, AThemeWhoseFileNameIsntValidUtf8HasAReplacementInItsId)
 {
-    EXPECT_FALSE(
-        ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Caf\"\n", std::filesystem::path("themes/caf\xE9.toml")).has_value());
-    EXPECT_TRUE(
-        ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Caf\"\n", std::filesystem::path("themes/caf\xC3\xA9.toml")).has_value());
+    const std::filesystem::path path("themes/caf\xE9.toml");
+    const auto info = ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Caf\"\n", path);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->id, "caf\xEF\xBF\xBD");
+    EXPECT_EQ(info->path, path) << "still read by its own path";
 }
 #endif
 
