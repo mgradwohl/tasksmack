@@ -8,6 +8,7 @@
 #include "UI/DpiScale.h"
 #include "UI/FontFileCache.h"
 #include "UI/FontLoading.h"
+#include "UI/FontPointSize.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
 
@@ -24,7 +25,7 @@ namespace UI
 namespace
 {
 
-/// The repository's assets directory (Inter, Sixtyfour, Font Awesome).
+/// The repository's assets directory (Inter, Noto Sans's U+FFFD subsets, Sixtyfour, Font Awesome).
 [[nodiscard]] std::filesystem::path assetsDir()
 {
     return {TASKSMACK_SOURCE_ASSETS_DIR};
@@ -37,6 +38,9 @@ namespace
     ImTextCharFromUtf8(&c, utf8, nullptr);
     return static_cast<ImWchar>(c);
 }
+
+/// U+FFFD REPLACEMENT CHARACTER: what the UTF-8 sanitizer puts in place of a malformed byte (#4489).
+constexpr ImWchar REPLACEMENT_CHARACTER = 0xFFFD;
 
 [[nodiscard]] bool namedLike(const ImFont* font, std::string_view name)
 {
@@ -102,6 +106,11 @@ TEST_F(FontLoadingTest, LoadsTheFontSizeSettingFromTheBundledFonts)
         EXPECT_FLOAT_EQ(theme.boldFont()->LegacySize, computePointsToPixels(sizes.regularPt, 1.0F)) << points;
         EXPECT_FLOAT_EQ(theme.chartFont()->LegacySize, computePointsToPixels(sizes.chartPt, 1.0F)) << points;
         EXPECT_TRUE(theme.chartFont()->IsGlyphInFont(codepoint(ICON_FA_GEAR))) << points;
+        // U+FFFD, merged from the Noto Sans subsets, in every text font (#4573).
+        for (ImFont* font : {theme.regularFont(), theme.largeFont(), theme.boldFont(), theme.chartFont()})
+        {
+            EXPECT_TRUE(font->IsGlyphInFont(REPLACEMENT_CHARACTER)) << points << " " << font->GetDebugName();
+        }
         // At 7 and 8 pt the charts draw in the body font itself; above, in one of their own.
         const bool ownChartFont = chartFontPointSize(points) != points;
         EXPECT_EQ(theme.chartFont() != theme.regularFont(), ownChartFont) << points;
@@ -158,6 +167,31 @@ TEST_F(FontLoadingTest, TheBodyFontHasTheIconsAndTabularDigits)
     ImGui::EndFrame();
 }
 
+// #4573: Inter has no U+FFFD, and ImGui draws a missing glyph as its fallback character, '?' for Inter, so a
+// sanitized name looked like it held a real question mark. The body font now bakes a glyph of its own for it.
+TEST_F(FontLoadingTest, TheReplacementCharacterDrawsAsItselfNotAsAQuestionMark)
+{
+    Theme& theme = Theme::get();
+    theme.setFontPointSize(FONT_POINT_SIZE_DEFAULT);
+    loadAllFonts(files(), assetsDir(), 1.0F);
+    ImFont* body = theme.regularFont();
+    ASSERT_NE(body, nullptr);
+    ASSERT_TRUE(body->IsGlyphInFont(REPLACEMENT_CHARACTER));
+
+    ImGui::NewFrame();
+    ImGui::PushFont(body, 0.0F);
+    ImFontBaked* baked = ImGui::GetFontBaked();
+    const ImFontGlyph* replacement = baked->FindGlyphNoFallback(REPLACEMENT_CHARACTER);
+    ASSERT_NE(replacement, nullptr) << "U+FFFD has a glyph of its own, not ImGui's fallback";
+    EXPECT_EQ(replacement->Codepoint, static_cast<unsigned int>(REPLACEMENT_CHARACTER));
+    EXPECT_GT(replacement->AdvanceX, 0.0F);
+    const ImFontGlyph* question = baked->FindGlyphNoFallback(static_cast<ImWchar>('?'));
+    ASSERT_NE(question, nullptr);
+    EXPECT_NE(replacement, question) << "'\xEF\xBF\xBD' and '?' must not be the same glyph";
+    ImGui::PopFont();
+    ImGui::EndFrame();
+}
+
 TEST_F(FontLoadingTest, MissingFontFilesFallBackToTheEmbeddedFont)
 {
     const std::filesystem::path nowhere = assetsDir() / "no-such-assets-dir";
@@ -192,6 +226,9 @@ TEST_F(FontLoadingTest, TheFallbackFontsMergeTheIconsWhenTheyCanBeRead)
     EXPECT_FALSE(namedLike(theme.regularFont(), "Inter"));
     EXPECT_TRUE(theme.regularFont()->IsGlyphInFont(codepoint(ICON_FA_GEAR)));
     EXPECT_TRUE(theme.largeFont()->IsGlyphInFont(codepoint(ICON_FA_GEAR)));
+    // The embedded font has no U+FFFD either: merged in from the Noto Sans subset when it can be read (#4573).
+    EXPECT_TRUE(theme.regularFont()->IsGlyphInFont(REPLACEMENT_CHARACTER));
+    EXPECT_TRUE(theme.largeFont()->IsGlyphInFont(REPLACEMENT_CHARACTER));
     EXPECT_FLOAT_EQ(theme.titleBarHeightPx(), computeTitleBarHeightPx(1.0F));
 }
 
@@ -202,6 +239,7 @@ TEST_F(FontLoadingTest, TheFallbackFontsDrawWithoutTheIconsWhenThereAreNone)
     loadFallbackFonts(files(), {}, 1.5F);
     ASSERT_NE(theme.regularFont(), nullptr);
     EXPECT_FALSE(theme.regularFont()->IsGlyphInFont(codepoint(ICON_FA_GEAR)));
+    EXPECT_FALSE(theme.regularFont()->IsGlyphInFont(REPLACEMENT_CHARACTER)) << "no assets, no subset to merge";
     EXPECT_FLOAT_EQ(theme.regularFont()->LegacySize, computePointsToPixels(theme.fontConfig().regularPt, 1.5F));
     EXPECT_FLOAT_EQ(theme.titleBarHeightPx(), computeTitleBarHeightPx(1.5F));
     EXPECT_EQ(files().fileCount(), 0U);
