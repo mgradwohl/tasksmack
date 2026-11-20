@@ -36,14 +36,34 @@ namespace Domain
     return controls == 0U && isValidUtf8(text);
 }
 
+namespace SingleLineDetail
+{
+/// toSingleLineInto() for text that isn't well-formed UTF-8: sanitized, then its controls made spaces. Rare, so kept
+/// out of the hot path.
+inline bool toSingleLineIntoSanitizing(std::string& out, std::string_view text)
+{
+    out.clear();
+    appendSanitizedUtf8(out, text);
+    for (char& c : out)
+    {
+        c = isSingleLineControl(c) ? ' ' : c;
+    }
+    return true;
+}
+} // namespace SingleLineDetail
+
 /// Writes the single-line form of @p text (see toSingleLine()) into @p out, reusing @p out's
 /// capacity, and returns whether it differs from @p text, i.e. whether any byte was replaced.
 inline bool toSingleLineInto(std::string& out, std::string_view text)
 {
-    out.clear();
-    // Ill-formed UTF-8 first (#4301): each maximal ill-formed subpart becomes U+FFFD, which has no control byte.
-    const bool replaced = appendSanitizedUtf8(out, text);
-    // Branch-free, so it vectorizes like isSingleLine(): every byte is rewritten, to itself or a space.
+    // Well-formed text, almost all of it, takes the one copy-and-rewrite loop it took before UTF-8 was checked; the
+    // check itself is isValidUtf8()'s word-at-a-time ASCII scan (#4525). A single loop that also gathers the high
+    // bit measured twice as slow: the extra reduction stops the rewrite vectorizing.
+    if (!isValidUtf8(text))
+    {
+        return SingleLineDetail::toSingleLineIntoSanitizing(out, text);
+    }
+    out.assign(text);
     unsigned controls = 0;
     for (char& c : out)
     {
@@ -51,7 +71,7 @@ inline bool toSingleLineInto(std::string& out, std::string_view text)
         controls |= static_cast<unsigned>(control);
         c = control ? ' ' : c;
     }
-    return replaced || controls != 0U;
+    return controls != 0U;
 }
 
 /// Collapse any control character in `text` to a space, returning a string safe to render in a

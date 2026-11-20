@@ -480,5 +480,27 @@ TEST(HandleRelativeFileTest, AChildFolderThatCantBeMadeSaysWhich)
     EXPECT_TRUE(refused.error().starts_with("the test folder can't be made: NTSTATUS 0x")) << refused.error();
 }
 
+/// GetFinalPathNameByHandleW answering that it needs one more character than it was given, every time.
+DWORD WINAPI neverFitsFinalPath(HANDLE /*handle*/, LPWSTR /*path*/, DWORD size, DWORD /*flags*/)
+{
+    return size + 1;
+}
+
+// A path that still doesn't fit once the buffer has been made as long as the first answer said is no path, not a
+// guess or a loop.
+TEST(HandleRelativeFileFailureTest, APathThatNeverFitsItsBufferIsNoPath)
+{
+    EXPECT_EQ(finalPathOf(nullptr, &neverFitsFinalPath), std::nullopt);
+}
+
+// A handle that can't be asked is neither a plain folder nor a trusted owner's: both answer "don't know", which
+// callers treat as a refusal, never as yes.
+TEST(HandleRelativeFileFailureTest, AHandleThatCantBeAskedIsNeitherAPlainFolderNorATrustedOwners)
+{
+    EXPECT_EQ(isPlainFolder(nullptr), std::nullopt);
+    EXPECT_EQ(isPlainFolder(INVALID_HANDLE_VALUE), std::nullopt);
+    EXPECT_EQ(ownerIsAdministratorsOrSystem(nullptr), std::nullopt);
+}
+
 } // namespace
 } // namespace Platform::Windows

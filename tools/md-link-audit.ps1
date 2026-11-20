@@ -11,8 +11,9 @@ $ErrorActionPreference = 'Stop'
 function Get-GitHubSlug([string]$text) {
     # GitHub's rule (github-slugger), as in md-link-audit.sh: lowercase, drop punctuation other than
     # "-" and "_", then turn each space into "-" without collapsing runs ("Foo - Bar" is "foo---bar").
+    # Letters, combining marks and digits of any script stay (#4332): "Cafe" with an accent keeps it.
     $t = $text.Trim().ToLowerInvariant().Replace('`', '')
-    $t = [regex]::Replace($t, '[^a-z0-9_\s-]', '')
+    $t = [regex]::Replace($t, '[^\p{L}\p{M}\p{N}_\s-]', '')
     $t = [regex]::Replace($t, '\s', '-')
     return $t
 }

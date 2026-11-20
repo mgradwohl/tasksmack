@@ -16,8 +16,9 @@ U+201D or into U+00E2 plus two C1 controls (#2529). A line is flagged when a run
 back, byte for byte, to a valid UTF-8 encoding of a non-ASCII character. Write such text correctly,
 or as escaped bytes ("\\xE2\\x80\\x94") in a C++ literal.
 
-Run by pre-commit on staged text files (`types: [text]`); binary assets are excluded there, matching
-.gitattributes/.editorconfig. Exits 1 if any file failed, 0 otherwise.
+Run by pre-commit on staged text and binary files (`types_or: [text, binary]`, #4333): a UTF-16 file
+whose type identify reads from its content is tagged binary, and is exactly what this must catch. The
+real binary assets are excluded there by extension. Exits 1 if any file failed, 0 otherwise.
 """
 
 from __future__ import annotations

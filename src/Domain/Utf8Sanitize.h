@@ -10,8 +10,11 @@
 // Pure and header-only, so Platform (which may include Domain's pure headers) can use it too.
 
 #include <cstddef>
+#include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 namespace Domain
 {
@@ -79,24 +82,47 @@ namespace Utf8Detail
     return length;
 }
 
+/// Whether every byte of @p text is below 0x80: eight bytes at a time, then the tail (#4525: a byte loop cost the
+/// process snapshot's per-string check about 6 ns on a 220-byte command line). Byte by byte when constant-evaluated,
+/// as memcpy isn't constexpr.
+[[nodiscard]] constexpr bool isAscii(std::string_view text) noexcept
+{
+    std::uint64_t high = 0;
+    std::size_t i = 0;
+    if (!std::is_constant_evaluated())
+    {
+        for (; i + 8 <= text.size(); i += 8)
+        {
+            std::uint64_t word = 0;
+            std::memcpy(&word, text.data() + i, 8);
+            high |= word;
+        }
+    }
+    for (; i < text.size(); ++i)
+    {
+        high |= static_cast<unsigned char>(text[i]);
+    }
+    return (high & 0x8080808080808080ULL) == 0U;
+}
+
 } // namespace Utf8Detail
 
-/// True when @p text is well-formed UTF-8. ASCII-only text, the usual case, is one read-only pass with no
-/// early exit, which the compiler vectorizes; only text with a byte >= 0x80 is decoded.
+/// True when @p text is well-formed UTF-8. ASCII-only text, the usual case, is one read-only pass
+/// (Utf8Detail::isAscii()); only text with a byte >= 0x80 is decoded.
 [[nodiscard]] constexpr bool isValidUtf8(std::string_view text) noexcept
 {
-    unsigned high = 0;
-    for (const char c : text)
-    {
-        high |= static_cast<unsigned char>(c);
-    }
-    if ((high & 0x80U) == 0U)
+    if (Utf8Detail::isAscii(text))
     {
         return true;
     }
     std::size_t at = 0;
     while (at < text.size())
     {
+        if (static_cast<unsigned char>(text[at]) < 0x80U) // the ASCII between non-ASCII characters (#4525)
+        {
+            ++at;
+            continue;
+        }
         std::size_t prefix = 0;
         const std::size_t length = Utf8Detail::sequenceAt(text, at, prefix);
         if (length == 0)
