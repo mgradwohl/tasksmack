@@ -442,8 +442,8 @@ TEST(SyscallTraceTest, ATerminalServerCantCarryTaskSmacksRootToStrace)
 
 // #4396: a link to a root-owned tool passed the check on its target, though the link itself sat in a folder another
 // account could write, and could be pointed elsewhere before the exec. Now such a link is refused, and as root the path
-// run is the canonical one checked.
-TEST(RootToolsTest, AsRootTheCanonicalPathCheckedIsThePathRun)
+// run is the one checked: since #4531, the path found, every link on whose way only root could change.
+TEST(RootToolsTest, AsRootThePathCheckedIsThePathRun)
 {
     const std::filesystem::path dir = std::filesystem::temp_directory_path() / "tasksmack-4396-link";
     std::error_code ec;
@@ -460,10 +460,14 @@ TEST(RootToolsTest, AsRootTheCanonicalPathCheckedIsThePathRun)
         << "its target is root's, but the link sits in a folder this account can write, so it could choose or re-point it";
     EXPECT_EQ(RootTools::rootTrustedPath(target.string()), std::optional<std::string>(target.string()));
 
+    // #4531: the path found is what runs, in a trusted folder (each one canonical, #4550), so a multi-call program
+    // keeps the name it dispatches on: /usr/bin/sh, not the dash or bash it links to.
     const std::optional<std::string> found = RootTools::find("sh", true, "");
     ASSERT_TRUE(found.has_value());
-    EXPECT_EQ(*found, std::filesystem::canonical(*found, ec).string()) << "no link left in the path run as root";
-    EXPECT_FALSE(std::filesystem::is_symlink(*found));
+    EXPECT_TRUE(found->ends_with("/sh")) << *found;
+    EXPECT_EQ(std::filesystem::path(*found).parent_path().string(),
+              std::filesystem::canonical(std::filesystem::path(*found).parent_path(), ec).string())
+        << "in a trusted folder, named canonically";
     std::filesystem::remove_all(dir, ec);
 }
 
@@ -615,8 +619,13 @@ TEST(RootToolsTest, AFolderLinkOnAHopsWayMustSitInARootOnlyFolder)
 
     EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/node", fs).has_value())
         << "/usr/local/lib/nodejs is a link in a staff-writable folder: it chooses where the hop leads";
-    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/direct", fs), std::optional<std::string>("/opt/other/bin/node"));
-    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/python3"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/direct", fs), std::optional<std::string>("/usr/bin/direct")) << "#4531";
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/merged"));
+    EXPECT_TRUE(RootTools::isPlainAbsolutePath("/usr/bin/pkill"));
+    for (const std::string_view odd : {"/usr/bin/../bin/pkill", "/usr/./bin/pkill", "/usr//bin/pkill", "usr/bin/pkill", "/usr/bin/"})
+    {
+        EXPECT_FALSE(RootTools::isPlainAbsolutePath(odd)) << odd << ": answered in its canonical form instead";
+    }
 }
 
 // The #4551 review: with no trusted folder, a root child's PATH finds nothing. An empty PATH would search the

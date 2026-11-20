@@ -167,11 +167,34 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     return trustedRootPath(SyscallTrace::ROOT_TOOL_PATH, systemRootFs());
 }
 
-/// For a tool TaskSmack runs as root (#3605): the canonical path @p path resolves to, when that is an executable file
-/// only root could have put there; nullopt otherwise. Every link on the way must sit in a root-only folder too (#4396):
-/// a link in a folder another account can write passes on its target alone, so that account would choose which
-/// root-owned program runs (xdg-open -> python3, which runs a folder's __main__.py), and could re-point it before an
-/// exec. Run the path this returns, never @p path.
+/// Whether @p path names each folder plainly: absolute, with no "." or ".." component and no empty one ("//").
+[[nodiscard]] inline bool isPlainAbsolutePath(std::string_view path)
+{
+    if (!path.starts_with('/') || path.ends_with('/'))
+    {
+        return false;
+    }
+    for (std::size_t start = 1; start <= path.size();)
+    {
+        std::size_t end = path.find('/', start);
+        end = end == std::string_view::npos ? path.size() : end;
+        const std::string_view part = path.substr(start, end - start);
+        if (part.empty() || part == "." || part == "..")
+        {
+            return false;
+        }
+        start = end + 1;
+    }
+    return true;
+}
+
+/// For a tool TaskSmack runs as root (#3605): the path to run for @p path, when it leads to an executable file only root
+/// could have put there; nullopt otherwise. Every link on the way, a folder's or a hop's, must sit in a folder only root
+/// could change (#4396, #4551): a link another account can replace would choose which root-owned program runs
+/// (xdg-open -> python3, which runs a folder's __main__.py), and could re-point it before the exec. So only root can
+/// change where @p path leads, and @p path itself is what runs (#4531): a multi-call program dispatches on its argv[0],
+/// so pkill run as /usr/bin/pgrep was pgrep, and busybox's crontab was busybox. A path with "." or ".." is answered as
+/// its canonical form instead. Run the path this returns.
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path, const RootFs& fs)
 {
     if (!path.starts_with('/') || !fs.executable(path))
@@ -198,7 +221,7 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     {
         return std::nullopt;
     }
-    return resolved;
+    return isPlainAbsolutePath(path) ? std::optional<std::string>(path) : resolved;
 }
 
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path)
@@ -212,8 +235,8 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     return rootTrustedPath(path).has_value();
 }
 
-/// The tool @p name as root, searched for in trustedRootPath(@p pathList) only and answered as the canonical path that
-/// was checked (rootTrustedPath(), #4396), resolved once.
+/// The tool @p name as root, searched for in trustedRootPath(@p pathList) only, and answered as the path rootTrustedPath()
+/// checked (#4396, #4531), checked once.
 [[nodiscard]] inline std::optional<std::string> findRootTool(std::string_view name, std::string_view pathList, const RootFs& fs)
 {
     std::optional<std::string> verified;
