@@ -92,6 +92,25 @@ inline constexpr std::uint16_t PROTOCOL_VERSION = 27;
 inline constexpr std::size_t MAX_MESSAGE_BYTES = std::size_t{8} << 20U;
 /// The longest string field (an error message, a note).
 inline constexpr std::size_t MAX_STRING_BYTES = std::size_t{64} << 10U;
+
+/// @p value as Writer::text() sends it (#4311): whole when it fits MAX_STRING_BYTES, else cut there, moved back
+/// before a UTF-8 sequence that would straddle the limit, so a cut never splits a character in two. The move is
+/// at most three bytes, as a sequence is at most four; bytes that aren't UTF-8 are cut within three of the limit.
+[[nodiscard]] constexpr std::string_view cappedText(std::string_view value) noexcept
+{
+    static_assert(MAX_STRING_BYTES > 3);
+    if (value.size() <= MAX_STRING_BYTES)
+    {
+        return value;
+    }
+    std::size_t end = MAX_STRING_BYTES;
+    // value[end] is the first byte left out: while it continues a sequence, that sequence started inside.
+    while (end > MAX_STRING_BYTES - 3 && (static_cast<unsigned char>(value[end]) & 0xC0U) == 0x80U)
+    {
+        --end;
+    }
+    return value.substr(0, end);
+}
 /// The most environment variables an EnvironmentReply carries; a read with more keeps the first. Fewer
 /// fit when they are long: every list reply stops short of MAX_MESSAGE_BYTES and says it was cut (#2403).
 inline constexpr std::size_t MAX_ENVIRONMENT_VARIABLES = std::size_t{1} << 16U;
@@ -575,7 +594,7 @@ class Writer
     }
     void text(std::string_view value)
     {
-        const std::string_view capped = value.substr(0, MAX_STRING_BYTES); // never more than the reader takes
+        const std::string_view capped = cappedText(value); // never more than the reader takes, nor half a character
         u32(static_cast<std::uint32_t>(capped.size()));
         m_Bytes.insert(m_Bytes.end(), capped.begin(), capped.end());
     }

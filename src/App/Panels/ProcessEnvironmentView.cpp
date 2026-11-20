@@ -115,7 +115,8 @@ void ProcessEnvironmentView::render(bool hasEnvironment)
     if (m_Truncated)
     {
         ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
-        ImGui::TextWrapped("Showing the first %zu variables", m_Rows.size());
+        // Variables left out, or a very long value cut short (#4311): the read says only that not all came through.
+        ImGui::TextWrapped("Showing the first %zu variables; a very long value may be cut short", m_Rows.size());
         ImGui::PopStyleColor();
     }
     if (m_Rows.empty())

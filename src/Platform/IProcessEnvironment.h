@@ -43,7 +43,8 @@ struct EnvironmentReadResult
     EnvironmentReadStatus status = EnvironmentReadStatus::Unsupported;
     std::vector<EnvironmentVariable> variables;
     /// The process had more than were passed on (the administrator helper's reply holds one frame,
-    /// #2403; the Windows reader caps the block and the count, #2569); `variables` holds the first.
+    /// #2403; the Windows reader caps the block and the count, #2569); `variables` holds the first. Also set
+    /// when the helper cut a name or value longer than a string field (#4311, Broker::cappedText()).
     bool truncated = false;
     /// Why, for Failed, when the reader can say (the Windows reader's: a Win32 or NTSTATUS error, or a PEB
     /// it could not follow, #2569); else empty. Drawn after the status line. Never a

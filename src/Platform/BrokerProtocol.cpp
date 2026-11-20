@@ -63,10 +63,10 @@ template<typename Entry, typename BytesOf>
     return count;
 }
 
-/// The bytes Writer::text() writes for @p value: its length and at most MAX_STRING_BYTES of it.
+/// The bytes Writer::text() writes for @p value: its length and at most MAX_STRING_BYTES of it (cappedText()).
 [[nodiscard]] constexpr std::size_t textBytes(std::string_view value) noexcept
 {
-    return 4 + std::min(value.size(), MAX_STRING_BYTES);
+    return 4 + cappedText(value).size();
 }
 
 template<typename Message>
@@ -435,8 +435,14 @@ template<typename Message>
                        MAX_ENVIRONMENT_VARIABLES,
                        ROOM,
                        [](const EnvironmentVariable& variable) { return textBytes(variable.name) + textBytes(variable.value); });
+    // A name or value longer than a string field is cut (Writer::text()), so the reply says not all was passed on
+    // (#4311), as it does when variables are left out.
+    const bool valueCut =
+        std::ranges::any_of(std::span(variables).first(count),
+                            [](const EnvironmentVariable& variable)
+                            { return variable.name.size() > MAX_STRING_BYTES || variable.value.size() > MAX_STRING_BYTES; });
     writer.u8(static_cast<std::uint8_t>(environment.result.status));
-    writer.u8((environment.result.truncated || count < variables.size()) ? 1 : 0);
+    writer.u8((environment.result.truncated || count < variables.size() || valueCut) ? 1 : 0);
     writer.u32(static_cast<std::uint32_t>(count));
     for (std::size_t i = 0; i < count; ++i)
     {
