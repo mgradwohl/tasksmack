@@ -10,6 +10,7 @@
 #include "Core/SaveFileDialog.h"
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/IProcessActions.h"
 #include "ProcessActionConfirm.h"
 #include "ProcessActionsView.h"
@@ -218,8 +219,17 @@ std::string rememberedDumpFolder()
 void rememberDumpDirectory(const std::filesystem::path& directory)
 {
     auto& config = UserConfig::get();
-    std::string folder = Core::pathToUtf8(directory);
-    folderChosenThisSession() = folder; // chosen in Windows' folder dialog by this session's user
+    folderChosenThisSession() = Core::pathToUtf8(directory); // chosen in Windows' folder dialog by this session's user
+    // Saved only as text that names this folder again (#4327): a name that isn't valid UTF-8 is used this session but
+    // never written, so the next run doesn't look for a folder by a mangled name.
+    std::optional<std::string> exact = Core::pathToUtf8Exact(directory);
+    if (!exact.has_value())
+    {
+        spdlog::info("Not saving the dump folder {} to settings: its name isn't valid UTF-8",
+                     Domain::sanitizedUtf8(folderChosenThisSession()));
+        return;
+    }
+    std::string folder = std::move(*exact);
     if (config.settings().dumpFolder == folder)
     {
         return;

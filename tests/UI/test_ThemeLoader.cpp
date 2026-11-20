@@ -2232,6 +2232,19 @@ class ThemeInfoFromStringTest : public ::testing::Test
     std::shared_ptr<spdlog::logger> m_PreviousLogger;
 };
 
+#ifndef _WIN32
+// #4327: a theme's id is its file name, saved in config.toml when it's chosen. One that isn't valid UTF-8 gets U+FFFD,
+// as a lone surrogate does on Windows (#4315): valid to save, the same id next run, and the theme read by its own path.
+TEST_F(ThemeInfoFromStringTest, AThemeWhoseFileNameIsntValidUtf8HasAReplacementInItsId)
+{
+    const std::filesystem::path path("themes/caf\xE9.toml");
+    const auto info = ThemeLoader::loadThemeInfoFromString("[meta]\nname = \"Caf\"\n", path);
+    ASSERT_TRUE(info.has_value());
+    EXPECT_EQ(info->id, "caf\xEF\xBF\xBD");
+    EXPECT_EQ(info->path, path) << "still read by its own path";
+}
+#endif
+
 TEST_F(ThemeInfoFromStringTest, AValidThemeIsNamedByItsMetaAndIdentifiedByItsFile)
 {
     const std::filesystem::path path = std::filesystem::path("handed-over") / "themes" / "my-theme.toml";
