@@ -238,12 +238,13 @@ void renderCredits(Links& links)
     const auto& theme = UI::Theme::get();
     // Every bundled font and icon set with its licence (#1212). Font Awesome Free is licensed in two
     // parts: the icon designs under CC BY 4.0 (which requires this attribution) and the distributed
-    // fa-solid-900.ttf under the SIL OFL 1.1. Full notices: assets/fonts/LICENSE.txt.
+    // fa-solid-900.ttf under the SIL OFL 1.1. Noto Sans supplies only U+FFFD, which Inter lacks (#4573).
+    // Full notices: assets/fonts/LICENSE.txt.
     (void) UI::Widgets::sectionHeader(ICON_FA_FONT, "Credits");
     if (beginDetailsTable("##AboutCredits"))
     {
         detailsRow("Fonts");
-        wrapped("Inter, Sixtyfour");
+        wrapped("Inter, Noto Sans, Sixtyfour");
         mutedWrapped("SIL Open Font License 1.1");
         detailsRow("Icons");
         wrapped("Font Awesome Free by Fonticons, Inc.");
