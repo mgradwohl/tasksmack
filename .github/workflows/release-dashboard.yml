@@ -49,7 +49,9 @@ jobs:
       issues: read  # milestones, their issues, the release tracker and the ci-red-main issues
       pull-requests: read  # the open pull requests and the ones that close a milestone's issues
     steps:
-      # Only what the generator and its tests read. A pull request runs its own copy; it has no token that writes.
+      # Only what the generator and its tests read: the generator takes main-health.yml's WATCHED list, and its
+      # test checks every workflow that list names is there. A pull request runs its own copy; it has no token
+      # that writes.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
@@ -57,7 +59,7 @@ jobs:
             tools/release-dashboard.py
             tests/tools/test_release_dashboard.py
             tests/tools/fixtures/release-dashboard
-            .github/workflows/main-health.yml
+            .github/workflows
           sparse-checkout-cone-mode: false
 
       - name: Run the generator's tests
