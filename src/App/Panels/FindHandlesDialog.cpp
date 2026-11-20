@@ -3,11 +3,11 @@
 #include "AuthorizeWording.h"
 #include "Domain/HandleSearch.h"
 #include "Domain/Worker.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessModules.h"
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
+#include "Platform/Utf8CaseFold.h"
 #include "RestartAsAdministratorButton.h"
 #include "UI/CellText.h"
 #include "UI/ChromeWidgets.h"
@@ -58,13 +58,13 @@ using Domain::HandleSearch::SearchPublication;
     switch (column)
     {
     case FindHandlesColumn::Process:
-        return Platform::compareIgnoreCase(a.process, b.process);
+        return Platform::compareFolded(a.process, b.process);
     case FindHandlesColumn::Pid:
         return a.target.pid <=> b.target.pid;
     case FindHandlesColumn::Kind:
         return Domain::HandleSearch::kindLabel(a.kind) <=> Domain::HandleSearch::kindLabel(b.kind);
     case FindHandlesColumn::Path:
-        return Platform::compareIgnoreCase(a.path, b.path);
+        return Platform::compareFolded(a.path, b.path);
     }
     return std::strong_ordering::equal;
 }

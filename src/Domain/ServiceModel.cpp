@@ -1,7 +1,7 @@
 #include "ServiceModel.h"
 
-#include "Platform/AsciiCase.h"
 #include "Platform/IServiceProbe.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <atomic>
@@ -81,10 +81,10 @@ void ServiceModel::sample()
     }
     next->services = std::move(result.services);
     // The table's default order, done once per sample here rather than per frame in the UI. ASCII
-    // letters fold, every other byte sorts as itself whatever the locale (#2566).
+    // letters fold by Unicode simple case folding, then bytes break ties, whatever the locale (#2566, #4324).
     const auto lessIgnoringCase = [](const Platform::ServiceInfo& a, const Platform::ServiceInfo& b)
     {
-        return Platform::compareIgnoreCase(a.name, b.name) < 0;
+        return Platform::compareFolded(a.name, b.name) < 0;
     };
     std::ranges::sort(next->services, lessIgnoringCase);
     // The PID index too (#1880), built here on the sampler thread rather than by each reader.

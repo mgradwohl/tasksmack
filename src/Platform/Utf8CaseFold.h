@@ -11,8 +11,10 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/UnicodeCaseFoldTable.h"
 
+#include <compare>
 #include <cstddef>
 #include <cstdint>
+#include <string>
 #include <string_view>
 
 namespace Platform
@@ -224,6 +226,93 @@ namespace Utf8CaseFoldDetail
         at += length;
     }
     return false;
+}
+
+/// Appends @p text's Unicode simple case fold to @p out, as UTF-8: a key that two spellings of one name share
+/// ("PC\\Élodie" and "pc\\élodie"). An ill-formed byte is copied as it is, so it stays distinct from any character.
+inline void appendFolded(std::string& out, std::string_view text)
+{
+    std::size_t at = 0;
+    while (at < text.size())
+    {
+        std::size_t length = 0;
+        const char32_t decoded = Utf8CaseFoldDetail::decodeAt(text, at, length);
+        if (decoded > 0x10FFFFU) // ill-formed: keep the byte
+        {
+            out += text[at];
+            at += length;
+            continue;
+        }
+        const char32_t cp = simpleCaseFold(decoded);
+        if (cp < 0x80U)
+        {
+            out += static_cast<char>(cp);
+        }
+        else if (cp < 0x800U)
+        {
+            out += static_cast<char>(0xC0U | (cp >> 6U));
+            out += static_cast<char>(0x80U | (cp & 0x3FU));
+        }
+        else if (cp < 0x10000U)
+        {
+            out += static_cast<char>(0xE0U | (cp >> 12U));
+            out += static_cast<char>(0x80U | ((cp >> 6U) & 0x3FU));
+            out += static_cast<char>(0x80U | (cp & 0x3FU));
+        }
+        else
+        {
+            out += static_cast<char>(0xF0U | (cp >> 18U));
+            out += static_cast<char>(0x80U | ((cp >> 12U) & 0x3FU));
+            out += static_cast<char>(0x80U | ((cp >> 6U) & 0x3FU));
+            out += static_cast<char>(0x80U | (cp & 0x3FU));
+        }
+        at += length;
+    }
+}
+
+/// The order of @p a and @p b by Unicode simple case folding alone: case variants ("PC\\alice", "pc\\ALICE") compare
+/// equal, as compareIgnoreCase()'s do (a strong_ordering for the same reason: callers order by it and then by their
+/// own tie-breakers). For keys that identify one thing however it is spelled, and for sorts that break ties by
+/// another key; a sort with no tie-breaker of its own wants compareFoldedCase().
+[[nodiscard]] constexpr std::strong_ordering compareFolded(std::string_view a, std::string_view b) noexcept
+{
+    if (Utf8CaseFoldDetail::isAscii(a) && Utf8CaseFoldDetail::isAscii(b))
+    {
+        return compareIgnoreCase(a, b);
+    }
+    std::size_t i = 0;
+    std::size_t j = 0;
+    while (i < a.size() && j < b.size())
+    {
+        std::size_t aLength = 0;
+        std::size_t bLength = 0;
+        const char32_t x = simpleCaseFold(Utf8CaseFoldDetail::decodeAt(a, i, aLength));
+        const char32_t y = simpleCaseFold(Utf8CaseFoldDetail::decodeAt(b, j, bLength));
+        if (x != y)
+        {
+            return x <=> y;
+        }
+        i += aLength;
+        j += bLength;
+    }
+    return (a.size() - i) <=> (b.size() - j); // one side is used up: the one with text left is after
+}
+
+/// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile", not
+/// after "Zoe"), then by their bytes, so case variants still sort in one stable order (the maintainer, #4324: the
+/// same fold as matching, with a byte-wise tie-break; not locale collation).
+[[nodiscard]] constexpr std::strong_ordering compareFoldedCase(std::string_view a, std::string_view b) noexcept
+{
+    const std::strong_ordering folded = compareFolded(a, b);
+    if (folded < 0)
+    {
+        return std::strong_ordering::less;
+    }
+    if (folded > 0)
+    {
+        return std::strong_ordering::greater;
+    }
+    return a.compare(b) <=> 0;
 }
 
 } // namespace Platform
