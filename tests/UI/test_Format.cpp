@@ -1388,7 +1388,9 @@ TEST(FormatTest, BytesAboveATebibyteUseTiB)
 {
     constexpr double TIB = 1024.0 * 1024.0 * 1024.0 * 1024.0;
     EXPECT_EQ(std::string(UI::Format::chooseByteUnit(TIB).suffix), "TiB");
-    EXPECT_EQ(std::string(UI::Format::chooseByteUnit(TIB - 1.0).suffix), "GiB");
+    // One byte short is 1023.999... GiB, which prints as 1024.0 GiB: decided on the rounded value, it is TiB (#4428).
+    EXPECT_EQ(std::string(UI::Format::chooseByteUnit(TIB - 1.0).suffix), "TiB");
+    EXPECT_EQ(std::string(UI::Format::chooseByteUnit(TIB * 0.9999).suffix), "GiB") << "1023.9 GiB stays GiB";
     EXPECT_EQ(UI::Format::formatBytes(2.0 * TIB), "2.0 TiB");
     EXPECT_EQ(UI::Format::formatBytesPerSec(1.5 * TIB), "1.5 TiB/s");
     // The table's aligned cells carry the same unit
@@ -1846,6 +1848,25 @@ void expectLocale(const UI::Format::NumericPunctuation& punctuation, const Local
     // The table's fast path and its allocating slow path agree.
     const auto slow = UI::Format::splitBytesForAlignment(1234.5 * 1024.0, UI::Format::BYTE_UNIT_KB);
     EXPECT_EQ(slow.wholePart, expected.alignedCell);
+}
+
+// #4428: the unit is decided on the value rounded as it prints, so a value just under a unit's boundary rolls up.
+TEST(FormatTest, AValueThatRoundsToTheNextUnitIsPrintedInIt)
+{
+    EXPECT_EQ(UI::Format::formatBytes(1048550.0), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 MiB");
+    EXPECT_EQ(UI::Format::formatBytes(1048576.0), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 MiB");
+    EXPECT_EQ(UI::Format::formatBytes(1023.96), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 KiB");
+    EXPECT_EQ(UI::Format::formatBytes(1048500.0).find("1024"), std::string::npos) << UI::Format::formatBytes(1048500.0);
+    EXPECT_EQ(UI::Format::formatWatts(0.99996), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 W");
+    EXPECT_EQ(UI::Format::formatWatts(0.00099996), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 mW");
+    EXPECT_EQ(UI::Format::formatCountPerSecond(999.96), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0K/s");
+    EXPECT_EQ(UI::Format::formatCountPerSecond(999'960.0), "1" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0M/s");
+    // The table cell's twin chooses the same unit.
+    EXPECT_EQ(UI::Format::unitForTotalBytes(1048550).suffix, "MiB");
+    const auto power = UI::Format::splitPowerForAlignment(0.99996);
+    EXPECT_EQ(power.unitPart, " W");
+    // Below the window, the smaller unit stays.
+    EXPECT_EQ(UI::Format::formatBytes(1048524.0).find("MiB"), std::string::npos) << "1023.9 KiB";
 }
 
 } // namespace
