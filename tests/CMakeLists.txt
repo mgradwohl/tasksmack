@@ -420,6 +420,11 @@ add_test(NAME BenchmarkBaselinesScript
 add_test(NAME BenchAcrossLaunchesScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_bench_across_launches.py)
 
+# tools/docs-site-smoke.py's local server (#4528): the docs folder at /tasksmack/, with no symlink (which needed a
+# privilege on Windows); a stub stands in for Playwright.
+add_test(NAME DocsSiteSmokeServerScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_docs_site_smoke.py)
+
 # tools/check-no-reverts.py, the revert guard (#3986, after #3972): a change whose diff undoes a recent merge is
 # found, on scratch git repositories.
 add_test(NAME CheckNoRevertsScript
