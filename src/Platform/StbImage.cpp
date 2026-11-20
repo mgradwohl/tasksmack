@@ -13,6 +13,10 @@
 #endif
 
 #define STB_IMAGE_IMPLEMENTATION
+// PNG only (#4424): stb_image picks its decoder by a file's content, so an icon an application wrote as "icon.png"
+// could otherwise be decoded as JPEG, BMP, GIF, PSD, PIC, TGA, HDR or PNM, the lesser-used decoders where its
+// memory-safety reports have been, in a TaskSmack that may be root. Every caller reads only PNGs.
+#define STBI_ONLY_PNG
 #ifdef _WIN32
 // stbi_load() takes a UTF-8 file name and opens it with _wfopen, never through the code page (#1648).
 #define STBI_WINDOWS_UTF8
