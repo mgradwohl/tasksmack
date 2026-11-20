@@ -443,9 +443,12 @@ inline NVMLLibraryFunctions::Proc fakeExport(std::string_view name)
 {
     static const std::unordered_map<std::string_view, NVMLLibraryFunctions::Proc> exports = {
         {"nvmlInit", asProc(&fakeInit)},
+        {"nvmlInit_v2", asProc(&fakeInit)},
         {"nvmlShutdown", asProc(&fakeShutdown)},
         {"nvmlDeviceGetCount", asProc(&fakeDeviceGetCount)},
+        {"nvmlDeviceGetCount_v2", asProc(&fakeDeviceGetCount)},
         {"nvmlDeviceGetHandleByIndex", asProc(&fakeDeviceGetHandleByIndex)},
+        {"nvmlDeviceGetHandleByIndex_v2", asProc(&fakeDeviceGetHandleByIndex)},
         {"nvmlDeviceGetName", asProc(&fakeDeviceGetName)},
         {"nvmlDeviceGetUUID", asProc(&fakeDeviceGetUUID)},
         {"nvmlDeviceGetMemoryInfo", asProc(&fakeDeviceGetMemoryInfo)},

@@ -110,10 +110,21 @@ bool NVMLGPUProbe::loadNVML()
         return false;                                                                                                                      \
     }
 
-    LOAD_NVML_FUNC(Init)
+    // nvml.h keeps the unversioned names of these three for binary compatibility, with the v1 behaviour
+    // (nvmlInit fails if any one GPU is in a bad state; the count leaves out devices NVML has no
+    // permission for). Bind the _v2 export first, as the Linux probe does, and the unversioned name only
+    // when a driver has no _v2 (#4378).
+#define LOAD_NVML_FUNC_V2(name)                                                                                                            \
+    m_NVML.name = reinterpret_cast<decltype(m_NVML.name)>(m_Library.getProcAddress(m_NVMLHandle, "nvml" #name "_v2"));                     \
+    if (m_NVML.name == nullptr)                                                                                                            \
+    {                                                                                                                                      \
+        LOAD_NVML_FUNC(name)                                                                                                               \
+    }
+
+    LOAD_NVML_FUNC_V2(Init)
     LOAD_NVML_FUNC(Shutdown)
-    LOAD_NVML_FUNC(DeviceGetCount)
-    LOAD_NVML_FUNC(DeviceGetHandleByIndex)
+    LOAD_NVML_FUNC_V2(DeviceGetCount)
+    LOAD_NVML_FUNC_V2(DeviceGetHandleByIndex)
     LOAD_NVML_FUNC(DeviceGetName)
     LOAD_NVML_FUNC(DeviceGetUUID)
     LOAD_NVML_FUNC(DeviceGetMemoryInfo)
@@ -151,6 +162,7 @@ bool NVMLGPUProbe::loadNVML()
     }
 
 #undef LOAD_NVML_FUNC_OPTIONAL
+#undef LOAD_NVML_FUNC_V2
 #undef LOAD_NVML_FUNC
 
     spdlog::debug("NVMLGPUProbe: Successfully loaded nvml.dll");
