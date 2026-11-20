@@ -2966,6 +2966,93 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderSwappedForALinkIsNotSavedIn
     std::filesystem::remove(m_TempDir, ec);
     std::filesystem::rename(real, m_TempDir, ec);
 }
+// #4542: run as root for a user, the save is relative to the config folder it checked. Swapping that folder for a link
+// between the check and the write (the race a by-path save had) sends nothing to the link's target: the file is
+// written into the folder that was checked, wherever it now is.
+TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveGoesToTheFolderCheckedNotALinkSwappedIn)
+{
+    const std::filesystem::path folder = m_TempDir / "cfg";
+    const std::filesystem::path moved = m_TempDir / "cfg.moved";
+    const std::filesystem::path elsewhere = m_TempDir / "elsewhere";
+    std::filesystem::create_directories(folder);
+    std::filesystem::create_directories(elsewhere);
+    writeFile(folder / "config.toml", "[theme]\nid = \"arctic-fire\"\n");
+
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+    config.resetConfigPathForTesting(folder / "config.toml");
+    config.load();
+    config.settings().themeId = "mocha";
+    bool swapped = false;
+    config.setAfterFolderCheckForTesting(
+        [&]
+        {
+            std::error_code ec;
+            std::filesystem::rename(folder, moved, ec);
+            std::filesystem::create_directory_symlink(elsewhere, folder, ec);
+            swapped = !ec;
+        });
+    config.save();
+    config.resetConfigPathForTesting(m_ConfigPath);
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    ASSERT_TRUE(swapped);
+    EXPECT_FALSE(std::filesystem::exists(elsewhere / "config.toml")) << "nothing written where the link points";
+    EXPECT_EQ(parsed(moved / "config.toml")["theme"]["id"].value<std::string>(), "mocha") << "saved in the folder checked";
+    for (const auto& entry : std::filesystem::directory_iterator(moved))
+    {
+        EXPECT_FALSE(entry.path().filename().string().starts_with(".tasksmack-config.")) << "no staging file left";
+    }
+}
+
+// #4542: the descriptor save keeps what the save by path keeps: a new config is owner-only, an existing one keeps its
+// mode, and a link or a hard link at config.toml is never read or replaced.
+TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveKeepsModesAndRefusesLinks)
+{
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    auto& config = UserConfig::get();
+
+    const std::filesystem::path fresh = m_TempDir / "fresh";
+    std::filesystem::create_directories(fresh);
+    config.resetConfigPathForTesting(fresh / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    struct stat info = {};
+    ASSERT_EQ(::stat((fresh / "config.toml").c_str(), &info), 0) << "a new config is written";
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+    EXPECT_EQ(info.st_uid, ::geteuid());
+
+    const std::filesystem::path kept = m_TempDir / "kept";
+    std::filesystem::create_directories(kept);
+    writeFile(kept / "config.toml", "[theme]\nid = \"arctic-fire\"\n");
+    std::filesystem::permissions(kept / "config.toml", std::filesystem::perms(0644));
+    config.resetConfigPathForTesting(kept / "config.toml");
+    config.load();
+    config.settings().themeId = "mocha";
+    config.save();
+    ASSERT_EQ(::stat((kept / "config.toml").c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777U, 0644U) << "an existing config keeps its mode";
+    EXPECT_EQ(parsed(kept / "config.toml")["theme"]["id"].value<std::string>(), "mocha");
+
+    const std::filesystem::path linked = m_TempDir / "linked";
+    std::filesystem::create_directories(linked);
+    writeFile(m_TempDir / "secret.toml", "[theme]\nid = \"arctic-fire\"\n");
+    std::error_code ec;
+    std::filesystem::create_hard_link(m_TempDir / "secret.toml", linked / "config.toml", ec);
+    ASSERT_FALSE(ec) << ec.message();
+    config.resetConfigPathForTesting(linked / "config.toml");
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_EQ(parsed(m_TempDir / "secret.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "a hard link is left alone";
+    EXPECT_EQ(std::filesystem::hard_link_count(linked / "config.toml"), 2U) << "and isn't replaced";
+
+    config.resetConfigPathForTesting(m_ConfigPath);
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+}
 #endif
 
 TEST_F(UserConfigSaveLoadFixture, ConfigCreatedBeforeTheFirstSaveKeepsItsOtherSettings)
