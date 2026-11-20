@@ -578,9 +578,26 @@ inline constexpr std::array<const ByteUnit*, 5> BYTE_UNITS = {&BYTE_UNIT_TB, &BY
     return BYTE_UNIT_B;
 }
 
+/// Value rounded to decimals places, halves away from zero (defined below).
+[[nodiscard]] inline auto roundHalfAwayFromZero(double value, int decimals) -> double;
+
+/// The unit a byte value is printed in: byteUnitFor(), then the next larger unit when the value, rounded as it
+/// prints, reaches 1024 of the one chosen (#4428). Decided on the rounded value, as formatPercent() is: 1,048,550
+/// bytes is 1023.98 KiB, which prints "1.0 MiB", not "1024.0 KiB".
 [[nodiscard]] inline auto chooseByteUnit(double bytes) -> ByteUnit
 {
-    return byteUnitFor(bytes);
+    const ByteUnit& unit = byteUnitFor(bytes);
+    if (&unit != &BYTE_UNIT_TB && roundHalfAwayFromZero(std::abs(bytes) / unit.scale, unit.decimals) >= 1024.0)
+    {
+        for (std::size_t i = 1; i < BYTE_UNITS.size(); ++i)
+        {
+            if (BYTE_UNITS[i] == &unit)
+            {
+                return *BYTE_UNITS[i - 1];
+            }
+        }
+    }
+    return unit;
 }
 
 [[nodiscard]] inline auto unitForTotalBytes(std::uint64_t bytes) -> ByteUnit
@@ -901,6 +918,28 @@ struct AlignedBytesParts
     return out;
 }
 
+/// The power unit @p absWatts prints in, with its scale: W, mW or µW, decided on the value rounded to one decimal as it
+/// prints (#4428), so 0.99996 W is "1.0 W", not "1000.0 mW".
+struct PowerUnit
+{
+    double scale = 1.0;
+    const char* suffix = "W";
+};
+[[nodiscard]] inline auto powerUnitFor(double absWatts) -> PowerUnit
+{
+    if (roundHalfAwayFromZero(absWatts, 1) >= 1.0)
+    {
+        return {.scale = 1.0, .suffix = "W"};
+    }
+    if (roundHalfAwayFromZero(absWatts * 1000.0, 1) >= 1.0)
+    {
+        return roundHalfAwayFromZero(absWatts * 1000.0, 1) >= 1000.0 ? PowerUnit{.scale = 1.0, .suffix = "W"}
+                                                                     : PowerUnit{.scale = 1000.0, .suffix = "mW"};
+    }
+    return roundHalfAwayFromZero(absWatts * 1'000'000.0, 1) >= 1000.0 ? PowerUnit{.scale = 1000.0, .suffix = "mW"}
+                                                                      : PowerUnit{.scale = 1'000'000.0, .suffix = "µW"};
+}
+
 /// Split a power value (watts) into parts for decimal-aligned rendering
 [[nodiscard]] inline auto splitPowerForAlignment(double watts) -> AlignedNumericParts
 {
@@ -909,24 +948,9 @@ struct AlignedBytesParts
         return {.wholePart = std::string{'0', getLocaleDecimalPoint()}, .decimalPart = "0", .unitPart = " W"};
     }
 
-    const double absWatts = std::abs(watts);
-    double displayValue = watts;
-    const char* unitSuffix = "W";
-
-    if (absWatts >= 1.0)
-    {
-        // Keep as watts
-    }
-    else if (absWatts >= 0.001)
-    {
-        displayValue = watts * 1000.0;
-        unitSuffix = "mW";
-    }
-    else
-    {
-        displayValue = watts * 1'000'000.0;
-        unitSuffix = "µW";
-    }
+    const PowerUnit unit = powerUnitFor(std::abs(watts)); // decided on the rounded value (#4428)
+    const double displayValue = watts * unit.scale;
+    const char* unitSuffix = unit.suffix;
 
     auto wholeValue = static_cast<std::int64_t>(displayValue);
     const double fractional = std::abs(displayValue - static_cast<double>(wholeValue));
@@ -950,11 +974,12 @@ struct AlignedBytesParts
 
 [[nodiscard]] inline auto formatCountPerSecond(double value) -> std::string
 {
-    if (value >= 1'000'000.0)
+    // Decided on the value rounded as it prints (#4428): 999.96/s is "1.0K/s", not "1000.0/s".
+    if (roundHalfAwayFromZero(value / 1'000.0, 1) >= 1'000.0)
     {
         return formatFixedLocalized(value / 1'000'000.0, 1, "M/s");
     }
-    if (value >= 1'000.0)
+    if (roundHalfAwayFromZero(value, 1) >= 1'000.0)
     {
         return formatFixedLocalized(value / 1'000.0, 1, "K/s");
     }
@@ -1044,16 +1069,8 @@ struct AlignedBytesParts
     {
         return formatFixedLocalized(0.0, 1, " W"); // Also -0.0, which would print as "-0.0 W"
     }
-    const double absWatts = std::abs(watts);
-    if (absWatts >= 1.0)
-    {
-        return formatFixedLocalized(roundHalfAwayFromZero(watts, 1), 1, " W");
-    }
-    if (absWatts >= 0.001)
-    {
-        return formatFixedLocalized(roundHalfAwayFromZero(watts * 1000.0, 1), 1, " mW");
-    }
-    return formatFixedLocalized(roundHalfAwayFromZero(watts * 1'000'000.0, 1), 1, " µW");
+    const PowerUnit unit = powerUnitFor(std::abs(watts));
+    return formatFixedLocalized(roundHalfAwayFromZero(watts * unit.scale, 1), 1, std::string(" ") + unit.suffix);
 }
 
 /// "42%" from 10 % up, "4.2%" below it (where a whole number would read 0 % or 1 % for most

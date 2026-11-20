@@ -26,6 +26,19 @@ Checks: >
   -readability-identifier-length,
   -readability-magic-numbers,
   -readability-use-concise-preprocessor-directives,
+  android-cloexec-accept4,
+  android-cloexec-creat,
+  android-cloexec-dup,
+  android-cloexec-epoll-create1,
+  android-cloexec-inotify-init1,
+  android-cloexec-memfd-create,
+  android-cloexec-open,
+  android-cloexec-pipe2,
+  android-cloexec-socket,
+
+# android-cloexec-* (#4348): despite the name, plain POSIX checks that every descriptor a call makes is close-on-exec
+# (O_CLOEXEC, SOCK_CLOEXEC, F_DUPFD_CLOEXEC...), so none leaks to a child started from another thread. #2148 and
+# #3762 were such leaks.
 
 # Disabled checks rationale:
 # - bugprone-easily-swappable-parameters: too noisy for constructors/adjacent same-type params.

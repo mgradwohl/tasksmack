@@ -102,8 +102,11 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
     const FdGuard fdinfoDir(::openat(dir.get(), "fdinfo", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
-    // A second descriptor for the listing: fdopendir() takes it over and the DirGuard closes it.
-    const int listFd = ::dup(fdDir.get());
+    // A second descriptor for the listing: fdopendir() takes it over and the DirGuard closes it. Close-on-exec like
+    // every other descriptor TaskSmack makes (#4348): dup() doesn't set it, and fdopendir() doesn't add it, so a
+    // child started from another thread meanwhile would inherit another process's /proc/<pid>/fd.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX fcntl() is variadic
+    const int listFd = ::fcntl(fdDir.get(), F_DUPFD_CLOEXEC, 0);
     const DirGuard listing(listFd >= 0 ? ::fdopendir(listFd) : nullptr);
     if (listing.get() == nullptr)
     {
