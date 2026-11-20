@@ -84,6 +84,18 @@ TEST_F(LinuxSystemConnectionsReaderTest, ListsEverySocketWithItsHolder)
     EXPECT_TRUE(timeWait->processName.empty());
 }
 
+// #4322: the holder's comm, cut at 15 bytes in the middle of a character, is shown as well-formed UTF-8.
+TEST_F(LinuxSystemConnectionsReaderTest, AHoldersNameIsWellFormedUtf8)
+{
+    write("100/comm", "Sicherung-Gr\xC3\xB6\xC3\n");
+    LinuxSystemConnectionsReader reader(m_Proc.path.string());
+    const SystemConnectionsRead read = reader.read();
+    ASSERT_EQ(read.status, SystemConnectionsStatus::Ok) << read.detail;
+    const auto held = std::ranges::find_if(read.connections, [](const SystemConnection& c) { return c.pid == 100; });
+    ASSERT_NE(held, read.connections.end());
+    EXPECT_EQ(held->processName, "Sicherung-Gr\xC3\xB6\xEF\xBF\xBD");
+}
+
 TEST_F(LinuxSystemConnectionsReaderTest, NoReadableTableIsAFailure)
 {
     std::filesystem::remove_all(m_Proc.path / "net");
