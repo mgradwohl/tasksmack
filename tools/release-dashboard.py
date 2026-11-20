@@ -10,7 +10,7 @@ Usage:
 docs/release/ on the docs site shows, for one release milestone, what still has to happen before it ships,
 where each of those things stands and how fast it's moving. This writes the JSON that page reads: one
 `<milestone>.json` for every `vX.Y.Z` milestone, and an `index.json` that lists them and holds the figures
-the page compares between releases. .github/workflows/release-dashboard.yml runs it every 30 minutes and
+the page compares between releases. .github/workflows/release-dashboard.yml runs it every 10 minutes and
 publishes DIR to the data-only `dashboard-data` branch; nothing generated is committed to main.
 
 Nothing here is a second tracking system. Every figure is read from what the release process already keeps
@@ -27,8 +27,12 @@ Nothing here is a second tracking system. Every figure is read from what the rel
   - CI          the watched workflows' latest runs and pass counts (main-health.yml's WATCHED list);
   - dry run     release.yml's latest manual run on the branch.
 
-A closed milestone whose release is published is written once, marked `final`, and copied from --previous
-on later runs, so a run costs about 30 REST calls and 40 GraphQL points whatever the history's size.
+What a run costs matters, because the workflow's token shares one hourly budget with every other workflow
+in the repository. A closed milestone whose release is published is written once, marked `final`, and copied
+from --previous on later runs. A planned release and the cycle's pass counts are read once an hour. The
+latest runs come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50
+GraphQL points, and six runs an hour take about 56 and 300 of each budget. Every run prints what it used and
+what's left, and warns when that's under a quarter.
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run
@@ -75,6 +79,15 @@ SOAK_HOURS = 24  # docs/dev/release-process.md, stage 6
 # How main-health.yml judges a watched workflow: by these events' runs, and these conclusions pass.
 JUDGED_EVENTS = ("push", "schedule")
 PASSING = ("success", "neutral")
+# A listing of a branch's last 100 runs of one event that reaches back this far holds every workflow that
+# runs on that event at all.
+LISTING_REACH = timedelta(days=7)
+# What changes slowly is read once an hour, not on every run: the pass counts for the whole cycle (14 calls),
+# and a planned release, which nobody is working on yet.
+SLOW_REFRESH = timedelta(minutes=55)
+# Say so in the run's log when a run leaves less than this share of the hour's API budget: the workflow's
+# token shares it with every other workflow in the repository (main-health.yml above all).
+BUDGET_WARNING = 0.25
 # Whose one-line tracker comments can declare the freeze or approve the candidate: anyone can comment on a
 # public repository's issue, so an outsider's line is never read as either.
 TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
@@ -143,6 +156,9 @@ class GitHub:
         self.rest_calls = 0
         self.graphql_calls = 0
         self.graphql_cost = 0
+        # What's left of each hourly budget after the last call, as (remaining, limit); None until one answers.
+        self.rest_budget: tuple[int, int] | None = None
+        self.graphql_budget: tuple[int, int] | None = None
 
     def _send(self, url: str, body: dict[str, Any] | None) -> Any:
         data = None if body is None else json.dumps(body).encode("utf-8")
@@ -155,6 +171,9 @@ class GitHub:
         if data is not None:
             request.add_header("Content-Type", "application/json")
         with urllib.request.urlopen(request, timeout=60) as response:  # noqa: S310
+            remaining, limit = response.headers.get("X-RateLimit-Remaining"), response.headers.get("X-RateLimit-Limit")
+            if body is None and remaining and limit and remaining.isdigit() and limit.isdigit():
+                self.rest_budget = (int(remaining), int(limit))
             return json.loads(response.read().decode("utf-8"))
 
     def _call(self, what: str, url: str, body: dict[str, Any] | None, check: Callable[[Any], Any]) -> Any:
@@ -213,14 +232,33 @@ class GitHub:
         variables = {"owner": self.owner, "name": self.name, **variables}
         self.graphql_calls += 1
         data = self._call("GraphQL", f"{self.api}/graphql", {"query": query, "variables": variables}, check)
-        self.graphql_cost += (data.get("rateLimit") or {}).get("cost", 0)
+        spent = data.get("rateLimit") or {}
+        self.graphql_cost += spent.get("cost", 0)
+        if isinstance(spent.get("remaining"), int) and isinstance(spent.get("limit"), int):
+            self.graphql_budget = (spent["remaining"], spent["limit"])
         return data
 
-    def graphql_nodes(self, query: str, path: Sequence[str], **variables: Any) -> Iterator[dict[str, Any]]:
-        """Every node of the connection at @p path, a page at a time. The query takes $first and $cursor.
+    def budget(self) -> tuple[str, list[str]]:
+        """What the run used and what's left this hour, as a line for the log, and a warning for each budget
+        the run left under BUDGET_WARNING of."""
+        parts = [f"{self.rest_calls} REST calls", f"{self.graphql_calls} GraphQL calls ({self.graphql_cost} points)"]
+        low = []
+        for name, budget in (("REST", self.rest_budget), ("GraphQL", self.graphql_budget)):
+            if budget is None:
+                continue
+            remaining, limit = budget
+            parts.append(f"{name}: {remaining} of {limit} left this hour")
+            if limit and remaining < BUDGET_WARNING * limit:
+                low.append(f"{name} budget is low: {remaining} of {limit} left this hour")
+        return ", ".join(parts), low
+
+    def graphql_nodes(
+        self, query: str, path: Sequence[str], *, page: int = 50, **variables: Any
+    ) -> Iterator[dict[str, Any]]:
+        """Every node of the connection at @p path, @p page at a time. The query takes $first and $cursor.
         A page that keeps failing is asked for again at half the size, since a large one can time out."""
         cursor = None
-        first = 50
+        first = page
         while True:
             try:
                 data = self.graphql(query, first=first, cursor=cursor, **variables)
@@ -252,7 +290,7 @@ def find_token() -> str:
 
 ISSUES_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String,$since:DateTime!){
-  rateLimit{cost}
+  rateLimit{cost remaining limit}
   repository(owner:$owner,name:$name){milestone(number:$number){issues(first:$first,after:$cursor){
     pageInfo{hasNextPage endCursor}
     nodes{
@@ -273,7 +311,7 @@ query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String,$sinc
 # No orderBy: with one, GitHub answers "Something went wrong" (2026-11-19).
 PULL_REQUESTS_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String){
-  rateLimit{cost}
+  rateLimit{cost remaining limit}
   repository(owner:$owner,name:$name){milestone(number:$number){pullRequests(first:$first,after:$cursor){
     pageInfo{hasNextPage endCursor}
     nodes{number state isDraft createdAt mergedAt closedAt additions deletions}}}}
@@ -281,7 +319,7 @@ query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String){
 
 OPEN_PULL_REQUESTS_QUERY = """
 query($owner:String!,$name:String!,$first:Int!,$cursor:String){
-  rateLimit{cost}
+  rateLimit{cost remaining limit}
   repository(owner:$owner,name:$name){
     pullRequests(states:OPEN,first:$first,after:$cursor,orderBy:{field:CREATED_AT,direction:ASC}){
     pageInfo{hasNextPage endCursor}
@@ -302,7 +340,7 @@ query($owner:String!,$name:String!,$first:Int!,$cursor:String){
 
 TRACKER_QUERY = """
 query($owner:String!,$name:String!,$number:Int!,$first:Int!,$cursor:String){
-  rateLimit{cost}
+  rateLimit{cost remaining limit}
   repository(owner:$owner,name:$name){issue(number:$number){
     number title body
     comments(first:$first,after:$cursor){
@@ -368,26 +406,43 @@ def collect_ci_counts(
     ]
 
 
-def collect_live(gh: GitHub, watched: Sequence[tuple[str, str]], branch: str) -> dict[str, Any]:
-    """What only an open release needs: the open pull requests, each watched workflow's latest finished run
-    on @p branch, and release.yml's manual runs there (a dry run: a real release runs on a tag)."""
+def latest_runs(gh: GitHub, watched: Sequence[tuple[str, str]], branch: str, now: datetime) -> list[dict[str, Any]]:
+    """Each watched workflow's latest finished push run and latest finished schedule run on @p branch, as
+    main-health.yml's judge_branch judges a branch (#2131): the two apart, since some jobs only run nightly and
+    a later push run would hide a red one. A cancelled or skipped run says nothing, and a manual dispatch isn't
+    judged. (Its per-job rule for CI's Sunday unity build, WATCHED_JOBS, isn't repeated: the red-main issue
+    carries that.)
+
+    One listing per event covers every workflow, where one call per workflow and event took fourteen. A
+    workflow missing from a listing that doesn't reach back LISTING_REACH is asked for by itself; missing from
+    one that does, it has no such runs (Pre-commit and Sanitizers never run on a schedule)."""
+    listings: dict[str, list[dict[str, Any]]] = {}
+    reaches_back: dict[str, bool] = {}
+    for event in JUDGED_EVENTS:
+        found = gh.rest("actions/runs", branch=branch, event=event, status="completed", per_page=100)["workflow_runs"]
+        listings[event] = found
+        oldest = parse_time(found[-1]["created_at"]) if found else None
+        reaches_back[event] = len(found) < 100 or (oldest is not None and now - oldest >= LISTING_REACH)
     latest = []
     for file, name in watched:
-        # As main-health.yml's judge_branch does (#2131): the latest finished push run and the latest finished
-        # schedule run, apart, since some jobs only run nightly and a later push run would hide a red one. A
-        # cancelled or skipped run says nothing, and a manual dispatch isn't judged. (Its per-job rule for
-        # CI's Sunday unity build, WATCHED_JOBS, isn't repeated here: the red-main issue carries that.)
         runs = []
         for event in JUDGED_EVENTS:
-            found = gh.rest(
-                f"actions/workflows/{file}/runs", branch=branch, event=event, status="completed", per_page=10
-            )
-            run = next(
-                (run for run in found["workflow_runs"] if run["conclusion"] not in ("cancelled", "skipped")), None
-            )
+            mine = [run for run in listings[event] if (run.get("path") or "").split("@")[0].endswith(f"/{file}")]
+            if not mine and not reaches_back[event]:
+                mine = gh.rest(
+                    f"actions/workflows/{file}/runs", branch=branch, event=event, status="completed", per_page=10
+                )["workflow_runs"]
+            run = next((run for run in mine if run["conclusion"] not in ("cancelled", "skipped")), None)
             if run is not None:
                 runs.append(_run_summary(run))
         latest.append({"file": file, "name": name, "runs": runs})
+    return latest
+
+
+def collect_live(gh: GitHub, watched: Sequence[tuple[str, str]], branch: str, now: datetime) -> dict[str, Any]:
+    """What only an open release needs: the open pull requests, each watched workflow's latest finished runs
+    on @p branch, and release.yml's manual runs there (a dry run: a real release runs on a tag)."""
+    latest = latest_runs(gh, watched, branch, now)
     dispatched = gh.rest(
         f"actions/workflows/{RELEASE_WORKFLOW}/runs", branch=branch, event="workflow_dispatch", per_page=10
     )["workflow_runs"]
@@ -427,8 +482,9 @@ def collect_milestone(gh: GitHub, milestone: dict[str, Any]) -> dict[str, Any]:
     issues = list(
         gh.graphql_nodes(ISSUES_QUERY, ("repository", "milestone", "issues"), number=number, since=IN_PROGRESS_SINCE)
     )
+    # A flat query: a hundred a page costs one point, where the issues' nested lists cost three for fifty.
     pull_requests = list(
-        gh.graphql_nodes(PULL_REQUESTS_QUERY, ("repository", "milestone", "pullRequests"), number=number)
+        gh.graphql_nodes(PULL_REQUESTS_QUERY, ("repository", "milestone", "pullRequests"), page=100, number=number)
     )
     tracker_number = find_tracker(issues)
     tracker = collect_tracker(gh, tracker_number) if tracker_number is not None else None
@@ -1436,6 +1492,9 @@ def build_release(
                 if not planned and (period["end"] or now) > window["start"] and period["start"] < end
             ],
             "live": live,
+            # The pass counts as counted, and when: the next run reuses them for SLOW_REFRESH.
+            "ci_counts": list(ci_counts),
+            "ci_counted_at": raw.get("ci_counted_at") or now,
             "figures": release_figures(
                 issues, pull_requests, window, periods, ci_counts, now, parse_time(milestone["created_at"])
             ),
@@ -1489,18 +1548,45 @@ def _save(path: Path, value: Any, *, pretty: bool = False) -> None:
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
-def reusable(previous: Path | None, title: str) -> dict[str, Any] | None:
-    """The earlier run's file for @p title, when it's a finished release in this schema."""
+def earlier(previous: Path | None, title: str) -> dict[str, Any] | None:
+    """The earlier run's file for @p title, when there is one in this schema."""
     if previous is None:
         return None
-    path = previous / f"{title}.json"
     try:
-        found = _load(path)
+        found = _load(previous / f"{title}.json")
     except (OSError, ValueError):
         return None
-    if isinstance(found, dict) and found.get("schema") == SCHEMA and found.get("final") is True:
-        return found
-    return None
+    return found if isinstance(found, dict) and found.get("schema") == SCHEMA else None
+
+
+def _recent(found: dict[str, Any], key: str, now: datetime) -> bool:
+    value = found.get(key)
+    try:
+        then = parse_time(value) if isinstance(value, str) else None
+    except ValueError:
+        return False
+    return then is not None and timedelta(0) <= now - then < SLOW_REFRESH
+
+
+def reusable(found: dict[str, Any] | None, window: dict[str, Any], now: datetime) -> bool:
+    """Whether the earlier run's file stands for this run too: a finished release always, and a planned one
+    for SLOW_REFRESH, as long as it's still planned (the release before it hasn't shipped since)."""
+    if found is None:
+        return False
+    if found.get("final") is True:
+        return True
+    return found.get("stage") == "planned" and window["start"] is None and _recent(found, "generated_at", now)
+
+
+def earlier_ci_counts(
+    found: dict[str, Any] | None, window: dict[str, Any], now: datetime
+) -> list[dict[str, Any]] | None:
+    """The earlier run's pass counts, when they were counted within SLOW_REFRESH for the same cycle."""
+    if found is None or not _recent(found, "ci_counted_at", now):
+        return None
+    counts = found.get("ci_counts")
+    same_cycle = (found.get("cycle") or {}).get("start") == iso(window["start"])
+    return counts if same_cycle and isinstance(counts, list) and counts else None
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -1551,8 +1637,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         watched = [tuple(entry) for entry in repo_raw["watched"]]
 
         milestones.sort(key=lambda milestone: version_of(milestone["title"]) or (0, 0, 0))
-        kept = {milestone["title"]: reusable(args.previous, milestone["title"]) for milestone in milestones}
         windows = {milestone["title"]: cycle_window(milestone, releases, pending) for milestone in milestones}
+        before = {milestone["title"]: earlier(args.previous, milestone["title"]) for milestone in milestones}
+        kept = {title: found if reusable(found, windows[title], now) else None for title, found in before.items()}
         if gh is not None:
             # Only the red periods the releases being rebuilt can overlap: the list grows by dozens a cycle.
             starts = [windows[title]["start"] for title, found in kept.items() if found is None]
@@ -1565,7 +1652,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         for milestone in milestones:
             title = milestone["title"]
             if kept[title] is not None:
-                print(f"{title}: final, copied from the last run")
+                print(f"{title}: {'final' if kept[title].get('final') else 'planned'}, copied from the last run")
                 built.append(kept[title])
                 continue
             version = version_of(title)
@@ -1574,11 +1661,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             window = windows[title]
             if gh is not None:
                 raw = collect_milestone(gh, milestone)
-                raw["ci_counts"] = []
+                raw["ci_counts"], raw["ci_counted_at"] = [], iso(now)
                 if window["start"] is not None:
-                    raw["ci_counts"] = collect_ci_counts(gh, watched, branch, window["start"], window["end"] or now)
+                    counted = earlier_ci_counts(before[title], window, now)
+                    if counted is not None:
+                        raw["ci_counts"], raw["ci_counted_at"] = counted, before[title]["ci_counted_at"]
+                    else:
+                        raw["ci_counts"] = collect_ci_counts(gh, watched, branch, window["start"], window["end"] or now)
                     if not window["end"] and branch not in repo_raw["live"]:
-                        repo_raw["live"][branch] = collect_live(gh, watched, branch)
+                        repo_raw["live"][branch] = collect_live(gh, watched, branch, now)
                 if args.dump_raw:
                     _save(args.dump_raw / f"{title}.json", raw, pretty=True)
             else:
@@ -1609,7 +1700,10 @@ def main(argv: Sequence[str] | None = None) -> int:
         _save(args.out / f"{release['milestone']['title']}.json", release)
     _save(args.out / "index.json", build_index(built, args.repo, now))
     if gh is not None:
-        print(f"{gh.rest_calls} REST calls, {gh.graphql_calls} GraphQL calls ({gh.graphql_cost} points)")
+        used, low = gh.budget()
+        print(used)
+        for warning in low:
+            print(f"::warning title=Release dashboard::{warning}")
     return 0
 
 

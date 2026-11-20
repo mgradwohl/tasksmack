@@ -231,7 +231,8 @@ What that asks of the tracker:
   - neither: a longer comment (the lanes' readiness reports), a line that hedges ("ready for the freeze?"), a line
     that names an issue or an exception ("Approved: #4600 exception"), or a comment from someone who can't write
     to the repository.
-- **A due date on the milestone** is optional. The page shows it when it's there.
+- **A due date on the milestone** is the release's goal. The page shows it under "Released" beside the date it
+  really shipped, says what net closing rate the goal asks for, and marks it on the burn-up chart.
 
 The pace table is arithmetic on the last 1, 3 and 7 days, not a forecast. A review sweep that files a hundred
 findings in a day turns the net negative until they're worked off.
@@ -245,9 +246,12 @@ How it's made:
 
 - `tools/release-dashboard.py` reads the API and writes one JSON file per `vX.Y.Z` milestone, plus an index. A
   shipped release is written once and reused.
-- `.github/workflows/release-dashboard.yml` runs it every 30 minutes and publishes the files to the `dashboard-data`
+- `.github/workflows/release-dashboard.yml` runs it every 10 minutes and publishes the files to the `dashboard-data`
   branch, which holds that one commit and nothing else. To refresh now: `gh workflow run release-dashboard.yml`.
-- `docs/release/` is the page: static, no library, no CDN. If the data is more than 90 minutes old it says so.
+- `docs/release/` is the page: static, no library, no CDN. If the data is more than 45 minutes old it says so.
+- The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
+  once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
+  used and what's left, and warns under a quarter.
 - To look at the data locally: `python -I -X utf8 tools/release-dashboard.py --out <folder>` (a read-only token
   from `gh auth login` is enough).
 

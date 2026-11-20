@@ -11,7 +11,7 @@
   const TITLE = /^v\d+\.\d+\.\d+$/;
   const REPO = /^[\w.-]+\/[\w.-]+$/;
   const REFRESH_MS = 5 * 60 * 1000;
-  const STALE_MINUTES = 90; // three missed runs of the 30-minute schedule
+  const STALE_MINUTES = 45; // the schedule is every 10 minutes; GitHub can start a run a quarter of an hour late
   const HOUR = 3600;
   const DAY = 86400;
 
@@ -188,7 +188,7 @@
     // warning when that's too long. clock() keeps them right on a page left open.
     const stamp = el('span', { title: moment(now) });
     const age = el('span');
-    const stale = el('p', { class: 'banner', hidden: true }, 'This data is ', age, ' old. It should refresh every 30 minutes: check the ',
+    const stale = el('p', { class: 'banner', hidden: true }, 'This data is ', age, ' old. It should refresh every 10 minutes: check the ',
       link('Release Dashboard workflow', '/actions/workflows/release-dashboard.yml'), '.');
     view.clock = () => {
       const minutes = (Date.now() / 1000 - now) / 60;
@@ -225,8 +225,15 @@
         el('p', { class: 'links' }, links)),
       el('div', { class: 'masthead-side' },
         el('label', { for: 'release-select' }, 'Release', select),
-        stamp,
-        release.milestone.due_on ? el('span', null, 'Due ' + day(seconds(release.milestone.due_on))) : null));
+        stamp));
+  }
+
+  /** The release's goal: the milestone's due date. It's a calendar day, whatever time GitHub stores with it. */
+  function goal(release) {
+    const match = /^(\d{4})-(\d\d)-(\d\d)/.exec(release.milestone.due_on || '');
+    if (!match) return null;
+    const end = new Date(Number(match[1]), Number(match[2]) - 1, Number(match[3]), 23, 59, 59);
+    return { end: end.getTime() / 1000, label: dateFormat.format(end) };
   }
 
   function choose(title) {
@@ -247,10 +254,16 @@
       released: release.cycle.end,
     };
     const position = STAGES.findIndex((stage) => stage[0] === release.stage);
+    const target = goal(release);
     return el('ol', { class: 'stages', 'aria-label': 'Release stage' }, STAGES.map(([key, name, note], index) => {
       const when = at[key] ? 'since ' + day(seconds(at[key])) : note;
+      // Under "Released": the goal date beside the date it really shipped, or TBD until it does.
+      const notes = key === 'released'
+        ? [target ? el('small', { class: 'goal', text: 'Goal: ' + target.label }) : null,
+          at.released || target ? el('small', { text: 'Actual: ' + (at.released ? day(seconds(at.released)) : 'TBD') }) : null]
+        : [el('small', { text: release.stage === 'planned' && index === 0 ? 'Not started' : when })];
       return el('li', { class: index < position ? 'past' : index === position ? 'now' : null, 'aria-current': index === position ? 'step' : null },
-        name, el('small', { text: release.stage === 'planned' && index === 0 ? 'Not started' : when }));
+        name, notes);
     }));
   }
 
@@ -276,6 +289,15 @@
     else sentence = 'Over the last 3 days, more issues were added than closed: ' + three.added_per_day + ' added and ' + three.closed_per_day + ' closed a day.';
     if (open && three.days_left == null && one && one.days_left != null) sentence += ' The last 24 hours did better: about ' + days(one.days_left) + ' at that rate.';
     hero.append(el('p', { class: 'pace-line', text: sentence }));
+    const target = goal(release);
+    if (target && open) {
+      const left = (target.end - seconds(release.generated_at)) / DAY;
+      const week = release.pace.find((rate) => rate.days === 7) || three;
+      const away = left < 1 ? 'today' : left < 2 ? 'tomorrow' : Math.floor(left) + ' days away';
+      hero.append(el('p', { class: 'pace-line', text: left > 0
+        ? 'The goal is ' + target.label + ', ' + away + '. Closing what is open by then takes a net ' + (Math.round((10 * open) / Math.max(left, 1)) / 10) + ' a day; the last 7 days ran at ' + signed(week.net_per_day) + '.'
+        : 'The goal was ' + target.label + ', ' + days(Math.round(-left)) + ' ago.' }));
+    }
 
     const table = el('table', null,
       el('caption', { text: 'Pace, in issues a day' }),
@@ -518,7 +540,10 @@
     const joined = release.events.joined;
     const done = release.events.done;
     const yMax = niceMax(joined.length);
-    const x = (t) => box.left + ((t - start) / Math.max(1, end - start)) * (box.right - box.left);
+    // The axis runs on to the goal while the release is open, so the room left is in the picture.
+    const aim = release.cycle.end ? null : goal(release);
+    const last = aim ? Math.max(end, aim.end) : end;
+    const x = (t) => box.left + ((t - start) / Math.max(1, last - start)) * (box.right - box.left);
     const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
 
     // A count only changes at an event, so each line is drawn as steps between them.
@@ -534,11 +559,11 @@
     const scope = steps(joined);
     const closed = steps(done);
 
-    const tickEvery = Math.max(1, Math.ceil((end - start) / DAY / Math.max(2, Math.floor((box.right - box.left) / 64))));
+    const tickEvery = Math.max(1, Math.ceil((last - start) / DAY / Math.max(2, Math.floor((box.right - box.left) / 64))));
     const xTicks = [];
     const cursor = new Date(start * 1000);
     cursor.setHours(24, 0, 0, 0);
-    for (let index = 0; cursor.getTime() / 1000 < end; index += 1) {
+    for (let index = 0; cursor.getTime() / 1000 < last; index += 1) {
       if (index % tickEvery === 0) xTicks.push([x(cursor.getTime() / 1000), dateFormat.format(cursor)]);
       cursor.setDate(cursor.getDate() + 1);
     }
@@ -551,14 +576,19 @@
       chart.append(svg('line', { class: 'marker', x1: x(freeze), x2: x(freeze), y1: box.top, y2: box.bottom }),
         svg('text', { x: x(freeze) + 5, y: box.top + 10, text: 'Freeze' }));
     }
+    if (aim && aim.end > start) {
+      const anchor = x(aim.end) > box.right - 40 ? 'end' : 'start';
+      chart.append(svg('line', { class: 'marker', x1: x(aim.end), x2: x(aim.end), y1: box.top, y2: box.bottom }),
+        svg('text', { x: x(aim.end) + (anchor === 'end' ? -5 : 5), y: box.top + 10, 'text-anchor': anchor, text: 'Goal ' + aim.label }));
+    }
     chart.append(svg('path', { class: 'f-closed-wash', d: closed.path + 'V' + box.bottom + 'H' + box.left + 'Z' }),
       svg('path', { class: 'line s-scope', d: scope.path }), svg('path', { class: 'line s-closed', d: closed.path }));
 
     // The end labels sit beside their dots; when the lines meet, the upper one moves up, not away.
     const closedY = y(closed.total);
     const scopeY = Math.min(y(scope.total), closedY - 15);
-    const label = (yAt, value, name) => svg('text', { x: box.right + 10, y: yAt + 4 }, svg('tspan', { class: 'label-strong', text: number.format(value) }), svg('tspan', { text: ' ' + name }));
-    chart.append(svg('circle', { class: 'dot f-scope', cx: box.right, cy: y(scope.total), r: 4 }), svg('circle', { class: 'dot f-closed', cx: box.right, cy: closedY, r: 4 }),
+    const label = (yAt, value, name) => svg('text', { x: x(end) + 10, y: yAt + 4 }, svg('tspan', { class: 'label-strong', text: number.format(value) }), svg('tspan', { text: ' ' + name }));
+    chart.append(svg('circle', { class: 'dot f-scope', cx: x(end), cy: y(scope.total), r: 4 }), svg('circle', { class: 'dot f-closed', cx: x(end), cy: closedY, r: 4 }),
       label(scopeY, scope.total, 'in scope'), label(closedY, closed.total, 'closed'));
 
     const hair = svg('line', { class: 'crosshair', y1: box.top, y2: box.bottom, hidden: true });
@@ -583,7 +613,7 @@
     };
     target.addEventListener('pointermove', (event) => {
       const bounds = chart.getBoundingClientRect();
-      point(start + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (end - start));
+      point(start + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (last - start));
     });
     target.addEventListener('pointerleave', leave);
     target.addEventListener('focus', () => point(at));
@@ -767,7 +797,7 @@
         strip, el('div', { class: 'strip-ends' }, el('span', { text: day(start) }), el('span', { text: release.cycle.end ? day(end) : 'now' }))),
       release.live ? el('div', { class: 'block' }, el('h3', { text: 'Latest runs of each watched workflow' }), workflows(release, now)) : null,
       el('div', { class: 'scroll' }, table),
-      el('p', { class: 'footnote' }, 'Runs on ' + release.branch + ' since the cycle started; cancelled runs are left out. Coverage is on ',
+      el('p', { class: 'footnote' }, 'Runs on ' + release.branch + ' since the cycle started, counted once an hour; cancelled runs are left out. Coverage is on ',
         el('a', { href: 'https://app.codecov.io/gh/' + (REPO.test(view.index.repo) ? view.index.repo : ''), text: 'Codecov' }), '.'));
   }
 
@@ -878,7 +908,7 @@
   function footer(release) {
     return el('footer', null,
       el('p', { class: 'footnote' }, 'Read from the milestone, the release tracker, the labels and the Actions runs: nothing is kept anywhere else. Generated ' + moment(seconds(release.generated_at)) + ' by ',
-        link('tools/release-dashboard.py', '/blob/main/tools/release-dashboard.py'), ', every 30 minutes.'),
+        link('tools/release-dashboard.py', '/blob/main/tools/release-dashboard.py'), ', every 10 minutes.'),
       el('p', { class: 'footnote' }, link('How the page reads the tracker and the labels', '/blob/main/docs/dev/release-process.md'), ' · ',
         link('All milestones', '/milestones'), ' · ', link('Actions', '/actions')));
   }

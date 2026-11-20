@@ -268,6 +268,10 @@ def check_release_dashboard(page: Page, site: str, offline: bool) -> None:
     stage = page.locator(".stages li[aria-current='step']").text_content() or ""
     if not stage.startswith("Feature freeze"):
         raise AssertionError(f"the current stage reads {stage!r}, not Feature freeze")
+    # The milestone's due date is the goal: under "Released", beside the date it really shipped (not yet).
+    released = page.locator(".stages li").last.text_content() or ""
+    if "Goal: " not in released or "Actual: TBD" not in released:
+        raise AssertionError(f"the Released stage reads {released!r}, with no goal or no 'Actual: TBD'")
     if page.locator(".chart svg path.line").count() != 2:
         raise AssertionError("the burn-up didn't draw its two lines")
     if page.locator(".hero-figure").text_content() != str(current["counts"]["open"]):
@@ -299,6 +303,9 @@ def check_release_dashboard(page: Page, site: str, offline: bool) -> None:
         raise AssertionError("the planned release shows more than its scope")
     page.goto(site + "release/?m=v1.0.0")
     expect_release(page, "v1.0.0")
+    shipped = page.locator(".stages li").last.text_content() or ""
+    if "Actual: " not in shipped or "TBD" in shipped:
+        raise AssertionError(f"the shipped release's Released stage reads {shipped!r}, with no date")
     page.goto(site + "release/?m=v9.9.9%3Cscript%3E")
     expect_release(page, index["current"])
 

@@ -294,6 +294,11 @@ select {
   color: var(--muted);
 }
 
+.stages small.goal {
+  color: var(--ink);
+  font-weight: 600;
+}
+
 /* ---- summary --------------------------------------------------------------------------------- */
 
 .summary {

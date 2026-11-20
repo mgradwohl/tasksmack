@@ -1213,6 +1213,96 @@ class FakeGitHub:
         return {"total_count": min(self.ceiling, sum(1 for moment in self.runs if start <= moment <= end))}
 
 
+class RunListing:
+    """Answers the run listings: the branch's last runs of an event, and one workflow's own."""
+
+    def __init__(self, listings, own=None):
+        self.listings = listings
+        self.own = own or {}
+        self.asked = []
+
+    def rest(self, path, **params):
+        self.asked.append((path, params["event"]))
+        if path == "actions/runs":
+            return {"workflow_runs": self.listings[params["event"]]}
+        return {"workflow_runs": self.own.get((path, params["event"]), [])}
+
+
+def listed(run_id, file, conclusion, created, event="push"):
+    return {
+        "id": run_id,
+        "path": f".github/workflows/{file}",
+        "status": "completed",
+        "conclusion": conclusion,
+        "event": event,
+        "head_sha": "c" * 40,
+        "created_at": created,
+        "updated_at": created,
+    }
+
+
+class LatestRunsTests(unittest.TestCase):
+    WATCHED = (("ci.yml", "CI"), ("pre-commit.yml", "Pre-commit"))
+
+    def test_two_listings_answer_for_every_workflow(self):
+        gh = RunListing(
+            {
+                "push": [
+                    listed(5, "ci.yml", "cancelled", at(20, 11)),  # says nothing
+                    listed(4, "pre-commit.yml", "success", at(20, 10)),
+                    listed(3, "ci.yml", "failure", at(20, 9)),
+                    listed(2, "ci.yml", "success", at(20, 8)),
+                    listed(1, "other.yml", "failure", at(20, 7)),
+                ],
+                "schedule": [listed(9, "ci.yml@refs/heads/main", "success", at(20, 4), event="schedule")],
+            }
+        )
+        found = dashboard.latest_runs(gh, self.WATCHED, "main", NOW)
+        self.assertEqual(
+            [(entry["file"], [run["id"] for run in entry["runs"]]) for entry in found],
+            [("ci.yml", [3, 9]), ("pre-commit.yml", [4])],
+        )
+        self.assertEqual(found[0]["runs"][0]["conclusion"], "failure")
+        # Short listings hold everything there is, so nothing more is asked: Pre-commit has no nightly run.
+        self.assertEqual(gh.asked, [("actions/runs", "push"), ("actions/runs", "schedule")])
+
+    def test_a_workflow_missing_from_a_short_reach_is_asked_for_by_itself(self):
+        # A hundred push runs in the last two hours, none of them Pre-commit's.
+        recent = [listed(1000 + index, "ci.yml", "success", at(20, 10)) for index in range(100)]
+        own = {("actions/workflows/pre-commit.yml/runs", "push"): [listed(7, "pre-commit.yml", "failure", at(18))]}
+        gh = RunListing({"push": recent, "schedule": []}, own)
+        found = dashboard.latest_runs(gh, self.WATCHED, "main", NOW)
+        self.assertEqual([run["id"] for run in found[1]["runs"]], [7])
+        self.assertIn(("actions/workflows/pre-commit.yml/runs", "push"), gh.asked)
+        self.assertEqual(len(gh.asked), 3)
+
+    def test_a_workflow_missing_from_a_week_of_runs_has_none(self):
+        # A hundred nightly runs reaching back three weeks, none of them Pre-commit's: it has no schedule.
+        nightly = [
+            listed(2000 + index, "ci.yml", "success", at(20 - index // 5, 4), event="schedule") for index in range(100)
+        ]
+        gh = RunListing({"push": [listed(1, "pre-commit.yml", "success", at(20, 10))], "schedule": nightly})
+        found = dashboard.latest_runs(gh, self.WATCHED, "main", NOW)
+        self.assertEqual([run["event"] for run in found[1]["runs"]], ["push"])
+        self.assertEqual(len(gh.asked), 2)
+
+
+class BudgetTests(unittest.TestCase):
+    def test_the_log_line_and_the_warning(self):
+        gh = dashboard.GitHub(REPOSITORY, "token")
+        gh.rest_calls, gh.graphql_calls, gh.graphql_cost = 7, 20, 48
+        self.assertEqual(gh.budget(), ("7 REST calls, 20 GraphQL calls (48 points)", []))
+        gh.rest_budget, gh.graphql_budget = (900, 1000), (240, 1000)
+        line, low = gh.budget()
+        self.assertEqual(
+            line,
+            "7 REST calls, 20 GraphQL calls (48 points), REST: 900 of 1000 left this hour, GraphQL: 240 of 1000 left this hour",
+        )
+        self.assertEqual(low, ["GraphQL budget is low: 240 of 1000 left this hour"])
+        gh.graphql_budget = (250, 1000)
+        self.assertEqual(gh.budget()[1], [])
+
+
 class CountRunsTests(unittest.TestCase):
     def test_a_count_under_the_ceiling_is_one_call(self):
         gh = FakeGitHub([when(1, hour) for hour in range(20)], dashboard.COUNT_CEILING)
@@ -1279,17 +1369,99 @@ class RunTests(unittest.TestCase):
             )
             self.assertEqual(json.loads((Path(second) / "v1.1.0.json").read_text(encoding="utf-8"))["stage"], "freeze")
 
-    def test_another_schema_is_not_reused(self):
+    def test_the_earlier_file_is_read_only_in_this_schema(self):
         with tempfile.TemporaryDirectory() as previous:
             path = Path(previous) / "v1.0.0.json"
             path.write_text(json.dumps({"schema": dashboard.SCHEMA + 1, "final": True}), encoding="utf-8")
-            self.assertIsNone(dashboard.reusable(Path(previous), "v1.0.0"))
-            path.write_text(json.dumps({"schema": dashboard.SCHEMA, "final": False}), encoding="utf-8")
-            self.assertIsNone(dashboard.reusable(Path(previous), "v1.0.0"))
+            self.assertIsNone(dashboard.earlier(Path(previous), "v1.0.0"))
+            path.write_text("{not json", encoding="utf-8")
+            self.assertIsNone(dashboard.earlier(Path(previous), "v1.0.0"))
+            path.write_text(json.dumps([dashboard.SCHEMA]), encoding="utf-8")
+            self.assertIsNone(dashboard.earlier(Path(previous), "v1.0.0"))
             path.write_text(json.dumps({"schema": dashboard.SCHEMA, "final": True}), encoding="utf-8")
-            self.assertIsNotNone(dashboard.reusable(Path(previous), "v1.0.0"))
-            self.assertIsNone(dashboard.reusable(Path(previous), "v9.9.9"))
-            self.assertIsNone(dashboard.reusable(None, "v1.0.0"))
+            self.assertEqual(dashboard.earlier(Path(previous), "v1.0.0"), {"schema": dashboard.SCHEMA, "final": True})
+            self.assertIsNone(dashboard.earlier(Path(previous), "v9.9.9"))
+            self.assertIsNone(dashboard.earlier(None, "v1.0.0"))
+
+    def test_what_stands_for_the_next_run(self):
+        under_way, planned = {"start": when(10), "end": None}, {"start": None, "end": None}
+        self.assertFalse(dashboard.reusable(None, under_way, NOW))
+        # A finished release always does.
+        self.assertTrue(dashboard.reusable({"final": True, "stage": "released"}, under_way, NOW))
+        # A release under way never does: it's what the page is for.
+        fresh = dashboard.iso(NOW - timedelta(minutes=10))
+        self.assertFalse(dashboard.reusable({"final": False, "stage": "freeze", "generated_at": fresh}, under_way, NOW))
+        # A planned one does for under an hour, while it's still planned.
+        self.assertTrue(dashboard.reusable({"final": False, "stage": "planned", "generated_at": fresh}, planned, NOW))
+        stale = dashboard.iso(NOW - timedelta(minutes=56))
+        self.assertFalse(dashboard.reusable({"final": False, "stage": "planned", "generated_at": stale}, planned, NOW))
+        # The release before it shipped since: it has started, so it's read afresh.
+        self.assertFalse(
+            dashboard.reusable({"final": False, "stage": "planned", "generated_at": fresh}, under_way, NOW)
+        )
+        for broken in (
+            {"stage": "planned"},
+            {"stage": "planned", "generated_at": "yesterday"},
+            {"stage": "planned", "generated_at": 7},
+        ):
+            self.assertFalse(dashboard.reusable(broken, planned, NOW), broken)
+
+    def test_pass_counts_are_reused_for_under_an_hour(self):
+        window = {"start": when(10, 12), "end": None}
+        counts = [{"file": "ci.yml", "name": "CI", "success": 1, "failure": 0}]
+        found = {
+            "ci_counts": counts,
+            "ci_counted_at": dashboard.iso(NOW - timedelta(minutes=30)),
+            "cycle": {"start": "2026-01-10T12:00:00Z"},
+        }
+        self.assertEqual(dashboard.earlier_ci_counts(found, window, NOW), counts)
+        self.assertIsNone(dashboard.earlier_ci_counts(None, window, NOW))
+        self.assertIsNone(
+            dashboard.earlier_ci_counts(
+                {**found, "ci_counted_at": dashboard.iso(NOW - timedelta(minutes=55))}, window, NOW
+            )
+        )
+        self.assertIsNone(
+            dashboard.earlier_ci_counts(
+                {**found, "ci_counted_at": dashboard.iso(NOW + timedelta(minutes=5))}, window, NOW
+            )
+        )
+        self.assertIsNone(dashboard.earlier_ci_counts({**found, "ci_counts": []}, window, NOW))
+        self.assertIsNone(
+            dashboard.earlier_ci_counts({**found, "cycle": {"start": "2026-01-09T12:00:00Z"}}, window, NOW)
+        )
+        self.assertIsNone(
+            dashboard.earlier_ci_counts(
+                {key: value for key, value in found.items() if key != "ci_counted_at"}, window, NOW
+            )
+        )
+
+    def test_a_planned_release_is_copied_while_it_is_fresh(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            code, printed = generate(Path(second), "--previous", first)
+            self.assertEqual(code, 0, printed)
+            self.assertIn("v1.2.0: planned, copied from the last run", printed)
+            self.assertIn("v1.1.0: freeze, 6 open of 10 issues", printed)  # the release under way is always read
+            later = dashboard.iso(NOW + timedelta(hours=2))
+            code, printed = generate(Path(second), "--previous", first, "--now", later)
+            self.assertIn("v1.2.0: planned, 2 open of 2 issues", printed)
+
+    def test_the_release_file_carries_its_pass_counts_for_the_next_run(self):
+        release = build("v1.1.0")
+        self.assertEqual(release["ci_counts"], CI_COUNTS)
+        self.assertEqual(release["ci_counted_at"], "2026-01-20T12:00:00Z")
+        counted = dashboard.build_release(
+            {**RAW["v1.1.0"], "ci_counted_at": "2026-01-20T11:30:00Z"},
+            published(),
+            RED_ISSUES,
+            CI_COUNTS,
+            LIVE,
+            REPOSITORY,
+            NOW,
+            {(1, 1, 0)},
+        )
+        self.assertEqual(counted["ci_counted_at"], "2026-01-20T11:30:00Z")
 
     def test_one_milestone(self):
         with tempfile.TemporaryDirectory() as out:
