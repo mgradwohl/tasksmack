@@ -192,9 +192,12 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
 /// could have put there; nullopt otherwise. Every link on the way, a folder's or a hop's, must sit in a folder only root
 /// could change (#4396, #4551): a link another account can replace would choose which root-owned program runs
 /// (xdg-open -> python3, which runs a folder's __main__.py), and could re-point it before the exec. So only root can
-/// change where @p path leads, and @p path itself is what runs (#4531): a multi-call program dispatches on its argv[0],
-/// so pkill run as /usr/bin/pgrep was pgrep, and busybox's crontab was busybox. A path with "." or ".." is answered as
-/// its canonical form instead. Run the path this returns.
+/// change where @p path leads. @p path itself is what runs (#4531) when every hop's folder is named as it is, with no
+/// link in it: a multi-call program dispatches on its argv[0], so pkill run as /usr/bin/pgrep was pgrep. Otherwise the
+/// canonical path is answered (the #4564 review): a link nested inside a folder link's target (a root link to /opt/app,
+/// itself a link into a staff-writable folder) is checked only where it leads, not where it sits, and a /proc magic
+/// link changes with the process behind it, so the kernel's walk of such a path could be changed after the check.
+/// Run the path this returns.
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path, const RootFs& fs)
 {
     if (!path.starts_with('/') || !fs.executable(path))
@@ -203,12 +206,16 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     }
     constexpr int MAX_LINK_HOPS = 40; // the kernel's own limit on a path's links
     std::string hop = path;
+    bool namedAsItIs = isPlainAbsolutePath(path); // every hop's folder is its own canonical path: no folder link walked
     for (int hops = 0;; ++hops)
     {
-        if (hops > MAX_LINK_HOPS || !isRootOnlyFolder(parentFolder(hop), fs) || !noForeignLinkOnTheWay(hop, fs))
+        const std::string folder = parentFolder(hop);
+        const std::optional<std::string> folderResolved = rootOnlyFolder(folder, fs);
+        if (hops > MAX_LINK_HOPS || !folderResolved.has_value() || !noForeignLinkOnTheWay(hop, fs))
         {
             return std::nullopt;
         }
+        namedAsItIs = namedAsItIs && *folderResolved == folder;
         const std::optional<std::string> target = fs.readLink(hop);
         if (!target.has_value())
         {
@@ -221,7 +228,7 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     {
         return std::nullopt;
     }
-    return isPlainAbsolutePath(path) ? std::optional<std::string>(path) : resolved;
+    return namedAsItIs ? std::optional<std::string>(path) : resolved;
 }
 
 [[nodiscard]] inline std::optional<std::string> rootTrustedPath(const std::string& path)

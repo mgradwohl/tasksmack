@@ -620,7 +620,11 @@ TEST(RootToolsTest, AFolderLinkOnAHopsWayMustSitInARootOnlyFolder)
     EXPECT_FALSE(RootTools::rootTrustedPath("/usr/bin/node", fs).has_value())
         << "/usr/local/lib/nodejs is a link in a staff-writable folder: it chooses where the hop leads";
     EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/direct", fs), std::optional<std::string>("/usr/bin/direct")) << "#4531";
-    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/merged"));
+
+    // The #4564 review: a hop through a folder link is answered canonically. /usr/bin/merged's hop goes through root's
+    // /bin link (merged-usr), so it runs as the python3 it leads to.
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/merged", fs), std::optional<std::string>("/usr/bin/python3"))
+        << "through a folder link: canonical";
     EXPECT_TRUE(RootTools::isPlainAbsolutePath("/usr/bin/pkill"));
     for (const std::string_view odd : {"/usr/bin/../bin/pkill", "/usr/./bin/pkill", "/usr//bin/pkill", "usr/bin/pkill", "/usr/bin/"})
     {
@@ -630,6 +634,41 @@ TEST(RootToolsTest, AFolderLinkOnAHopsWayMustSitInARootOnlyFolder)
 
 // The #4551 review: with no trusted folder, a root child's PATH finds nothing. An empty PATH would search the
 // current directory.
+// The #4564 review: a link nested in a folder link's target is checked only where it leads. /usr/bin/two -> /opt/app/
+// bin/node, where root's /opt/app links into a staff-writable /usr/local/lib/nodejs, a link the staff member can swap:
+// run by its own name, the kernel would walk that link again at the exec. It is answered canonically, as is a /proc
+// magic link, which changes with the process behind it; a link to its neighbour (pkill -> pgrep) keeps its name.
+TEST(RootToolsTest, APathThroughAFolderLinkRunsCanonicallyAndANeighbourLinkKeepsItsName)
+{
+    constexpr std::uint32_t DIR = 0040000;
+    FakeTree tree = staffWritableUsrLocal();
+    tree.entries["/usr/local/lib"] = {.uid = 0, .mode = DIR | 02775};
+    tree.entries["/usr/local/lib/nodejs"] = {.uid = 1000, .mode = 0120777};
+    tree.links["/usr/local/lib/nodejs"] = "/opt/other";
+    tree.entries["/opt"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other/bin"] = {.uid = 0, .mode = DIR | 0755};
+    tree.entries["/opt/other/bin/node"] = {.uid = 0, .mode = 0100755};
+    tree.entries["/opt/app"] = {.uid = 0, .mode = 0120777};
+    tree.links["/opt/app"] = "/usr/local/lib/nodejs";
+    tree.entries["/usr/bin/two"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/two"] = "/opt/app/bin/node";
+    tree.entries["/usr/bin/pgrep"] = {.uid = 0, .mode = 0100755};
+    tree.entries["/usr/bin/pkill"] = {.uid = 0, .mode = 0120777};
+    tree.links["/usr/bin/pkill"] = "/usr/bin/pgrep";
+    tree.entries["/proc"] = {.uid = 0, .mode = DIR | 0555};
+    tree.entries["/proc/1"] = {.uid = 0, .mode = DIR | 0555};
+    tree.entries["/proc/1/cwd"] = {.uid = 0, .mode = 0120777};
+    tree.links["/proc/1/cwd"] = "/";
+    const RootTools::RootFs fs = tree.fs();
+
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/two", fs), std::optional<std::string>("/opt/other/bin/node"))
+        << "never by a name the kernel would walk through the staff member's link again";
+    EXPECT_EQ(RootTools::rootTrustedPath("/proc/1/cwd/usr/bin/pgrep", fs), std::optional<std::string>("/usr/bin/pgrep"));
+    EXPECT_EQ(RootTools::rootTrustedPath("/usr/bin/pkill", fs), std::optional<std::string>("/usr/bin/pkill"))
+        << "#4531: pkill keeps the name it dispatches on";
+}
+
 TEST(RootToolsTest, WithNoTrustedFolderTheRootPathFindsNothing)
 {
     EXPECT_EQ(RootTools::rootPathVariable(""), "PATH=/proc/nonexistent");
