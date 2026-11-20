@@ -1,5 +1,9 @@
 #include "Sha256.h"
 
+#ifndef _WIN32
+#include "Platform/Linux/PosixGuards.h"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -9,14 +13,21 @@
 #include <cstring>
 #include <expected>
 #include <filesystem>
+#ifdef _WIN32
 #include <fstream>
 #include <ios>
+#endif
 #include <span>
 #include <stop_token>
 #include <string>
 #include <string_view>
 #include <system_error>
 #include <vector>
+
+#ifndef _WIN32
+#include <fcntl.h>
+#include <unistd.h>
+#endif
 
 namespace Platform::Sha256
 {
@@ -161,14 +172,16 @@ std::string toHex(const Digest& digest)
 
 std::expected<Digest, std::string> hashFile(const std::filesystem::path& path, const std::stop_token& stop)
 {
+    Hasher hasher;
+    std::vector<char> chunk(READ_CHUNK_BYTES);
+#ifdef _WIN32
+    // Windows' own image hashing reads through ReadFile (WindowsProcessActions); this path serves the shared callers.
     std::ifstream file(path, std::ios::binary);
     if (!file)
     {
         const std::error_code ec(errno, std::generic_category());
         return std::unexpected(std::string("couldn't open the file: ") + ec.message());
     }
-    Hasher hasher;
-    std::vector<char> chunk(READ_CHUNK_BYTES);
     while (file)
     {
         if (stop.stop_requested())
@@ -186,6 +199,41 @@ std::expected<Digest, std::string> hashFile(const std::filesystem::path& path, c
     {
         return std::unexpected(std::string("couldn't read the file"));
     }
+#else
+    // read(2), not an ifstream (#4422): libc++'s file buffer doesn't report a failed read as badbit, so a read that
+    // failed part-way (EIO on a failing disk, ESTALE on NFS, EISDIR) ended the loop like the end of the file, and the
+    // digest of the bytes read so far came back as the file's (the one VirusTotal is then asked about).
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const Posix::FdGuard fd(::open(path.c_str(), O_RDONLY | O_CLOEXEC));
+    if (fd.get() < 0)
+    {
+        const std::error_code ec(errno, std::generic_category());
+        return std::unexpected(std::string("couldn't open the file: ") + ec.message());
+    }
+    for (;;)
+    {
+        if (stop.stop_requested())
+        {
+            return std::unexpected(std::string("Stopped"));
+        }
+        // NOLINTNEXTLINE(misc-include-cleaner) - ssize_t is POSIX (<sys/types.h> via <unistd.h>)
+        const ssize_t got = ::read(fd.get(), chunk.data(), chunk.size());
+        if (got < 0)
+        {
+            if (errno == EINTR)
+            {
+                continue;
+            }
+            const std::error_code ec(errno, std::generic_category());
+            return std::unexpected(std::string("couldn't read the file: ") + ec.message());
+        }
+        if (got == 0)
+        {
+            break;
+        }
+        hasher.update(std::string_view(chunk.data(), static_cast<std::size_t>(got)));
+    }
+#endif
     return hasher.finish();
 }
 
