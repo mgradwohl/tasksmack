@@ -277,6 +277,20 @@
             }
         },
         {
+            "name": "win-asan-ubsan",
+            "displayName": "Windows ASan+UBSan",
+            "description": "Debug build with AddressSanitizer and UndefinedBehaviorSanitizer (Windows x64 only; clang's ASan has no ARM64 Windows runtime). Links clang's dynamic ASan runtime, so the build leaves clang_rt.asan_dynamic-x86_64.dll next to each test exe and uses the release DLL CRT (/MD), which that runtime requires (cmake/CompilerOptions.cmake). No PCH, IPO or ghash; CFG and CETCOMPAT turn off under a sanitizer.",
+            "inherits": "windows-base",
+            "binaryDir": "${sourceDir}/build/win-asan-ubsan",
+            "cacheVariables": {
+                "CMAKE_BUILD_TYPE": "Debug",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -D_DISABLE_STL_ANNOTATION",
+                "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
+                "TASKSMACK_ENABLE_IPO": "OFF",
+                "TASKSMACK_ENABLE_PCH": "OFF"
+            }
+        },
+        {
             "name": "win-relwithdebinfo",
             "displayName": "Windows RelWithDebInfo",
             "description": "Release with debug info for Windows",
@@ -472,6 +486,11 @@
             "configurePreset": "win-debug"
         },
         {
+            "name": "win-asan-ubsan",
+            "displayName": "Windows ASan+UBSan",
+            "configurePreset": "win-asan-ubsan"
+        },
+        {
             "name": "win-relwithdebinfo",
             "displayName": "Windows RelWithDebInfo",
             "configurePreset": "win-relwithdebinfo"
@@ -615,6 +634,17 @@
             "configurePreset": "win-debug",
             "output": {
                 "outputOnFailure": true
+            }
+        },
+        {
+            "name": "win-asan-ubsan",
+            "displayName": "Windows ASan+UBSan Tests",
+            "configurePreset": "win-asan-ubsan",
+            "output": {
+                "outputOnFailure": true
+            },
+            "environment": {
+                "UBSAN_OPTIONS": "halt_on_error=1:print_stacktrace=1:$penv{UBSAN_OPTIONS}"
             }
         },
         {
