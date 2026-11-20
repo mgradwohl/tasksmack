@@ -13,6 +13,7 @@
 #include "Domain/UsersModel.h"
 #include "Mocks/MockServiceProbe.h"
 #include "Mocks/MockStartupProbe.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
@@ -179,7 +180,7 @@ TEST(SnapshotModelsAllocationFailureTest, AFailedStartupSampleKeepsTheLastWholeL
             auto probe = std::make_unique<Mocks::MockStartupProbe>();
             auto* raw = probe.get();
             raw->setEntries({entry("Zoom"), entry("Discord")});
-            auto model = std::make_unique<Domain::StartupModel>(std::move(probe));
+            auto model = std::make_unique<Domain::StartupModel>(std::move(probe), &Platform::equalsIgnoreCase);
             model->sample();
             raw->setEntries({entry("Zoom"), entry("Discord"), entry("OneDrive"), entry("Teams")});
             return model;

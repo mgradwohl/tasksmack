@@ -6,6 +6,7 @@
 #include "Domain/StartupImpact.h"
 #include "Domain/StartupModel.h"
 #include "Mocks/MockStartupProbe.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 
 #include <gtest/gtest.h>
@@ -33,7 +34,7 @@ namespace
 
 TEST(StartupModelTest, PublishesNothingBeforeTheFirstSample)
 {
-    const StartupModel model(std::make_unique<Mocks::MockStartupProbe>());
+    const StartupModel model(std::make_unique<Mocks::MockStartupProbe>(), &Platform::equalsIgnoreCase);
     EXPECT_EQ(model.version(), 0U);
     EXPECT_TRUE(model.publication()->entries.empty());
     EXPECT_TRUE(model.capabilities().canEnumerate);
@@ -43,7 +44,7 @@ TEST(StartupModelTest, SamplePublishesEntriesOrderedByNameIgnoringCase)
 {
     auto probe = std::make_unique<Mocks::MockStartupProbe>();
     probe->setEntries({entry("Zoom"), entry("onedrive", false), entry("Discord")});
-    StartupModel model(std::move(probe));
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase);
 
     model.sample();
 
@@ -63,7 +64,7 @@ TEST(StartupModelTest, NameOrderFoldsAsciiLettersOnlyAndKeepsTheProbesOrderForTi
     // ignoring case keep the probe's order (the sort is stable). An empty name first.
     auto probe = std::make_unique<Mocks::MockStartupProbe>();
     probe->setEntries({entry("\xE4pp"), entry("teams", false), entry("\xC4pp"), entry("TEAMS"), entry(""), entry("Zoom")});
-    StartupModel model(std::move(probe));
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase);
 
     model.sample();
 
@@ -83,7 +84,7 @@ TEST(StartupModelTest, EachSampleIsANewImmutableGeneration)
     auto probe = std::make_unique<Mocks::MockStartupProbe>();
     auto* raw = probe.get();
     raw->setEntries({entry("a")});
-    StartupModel model(std::move(probe));
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase);
 
     model.sample();
     const auto first = model.publication();
@@ -100,7 +101,7 @@ TEST(StartupModelTest, EachSampleIsANewImmutableGeneration)
 
 TEST(StartupModelTest, UnsupportedProbeReportsNoEnumeration)
 {
-    StartupModel model(std::make_unique<Platform::UnsupportedStartupProbe>());
+    StartupModel model(std::make_unique<Platform::UnsupportedStartupProbe>(), &Platform::equalsIgnoreCase);
     EXPECT_FALSE(model.capabilities().canEnumerate);
     EXPECT_FALSE(model.capabilities().unavailableReason.empty());
     model.sample();
@@ -109,7 +110,7 @@ TEST(StartupModelTest, UnsupportedProbeReportsNoEnumeration)
 
 TEST(StartupModelTest, NullProbeThrows)
 {
-    EXPECT_THROW(StartupModel(nullptr), std::invalid_argument);
+    EXPECT_THROW(StartupModel(nullptr, &Platform::equalsIgnoreCase), std::invalid_argument);
 }
 
 // ========== Startup impact (#3073) ==========
@@ -170,7 +171,7 @@ TEST(StartupModelTest, PublishesEachEntrysImpactByIndex)
     auto probe = std::make_unique<Mocks::MockStartupProbe>(withImpact());
     probe->setEntries({program("Quiet"), program("Busy"), program("Off", false), program("Absent")});
     probe->setImpact(signIn());
-    StartupModel model(std::move(probe));
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase);
 
     model.sample();
 
@@ -195,7 +196,7 @@ TEST(StartupModelTest, ReadsTheSignInMeasurementOnlyEverySoOften)
     raw->setEntries({program("Busy")});
     raw->setImpact(signIn());
     ImpactClock clock;
-    StartupModel model(std::move(probe), clock.function());
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase, clock.function());
 
     model.sample();
     EXPECT_EQ(raw->impactReadCount(), 1);
@@ -224,7 +225,7 @@ TEST(StartupModelTest, AnUnreadableMeasurementLeavesEveryEntryNotMeasuredWithThe
     Platform::StartupImpactReading unreadable;
     unreadable.unavailableReason = "Windows hasn't measured a sign-in for this account yet";
     probe->setImpact(unreadable);
-    StartupModel model(std::move(probe));
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase);
 
     model.sample();
 
@@ -243,7 +244,7 @@ TEST(StartupModelTest, WithoutImpactDataNothingIsReadOrPublished)
     auto* raw = probe.get();
     raw->setEntries({program("Busy")});
     raw->setImpact(signIn());
-    StartupModel model(std::move(probe));
+    StartupModel model(std::move(probe), &Platform::equalsIgnoreCase);
 
     model.sample();
 

@@ -6,11 +6,13 @@
 /// only for a copy no one but an administrator can change, the helper's check.
 
 #include "Mocks/FakeIfeoRegistry.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/TaskManagerReplacement.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipe.h"
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
@@ -123,15 +125,15 @@ TEST(WindowsIfeoRegistryTest, OnAndOffRoundTripThroughTheRegistry)
 {
     const ScratchKey scratch;
     WindowsIfeoRegistry registry(HKEY_CURRENT_USER, scratch.taskmgr());
-    const ProcessActionResult on = TMR::applySet(registry, INSTALLED, false);
+    const ProcessActionResult on = TMR::applySet(registry, INSTALLED, false, &equalsOrdinalIgnoreCase);
     ASSERT_TRUE(on.success) << on.errorMessage;
     const auto debugger = registry.readDebugger();
     ASSERT_TRUE(debugger.has_value());
     EXPECT_EQ(debugger->value_or(""), TMR::debuggerFor(INSTALLED));
     EXPECT_EQ(registry.readCreatedMarker().value_or(false), true);
-    EXPECT_EQ(TMR::classify(*debugger, INSTALLED).state, TMR::State::ThisCopy);
+    EXPECT_EQ(TMR::classify(*debugger, INSTALLED, &equalsOrdinalIgnoreCase).state, TMR::State::ThisCopy);
 
-    const ProcessActionResult off = TMR::applyClear(registry);
+    const ProcessActionResult off = TMR::applyClear(registry, &equalsOrdinalIgnoreCase);
     ASSERT_TRUE(off.success) << off.errorMessage;
     EXPECT_FALSE(keyExists(scratch.taskmgr())) << "TaskSmack made it, and it is empty";
 }
@@ -164,11 +166,11 @@ TEST(WindowsIfeoRegistryTest, AnotherToolsKeyAndValuesStay)
 
     WindowsIfeoRegistry registry(HKEY_CURRENT_USER, scratch.taskmgr());
     EXPECT_EQ(registry.readDebugger().value_or(std::nullopt).value_or(""), R"(C:\Tools\procexp64.exe)") << "REG_EXPAND_SZ read as written";
-    EXPECT_FALSE(TMR::applySet(registry, INSTALLED, false).success) << "another program's, unconfirmed";
-    EXPECT_FALSE(TMR::applyClear(registry).success) << "another program's, never removed";
-    ASSERT_TRUE(TMR::applySet(registry, INSTALLED, true).success);
+    EXPECT_FALSE(TMR::applySet(registry, INSTALLED, false, &equalsOrdinalIgnoreCase).success) << "another program's, unconfirmed";
+    EXPECT_FALSE(TMR::applyClear(registry, &equalsOrdinalIgnoreCase).success) << "another program's, never removed";
+    ASSERT_TRUE(TMR::applySet(registry, INSTALLED, true, &equalsOrdinalIgnoreCase).success);
     EXPECT_FALSE(registry.readCreatedMarker().value_or(true)) << "not TaskSmack's key";
-    ASSERT_TRUE(TMR::applyClear(registry).success);
+    ASSERT_TRUE(TMR::applyClear(registry, &equalsOrdinalIgnoreCase).success);
     EXPECT_TRUE(keyExists(scratch.taskmgr())) << "GlobalFlag is still in it";
     EXPECT_FALSE(registry.readDebugger().value_or(std::string("?")).has_value());
 }
@@ -186,7 +188,7 @@ TEST(WindowsIfeoRegistryTest, ADebuggerThatIsntTextIsAnotherProgram)
     const auto debugger = registry.readDebugger();
     ASSERT_TRUE(debugger.has_value());
     ASSERT_TRUE(debugger->has_value());
-    EXPECT_EQ(TMR::classify(*debugger, INSTALLED).state, TMR::State::OtherProgram);
+    EXPECT_EQ(TMR::classify(*debugger, INSTALLED, &equalsOrdinalIgnoreCase).state, TMR::State::OtherProgram);
     EXPECT_FALSE(registry.createKey().value_or(true)) << "already there";
 }
 
@@ -221,6 +223,20 @@ TEST(TaskManagerHelperRequestTest, SetsOnlyTheTaskSmackBesideTheHelper)
     EXPECT_TRUE(caseDiffers.success) << "letters ignoring case, as NTFS";
 }
 
+TEST(TaskManagerHelperRequestTest, ANonAsciiLetterInAnotherCaseIsTheSamePath)
+{
+    // Windows compares paths ordinal-ignore-case (#4309): "C:\Users\Émile" is "c:\users\émile".
+    const std::string served = "C:\\Users\\\xC3\x89mile\\TaskSmack.exe";
+    const std::string requested = "c:\\users\\\xC3\xA9mile\\TaskSmack.exe";
+    Mocks::FakeIfeoRegistry registry;
+    const Broker::ActionResult on = handleHelperRequest(setTo(requested), WinString::utf8ToWide(served), registry, &alwaysSame);
+    EXPECT_TRUE(on.success) << on.errorMessage;
+
+    EXPECT_EQ(TMR::classify(TMR::debuggerFor(requested), served, &equalsOrdinalIgnoreCase).state, TMR::State::ThisCopy);
+    EXPECT_EQ(TMR::classify(TMR::debuggerFor(requested), served, &equalsIgnoreCase).state, TMR::State::OtherTaskSmack)
+        << "an ASCII fold reads it as another copy";
+}
+
 TEST(TaskManagerHelperRequestTest, RefusesAnythingButThatFile)
 {
     const std::wstring beside = WinString::utf8ToWide(INSTALLED);
@@ -233,7 +249,11 @@ TEST(TaskManagerHelperRequestTest, RefusesAnythingButThatFile)
     };
     for (const Refused& r : {
              Refused{
-                 .path = R"(C:\Users\me\TaskSmack.exe)", .beside = beside, .sameFile = &alwaysSame, .why = "another path, a link to it"},
+                 .path = R"(C:\Users\me\TaskSmack.exe)",
+                 .beside = beside,
+                 .sameFile = &alwaysSame,
+                 .why = "another path, a link to it",
+             },
              Refused{.path = std::string(INSTALLED), .beside = beside, .sameFile = &neverSame, .why = "the name, but not the file"},
              Refused{.path = std::string(INSTALLED), .beside = L"", .sameFile = &alwaysSame, .why = "no TaskSmack beside the helper"},
              Refused{.path = std::string(INSTALLED), .beside = beside, .sameFile = nullptr, .why = "no file check"},
@@ -390,7 +410,7 @@ TEST(TaskManagerInstallTest, InstallFoldersAreTheKnownFoldersNotTheEnvironment)
     for (const std::string& folder : real)
     {
         EXPECT_FALSE(folder.empty());
-        EXPECT_FALSE(TMR::samePath(folder, plantedText)) << folder;
+        EXPECT_FALSE(TMR::samePath(folder, plantedText, &equalsOrdinalIgnoreCase)) << folder;
     }
     const std::string portable = WinString::wideToUtf8((planted / L"TaskSmack.exe").wstring());
     const std::vector<std::string_view> views(real.begin(), real.end());

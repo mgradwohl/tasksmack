@@ -6,11 +6,14 @@
 
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/TextEquals.h"
 
+#include <algorithm>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 #include <set>
+#include <string>
 #include <string_view>
 #include <utility>
 
@@ -58,37 +61,44 @@ struct StartupImpactTotals
     return path;
 }
 
-/// Whether @p a and @p b name the same program file, as Windows compares paths: ASCII letters
-/// case-insensitively, '/' and '\' alike, each in comparableProgramPath()'s form.
+/// @p path with every '/' as '\\', in @p storage when there is one to change (else @p path itself).
+[[nodiscard]] inline std::string_view withBackslashes(std::string_view path, std::string& storage)
+{
+    if (!path.contains('/'))
+    {
+        return path;
+    }
+    storage.assign(path);
+    std::ranges::replace(storage, '/', '\\');
+    return storage;
+}
+
+/// Whether @p a and @p b name the same program file, as Windows compares paths: '/' and '\\' alike, each in
+/// comparableProgramPath()'s form, then compared by @p equals (on Windows ordinal-ignore-case, so a path
+/// differing only in "É" and "é" is the same file; elsewhere an ASCII fold or an exact compare).
 /// Neither is resolved further: a short (8.3) name or a path through a link differs from the long one.
 /// Empty paths match nothing.
-[[nodiscard]] constexpr bool sameProgramPath(std::string_view a, std::string_view b) noexcept
+[[nodiscard]] inline bool sameProgramPath(std::string_view a, std::string_view b, TextEquals equals)
 {
     a = comparableProgramPath(a);
     b = comparableProgramPath(b);
-    if (a.empty() || a.size() != b.size())
+    if (a.empty() || b.empty())
     {
         return false;
     }
-    for (std::size_t i = 0; i < a.size(); ++i)
-    {
-        const char x = (a[i] == '/') ? '\\' : foldAscii(a[i]);
-        const char y = (b[i] == '/') ? '\\' : foldAscii(b[i]);
-        if (x != y)
-        {
-            return false;
-        }
-    }
-    return true;
+    std::string storageA;
+    std::string storageB;
+    return equals(withBackslashes(a, storageA), withBackslashes(b, storageB));
 }
 
 /// What the program at @p executablePath cost at the sign-in @p reading measured: every recorded
 /// process of that program, and every process one of them started (and those started, and so on),
 /// each counted once -- a browser's own child processes are part of what starting it costs. Zero
 /// processes when the program didn't run during the measurement, or @p executablePath is empty.
-/// @p reading's processes must be ordered by start time (a parent starts before its children), as
-/// IStartupProbe::readImpact() gives them.
-[[nodiscard]] inline StartupImpactTotals measureStartupProgram(const StartupImpactReading& reading, std::string_view executablePath)
+/// Paths are compared by @p equals (sameProgramPath()). @p reading's processes must be ordered by start time (a parent starts before its
+/// children), as IStartupProbe::readImpact() gives them.
+[[nodiscard]] inline StartupImpactTotals
+measureStartupProgram(const StartupImpactReading& reading, std::string_view executablePath, TextEquals equals)
 {
     StartupImpactTotals totals;
     if (comparableProgramPath(executablePath).empty())
@@ -98,7 +108,7 @@ struct StartupImpactTotals
     std::set<std::pair<std::uint32_t, std::uint64_t>> counted; // (PID, start ticks) of each counted process
     for (const StartupImpactProcess& process : reading.processes)
     {
-        if (!sameProgramPath(process.path, executablePath) && !counted.contains({process.parentPid, process.parentStartTicks}))
+        if (!sameProgramPath(process.path, executablePath, equals) && !counted.contains({process.parentPid, process.parentStartTicks}))
         {
             continue;
         }
