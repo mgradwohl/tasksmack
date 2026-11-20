@@ -297,17 +297,20 @@ if(_ts_is_multi_config_generator)
                      "Use one of the single-config presets in CMakePresets.json instead.")
 endif()
 if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
+    # -ftrivial-auto-var-init=zero (#4342): a local read before it's written is 0, not whatever was on the stack, so
+    # a stale value can't leak into a report, a log line or a broker reply from the shipped build. Debug and the
+    # sanitizer presets keep =pattern (CMakePresets.json), which makes such a read visible instead of harmless.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         # -fstack-protector-strong: instrument functions with stack buffers/alloca against overflows
         # -D_FORTIFY_SOURCE=2: enable glibc buffer-overflow checks for common string/memory functions
         # -fPIE/-pie: produce a position-independent executable (enables ASLR)
-        add_compile_options(-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE)
+        add_compile_options(-fstack-protector-strong -D_FORTIFY_SOURCE=2 -fPIE -ftrivial-auto-var-init=zero)
         add_link_options(-pie)
         message(STATUS "Security hardening flags enabled (Linux release)")
     elseif(WIN32)
         # -fstack-protector-strong: stack canaries via clang on Windows
         # ASLR (/DYNAMICBASE) is enabled by default by lld-link on Windows
-        add_compile_options(-fstack-protector-strong)
+        add_compile_options(-fstack-protector-strong -ftrivial-auto-var-init=zero)
         message(STATUS "Security hardening flags enabled (Windows release)")
     endif()
 endif()
@@ -319,18 +322,24 @@ endif()
 #   -fstack-clash-protection: probe each stack page, so a large allocation can't jump the guard page
 #   -fcf-protection=full (x86-64) / -mbranch-protection=standard (AArch64): CET IBT+SHSTK or BTI+PAC
 #   -D_FORTIFY_SOURCE=3: also checks sizes known only at run time (needs optimization: release only)
-#   _LIBCPP_HARDENING_MODE_FAST: libc++'s cheap bounds and precondition checks (tasksmack_apply_libcxx_hardening)
+#   _LIBCPP_HARDENING_MODE_FAST: libc++'s cheap bounds and precondition checks (tasksmack_apply_stl_hardening)
 # The app's objects (TaskSmackApp) and the executable take it; the third-party libraries keep their own flags.
-# libc++'s FAST hardening (#3605): an out-of-bounds operator[] on a span or vector, or front() on an empty
-# container, traps instead of reading past the end. The app takes it (above), and so do the test executables
-# that compile its sources (#3900), so a check that would abort the shipped, root-running TaskSmack fails a test or
-# a fuzz run first (.clusterfuzzlite/build.sh passes the same define). FAST in every build type, the mode that
-# ships: TaskSmackAppTests links TaskSmackApp's own objects, which a test-only mode would mix with.
-function(tasksmack_apply_libcxx_hardening target)
-    if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
-        return()
+# The standard library's hardening (#3605 on Linux, #4341 on Windows): an out-of-bounds operator[] on a span, vector
+# or string_view, or * on an empty optional, traps instead of reading or writing past the end.
+#   Linux: libc++'s _LIBCPP_HARDENING_MODE_FAST.
+#   Windows: the MSVC STL's _MSVC_STL_HARDENING=1 (14.44 and later). Without it a non-Debug build, the one that
+#            ships and runs elevated (Restart as administrator, TaskSmackHelper), has _ITERATOR_DEBUG_LEVEL 0 and no
+#            checks at all.
+# The app takes it (above), and so do the test executables that compile its sources (#3900), so a check that would
+# abort the shipped TaskSmack fails a test or a fuzz run first (.clusterfuzzlite/build.sh passes libc++'s define).
+# In every build type, the mode that ships: TaskSmackAppTests links TaskSmackApp's own objects, which a test-only
+# mode would mix with.
+function(tasksmack_apply_stl_hardening target)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
+    elseif(WIN32)
+        target_compile_definitions(${target} PRIVATE _MSVC_STL_HARDENING=1)
     endif()
-    target_compile_definitions(${target} PRIVATE _LIBCPP_HARDENING_MODE=_LIBCPP_HARDENING_MODE_FAST)
 endfunction()
 
 # tasksmack_apply_privileged_hardening(target): the Linux profile above (#3605), and on Windows the hardening of
@@ -376,6 +385,7 @@ function(tasksmack_apply_privileged_hardening target)
             target_compile_options(${target} PRIVATE "SHELL:-Xclang -cfguard")
             target_link_options(${target} PRIVATE "LINKER:/guard:cf" "LINKER:/CETCOMPAT" "LINKER:/DEPENDENTLOADFLAG:0x800")
         endif()
+        tasksmack_apply_stl_hardening(${target})
         return()
     endif()
     if(NOT CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -388,7 +398,7 @@ function(tasksmack_apply_privileged_hardening target)
     elseif(CMAKE_SYSTEM_PROCESSOR MATCHES "^(aarch64|arm64|ARM64)$")
         target_compile_options(${target} PRIVATE -mbranch-protection=standard)
     endif()
-    tasksmack_apply_libcxx_hardening(${target})
+    tasksmack_apply_stl_hardening(${target})
     if(CMAKE_BUILD_TYPE MATCHES "^(Release|RelWithDebInfo)$")
         # After the directory-wide -D_FORTIFY_SOURCE=2 above, so it replaces it
         target_compile_options(${target} PRIVATE -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=3)
