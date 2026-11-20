@@ -869,8 +869,12 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
 }
 #endif
 
-/// The rest of the open file @p fd, read to its end (EINTR retried), or nullopt on a read error.
-[[nodiscard]] std::optional<std::string> readToEnd(int fd)
+/// The most config.toml the descriptor save reads (#4542 review): a sparse or endless file of the user's must not make
+/// root read until memory runs out. Settings are a few KiB.
+constexpr std::size_t MAX_CONFIG_FILE_BYTES = std::size_t{4} * 1024U * 1024U;
+
+/// The rest of the open file @p fd, read to its end (EINTR retried), or nullopt on a read error or past @p maxBytes.
+[[nodiscard]] std::optional<std::string> readToEnd(int fd, std::size_t maxBytes)
 {
     std::string out;
     std::array<char, 16384> chunk{};
@@ -888,6 +892,10 @@ constexpr const char* POSIX_ACL_ACCESS_XATTR = "system.posix_acl_access";
         if (n == 0)
         {
             return out;
+        }
+        if (out.size() + static_cast<std::size_t>(n) > maxBytes)
+        {
+            return std::nullopt;
         }
         out.append(chunk.data(), static_cast<std::size_t>(n));
     }
@@ -1560,6 +1568,28 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
 {
     const std::string name = m_ConfigPath.filename().string();
     const std::string shown = Core::pathToUtf8(m_ConfigPath);
+    // A refusal the user is told about (#4318), not only logged: every later change would be lost without a word.
+    const auto refuse = [this, &shown](std::string_view why)
+    {
+        spdlog::error("Not saving settings: {} {}", shown, why);
+        setFileProblem(ConfigFileProblem::couldNotOpen(shown));
+        return false;
+    };
+
+    // Whose the folder is, from the descriptor that was checked, not by path (the #4542 review): what root makes here
+    // is theirs (#2121), and an existing config.toml must be theirs too. A path lookup could be pointed, for that one
+    // moment, at a folder of root's or another user's.
+    struct stat folderInfo = {};
+    if (::fstat(folderFd, &folderInfo) != 0)
+    {
+        return refuse("can't be saved: its folder can't be checked");
+    }
+    const uid_t effectiveUid = m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid();
+    if (effectiveUid == 0)
+    {
+        newFileOwner = folderInfo.st_uid != 0 ? std::optional(NewFileOwner::FileOwner{.uid = folderInfo.st_uid, .gid = folderInfo.st_gid})
+                                              : std::nullopt; // root's own folder: nothing to hand over
+    }
 
     // Start from the file as it is, opened with no link followed. A link is refused, as the save by path refuses one
     // here (#3759), and so is a hard link: root reading another file of theirs, or one it can read and they can't, and
@@ -1574,9 +1604,8 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
         const int existingFd = ::openat(folderFd, name.c_str(), O_RDONLY | O_NOFOLLOW | O_NONBLOCK | O_CLOEXEC);
         if (existingFd < 0 && errno != ENOENT)
         {
-            spdlog::error(
-                "Not saving settings: {} can't be opened without following a link: {}", shown, std::system_category().message(errno));
-            return false;
+            return refuse(errno == ELOOP ? std::string("is a link, which TaskSmack run as root doesn't follow")
+                                         : "can't be opened: " + std::system_category().message(errno));
         }
         if (existingFd >= 0)
         {
@@ -1589,15 +1618,22 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
             }
             if (!S_ISREG(info.st_mode) || info.st_nlink != 1)
             {
-                spdlog::error("Not saving settings: {} isn't a plain file of its own (a hard link, or not a file)", shown);
-                return false;
+                return refuse("isn't a plain file of its own (a hard link, or not a file); fix or remove it");
             }
-            const std::optional<std::string> existing = readToEnd(existingFd);
+            // Theirs, as everything in their folder should be: a file of someone else's, linked in and its other name
+            // removed, is never read and rewritten as root (the #4542 review).
+            if (info.st_uid != folderInfo.st_uid)
+            {
+                return refuse("isn't owned by its folder's owner; fix or remove it");
+            }
+            if (info.st_size < 0 || std::cmp_greater(info.st_size, MAX_CONFIG_FILE_BYTES))
+            {
+                return refuse("is too large to be a settings file; fix or remove it");
+            }
+            const std::optional<std::string> existing = readToEnd(existingFd, MAX_CONFIG_FILE_BYTES);
             if (!existing.has_value())
             {
-                spdlog::error("Not saving settings: {} can't be opened; fix or remove it", shown);
-                setFileProblem(ConfigFileProblem::couldNotOpen(shown)); // #4318
-                return false;
+                return refuse("can't be read; fix or remove it");
             }
             try
             {
@@ -1666,6 +1702,15 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
     {
         ::unlinkat(folderFd, tempName.c_str(), 0);
     };
+    // Theirs from the start (the #4542 review): a staging file they moved aside while it was root's would stay root's if
+    // the write then failed. writeAllAndClose() sets the owner again after writing, which changes nothing.
+    if (owner.has_value() && (saveStepFails(SaveStep::Chown) || ::fchown(fd, owner->uid, owner->gid) != 0))
+    {
+        spdlog::error("Not saving settings: the new {} can't be given to its user: {}", shown, std::system_category().message(errno));
+        ::close(fd);
+        discard();
+        return false;
+    }
     if (!writeAllAndClose(fd, *rendered, owner, mode, accessAcl, [this](SaveStep step) { return saveStepFails(step); }, true))
     {
         spdlog::error("Not saving settings: couldn't write the new {} or give it the old one's owner and permissions", shown);
