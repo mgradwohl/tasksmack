@@ -313,7 +313,8 @@ class LinuxProcessProbe : public IProcessProbe
                             CmdlineCache& seen,
                             std::chrono::steady_clock::time_point now) const;
 
-    /// Read /proc/[pid]/cmdline (through `pidDirFd`) whole: nullopt if it can't be read.
+    /// Read /proc/[pid]/cmdline (through `pidDirFd`) up to one byte past MAX_CMDLINE_BYTES (#4386), so a longer one is
+    /// known to be cut: nullopt if it can't be read.
     [[nodiscard]] static std::optional<std::vector<char>> readCmdline(int pidDirFd);
 
     /// Set the command, and the full name where comm was cut, from a raw command line.
