@@ -81,6 +81,11 @@ class AdministratorLauncherTest(unittest.TestCase):
         self.assertEqual(STANDARD.name, app_id + ".desktop")
         for path in (STANDARD, LAUNCHER):
             self.assertEqual(desktop_entry(path)["StartupWMClass"], app_id, path.name)
+        # Every script that finds TaskSmack's Wayland window by its app_id uses this one (the #4451 follow-up: the
+        # Wayland matrix still looked for "TaskSmack" and never found the window).
+        matrix = (REPO_ROOT / "tools" / "wayland-matrix.sh").read_text(encoding="utf-8")
+        self.assertIn(app_id, matrix)
+        self.assertNotRegex(matrix, r'app_id"?\)? ?(==|=) ?"?TaskSmack\b', "an app_id match on the old name")
         source = (REPO_ROOT / "src" / "Core" / "Application.cpp").read_text(encoding="utf-8")
         self.assertRegex(source, r"SDL_SetAppMetadata\([^;]*DESKTOP_APP_ID\)", "the app id reaches SDL")
 

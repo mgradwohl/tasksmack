@@ -33,6 +33,7 @@ while [[ $# -gt 0 ]]; do
 done
 
 APP="$BUILD_DIR/bin/TaskSmack"
+# TaskSmack's Wayland app_id, its desktop file's id (Core::DESKTOP_APP_ID, #4451): sway finds its window by it.
 APP_TESTS="$BUILD_DIR/tests/TaskSmackAppTests"
 for needed in "$APP" "$APP_TESTS"; do
     [[ -x "$needed" ]] || { echo "Missing $needed: build the preset first" >&2; exit 2; }
@@ -93,7 +94,7 @@ sway_rect() { # x y width height of TaskSmack's window, or nothing
     swaymsg -t get_tree | python3 -c '
 import json, sys
 def walk(node):
-    if node.get("app_id") == "TaskSmack":
+    if node.get("app_id") == "app.tasksmack.TaskSmack":
         r = node["rect"]
         print(r["x"], r["y"], r["width"], r["height"])
         sys.exit()
@@ -108,7 +109,7 @@ import json, sys
 def walk(node, output):
     if node.get("type") == "output":
         output = node["name"]
-    if node.get("app_id") == "TaskSmack":
+    if node.get("app_id") == "app.tasksmack.TaskSmack":
         print(output)
         sys.exit()
     for child in node.get("nodes", []) + node.get("floating_nodes", []):
@@ -212,7 +213,7 @@ run_sway() {
     local second
     second="$(swaymsg -t get_outputs | python3 -c 'import json,sys; print([o["name"] for o in json.load(sys.stdin) if o["name"]!="HEADLESS-1"][0])')"
     swaymsg -q "output $second resolution 1280x720 position 1920 0 scale 1.5"
-    swaymsg -q "[app_id=TaskSmack] move to output $second"
+    swaymsg -q "[app_id=app.tasksmack.TaskSmack] move to output $second"
     sleep 1
     if [[ "$(sway_window_output)" == "$second" ]] && kill -0 "$APP_PID" 2>/dev/null; then
         pass "moved onto a second output at scale 1.5"
@@ -229,7 +230,7 @@ run_sway() {
 
     # 4. The size it was closed at, saved and reopened at.
     read -r x y w h <<<"$(sway_rect)"
-    swaymsg -q "[app_id=TaskSmack] kill" # the compositor's close, as the user's would be
+    swaymsg -q "[app_id=app.tasksmack.TaskSmack] kill" # the compositor's close, as the user's would be
     local _
     for _ in $(seq 1 100); do
         kill -0 "$APP_PID" 2>/dev/null || break
@@ -245,7 +246,7 @@ run_sway() {
         else
             fail "closed at ${w}x$h, reopened at ${nw}x$nh"
         fi
-        swaymsg -q "[app_id=TaskSmack] kill"
+        swaymsg -q "[app_id=app.tasksmack.TaskSmack] kill"
     fi
     echo quit >&"${VP[1]}" # it exits without an answer
     unset SWAYSOCK
