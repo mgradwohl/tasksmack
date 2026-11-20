@@ -20,6 +20,7 @@
 #include "Core/Utf8Path.h"
 #include "Core/Window.h"
 #include "NonAsciiTestNames.h"
+#include "Platform/TestPng.h"
 #include "UI/IconLoader.h"
 
 #include <SDL3/SDL.h>
@@ -191,61 +192,12 @@ TEST(IconLoaderTest, LoadTextureWithNonImageFileReturnsInvalidTexture)
 // loadTexture() success path: needs a live OpenGL context.
 // ==========================================================================
 
-// Builds a minimal valid 1x1, 24-bit-per-pixel BMP (uncompressed, so no codec dependency
-// beyond stb_image's built-in BMP decoder): a 14-byte BITMAPFILEHEADER, a 40-byte
-// BITMAPINFOHEADER, and one BGR pixel padded to a 4-byte row boundary. Chosen over PNG/JPEG
-// because the uncompressed format can be hand-built byte-for-byte without a codec dependency.
-std::vector<unsigned char> makeMinimalRedBmp()
+// A 1x1 red PNG, the one image format the app loads (stb_image is built PNG-only, #4424), from the tests' own encoder
+// (tests/Platform/TestPng.h: stored deflate, no codec dependency).
+std::vector<unsigned char> makeMinimalRedPng()
 {
-    constexpr std::uint32_t fileHeaderSize = 14;
-    constexpr std::uint32_t dibHeaderSize = 40;
-    constexpr std::uint32_t pixelDataOffset = fileHeaderSize + dibHeaderSize;
-    constexpr std::uint32_t rowBytes = 4; // 1 pixel * 3 bytes (BGR) padded to a 4-byte boundary
-    constexpr std::uint32_t fileSize = pixelDataOffset + rowBytes;
-
-    const auto putU16 = [](std::vector<unsigned char>& buf, std::uint16_t v)
-    {
-        buf.push_back(static_cast<unsigned char>(v & 0xFFU));
-        buf.push_back(static_cast<unsigned char>((v >> 8U) & 0xFFU));
-    };
-    const auto putU32 = [](std::vector<unsigned char>& buf, std::uint32_t v)
-    {
-        buf.push_back(static_cast<unsigned char>(v & 0xFFU));
-        buf.push_back(static_cast<unsigned char>((v >> 8U) & 0xFFU));
-        buf.push_back(static_cast<unsigned char>((v >> 16U) & 0xFFU));
-        buf.push_back(static_cast<unsigned char>((v >> 24U) & 0xFFU));
-    };
-
-    std::vector<unsigned char> bmp;
-    bmp.reserve(fileSize);
-
-    // BITMAPFILEHEADER
-    bmp.push_back('B');
-    bmp.push_back('M');
-    putU32(bmp, fileSize);
-    putU32(bmp, 0); // reserved
-    putU32(bmp, pixelDataOffset);
-
-    // BITMAPINFOHEADER
-    putU32(bmp, dibHeaderSize);
-    putU32(bmp, 1);        // width
-    putU32(bmp, 1);        // height (positive = bottom-up)
-    putU16(bmp, 1);        // planes
-    putU16(bmp, 24);       // bits per pixel
-    putU32(bmp, 0);        // compression = BI_RGB (none)
-    putU32(bmp, rowBytes); // image size
-    putU32(bmp, 0);        // x pixels per meter
-    putU32(bmp, 0);        // y pixels per meter
-    putU32(bmp, 0);        // colors used
-    putU32(bmp, 0);        // colors important
-
-    // Pixel data: one BGR pixel (pure red), padded to 4 bytes.
-    bmp.push_back(0x00); // B
-    bmp.push_back(0x00); // G
-    bmp.push_back(0xFF); // R
-    bmp.push_back(0x00); // padding
-
-    return bmp;
+    const std::array<std::uint8_t, 4> red{0xFF, 0x00, 0x00, 0xFF};
+    return Platform::TestSupport::makePng(1, 1, red);
 }
 
 } // namespace
@@ -344,17 +296,17 @@ TEST_F(IconLoaderGLTest, LoadTextureWithRealImageAndRealGLContextSucceeds)
         static std::atomic<std::uint64_t> counter{0};
         const auto uniqueSuffix = std::format(
             "{}_{}", std::chrono::steady_clock::now().time_since_epoch().count(), counter.fetch_add(1, std::memory_order_relaxed));
-        const ScopedTempFile bmpFile{.path = std::filesystem::temp_directory_path() /
-                                             std::format("tasksmack_iconloader_test_red_pixel_{}.bmp", uniqueSuffix)};
+        const ScopedTempFile pngFile{.path = std::filesystem::temp_directory_path() /
+                                             std::format("tasksmack_iconloader_test_red_pixel_{}.png", uniqueSuffix)};
         {
-            const auto bytes = makeMinimalRedBmp();
-            std::ofstream out(bmpFile.path, std::ios::binary);
+            const auto bytes = makeMinimalRedPng();
+            std::ofstream out(pngFile.path, std::ios::binary);
             out.write(reinterpret_cast<const char*>(bytes.data()),
                       static_cast<std::streamsize>(bytes.size())); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         }
-        ASSERT_TRUE(std::filesystem::exists(bmpFile.path));
+        ASSERT_TRUE(std::filesystem::exists(pngFile.path));
 
-        Texture tex = loadTexture(bmpFile.path);
+        Texture tex = loadTexture(pngFile.path);
 
         EXPECT_TRUE(tex.valid());
         EXPECT_NE(tex.textureId(), ImTextureID{});
@@ -389,16 +341,16 @@ TEST_F(IconLoaderGLTest, LoadTextureFromANonAsciiDirectorySucceeds)
         const Core::Window window(
             Core::WindowSpecification{.Title = "IconLoaderGLTest", .Width = 640, .Height = 480, .VSync = false, .Borderless = true});
 
-        const std::filesystem::path bmpPath = dir.path() / Core::utf8ToPath(std::format("{}.bmp", TestSupport::allNonAsciiNames()));
+        const std::filesystem::path pngPath = dir.path() / Core::utf8ToPath(std::format("{}.png", TestSupport::allNonAsciiNames()));
         {
-            const auto bytes = makeMinimalRedBmp();
-            std::ofstream out(bmpPath, std::ios::binary);
+            const auto bytes = makeMinimalRedPng();
+            std::ofstream out(pngPath, std::ios::binary);
             out.write(reinterpret_cast<const char*>(bytes.data()),
                       static_cast<std::streamsize>(bytes.size())); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
         }
-        ASSERT_TRUE(std::filesystem::exists(bmpPath));
+        ASSERT_TRUE(std::filesystem::exists(pngPath));
 
-        Texture tex = loadTexture(bmpPath);
+        Texture tex = loadTexture(pngPath);
         EXPECT_TRUE(tex.valid());
         EXPECT_FLOAT_EQ(tex.size().x, 1.0F);
         tex = Texture{}; // glDeleteTextures() while the window's context is current
