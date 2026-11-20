@@ -236,6 +236,18 @@ What that asks of the tracker:
 - **A due date on the milestone** is the release's goal. The page shows it under "Released" beside the date it
   really shipped, says what net closing rate the goal asks for, and marks it on the burn-up chart.
 
+Three figures need a word on what they measure:
+
+- **Ready to merged** is the wait a finished change has: from when its pull request was last marked ready for
+  review, or opened if it never was a draft, to its merge.
+- **Pull request CI** counts `ci.yml`'s pull request runs in the cycle, passed and failed, and divides them by
+  the pull requests merged in that time: the CI runs the cycle spent for each merge. The runs are every pull
+  request's, including those still open, so pull requests held through a freeze raise it, and the comparison
+  shows it as context, not as better or worse. A cancelled run was superseded by a push and isn't counted.
+  It's the whole repository's figure, so a patch release has none.
+- **The open work, by where it stood** stacks the open issues as not started, in progress and in review over the
+  cycle. Before the `in progress` label (2026-11-19) an issue shows as started only once it had a pull request.
+
 The pace table is arithmetic on the last 1, 3 and 7 days, not a forecast. A review sweep that files a hundred
 findings in a day turns the net negative until they're worked off.
 

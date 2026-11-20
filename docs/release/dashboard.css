@@ -367,6 +367,13 @@ td:last-child {
   padding-right: 0;
 }
 
+/* A second header row's cells sit over the table's later columns: its first cell is not the first column, so it
+   lines up with the figures under it like any other. */
+thead tr + tr th:first-child {
+  text-align: right;
+  padding-left: 10px;
+}
+
 thead th {
   font-weight: 600;
   color: var(--ink-2);
@@ -659,6 +666,23 @@ details[open] > summary .chevron {
 
 .f-closed-wash {
   fill: var(--closed-wash);
+}
+
+.f-todo {
+  fill: var(--phase-todo);
+}
+
+.f-progress {
+  fill: var(--phase-progress);
+}
+
+.f-review {
+  fill: var(--phase-review);
+}
+
+/* Stacked bands touch: a stroke between them would paint over a band one issue tall on a large milestone. */
+.area {
+  stroke: none;
 }
 
 .dot {
