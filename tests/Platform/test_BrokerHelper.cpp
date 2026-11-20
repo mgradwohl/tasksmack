@@ -308,6 +308,7 @@ TEST(BrokerHelperTest, AnythingElseOnTheCommandLineIsRefused)
         text.back() = L'A';
         return text;
     }();
+    const std::wstring longer = name + L"0"; // named: the views below must not outlive their storage
     const std::vector<std::vector<std::wstring_view>> refused{
         {},
         {L"--broker"},
@@ -317,7 +318,7 @@ TEST(BrokerHelperTest, AnythingElseOnTheCommandLineIsRefused)
         {L"--broker", L"\\\\.\\pipe\\SomethingElse", L"1234", L"99"},
         {L"--broker", L"\\\\.\\pipe\\TaskSmack.Broker.00", L"1234", L"99"},
         {L"--broker", upper, L"1234", L"99"},
-        {L"--broker", name + L"0", L"1234", L"99"},
+        {L"--broker", longer, L"1234", L"99"},
         {L"--broker", L"\\\\server\\pipe\\TaskSmack.Broker.0123456789abcdef0123456789abcdef", L"1234", L"99"},
         {L"--broker", name, L"0", L"99"},
         {L"--broker", name, L"01234", L"99"},
