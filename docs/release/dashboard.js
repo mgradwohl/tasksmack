@@ -440,18 +440,64 @@
     const burn = el('div', { class: 'chart' });
     const daily = el('div', { class: 'chart' });
     const buckets = bucketed(release, start, end);
-    view.charts.push(() => drawBurnup(burn, release, start, end), () => drawDaily(daily, buckets));
+    view.charts.push(() => drawBurnup(burn, release, start, end), () => drawDaily(daily, buckets, release, start, end));
     const keys = (items) => el('ul', { class: 'legend' }, items.map(([cls, text]) => el('li', null, el('span', { class: 'key ' + cls }), text)));
+    // The open work by where it stood: only when the data carries the lists it's drawn from.
+    const flows = Boolean(release.events.flow_started && release.events.flow_review);
+    const flow = el('div', { class: 'chart' });
+    if (flows) view.charts.push(() => drawFlow(flow, release, start, end));
+    const flowHead = ['Not started', 'In progress', 'In review'];
     return el('section', null,
       el('div', { class: 'section-head' }, el('h2', { text: 'Scope and progress' }),
-        el('p', { class: 'sub', text: 'Since ' + release.cycle.start_reason + ' on ' + day(start) + '. The gap between the two lines is the open work.' })),
+        el('p', { class: 'sub', text: 'Since ' + release.cycle.start_reason + ' on ' + day(start) + '. The gap between the two lines is the open work. The charts share one time axis.' })),
       el('div', { class: 'block' }, el('h3', { text: 'Issues on the milestone, and how many are closed' }), keys([['k-scope', 'In scope'], ['k-closed', 'Closed']]), burn),
       el('div', { class: 'block' }, el('h3', { text: 'Closed and added, per ' + buckets.unit }), keys([['box k-closed', 'Closed'], ['box k-scope', 'Added to the milestone']]), daily),
+      flows ? el('div', { class: 'block' }, el('h3', { text: 'The open work, by where it stood' }),
+        keys([['box k-todo', 'Not started'], ['box k-progress', 'In progress'], ['box k-review', 'In review']]), flow,
+        el('p', { class: 'footnote', text: 'Before the `in progress` label (2026-11-19), work shows as started only once it had a pull request. An issue whose pull request was closed unmerged counts as not started again.' })) : null,
       details('table-movement', 'group', el('summary', null, el('span', { text: 'Show the numbers' }), el('span', { text: count(buckets.rows.length, buckets.unit) })),
         el('div', { class: 'scroll' }, el('table', null,
-          el('thead', null, el('tr', null, [buckets.unit === 'day' ? 'Day' : 'Week of', 'Closed', 'Added', 'Closed in all', 'In scope', 'Open'].map((text) => el('th', { scope: 'col', text })))),
+          el('thead', null, el('tr', null, [buckets.unit === 'day' ? 'Day' : 'Week of', 'Closed', 'Added', 'Closed in all', 'In scope', 'Open'].concat(flows ? flowHead : []).map((text) => el('th', { scope: 'col', text })))),
           el('tbody', null, buckets.rows.slice().reverse().map((row) => el('tr', null, el('th', { scope: 'row', text: day(row.from) }),
-            el('td', { text: row.closed }), el('td', { text: row.added }), el('td', { text: row.closedTotal }), el('td', { text: row.scope }), el('td', { text: row.scope - row.closedTotal })))))), false));
+            el('td', { text: row.closed }), el('td', { text: row.added }), el('td', { text: row.closedTotal }), el('td', { text: row.scope }), el('td', { text: row.scope - row.closedTotal }),
+            flows ? [el('td', { text: row.todo }), el('td', { text: row.progress }), el('td', { text: row.review })] : null))))), false));
+  }
+
+  /** How the open work stood at @p t: not started, in progress and in review. The lists nest (the generator's flow_events). */
+  function standing(release, t) {
+    const events = release.events;
+    const joined = upTo(events.joined, t);
+    const started = Math.min(joined, upTo(events.flow_started || [], t));
+    const review = Math.min(started, upTo(events.flow_review || [], t));
+    const done = Math.min(review, upTo(events.done, t));
+    return { todo: joined - started, progress: started - review, review: review - done };
+  }
+
+  /**
+   * The time axis the section's three charts share, so a day is at the same place in each: the same plot edges,
+   * and whole local days from the cycle's first to today's, or to the goal's while the release is open. The
+   * labels sit under the middle of their day, where the bar chart's bars are.
+   */
+  function timeAxis(release, start, end, width) {
+    const left = 44;
+    const right = width - 88; // room for the line charts' end labels; the bar chart keeps it too, to line up
+    const aim = release.cycle.end ? null : goal(release);
+    const first = new Date(start * 1000);
+    first.setHours(0, 0, 0, 0);
+    const beyond = new Date(Math.max(end, aim ? aim.end : end) * 1000);
+    beyond.setHours(24, 0, 0, 0);
+    const from = first.getTime() / 1000;
+    const to = beyond.getTime() / 1000;
+    const x = (t) => left + ((t - from) / Math.max(1, to - from)) * (right - left);
+    const middles = [];
+    for (const cursor = new Date(first); cursor.getTime() / 1000 < to; cursor.setDate(cursor.getDate() + 1)) {
+      const next = new Date(cursor);
+      next.setDate(next.getDate() + 1);
+      middles.push([(cursor.getTime() + next.getTime()) / 2000, dateFormat.format(cursor)]);
+    }
+    const every = Math.max(1, Math.ceil(middles.length / Math.max(2, Math.floor((right - left) / 56))));
+    const ticks = middles.filter((middle, index) => index % every === 0).map(([t, label]) => [x(t), label]);
+    return { left, right, from, to, x, ticks, aim };
   }
 
   /** How many of the sorted @p times are at or before @p t. */
@@ -486,10 +532,12 @@
       const to = Math.min(edges[Math.min(index + step, edges.length - 1)], end);
       rows.push({
         from: edges[index],
+        until: edges[Math.min(index + step, edges.length - 1)],
         closed: upTo(done, to) - upTo(done, from),
         added: upTo(joined, to) - upTo(joined, from),
         closedTotal: upTo(done, to),
         scope: upTo(joined, to),
+        ...standing(release, to),
       });
     }
     return { unit: step === 7 ? 'week' : 'day', rows };
@@ -538,14 +586,14 @@
   function drawBurnup(container, release, start, end) {
     const width = Math.max(280, container.clientWidth);
     const height = 250;
-    const box = { left: 44, right: width - 88, top: 14, bottom: height - 28 };
+    // The axis runs on to the goal while the release is open, so the room left is in the picture.
+    const axis = timeAxis(release, start, end, width);
+    const box = { left: axis.left, right: axis.right, top: 14, bottom: height - 28 };
     const joined = release.events.joined;
     const done = release.events.done;
     const yMax = niceMax(joined.length);
-    // The axis runs on to the goal while the release is open, so the room left is in the picture.
-    const aim = release.cycle.end ? null : goal(release);
-    const last = aim ? Math.max(end, aim.end) : end;
-    const x = (t) => box.left + ((t - start) / Math.max(1, last - start)) * (box.right - box.left);
+    const aim = axis.aim;
+    const x = axis.x;
     const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
 
     // A count only changes at an event, so each line is drawn as steps between them.
@@ -561,18 +609,9 @@
     const scope = steps(joined);
     const closed = steps(done);
 
-    const tickEvery = Math.max(1, Math.ceil((last - start) / DAY / Math.max(2, Math.floor((box.right - box.left) / 64))));
-    const xTicks = [];
-    const cursor = new Date(start * 1000);
-    cursor.setHours(24, 0, 0, 0);
-    for (let index = 0; cursor.getTime() / 1000 < last; index += 1) {
-      if (index % tickEvery === 0) xTicks.push([x(cursor.getTime() / 1000), dateFormat.format(cursor)]);
-      cursor.setDate(cursor.getDate() + 1);
-    }
-
     const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img',
       'aria-label': 'Burn-up: ' + scope.total + ' issues in scope, ' + closed.total + ' closed, ' + (scope.total - closed.total) + ' open. The table below has the numbers.' });
-    axes(chart, box, yMax, xTicks);
+    axes(chart, box, yMax, axis.ticks);
     const freeze = release.signals.freeze && seconds(release.signals.freeze.at);
     if (freeze && freeze > start && freeze < end) {
       chart.append(svg('line', { class: 'marker', x1: x(freeze), x2: x(freeze), y1: box.top, y2: box.bottom }),
@@ -583,7 +622,7 @@
       chart.append(svg('line', { class: 'marker', x1: x(aim.end), x2: x(aim.end), y1: box.top, y2: box.bottom }),
         svg('text', { x: x(aim.end) + (anchor === 'end' ? -5 : 5), y: box.top + 10, 'text-anchor': anchor, text: 'Goal ' + aim.label }));
     }
-    chart.append(svg('path', { class: 'f-closed-wash', d: closed.path + 'V' + box.bottom + 'H' + box.left + 'Z' }),
+    chart.append(svg('path', { class: 'f-closed-wash', d: closed.path + 'V' + box.bottom + 'H' + x(start).toFixed(1) + 'Z' }),
       svg('path', { class: 'line s-scope', d: scope.path }), svg('path', { class: 'line s-closed', d: closed.path }));
 
     // The end labels sit beside their dots; when the lines meet, the upper one moves up, not away.
@@ -615,7 +654,7 @@
     };
     target.addEventListener('pointermove', (event) => {
       const bounds = chart.getBoundingClientRect();
-      point(start + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (last - start));
+      point(axis.from + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (axis.to - axis.from));
     });
     target.addEventListener('pointerleave', leave);
     target.addEventListener('focus', () => point(at));
@@ -628,34 +667,107 @@
     });
   }
 
-  function drawDaily(container, buckets) {
+  /** The open work over the cycle as three stacked bands: in review at the bottom, in progress, not started on top. */
+  function drawFlow(container, release, start, end) {
+    const width = Math.max(280, container.clientWidth);
+    const height = 220;
+    const axis = timeAxis(release, start, end, width); // the same axis as the two charts above it
+    const box = { left: axis.left, right: axis.right, top: 12, bottom: height - 28 };
+    const x = axis.x;
+    // One sample a pixel is as fine as the screen shows; the counts only change at events.
+    const samples = Math.max(2, Math.round(x(end) - x(start)));
+    const points = [];
+    for (let index = 0; index <= samples; index += 1) {
+      const t = start + ((end - start) * index) / samples;
+      points.push({ t, ...standing(release, t) });
+    }
+    const yMax = niceMax(Math.max(1, ...points.map((point) => point.todo + point.progress + point.review)));
+    const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
+
+    const now = points[points.length - 1];
+    const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img',
+      'aria-label': 'The open work over the cycle. ' + (release.cycle.end ? 'At the release: ' : 'Now: ') + number.format(now.todo) + ' not started, ' +
+        number.format(now.progress) + ' in progress, ' + number.format(now.review) + ' in review. The table below has the numbers.' });
+    axes(chart, box, yMax, axis.ticks);
+
+    // Each band lies between two running totals: the area from its lower edge to its upper one.
+    const band = (cls, lower, upper) => {
+      let path = '';
+      points.forEach((point, index) => { path += (index ? 'L' : 'M') + x(point.t).toFixed(1) + ' ' + y(upper(point)).toFixed(1); });
+      for (let index = points.length - 1; index >= 0; index -= 1) path += 'L' + x(points[index].t).toFixed(1) + ' ' + y(lower(points[index])).toFixed(1);
+      return svg('path', { class: 'area ' + cls, d: path + 'Z' });
+    };
+    chart.append(
+      band('f-review', () => 0, (point) => point.review),
+      band('f-progress', (point) => point.review, (point) => point.review + point.progress),
+      band('f-todo', (point) => point.review + point.progress, (point) => point.review + point.progress + point.todo));
+    const open = now.todo + now.progress + now.review;
+    chart.append(svg('circle', { class: 'dot f-todo', cx: x(end), cy: y(open), r: 4 }),
+      svg('text', { x: x(end) + 10, y: y(open) + 4 }, svg('tspan', { class: 'label-strong', text: number.format(open) }), svg('tspan', { text: ' open' })));
+
+    const hair = svg('line', { class: 'crosshair', y1: box.top, y2: box.bottom, hidden: true });
+    const target = svg('rect', { class: 'hit', x: box.left, y: box.top, width: box.right - box.left, height: box.bottom - box.top, tabindex: 0,
+      'aria-label': 'The open work over time. Use the left and right arrow keys to read a point in time.' });
+    chart.append(hair, target);
+    container.replaceChildren(chart);
+    const tip = tooltipFor(container);
+    let at = end;
+    const point = (t) => {
+      at = Math.max(start, Math.min(end, t));
+      const stood = standing(release, at);
+      hair.setAttribute('x1', x(at));
+      hair.setAttribute('x2', x(at));
+      hair.removeAttribute('hidden');
+      tip.show(moment(at), [['box k-todo', 'Not started', number.format(stood.todo)], ['box k-progress', 'In progress', number.format(stood.progress)],
+        ['box k-review', 'In review', number.format(stood.review)], [null, 'Open', number.format(stood.todo + stood.progress + stood.review)]], x(at), box.top);
+    };
+    const leave = () => {
+      hair.setAttribute('hidden', '');
+      tip.hide();
+    };
+    target.addEventListener('pointermove', (event) => {
+      const bounds = chart.getBoundingClientRect();
+      point(axis.from + (((event.clientX - bounds.left) * (width / bounds.width) - box.left) / (box.right - box.left)) * (axis.to - axis.from));
+    });
+    target.addEventListener('pointerleave', leave);
+    target.addEventListener('focus', () => point(at));
+    target.addEventListener('blur', leave);
+    target.addEventListener('keydown', (event) => {
+      const move = { ArrowLeft: -1, ArrowRight: 1 }[event.key];
+      if (!move) return;
+      event.preventDefault();
+      point(at + (move * (end - start)) / 60);
+    });
+  }
+
+  function drawDaily(container, buckets, release, start, end) {
     const rows = buckets.rows;
     const width = Math.max(280, container.clientWidth);
     const height = 190;
-    const box = { left: 44, right: width - 8, top: 10, bottom: height - 28 };
+    const axis = timeAxis(release, start, end, width); // each bucket's bars stand on its own days of the shared axis
+    const box = { left: axis.left, right: axis.right, top: 10, bottom: height - 28 };
     const yMax = niceMax(Math.max(1, ...rows.map((row) => Math.max(row.closed, row.added))));
-    const band = (box.right - box.left) / Math.max(1, rows.length);
-    const bar = Math.max(2, Math.min(24, (band - 8) / 2));
     const y = (value) => box.bottom - (value / yMax) * (box.bottom - box.top);
-    const every = Math.max(1, Math.ceil(rows.length / Math.max(2, Math.floor((box.right - box.left) / 56))));
-    const xTicks = rows.map((row, index) => [box.left + band * (index + 0.5), day(row.from)]).filter((tick, index) => index % every === 0);
     const chart = svg('svg', { viewBox: '0 0 ' + width + ' ' + height, role: 'img', 'aria-label': 'Issues closed and added per ' + buckets.unit + '. The table below has the numbers.' });
-    axes(chart, box, yMax, xTicks);
+    axes(chart, box, yMax, axis.ticks);
     container.replaceChildren(chart);
     const tip = tooltipFor(container);
 
     // A column with a rounded top and a square foot on the baseline.
-    const column = (cls, left, value) => {
+    const column = (cls, left, value, bar) => {
       if (!value) return null;
       const top = y(value);
       const radius = Math.min(4, bar / 2, box.bottom - top);
       return svg('path', { class: cls, d: 'M' + left + ' ' + box.bottom + 'V' + (top + radius) + 'Q' + left + ' ' + top + ' ' + (left + radius) + ' ' + top +
         'H' + (left + bar - radius) + 'Q' + (left + bar) + ' ' + top + ' ' + (left + bar) + ' ' + (top + radius) + 'V' + box.bottom + 'Z' });
     };
-    rows.forEach((row, index) => {
-      const middle = box.left + band * (index + 0.5);
+    rows.forEach((row) => {
+      const from = axis.x(row.from);
+      const band = axis.x(row.until) - from;
+      const bar = Math.max(2, Math.min(24, (band - 6) / 2));
+      const middle = from + band / 2;
       const text = day(row.from) + ': ' + row.closed + ' closed, ' + row.added + ' added';
-      const target = svg('rect', { class: 'hit', x: box.left + band * index, y: box.top, width: band, height: box.bottom - box.top, tabindex: 0, 'aria-label': text });
+      const target = svg('rect', { class: 'hit', x: from, y: box.top, width: band, height: box.bottom - box.top, tabindex: 0, 'aria-label': text });
       const tell = () => tip.show((buckets.unit === 'week' ? 'Week of ' : '') + day(row.from),
         [['box k-closed', 'Closed', row.closed], ['box k-scope', 'Added', row.added], [null, 'Net', signed(row.closed - row.added)]], middle, box.top);
       target.addEventListener('pointerenter', tell);
@@ -663,7 +775,7 @@
       target.addEventListener('pointerleave', tip.hide);
       target.addEventListener('blur', tip.hide);
       chart.append(target);
-      for (const mark of [column('f-closed', middle - bar - 1, row.closed), column('f-scope', middle + 1, row.added)]) {
+      for (const mark of [column('f-closed', middle - bar - 1, row.closed, bar), column('f-scope', middle + 1, row.added, bar)]) {
         if (mark) chart.append(mark);
       }
     });
@@ -799,6 +911,9 @@
         strip, el('div', { class: 'strip-ends' }, el('span', { text: day(start) }), el('span', { text: release.cycle.end ? day(end) : 'now' }))),
       release.live ? el('div', { class: 'block' }, el('h3', { text: 'Latest runs of each watched workflow' }), workflows(release, now)) : null,
       el('div', { class: 'scroll' }, table),
+      release.figures.pr_ci && release.figures.pr_ci.pass_percent != null ? el('p', { class: 'sub' }, 'Pull request CI this cycle: ' + number.format(release.figures.pr_ci.success) + ' runs passed and ' +
+        number.format(release.figures.pr_ci.failure) + ' failed (' + release.figures.pr_ci.pass_percent + '%)' +
+        (release.figures.pr_ci.runs_per_merged != null ? ', ' + release.figures.pr_ci.runs_per_merged + ' runs for each merge (the runs of pull requests still open count too).' : '.')) : null,
       el('p', { class: 'footnote' }, 'Runs on ' + release.branch + ' since the cycle started, counted once an hour; cancelled runs are left out. Coverage is on ',
         el('a', { href: 'https://app.codecov.io/gh/' + (REPO.test(view.index.repo) ? view.index.repo : ''), text: 'Codecov' }), '.'));
   }
@@ -826,12 +941,16 @@
     ['Wait before work started, median', (f) => span(median(f.queue_hours)), (f) => median(f.queue_hours), 'down'],
     ['Work started to closed, median', (f) => span(median(f.active_hours)), (f) => median(f.active_hours), 'down'],
     ['Pull request opened to merged, median', (f) => span(median(f.merge_hours)), (f) => median(f.merge_hours), 'down'],
+    ['Pull request ready to merged, median', (f) => span(median(f.review_hours)), (f) => median(f.review_hours), 'down'],
+    ['Pull request CI pass rate', (f) => (f.pr_ci && f.pr_ci.pass_percent != null ? f.pr_ci.pass_percent + '%' : '–'), (f) => (f.pr_ci ? f.pr_ci.pass_percent : null), 'up'],
+    // Every pull request's runs over the merges, so pull requests held open through a freeze raise it: context, not judged.
+    ['Pull request CI runs per merge', (f) => (f.pr_ci && f.pr_ci.runs_per_merged != null ? String(f.pr_ci.runs_per_merged) : '–'), (f) => (f.pr_ci ? f.pr_ci.runs_per_merged : null), null],
     ['High-severity bug opened to closed, median', (f) => (f.bug_lead_hours.high ? span(f.bug_lead_hours.high.median) + ' (' + f.bug_lead_hours.high.n + ')' : '–'), (f) => median(f.bug_lead_hours.high), 'down'],
     ['Pull request size, median lines', (f) => (f.pull_request_lines ? number.format(Math.round(f.pull_request_lines.median)) : '–'), (f) => median(f.pull_request_lines), 'down'],
     ['Issues reopened', (f) => (f.reopened == null ? '–' : number.format(f.reopened)), (f) => f.reopened ?? null, 'down'],
     ['Share of the cycle red', (f) => f.red.percent + '% (' + span(f.red.hours) + ')', (f) => f.red.percent, 'down'],
     ['Longest red stretch', (f) => span(f.red.longest_hours), (f) => f.red.longest_hours, 'down'],
-    ['CI pass rate', (f) => (f.ci.pass_percent == null ? '–' : f.ci.pass_percent + '%'), (f) => f.ci.pass_percent, 'up'],
+    ['Branch CI pass rate', (f) => (f.ci.pass_percent == null ? '–' : f.ci.pass_percent + '%'), (f) => f.ci.pass_percent, 'up'],
     ['Cycle length', (f) => f.days + ' d', (f) => f.days, null],
     ['Issues closed', (f) => number.format(f.issues_closed), (f) => f.issues_closed, null],
     ['Carried in from before', (f) => number.format(f.carried_in), (f) => f.carried_in, null],

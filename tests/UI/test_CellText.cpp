@@ -266,6 +266,119 @@ TEST(MiddleEllipsizeTest, GraphemeExtendersAreRecognised)
     EXPECT_EQ(decodeCodePointAt("\xE2\x80", 0), char32_t{0xFFFD});
 }
 
+// ---- Grapheme-safe cut points (#4313) ----
+
+TEST(GraphemeSafeCutTest, AsciiIsCutAtExactlyTheByteLimit)
+{
+    EXPECT_EQ(graphemeSafeCut("abc", 2), 2U);
+    EXPECT_EQ(graphemeSafeCut("abc", 0), 0U);
+    EXPECT_EQ(graphemeSafeCut("abc", 99), 3U);
+    EXPECT_EQ(graphemeSafeCut("", 5), 0U);
+}
+
+TEST(GraphemeSafeCutTest, NeverSeparatesALetterFromItsCombiningMark)
+{
+    const std::string_view text = "Cafe\xCC\x81!"; // "Cafe" + U+0301 (NFD e acute) + "!"
+    EXPECT_EQ(graphemeSafeCut(text, 4), 3U);       // before the mark: back to before the e
+    EXPECT_EQ(graphemeSafeCut(text, 5), 3U);       // inside the mark's bytes
+    EXPECT_EQ(graphemeSafeCut(text, 6), 6U);       // after the whole e + mark
+    EXPECT_EQ(graphemeSafeCut(text, 99), 7U);
+}
+
+TEST(GraphemeSafeCutTest, NeverSplitsAZeroWidthJoinerFamily)
+{
+    // "A" + man + ZWJ + woman + "B": the three emoji pieces are one grapheme, bytes 1..11.
+    const std::string_view text = "A\xF0\x9F\x91\xA8\xE2\x80\x8D\xF0\x9F\x91\xA9"
+                                  "B";
+    EXPECT_EQ(graphemeSafeCut(text, 1), 1U);
+    EXPECT_EQ(graphemeSafeCut(text, 4), 1U);  // between man and ZWJ
+    EXPECT_EQ(graphemeSafeCut(text, 5), 1U);  // inside the ZWJ
+    EXPECT_EQ(graphemeSafeCut(text, 8), 1U);  // between ZWJ and woman
+    EXPECT_EQ(graphemeSafeCut(text, 11), 1U); // inside the woman
+    EXPECT_EQ(graphemeSafeCut(text, 12), 12U);
+}
+
+TEST(GraphemeSafeCutTest, NeverSplitsAFlagPair)
+{
+    // "A" + U+1F1FA U+1F1F8 + "B"
+    const std::string_view flag = "A\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+                                  "B";
+    EXPECT_EQ(graphemeSafeCut(flag, 1), 1U);
+    EXPECT_EQ(graphemeSafeCut(flag, 5), 1U); // between the two indicators
+    EXPECT_EQ(graphemeSafeCut(flag, 9), 9U); // after the pair
+    EXPECT_TRUE(isRegionalIndicator(0x1F1FA));
+    EXPECT_FALSE(isRegionalIndicator(U'A'));
+}
+
+TEST(GraphemeSafeCutTest, RegionalIndicatorsPairFromTheStartOfTheirRun)
+{
+    // Three indicators: a flag and half of another. Cuts at 0 and 8 pair up; 4 does not.
+    const std::string_view run = "\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xF0\x9F\x87\xBA";
+    EXPECT_FALSE(isGraphemeBoundary(run, 4));
+    EXPECT_TRUE(isGraphemeBoundary(run, 8));
+    EXPECT_EQ(graphemeSafeCut(run, 4), 0U);
+    EXPECT_EQ(graphemeSafeCut(run, 8), 8U);
+    // A letter between two indicators restarts the pairing.
+    const std::string_view split = "\xF0\x9F\x87\xBA"
+                                   "x"
+                                   "\xF0\x9F\x87\xB8";
+    EXPECT_TRUE(isGraphemeBoundary(split, 5));
+}
+
+TEST(GraphemeSafeCutTest, NeverCutsBeforeAVariationSelector)
+{
+    const std::string_view text = "\xE2\x9D\xA4\xEF\xB8\x8F!"; // heart + VS16 + "!"
+    EXPECT_EQ(graphemeSafeCut(text, 3), 0U);                   // between the heart and VS16
+    EXPECT_EQ(graphemeSafeCut(text, 6), 6U);
+}
+
+TEST(GraphemeSafeCutTest, OnlyTextWithJoinersNeedsTheGraphemeCut)
+{
+    EXPECT_FALSE(hasGraphemeJoiners("systemd-resolve"));
+    EXPECT_FALSE(hasGraphemeJoiners("caf\xC3\xA9")); // precomposed e acute
+    EXPECT_TRUE(hasGraphemeJoiners("cafe\xCC\x81")); // NFD
+    EXPECT_TRUE(hasGraphemeJoiners("\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"));
+    EXPECT_TRUE(hasGraphemeJoiners("\xE2\x9D\xA4\xEF\xB8\x8F"));
+}
+
+TEST(PrefixEllipsizeTest, KeepsAsciiBehaviourAndNeverStrandsAMark)
+{
+    EXPECT_EQ(prefixEllipsize("abcdefgh", 8.0F, characterCount), "abcdefgh");
+    EXPECT_EQ(prefixEllipsize("abcdefgh", 5.0F, characterCount), "abcd\xE2\x80\xA6");
+    EXPECT_EQ(prefixEllipsize("abcdefgh", 0.0F, characterCount), "\xE2\x80\xA6");
+    // "Cafe" + U+0301 + " menu": "Cafe" and the ellipsis would strand the mark.
+    const std::string_view nfd = "Cafe\xCC\x81 menu";
+    EXPECT_EQ(prefixEllipsize(nfd, 5.0F, characterCount), "Caf\xE2\x80\xA6");
+    EXPECT_EQ(prefixEllipsize(nfd, 6.0F, characterCount), "Cafe\xCC\x81\xE2\x80\xA6");
+}
+
+TEST(PrefixEllipsizeTest, NeverCutsInsideAFlag)
+{
+    const std::string_view text = "ab\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+                                  "cdef";
+    EXPECT_EQ(prefixEllipsize(text, 4.0F, characterCount), "ab\xE2\x80\xA6"); // "ab" + one indicator would split it
+    EXPECT_EQ(prefixEllipsize(text, 5.0F, characterCount), "ab\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8\xE2\x80\xA6");
+}
+
+TEST(MiddleEllipsizeTest, NeverCutsInsideAFlag)
+{
+    const std::string_view text = "ab\xF0\x9F\x87\xBA\xF0\x9F\x87\xB8"
+                                  "cdefgh";
+    for (float budget = 3.0F; budget < 12.0F; budget += 1.0F)
+    {
+        const std::string shown = middleEllipsize(text, 2, budget, characterCount);
+        std::size_t indicators = 0;
+        for (const char byte : shown)
+        {
+            if (static_cast<unsigned char>(byte) == 0xF0U)
+            {
+                ++indicators;
+            }
+        }
+        EXPECT_EQ(indicators % 2, 0U) << "budget " << budget;
+    }
+}
+
 // ---- Drawn headless ----
 
 /// What one cellText() call drew.

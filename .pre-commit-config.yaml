@@ -48,8 +48,11 @@ repos:
         # language: python gives the hook its own interpreter, so 'python' resolves on every OS.
         entry: python -I -X utf8 tools/check-utf8.py
         language: python
-        types: [text]
-        exclude: '^tests/fuzz/corpus/'
+        # text and binary (#4333): identify tags a UTF-16 file as binary when its type comes from its content
+        # (.rc.in, .wprp, .in, .policy), and that is the file this hook must catch. The real binaries are left
+        # out by extension; a new binary type fails here as "not valid UTF-8" until it is added.
+        types_or: [text, binary]
+        exclude: '^tests/fuzz/corpus/|\.(png|webp|ico|ttf|bin|jpg|jpeg|gif|zst|gz|zip|pdf)$'
       # Win32 error text comes from FormatMessageW as UTF-8 (#4308): std::system_category().message() is
       # FormatMessageA in the ANSI code page on Windows. Use Platform::WinString::win32ErrorText(), or
       # Core::errorCodeText() for an std::error_code.

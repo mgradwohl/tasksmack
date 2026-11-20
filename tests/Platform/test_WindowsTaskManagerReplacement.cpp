@@ -691,5 +691,76 @@ TEST(TaskManagerInstallTest, AnObjectAnotherUserCanChangeIsRefusedThoughTheToken
     EXPECT_TRUE(named.error().contains(aliceText)) << "the error names who: " << named.error();
 }
 
+// The registry's failures: a root that isn't a key (no handle at all) fails every call at its first step, so
+// each says what it was doing and Windows' error rather than reading as "no key" or "nothing to do". Nothing
+// is opened, read or written.
+TEST(WindowsIfeoRegistryFailureTest, ACallOnARootThatIsNoKeySaysWhatFailed)
+{
+    WindowsIfeoRegistry registry(nullptr, L"Software\\TaskSmack.Tests\\never-opened");
+    constexpr std::string_view INVALID_HANDLE = "error 6"; // ERROR_INVALID_HANDLE
+    const auto expectFailure = [&INVALID_HANDLE](const std::string& error, std::string_view step)
+    {
+        EXPECT_TRUE(error.starts_with(step)) << error;
+        EXPECT_TRUE(error.contains(INVALID_HANDLE)) << error;
+    };
+
+    const auto debugger = registry.readDebugger();
+    ASSERT_FALSE(debugger.has_value());
+    expectFailure(debugger.error(), "couldn't open the key");
+
+    const auto created = registry.createKey();
+    ASSERT_FALSE(created.has_value());
+    expectFailure(created.error(), "couldn't create the key");
+
+    const auto written = registry.writeDebugger("C:\\Program Files\\TaskSmack\\TaskSmack.exe");
+    ASSERT_FALSE(written.has_value());
+    expectFailure(written.error(), "couldn't open the key");
+
+    const auto deleted = registry.deleteDebugger();
+    ASSERT_FALSE(deleted.has_value());
+    expectFailure(deleted.error(), "couldn't open the key");
+
+    const auto marker = registry.readCreatedMarker();
+    ASSERT_FALSE(marker.has_value());
+    expectFailure(marker.error(), "couldn't open the key");
+
+    const auto markerWritten = registry.writeCreatedMarker();
+    ASSERT_FALSE(markerWritten.has_value());
+    expectFailure(markerWritten.error(), "couldn't open the key");
+
+    const auto markerDeleted = registry.deleteCreatedMarker();
+    ASSERT_FALSE(markerDeleted.has_value());
+    expectFailure(markerDeleted.error(), "couldn't open the key");
+
+    const auto keyDeleted = registry.deleteKeyIfEmpty();
+    ASSERT_FALSE(keyDeleted.has_value());
+    expectFailure(keyDeleted.error(), "couldn't open the key");
+}
+
+// A token that can't be asked whether TaskSmack runs elevated is an error saying so, not a token.
+TEST(TaskManagerInstallTest, ATokenThatCantBeAskedIsAnErrorNotAToken)
+{
+    const auto none = unelevatedTokenOf(nullptr);
+    ASSERT_FALSE(none.has_value());
+    EXPECT_TRUE(none.error().starts_with("couldn't tell whether TaskSmack runs elevated: ")) << none.error();
+}
+
+// A token opened for query only can't be restricted (that needs TOKEN_DUPLICATE), and the error says that.
+TEST(TaskManagerInstallTest, ATokenWithoutDuplicateRightCantBeRestricted)
+{
+    UniqueHandle own;
+    ASSERT_NE(OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, own.put()), FALSE);
+    TOKEN_ELEVATION_TYPE type = TokenElevationTypeDefault;
+    DWORD length = 0;
+    ASSERT_NE(GetTokenInformation(own.get(), TokenElevationType, &type, sizeof(type), &length), FALSE);
+    if (type == TokenElevationTypeFull)
+    {
+        GTEST_SKIP() << "elevated: the linked token is taken, nothing is restricted";
+    }
+    const auto token = unelevatedTokenOf(own.get());
+    ASSERT_FALSE(token.has_value());
+    EXPECT_TRUE(token.error().starts_with("couldn't restrict TaskSmack's token: ")) << token.error();
+}
+
 } // namespace
 } // namespace Platform::Windows

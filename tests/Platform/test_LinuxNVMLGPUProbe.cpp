@@ -222,21 +222,49 @@ TEST(NVMLProcessUtilizationTest, EachProcessKeepsItsNewestSample)
     EXPECT_FALSE(NVMLProcessUtilization::query(failing, 0).ok);
 }
 
-TEST(NVMLGPUProbeMathTest, PrefersTheV3RunningProcessesSymbol)
+// #4421: _v2's 24-byte layout never changed; some R535 drivers' _v3 wrote 32-byte entries.
+TEST(NVMLGPUProbeMathTest, PrefersTheV2RunningProcessesSymbol)
 {
     const FakeResolver resolver{
         {"nvmlDeviceGetComputeRunningProcesses", "nvmlDeviceGetComputeRunningProcesses_v2", "nvmlDeviceGetComputeRunningProcesses_v3"}};
     const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetComputeRunningProcesses", resolver);
-    EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses_v3");
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetComputeRunningProcesses_v2");
     EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
 }
 
-TEST(NVMLGPUProbeMathTest, FallsBackToTheV2RunningProcessesSymbol)
+TEST(NVMLGPUProbeMathTest, FallsBackToTheV3RunningProcessesSymbol)
 {
-    const FakeResolver resolver{{"nvmlDeviceGetGraphicsRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses_v2"}};
+    const FakeResolver resolver{{"nvmlDeviceGetGraphicsRunningProcesses", "nvmlDeviceGetGraphicsRunningProcesses_v3"}};
     const auto symbol = NVMLGPUProbeMath::chooseRunningProcessesSymbol("nvmlDeviceGetGraphicsRunningProcesses", resolver);
-    EXPECT_EQ(symbol.name, "nvmlDeviceGetGraphicsRunningProcesses_v2");
+    EXPECT_EQ(symbol.name, "nvmlDeviceGetGraphicsRunningProcesses_v3");
     EXPECT_EQ(symbol.entrySize, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
+}
+
+// #4421: a driver that writes 32-byte entries where 24 were expected (R535's _v3) stays inside the
+// buffer: it is sized for the largest stride any driver wrote. Under ASan the old 24-byte sizing
+// trips here (13 entries + 4 headroom = 408 bytes; the driver writes 416).
+TEST(NVMLGPUProbeMathTest, ALargerDriverEntryStaysInsideTheBuffer)
+{
+    std::vector<FakeProcess> processes;
+    for (unsigned int i = 0; i < 13; ++i)
+    {
+        processes.push_back({.pid = 100 + i, .usedGpuMemory = 1000 + i});
+    }
+    auto fake = makeFake(processes, NVMLGPUProbeMath::PROCESS_INFO_LARGEST_SIZE);
+    std::size_t bytesWritten = 0;
+    auto query = [&fake, &bytesWritten](unsigned int* count, void* buffer)
+    {
+        const NVML::nvmlReturn_t result = fake(count, buffer);
+        if (buffer != nullptr && result == NVML::NVML_SUCCESS)
+        {
+            bytesWritten = fake.processes.size() * fake.entrySize;
+        }
+        return result;
+    };
+    const auto processesRead = NVMLGPUProbeMath::queryRunningProcesses(query, NVMLGPUProbeMath::PROCESS_INFO_V2_SIZE);
+    EXPECT_EQ(bytesWritten, 13U * 32U);
+    ASSERT_EQ(processesRead.size(), 13U) << "the count the driver returned, not more than the buffer was sized for";
+    EXPECT_EQ(processesRead.front().pid, 100U) << "the first entry is at offset 0 whatever the stride";
 }
 
 TEST(NVMLGPUProbeMathTest, LegacyRunningProcessesSymbolUsesTheV1EntrySize)

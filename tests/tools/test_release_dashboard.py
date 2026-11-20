@@ -17,6 +17,7 @@ import contextlib
 import importlib.util
 import io
 import json
+import re
 import sys
 import tempfile
 import unittest
@@ -52,6 +53,7 @@ def pull(
     state: str | None = None,
     draft: bool = False,
     lines: int | None = 100,
+    ready: str | None = None,
 ) -> dict:
     node = {
         "number": number,
@@ -63,6 +65,8 @@ def pull(
     }
     if lines is not None:
         node.update(additions=lines - 10, deletions=10)
+    if ready is not None:
+        node["ready"] = {"nodes": [{"createdAt": ready}]}
     return node
 
 
@@ -338,10 +342,13 @@ RAW = {
         "milestone": CURRENT,
         "issues": CURRENT_ISSUES,
         "pull_requests": [
-            pull(201, at(11, 2), at(11, 6), lines=40),
+            pull(201, at(11, 2), at(11, 6), lines=40, ready=at(11, 3)),
             pull(220, at(14), at(14, 1), lines=200),
             pull(221, at(16), state="CLOSED"),
         ],
+        "pr_ci": {"success": 30, "failure": 10, "merged": 8},
+        # The linked pull requests that aren't on the milestone: #211 was a draft for a day, #212 never was one.
+        "pull_request_ready": {"211": at(14), "212": None},
         "tracker": {
             "number": 100,
             "title": "[RELEASE 1.1] v1.1.0 release tracker",
@@ -889,6 +896,126 @@ class FigureTests(unittest.TestCase):
             {"no_lane": [7], "no_priority": [7], "no_severity": [7]},
         )
 
+    def test_time_in_review_and_pull_request_ci(self):
+        figures = build("v1.1.0")["figures"]
+        # Ready to merged: #201 was marked ready at 03:00 and merged at 06:00 (3 h), and #211 a day after it was
+        # opened (24 h, not the 48 h since it was opened). #212 and #220 never were drafts: 30 h and 1 h.
+        self.assertEqual(figures["review_hours"], {"n": 4, "median": 13.5, "p90": 28.2})
+        self.assertEqual(
+            figures["pr_ci"], {"success": 30, "failure": 10, "merged": 8, "pass_percent": 75.0, "runs_per_merged": 5.0}
+        )
+        self.assertIsNone(build("v1.0.0")["figures"]["pr_ci"])  # no counts for it
+        self.assertEqual(dashboard._pr_ci_figures({"success": 0, "failure": 0, "merged": 0})["pass_percent"], None)
+        self.assertEqual(dashboard._pr_ci_figures({"success": 3, "failure": 1, "merged": 0})["runs_per_merged"], None)
+        self.assertIsNone(dashboard._pr_ci_figures({}))
+
+    def test_when_a_pull_request_became_reviewable(self):
+        def request(**changes):
+            return {"n": 7, "draft": False, "state": "merged", "created": when(3), "ready": None, **changes}
+
+        self.assertEqual(dashboard.review_start(request(), {}), when(3))  # never a draft
+        self.assertEqual(dashboard.review_start(request(ready=when(4)), {}), when(4))
+        self.assertEqual(dashboard.review_start(request(), {7: when(5)}), when(5))  # known from the milestone's list
+        self.assertIsNone(dashboard.review_start(request(draft=True, state="open"), {7: when(5)}))  # still a draft
+        # Closed unmerged: abandoned, so no review started with it, draft or not.
+        self.assertIsNone(dashboard.review_start(request(draft=True, state="closed"), {}))
+        self.assertIsNone(dashboard.review_start(request(state="closed", ready=when(4)), {7: when(5)}))
+
+    def test_an_abandoned_pull_request_is_not_a_review(self):
+        # A draft closed unmerged on the 2nd, then a pull request opened ready on the 10th and still open.
+        node = issue(
+            1,
+            "x",
+            created=at(1),
+            pulls=(pull(2, at(1), state="CLOSED", draft=True), pull(3, at(10))),
+        )
+        release = dashboard.build_release(
+            {**RAW["v1.1.0"], "issues": [node], "tracker": None, "pull_requests": [], "pull_request_ready": {}},
+            published(),
+            RED_ISSUES,
+            CI_COUNTS,
+            None,
+            REPOSITORY,
+            NOW,
+            {(1, 1, 0)},
+        )
+        self.assertEqual(release["counts"]["phases"], {"todo": 0, "progress": 0, "review": 1, "done": 0})
+        # It started with its first pull request, on the 1st. It's in review from the second one, on the 10th: not
+        # from the abandoned draft.
+        self.assertEqual(release["events"]["flow_review"], [dashboard.epoch(when(10))])
+
+    def test_ready_times_are_asked_for_forty_at_a_time(self):
+        asked = []
+
+        class Fake:
+            def graphql(self, query, *, partial=False, **variables):
+                asked.append((query, partial))
+                numbers = [int(number) for number in re.findall(r"p(\d+):pullRequest", query)]
+                found = {
+                    f"p{number}": {"timelineItems": {"nodes": [{"createdAt": at(4)}] if number % 2 else []}}
+                    for number in numbers
+                }
+                found["p7"] = None  # a number that names no pull request
+                return {"repository": found}
+
+        found = dashboard.collect_ready_times(Fake(), list(range(1, 46)) + [3, 3])
+        self.assertEqual(len(asked), 2)  # 45 numbers, 40 to a query
+        self.assertTrue(all(partial for _, partial in asked))
+        self.assertIn("p1:pullRequest(number:1){timelineItems(itemTypes:[READY_FOR_REVIEW_EVENT],last:1)", asked[0][0])
+        self.assertEqual((found["1"], found["2"], found["7"], found["45"]), (at(4), None, None, at(4)))
+        self.assertEqual(len(found), 45)
+        self.assertEqual(dashboard.collect_ready_times(Fake(), []), {})
+
+    def test_the_flow_lists_nest(self):
+        release = build("v1.1.0")
+        events = release["events"]
+        # Ten issues joined and four are done. Started: the four done, #102 (in review) and #104 (in progress).
+        # In review: the four done and #102. #109's label came off again and #105's never came, so neither started.
+        self.assertEqual([len(events[key]) for key in ("joined", "flow_started", "flow_review", "done")], [10, 6, 5, 4])
+        for earlier, later in (("joined", "flow_started"), ("flow_started", "flow_review"), ("flow_review", "done")):
+            # At every moment, no more issues have reached the later state than the earlier one.
+            for moment in sorted(set(events[earlier]) | set(events[later])):
+                reached = [sum(1 for stamp in events[key] if stamp <= moment) for key in (earlier, later)]
+                self.assertGreaterEqual(reached[0], reached[1], (earlier, later, moment))
+
+    def test_flow_times_stay_in_order_for_one_issue(self):
+        def flow(**changes):
+            base = {"joined": when(5), "done": None, "open": True, "phase": "todo", "started": None, "review": None}
+            return dashboard.flow_events([{**base, **changes}])
+
+        self.assertEqual(flow(), {"started": [], "review": []})
+        # Its pull request is older than its place on the milestone: it started when it joined.
+        early = flow(phase="review", started=when(2), review=when(3))
+        self.assertEqual(early, {"started": [dashboard.epoch(when(5))], "review": [dashboard.epoch(when(5))]})
+        # In progress now, with a pull request that was once ready and is a draft again: not in review.
+        self.assertEqual(
+            flow(phase="progress", started=when(6), review=when(7)),
+            {"started": [dashboard.epoch(when(6))], "review": []},
+        )
+        # In progress by its label, with no time recorded for it: since it joined.
+        self.assertEqual(flow(phase="progress"), {"started": [dashboard.epoch(when(5))], "review": []})
+        self.assertEqual(
+            flow(phase="review", started=when(6)),
+            {"started": [dashboard.epoch(when(6))], "review": [dashboard.epoch(when(6))]},
+        )
+        # A pull request closed unmerged put it back to not started.
+        self.assertEqual(flow(started=when(6), review=when(7)), {"started": [], "review": []})
+        # Closed with nothing recorded: it passes through both states at its close.
+        closed = flow(open=False, phase="done", done=when(9))
+        self.assertEqual(closed, {"started": [dashboard.epoch(when(9))], "review": [dashboard.epoch(when(9))]})
+        # Closed before its review time (a late pull request): the times are pulled back to the close.
+        late = flow(open=False, phase="done", done=when(9), started=when(8), review=when(12))
+        self.assertEqual(late, {"started": [dashboard.epoch(when(8))], "review": [dashboard.epoch(when(9))]})
+
+    def test_no_event_is_later_than_the_run(self):
+        # An issue filed while the run was reading the API: it's in the counts, so it's in the charts, at "now".
+        filed_late = issue(120, "[BUG] Filed during the run", labels=("bug",), created=at(20, 13))
+        raw = {**RAW["v1.1.0"], "issues": [*CURRENT_ISSUES, filed_late]}
+        release = dashboard.build_release(raw, published(), RED_ISSUES, CI_COUNTS, LIVE, REPOSITORY, NOW, {(1, 1, 0)})
+        self.assertEqual(release["counts"]["issues"], 11)
+        self.assertEqual(len(release["events"]["joined"]), 11)
+        self.assertEqual(max(release["events"]["joined"]), dashboard.epoch(NOW))
+
     def test_a_milestone_opened_late_is_partial(self):
         issues = self.issues()
         window = {"start": when(1), "end": when(11)}
@@ -1113,7 +1240,7 @@ class BuildTests(unittest.TestCase):
         self.assertEqual(release["label_gaps"]["no_priority"], [104, 108, 109])
         self.assertEqual(
             {key: len(times) for key, times in release["events"].items()},
-            {"joined": 10, "done": 4, "started": 5, "merged": 4},
+            {"joined": 10, "done": 4, "started": 5, "merged": 4, "flow_started": 6, "flow_review": 5},
         )
         for times in release["events"].values():
             self.assertEqual(times, sorted(times))
@@ -1221,6 +1348,9 @@ class BuildTests(unittest.TestCase):
         )
         self.assertEqual(release["figures"], {"issues": 2, "issues_open": 2, "issues_closed": 0})
         self.assertEqual([entry["name"] for entry in release["by_lane"]], ["Dash", "None"])
+        # #400 carries the label with no event for it: it's in progress in the counts, so it's started in the chart.
+        self.assertEqual(release["counts"]["phases"]["progress"], 1)
+        self.assertEqual(len(release["events"]["flow_started"]), 1)
         self.assertEqual(release["open_issues"][0]["lane"], "Dash")
 
     def test_index(self):
@@ -1339,6 +1469,42 @@ class LatestRunsTests(unittest.TestCase):
         found = dashboard.latest_runs(gh, self.WATCHED, "main", NOW)
         self.assertEqual([run["event"] for run in found[1]["runs"]], ["push"])
         self.assertEqual(len(gh.asked), 2)
+
+
+class PullRequestCiTests(unittest.TestCase):
+    def test_counts_the_cycles_pull_request_runs_and_merges(self):
+        asked = []
+
+        class Fake:
+            repo = REPOSITORY
+
+            def rest(self, path, **params):
+                asked.append((path, params))
+                if path == "/search/issues":
+                    return {"total_count": 12}
+                return {"total_count": 40 if params["status"] == "success" else 8}
+
+        found = dashboard.collect_pr_ci(Fake(), when(10), when(20))
+        self.assertEqual(found, {"success": 40, "failure": 8, "merged": 12})
+        search = asked[0][1]["q"]
+        self.assertEqual(search, f"repo:{REPOSITORY} is:pr is:merged merged:2026-01-10T00:00:00Z..2026-01-20T00:00:00Z")
+        runs = asked[1]
+        self.assertEqual(runs[0], "actions/workflows/ci.yml/runs")
+        self.assertEqual((runs[1]["event"], runs[1]["branch"], runs[1]["status"]), ("pull_request", None, "success"))
+
+    def test_a_path_from_the_api_root(self):
+        gh = dashboard.GitHub(REPOSITORY, "token", api="https://api.invalid")
+        seen = []
+        gh._call = lambda what, url, body, check: seen.append(url) or {}
+        gh.rest("/search/issues", q="a b", per_page=1)
+        gh.rest("milestones", state="all", page=None)
+        self.assertEqual(
+            seen,
+            [
+                "https://api.invalid/search/issues?q=a+b&per_page=1",
+                f"https://api.invalid/repos/{REPOSITORY}/milestones?state=all",
+            ],
+        )
 
 
 class BudgetTests(unittest.TestCase):
@@ -1463,32 +1629,28 @@ class RunTests(unittest.TestCase):
     def test_pass_counts_are_reused_for_under_an_hour(self):
         window = {"start": when(10, 12), "end": None}
         counts = [{"file": "ci.yml", "name": "CI", "success": 1, "failure": 0}]
+        pr_counts = {"success": 5, "failure": 1, "merged": 2}
         found = {
             "ci_counts": counts,
+            "pr_ci_counts": pr_counts,
             "ci_counted_at": dashboard.iso(NOW - timedelta(minutes=30)),
             "cycle": {"start": "2026-01-10T12:00:00Z"},
         }
-        self.assertEqual(dashboard.earlier_ci_counts(found, window, NOW), counts)
+        self.assertEqual(dashboard.earlier_ci_counts(found, window, NOW), (counts, pr_counts))
+        self.assertEqual(
+            dashboard.earlier_ci_counts({**found, "pr_ci_counts": {}}, window, NOW), (counts, {})
+        )  # a patch
         self.assertIsNone(dashboard.earlier_ci_counts(None, window, NOW))
-        self.assertIsNone(
-            dashboard.earlier_ci_counts(
-                {**found, "ci_counted_at": dashboard.iso(NOW - timedelta(minutes=55))}, window, NOW
-            )
-        )
-        self.assertIsNone(
-            dashboard.earlier_ci_counts(
-                {**found, "ci_counted_at": dashboard.iso(NOW + timedelta(minutes=5))}, window, NOW
-            )
-        )
-        self.assertIsNone(dashboard.earlier_ci_counts({**found, "ci_counts": []}, window, NOW))
-        self.assertIsNone(
-            dashboard.earlier_ci_counts({**found, "cycle": {"start": "2026-01-09T12:00:00Z"}}, window, NOW)
-        )
-        self.assertIsNone(
-            dashboard.earlier_ci_counts(
-                {key: value for key, value in found.items() if key != "ci_counted_at"}, window, NOW
-            )
-        )
+        for changed in (
+            {"ci_counted_at": dashboard.iso(NOW - timedelta(minutes=55))},
+            {"ci_counted_at": dashboard.iso(NOW + timedelta(minutes=5))},
+            {"ci_counts": []},
+            {"pr_ci_counts": None},  # written before the page counted pull request CI
+            {"cycle": {"start": "2026-01-09T12:00:00Z"}},
+        ):
+            self.assertIsNone(dashboard.earlier_ci_counts({**found, **changed}, window, NOW), changed)
+        without = {key: value for key, value in found.items() if key != "ci_counted_at"}
+        self.assertIsNone(dashboard.earlier_ci_counts(without, window, NOW))
 
     def test_a_planned_release_is_copied_while_it_is_fresh(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
