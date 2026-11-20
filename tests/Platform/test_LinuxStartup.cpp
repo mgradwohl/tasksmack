@@ -445,6 +445,45 @@ TEST(SystemdUnitFileTest, TheDirectoriesFollowXdgConfigHome)
 // #3082: enabled user units (services and timers) are listed beside the autostart files; a unit the user links that is
 // also enabled for every user is the administrator's, read-only (#3497 review: disabling the user's link wouldn't stop
 // it); a timer shows the command its service runs.
+// #4398: a unit's program is read with systemd's rules, not as the first space-separated text: %h is the home, %% a
+// percent sign, a bare name is looked for on systemd's search path, and a quoted path keeps its spaces. Only an
+// absolute path that isn't there is Missing; anything not worked out is Unresolved, never a false warning.
+TEST_F(LinuxStartupTest, AUnitsProgramIsReadWithSystemdsRules)
+{
+    const std::filesystem::path home = m_Root.path / "home";
+    const std::filesystem::path bin = m_Root.path / "usrbin";
+    const std::filesystem::path spaced = m_Root.path / "My App";
+    std::filesystem::create_directories(home / "bin");
+    std::filesystem::create_directories(bin);
+    std::filesystem::create_directories(spaced);
+    std::ofstream(home / "bin" / "backup.sh") << "#!/bin/sh\n";
+    std::ofstream(bin / "syncthing") << "";
+    std::ofstream(spaced / "run") << "";
+    std::ofstream(m_Root.path / "100%") << "";
+    SystemdUserDirs dirs;
+    dirs.home = home.string();
+    dirs.programSearchPath = {m_Root.path / "nothing-here", bin};
+
+    UnitProgram program = unitProgram("%h/bin/backup.sh --daily", dirs);
+    EXPECT_EQ(program.state, StartupTargetState::Present);
+    EXPECT_EQ(program.program, (home / "bin" / "backup.sh").string());
+    program = unitProgram("syncthing serve", dirs);
+    EXPECT_EQ(program.state, StartupTargetState::Present) << "a bare name, on systemd's search path";
+    EXPECT_EQ(program.program, (bin / "syncthing").string());
+    program = unitProgram("\"" + (spaced / "run").string() + "\" --x", dirs);
+    EXPECT_EQ(program.state, StartupTargetState::Present) << "a quoted path with a space";
+    EXPECT_EQ(program.program, (spaced / "run").string());
+    EXPECT_EQ(unitProgram((m_Root.path / "100%%").string(), dirs).state, StartupTargetState::Present) << "%% is a percent sign";
+
+    EXPECT_EQ(unitProgram("sh -c true", dirs).state, StartupTargetState::Unresolved) << "not on this test's search path";
+    EXPECT_EQ(unitProgram("%t/agent", dirs).state, StartupTargetState::Unresolved) << "another specifier";
+    EXPECT_EQ(unitProgram("bin/x", dirs).state, StartupTargetState::Unresolved) << "a relative path";
+    EXPECT_EQ(unitProgram("%h/bin/x", SystemdUserDirs{}).state, StartupTargetState::Unresolved) << "no home known";
+    program = unitProgram((home / "bin" / "gone").string() + " -v", dirs);
+    EXPECT_EQ(program.state, StartupTargetState::Missing) << "an absolute path that isn't there";
+    EXPECT_EQ(program.program, (home / "bin" / "gone").string());
+}
+
 TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
 {
     const std::filesystem::path user = m_Root.path / "home/.config/systemd/user";
@@ -465,7 +504,7 @@ TEST_F(LinuxStartupTest, ListsTheEnabledSystemdUserUnitsReadOnly)
     writeText(system / "default.target.wants/agent.service", "[Service]\nExecStart=/bin/sh\n");
 
     LinuxStartupProbe probe(
-        m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {system}, .unitPath = {user, system, lib}});
+        m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {system}, .unitPath = {user, system, lib}, .home = {}});
     const std::vector<StartupEntry> entries = probe.enumerate();
     ASSERT_EQ(entries.size(), 4U);
     const StartupEntry* handmade = find(entries, "handmade.service");
@@ -562,7 +601,7 @@ TEST_F(LinuxStartupTest, AnInstallableUnitThatIsntEnabledIsListedDisabled)
     std::filesystem::create_directories(user / "default.target.wants");
     std::filesystem::create_symlink(lib / "worker@.service", user / "default.target.wants/worker@bob.service");
 
-    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}});
+    LinuxStartupProbe probe(m_Dirs, "GNOME", SEARCH_PATH, SystemdUserDirs{.user = user, .system = {}, .unitPath = {user, lib}, .home = {}});
     const std::vector<StartupEntry> entries = probe.enumerate();
     ASSERT_EQ(entries.size(), 6U);
     EXPECT_EQ(find(entries, "notes-alias.service"), nullptr) << "an alias";

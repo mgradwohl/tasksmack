@@ -57,6 +57,30 @@ namespace Detail
 } // namespace Detail
 
 /// @p text parsed: keys outside the four sections, comments (# and ;) and continuation lines are ignored.
+/// The first word of @p value, which is moved past it and the blanks after (#4398): words are separated by spaces or
+/// tabs, and each may be in "..." or '...' (systemd's extract_first_word() with EXTRACT_UNQUOTE).
+[[nodiscard]] inline std::string takeFirstWord(std::string_view& value)
+{
+    std::string word;
+    std::size_t at = 0;
+    while (at < value.size() && value[at] != ' ' && value[at] != '\t')
+    {
+        const char c = value[at];
+        if (c == '"' || c == '\'')
+        {
+            const std::size_t close = value.find(c, at + 1);
+            const std::size_t end = close == std::string_view::npos ? value.size() : close;
+            word.append(value.substr(at + 1, end - at - 1));
+            at = close == std::string_view::npos ? value.size() : close + 1;
+            continue;
+        }
+        word += c;
+        ++at;
+    }
+    value = Detail::trim(value.substr(at));
+    return word;
+}
+
 [[nodiscard]] inline Unit parse(std::string_view text)
 {
     Unit unit;
@@ -141,27 +165,10 @@ namespace Detail
             // A space-separated list, each word optionally in "..." or '...' (systemd's extract_first_word()).
             while (!value.empty())
             {
-                std::string target;
-                std::size_t at = 0;
-                while (at < value.size() && value[at] != ' ' && value[at] != '\t')
-                {
-                    const char c = value[at];
-                    if (c == '"' || c == '\'')
-                    {
-                        const std::size_t close = value.find(c, at + 1);
-                        const std::size_t end = close == std::string_view::npos ? value.size() : close;
-                        target.append(value.substr(at + 1, end - at - 1));
-                        at = close == std::string_view::npos ? value.size() : close + 1;
-                        continue;
-                    }
-                    target += c;
-                    ++at;
-                }
-                if (!target.empty())
+                if (std::string target = takeFirstWord(value); !target.empty())
                 {
                     unit.wantedBy.push_back(std::move(target));
                 }
-                value = Detail::trim(value.substr(at));
             }
         }
     }

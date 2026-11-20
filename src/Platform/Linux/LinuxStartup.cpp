@@ -341,6 +341,69 @@ struct CronTarget
 
 } // namespace
 
+UnitProgram unitProgram(std::string_view execStart, const SystemdUserDirs& dirs)
+{
+    std::string_view rest = execStart;
+    const std::string word = SystemdUnitFile::takeFirstWord(rest);
+    UnitProgram result{.program = word};
+    if (word.empty() || word.contains('\\'))
+    {
+        return result; // an escape sequence isn't worked out here
+    }
+    std::string program;
+    for (std::size_t at = 0; at < word.size(); ++at)
+    {
+        if (word[at] != '%')
+        {
+            program += word[at];
+            continue;
+        }
+        const char specifier = at + 1 < word.size() ? word[at + 1] : '\0';
+        if (specifier == '%')
+        {
+            program += '%';
+        }
+        else if (specifier == 'h' && !dirs.home.empty())
+        {
+            program += dirs.home;
+        }
+        else
+        {
+            return result; // %U, %t, %E and the rest aren't worked out here
+        }
+        ++at;
+    }
+    std::error_code ec;
+    if (program.starts_with('/'))
+    {
+        const bool there = std::filesystem::exists(program, ec);
+        result.program = program;
+        if (there)
+        {
+            result.state = StartupTargetState::Present;
+        }
+        else if (!ec)
+        {
+            result.state = StartupTargetState::Missing; // an unreadable folder on the way stays Unresolved
+        }
+        return result;
+    }
+    if (program.contains('/'))
+    {
+        return result; // a relative path: systemd refuses the unit, not something checked here
+    }
+    for (const std::filesystem::path& dir : dirs.programSearchPath)
+    {
+        if (const std::filesystem::path candidate = dir / program; std::filesystem::is_regular_file(candidate, ec))
+        {
+            result.program = candidate.string();
+            result.state = StartupTargetState::Present;
+            return result;
+        }
+    }
+    return result;
+}
+
 SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfigHome)
 {
     SystemdUserDirs dirs;
@@ -351,6 +414,10 @@ SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfi
     else if (!home.empty() && home.front() == '/')
     {
         dirs.user = std::filesystem::path(home) / ".config" / "systemd" / "user";
+    }
+    if (!home.empty() && home.front() == '/')
+    {
+        dirs.home = home; // %h in an ExecStart (#4398)
     }
     dirs.system = {"/etc/systemd/user"};
     if (!dirs.user.empty())
@@ -668,7 +735,8 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
         entry.programName = entry.name;
         entry.registrationName = name;
         entry.command = command;
-        entry.executablePath = command.substr(0, command.find(' '));
+        const UnitProgram program = unitProgram(command, m_Systemd); // #4398: quoting, %h, a bare name
+        entry.executablePath = program.program;
         entry.sourcePath = found.link.string();
         const bool system = found.owner != Owner::User;
         entry.location = system ? StartupLocation::SystemdSystemUnit : StartupLocation::SystemdUserUnit;
@@ -717,7 +785,7 @@ void LinuxStartupProbe::addSystemdUnits(std::vector<StartupEntry>& entries) cons
             entry.notSwitchableReason = "This build has no systemd support (sd-bus): use systemctl --user";
         }
 #endif
-        entry.target = entry.executablePath.empty() ? StartupTargetState::Unresolved : targetState(entry.executablePath);
+        entry.target = program.state;
         entries.push_back(std::move(entry));
     }
 }
