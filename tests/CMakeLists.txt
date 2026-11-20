@@ -344,9 +344,11 @@ set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 
 # The NSIS installer's upgrade step (#3276), cmake/CPackProjectConfig.cmake.in: it runs the old uninstaller with
 # /TASKSMACK_UPGRADE when it installs to the same folder, and the two steps above then keep their values; run
-# against fakes, through those steps' interpreters. Pure Python, on every platform.
+# against fakes, through those steps' interpreters. It also gates the old uninstaller on its folder being admin-only
+# or the file validly signed (#4444) and keeps an upgrade in its folder (#4445), and on Windows runs
+# cmake/nsis/TaskSmackUninstallerTrust.ps1 on temporary folders. Pure Python, no install, no elevation, no makensis.
 add_test(NAME NsisUpgradeStep COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_upgrade.py)
-set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 60)
+set_tests_properties(NsisUpgradeStep PROPERTIES TIMEOUT 180)
 
 # The installer is a Unicode NSIS target and has no Add-to-PATH option (#4300): CPACK_NSIS_DEFINES starts with
 # `Unicode true` and CPACK_NSIS_MODIFY_PATH is gone. Pure Python, on every platform.
