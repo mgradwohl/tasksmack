@@ -154,7 +154,7 @@ seed_corpus fuzz_cron_tab tests/fuzz/corpus/fuzz_cron_tab/* # a user's crontab a
 build_fuzzer fuzz_systemd_unit
 seed_corpus fuzz_systemd_unit tests/fuzz/corpus/fuzz_systemd_unit/* # a service and a timer
 build_fuzzer fuzz_xdg_autostart
-seed_corpus fuzz_xdg_autostart tests/fuzz/corpus/fuzz_xdg_autostart/* # CRLF with a BOM, and a hidden entry
+seed_corpus fuzz_xdg_autostart tests/fuzz/corpus/fuzz_xdg_autostart/* # one with a BOM, and a hidden entry (CRLF is LF in the repo; libFuzzer mutates \r in)
 build_fuzzer fuzz_os_release
 seed_corpus fuzz_os_release tests/fuzz/corpus/fuzz_os_release/* # os-release with escapes, and /proc/stat
 build_fuzzer fuzz_proc_text
