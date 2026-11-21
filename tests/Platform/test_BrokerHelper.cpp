@@ -664,7 +664,7 @@ struct FinalPathFake
     bool moveFileReread = false; ///< Answer another path when the file's handle is read a second time
     std::wstring replaced;       ///< The real path the moved answer stands in for
 };
-FinalPathFake g_FinalPathFake;
+FinalPathFake g_FinalPathFake; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the stand-in's, reset per test
 
 /// Writes @p text as GetFinalPathNameByHandleW does: its length when it fits, else the length needed with the NUL.
 DWORD writeFinalPath(const std::wstring& text, LPWSTR buffer, DWORD size)
@@ -1124,12 +1124,6 @@ TEST_F(ProcessWatchWorkerTest, AFailedWaitStopsTheSession)
 // says why.
 TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
 {
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
-    // clang 23's ASan runtime on Windows crashes ("stack-overflow", at a code address, not a stack one) on any bare
-    // `throw;`, which ProcessWatch::watch() does before the Worker records why (#4518). A stand-alone
-    // `try { throw X; } catch (...) { throw; }` does it; the watch's stack is the default 1 MiB. Normal builds run it.
-    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)";
-#endif
     m_Seam.then = WaitSeam::Then::Throw;
     const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
     std::promise<void> stopped;
@@ -1145,9 +1139,6 @@ TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsStopsTheSessionAndSaysWhy)
 
 TEST_F(ProcessWatchWorkerTest, AWatchThatThrowsAnythingStopsTheSession)
 {
-#if defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer))
-    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)"; // see the test above
-#endif
     m_Seam.then = WaitSeam::Then::ThrowNonStd;
     const BrokerHelper::ProcessWatch watch(m_Parent.get(), {}, &seamWait);
     std::promise<void> stopped;

@@ -14,6 +14,7 @@ jobs:
     name: Prune parser corpus
     runs-on: ubuntu-26.04
     timeout-minutes: 15
+    # AddressSanitizer only: pruning rewrites the one corpus every sanitizer shares (#4343, see cflite_batch.yml).
     steps:
       - name: Build fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1

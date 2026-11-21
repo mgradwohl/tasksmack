@@ -3,55 +3,29 @@
 /// Efficiency mode retries, actions on a selection, pinning, and batch priority and I/O priority. Split from test_ProcessesPanelRender.cpp
 /// by feature (#3850); the fixture is in ProcessesPanelRenderFixture.h.
 
+#include "App/PanelPlatformTypes.h"
 #include "App/Panels/AuthorizeWording.h"
-#include "App/Panels/ExitingProcessRows.h"
-#include "App/Panels/FindHandlesDialog.h"
 #include "App/Panels/NiceStep.h"
 #include "App/Panels/PriorityChangesInFlight.h"
 #include "App/Panels/ProcessActionsView.h"
-#include "App/Panels/ProcessColumnAvailability.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
-#include "App/Panels/ProcessDumpView.h"
 #include "App/Panels/ProcessGrouping.h"
 #include "App/Panels/ProcessPins.h"
 #include "App/Panels/ProcessRowFormat.h"
-#include "App/Panels/ProcessRowMeter.h"
-#include "App/Panels/ProcessSignatureText.h"
-#include "App/Panels/ProcessTreeIndent.h"
-#include "App/Panels/ProcessWaitChainDialog.h"
 #include "App/Panels/ProcessesPanel.h"
 #include "App/Panels/StuckProcesses.h"
-#include "App/Panels/UserGrouping.h"
-#include "App/Panels/UserSessionsFeed.h"
 #include "App/ProcessColumnConfig.h"
 #include "App/SelectOverride.h"
-#include "App/UdpCountingStatus.h"
 #include "App/UserConfig.h"
 #include "Core/ApplicationEvents.h"
 #include "Core/Event.h"
-#include "Domain/GPUModel.h"
-#include "Domain/HandleSearch.h"
 #include "Domain/PriorityConfig.h"
-#include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
-#include "Domain/SamplingConfig.h"
-#include "Domain/ServiceModel.h"
-#include "Mocks/FakeClipboard.h"
-#include "Mocks/FakeHttpsClient.h"
-#include "Mocks/FakeUserSessions.h"
-#include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
-#include "Platform/CpuAffinity.h"
-#include "Platform/GPUTypes.h"
-#include "Platform/IHttpsClient.h"
 #include "Platform/IProcessActions.h"
-#include "Platform/IProcessOpenFiles.h"
-#include "Platform/IServiceProbe.h"
-#include "Platform/IUserSessions.h"
-#include "Platform/ImageSignature.h"
+#include "Platform/IoPriorityTypes.h"
 #include "Platform/ProcessTypes.h"
 #include "Platform/SchedPolicy.h"
-#include "Platform/WaitChain.h"
 #include "ProcessesPanelRenderFixture.h"
 #include "UI/IconsFontAwesome6.h"
 #include "UI/Theme.h"
@@ -62,25 +36,17 @@
 #include <implot.h>
 #include <toml++/toml.hpp>
 
-#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cfloat>
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
-#include <expected>
 #include <format>
 #include <functional>
-#include <latch>
-#include <map>
 #include <memory>
-#include <mutex>
 #include <optional>
-#include <regex>
-#include <sstream>
 #include <stdexcept>
-#include <stop_token>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -899,11 +865,6 @@ TEST_F(ProcessesPanelRenderTest, ARowMenuStillOffersKillWhenTheCpuLayoutReadThro
 // instead of drawing an empty table and "0 processes".
 TEST_F(ProcessesPanelRenderTest, AThrowingPlatformFactoryGivesTheUnavailableEmptyState)
 {
-#if defined(_WIN32) && (defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer)))
-    // The sampler's start hook rethrows (`throw;`) after recording the failure, and clang 23's ASan runtime on Windows
-    // crashes the process on any rethrow (#4518). Normal builds, and ASan on Linux, run it.
-    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)";
-#endif
     const auto panel = std::make_unique<ProcessesPanel>([] -> ProcessesPanelPlatform { throw std::runtime_error("no probe"); },
                                                         [](Core::Event& /*event*/) {});
     panel->onAttach();
@@ -1119,7 +1080,7 @@ TEST_F(ProcessesPanelRenderTest, AProcessStuckInDiskSleepHasItsRowTinted)
             init.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
             auto server = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
             server.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 2};
-            auto worker = TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
+            const auto worker = TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
             for (const auto& counters : {init, server, worker})
             {
                 probe->withProcess(counters);
