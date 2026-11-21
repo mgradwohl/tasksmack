@@ -44,11 +44,25 @@ validate_build_prereqs() {
     return 0
 }
 
-# Validate coverage prerequisites (llvm-cov, llvm-profdata)
+# Validate coverage prerequisites (llvm-cov, llvm-profdata), found as coverage.sh then runs them: with
+# find_llvm_tool(), the LLVM folders before PATH (#4711). A --minimal setup-dev.sh installs llvm-23 but registers no
+# unversioned llvm-cov or llvm-profdata, and a PATH-only check refused it with every binary present. Held to the
+# clang floor as validate_build_prereqs() is, and the hint names the versioned package (apt's llvm is older).
 # Returns: 0 if all prerequisites are met, 1 otherwise
 validate_coverage_prereqs() {
-    check_command llvm-cov "apt install llvm" || return 1
-    check_command llvm-profdata "apt install llvm" || return 1
+    local tool path version
+    for tool in llvm-cov llvm-profdata; do
+        path="$(find_llvm_tool "$tool" 2>/dev/null || true)"
+        if [[ -z "$path" ]]; then
+            echo "Error: $tool not found. Install via: apt install llvm-23" >&2
+            return 1
+        fi
+        version="$(get_llvm_tool_major_version "$path" 2>/dev/null || true)"
+        if [[ -z "$version" || "$version" -lt 23 ]]; then
+            echo "Error: $tool >= 23 required, found: ${version:-unknown} ($path). Install via: apt install llvm-23" >&2
+            return 1
+        fi
+    done
     return 0
 }
 
