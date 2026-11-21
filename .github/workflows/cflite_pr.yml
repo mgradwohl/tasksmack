@@ -69,7 +69,7 @@ jobs:
   fuzz:
     name: Fuzz changed parsers (${{ matrix.sanitizer }})
     runs-on: ubuntu-26.04
-    timeout-minutes: 30
+    timeout-minutes: 50
     # AddressSanitizer and UndefinedBehaviorSanitizer (#4343): the harnesses drive hand-written byte and integer
     # parsers, whose typical defects (a signed overflow in an offset-plus-length check, a shift by the operand's width,
     # a misaligned load) only UBSan reports. Each leg fuzzes against its own sanitizer's baseline build from
@@ -81,13 +81,15 @@ jobs:
         sanitizer: [address, undefined]
     steps:
       # Step timeouts well above the normal times, so a stalled download (#1406: the artifacts API rate
-      # limit) or a hung build fails in minutes rather than holding the job for its whole 30. Building
-      # took 90-260 s over the 30 runs before #2354, and a slow runner passed the old 6 min, so it gets
-      # 10. Run fuzzers is 120 s of fuzzing shared out among the targets a change reaches, plus a corpus
-      # download of about 15 s per target: 4-7 min over those runs as the target count grew, against
-      # the old 10, so it gets 15.
+      # limit) or a hung build fails in minutes rather than holding the job for its whole run. Building
+      # took 90-260 s over the 30 runs before #2354, and Run fuzzers is 120 s of fuzzing shared out among
+      # the targets a change reaches, plus a corpus download of about 15 s per target (4-7 min). But an
+      # artifact that doesn't exist yet (a new target's corpus, a new sanitizer's baseline build) is
+      # looked for by listing every artifact in the repository, 2-3 min each at 8,198 (#4617), so a PR
+      # adding targets needs room for several misses: 15 to build (one baseline miss), 30 to fuzz (a
+      # few corpus misses), 50 for the job.
       - name: Build fuzzers
-        timeout-minutes: 10
+        timeout-minutes: 15
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           language: c++
@@ -95,7 +97,7 @@ jobs:
           sanitizer: ${{ matrix.sanitizer }}
 
       - name: Run fuzzers
-        timeout-minutes: 15
+        timeout-minutes: 30
         uses: google/clusterfuzzlite/actions/run_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
