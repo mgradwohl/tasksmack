@@ -7,7 +7,7 @@ name: Main Health
 # same way (#2741). Every run, whichever branch's workflow triggered it and a manual dispatch alike,
 # re-reads main and every release/* branch (#2951). workflow_run always runs this file from the
 # default branch, with this file's permissions. A run that opened or closed a tracking issue starts a
-# Release Dashboard run, so the release page shows the branch's new state at once (#4700).
+# Release Dashboard run, so the release page has the branch's new state within minutes (#4700).
 on:
   workflow_run:
     # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
@@ -199,6 +199,23 @@ jobs:
             echo "Updated #$issue."
           }
 
+          # The release dashboard reads these issues to say whether main is green (#4524). An issue this token
+          # opens or closes starts no workflow, so the dashboard would only notice at its next run: tell it,
+          # once, when an issue's state changed in this run (#4700). A dispatch is the one event this token may
+          # start a run with. On exit, so a run that changed one branch's issue and then failed on another
+          # still tells it: the next run would find that issue already as it should be, and say nothing. A
+          # dispatch that fails isn't worth failing this check over, since the dashboard's next run reads the
+          # issue anyway, and the trap leaves the step's own exit status as it was.
+          tell_dashboard() {
+            [[ -n "${changed:-}" ]] || return 0
+            if gh api -X POST "repos/$REPO/actions/workflows/release-dashboard.yml/dispatches" --silent -f ref=main; then
+              echo "Started a Release Dashboard run: ${changed%; }."
+            else
+              echo "::warning title=Main Health::The Release Dashboard run couldn't be started (${changed%; }). Its next run reads the issue."
+            fi
+          }
+          trap tell_dashboard EXIT
+
           # Every run, automatic or dispatched, re-reads main and every release/* branch that exists
           # (#2951). Judging only the triggering branch lost that branch's update whenever another
           # branch's run replaced its pending run in the concurrency group above. A failed listing fails
@@ -212,15 +229,3 @@ jobs:
             update_issue "$branch"
             echo "::endgroup::"
           done
-
-          # The release dashboard reads these issues to say whether main is green (#4524). An issue this token
-          # opens or closes starts no workflow, so the dashboard would only notice at its next run: tell it,
-          # once, when an issue's state changed in this run (#4700). A dispatch is the one event this token may
-          # start a run with. It isn't worth failing this check over: the dashboard's next run reads the issue.
-          if [[ -n "${changed:-}" ]]; then
-            if gh api -X POST "repos/$REPO/actions/workflows/release-dashboard.yml/dispatches" --silent -f ref=main; then
-              echo "Started a Release Dashboard run: ${changed%; }."
-            else
-              echo "::warning title=Main Health::The Release Dashboard run couldn't be started (${changed%; }). Its next run reads the issue."
-            fi
-          fi
