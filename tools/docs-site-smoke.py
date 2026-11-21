@@ -14,8 +14,9 @@ sees:
   - every section link on the sidebar's pages reaches a heading on its page;
   - an unknown route shows the custom 404 page, and its User Guide link recovers;
   - the release dashboard under release/ (#4524) draws a made-up release, splits its open count by lane and
-    lists the open issues by kind or by lane (#4585), switches between releases, shows a hostile issue title as
-    text, and says so when its data can't be loaded;
+    lists the open issues by kind or by lane (#4585), ends a lane's list with its own group for the issues that
+    wait on the maintainer (#4718), switches between releases, shows a hostile issue title as text, and says so
+    when its data can't be loaded;
   - the release dashboard flags data over 25 minutes old, and its "Refresh now" link opens the workflow on GitHub
     and has the page look for new data every 30 seconds (#4604);
   - no JavaScript error, and no first-party request that fails.
@@ -503,8 +504,12 @@ def _check_release_lists(page: Page, current: dict) -> None:
             with_waiting += 1
             if listed["heading"] != ["Waiting on the maintainer", f"{len(waiting)} issue{'' if len(waiting) == 1 else 's'}"]:
                 raise AssertionError(f"the {lane} list's waiting group is headed {listed['heading']}")
-            if not listed["summary"].endswith(said):
-                raise AssertionError(f"the {lane} list's summary reads {listed['summary']!r}, without {said!r}")
+            if listed["heading_text"] != f"Waiting on the maintainer {len(waiting)} issue{'' if len(waiting) == 1 else 's'}":
+                raise AssertionError(f"the {lane} list's waiting group reads {listed['heading_text']!r} to a screen reader")
+            started = sum(1 for issue in in_queue if issue["n"] not in held and issue["phase"] != "todo")
+            summary = f"{len(in_queue)} issue{'' if len(in_queue) == 1 else 's'}" + (f", {started} started" if started else "") + f", {said}"
+            if listed["summary"] != summary:
+                raise AssertionError(f"the {lane} list's summary reads {listed['summary']!r}, not {summary!r}")
             # The heading says it once: the rows under it don't each say it again.
             if "Waiting on the maintainer" in listed["held_chips"]:
                 raise AssertionError(f"the {lane} list's waiting rows repeat their heading: {listed['held_chips']}")
@@ -541,6 +546,7 @@ def lane_list(page: Page, lane: str) -> dict:
         " own: texts(group.querySelectorAll(':scope > .items .item-number')),"
         " held: texts(group.querySelectorAll('.held .item-number')),"
         " heading: texts(group.querySelectorAll('.held > h4 span')),"
+        " heading_text: (group.querySelector('.held > h4') || {}).textContent || '',"
         " held_chips: texts(group.querySelectorAll('.held .chip')),"
         " summary: group.querySelector('summary > span:last-child').textContent }; }",
         f"open-lane-{lane}",
@@ -565,14 +571,12 @@ def check_release_dashboard_lane_all_waiting(page: Page, site: str, offline: boo
     expect_release(page, index["current"])
     page.locator(".switch button[data-by='lane']").click()
     listed = lane_list(page, "Windows")
-    if listed["own"] or sorted(listed["held"]) != [f"#{number}" for number in windows]:
+    if listed["own"] or sorted(int(text.lstrip("#")) for text in listed["held"]) != windows:
         raise AssertionError(f"with every Windows issue waiting, the list shows its own work {listed['own']} and waiting {listed['held']}")
     if page.locator("details[data-key='open-lane-Windows'] > .items").count():
         raise AssertionError("with every Windows issue waiting, the list still draws an empty list of the lane's own work")
+    # No "started" here, whatever labels the issues carry: that count is the lane's own work, and it has none.
     expected = f"{len(windows)} issues, {len(windows)} waiting on the maintainer"
-    started = sum(1 for issue in current["open_issues"] if issue["lane"] == "Windows" and issue["phase"] != "todo")
-    if started:
-        expected = f"{len(windows)} issues, {started} started, {len(windows)} waiting on the maintainer"
     if listed["summary"] != expected:
         raise AssertionError(f"the Windows list's summary reads {listed['summary']!r}, not {expected!r}")
     untouched = lane_list(page, "WSL")

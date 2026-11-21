@@ -216,7 +216,7 @@ fixed at its source:
 | "Code-review findings closed" | the milestone's `code-review` issues |
 | "Performance issues closed" | the milestone's `performance` issues: stage 4's measure against the baselines files its regressions there |
 | "Tracker checklist" | the task list in the tracker's body |
-| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Listed by lane, they come after the lane's own work in a "Waiting on the maintainer" group, and the lane's count says how many (#4718). Anywhere else an issue is listed, it carries a "Waiting on the maintainer" chip. |
+| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Listed by lane, they come after the lane's own work in a "Waiting on the maintainer" group, and the lane's count says how many (#4718). Under that heading and under this row the issues don't repeat it; anywhere else one is listed, it carries a "Waiting on the maintainer" chip. |
 | "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
 | "Pull requests merged" | the open pull requests on the milestone or closing one of its issues: how long each has been ready, and what it's waiting on (failing checks, a conflict, open review threads, a catch-up with its base, running checks) |
 | "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |

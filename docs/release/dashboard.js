@@ -465,7 +465,8 @@
     const rows = release.ship_list.map((row) => {
       let body = null;
       if (row.issues && row.issues.length) {
-        body = issueList(row.issues.map((n) => byNumber.get(n)).filter(Boolean), now);
+        // The maintainer's row says what its issues wait on: they don't each say it again.
+        body = issueList(row.issues.map((n) => byNumber.get(n)).filter(Boolean), now, null, false, row.id === 'maintainer');
       } else if (row.id === 'checklist') {
         body = checklist(release);
       } else if (row.id === 'pull_requests' && release.live && release.live.pull_requests.length) {
@@ -1068,13 +1069,15 @@
       labelGaps(release),
       el('div', { class: 'open-lists' }, el('div', { class: 'list-head' }, el('h3', { text: 'Open issues' }), switcher),
         groups.map((group, index) => {
-          const all = group.issues.concat(group.waiting);
-          const begun = all.filter((issue) => issue.phase !== 'todo').length;
+          // "Started" is the lane's own work: an issue that waits on the maintainer is counted once, as waiting,
+          // whatever label it still carries.
+          const begun = group.issues.filter((issue) => issue.phase !== 'todo').length;
           const waiting = group.waiting.length;
-          const said = count(all.length, 'issue') + (begun ? ', ' + begun + ' started' : '') + (waiting ? ', ' + waiting + ' waiting on the maintainer' : '');
+          const said = count(group.issues.length + waiting, 'issue') + (begun ? ', ' + begun + ' started' : '') + (waiting ? ', ' + waiting + ' waiting on the maintainer' : '');
           return details(group.key, 'group', el('summary', null, el('span', null, group.name, el('span', { class: 'chevron', 'aria-hidden': 'true' })), el('span', { text: said })),
             [group.issues.length ? issueList(group.issues, now, null, group.asGiven) : null,
-              waiting ? el('div', { class: 'held' }, el('h4', null, el('span', { text: 'Waiting on the maintainer' }), el('span', { text: count(waiting, 'issue') })),
+              // The space is for a screen reader and a copy: the two are set apart, so it isn't drawn.
+              waiting ? el('div', { class: 'held' }, el('h4', null, el('span', { text: 'Waiting on the maintainer' }), ' ', el('span', { text: count(waiting, 'issue') })),
                 issueList(group.waiting, now, null, true, true)) : null], index === 0);
         })),
       release.recently_closed.length
