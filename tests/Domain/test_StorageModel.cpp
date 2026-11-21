@@ -528,6 +528,41 @@ TEST(StorageModelTest, TotalsAreAggregatedFromAllDisks)
     EXPECT_DOUBLE_EQ(snap.totalWriteBytesPerSec, 0.0);
 }
 
+// #4391: a device stacked on others (a RAID array, not isPhysicalDevice) has its own row and rate, but stays out of the
+// totals: its I/O is already in its member disks', and adding it would count it twice.
+TEST(StorageModelTest, AStackedDeviceIsShownButLeftOutOfTheTotals)
+{
+    auto mockProbeOwned = std::make_unique<Mocks::MockDiskProbe>();
+    Mocks::MockDiskProbe* mockProbe = mockProbeOwned.get();
+    StorageModel model(std::move(mockProbeOwned));
+
+    const auto countersWith = [](std::uint64_t sectors)
+    {
+        Platform::SystemDiskCounters counters;
+        Platform::DiskCounters member;
+        member.deviceName = "sda";
+        member.readSectors = sectors;
+        Platform::DiskCounters array = member;
+        array.deviceName = "md0";
+        array.isPhysicalDevice = false;
+        counters.disks = {member, array};
+        return counters;
+    };
+    const auto start = std::chrono::steady_clock::now();
+    mockProbe->setNextCounters(countersWith(1000));
+    model.sampleAt(start);
+    mockProbe->setNextCounters(countersWith(3000));
+    model.sampleAt(start + std::chrono::seconds(2));
+
+    const auto snap = model.publication()->snapshot;
+    ASSERT_EQ(snap.disks.size(), 2ULL);
+    for (const auto& disk : snap.disks)
+    {
+        EXPECT_DOUBLE_EQ(disk.readBytesPerSec, 512000.0) << disk.deviceName;
+    }
+    EXPECT_DOUBLE_EQ(snap.totalReadBytesPerSec, 512000.0) << "md0's I/O isn't added to sda's again";
+}
+
 TEST(StorageModelTest, DiskSnapshotContainsTotalBytes)
 {
     auto mockProbe = std::make_unique<Mocks::MockDiskProbe>();
@@ -1475,10 +1510,11 @@ TEST(StorageModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
     ASSERT_TRUE(result.overlapAchieved) << "only " << result.overlappingReads << " reads started during a write after " << result.trials
                                         << " trials (need " << TestPublication::MIN_OVERLAPPING_READS
                                         << "): the scheduler never ran the reader alongside the writer, so contention wasn't measured";
-    // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
-    EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
-                                            << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of "
-                                            << result.overlappingReads << " overlapping";
+    // Before #868 about one read per write waited out the copy; a trial over the budget is rerun (#4245).
+    EXPECT_LE(result.slowReads, TestPublication::slowReadBudget(WRITES))
+        << "after " << result.trials << " trials, median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
+        << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of " << result.overlappingReads
+        << " overlapping";
 }
 
 TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)

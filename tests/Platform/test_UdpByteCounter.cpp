@@ -193,6 +193,77 @@ TEST(UdpByteCounterTest, AnAttemptsCaptureKeepsWarningsOnlyWhileItsOpen)
     EXPECT_EQ(otherThreads, "on another thread\n") << "each thread has its own capture";
 }
 
+// #4265: the map walk, against a fake LRU map of tgids 1..N whose cursor can age out (the next call then starts over
+// from the first key). A walk that reaches the last key is a reading, a restart or two included; one that runs out
+// of steps is not, so the collector starts over from a baseline instead of crediting missed processes' lifetime
+// bytes to one interval.
+namespace
+{
+
+struct FakeLruMap
+{
+    std::uint32_t size = 0;
+    std::size_t restarts = 0; ///< how many of the next calls answer as if the cursor aged out
+    std::size_t restartAt = 0;
+
+    int getNextKey(const std::uint32_t* previous, std::uint32_t& next)
+    {
+        if (previous == nullptr || (*previous >= restartAt && restarts > 0 && (--restarts, true)))
+        {
+            next = 1;
+            return size == 0 ? -ENOENT : 0;
+        }
+        if (*previous >= size)
+        {
+            return -ENOENT;
+        }
+        next = *previous + 1;
+        return 0;
+    }
+};
+
+[[nodiscard]] auto walkOf(FakeLruMap& map, std::size_t entries)
+{
+    return UdpMapWalk::walk(
+        entries,
+        [&map](const std::uint32_t* previous, std::uint32_t& next) { return map.getNextKey(previous, next); },
+        [](std::uint32_t tgid, UdpByteCounts& process)
+        {
+            process.txBytes = tgid * 10U;
+            return true;
+        });
+}
+
+} // namespace
+
+TEST(UdpByteCounterTest, AMapWalkThatReachesTheLastKeyIsAReadingEvenAfterARestart)
+{
+    FakeLruMap map{.size = 5, .restarts = 1, .restartAt = 3};
+    const auto counts = walkOf(map, 16);
+    ASSERT_TRUE(counts.has_value());
+    ASSERT_EQ(counts->size(), 5U) << "each tgid once, the restart's repeats skipped";
+    EXPECT_EQ(counts->back().tgid, 5U);
+    EXPECT_EQ(counts->back().txBytes, 50U);
+}
+
+TEST(UdpByteCounterTest, AMapWalkThatRunsOutOfStepsIsNotAReading)
+{
+    FakeLruMap map{.size = 10, .restarts = 1000, .restartAt = 6}; // the cursor ages out on every late step
+    const auto counts = walkOf(map, 16);
+    ASSERT_FALSE(counts.has_value()) << "tgids 7 to 10 were never seen";
+    EXPECT_EQ(counts.error().kernelError, 0);
+}
+
+TEST(UdpByteCounterTest, AMapWalkHoldingAFullMapIsAReadingAndARefusalSaysSo)
+{
+    FakeLruMap full{.size = 4, .restarts = 0, .restartAt = 0};
+    EXPECT_EQ(walkOf(full, 4).value_or(std::vector<UdpByteCounts>{}).size(), 4U);
+    const auto refused = UdpMapWalk::walk(
+        4, [](const std::uint32_t*, std::uint32_t&) { return -EPERM; }, [](std::uint32_t, UdpByteCounts&) { return true; });
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error().kernelError, -EPERM);
+}
+
 TEST(UdpByteCounterTest, WithoutRootLoadingFailsAndSaysWhy)
 {
     if (::geteuid() == 0)

@@ -3,8 +3,13 @@
 /// the recorded processes (case, separators, quotes, long-path and UNC prefixes) and adding up its
 /// process tree, each process once, PIDs told apart by their start times.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/StartupImpact.h"
+
+#ifdef _WIN32
+#include "Platform/Windows/OrdinalCase.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -18,21 +23,33 @@ namespace
 
 TEST(StartupImpactPathTest, ComparesPathsAsWindowsDoes)
 {
-    EXPECT_TRUE(sameProgramPath(R"(C:\Program Files\A\a.exe)", R"(c:\program files\a\A.EXE)"));
-    EXPECT_TRUE(sameProgramPath(R"(C:\Program Files\A\a.exe)", "C:/Program Files/A/a.exe"));
-    EXPECT_TRUE(sameProgramPath(R"("C:\Program Files\A\a.exe")", R"( C:\Program Files\A\a.exe )"));
-    EXPECT_TRUE(sameProgramPath(R"(\\?\C:\Program Files\A\a.exe)", R"(C:\Program Files\A\a.exe)"));
-    EXPECT_TRUE(sameProgramPath(R"(\??\C:\Windows\System32\conhost.exe)", R"(C:\Windows\System32\conhost.exe)"));
-    EXPECT_TRUE(sameProgramPath(R"(\\?\UNC\server\share\a.exe)", R"(\\server\share\a.exe)"));
-    EXPECT_TRUE(sameProgramPath(R"(\\server\share\a.exe)", "//server/share/a.exe"));
+    EXPECT_TRUE(sameProgramPath(R"(C:\Program Files\A\a.exe)", R"(c:\program files\a\A.EXE)", &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(sameProgramPath(R"(C:\Program Files\A\a.exe)", "C:/Program Files/A/a.exe", &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(sameProgramPath(R"("C:\Program Files\A\a.exe")", R"( C:\Program Files\A\a.exe )", &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(sameProgramPath(R"(\\?\C:\Program Files\A\a.exe)", R"(C:\Program Files\A\a.exe)", &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(
+        sameProgramPath(R"(\??\C:\Windows\System32\conhost.exe)", R"(C:\Windows\System32\conhost.exe)", &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(sameProgramPath(R"(\\?\UNC\server\share\a.exe)", R"(\\server\share\a.exe)", &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(sameProgramPath(R"(\\server\share\a.exe)", "//server/share/a.exe", &Platform::equalsIgnoreCase));
 
-    EXPECT_FALSE(sameProgramPath(R"(C:\Program Files\A\a.exe)", R"(C:\Program Files\A\b.exe)"));
-    EXPECT_FALSE(sameProgramPath(R"(C:\Program Files\A\a.exe)", R"(C:\Program Files (x86)\A\a.exe)"));
-    EXPECT_FALSE(sameProgramPath(R"(C:\PROGRA~1\A\a.exe)", R"(C:\Program Files\A\a.exe)")) << "short names aren't resolved";
-    EXPECT_FALSE(sameProgramPath("", ""));
-    EXPECT_FALSE(sameProgramPath(R"("")", R"("")"));
-    // Only ASCII letters fold: "É" and "é" are different bytes.
-    EXPECT_FALSE(sameProgramPath("C:\\\xC3\x89.exe", "C:\\\xC3\xA9.exe"));
+    EXPECT_FALSE(sameProgramPath(R"(C:\Program Files\A\a.exe)", R"(C:\Program Files\A\b.exe)", &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(sameProgramPath(R"(C:\Program Files\A\a.exe)", R"(C:\Program Files (x86)\A\a.exe)", &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(sameProgramPath(R"(C:\PROGRA~1\A\a.exe)", R"(C:\Program Files\A\a.exe)", &Platform::equalsIgnoreCase))
+        << "short names aren't resolved";
+    EXPECT_FALSE(sameProgramPath("", "", &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(sameProgramPath(R"("")", R"("")", &Platform::equalsIgnoreCase));
+    // Only ASCII letters fold here: "É" and "é" are different bytes.
+    EXPECT_FALSE(sameProgramPath("C:\\\xC3\x89.exe", "C:\\\xC3\xA9.exe", &Platform::equalsIgnoreCase));
+#ifdef _WIN32
+    // Windows compares paths ordinal-ignore-case (#4309), and its callers pass that comparison.
+    EXPECT_TRUE(sameProgramPath("C:\\\xC3\x89.exe", "C:\\\xC3\xA9.exe", &Windows::equalsOrdinalIgnoreCase));
+    EXPECT_TRUE(sameProgramPath("C:/Users/\xC3\x89mile/a.exe",
+                                R"(c:\users\)"
+                                "\xC3\xA9mile"
+                                R"(\A.EXE)",
+                                &Windows::equalsOrdinalIgnoreCase));
+    EXPECT_FALSE(sameProgramPath("C:\\\xC3\x89.exe", "C:\\E.exe", &Windows::equalsOrdinalIgnoreCase));
+#endif
 
     EXPECT_EQ(comparableProgramPath(R"(\\?\UNC\server\x)"), R"(\server\x)");
     EXPECT_EQ(comparableProgramPath(R"(\\?\C:\x)"), R"(C:\x)");
@@ -48,13 +65,15 @@ TEST(StartupImpactPathTest, ComparesPathsAsWindowsDoes)
                                                    std::uint64_t cpuUs,
                                                    std::uint64_t diskBytes)
 {
-    return {.path = path,
-            .pid = pid,
-            .parentPid = parentPid,
-            .startTicks = start,
-            .parentStartTicks = parentStart,
-            .cpuUs = cpuUs,
-            .diskBytes = diskBytes};
+    return {
+        .path = path,
+        .pid = pid,
+        .parentPid = parentPid,
+        .startTicks = start,
+        .parentStartTicks = parentStart,
+        .cpuUs = cpuUs,
+        .diskBytes = diskBytes,
+    };
 }
 
 TEST(StartupImpactMeasureTest, AddsUpTheProgramsProcessesAndWhatTheyStarted)
@@ -70,20 +89,20 @@ TEST(StartupImpactMeasureTest, AddsUpTheProgramsProcessesAndWhatTheyStarted)
         recordedProcess(R"(C:\Other\other.exe)", 201, 7, 999, 3, 9999, 9), // PID 201 again, another parent start: not its child
         recordedProcess(R"(C:\App\app.exe)", 200, 2, 100, 1, 1000, 10),    // recorded twice: counted once
     };
-    const StartupImpactTotals app = measureStartupProgram(reading, R"(c:\app\APP.exe)");
+    const StartupImpactTotals app = measureStartupProgram(reading, R"(c:\app\APP.exe)", &Platform::equalsIgnoreCase);
     EXPECT_EQ(app.processCount, 5U);
     EXPECT_EQ(app.cpuUs, 1000U + 500U + 100U + 50U + 7U);
     EXPECT_EQ(app.diskBytes, 10U + 5U + 1U + 2U + 7U);
 
-    const StartupImpactTotals tool = measureStartupProgram(reading, R"(C:\Tools\tool.exe)");
+    const StartupImpactTotals tool = measureStartupProgram(reading, R"(C:\Tools\tool.exe)", &Platform::equalsIgnoreCase);
     EXPECT_EQ(tool.processCount, 1U);
     EXPECT_EQ(tool.cpuUs, 100U);
 
-    const StartupImpactTotals missing = measureStartupProgram(reading, R"(C:\Nowhere\none.exe)");
+    const StartupImpactTotals missing = measureStartupProgram(reading, R"(C:\Nowhere\none.exe)", &Platform::equalsIgnoreCase);
     EXPECT_EQ(missing.processCount, 0U);
     EXPECT_EQ(missing.cpuUs, 0U);
-    EXPECT_EQ(measureStartupProgram(reading, "").processCount, 0U) << "an entry whose program is unknown";
-    EXPECT_EQ(measureStartupProgram(StartupImpactReading{}, R"(C:\App\app.exe)").processCount, 0U);
+    EXPECT_EQ(measureStartupProgram(reading, "", &Platform::equalsIgnoreCase).processCount, 0U) << "an entry whose program is unknown";
+    EXPECT_EQ(measureStartupProgram(StartupImpactReading{}, R"(C:\App\app.exe)", &Platform::equalsIgnoreCase).processCount, 0U);
 }
 
 TEST(StartupImpactMeasureTest, APlatformWithoutMeasurementsGivesNone)

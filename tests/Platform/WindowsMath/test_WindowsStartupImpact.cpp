@@ -4,6 +4,7 @@
 /// entities, and the choice of the newest of the five files and the reasons when none can be read.
 /// Standard library only, so it runs everywhere; no real file is read.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/StartupImpact.h"
 #include "Platform/Windows/WindowsStartupImpact.h"
@@ -141,12 +142,14 @@ TEST(WindowsStartupImpactTest, EdgesTreeIsMeasuredWithItsChildrenAndNotThePidTha
     const auto readingParsed = parseStartupInfoXml(StartupInfoTestData::SIGN_IN_XML);
     ASSERT_TRUE(readingParsed.has_value());
     const StartupImpactReading reading = readingParsed.value_or(StartupImpactReading{});
-    const StartupImpactTotals edge = measureStartupProgram(reading, R"("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")");
+    const StartupImpactTotals edge =
+        measureStartupProgram(reading, R"("C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe")", &Platform::equalsIgnoreCase);
     EXPECT_EQ(edge.processCount, 4U); // itself, its renderer and WebView2, and WebView2's conhost
     EXPECT_EQ(edge.cpuUs, 214700U + 4100000U + 1800000U + 90000U);
     EXPECT_EQ(edge.diskBytes, 359051264U + 52428800U + 40000000U + 8192U);
 
-    const StartupImpactTotals updater = measureStartupProgram(reading, R"(C:\Program Files (x86)\Contoso & Co\Updater\updater.exe)");
+    const StartupImpactTotals updater =
+        measureStartupProgram(reading, R"(C:\Program Files (x86)\Contoso & Co\Updater\updater.exe)", &Platform::equalsIgnoreCase);
     EXPECT_EQ(updater.processCount, 1U);
     EXPECT_EQ(updater.cpuUs, 3969U);
 }

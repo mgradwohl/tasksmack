@@ -12,7 +12,13 @@
 #include "Domain/BackgroundSampler.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/StartupModel.h"
+#include "Platform/TextEquals.h"
 #include "Platform/ThreadName.h"
+#ifdef _WIN32
+#include "Platform/Windows/OrdinalCase.h"
+#else
+#include "Platform/AsciiCase.h"
+#endif
 
 #include <imgui.h>
 
@@ -42,7 +48,14 @@ void StartupPanel::onAttach()
     // The composition root's one probe creation for this panel; sampling waits for the tab to show.
     // An injected factory (tests, #1721) replaces the platform's.
     StartupPanelPlatform platform = m_MakePlatform ? m_MakePlatform() : makeStartupPanelPlatform(Synthetic::activeScenario());
-    m_Model = std::make_shared<Domain::StartupModel>(std::move(platform.probe));
+    // A startup entry's program path against the measured processes': Windows compares paths ordinal-ignore-case
+    // (#4309); Linux has no sign-in measurement, so what it passes is never used.
+#ifdef _WIN32
+    constexpr Platform::TextEquals PATHS_EQUAL = &Platform::Windows::equalsOrdinalIgnoreCase;
+#else
+    constexpr Platform::TextEquals PATHS_EQUAL = &Platform::equalsIgnoreCase;
+#endif
+    m_Model = std::make_shared<Domain::StartupModel>(std::move(platform.probe), PATHS_EQUAL);
     m_Gate = std::make_shared<SamplingGate>(m_Model);
     m_Actions = std::make_unique<StartupActionsView>(std::move(platform.actions), std::move(platform.account));
 }

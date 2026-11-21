@@ -2692,6 +2692,16 @@ std::expected<std::string, int> failingExecutableLink(std::int32_t /*pid*/)
     return std::unexpected(linkError());
 }
 
+std::expected<std::string, int> sandboxedExecutableLink(std::int32_t /*pid*/)
+{
+    return std::string("/app/bin/gnome-calculator"); // a Flatpak's path: none of it here
+}
+
+std::expected<std::string, int> hostPathExecutableLink(std::int32_t /*pid*/)
+{
+    return std::string("/bin/sh"); // a container's path that names a different file here
+}
+
 std::expected<std::string, int> deletedExecutableLink(std::int32_t /*pid*/)
 {
     return std::string("/opt/old app/bin/tool (deleted)");
@@ -3022,6 +3032,31 @@ TEST(LinuxProcessActionsTest, OpenFileLocationOfADeletedExecutableOpensItsOldFol
     EXPECT_FALSE(result.successNote.empty());
     ASSERT_EQ(showItems().uris.size(), 1U);
     EXPECT_EQ(showItems().uris.front(), "file:///opt/old%20app/bin/tool");
+}
+
+// #4397: /proc/<pid>/exe's text is the path in the process's own mount namespace. A path that names nothing here (a
+// Flatpak's /app/bin/x), or another file than the running one (a container's /usr/sbin/nginx), opens nothing: the
+// file manager would be shown the wrong file, or none.
+TEST(LinuxProcessActionsTest, OpenFileLocationOfAnExecutableInAnotherMountNamespaceOpensNothing)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    for (const auto link : {&sandboxedExecutableLink, &hostPathExecutableLink})
+    {
+        const TestSupport::ScopedTempDir dir("tasksmack_open_namespace");
+        LinuxProcessSyscalls syscalls = realProcessSyscalls();
+        syscalls.executableLink = link;
+        LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+
+        const auto result = actions.openFileLocation(ownTarget());
+
+        EXPECT_FALSE(result.success);
+        EXPECT_EQ(result.errorMessage, "Its executable is inside a sandbox or container, and has no folder on this system");
+        EXPECT_TRUE(showItems().uris.empty());
+        EXPECT_FALSE(std::filesystem::exists(dir.path / "argv.txt"));
+    }
 }
 
 TEST(LinuxProcessActionsTest, OpenFileLocationSaysWhyTheExecutableCantBeRead)

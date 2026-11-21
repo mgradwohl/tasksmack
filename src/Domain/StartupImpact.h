@@ -59,15 +59,16 @@ struct StartupEntryImpact
 };
 
 /// @p entry's impact at the sign-in @p reading measured: None when it is disabled, NotMeasured when its
-/// program is unknown or didn't run then, else rated from what its processes cost.
-[[nodiscard]] inline StartupEntryImpact startupEntryImpact(const Platform::StartupEntry& entry,
-                                                           const Platform::StartupImpactReading& reading)
+/// program is unknown or didn't run then, else rated from what its processes cost. Its program's path is
+/// matched to the processes' by @p equals.
+[[nodiscard]] inline StartupEntryImpact
+startupEntryImpact(const Platform::StartupEntry& entry, const Platform::StartupImpactReading& reading, Platform::TextEquals equals)
 {
     if (!entry.enabled)
     {
         return {.rating = StartupImpact::None};
     }
-    const Platform::StartupImpactTotals totals = Platform::measureStartupProgram(reading, entry.executablePath);
+    const Platform::StartupImpactTotals totals = Platform::measureStartupProgram(reading, entry.executablePath, equals);
     if (totals.processCount == 0)
     {
         return {};

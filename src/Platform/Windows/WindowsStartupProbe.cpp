@@ -34,6 +34,7 @@
 
 #include "ComPtr.h"
 #include "ComScope.h"
+#include "OrdinalCase.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
 #include "WindowsNativeIds.h"
@@ -1139,7 +1140,7 @@ struct WindowsStartupProbe::Impl
     {
         for (const Windows::ScheduledTaskMath::TaskRecord& task : scheduledTasks)
         {
-            StartupEntry entry = Windows::ScheduledTaskMath::taskEntry(task, currentUserNames);
+            StartupEntry entry = Windows::ScheduledTaskMath::taskEntry(task, currentUserNames, &Windows::equalsOrdinalIgnoreCase);
             resolveTarget(entry, entry.registrationName, seenPaths, taskProgram(task, entry.location));
             if (entry.publisher.empty())
             {

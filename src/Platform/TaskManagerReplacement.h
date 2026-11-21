@@ -19,6 +19,7 @@
 #include "Platform/AsciiCase.h"
 #include "Platform/AsciiTrim.h"
 #include "Platform/IProcessActions.h"
+#include "Platform/TextEquals.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -120,15 +121,17 @@ struct Status
     return debugger;
 }
 
-/// Whether @p a and @p b are the same path, ASCII letters ignoring case. A path that differs only in a
-/// non-ASCII letter's case reads as another copy, which only offers a repair that isn't needed.
-[[nodiscard]] constexpr bool samePath(std::string_view a, std::string_view b) noexcept
+/// Whether @p a and @p b are the same path as @p equals compares them: Windows passes its ordinal-ignore-case
+/// comparison (Platform::Windows::equalsOrdinalIgnoreCase), so a path differing only in "É" and "é" is one
+/// path; elsewhere an ASCII fold or an exact compare.
+[[nodiscard]] inline bool samePath(std::string_view a, std::string_view b, TextEquals equals) noexcept
 {
-    return equalsIgnoreCase(a, b);
+    return equals(a, b);
 }
 
-/// @p debugger (nullopt: no value) sorted against @p selfPath, the running TaskSmack's own image.
-[[nodiscard]] inline Status classify(const std::optional<std::string>& debugger, std::string_view selfPath)
+/// @p debugger (nullopt: no value) sorted against @p selfPath, the running TaskSmack's own image, with paths
+/// compared by @p equals.
+[[nodiscard]] inline Status classify(const std::optional<std::string>& debugger, std::string_view selfPath, TextEquals equals)
 {
     if (!debugger.has_value())
     {
@@ -142,7 +145,7 @@ struct Status
     Status status{.state = State::OtherProgram, .program = std::string(program)};
     if (isTaskSmackProgram(program))
     {
-        status.state = (!selfPath.empty() && samePath(program, selfPath)) ? State::ThisCopy : State::OtherTaskSmack;
+        status.state = (!selfPath.empty() && samePath(program, selfPath, equals)) ? State::ThisCopy : State::OtherTaskSmack;
     }
     return status;
 }
@@ -304,8 +307,9 @@ class IIfeoRegistry
 
 /// Points Task Manager at @p path (checked again here with validateTaskSmackPath()) in @p registry. A
 /// Debugger of another program is replaced only with @p replaceOther (the user confirmed it); one of a
-/// TaskSmack (this copy or another) is replaced as it is. A key this creates is marked as TaskSmack's.
-[[nodiscard]] inline ProcessActionResult applySet(IIfeoRegistry& registry, std::string_view path, bool replaceOther)
+/// TaskSmack (this copy or another) is replaced as it is. A key this creates is marked as TaskSmack's. Paths are
+/// compared by @p equals.
+[[nodiscard]] inline ProcessActionResult applySet(IIfeoRegistry& registry, std::string_view path, bool replaceOther, TextEquals equals)
 {
     if (const auto valid = validateTaskSmackPath(path); !valid.has_value())
     {
@@ -316,7 +320,7 @@ class IIfeoRegistry
     {
         return ProcessActionResult::error("Couldn't read Task Manager's setting: " + current.error());
     }
-    const Status status = classify(*current, path);
+    const Status status = classify(*current, path, equals);
     if (status.state == State::OtherProgram && !replaceOther)
     {
         return ProcessActionResult::error(otherProgramMessage(status.program));
@@ -356,14 +360,14 @@ inline void removeKeyIfTaskSmacks(IIfeoRegistry& registry)
 
 /// Gives Task Manager back: removes a Debugger that starts a TaskSmack.exe (this copy or another), never
 /// another program's, then the key if TaskSmack created it and nothing else is left in it.
-[[nodiscard]] inline ProcessActionResult applyClear(IIfeoRegistry& registry)
+[[nodiscard]] inline ProcessActionResult applyClear(IIfeoRegistry& registry, TextEquals equals)
 {
     const auto current = registry.readDebugger();
     if (!current.has_value())
     {
         return ProcessActionResult::error("Couldn't read Task Manager's setting: " + current.error());
     }
-    const Status status = classify(*current, {});
+    const Status status = classify(*current, {}, equals);
     if (status.state == State::OtherProgram)
     {
         return ProcessActionResult::error("Task Manager is replaced by " + status.program + ", not by TaskSmack, so TaskSmack leaves it");
