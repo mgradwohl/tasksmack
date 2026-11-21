@@ -89,7 +89,7 @@ class Installer:
         self.error_level: int | None = None
         self.quit = False
         self.trust_checks: list[tuple[str, str]] = []  # (mode, path) TaskSmackTrustCheck was asked
-        self.removed_installs: list[str] = []  # the folders TaskSmackRemoveOldInstall cleared
+        self.unregistered: list[str] = []  # the folders TaskSmackUnregisterOldInstall unregistered (no file deleted)
         self.details: list[str] = []
         self.deleted: list[str] = []
         self.removed_dirs: list[str] = []
@@ -176,10 +176,8 @@ class Installer:
                 mode, path = self.stack.pop(), self.stack.pop()  # the path is pushed first, then the mode
                 self.trust_checks.append((mode, path))
                 self.stack.append("0" if path.lower() in self.untrusted else "1")
-            elif op == "Call" and args[0] == "TaskSmackRemoveOldInstall":
-                folder = self.stack.pop()
-                self.removed_installs.append(folder)
-                self.files = {name for name in self.files if not name.startswith(folder.lower() + "\\")}
+            elif op == "Call" and args[0] == "TaskSmackUnregisterOldInstall":
+                self.unregistered.append(self.stack.pop())  # its registry entries only: every file stays (#4659)
             elif op == "Call":
                 if args[0] != "TaskSmackInUseCheck":
                     raise AssertionError(f"the step calls {args[0]}, not TaskSmackInUseCheck")
@@ -406,8 +404,9 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn('set(CPACK_PACKAGE_VENDOR "TaskSmack Contributors")', PACKAGING.read_text(encoding="utf-8"))
 
     def test_an_unsafe_old_uninstaller_is_never_run(self) -> None:
-        # #4444: an unsigned Uninstall.exe in a folder users can write to. Whatever folder the new copy goes to, and
-        # however the upgrade got there, it isn't started: the install removes the old one by its own list instead.
+        # #4444, #4660: an Uninstall.exe in a folder users can write to, signed or not. Whatever folder the new copy
+        # goes to, and however the upgrade got there, it isn't started, and its registry entries are removed instead.
+        # #4659: no file there is deleted, since an elevated delete by path follows a junction a user planted.
         unsafe = r"D:\Shared\TaskSmack"
         uninstaller = unsafe + r"\Uninstall.exe"
         for instdir in (unsafe, INSTDIR):
@@ -415,7 +414,10 @@ class UpgradeStepTest(unittest.TestCase):
                 installer = install(f'"{uninstaller}"', instdir=instdir, files={uninstaller}, untrusted={uninstaller})
                 self.assertIn(("Uninstaller", uninstaller), installer.trust_checks)
                 self.assertEqual(installer.executed, [], "never run")
-                self.assertEqual(installer.removed_installs, [unsafe])
+                self.assertEqual(installer.unregistered, [unsafe])
+                self.assertIn(uninstaller.lower(), installer.files, "its files stay")
+                self.assertEqual(installer.deleted, [], "nothing deleted")
+                self.assertEqual(installer.removed_dirs, [])
                 self.assertFalse(installer.aborted)
                 self.assertFalse(installer.quit)
                 self.assertEqual(installer.out_paths, [instdir], "the install goes on")
@@ -428,7 +430,7 @@ class UpgradeStepTest(unittest.TestCase):
                 installer = install(f'"{UNINSTALLER}"', instdir=instdir)
                 self.assertEqual(installer.trust_checks[-1], ("Uninstaller", UNINSTALLER))
                 self.assertEqual(len(installer.executed), 1)
-                self.assertEqual(installer.removed_installs, [])
+                self.assertEqual(installer.unregistered, [])
         installer = install(None)
         self.assertEqual(installer.trust_checks, [("Folder", INSTDIR)], "a first install only checks its folder")
 
@@ -533,6 +535,18 @@ class UpgradeStepTest(unittest.TestCase):
         self.assertIn("cmake/nsis/TaskSmackUninstallerTrust.ps1", text)
         self.assertTrue(TRUST_SCRIPT.is_file())
 
+    def test_the_unregister_step_deletes_no_file(self) -> None:
+        # #4659: TaskSmackUnregisterOldInstall runs for a folder standard users can write, elevated: a Delete, RMDir
+        # or script run there would follow the junctions they planted. It touches the registry only.
+        text = CONFIG.read_text(encoding="utf-8")
+        start = text.index("  Function TaskSmackUnregisterOldInstall")
+        body = text[start : text.index("FunctionEnd", start)]
+        instructions = {line.split()[0] for line in body.splitlines()[1:] if line.strip() and not line.strip().endswith(":")}
+        for word in ("Delete", "RMDir", "Rename", "CopyFiles", "File", "Exec", "ExecWait", "ExecShell", "nsExec::ExecToStack"):
+            self.assertNotIn(word, instructions)
+        self.assertIn('DeleteRegKey HKLM "Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\TaskSmack"', body)
+        self.assertNotIn("TaskSmackRemoveOldInstall", text)
+
     def test_cpacks_own_uninstall_before_install_is_off(self) -> None:
         # CPack's .onInit call can't pass the flag: with it on, the old uninstaller would run first, without it.
         text = PACKAGING.read_text(encoding="utf-8")
@@ -558,7 +572,7 @@ def windows_powershell() -> str | None:
 @unittest.skipUnless(windows_powershell(), "the trust script runs in Windows PowerShell")
 class TrustScriptTest(unittest.TestCase):
     """cmake/nsis/TaskSmackUninstallerTrust.ps1 (#4444), run for real on temporary folders. It only reads ACLs
-    (Remove mode deletes what it is given), needs no elevation and installs nothing."""
+    and signatures (#4659: it deletes nothing), needs no elevation and installs nothing."""
 
     def setUp(self) -> None:
         self.root = Path(tempfile.mkdtemp(prefix="tasksmack-trust-"))
@@ -566,7 +580,7 @@ class TrustScriptTest(unittest.TestCase):
 
     def script(self, mode: str, path: Path | str) -> subprocess.CompletedProcess[str]:
         command = [windows_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
-        command += [str(TRUST_SCRIPT), "-Mode", mode, "-Path", str(path), "-Signer", "Matt Gradwohl"]
+        command += [str(TRUST_SCRIPT), "-Mode", mode, "-Path", str(path)]
         return subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
 
     def users_writable(self, name: str) -> Path:
@@ -601,30 +615,32 @@ class TrustScriptTest(unittest.TestCase):
         folder = self.users_writable("Fresh")
         self.assertEqual(self.script("Folder", folder / "not" / "made" / "yet").returncode, 1)
 
-    def test_remove_deletes_the_install_by_the_list_and_never_follows_a_junction(self) -> None:
-        folder = self.root / "TaskSmack"
-        outside = self.root / "outside"
-        (folder / "share" / "tasksmack" / "assets").mkdir(parents=True)
-        outside.mkdir()
-        (outside / "keep.txt").write_text("not TaskSmack's", encoding="utf-8")
-        for name in ("TaskSmack.exe", "TaskSmackHelper.exe", "LICENSE.txt", "Uninstall.exe", "notes.txt"):
-            (folder / name).write_text("x", encoding="utf-8")
-        (folder / "share" / "tasksmack" / "assets" / "font.ttf").write_text("x", encoding="utf-8")
-        link = subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / "third_party_licenses"), str(outside)], capture_output=True, text=True, check=False)
-        self.assertEqual(link.returncode, 0, link.stdout + link.stderr)
-        result = self.script("Remove", folder)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertEqual(sorted(p.name for p in folder.iterdir()), ["notes.txt"], "only its own files go, the junction too")
-        self.assertEqual((outside / "keep.txt").read_text(encoding="utf-8"), "not TaskSmack's", "the junction's target is untouched")
+    def test_a_signed_uninstaller_in_a_users_writable_folder_isnt_trusted(self) -> None:
+        # #4660: a valid signature doesn't make it safe to run elevated: a user could swap the file after the check,
+        # and the genuine uninstaller deletes by path through their junctions. Any validly signed program stands in
+        # for a signed Uninstall.exe; Windows' own are signed through catalogs, which a copy still matches.
+        folder = self.users_writable("Signed")
+        system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        shutil.copyfile(system / "cmd.exe", folder / "Uninstall.exe")
+        check = [windows_powershell(), "-NoProfile", "-NonInteractive", "-Command"]
+        check += [f"(Get-AuthenticodeSignature -LiteralPath '{folder / 'Uninstall.exe'}').Status"]
+        # Without PowerShell 7's PSModulePath, which stops Windows PowerShell loading Get-AuthenticodeSignature's module.
+        env = {name: value for name, value in os.environ.items() if name.upper() != "PSMODULEPATH"}
+        status = subprocess.run(check, capture_output=True, text=True, timeout=120, check=False, env=env).stdout.strip()
+        if status != "Valid":
+            self.skipTest(f"the copied cmd.exe's signature is {status!r} here, not Valid")
+        result = self.script("Uninstaller", folder / "Uninstall.exe")
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("is not trusted", result.stdout)
+        # Any signer's: the script no longer asks who signed it, so no -Signer can make the copy trusted.
+        self.assertNotIn("Get-AuthenticodeSignature", TRUST_SCRIPT.read_text(encoding="utf-8"))
 
-    def test_remove_takes_an_emptied_folder_too(self) -> None:
-        folder = self.root / "TaskSmack"
-        folder.mkdir()
-        (folder / "Uninstall.exe").write_text("x", encoding="utf-8")
-        self.assertEqual(self.script("Remove", folder).returncode, 0)
-        self.assertFalse(folder.exists())
-        self.assertEqual(self.script("Remove", folder).returncode, 0, "a folder that is gone is fine")
-
+    def test_the_script_deletes_nothing(self) -> None:
+        # #4659: the elevated installer runs it on folders standard users can write; no mode removes anything.
+        self.assertEqual(self.script("Remove", self.root).returncode, 1, "there is no Remove mode")
+        code = "\n".join(line for line in TRUST_SCRIPT.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#"))
+        for word in ("Delete(", "Remove-Item", "Move-Item", "Rename-Item", "Set-Content", "Out-File", "SetAttributes"):
+            self.assertNotIn(word, code)
 
 if __name__ == "__main__":
     unittest.main()
