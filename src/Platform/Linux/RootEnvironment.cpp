@@ -4,6 +4,7 @@
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -162,20 +163,76 @@ std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& 
             return std::nullopt;
         }
     }
-    const std::string copy = folder + "/tasksmack-xauthority";
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int out = ::open(copy.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    std::optional<std::string> copy = writeXauthorityCopy(folder, *uid, *contents);
+    if (copy.has_value())
+    {
+        removeAtExit(*copy);
+    }
+    return copy;
+}
+
+/// The copy this session made, for removeCopyAtExit(); empty until there is one.
+std::string& copyToRemove()
+{
+    static std::string path;
+    return path;
+}
+
+void removeCopyAtExit()
+{
+    if (!copyToRemove().empty())
+    {
+        static_cast<void>(::unlink(copyToRemove().c_str()));
+    }
+}
+
+} // namespace
+
+std::optional<std::string> writeXauthorityCopy(const std::string& folder, uid_t uid, const std::string& contents)
+{
+    // Never a name another session uses (#4667): one fixed name let a second user's root session truncate the first's copy
+    // and write their own cookies into it. mkostemp() makes the file 0600 with O_EXCL, so it is always a new one.
+    std::string copy = folder + "/tasksmack-xauthority-" + std::to_string(uid) + "-XXXXXX";
+    // NOLINTNEXTLINE(misc-include-cleaner) - mkostemp is in <cstdlib> (glibc, _GNU_SOURCE)
+    const int out = ::mkostemp(copy.data(), O_CLOEXEC);
     if (out < 0)
     {
         return std::nullopt;
     }
-    const bool written = ::fchmod(out, S_IRUSR | S_IWUSR) == 0 && ::write(out, contents->data(), contents->size()) ==
-                                                                      static_cast<decltype(::write(out, nullptr, 0))>(contents->size());
+    std::size_t done = 0;
+    while (done < contents.size())
+    {
+        const auto wrote = ::write(out, contents.data() + done, contents.size() - done);
+        if (wrote < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (wrote <= 0)
+        {
+            break;
+        }
+        done += static_cast<std::size_t>(wrote);
+    }
+    const bool written = done == contents.size() && ::fchmod(out, S_IRUSR | S_IWUSR) == 0;
     ::close(out);
-    return written ? std::optional(copy) : std::nullopt;
+    if (!written)
+    {
+        static_cast<void>(::unlink(copy.c_str()));
+        return std::nullopt;
+    }
+    return copy;
 }
 
-} // namespace
+void removeAtExit(const std::string& copy)
+{
+    // The path is stored before the handler is registered, so it is destroyed after the handler runs (reverse order).
+    const bool first = copyToRemove().empty();
+    copyToRemove() = copy;
+    if (first)
+    {
+        static_cast<void>(std::atexit(&removeCopyAtExit));
+    }
+}
 
 int openAsUser(const std::string& path, uid_t uid)
 {
