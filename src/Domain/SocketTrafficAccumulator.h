@@ -174,6 +174,9 @@ class SocketTrafficAccumulator
         // Per owner (listedOwner(), as the bytes are credited): whether any of its connections in this
         // reading could be read (#1304).
         std::unordered_map<ProcessKey, bool, ProcessKeyHash> anyReadableByOwner;
+        // This reading's credits, merged into m_PendingByProcess only once m_Sockets is replaced (#4405): a throw
+        // part way leaves both as they were, so the same growth isn't credited again by the retry.
+        std::unordered_map<ProcessKey, Totals, ProcessKeyHash> credited;
         for (const auto& sample : sockets)
         {
             if (sample.key == 0)
@@ -259,7 +262,7 @@ class SocketTrafficAccumulator
                 }
                 if (credit.received != 0 || credit.sent != 0)
                 {
-                    m_PendingByProcess[*owner].add(credit);
+                    credited[*owner].add(credit);
                 }
                 state = SocketState{.bytesReceived = sample.bytesReceived, .bytesSent = sample.bytesSent};
             }
@@ -276,7 +279,14 @@ class SocketTrafficAccumulator
             }
             next.insert_or_assign(sample.key, state);
         }
+        // Room for every new owner first, so the merge below moves nodes and allocates nothing.
+        m_PendingByProcess.reserve(m_PendingByProcess.size() + credited.size());
         m_Sockets = std::move(next);
+        m_PendingByProcess.merge(credited);          // takes the owners not pending yet
+        for (const auto& [owner, totals] : credited) // what is left was pending already
+        {
+            m_PendingByProcess[owner].add(totals);
+        }
         m_HasReading = true;
         m_UnreadableOwners.clear();
         for (const auto& [owner, anyReadable] : anyReadableByOwner)

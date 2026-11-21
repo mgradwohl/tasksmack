@@ -1,5 +1,6 @@
 // Tests for SocketTrafficAccumulator: per-process network counters built from per-socket deltas (#1099).
 
+#include "AllocationFailureHook.h"
 #include "Domain/SamplingConfig.h"
 #include "Domain/SocketTrafficAccumulator.h"
 #include "Platform/ProcessTypes.h"
@@ -8,6 +9,8 @@
 
 #include <cstdint>
 #include <limits>
+#include <new>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -60,9 +63,11 @@ TEST(SocketTrafficAccumulatorTest, AProcessNoneOfWhoseConnectionsCouldBeReadHasN
     EXPECT_TRUE(processes[1].networkCountersAvailable);
 
     apply(3'000,
-          {{.key = 1, .pid = 10, .readable = false},
-           {.key = 3, .pid = 10, .bytesReceived = 10},
-           {.key = 2, .pid = 20, .bytesReceived = 3'000}});
+          {
+              {.key = 1, .pid = 10, .readable = false},
+              {.key = 3, .pid = 10, .bytesReceived = 10},
+              {.key = 2, .pid = 20, .bytesReceived = 3'000},
+          });
     EXPECT_TRUE(processes[0].networkCountersAvailable) << "one readable connection is a reading";
 
     // A repeat of the same reading (a probe that caches its query) keeps the newest reading's verdict.
@@ -363,16 +368,22 @@ TEST(SocketTrafficAccumulatorTest, ANewProcessThatReusedAListedPidIsNotCreditedT
     SocketTrafficAccumulator accumulator;
     std::vector processes{process(10, 1000)};
     accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
-    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 500, .bytesSent = 5}},
-                       .sampleTimeNs = 11 * SECOND},
-                      processes);
+    accumulator.apply(
+        {
+            .sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 500, .bytesSent = 5}},
+            .sampleTimeNs = 11 * SECOND,
+        },
+        processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "the exited process gets none of the new one's traffic";
     EXPECT_EQ(processes[0].netSentBytes, 0U);
 
     processes = {process(10, 2000)}; // the next refresh lists the new process
-    accumulator.apply({.sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 600, .bytesSent = 5}},
-                       .sampleTimeNs = 12 * SECOND},
-                      processes);
+    accumulator.apply(
+        {
+            .sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 600, .bytesSent = 5}},
+            .sampleTimeNs = 12 * SECOND,
+        },
+        processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 600U) << "its connection's held 500 plus this interval's 100";
     EXPECT_EQ(processes[0].netSentBytes, 5U);
 }
@@ -570,8 +581,10 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingThatAttributesAConnectionCred
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100, .bytesSent = 1}}, .sampleTimeNs = 11 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400, .bytesSent = 9}}, .sampleTimeNs = 12 * SECOND}, processes);
 
-    const SocketTrafficReading attributed{.sockets = {{.key = 2, .pid = 10, .bytesReceived = 400, .bytesSent = 9}},
-                                          .sampleTimeNs = 12 * SECOND};
+    const SocketTrafficReading attributed{
+        .sockets = {{.key = 2, .pid = 10, .bytesReceived = 400, .bytesSent = 9}},
+        .sampleTimeNs = 12 * SECOND,
+    };
     accumulator.apply(attributed, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "credited with the next fresh reading, a measured interval";
     EXPECT_EQ(processes[0].netSampleTimeNs, 12 * SECOND);
@@ -680,11 +693,17 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingDoesNotRecountItsCounters)
     accumulator.apply(
         {.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 0, .bytesReceived = 50}}, .sampleTimeNs = 1'000},
         processes);
-    accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 900},
-                                   {.key = 2, .pid = 10, .bytesReceived = 800},
-                                   {.key = 3, .pid = 10, .bytesReceived = 7'000}},
-                       .sampleTimeNs = 1'000},
-                      processes);
+    accumulator.apply(
+        {
+            .sockets =
+                {
+                    {.key = 1, .pid = 20, .bytesReceived = 900},
+                    {.key = 2, .pid = 10, .bytesReceived = 800},
+                    {.key = 3, .pid = 10, .bytesReceived = 7'000},
+                },
+            .sampleTimeNs = 1'000,
+        },
+        processes);
     accumulator.apply(
         {.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .bytesReceived = 50}}, .sampleTimeNs = 2'000},
         processes);
@@ -845,6 +864,72 @@ TEST(SocketTrafficAccumulatorTest, ABaselineOnlySampleSetsTheBaselineAndTheNextR
     EXPECT_EQ(processes[0].netSentBytes, 60U);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}, {.key = 2, .pid = 10, .bytesSent = 20'005}}, processes);
     EXPECT_EQ(processes[0].netSentBytes, 65U);
+}
+
+// #4405: a reading that throws part way through (an allocation) must leave the accumulator as it was, so the retry
+// credits the interval's growth once. Credits used to be queued as the loop went, so the throw left them queued
+// beside the old connection baselines and the retry credited the same growth again. Each allocation of one
+// reading is failed in turn; after the retry the process's total is the true growth, never more.
+TEST(SocketTrafficAccumulatorTest, AReadingThatThrowsPartWayCreditsItsGrowthOnceWhenRetried)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one reading's
+    constexpr std::uint64_t GROWTH = 1'000;
+    const auto reading = [](std::uint64_t bytes)
+    {
+        std::vector<SocketTrafficSample> sockets;
+        for (std::uint64_t key = 1; key <= 40; ++key) // ten sockets for each of four processes
+        {
+            sockets.push_back({.key = key, .pid = static_cast<std::int32_t>(10 + (key % 4)), .bytesReceived = bytes, .bytesSent = bytes});
+        }
+        return sockets;
+    };
+    int thrownReadings = 0;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        SocketTrafficAccumulator accumulator;
+        std::vector processes{process(10), process(11), process(12), process(13)};
+        read(accumulator, reading(100), processes); // the baselines
+
+        bool threw = false;
+        bool fired = false;
+        {
+            const TestSupport::FailAllocationAfter guard(failAt);
+            try
+            {
+                accumulator.addReading(reading(100 + GROWTH));
+            }
+            catch (const std::bad_alloc&)
+            {
+                threw = true;
+            }
+            fired = !TestSupport::allocationFailurePending();
+        }
+        if (!fired)
+        {
+            break; // the reading made fewer than failAt + 1 allocations: every one has been failed
+        }
+        thrownReadings += threw ? 1 : 0;
+
+        if (threw)
+        {
+            accumulator.addReading(reading(100 + GROWTH)); // the retry
+        }
+        accumulator.publish(processes);
+        for (const auto& proc : processes)
+        {
+            EXPECT_EQ(proc.netReceivedBytes, 10 * GROWTH) << "pid " << proc.pid;
+            EXPECT_EQ(proc.netSentBytes, 10 * GROWTH) << "pid " << proc.pid;
+        }
+        if (HasFailure())
+        {
+            return;
+        }
+    }
+    EXPECT_GT(thrownReadings, 0) << "some failing allocation lands in the reading";
 }
 
 } // namespace
