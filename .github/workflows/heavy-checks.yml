@@ -20,6 +20,7 @@ on:
       - 'src/App/Panels/ProcessRowFormat.h'
       - 'src/App/Panels/ProcessRowMeter.h'
       - 'src/App/Panels/ProcessRowMeterView.h'
+      - 'src/App/Panels/ProcessSortUtils.h'
       - 'src/App/Panels/ProcessTreeFlatten.h'
       - 'src/App/ProcessColumnConfig.h'
       - 'tests/Mocks/**'
@@ -131,7 +132,8 @@ jobs:
             case "$path" in
               src/Domain/*|src/UI/*|src/Platform/*|src/App/Panels/ProcessDetailsHistory.*|benchmarks/*|\
               src/App/Panels/ProcessFilterCache.h|src/App/Panels/ProcessIconView.h|src/App/Panels/ProcessRowFormat.h|\
-              src/App/Panels/ProcessRowMeter.h|src/App/Panels/ProcessRowMeterView.h|src/App/Panels/ProcessTreeFlatten.h|\
+              src/App/Panels/ProcessRowMeter.h|src/App/Panels/ProcessRowMeterView.h|src/App/Panels/ProcessSortUtils.h|\
+              src/App/Panels/ProcessTreeFlatten.h|\
               src/App/ProcessColumnConfig.h|tests/Mocks/*|CMakePresets.json|cmake/CompilerOptions.cmake|tools/common.sh|\
               perf-data/linux-ci-baseline.json|perf-data/linux-ci-thresholds.json|tools/bench.sh|\
               tools/check-benchmark-regression.py|tools/bench-across-launches.py|tools/bench-manifest.py|\
