@@ -80,13 +80,24 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     {
         return ascending ? (lhs < rhs) : (rhs < lhs);
     };
+    // Text the user reads, as every other user-visible sort (#4324, #4509): by Unicode simple case folding, so "Émile"
+    // sorts before "Zoe" and "bash" beside "Bash", then by bytes, so only identical texts tie.
+    const auto compareText = [ascending](std::string_view lhs, std::string_view rhs) -> bool
+    {
+        const std::strong_ordering order = Platform::compareFoldedCase(lhs, rhs);
+        return ascending ? order < 0 : order > 0;
+    };
 
     switch (column)
     {
     case ProcessColumn::PID:
         return compare(a.pid, b.pid);
     case ProcessColumn::User: // By user name, then domain, so PC\alice's and CORP\alice's rows don't interleave (#3328)
-        return compare(std::tie(a.user, a.userDomain), std::tie(b.user, b.userDomain));
+        if (const std::strong_ordering byUser = Platform::compareFoldedCase(a.user, b.user); byUser != 0)
+        {
+            return ascending ? byUser < 0 : byUser > 0;
+        }
+        return compareText(a.userDomain, b.userDomain);
     case ProcessColumn::CpuPercent:
         return compare(a.cpuPercent, b.cpuPercent);
     case ProcessColumn::MemPercent:
@@ -112,7 +123,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::Status:
         return compare(a.status, b.status);
     case ProcessColumn::Name:
-        return compare(a.name, b.name);
+        return compareText(a.name, b.name);
     case ProcessColumn::PPID:
         return compare(a.parentPid, b.parentPid);
     case ProcessColumn::Priority:
@@ -128,7 +139,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::Affinity:
         return compare(a.cpuAffinity, b.cpuAffinity);
     case ProcessColumn::Command:
-        return compare(a.command, b.command);
+        return compareText(a.command, b.command);
     case ProcessColumn::IoRead:
         return compare(readingSortKey(a.ioAvailable, a.ioReadBytesPerSec), readingSortKey(b.ioAvailable, b.ioReadBytesPerSec));
     case ProcessColumn::IoWrite:
