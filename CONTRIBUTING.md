@@ -1393,6 +1393,9 @@ summary line (targets, total and per-target seconds) in the release's fuzzing re
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
 `cmake/Dependencies.cmake` pins, with the same `cmake/patches/` applied (`.clusterfuzzlite/fetch-deps.sh`).
+They compile with the project's warnings (#4344), and `FUZZ_WERROR=1` makes them errors, as the PR smoke build
+("Fuzz targets build") sets it. Under ClusterFuzzLite (`$SANITIZER` set), `build.sh` also fails unless the standard
+library is libc++, since `_LIBCPP_HARDENING_MODE` does nothing under libstdc++.
 
 To build and run the targets locally with Clang, from the repo root:
 
