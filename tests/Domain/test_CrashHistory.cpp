@@ -109,13 +109,15 @@ TEST(CrashMatchTest, UnknownFamilyMatchesExactly)
 TEST(CrashCountsTest, CountsCrashesAndHangsWithTheNewestFirst)
 {
     const CrashesInfo info = listed(OsFamily::Windows,
-                                    {crash("dllhost.exe", 500, true),
-                                     crash("other.exe", 450),
-                                     crash("DLLHOST.EXE", 400),
-                                     crash("dllhost.exe", 300),
-                                     crash("dllhost.exe", 200),
-                                     crash("dllhost.exe", 150),
-                                     crash("dllhost.exe", 100)});
+                                    {
+                                        crash("dllhost.exe", 500, true),
+                                        crash("other.exe", 450),
+                                        crash("DLLHOST.EXE", 400),
+                                        crash("dllhost.exe", 300),
+                                        crash("dllhost.exe", 200),
+                                        crash("dllhost.exe", 150),
+                                        crash("dllhost.exe", 100),
+                                    });
     const ExecutableCrashCounts counts = crashCountsFor(info, "dllhost.exe");
     EXPECT_EQ(counts.crashes, 5U);
     EXPECT_EQ(counts.hangs, 1U);
@@ -178,7 +180,7 @@ TEST(CrashHistoryTest, ReadsOnlyWhenAskedAndPublishesEachRead)
 
 TEST(CrashHistoryTest, AThrowingReadIsPublishedAsUnlisted)
 {
-    CrashHistory history([]() -> CrashesInfo { throw std::runtime_error("log gone"); });
+    CrashHistory history([] -> CrashesInfo { throw std::runtime_error("log gone"); });
     history.read();
     const auto snapshot = history.snapshot();
     EXPECT_EQ(snapshot->version, 1U);

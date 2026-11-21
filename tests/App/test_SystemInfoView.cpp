@@ -648,9 +648,11 @@ TEST(SystemInfoSectionsTest, SecurityRows)
     security.apparmorEnabled = true;
     security.lockdown = "integrity";
     security.vulnerabilitiesRead = true;
-    security.vulnerabilities = {{.name = "meltdown", .status = "Not affected"},
-                                {.name = "spectre_v2", .status = "Mitigation: Enhanced / Automatic IBRS"},
-                                {.name = "mds", .status = "Vulnerable: Clear CPU buffers attempted, no microcode"}};
+    security.vulnerabilities = {
+        {.name = "meltdown", .status = "Not affected"},
+        {.name = "spectre_v2", .status = "Mitigation: Enhanced / Automatic IBRS"},
+        {.name = "mds", .status = "Vulnerable: Clear CPU buffers attempted, no microcode"},
+    };
     const Section section = SystemInfo::buildSecuritySection(security);
     EXPECT_EQ(section.title, "Security");
     EXPECT_EQ(findRow(section, "Secure Boot")->value, "On");
@@ -796,8 +798,10 @@ TEST(SystemInfoSectionsTest, VulnerabilityNamesAndSummary)
     EXPECT_EQ(SystemInfo::formatVulnerabilityName("mmio_stale_data"), "MMIO stale data");
     EXPECT_EQ(SystemInfo::formatVulnerabilityName("l1tf"), "L1TF");
     EXPECT_EQ(SystemInfo::formatVulnerabilitySummary({}), "");
-    const std::vector<Platform::CpuVulnerability> odd{{.name = "x", .status = "Unknown: no microcode"},
-                                                      {.name = "y", .status = "Not affected"}};
+    const std::vector<Platform::CpuVulnerability> odd{
+        {.name = "x", .status = "Unknown: no microcode"},
+        {.name = "y", .status = "Not affected"},
+    };
     EXPECT_EQ(SystemInfo::formatVulnerabilitySummary(odd), "1 not affected, 1 unknown");
 }
 
@@ -807,12 +811,14 @@ TEST(SystemInfoSectionsTest, WindowsUnknownVulnerabilitiesAreCountedAndExplained
     security.available = true;
     security.family = Platform::OsFamily::Windows;
     security.vulnerabilitiesRead = true;
-    security.vulnerabilities = {{.name = "l1tf", .status = "Unknown"},
-                                {.name = "mds", .status = "Unknown"},
-                                {.name = "meltdown", .status = "Not affected"},
-                                {.name = "spec_store_bypass", .status = "Vulnerable: Speculative Store Bypass Disable is off"},
-                                {.name = "spectre_v2", .status = "Mitigation: Enhanced IBRS"},
-                                {.name = "gather_data_sampling", .status = "Mitigation: Microcode"}};
+    security.vulnerabilities = {
+        {.name = "l1tf", .status = "Unknown"},
+        {.name = "mds", .status = "Unknown"},
+        {.name = "meltdown", .status = "Not affected"},
+        {.name = "spec_store_bypass", .status = "Vulnerable: Speculative Store Bypass Disable is off"},
+        {.name = "spectre_v2", .status = "Mitigation: Enhanced IBRS"},
+        {.name = "gather_data_sampling", .status = "Mitigation: Microcode"},
+    };
     const Section section = SystemInfo::buildSecuritySection(security);
     EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 2 mitigated, 1 not affected, 2 unknown");
     const Row* l1tf = findRow(section, "L1TF");
@@ -858,14 +864,36 @@ TEST(SystemInfoSectionsTest, SensorRows)
     sensors.available = true;
     sensors.listed = true;
     sensors.devices = {
-        {.name = "coretemp",
-         .id = {},
-         .readings = {SensorReading{
-             .kind = SensorKind::Temperature, .label = "Package id 0", .id = {}, .value = 52.0, .high = {}, .critical = {}}}},
-        {.name = "nvme #2",
-         .id = {},
-         .readings = {SensorReading{
-             .kind = SensorKind::Temperature, .label = "Composite", .id = {}, .value = 41.0, .high = {}, .critical = {}}}},
+        {
+            .name = "coretemp",
+            .id = {},
+            .readings =
+                {
+                    SensorReading{
+                        .kind = SensorKind::Temperature,
+                        .label = "Package id 0",
+                        .id = {},
+                        .value = 52.0,
+                        .high = {},
+                        .critical = {},
+                    },
+                },
+        },
+        {
+            .name = "nvme #2",
+            .id = {},
+            .readings =
+                {
+                    SensorReading{
+                        .kind = SensorKind::Temperature,
+                        .label = "Composite",
+                        .id = {},
+                        .value = 41.0,
+                        .high = {},
+                        .critical = {},
+                    },
+                },
+        },
     };
     const Section section = SystemInfo::buildSensorsSection(sensors);
     EXPECT_EQ(section.title, "Sensors");
@@ -902,10 +930,21 @@ TEST(SystemInfoSectionsTest, ValuesAndCopyTextUseTheDisplayLocale)
     sensors.available = true;
     sensors.listed = true;
     sensors.devices = {
-        {.name = "coretemp",
-         .id = {},
-         .readings = {SensorReading{
-             .kind = SensorKind::Temperature, .label = "Package id 0", .id = {}, .value = 52.5, .high = {}, .critical = {}}}},
+        {
+            .name = "coretemp",
+            .id = {},
+            .readings =
+                {
+                    SensorReading{
+                        .kind = SensorKind::Temperature,
+                        .label = "Package id 0",
+                        .id = {},
+                        .value = 52.5,
+                        .high = {},
+                        .critical = {},
+                    },
+                },
+        },
     };
     const std::vector<Section> sections{SystemInfo::buildSensorsSection(sensors)};
     EXPECT_TRUE(SystemInfo::allSectionsText(sections, false).contains("coretemp: Package id 0: 52,5 °C"))
@@ -946,8 +985,10 @@ TEST(SystemInfoSectionsTest, NetworkAdapterRows)
     eth0.mtu = 1500;
     eth0.driver = "e1000e";
     eth0.up = true;
-    eth0.addresses = {{.address = "fe80::1c2a:3bff:fe4d:5e6f", .prefix = 64, .v6 = true},
-                      {.address = "192.168.0.20", .prefix = 24, .v6 = false}};
+    eth0.addresses = {
+        {.address = "fe80::1c2a:3bff:fe4d:5e6f", .prefix = 64, .v6 = true},
+        {.address = "192.168.0.20", .prefix = 24, .v6 = false},
+    };
     Platform::NetworkAdapter wifi;
     wifi.name = "wlp3s0";
     wifi.wireless = true;
@@ -980,61 +1021,69 @@ TEST(SystemInfoSectionsTest, LocalAddressesAreThoseThatCantPlaceTheMachine)
     {
         return SystemInfo::isLocalAddress({.address = std::move(text), .prefix = 0, .v6 = v6});
     };
-    for (const char* v4 : {"10.1.2.3",
-                           "172.16.0.1",
-                           "172.31.255.255",
-                           "192.168.1.5",
-                           "169.254.10.20",
-                           "100.64.0.1",
-                           "100.127.255.254",
-                           "127.0.0.1",
-                           "0.0.0.0"})
+    for (const char* v4 : {
+             "10.1.2.3",
+             "172.16.0.1",
+             "172.31.255.255",
+             "192.168.1.5",
+             "169.254.10.20",
+             "100.64.0.1",
+             "100.127.255.254",
+             "127.0.0.1",
+             "0.0.0.0",
+         })
     {
         EXPECT_TRUE(local(v4, false)) << v4;
     }
-    for (const char* v4 : {"8.8.8.8",
-                           "172.15.0.1",
-                           "172.32.0.1",
-                           "100.63.0.1",
-                           "100.128.0.1",
-                           "192.169.0.1",
-                           "81.2.69.160",
-                           "",
-                           "1.2.3",
-                           "1.2.3.4.5",
-                           "256.1.1.1",
-                           "a.b.c.d"})
+    for (const char* v4 : {
+             "8.8.8.8",
+             "172.15.0.1",
+             "172.32.0.1",
+             "100.63.0.1",
+             "100.128.0.1",
+             "192.169.0.1",
+             "81.2.69.160",
+             "",
+             "1.2.3",
+             "1.2.3.4.5",
+             "256.1.1.1",
+             "a.b.c.d",
+         })
     {
         EXPECT_FALSE(local(v4, false)) << v4 << ": public, or unreadable and so kept hidden";
     }
-    for (const char* v6 : {"fe80::1",
-                           "fe80::1c2a:3bff:fe4d:5e6f%12",
-                           "FE80::1",
-                           "febf::1",
-                           "fec0::1",
-                           "fd12:3456:789a::1",
-                           "fc00::1",
-                           "::1",
-                           "::",
-                           "::ffff:192.168.1.5"})
+    for (const char* v6 : {
+             "fe80::1",
+             "fe80::1c2a:3bff:fe4d:5e6f%12",
+             "FE80::1",
+             "febf::1",
+             "fec0::1",
+             "fd12:3456:789a::1",
+             "fc00::1",
+             "::1",
+             "::",
+             "::ffff:192.168.1.5",
+         })
     {
         EXPECT_TRUE(local(v6, true)) << v6;
     }
-    for (const char* v6 : {"2a02:6b8::5",
-                           "2a02:6b8:0:1:a65e:60ff:fe12:3456",
-                           "2001:db8::5",
-                           "2002:c000:204::1",
-                           "::ffff:8.8.8.8",
-                           "::2",
-                           "1:2:3:4:5:6:7:8",
-                           "",
-                           "fe80:::1",
-                           "fe80::1::2",
-                           "12345::1",
-                           "1:2:3:4:5:6:7",
-                           "1:2:3:4:5:6:7:8:9",
-                           "fe80:",
-                           "1.2.3.4::"})
+    for (const char* v6 : {
+             "2a02:6b8::5",
+             "2a02:6b8:0:1:a65e:60ff:fe12:3456",
+             "2001:db8::5",
+             "2002:c000:204::1",
+             "::ffff:8.8.8.8",
+             "::2",
+             "1:2:3:4:5:6:7:8",
+             "",
+             "fe80:::1",
+             "fe80::1::2",
+             "12345::1",
+             "1:2:3:4:5:6:7",
+             "1:2:3:4:5:6:7:8:9",
+             "fe80:",
+             "1.2.3.4::",
+         })
     {
         EXPECT_FALSE(local(v6, true)) << v6 << ": public, or unreadable and so kept hidden";
     }
@@ -1050,10 +1099,12 @@ TEST(SystemInfoSectionsTest, PublicAdapterAddressesAreIdentifiers)
     Platform::NetworkAdapter wifi;
     wifi.name = "wlan0";
     wifi.up = true;
-    wifi.addresses = {{.address = "2a02:6b8:0:1:a65e:60ff:fe12:3456", .prefix = 64, .v6 = true},
-                      {.address = "fe80::1", .prefix = 64, .v6 = true},
-                      {.address = "192.168.1.5", .prefix = 24, .v6 = false},
-                      {.address = "81.2.69.160", .prefix = 28, .v6 = false}};
+    wifi.addresses = {
+        {.address = "2a02:6b8:0:1:a65e:60ff:fe12:3456", .prefix = 64, .v6 = true},
+        {.address = "fe80::1", .prefix = 64, .v6 = true},
+        {.address = "192.168.1.5", .prefix = 24, .v6 = false},
+        {.address = "81.2.69.160", .prefix = 28, .v6 = false},
+    };
     Platform::NetworkAdapter vps;
     vps.name = "eth0";
     vps.up = true;
@@ -1173,23 +1224,31 @@ TEST(SystemInfoSectionsTest, LoginNameInPathsIsRedactedWhileIdentifiersAreHidden
     Platform::PhysicalDisk disk;
     disk.name = "sdb";
     disk.partitionsRead = true;
-    disk.partitions = {{.number = 1,
-                        .device = "sdb1",
-                        .typeId = "0x0c",
-                        .typeName = "FAT32",
-                        .offsetBytes = 1'048'576,
-                        .sizeBytes = 16ULL << 30U,
-                        .mountPoint = "/media/alice/USB"}};
+    disk.partitions = {
+        {
+            .number = 1,
+            .device = "sdb1",
+            .typeId = "0x0c",
+            .typeName = "FAT32",
+            .offsetBytes = 1'048'576,
+            .sizeBytes = 16ULL << 30U,
+            .mountPoint = "/media/alice/USB",
+        },
+    };
     read.storage.disks = {disk};
     read.storage.volumesRead = true;
-    read.storage.volumes = {{.mountPoint = "/media/alice/USB",
-                             .label = "USB",
-                             .fileSystem = "vfat",
-                             .device = "/dev/sdb1",
-                             .network = false,
-                             .sizeRead = false,
-                             .sizeBytes = 0,
-                             .freeBytes = 0}};
+    read.storage.volumes = {
+        {
+            .mountPoint = "/media/alice/USB",
+            .label = "USB",
+            .fileSystem = "vfat",
+            .device = "/dev/sdb1",
+            .network = false,
+            .sizeRead = false,
+            .sizeBytes = 0,
+            .freeBytes = 0,
+        },
+    };
     read.crashes.available = true;
     read.crashes.family = Platform::OsFamily::Linux;
     read.crashes.listed = true;
@@ -1340,11 +1399,13 @@ TEST(SystemInfoSectionsTest, RedactUserPathsCoversEveryTextOfARowButNotIdentifie
         return made;
     };
     std::vector<Section> sections(1);
-    sections[0].rows = {makeRow(R"(C:\Users\alice\Mount drive)", "NTFS"),
-                        makeRow("Crash", "x.exe crashed", {}, R"(c:\users\ALICE\x.exe)"),
-                        makeRow("Dump", "", R"(C:\Users\Alice\dump couldn't be read)"),
-                        makeRow("User", R"(PC\Alice)"),
-                        makeRow("Kernel", R"(C:\Windows\system32\ntoskrnl.exe)")};
+    sections[0].rows = {
+        makeRow(R"(C:\Users\alice\Mount drive)", "NTFS"),
+        makeRow("Crash", "x.exe crashed", {}, R"(c:\users\ALICE\x.exe)"),
+        makeRow("Dump", "", R"(C:\Users\Alice\dump couldn't be read)"),
+        makeRow("User", R"(PC\Alice)"),
+        makeRow("Kernel", R"(C:\Windows\system32\ntoskrnl.exe)"),
+    };
     sections[0].rows[3].isIdentifier = true;
     SystemInfo::redactUserPaths(sections, os);
     const std::vector<Row>& rows = sections[0].rows;
@@ -1415,12 +1476,14 @@ TEST(SystemInfoSectionsTest, DhcpLeaseRowWhereThereIsOne)
 // #1522: a sensor's range since the page first read it, in its unit, once it has moved.
 TEST(SystemInfoSectionsTest, SensorRowsShowTheirRangeOnceItHasMoved)
 {
-    const Platform::SensorReading temperature{.kind = Platform::SensorKind::Temperature,
-                                              .label = "Package id 0",
-                                              .id = {},
-                                              .value = 55.0,
-                                              .high = 80.0,
-                                              .critical = std::nullopt};
+    const Platform::SensorReading temperature{
+        .kind = Platform::SensorKind::Temperature,
+        .label = "Package id 0",
+        .id = {},
+        .value = 55.0,
+        .high = 80.0,
+        .critical = std::nullopt,
+    };
     EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 41.0, .max = 63.0, .samples = 5}),
               "min " + UI::Format::formatFixedLocalized(41.0, 1, " \u00B0C") + ", max " +
                   UI::Format::formatFixedLocalized(63.0, 1, " \u00B0C"));                                // no thresholds repeated
@@ -1428,7 +1491,13 @@ TEST(SystemInfoSectionsTest, SensorRowsShowTheirRangeOnceItHasMoved)
     EXPECT_EQ(SystemInfo::formatSensorRange(temperature, {.min = 50.0, .max = 55.0, .samples = 1}), ""); // one read
 
     const Platform::SensorReading fan{
-        .kind = Platform::SensorKind::Fan, .label = "fan1", .id = {}, .value = 1200.0, .high = {}, .critical = {}};
+        .kind = Platform::SensorKind::Fan,
+        .label = "fan1",
+        .id = {},
+        .value = 1200.0,
+        .high = {},
+        .critical = {},
+    };
     EXPECT_EQ(SystemInfo::formatSensorRange(fan, {.min = 900.0, .max = 1500.0, .samples = 3}), "min 900 RPM, max 1500 RPM");
 
     Platform::SensorsInfo sensors;
@@ -1615,12 +1684,14 @@ TEST(SystemInfoSectionsTest, PublicIpRowsWaitForTheButtonThenAreIdentifiers)
     EXPECT_FALSE(ask[0].isIdentifier) << "the button stays visible with identifiers hidden";
     EXPECT_TRUE(ask[0].unavailableReason.contains(SystemInfo::PUBLIC_IP_NOTE)) << ask[0].unavailableReason;
 
-    const Platform::PublicIpInfo found{.read = true,
-                                       .v4 = "203.0.113.7",
-                                       .v6 = {},
-                                       .v4Unavailable = {},
-                                       .v6Unavailable = "No IPv6 route to the internet",
-                                       .source = "OpenDNS (myip.opendns.com)"};
+    const Platform::PublicIpInfo found{
+        .read = true,
+        .v4 = "203.0.113.7",
+        .v6 = {},
+        .v4Unavailable = {},
+        .v6Unavailable = "No IPv6 route to the internet",
+        .source = "OpenDNS (myip.opendns.com)",
+    };
     const std::vector<Row> rows = SystemInfo::buildPublicIpRows(true, true, found);
     ASSERT_EQ(rows.size(), 2U);
     EXPECT_EQ(rows[0].label, "Public IPv4");
@@ -1637,7 +1708,11 @@ TEST(SystemInfoSectionsTest, PublicIpRowsWaitForTheButtonThenAreIdentifiers)
     Domain::SystemInfoSnapshot snap = snapshot();
     snap.adapters.available = true;
     const Platform::SystemInfoCapabilities withLookup{
-        .hasOs = true, .unavailableReason = {}, .wifiDetailsGated = false, .hasPublicIp = true};
+        .hasOs = true,
+        .unavailableReason = {},
+        .wifiDetailsGated = false,
+        .hasPublicIp = true,
+    };
     auto sections = SystemInfo::buildSystemInfoSections(snap, {}, withLookup);
     auto adapters = std::ranges::find(sections, std::string("Network adapters"), &Section::title);
     ASSERT_NE(adapters, sections.end());
@@ -2974,12 +3049,14 @@ TEST(SystemInfoSectionsTest, NoSectionsBeforeTheFirstRead)
 // drops its "Read at", and only then does it wrap to its own line.
 [[nodiscard]] SystemInfo::ToolbarWidths toolbarAt(float rowPx)
 {
-    return {.rowPx = rowPx,
-            .filterWantedPx = 300.0F,
-            .filterHintPx = 200.0F,
-            .controlsPx = 450.0F,
-            .readAtFullPx = 120.0F,
-            .readAtShortPx = 60.0F};
+    return {
+        .rowPx = rowPx,
+        .filterWantedPx = 300.0F,
+        .filterHintPx = 200.0F,
+        .controlsPx = 450.0F,
+        .readAtFullPx = 120.0F,
+        .readAtShortPx = 60.0F,
+    };
 }
 
 TEST(SystemInfoToolbarLayoutTest, WideRowKeepsTheBoxAndTheFullTime)
@@ -3459,14 +3536,18 @@ TEST_F(SystemInfoViewRenderTest, MountPointNamingTheUserDrawsRedactedUntilIdenti
     snap.storage.family = Platform::OsFamily::Linux;
     snap.storage.disksRead = true;
     snap.storage.volumesRead = true;
-    snap.storage.volumes = {{.mountPoint = "/media/alice/USB",
-                             .label = "USB",
-                             .fileSystem = "vfat",
-                             .device = "/dev/sdb1",
-                             .network = false,
-                             .sizeRead = false,
-                             .sizeBytes = 0,
-                             .freeBytes = 0}};
+    snap.storage.volumes = {
+        {
+            .mountPoint = "/media/alice/USB",
+            .label = "USB",
+            .fileSystem = "vfat",
+            .device = "/dev/sdb1",
+            .network = false,
+            .sizeRead = false,
+            .sizeBytes = 0,
+            .freeBytes = 0,
+        },
+    };
     SystemInfoViewState state;
     const auto drawnText = [&]
     {
@@ -3634,15 +3715,24 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     // Wi-Fi with a signal quality but no dBm figure; a link with only a receive rate.
     Platform::NetworkAdapter wifi;
     wifi.wifiLink = Platform::WifiLink{
-        .ssid = "", .frequencyMhz = 0, .bitrateKbps = 0, .signalQuality = 70, .phy = "", .channel = 0, .rxBitrateKbps = 0};
+        .ssid = "",
+        .frequencyMhz = 0,
+        .bitrateKbps = 0,
+        .signalQuality = 70,
+        .phy = "",
+        .channel = 0,
+        .rxBitrateKbps = 0,
+    };
     EXPECT_EQ(SystemInfo::formatWifiSignal(wifi), "70%");
-    const std::string receiveOnly = SystemInfo::formatWifiLink({.ssid = "",
-                                                                .frequencyMhz = 0,
-                                                                .bitrateKbps = 0,
-                                                                .signalQuality = std::nullopt,
-                                                                .phy = "",
-                                                                .channel = 0,
-                                                                .rxBitrateKbps = 866'700});
+    const std::string receiveOnly = SystemInfo::formatWifiLink({
+        .ssid = "",
+        .frequencyMhz = 0,
+        .bitrateKbps = 0,
+        .signalQuality = std::nullopt,
+        .phy = "",
+        .channel = 0,
+        .rxBitrateKbps = 866'700,
+    });
     EXPECT_TRUE(receiveOnly.contains("receive")) << receiveOnly;
     EXPECT_FALSE(receiveOnly.contains("transmit")) << receiveOnly;
 
@@ -3658,7 +3748,13 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
 
     // A public address read without a source names none in its tooltip.
     const Platform::PublicIpInfo unnamed{
-        .read = true, .v4 = "203.0.113.7", .v6 = {}, .v4Unavailable = {}, .v6Unavailable = {}, .source = {}};
+        .read = true,
+        .v4 = "203.0.113.7",
+        .v6 = {},
+        .v4Unavailable = {},
+        .v6Unavailable = {},
+        .source = {},
+    };
     const std::vector<Row> rows = SystemInfo::buildPublicIpRows(true, true, unnamed);
     ASSERT_FALSE(rows.empty());
     EXPECT_TRUE(rows[0].available());
