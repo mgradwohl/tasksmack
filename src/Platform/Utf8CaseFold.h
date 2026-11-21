@@ -296,9 +296,10 @@ inline void appendFolded(std::string& out, std::string_view text)
     return (a.size() - i) <=> (b.size() - j); // one side is used up: the one with text left is after
 }
 
-/// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile", not
-/// after "Zoe"), then by their bytes, so case variants still sort in one stable order (the maintainer, #4324: the
-/// same fold as matching, with a byte-wise tie-break; not locale collation).
+/// The order of @p a and @p b for a user-visible sort: by Unicode simple case folding ("Émile" beside "émile"; folding
+/// joins cases, it strips no accents, so both still sort after "Zoe" by code point, #4509), then by their bytes, so case
+/// variants still sort in one stable order (the maintainer, #4324: the same fold as matching, with a byte-wise
+/// tie-break; not locale collation).
 [[nodiscard]] constexpr std::strong_ordering compareFoldedCase(std::string_view a, std::string_view b) noexcept
 {
     const std::strong_ordering folded = compareFolded(a, b);

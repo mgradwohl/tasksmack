@@ -12,7 +12,10 @@
 
 #include <algorithm>
 #include <clocale>
+#include <cstddef>
 #include <cstdint>
+#include <format>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -251,6 +254,63 @@ TEST(ProcessSortUtilsTest, NameCommandAndUserSortByUnicodeCaseFolding)
     }
 }
 
+// #4509: sortByColumn() folds a text column's keys once per sort for speed; it must give exactly the order
+// compareByColumn() gives, for each text column, both ways, with case variants, accents, shared prefixes and ties.
+TEST(ProcessSortUtilsTest, SortByColumnGivesCompareByColumnsOrder)
+{
+    const std::vector<std::string> texts{
+        "bash",
+        "Bash",
+        "BASH",
+        "\xC3\x89mile",
+        "\xC3\xA9mile",
+        "\xC3\x96land",
+        "Zoe",
+        "zoe",
+        "cat",
+        "",
+        "C:\\Users\\\xC3\x89mile\\a.exe --x",
+        "c:\\users\\\xC3\xA9mile\\a.exe --x",
+        "bash",
+    };
+    const std::vector<std::string> domains{"PC", "pc", "CORP", ""};
+    std::vector<ProcessSnapshot> rows;
+    for (std::size_t i = 0; i < texts.size() * 2; ++i)
+    {
+        ProcessSnapshot row = makeSnapshot(false);
+        row.pid = static_cast<std::int32_t>(1000 - i); // PIDs out of order, so the tie-break is exercised
+        row.uniqueKey = i;
+        row.name = texts[i % texts.size()];
+        row.command = texts[(i * 5) % texts.size()];
+        row.user = texts[(i * 3) % texts.size()];
+        row.userDomain = domains[i % domains.size()];
+        rows.push_back(std::move(row));
+    }
+    for (const ProcessColumn column : {ProcessColumn::Name, ProcessColumn::Command, ProcessColumn::User, ProcessColumn::PID})
+    {
+        for (const bool ascending : {true, false})
+        {
+            SCOPED_TRACE(std::format("column {} {}", static_cast<int>(column), ascending ? "ascending" : "descending"));
+            std::vector<std::size_t> expected(rows.size());
+            std::ranges::iota(expected, std::size_t{0});
+            std::vector<std::size_t> actual = expected;
+            std::ranges::sort(expected,
+                              [&rows, column, ascending](std::size_t a, std::size_t b)
+                              { return ProcessSortUtils::compareByColumn(rows[a], rows[b], column, ascending); });
+            ProcessSortUtils::sortByColumn(rows, actual, column, ascending);
+            EXPECT_EQ(actual, expected);
+        }
+    }
+    // A subset of the rows (a filter), the others' keys never read.
+    std::vector<std::size_t> subset{3, 0, 7, 12};
+    std::vector<std::size_t> expected = subset;
+    std::ranges::sort(expected,
+                      [&rows](std::size_t a, std::size_t b)
+                      { return ProcessSortUtils::compareByColumn(rows[a], rows[b], ProcessColumn::Name, true); });
+    ProcessSortUtils::sortByColumn(rows, subset, ProcessColumn::Name, true);
+    EXPECT_EQ(subset, expected);
+}
+
 // #3328: the User column sorts by the user name, then the domain, so two accounts sharing a name sort next to each
 // other but never interleave; with no domain (Linux) it is the user name alone, as before.
 TEST(ProcessSortUtilsTest, UserSortsByTheNameThenTheDomain)
@@ -395,6 +455,7 @@ TEST(ProcessSortUtilsTest, SignatureSortsVerifiedBySignerThenTheRest)
     std::ranges::sort(rows,
                       [](const auto& a, const auto& b) { return ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Signature, true); });
     std::vector<std::int32_t> order;
+    order.reserve(rows.size());
     for (const ProcessSnapshot& row : rows)
     {
         order.push_back(row.pid);
@@ -638,6 +699,7 @@ TEST(ProcessSortUtilsTest, AffinitySortsBeyond64Cpus)
                              { return ProcessSortUtils::compareColumnKey(a, b, ProcessColumn::Affinity, /*ascending=*/true); });
 
     std::vector<std::string> order;
+    order.reserve(rows.size());
     for (const auto& row : rows)
     {
         order.push_back(UI::Format::formatCpuAffinity(row.cpuAffinity.words()));

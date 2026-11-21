@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <array>
+#include <compare>
 #include <cstddef>
 #include <cstdint>
 #include <format>
@@ -53,43 +54,85 @@ namespace
     return rows;
 }
 
-void runSort(benchmark::State& state, App::ProcessColumn column, bool nonAscii)
+/// How the sort compares: Bytes is the raw byte compare the table used before #4509 (kept here as the baseline);
+/// Folded is the panel's sortByColumn(), each row's key folded once per sort.
+enum class Way : std::uint8_t
+{
+    Bytes,
+    Folded,
+};
+
+void runSort(benchmark::State& state, App::ProcessColumn column, bool nonAscii, Way way)
 {
     const auto count = static_cast<std::size_t>(state.range(0));
     const std::vector<Domain::ProcessSnapshot> rows = makeRows(count, nonAscii);
+    const auto text = [column](const Domain::ProcessSnapshot& row) -> const std::string&
+    {
+        return column == App::ProcessColumn::Name ? row.name : row.command;
+    };
     std::vector<std::size_t> order(count);
     for (auto _ : state)
     {
-        std::iota(order.begin(), order.end(), std::size_t{0});
-        std::ranges::sort(order,
-                          [&rows, column](std::size_t a, std::size_t b)
-                          { return App::ProcessSortUtils::compareColumnKey(rows[a], rows[b], column, /*ascending=*/true); });
+        std::ranges::iota(order, std::size_t{0});
+        if (way == Way::Folded)
+        {
+            App::ProcessSortUtils::sortByColumn(rows, order, column, /*ascending=*/true);
+        }
+        else
+        {
+            std::ranges::sort(order,
+                              [&rows, &text](std::size_t a, std::size_t b)
+                              {
+                                  const std::strong_ordering byText = text(rows[a]) <=> text(rows[b]);
+                                  return byText != 0 ? byText < 0 : rows[a].pid < rows[b].pid;
+                              });
+        }
         benchmark::DoNotOptimize(order.data());
         benchmark::ClobberMemory();
     }
     state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(count));
 }
 
-void BM_ProcessSort_Name_Ascii(benchmark::State& state)
+void BM_ProcessSort_Name_Ascii_Bytes(benchmark::State& state)
 {
-    runSort(state, App::ProcessColumn::Name, /*nonAscii=*/false);
+    runSort(state, App::ProcessColumn::Name, /*nonAscii=*/false, Way::Bytes);
 }
-void BM_ProcessSort_Name_NonAscii(benchmark::State& state)
+void BM_ProcessSort_Name_Ascii_Folded(benchmark::State& state)
 {
-    runSort(state, App::ProcessColumn::Name, /*nonAscii=*/true);
+    runSort(state, App::ProcessColumn::Name, /*nonAscii=*/false, Way::Folded);
 }
-void BM_ProcessSort_Command_Ascii(benchmark::State& state)
+void BM_ProcessSort_Name_NonAscii_Bytes(benchmark::State& state)
 {
-    runSort(state, App::ProcessColumn::Command, /*nonAscii=*/false);
+    runSort(state, App::ProcessColumn::Name, /*nonAscii=*/true, Way::Bytes);
 }
-void BM_ProcessSort_Command_NonAscii(benchmark::State& state)
+void BM_ProcessSort_Name_NonAscii_Folded(benchmark::State& state)
 {
-    runSort(state, App::ProcessColumn::Command, /*nonAscii=*/true);
+    runSort(state, App::ProcessColumn::Name, /*nonAscii=*/true, Way::Folded);
+}
+void BM_ProcessSort_Command_Ascii_Bytes(benchmark::State& state)
+{
+    runSort(state, App::ProcessColumn::Command, /*nonAscii=*/false, Way::Bytes);
+}
+void BM_ProcessSort_Command_Ascii_Folded(benchmark::State& state)
+{
+    runSort(state, App::ProcessColumn::Command, /*nonAscii=*/false, Way::Folded);
+}
+void BM_ProcessSort_Command_NonAscii_Bytes(benchmark::State& state)
+{
+    runSort(state, App::ProcessColumn::Command, /*nonAscii=*/true, Way::Bytes);
+}
+void BM_ProcessSort_Command_NonAscii_Folded(benchmark::State& state)
+{
+    runSort(state, App::ProcessColumn::Command, /*nonAscii=*/true, Way::Folded);
 }
 
 } // namespace
 
-BENCHMARK(BM_ProcessSort_Name_Ascii)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
-BENCHMARK(BM_ProcessSort_Name_NonAscii)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
-BENCHMARK(BM_ProcessSort_Command_Ascii)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
-BENCHMARK(BM_ProcessSort_Command_NonAscii)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Name_Ascii_Bytes)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Name_Ascii_Folded)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Name_NonAscii_Bytes)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Name_NonAscii_Folded)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Command_Ascii_Bytes)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Command_Ascii_Folded)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Command_NonAscii_Bytes)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
+BENCHMARK(BM_ProcessSort_Command_NonAscii_Folded)->Arg(500)->Arg(2000)->Unit(benchmark::kMicrosecond);
