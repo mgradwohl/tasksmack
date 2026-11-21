@@ -95,9 +95,10 @@ class StorageModel : public ISamplable
     /// defaults without a probe.
     [[nodiscard]] Platform::DiskCapabilities capabilities() const;
 
-    /// Gives a model built with DeferredProbeTag its probe (#2731), or null for no disks. Meant for the
-    /// sampler thread, before its first sample (the sampler's start hook); thread-safe, and a probe
-    /// already held is replaced. The probe is not read here.
+    /// Gives a model built with DeferredProbeTag its probe (#2731), or null for no disks, on the sampler
+    /// thread before its first sample (the sampler's start hook). The probe is not read here.
+    /// Sampler thread only (#4434): the sampling path reads the probe outside the model's lock, so a call from another thread while it
+    /// samples would race. A probe already held is replaced.
     void setProbe(std::unique_ptr<Platform::IDiskProbe> probe);
 
   private:

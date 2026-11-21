@@ -296,6 +296,16 @@ void BackgroundSampler::stop()
     logStopSummary();
 }
 
+void BackgroundSampler::requestStop() noexcept
+{
+    // Not m_Running: stop() still sees a running sampler, joins it and logs its summary.
+    if (m_SamplerThread.joinable())
+    {
+        static_cast<void>(m_SamplerThread.request_stop());
+        m_WakeCondition.notify_all();
+    }
+}
+
 void BackgroundSampler::logStopSummary() const noexcept
 {
     // Named by its thread, so each sampler's line can be told apart in the log (#3153). Called from

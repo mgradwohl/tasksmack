@@ -36,6 +36,7 @@
 #include "ComScope.h"
 #include "OrdinalCase.h"
 #include "WinString.h"
+#include "WindowsCoTaskMem.h"
 #include "WindowsConversions.h"
 #include "WindowsNativeIds.h"
 #include "WindowsScheduledTasks.h"
@@ -363,13 +364,15 @@ void applyApproved(StartupEntry& entry, const ApprovedMap& approved, const std::
 
 [[nodiscard]] std::wstring knownFolder(const Windows::StartupProbeFunctions& api, const KNOWNFOLDERID& id)
 {
-    PWSTR path = nullptr;
+    // Freed whether or not the call succeeded, as SHGetKnownFolderPath's contract asks. Its own statement:
+    // std::out_ptr hands the path to @c path only when the full expression ends.
+    Windows::UniqueCoTaskMem<wchar_t> path;
+    const HRESULT found = api.knownFolderPath(id, KF_FLAG_DEFAULT, nullptr, std::out_ptr(path));
     std::wstring result;
-    if (SUCCEEDED(api.knownFolderPath(id, KF_FLAG_DEFAULT, nullptr, &path)) && path != nullptr)
+    if (SUCCEEDED(found) && path != nullptr)
     {
-        result = path;
+        result = path.get();
     }
-    CoTaskMemFree(path);
     return result;
 }
 

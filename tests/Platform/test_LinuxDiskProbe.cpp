@@ -321,6 +321,88 @@ TEST_F(LinuxDiskProbeReadTest, SysBlockDecidesWholeDevicesAndMarksStackedOnes)
     std::filesystem::remove_all(sysBlock, ec);
 }
 
+// #4628: /sys/block also lists devices that aren't disks to show: an optical drive, a floppy, an eMMC's boot and RPMB
+// areas, and devices with no media (size 0, as nbd makes 16 of at load). The rows are the same as the name rule gave,
+// plus the arrays and volumes #4391 added.
+TEST_F(LinuxDiskProbeReadTest, SysBlockLeavesOutDrivesBootAreasAndDevicesWithNoMedia)
+{
+    const std::filesystem::path sysBlock = m_DiskstatsPath.string() + "_sysblock_media";
+    const auto device = [&](const char* name, const char* sectors)
+    {
+        std::filesystem::create_directories(sysBlock / name);
+        if (sectors != nullptr)
+        {
+            std::ofstream(sysBlock / name / "size") << sectors << "\n";
+        }
+    };
+    device("sda", "1953525168");
+    device("sr0", "2097151");
+    device("fd0", "2880");
+    device("mmcblk0", "61071360");
+    device("mmcblk0boot0", "8192");
+    device("mmcblk0rpmb", "8192");
+    device("nbd0", "0");
+    device("nbd1", "2097152");
+    device("md0", nullptr); // no size file: kept
+    std::string lines;
+    for (const char* name : {"sda", "sr0", "fd0", "mmcblk0", "mmcblk0boot0", "mmcblk0rpmb", "nbd0", "nbd1", "md0"})
+    {
+        lines += makeLine(name);
+    }
+    writeDiskstats(lines);
+
+    LinuxDiskProbe probe(m_DiskstatsPath, sysBlock);
+    std::vector<std::string> names;
+    for (const DiskCounters& disk : probe.read().disks)
+    {
+        names.push_back(disk.deviceName);
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"sda", "mmcblk0", "nbd1", "md0"}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sysBlock, ec);
+}
+
+// #4697: /sys/block is listed again only when /proc/diskstats' device names change or the interval passes, not every
+// sample: a listing reads each device's size and slaves/, about 3x the read's cost.
+TEST_F(LinuxDiskProbeReadTest, TheSysBlockListingIsKeptUntilTheDeviceNamesChangeOrTheIntervalPasses)
+{
+    const std::filesystem::path sysBlock = m_DiskstatsPath.string() + "_sysblock_cache";
+    const auto device = [&sysBlock](const char* name, const char* size)
+    {
+        std::filesystem::create_directories(sysBlock / name);
+        std::ofstream(sysBlock / name / "size") << size << "\n";
+    };
+    const auto namesOf = [](const SystemDiskCounters& counters)
+    {
+        std::vector<std::string> names;
+        for (const DiskCounters& disk : counters.disks)
+        {
+            names.push_back(disk.deviceName);
+        }
+        return names;
+    };
+    device("sda", "1000");
+    device("sdb", "0"); // a card reader with no card
+    writeDiskstats(makeLine("sda") + makeLine("sdb"));
+    LinuxDiskProbe probe(m_DiskstatsPath, sysBlock);
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda"}));
+
+    device("sdb", "2000"); // a card put in: the same names, so the listing is kept until the interval passes
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda"})) << "listed again although nothing in diskstats changed";
+
+    device("sdc", "3000"); // a disk plugged in: a new name in diskstats lists /sys/block at once
+    writeDiskstats(makeLine("sda") + makeLine("sdb") + makeLine("sdc"));
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda", "sdb", "sdc"}));
+
+    device("sdb", "0"); // the card taken out again; with the interval passed (zero here), the next sample sees it
+    probe.setRescanIntervalForTesting(std::chrono::steady_clock::duration::zero());
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda", "sdc"}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sysBlock, ec);
+}
+
 // Without a /sys/block to list, the name rule is the fallback.
 TEST_F(LinuxDiskProbeReadTest, AnUnlistableSysBlockFallsBackToTheNameRule)
 {

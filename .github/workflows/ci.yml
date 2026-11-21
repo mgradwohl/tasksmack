@@ -601,7 +601,7 @@ jobs:
         with:
           name: iwyu-results
           path: iwyu-output.txt
-          retention-days: 5
+          retention-days: 2 # per-PR output: 2 days keeps the artifact count down for ClusterFuzzLite (#4617)
 
   # Blocking ASan+UBSan run on PRs (#1406) and on merge groups (#3818), which gate the same way. It
   # used to be advisory (`|| true` plus continue-on-error), so a PR could merge with a sanitizer
@@ -688,7 +688,7 @@ jobs:
         with:
           name: asan-ubsan
           path: asan-ubsan-output.txt
-          retention-days: 5
+          retention-days: 2 # per-PR output: 2 days keeps the artifact count down for ClusterFuzzLite (#4617)
 
   # ── Gate job ────────────────────────────────────────────────────────────────
   # A single required check for branch protection.  All required jobs must succeed

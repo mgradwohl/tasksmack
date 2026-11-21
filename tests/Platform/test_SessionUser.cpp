@@ -462,4 +462,32 @@ TEST(SessionUserProcTest, ThisProcesssOwnUidIsAboveItWhenNotRoot)
     EXPECT_FALSE(invokerIsAboveThisProcess(::getuid() + 54321)) << "an id no process above has";
 }
 
+// #4651: a program a setcap session starts is its own user's, with none of its capabilities, so it gets the environment
+// the session started with (GTK_IM_MODULE, GIO modules, the shader cache). Never when it would run as other ids than
+// the environment's owner, or inherit a capability.
+TEST(SessionUserTest, OnlyAChildOfTheSameUserWithNoCapabilitiesGetsTheStartingEnvironmentBack)
+{
+    using Platform::SessionUser::childMayGetStartingEnvironment;
+    const auto none = [](std::string_view /*name*/) -> std::optional<std::string>
+    {
+        return std::nullopt;
+    };
+    const auto sudoUid = [](const char* value)
+    {
+        return [value](std::string_view name) -> std::optional<std::string>
+        {
+            return name == "SUDO_UID" ? std::optional<std::string>(value) : std::nullopt;
+        };
+    };
+    EXPECT_TRUE(childMayGetStartingEnvironment(1000, 1000, 1000, 1000, false, none)) << "the FAQ's setcap session";
+    EXPECT_TRUE(childMayGetStartingEnvironment(1000, 1000, 1000, 1000, false, sudoUid("1000"))) << "sudo -u themselves";
+    EXPECT_FALSE(childMayGetStartingEnvironment(0, 0, 0, 0, false, none)) << "root: RootEnvironment's rules";
+    EXPECT_FALSE(childMayGetStartingEnvironment(1000, 1001, 1000, 1000, false, none)) << "setuid to another user";
+    EXPECT_FALSE(childMayGetStartingEnvironment(1000, 1000, 1000, 1001, false, none)) << "setgid";
+    EXPECT_FALSE(childMayGetStartingEnvironment(1000, 1000, 1000, 1000, true, none)) << "ambient capabilities are inherited";
+    EXPECT_FALSE(childMayGetStartingEnvironment(1001, 1001, 1001, 1001, false, sudoUid("1000"))) << "sudo -u bob: alice's";
+    EXPECT_FALSE(childMayGetStartingEnvironment(1000, 1000, 1000, 1000, false, sudoUid("x"))) << "a malformed one counts";
+    EXPECT_TRUE(childMayGetStartingEnvironment(1000, 1000, 1000, 1000, false, sudoUid(""))) << "an empty one is none";
+}
+
 } // namespace Platform::SessionUser

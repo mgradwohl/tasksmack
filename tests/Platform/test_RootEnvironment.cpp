@@ -13,6 +13,7 @@
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
+#include <iterator>
 #include <map>
 #include <optional>
 #include <string>
@@ -131,6 +132,19 @@ TEST(RootEnvironmentTest, EverythingElseGoesAndRootsValuesReplaceTheUsers)
     EXPECT_EQ(recorder.set.at("XDG_RUNTIME_DIR"), "/run/user/0") << "root's own, where dconf and the like write";
     EXPECT_EQ(recorder.set.at("XAUTHORITY"), "/run/user/0/tasksmack-xauthority")
         << "root's own copy of the user's cookie, never a file the user names (the second #4187 review)";
+}
+
+// #4666: the process's own PATH is the one applyToThisProcess() works out (ROOT_PATH's root-only folders), not ROOT_PATH
+// itself: a /usr/local another account may write is left out of what SDL's zenity lookup searches.
+TEST(RootEnvironmentTest, PathIsTheOneGivenSoAnUntrustedUsrLocalIsLeftOut)
+{
+    const std::array<const char*, 3> environment{"PATH=/home/me/bin:/usr/bin", "DISPLAY=:0", nullptr};
+    Recorder recorder;
+    static_cast<void>(
+        applyTo(environment.data(),
+                RootValues{.home = "/root", .runtimeDir = std::nullopt, .xauthority = std::nullopt, .path = "/usr/sbin:/usr/bin"},
+                recorder.operations()));
+    EXPECT_EQ(recorder.set.at("PATH"), "/usr/sbin:/usr/bin");
 }
 
 TEST(RootEnvironmentTest, UnknownRootValuesAndAFailedSetUnsetRatherThanKeepTheUsers)
@@ -253,6 +267,45 @@ TEST_F(XauthorityCopyTest, OnlyARegularFileOfTheOwnersWithinTheLimitIsRead)
     ASSERT_GE(pipe, 0);
     EXPECT_EQ(readOwnedFile(pipe, ::geteuid(), MOST_XAUTHORITY_BYTES), std::nullopt) << "a FIFO";
     ::close(pipe);
+}
+
+// #4667: each session gets a copy of its own, so a second user's root session can't rewrite the first one's cookies.
+TEST_F(XauthorityCopyTest, EachSessionWritesACopyOfItsOwnThatNoOtherSessionTouches)
+{
+    const auto read = [](const std::string& path)
+    {
+        std::ifstream in(path);
+        return std::string(std::istreambuf_iterator<char>(in), std::istreambuf_iterator<char>());
+    };
+    const std::optional<std::string> alice = writeXauthorityCopy(m_Dir.string(), 1000, "alice's cookie");
+    const std::optional<std::string> bob = writeXauthorityCopy(m_Dir.string(), 1001, "bob's cookie");
+    const std::optional<std::string> aliceAgain = writeXauthorityCopy(m_Dir.string(), 1000, "alice's other cookie");
+    ASSERT_TRUE(alice.has_value() && bob.has_value() && aliceAgain.has_value());
+    EXPECT_NE(*alice, *bob);
+    EXPECT_NE(*alice, *aliceAgain) << "the same user's second session too: never a file another session reads";
+    EXPECT_TRUE(std::filesystem::path(*alice).filename().string().starts_with("tasksmack-xauthority-1000-")) << *alice;
+    EXPECT_EQ(read(*alice), "alice's cookie") << "untouched by the sessions after it";
+    EXPECT_EQ(read(*bob), "bob's cookie");
+    EXPECT_EQ(read(*aliceAgain), "alice's other cookie");
+    struct stat info = {};
+    ASSERT_EQ(::stat(alice->c_str(), &info), 0);
+    EXPECT_EQ(info.st_mode & 0777U, 0600U);
+    EXPECT_EQ(writeXauthorityCopy((m_Dir / "missing").string(), 1000, "x"), std::nullopt) << "no folder, no copy";
+}
+
+TEST_F(XauthorityCopyTest, TheSessionsCopyIsRemovedWhenItExits)
+{
+    const std::optional<std::string> copy = writeXauthorityCopy(m_Dir.string(), 1000, "cookie");
+    ASSERT_TRUE(copy.has_value());
+    // In a child process (a death test forks), so this process's own exit handlers are left alone.
+    EXPECT_EXIT(
+        {
+            removeAtExit(*copy);
+            std::exit(0);
+        },
+        ::testing::ExitedWithCode(0),
+        "");
+    EXPECT_FALSE(std::filesystem::exists(*copy)) << "removed by the exit handler";
 }
 
 TEST_F(XauthorityCopyTest, OpenAsUserRefusesALinkAndNeverBlocksOnAFifo)

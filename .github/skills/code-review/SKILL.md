@@ -85,6 +85,14 @@ TaskSmack has a strict layered architecture: App → UI → Core → Domain → 
 - GLAD before SDL: `#include <glad/gl.h>` then `#include <SDL3/SDL.h>`.
 - Reuse constants from `src/Domain/SamplingConfig.h`; flag re-declared sampling literals.
 - Windows code must call wide-character (W) APIs and convert to UTF-8 at the boundary.
+- Text encoding (#4299, CONTRIBUTING.md "Text encoding and locale"): flag
+  - an action, lookup or identity rebuilt from display text, instead of the native form (the wide
+    original, the raw bytes, or an opaque id mapped to them);
+  - OS text drawn without `Domain::sanitizedUtf8`, or invalid UTF-8 written to a file;
+  - `Core::pathToUtf8` used to open a file or saved to be read back (`pathToUtf8Exact` is for that);
+  - an ASCII-only fold (`Platform/AsciiCase.h`, `std::tolower`) on text the user types or reads, which
+    takes `Platform/Utf8CaseFold.h`;
+  - a case-insensitive identity comparison on Linux, or one on Windows that isn't ordinal.
 - Windows/Linux parity (from v0.11.0, AGENTS.md): a feature for one platform needs one of three things.
   It ships on the other platform too; or the PR says why the other platform can't support it and
   adds a Platform Differences row in the user guide; or the PR links a parity issue filed for the

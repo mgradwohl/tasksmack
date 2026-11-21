@@ -226,6 +226,25 @@ add_test(NAME ThirdPartyNoticesUnparsedDeclareScript
 set_tests_properties(ThirdPartyNoticesUnparsedDeclareScript PROPERTIES
     PASS_REGULAR_EXPRESSION "FetchContent_Declare\\(\\)[ \r\n]+calls,[ \r\n]+but[ \r\n]+only")
 
+# SDL's libdecor configure check (#4661): it reads the settings SDL's configure writes, never a generate-time file that a
+# fresh tree hasn't made yet, and a missing file fails rather than passing with nothing read. Each case is its own test.
+foreach(_ts_case IN ITEMS loaded none missing linked required)
+    add_test(NAME SdlLibdecorCheckScript_${_ts_case}
+        COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/sdl-libdecor-check-${_ts_case} -DTS_CASE=${_ts_case}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SdlLibdecorCheck.cmake)
+endforeach()
+unset(_ts_case)
+# A failing case passes on its own message; CMake wraps it, so any run of spaces and line breaks may separate the words.
+set_tests_properties(SdlLibdecorCheckScript_loaded SdlLibdecorCheckScript_none PROPERTIES
+    PASS_REGULAR_EXPRESSION "passed the check")
+set_tests_properties(SdlLibdecorCheckScript_missing PROPERTIES
+    PASS_REGULAR_EXPRESSION "can.t[ \r\n]+be[ \r\n]+checked")
+set_tests_properties(SdlLibdecorCheckScript_linked PROPERTIES
+    PASS_REGULAR_EXPRESSION "links[ \r\n]+libdecor[ \r\n]+instead")
+set_tests_properties(SdlLibdecorCheckScript_required PROPERTIES
+    PASS_REGULAR_EXPRESSION "built[ \r\n]+without[ \r\n]+libdecor")
+
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
 # only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
 if(WIN32)
@@ -291,6 +310,12 @@ if(TASKSMACK_BASH AND NOT WIN32)
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_iwyu_sh.py)
     set_tests_properties(IwyuShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
+
+# tools/prune-artifacts.py, artifact-prune.yml's nightly selection (#4617): the newest copy of a name on its branch,
+# anything under 6 hours old, and the benchmark and dashboard artifacts are kept.
+add_test(NAME PruneArtifactsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_prune_artifacts.py)
+set_tests_properties(PruneArtifactsScript PROPERTIES TIMEOUT 60)
 
 # tools/md-link-audit.sh, the docs-hygiene link check: code spans and fenced blocks aren't links (#3001), and
 # a root-absolute link under docs/ resolves from docs/ (#2953). Linux, as its CI job is.
@@ -377,7 +402,8 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(ProfilePerfShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
-# tools/pgo.sh's help exits 0 and an unknown action 1 (#4216); nothing is built. Linux-only.
+# tools/pgo.sh's help exits 0 and an unknown action 1 (#4216), and it takes llvm-profdata from LLVM 23 only (#4226);
+# nothing is built. Linux-only.
 if(TASKSMACK_BASH AND NOT WIN32)
     add_test(NAME PgoShScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pgo_sh.py)
@@ -461,6 +487,10 @@ endif()
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
+
+# tools/ninja-build-profile.py, the build-profile summary CI appends to a job's summary (#1875, #4226).
+add_test(NAME NinjaBuildProfileScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ninja_build_profile.py)
 
 # tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
 add_test(NAME MergeGtestResultsScript
@@ -593,6 +623,7 @@ set(COMMON_TEST_SOURCES
     Benchmarks/test_ProcessTreeFixture.cpp
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
+    Core/test_ReadWholeFile.cpp  # a read that fails part-way is a failure, not the end of the file (#4652)
     Core/test_EnvUtils.cpp
     Core/test_FramebufferCapture.cpp
     Core/test_GraphicsReset.cpp
@@ -999,6 +1030,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
     Platform/test_WindowsElevation.cpp
+    Platform/test_WindowsSecurityOwners.cpp # the owner predicates over SDDL-built descriptors, and real handles' owners (#4368)
+    Platform/test_WindowsFinalPath.cpp # the shared final-path reader: its prefix policies and buffer sizings, through a fake (#4368)
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
     # CI real-system tests (#3489): Realtime, Run new task, Compressed memory, Open file location and the helper's
@@ -1536,6 +1569,8 @@ if(TARGET TaskSmackHelper)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp # HelperLauncher::availability()
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSecurityOwners.cpp # BrokerHelper's TrustedInstaller check (#4368)
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/OrdinalCase.cpp # BrokerHelper's path comparisons (#4368)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp # PipeBroker names its launch thread (#2768)

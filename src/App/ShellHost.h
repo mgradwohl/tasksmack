@@ -54,6 +54,8 @@ class IShellHost
     /// The window's normal (restored) geometry, its scale, and whether it is maximized, for the
     /// settings saved on exit (#1121, #1168).
     [[nodiscard]] virtual WindowOverride::CapturedWindow captureWindow() const = 0;
+    /// Core::Window::hideForExit(): the window off the screen before the panels stop (#4590).
+    virtual void hideWindowForExit() = 0;
 };
 
 /// The real host: Core::Application, its window and TitleBarLayer::height().

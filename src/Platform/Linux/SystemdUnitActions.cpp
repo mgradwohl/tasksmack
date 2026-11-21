@@ -178,21 +178,6 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
     return std::nullopt;
 }
 
-/// A unit's ActiveState, or empty when it can't be read.
-[[nodiscard]] std::string activeStateOf(sd_bus* bus, const std::string& unitPath)
-{
-    BusError error;
-    MallocString state; // freed even if the copy below throws (#3338)
-    // Its own statement: std::out_ptr() hands the string to state only at the end of the full expression.
-    const int result =
-        sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), std::out_ptr(state));
-    if (result < 0 || state.get() == nullptr)
-    {
-        return {};
-    }
-    return state.get();
-}
-
 /// A string property of @p unitPath's Service interface (Type, Result); empty when it can't be read.
 [[nodiscard]] std::string serviceStringOf(sd_bus* bus, const std::string& unitPath, const char* property)
 {
@@ -221,12 +206,66 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
     return started;
 }
 
-/// Whether a failed call was answered with an error (a named D-Bus error that isn't a timeout), rather than not
-/// answered at all: timed out, or the connection gone (#4399).
+/// Whether a failed call was answered by systemd about the object itself (#4399, #4629): no such object (a finished
+/// job's is removed), interface, property or method, or systemd's own NoSuchJob/NoSuchUnit. Only those: sd-bus names
+/// local failures too (sd_bus_error_set_errno), so a dropped connection (Disconnected, System.Error.ENOTCONN), a
+/// timeout, or systemd briefly without its bus name in a daemon-reexec (ServiceUnknown, NameHasNoOwner) is not an
+/// answer, and the caller can't tell what systemd would have said.
 [[nodiscard]] bool answeredWithAnError(const BusError& error, int result) noexcept
 {
     const sd_bus_error& raw = error.raw();
-    return raw.name != nullptr && !timedOut(raw, result);
+    if (raw.name == nullptr || timedOut(raw, result))
+    {
+        return false;
+    }
+    const std::string_view name(raw.name);
+    return name == "org.freedesktop.DBus.Error.UnknownObject" || name == "org.freedesktop.DBus.Error.UnknownInterface" ||
+           name == "org.freedesktop.DBus.Error.UnknownProperty" || name == "org.freedesktop.DBus.Error.UnknownMethod" ||
+           name == "org.freedesktop.systemd1.NoSuchJob" || name == "org.freedesktop.systemd1.NoSuchUnit";
+}
+
+/// A unit's ActiveState (#4649): empty when systemd answered with an error (no such object: the unit is gone), and the
+/// failure when it didn't answer (timed out, connection gone), which no caller may read as "not running".
+[[nodiscard]] std::expected<std::string, ServiceActionResult> activeStateRead(sd_bus* bus, const std::string& unitPath)
+{
+    BusError error;
+    MallocString state; // freed even if the copy below throws (#3338)
+    // Its own statement: std::out_ptr() hands the string to state only at the end of the full expression.
+    const int result =
+        sd_bus_get_property_string(bus, SYSTEMD, unitPath.c_str(), SYSTEMD_UNIT, "ActiveState", error.get(), std::out_ptr(state));
+    if (result < 0)
+    {
+        if (!answeredWithAnError(error, result))
+        {
+            return std::unexpected(actionFailure(error, result));
+        }
+        return std::string();
+    }
+    return state.get() != nullptr ? std::string(state.get()) : std::string();
+}
+
+/// Manager.LoadUnit of @p name (#4649): its object; nullopt when systemd answered with an error (no such unit), and the
+/// failure when it didn't answer, or answered something that isn't an object path.
+[[nodiscard]] std::expected<std::optional<std::string>, ServiceActionResult> loadUnitRead(sd_bus* bus, const std::string& name)
+{
+    BusError error;
+    Message reply;
+    if (const int result =
+            sd_bus_call_method(bus, SYSTEMD, SYSTEMD_PATH, SYSTEMD_MANAGER, "LoadUnit", error.get(), reply.out(), "s", name.c_str());
+        result < 0)
+    {
+        if (!answeredWithAnError(error, result))
+        {
+            return std::unexpected(actionFailure(error, result));
+        }
+        return std::optional<std::string>();
+    }
+    const char* object = nullptr;
+    if (const int result = sd_bus_message_read(reply.get(), "o", &object); result < 0 || object == nullptr)
+    {
+        return std::unexpected(ServiceActionResult::failed("systemd's answer couldn't be read"));
+    }
+    return std::optional<std::string>(object);
 }
 
 enum class JobState : std::uint8_t
@@ -302,8 +341,10 @@ enum class JobState : std::uint8_t
         // the state from before it ("It didn't start (inactive)" for a restart that worked, #3520). Once the job is
         // gone, the state read after it is the final one.
         const bool gone = jobPath.empty() || jobStateOf(bus, jobPath) == JobState::Gone;
-        const std::string state = activeStateOf(bus, unitObject);
-        switch (SystemdActions::waitStep(goal, state, gone))
+        // A state read systemd didn't answer is no news (#4649): keep waiting, never "It didn't start (state unknown)".
+        const std::expected<std::string, ServiceActionResult> stateRead = activeStateRead(bus, unitObject);
+        const std::string state = stateRead.value_or(std::string());
+        switch (stateRead.has_value() ? SystemdActions::waitStep(goal, state, gone) : SystemdActions::WaitStep::Wait)
         {
         case SystemdActions::WaitStep::Done:
             return ServiceActionResult::succeeded();
@@ -364,9 +405,23 @@ enum class JobState : std::uint8_t
              ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - a C strv
         {
             const std::string dependent(*entry);
-            std::string dependentObject;
-            if (!unitPath(bus, dependent, dependentObject).has_value() && SystemdActions::isRunning(activeStateOf(bus, dependentObject)) &&
-                std::ranges::find(running, dependent) == running.end())
+            // A dependent systemd didn't answer about (#4649) may be running: refuse the stop rather than take it down.
+            // One it answered "no such unit" for is skipped, as before.
+            const std::expected<std::optional<std::string>, ServiceActionResult> dependentObject = loadUnitRead(bus, dependent);
+            if (!dependentObject.has_value())
+            {
+                return std::unexpected(dependentObject.error());
+            }
+            if (!dependentObject->has_value())
+            {
+                continue;
+            }
+            const std::expected<std::string, ServiceActionResult> state = activeStateRead(bus, **dependentObject);
+            if (!state.has_value())
+            {
+                return std::unexpected(state.error());
+            }
+            if (SystemdActions::isRunning(*state) && std::ranges::find(running, dependent) == running.end())
             {
                 running.push_back(dependent);
             }

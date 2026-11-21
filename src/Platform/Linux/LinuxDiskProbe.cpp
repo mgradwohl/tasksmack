@@ -4,12 +4,18 @@
 
 #include "LinuxDiskProbe.h"
 
+#include "Domain/SamplingConfig.h"
 #include "Platform/StorageTypes.h"
+#include "ProcParsing.h"
+#include "SysfsValue.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -25,13 +31,17 @@
 namespace Platform
 {
 
-LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath) : m_DiskstatsPath(std::move(diskstatsPath))
+LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath)
+    : m_DiskstatsPath(std::move(diskstatsPath)),
+      m_RescanInterval(std::chrono::seconds(Domain::Sampling::DISK_DEVICE_RESCAN_INTERVAL_SECONDS))
 {
     spdlog::debug("LinuxDiskProbe: initialized");
 }
 
 LinuxDiskProbe::LinuxDiskProbe(std::filesystem::path diskstatsPath, std::filesystem::path sysBlockPath)
-    : m_DiskstatsPath(std::move(diskstatsPath)), m_SysBlockPath(std::move(sysBlockPath))
+    : m_DiskstatsPath(std::move(diskstatsPath)),
+      m_SysBlockPath(std::move(sysBlockPath)),
+      m_RescanInterval(std::chrono::seconds(Domain::Sampling::DISK_DEVICE_RESCAN_INTERVAL_SECONDS))
 {
     spdlog::debug("LinuxDiskProbe: initialized");
 }
@@ -42,9 +52,25 @@ LinuxDiskProbe::LinuxDiskProbe() : LinuxDiskProbe("/proc/diskstats", "/sys/block
 bool LinuxDiskProbe::isAlwaysExcluded(const std::string& deviceName)
 {
     // Loop devices and RAM disks carry no disk I/O of their own; zram is compressed swap in memory; a device-mapper
-    // volume (dm-N: LVM, LUKS) is stacked on a disk that is already counted.
-    return deviceName.starts_with("loop") || deviceName.starts_with("ram") || deviceName.starts_with("zram") ||
-           deviceName.starts_with("dm-");
+    // volume (dm-N: LVM, LUKS) is stacked on a disk that is already counted. Optical drives (sr), floppies (fd) and an
+    // eMMC's boot and RPMB areas (mmcblk0boot0, mmcblk0rpmb) are whole devices in /sys/block, but not disks to list
+    // (#4628), as the name rule never listed them.
+    if (deviceName.starts_with("loop") || deviceName.starts_with("ram") || deviceName.starts_with("zram") ||
+        deviceName.starts_with("dm-") || deviceName.starts_with("sr") || deviceName.starts_with("fd"))
+    {
+        return true;
+    }
+    return deviceName.starts_with("mmcblk") && (deviceName.contains("boot") || deviceName.contains("rpmb"));
+}
+
+bool LinuxDiskProbe::hasNoMedia(const std::filesystem::path& deviceDir)
+{
+    // size is the device's length in 512-byte sectors: 0 for an empty card reader, a drive with no disc, or an nbd
+    // device nothing is connected to (the module makes 16 at load). One that can't be read is kept (#4628).
+    std::array<char, 32> buf{};
+    const std::string path = (deviceDir / "size").string();
+    const std::size_t len = ProcParsing::readProcFile(path.c_str(), buf.data(), buf.size());
+    return SysfsValue::parse<std::uint64_t>(std::string_view(buf.data(), len)) == std::optional<std::uint64_t>(0);
 }
 
 std::optional<std::vector<LinuxDiskProbe::WholeDevice>> LinuxDiskProbe::listWholeDevices(const std::filesystem::path& sysBlockPath)
@@ -61,6 +87,10 @@ std::optional<std::vector<LinuxDiskProbe::WholeDevice>> LinuxDiskProbe::listWhol
         if (error)
         {
             return std::nullopt;
+        }
+        if (hasNoMedia(entries->path()))
+        {
+            continue; // listed as no whole device, so its /proc/diskstats line is left out
         }
         WholeDevice device{.name = entries->path().filename().string()};
         std::error_code slavesError;
@@ -115,6 +145,22 @@ bool LinuxDiskProbe::shouldIncludeDevice(const std::string& deviceName)
     return true;
 }
 
+const std::optional<std::vector<LinuxDiskProbe::WholeDevice>>&
+LinuxDiskProbe::wholeDevicesFor(const std::vector<std::string>& diskstatsNames)
+{
+    // Listed again only when it may have changed (#4697): a device added or gone shows as a change in /proc/diskstats'
+    // names; media put into an empty reader (#4628's size check) waits for the interval.
+    const auto now = std::chrono::steady_clock::now();
+    if (!m_Listed || diskstatsNames != m_ListedFor || now - m_ListedAt >= m_RescanInterval)
+    {
+        m_WholeDevices = m_SysBlockPath.empty() ? std::nullopt : listWholeDevices(m_SysBlockPath);
+        m_ListedFor = diskstatsNames;
+        m_ListedAt = now;
+        m_Listed = true;
+    }
+    return m_WholeDevices;
+}
+
 SystemDiskCounters LinuxDiskProbe::read()
 {
     SystemDiskCounters result;
@@ -126,10 +172,9 @@ SystemDiskCounters LinuxDiskProbe::read()
         return result;
     }
 
-    // /sys/block lists exactly the whole block devices, so md0, nbd0, rbd0, pmem0 or bcache0 (whole devices whose
-    // names end in a digit) aren't taken for partitions (#4391). The name rule is the fallback without it.
-    const std::optional<std::vector<WholeDevice>> wholeDevices = m_SysBlockPath.empty() ? std::nullopt : listWholeDevices(m_SysBlockPath);
-
+    // Every line first, then which are whole devices: the device names decide whether /sys/block is listed again.
+    std::vector<DiskCounters> parsed;
+    std::vector<std::string> names;
     std::string line;
     while (std::getline(diskstats, line))
     {
@@ -167,21 +212,6 @@ SystemDiskCounters LinuxDiskProbe::read()
             continue;
         }
 
-        bool stacked = false;
-        if (wholeDevices.has_value())
-        {
-            const auto whole = std::ranges::find(*wholeDevices, deviceName, &WholeDevice::name);
-            if (whole == wholeDevices->end() || isAlwaysExcluded(deviceName))
-            {
-                continue; // a partition, or a device left out either way
-            }
-            stacked = whole->stacked;
-        }
-        else if (!shouldIncludeDevice(deviceName))
-        {
-            continue;
-        }
-
         DiskCounters disk;
         disk.deviceName = deviceName;
         disk.readsCompleted = readsCompleted;
@@ -193,10 +223,32 @@ SystemDiskCounters LinuxDiskProbe::read()
         disk.ioInProgressMs = ioInProgress;
         disk.ioTimeMs = timeIo;
         disk.weightedIoTimeMs = weightedTimeIo;
-        disk.sectorSize = 512;            // Linux typically reports in 512-byte sectors
-        disk.isPhysicalDevice = !stacked; // a stacked device is shown but kept out of the totals (#4391)
+        disk.sectorSize = 512; // Linux typically reports in 512-byte sectors
+        names.push_back(std::move(deviceName));
+        parsed.push_back(std::move(disk));
+    }
 
-        result.disks.push_back(disk);
+    // /sys/block lists exactly the whole block devices, so md0, nbd0, rbd0, pmem0 or bcache0 (whole devices whose
+    // names end in a digit) aren't taken for partitions (#4391). The name rule is the fallback without it.
+    const std::optional<std::vector<WholeDevice>>& wholeDevices = wholeDevicesFor(names);
+    for (DiskCounters& disk : parsed)
+    {
+        bool stacked = false;
+        if (wholeDevices.has_value())
+        {
+            const auto whole = std::ranges::find(*wholeDevices, disk.deviceName, &WholeDevice::name);
+            if (whole == wholeDevices->end() || isAlwaysExcluded(disk.deviceName))
+            {
+                continue; // a partition, or a device left out either way
+            }
+            stacked = whole->stacked;
+        }
+        else if (!shouldIncludeDevice(disk.deviceName))
+        {
+            continue;
+        }
+        disk.isPhysicalDevice = !stacked; // a stacked device is shown but kept out of the totals (#4391)
+        result.disks.push_back(std::move(disk));
     }
 
     return result;

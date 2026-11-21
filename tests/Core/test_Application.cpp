@@ -1058,12 +1058,12 @@ TEST(ApplicationTest, CloseRequestIsAcceptedUnlessALayerVetoesIt)
         EXPECT_TRUE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
 
         // A layer that only observes the close returns false and does not stop it (#1073).
-        auto& observer = app.pushLayer<CloseListenerLayer>("Observer", false);
+        auto const& observer = app.pushLayer<CloseListenerLayer>("Observer", false);
         EXPECT_TRUE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
         EXPECT_EQ(observer.closeEventsSeen(), 1);
 
         // A layer that handles it vetoes the close, and the layers below it never see the event.
-        auto& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
+        auto const& vetoer = app.pushLayer<CloseListenerLayer>("Vetoer", true);
         EXPECT_FALSE(Core::ApplicationTestAccessor::closeRequestAccepted(app));
         EXPECT_EQ(vetoer.closeEventsSeen(), 1);
         EXPECT_EQ(observer.closeEventsSeen(), 1);
@@ -1436,6 +1436,50 @@ TEST(ApplicationHeadlessTest, LayersAttachReceiveEventsAndDetach)
 namespace
 {
 
+/// Logs "<name> exiting" for AppExitingEvent and "<name> detach" for onDetach(), in order (#4590).
+class ExitOrderLayer : public Core::Layer
+{
+  public:
+    ExitOrderLayer(std::string name, std::vector<std::string>& log) : Layer(name), m_Name(std::move(name)), m_Log(log)
+    {}
+
+    void onEvent(Core::Event& event) override
+    {
+        if (event.getEventType() == Core::EventType::AppExiting)
+        {
+            m_Log.push_back(m_Name + " exiting");
+        }
+    }
+    void onDetach() override
+    {
+        m_Log.push_back(m_Name + " detach");
+    }
+
+  private:
+    std::string m_Name;
+    std::vector<std::string>& m_Log;
+};
+
+} // namespace
+
+// #4590: every layer hears AppExitingEvent before the first one detaches, so a layer can get out of the way (the
+// window hidden) and start its stops before any onDetach() waits on a thread.
+TEST(ApplicationHeadlessTest, EveryLayerHearsAppExitingBeforeAnyDetaches)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    std::vector<std::string> log;
+    Core::Application app(spec);
+    app.pushLayer<ExitOrderLayer>("bottom", log);
+    app.pushLayer<ExitOrderLayer>("top", log);
+
+    app.detachAllLayers();
+    EXPECT_EQ(log, (std::vector<std::string>{"top exiting", "bottom exiting", "top detach", "bottom detach"}));
+}
+
+namespace
+{
+
 /// A layer whose onEvent() throws something that is not a std::exception (#1395).
 class ThrowingNonStdLayer : public Core::Layer
 {
@@ -1445,7 +1489,7 @@ class ThrowingNonStdLayer : public Core::Layer
 
     void onEvent(Core::Event& /*event*/) override
     {
-        throw 42; // NOLINT(hicpp-exception-baseclass) - what is under test: a throw no std::exception handler catches
+        throw 42; // NOLINT(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - what is under test: a throw no std::exception handler catches
     }
 };
 
@@ -1624,13 +1668,15 @@ TEST(FramePacingTest, FramePeriodIsAWholeNumberOfRefreshes)
         double refreshHz;
         int vblanks;
     };
-    for (const Case c : {Case{.refreshHz = 60.0, .vblanks = 1},
-                         Case{.refreshHz = 75.0, .vblanks = 1},
-                         Case{.refreshHz = 120.0, .vblanks = 2},
-                         Case{.refreshHz = 144.0, .vblanks = 2},
-                         Case{.refreshHz = 165.0, .vblanks = 2},
-                         Case{.refreshHz = 240.0, .vblanks = 4},
-                         Case{.refreshHz = 30.0, .vblanks = 1}})
+    for (const Case c : {
+             Case{.refreshHz = 60.0, .vblanks = 1},
+             Case{.refreshHz = 75.0, .vblanks = 1},
+             Case{.refreshHz = 120.0, .vblanks = 2},
+             Case{.refreshHz = 144.0, .vblanks = 2},
+             Case{.refreshHz = 165.0, .vblanks = 2},
+             Case{.refreshHz = 240.0, .vblanks = 4},
+             Case{.refreshHz = 30.0, .vblanks = 1},
+         })
     {
         SCOPED_TRACE(c.refreshHz);
         EXPECT_EQ(Core::FramePacing::vblanksPerFrame(c.refreshHz, 60.0), c.vblanks);
@@ -1955,26 +2001,34 @@ TEST(FramePacingTest, DrainChecksItsBudgetAfterEveryEvent)
         double expectedMaxSingleMs;
     };
     const std::vector<Case> cases = {
-        {.name = "first poll stalls",
-         .costsMs = {9.0, 1.0, 1.0, 1.0, 1.0},
-         .expectedEvents = 1,
-         .expectedBudgetExceeded = true,
-         .expectedMaxSingleMs = 9.0},
-        {.name = "second poll crosses",
-         .costsMs = {1.0, 7.5, 1.0, 1.0},
-         .expectedEvents = 2,
-         .expectedBudgetExceeded = true,
-         .expectedMaxSingleMs = 7.5},
-        {.name = "fifth poll crosses",
-         .costsMs = {2.0, 2.0, 2.0, 1.0, 1.0, 1.0},
-         .expectedEvents = 5,
-         .expectedBudgetExceeded = true,
-         .expectedMaxSingleMs = 2.0},
-        {.name = "fits the budget",
-         .costsMs = {1.0, 1.0, 3.0},
-         .expectedEvents = 3,
-         .expectedBudgetExceeded = false,
-         .expectedMaxSingleMs = 3.0},
+        {
+            .name = "first poll stalls",
+            .costsMs = {9.0, 1.0, 1.0, 1.0, 1.0},
+            .expectedEvents = 1,
+            .expectedBudgetExceeded = true,
+            .expectedMaxSingleMs = 9.0,
+        },
+        {
+            .name = "second poll crosses",
+            .costsMs = {1.0, 7.5, 1.0, 1.0},
+            .expectedEvents = 2,
+            .expectedBudgetExceeded = true,
+            .expectedMaxSingleMs = 7.5,
+        },
+        {
+            .name = "fifth poll crosses",
+            .costsMs = {2.0, 2.0, 2.0, 1.0, 1.0, 1.0},
+            .expectedEvents = 5,
+            .expectedBudgetExceeded = true,
+            .expectedMaxSingleMs = 2.0,
+        },
+        {
+            .name = "fits the budget",
+            .costsMs = {1.0, 1.0, 3.0},
+            .expectedEvents = 3,
+            .expectedBudgetExceeded = false,
+            .expectedMaxSingleMs = 3.0,
+        },
         {.name = "empty queue", .costsMs = {}, .expectedEvents = 0, .expectedBudgetExceeded = false, .expectedMaxSingleMs = 0.0},
     };
     for (const auto& testCase : cases)
@@ -2114,16 +2168,26 @@ TEST(FramePacingTest, IdleWaitPollsOnceAfterATimeout)
         int expectedPolls;
     };
     using enum Core::FramePacing::IdleWaitOutcome;
-    const std::array<Case, 4> cases{{
-        {.name = "woken", .waitWakes = true, .eventQueuedAfterTimeout = false, .expected = Woke, .expectedPolls = 0},
-        {.name = "woken, more queued", .waitWakes = true, .eventQueuedAfterTimeout = true, .expected = Woke, .expectedPolls = 0},
-        {.name = "timed out, queue empty", .waitWakes = false, .eventQueuedAfterTimeout = false, .expected = TimedOut, .expectedPolls = 1},
-        {.name = "timed out, event queued",
-         .waitWakes = false,
-         .eventQueuedAfterTimeout = true,
-         .expected = PolledAfterTimeout,
-         .expectedPolls = 1},
-    }};
+    const std::array<Case, 4> cases{
+        {
+            {.name = "woken", .waitWakes = true, .eventQueuedAfterTimeout = false, .expected = Woke, .expectedPolls = 0},
+            {.name = "woken, more queued", .waitWakes = true, .eventQueuedAfterTimeout = true, .expected = Woke, .expectedPolls = 0},
+            {
+                .name = "timed out, queue empty",
+                .waitWakes = false,
+                .eventQueuedAfterTimeout = false,
+                .expected = TimedOut,
+                .expectedPolls = 1,
+            },
+            {
+                .name = "timed out, event queued",
+                .waitWakes = false,
+                .eventQueuedAfterTimeout = true,
+                .expected = PolledAfterTimeout,
+                .expectedPolls = 1,
+            },
+        },
+    };
     for (const auto& testCase : cases)
     {
         SCOPED_TRACE(testCase.name);
@@ -3509,7 +3573,7 @@ TEST(ApplicationTest, SetInstancePreservesWindowState)
         Core::Application::setInstance(std::move(app));
 
         // Window properties should be preserved
-        auto& instance = Core::Application::get();
+        auto const& instance = Core::Application::get();
         const auto [newWidth, newHeight] = instance.getWindow().getSize();
         EXPECT_EQ(newWidth, width);
         EXPECT_EQ(newHeight, height);
@@ -3537,12 +3601,12 @@ TEST(ApplicationTest, SetInstanceAllowsLayerOperations)
         auto app = std::make_unique<Core::Application>(spec);
 
         // Push layers before setting instance
-        auto& layer1 = app->pushLayer<TestLayer>("BeforeSetting");
+        auto const& layer1 = app->pushLayer<TestLayer>("BeforeSetting");
 
         Core::Application::setInstance(std::move(app));
 
         // Should be able to push layers after setting instance
-        auto& layer2 = Core::Application::get().pushLayer<TestLayer>("AfterSetting");
+        auto const& layer2 = Core::Application::get().pushLayer<TestLayer>("AfterSetting");
 
         // Layer 1 should still be in the stack.
         // NOTE: layer1 reference remains valid for as long as the Application instance is alive,
@@ -3686,7 +3750,7 @@ TEST(ApplicationTest, SetInstanceTransfersOwnershipCorrectly)
         // remains alive and is owned by s_Instance until we reset it explicitly below.
 
         // Instance should still be accessible after scope exit (verify get() works)
-        EXPECT_NO_THROW([[maybe_unused]] auto& ref = Core::Application::get());
+        EXPECT_NO_THROW([[maybe_unused]] const auto& ref = Core::Application::get());
         Core::Application::setInstance(nullptr);
 
         // After destruction, verify singleton is cleared by checking that get() throws
@@ -3804,8 +3868,8 @@ TEST(ApplicationTest, RaiseEventStopsAfterEventIsHandled)
         Core::Application app(spec);
 
         // Top layer handles the event; bottom layer must NOT receive it.
-        auto& bottom = app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false);
-        auto& top = app.pushLayer<EventTrackingLayer>("Top", /*handleEvents=*/true);
+        auto const& bottom = app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false);
+        auto const& top = app.pushLayer<EventTrackingLayer>("Top", /*handleEvents=*/true);
 
         Core::WindowCloseEvent event;
         app.raiseEvent(event);
@@ -3841,7 +3905,7 @@ TEST(ApplicationTest, RaiseEventDoesNotCrashWhenLayerThrows)
 
         // Top throws on every event; Bottom is a normal tracking layer below it in the stack.
         // Reverse-order dispatch means Top is invoked first.
-        auto& bottom = app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false);
+        auto const& bottom = app.pushLayer<EventTrackingLayer>("Bottom", /*handleEvents=*/false);
         app.pushLayer<ThrowingLayer>("Top");
 
         Core::WindowCloseEvent event;

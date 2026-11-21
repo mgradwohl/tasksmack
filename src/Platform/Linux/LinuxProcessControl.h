@@ -69,11 +69,17 @@ struct LinuxProcessSyscalls
     /// non-dumpable one (set-id, prctl(PR_SET_DUMPABLE, 0)) keeps while /proc/<pid> itself turns root's. Words a
     /// refused executable read (#4271). Left null, the real /proc is read. LinuxProcessActions only.
     std::optional<uid_t> (*processRealUid)(std::int32_t pid) = nullptr;
-    /// Whether @p path, as TaskSmack sees it, is the file /proc/<pid>/exe is (#4397): the same device and inode. The
+    /// Whether @p path, as TaskSmack sees it, may be the file /proc/<pid>/exe is (#4397): false only for nothing at that
+    /// path or another file (device and inode); a stat that fails otherwise can't tell, and is a yes (#4630). The
     /// link's text is the path in the process's own mount namespace, so a Flatpak's /app/bin/x or a container's
     /// /usr/sbin/nginx may name nothing, or another file, here. Left null, the real stat(2)s are made.
     /// LinuxProcessActions only.
     bool (*isProcessExecutable)(std::int32_t pid, const std::string& path) = nullptr;
+    /// Whether the process is in TaskSmack's own mount namespace (#4650): /proc/<pid>/ns/mnt and /proc/self/ns/mnt are
+    /// the same namespace (device and inode); nullopt when either can't be read (another user's process, unless root).
+    /// A deleted executable's link can't be compared with the running file, so this says whether its path means the
+    /// same here. Left null, the real stat(2)s are made. LinuxProcessActions only.
+    std::optional<bool> (*sharesMountNamespace)(std::int32_t pid) = nullptr;
     /// org.freedesktop.FileManager1.ShowItems for file:// URI @p uri on the session bus: true when a file
     /// manager took it. Left null, the real call is made (none without sd-bus, which is a false); tests
     /// fake it so no file manager opens. LinuxProcessActions only (#3064).

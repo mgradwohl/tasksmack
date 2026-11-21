@@ -1,8 +1,8 @@
 #include "CrashHistory.h"
 
 #include "Domain/ProcessModules.h"
-#include "Platform/AsciiCase.h"
 #include "Platform/ISystemInfoProbe.h"
+#include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <chrono>
@@ -99,9 +99,9 @@ bool crashMatchesExecutable(const Platform::CrashEvent& event, std::string_view 
     switch (family)
     {
     case Platform::OsFamily::Windows:
-        // Windows file names are case-insensitive: "NOTEPAD.EXE" is notepad.exe. ASCII letters only,
-        // so no locale folds a byte of UTF-8 (#2566).
-        return Platform::equalsIgnoreCase(application, name);
+        // Windows file names are case-insensitive: "NOTEPAD.EXE" is notepad.exe, and WER's "ÜBER.EXE" is
+        // Über.exe (#4309). Unicode simple case folding over UTF-8, never a locale, so no byte is misread (#2566).
+        return Platform::equalsFoldedCase(application, name);
     case Platform::OsFamily::Linux:
         // A core is named by its process's comm, cut by the kernel to 15 bytes; the journal's
         // executable path (#1674), when there is one, has the whole name.

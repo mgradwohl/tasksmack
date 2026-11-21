@@ -107,13 +107,27 @@ constexpr std::array<std::wstring_view, 4> CONNECTING_DEVICES{
 [[nodiscard]] std::expected<void, LocalFileRefusal> checkHeld(HANDLE file, const LocalFileFunctions& fns)
 {
     FILE_ATTRIBUTE_TAG_INFO tag{};
-    if (fns.getFileInformationByHandleEx(file, FileAttributeTagInfo, &tag, sizeof(tag)) == 0)
+    if (fns.getFileInformationByHandleEx(file, FileAttributeTagInfo, &tag, sizeof(tag)) != 0)
     {
-        return std::unexpected(LocalFileRefusal::NotLocal);
+        if ((tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && IsReparseTagNameSurrogate(tag.ReparseTag))
+        {
+            return std::unexpected(LocalFileRefusal::Link);
+        }
     }
-    if ((tag.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0 && IsReparseTagNameSurrogate(tag.ReparseTag))
+    else
     {
-        return std::unexpected(LocalFileRefusal::Link);
+        // FAT, FAT32 and exFAT don't answer FileAttributeTagInfo (ERROR_INVALID_PARAMETER, #4647), and have no reparse
+        // points. The basic attributes say whether this one does: a reparse point whose tag can't be read is refused
+        // as a link, since it might be one.
+        FILE_BASIC_INFO basic{};
+        if (fns.getFileInformationByHandleEx(file, FileBasicInfo, &basic, sizeof(basic)) == 0)
+        {
+            return std::unexpected(LocalFileRefusal::NotLocal);
+        }
+        if ((basic.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0)
+        {
+            return std::unexpected(LocalFileRefusal::Link);
+        }
     }
     IO_STATUS_BLOCK status{};
     FileFsDeviceInformation device{};

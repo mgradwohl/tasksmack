@@ -1,11 +1,13 @@
 #include "HandleRelativeFile.h"
 
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsFinalPath.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcAddress.h"
+#include "Platform/Windows/WindowsSecurityOwners.h"
 
 // clang-format off
-#include <aclapi.h> // GetSecurityInfo
 #include <sddl.h>   // ConvertStringSecurityDescriptorToSecurityDescriptorW
 // clang-format on
 
@@ -181,27 +183,9 @@ void markDeleteOnClose(HANDLE file) noexcept
 
 std::optional<std::wstring> finalPathOf(HANDLE handle, GetFinalPathFn getFinalPath)
 {
-    std::wstring path(MAX_PATH, L'\0');
-    for (int attempt = 0; attempt < 2; ++attempt)
-    {
-        const DWORD length = getFinalPath(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (length == 0)
-        {
-            return std::nullopt;
-        }
-        if (length < path.size())
-        {
-            path.resize(length);
-            constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
-            if (path.starts_with(LONG_PREFIX) && !path.starts_with(LR"(\\?\UNC\)"))
-            {
-                path.erase(0, LONG_PREFIX.size());
-            }
-            return path;
-        }
-        path.assign(length, L'\0'); // too short: length is the size it needs, with its terminator
-    }
-    return std::nullopt;
+    // Sized as the first answer says, and only a drive path's \\?\ dropped: a \\?\UNC\ path keeps it.
+    return readFinalPath(
+        handle, getFinalPath, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS, FinalPathBuffer::AsAnswered, FinalPathPrefix::KeptForUnc);
 }
 
 std::optional<bool> isPlainFolder(HANDLE handle)
@@ -214,23 +198,14 @@ std::optional<bool> isPlainFolder(HANDLE handle)
     return (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
-std::optional<bool> ownerIsAdministratorsOrSystem(HANDLE handle)
+std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle)
 {
-    PSID owner = nullptr;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
-            ERROR_SUCCESS ||
-        owner == nullptr)
+    const auto owner = ownerSidOf(handle);
+    if (!owner.has_value())
     {
-        if (descriptor != nullptr)
-        {
-            LocalFree(descriptor);
-        }
         return std::nullopt;
     }
-    const bool trusted = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(owner, WinLocalSystemSid) != FALSE;
-    LocalFree(descriptor);
-    return trusted;
+    return isAdministratorsOrSystem(owner->sid) || isTrustedInstaller(owner->sid);
 }
 
 OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
@@ -246,8 +221,7 @@ OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
 
 bool samePathText(std::wstring_view left, std::wstring_view right) noexcept
 {
-    return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) ==
-           CSTR_EQUAL;
+    return samePathIgnoringTrailingSeparators(left, right);
 }
 
 std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess)
@@ -282,11 +256,13 @@ std::expected<UniqueHandle, std::string> secureChildFolder(
         {
             return std::unexpected(std::format("{} can't be made: {}", display, ntStatusText(fresh.error())));
         }
-        // There already. A plain folder Administrators or SYSTEM owns, that this process can open for WRITE_DAC, is kept
-        // and its DACL reset; the open for WRITE_DAC is tried separately so a protected DACL doesn't stop the removal below.
+        // There already. A plain folder SYSTEM, TrustedInstaller or Administrators owns, that this process can open for
+        // WRITE_DAC, is kept and its DACL reset; the open for WRITE_DAC is tried separately so a protected DACL doesn't stop
+        // the removal below.
         if (auto dacl = openRelative(parent, name, RelativeOpen{.access = HELD, .disposition = FILE_OPEN, .kind = EntryKind::Directory});
             dacl.has_value() && isPlainFolder(dacl->handle.get()) == std::optional(true) &&
-            (ownerTrusted ? ownerTrusted(dacl->handle.get()) : ownerIsAdministratorsOrSystem(dacl->handle.get())) == std::optional(true))
+            (ownerTrusted ? ownerTrusted(dacl->handle.get()) : ownerIsSystemOrAdministratorsOrTrustedInstaller(dacl->handle.get())) ==
+                std::optional(true))
         {
             if (SetKernelObjectSecurity(dacl->handle.get(), DACL_SECURITY_INFORMATION, security) == FALSE)
             {

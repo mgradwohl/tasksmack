@@ -63,7 +63,9 @@ constexpr int NAME_ATTEMPTS = 8;
 
 std::string replace(const std::filesystem::path& path, std::string_view text)
 {
-    // The permissions to keep, when there is a regular file to replace (followed, as the rename's target is).
+    // The permissions to keep, when there is a regular file to replace. stat() follows a link at @p path, so a link's
+    // target's permissions are kept; the rename then replaces the link itself, not the file it named, as the header
+    // says (#4434).
     struct stat old{};
     const bool replacing = ::stat(path.c_str(), &old) == 0 && S_ISREG(old.st_mode);
 

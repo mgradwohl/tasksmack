@@ -216,6 +216,27 @@ class CheckNoRevertsTest(unittest.TestCase):
         self.assertEqual(check_no_reverts.header_path('+++ "b/odd\\tname.md"', "b"), "odd\tname.md")
         self.assertEqual(check_no_reverts.header_path('--- "a/caf\\303\\251.md"', "a"), "café.md")
         self.assertEqual(check_no_reverts.header_path('--- "a/q\\"uote.md"', "a"), 'q"uote.md')
+        # #4664: git ends a header whose name holds a space with a tab, which isn't part of the name.
+        self.assertEqual(check_no_reverts.header_path("--- a/docs/release notes.md\t", "a"), "docs/release notes.md")
+        self.assertEqual(check_no_reverts.header_path("+++ b/docs/release notes.md\t", "b"), "docs/release notes.md")
+
+    def test_a_stale_copy_of_a_file_whose_name_has_a_space_still_fails(self) -> None:
+        # #4664: "--- a/docs/release notes.md<TAB>" kept its tab, git blame found no such path, and the PR went unchecked.
+        self.merged("docs: the release notes (#152)", {"docs/release notes.md": code("notes", 8)})
+        self.branch("stale-notes")
+        before = self.git("show", "HEAD:docs/release notes.md")
+        head = self.commit("fix: unrelated (#153)", {"docs/release notes.md": before.split("\n", 1)[0] + "\n", "src/e.cpp": code("e", 2)})
+        status, out, _ = self.run_check(head)
+        self.assertEqual(status, 1, out)
+        self.assertIn("docs: the release notes (#152)", out)
+
+    def test_deleting_a_file_whose_name_has_a_space_still_fails(self) -> None:
+        self.merged("docs: the old notes (#154)", {"old notes.md": code("old notes", 9)})
+        self.branch("gone-notes")
+        head = self.commit("fix: unrelated (#155)", {"old notes.md": None, "src/f.cpp": code("f", 2)})
+        status, out, _ = self.run_check(head)
+        self.assertEqual(status, 1, out)
+        self.assertIn("docs: the old notes (#154)", out)
 
     def test_a_clean_change_passes(self) -> None:
         self.branch("clean")

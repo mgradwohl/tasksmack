@@ -6,10 +6,11 @@
 #                           [--duration <seconds>] [--label <name>] [--setup-cmd <command>]
 #                           [--synthetic <spec>] [--window <WxH>[,maximized]] [--repeat <N>]
 #                           [--phases <spec>] [--phase-settle <seconds>] [--memory-poll-seconds <n>]
-#                           [--memory-csv <path>]
+#                           [--memory-csv <path>] [--config-dir <dir> | --user-config]
 #                           [--json <path>] [--fail-above <pct>]
 #
-# Each repetition launches TaskSmack with TASKSMACK_TRACE_RESIZE_PERF=1, waits for its main loop
+# Each repetition launches TaskSmack with TASKSMACK_TRACE_RESIZE_PERF=1 and its own config folder (#4221: a
+# fresh one per run unless --config-dir or --user-config says otherwise, as measure-idle.ps1 does), waits for its main loop
 # and a warm-up (as tools/profile-perf.sh app mode does), samples per-thread CPU for --duration
 # seconds, closes it with SIGTERM, then prints one table:
 #   - per-thread average CPU% (100% = one logical CPU fully busy), and the process total;
@@ -110,6 +111,15 @@
 #   --memory-csv <path>   Also write the memory series here, one row per reading: seconds since the
 #                         launch, phase, privateWorkingSetMB, workingSetMB, pssMB, fds, threads, rep.
 #                         For long memory runs (--phases visible:3600 --memory-poll-seconds 30).
+#   --config-dir <dir>    Run TaskSmack with this TASKSMACK_CONFIG_DIR instead of a fresh one (created if
+#                         missing and kept afterwards), as measure-idle.ps1 -ConfigDir: put a config.toml
+#                         in it to measure non-default settings.
+#   --user-config         Run on the user's own config (and their single-instance lock), as before #4221.
+#                         Default: a fresh folder per run, removed afterwards, holding only
+#                         [ui] show_privilege_notice = false, so the run starts from the default settings,
+#                         never rewrites the user's config.toml, and no startup access notice covers the
+#                         window being measured. Either way TaskSmack gets its own temp folder inside the
+#                         config folder, so its tasksmack-debug.log isn't the user's (#4209).
 #   --json <path>         Write the results as JSON here. Default:
 #                         perf-data/idle-<label>-<timestamp>.json, beside the app logs.
 #   --fail-above <pct>    Exit with status 3 when the median app CPU across the repetitions is
@@ -146,7 +156,7 @@
 #
 # TaskSmack's own output goes to perf-data/idle-<label>-<timestamp>-app.log (-r<N>-app.log per
 # repetition when --repeat is above 1). The run fails if another TaskSmack already holds the
-# single-instance lock (close it first), or if TaskSmack exits early, exits non-zero after
+# single-instance lock (only with --user-config or a shared --config-dir), or if TaskSmack exits early, exits non-zero after
 # SIGTERM, or needs SIGKILL. Exit status: 0 success, 1 error, 3 --fail-above exceeded.
 #
 # On WSL (WSLg), the app CPU figures are valid evidence; total CPU is dominated by llvmpipe and
@@ -206,6 +216,8 @@ PHASE_SETTLE_SECONDS=10
 DURATION_GIVEN=0
 MEMORY_POLL_SECONDS=5
 MEMORY_CSV=""
+CONFIG_DIR_GIVEN=""
+USE_USER_CONFIG=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -216,6 +228,8 @@ while [[ $# -gt 0 ]]; do
         --phases)     [[ $# -ge 2 ]] || die "$1 requires a value"; PHASE_SPEC="$2";       shift 2 ;;
         --memory-poll-seconds) [[ $# -ge 2 ]] || die "$1 requires a value"; MEMORY_POLL_SECONDS="$2"; shift 2 ;;
         --memory-csv) [[ $# -ge 2 ]] || die "$1 requires a value"; MEMORY_CSV="$2";       shift 2 ;;
+        --config-dir) [[ $# -ge 2 && -n "$2" ]] || die "$1 requires a value"; CONFIG_DIR_GIVEN="$2"; shift 2 ;;
+        --user-config) USE_USER_CONFIG=1; shift ;;
         --phase-settle) [[ $# -ge 2 ]] || die "$1 requires a value"; PHASE_SETTLE_SECONDS="$2"; shift 2 ;;
         --label)      [[ $# -ge 2 ]] || die "$1 requires a value"; LABEL="$2";            shift 2 ;;
         --setup-cmd)  [[ $# -ge 2 ]] || die "$1 requires a value"; SETUP_CMD="$2";        shift 2 ;;
@@ -228,6 +242,7 @@ while [[ $# -gt 0 ]]; do
         *) echo "Unknown argument: $1" >&2; usage >&2; exit 1 ;;
     esac
 done
+[[ -n "${CONFIG_DIR_GIVEN}" && "${USE_USER_CONFIG}" -eq 1 ]] && die "--config-dir and --user-config can't be combined"
 
 if [[ -z "${WARMUP_SECONDS}" ]]; then
     # ~5 fps minimized (MINIMIZED_FRAME_SLEEP_MS = 200) vs 20+ fps idle: 200 samples take ~40 s.
@@ -349,6 +364,26 @@ TIMESTAMP="$(date +%Y%m%d-%H%M%S)"
 [[ -n "${JSON_PATH}" ]] || JSON_PATH="${PERF_DIR}/idle-${LABEL}-${TIMESTAMP}.json"
 mkdir -p "$(dirname "${JSON_PATH}")"
 WORK_DIR="$(mktemp -d)"
+
+# TaskSmack's config folder (#4221). A fresh one by default, removed with WORK_DIR, starting from the default
+# settings with the startup access notice off, so it can't cover the measured window; --config-dir uses and keeps
+# the folder given; --user-config leaves TASKSMACK_CONFIG_DIR unset, as before. Either way TaskSmack's temp folder
+# is one of its own (#4209), so its tasksmack-debug.log isn't the user's.
+APP_CONFIG_DIR=""
+if [[ "${USE_USER_CONFIG}" -eq 0 ]]; then
+    if [[ -n "${CONFIG_DIR_GIVEN}" ]]; then
+        mkdir -p -- "${CONFIG_DIR_GIVEN}"
+        APP_CONFIG_DIR="$(cd -- "${CONFIG_DIR_GIVEN}" && pwd)"
+    else
+        APP_CONFIG_DIR="${WORK_DIR}/config"
+        mkdir -p -- "${APP_CONFIG_DIR}"
+        printf '[ui]\nshow_privilege_notice = false\n' > "${APP_CONFIG_DIR}/config.toml"
+    fi
+    APP_TEMP_DIR="${APP_CONFIG_DIR}/tmp"
+else
+    APP_TEMP_DIR="${WORK_DIR}/app-tmp"
+fi
+mkdir -p -- "${APP_TEMP_DIR}"
 # One line per repetition: rep total app mesa fps frameP95 frameP99 frameMax loopP95 loopP99
 # summaries cpuStart cpuEnd traceStart traceEnd traceSpan appLog
 REPS_FILE="${WORK_DIR}/reps"
@@ -622,6 +657,9 @@ run_once() {
     app_env+=("TASKSMACK_SYNTHETIC=${SYNTHETIC}")
     # Likewise for --window: an empty value turns an inherited TASKSMACK_WINDOW off.
     app_env+=("TASKSMACK_WINDOW=${WINDOW_SPEC}")
+    # Its own config folder unless --user-config (#4221), and its own temp folder (#4209).
+    [[ -n "${APP_CONFIG_DIR}" ]] && app_env+=("TASKSMACK_CONFIG_DIR=${APP_CONFIG_DIR}")
+    app_env+=("TMPDIR=${APP_TEMP_DIR}")
     # The caller's locale, not this script's C locale (see the top of the script).
     local env_args=(-u LC_ALL)
     [[ -n "${CALLER_LC_ALL_SET}" ]] && app_env+=("LC_ALL=${CALLER_LC_ALL}")
@@ -643,7 +681,7 @@ run_once() {
         # The single-instance lock: this copy shows a modal "already running" box and waits for it
         # to be dismissed, so it would never reach its main loop. Close the other TaskSmack first.
         if grep -q "${ALREADY_RUNNING_MARKER}" "${APP_LOG}" 2>/dev/null; then
-            die "Another TaskSmack is already running with the same settings; close it and run again. See ${APP_LOG}."
+            die "Another TaskSmack is already running with the same config folder (--user-config or --config-dir); close it and run again. See ${APP_LOG}."
         fi
         sleep 0.25
     done

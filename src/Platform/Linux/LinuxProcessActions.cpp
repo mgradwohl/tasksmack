@@ -85,7 +85,7 @@ using RootTools::isExecutableFile;
 /// The value of environment variable @p name, or empty when unset.
 [[nodiscard]] std::string_view environmentValue(const char* name)
 {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read once at construction, on the thread that builds the panels
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - nothing changes the environment once main() starts its threads, so getenv() on a worker is safe (#4434)
     const char* const value = std::getenv(name);
     return value != nullptr ? std::string_view(value) : std::string_view{};
 }
@@ -350,13 +350,35 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     return link.string();
 }
 
-/// Whether @p path is the file /proc/<pid>/exe is, by device and inode (#4397).
+/// Whether @p path may be the file /proc/<pid>/exe is (#4397): false only when this system shows it isn't, that is
+/// nothing at that path (ENOENT, ENOTDIR) or another file (a different device or inode). A stat that fails for any other
+/// reason can't tell, so the answer is yes (#4630): root reading a user's AppImage on a FUSE mount without allow_other
+/// gets EACCES from both, and opens its folder as before.
 [[nodiscard]] bool isProcessExecutableFromProc(std::int32_t pid, const std::string& path)
 {
     struct stat named{};
+    if (::stat(path.c_str(), &named) != 0)
+    {
+        return errno != ENOENT && errno != ENOTDIR;
+    }
     struct stat running{};
-    return ::stat(path.c_str(), &named) == 0 && ::stat(std::format("/proc/{}/exe", pid).c_str(), &running) == 0 &&
-           named.st_dev == running.st_dev && named.st_ino == running.st_ino;
+    if (::stat(std::format("/proc/{}/exe", pid).c_str(), &running) != 0)
+    {
+        return true; // can't tell
+    }
+    return named.st_dev == running.st_dev && named.st_ino == running.st_ino;
+}
+
+/// Whether the process is in this one's mount namespace (#4650); nullopt when either namespace link can't be read.
+[[nodiscard]] std::optional<bool> sharesMountNamespaceFromProc(std::int32_t pid)
+{
+    struct stat theirs{};
+    struct stat ours{};
+    if (::stat(std::format("/proc/{}/ns/mnt", pid).c_str(), &theirs) != 0 || ::stat("/proc/self/ns/mnt", &ours) != 0)
+    {
+        return std::nullopt;
+    }
+    return theirs.st_dev == ours.st_dev && theirs.st_ino == ours.st_ino;
 }
 
 /// The real uid on /proc/<pid>/status's "Uid:" line (#4271): readable by anyone, dumpable or not.
@@ -472,6 +494,10 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     if (syscalls.isProcessExecutable == nullptr)
     {
         syscalls.isProcessExecutable = &isProcessExecutableFromProc;
+    }
+    if (syscalls.sharesMountNamespace == nullptr)
+    {
+        syscalls.sharesMountNamespace = &sharesMountNamespaceFromProc;
     }
     if (syscalls.showItemInFileManager == nullptr)
     {
@@ -702,10 +728,13 @@ ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& t
         return identity;
     }
     const std::expected<std::string, int> link = syscalls().executableLink(target.pid);
-    // The link's text is the path in the process's mount namespace (#4397): unless the file has since been deleted or
-    // replaced, check that it names the running file here too, before the pidfd says the process lasted.
+    // The link's text is the path in the process's mount namespace (#4397): check that it names the running file here
+    // too, before the pidfd says the process lasted. A deleted or replaced file can't be compared, so its path counts
+    // only when the process shares this mount namespace (#4650): a container's upgraded /usr/sbin/nginx isn't the
+    // host's /usr/sbin. A namespace that can't be read keeps the old answer.
     const bool deleted = link.has_value() && FileManagerReveal::withoutDeletedSuffix(*link).size() != link->size();
-    const bool namesItHere = !link.has_value() || deleted || syscalls().isProcessExecutable(target.pid, *link);
+    const bool namesItHere = !link.has_value() || (deleted ? syscalls().sharesMountNamespace(target.pid).value_or(true)
+                                                           : syscalls().isProcessExecutable(target.pid, *link));
     int exited = syscalls().pollPidfd(pidfd.get());
     while (exited < 0 && errno == EINTR)
     {
@@ -998,13 +1027,26 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
         const int finished = ::open(written.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
         struct stat current = {};
+        // And owner-only as the filesystem now says (#4648): one that ignores the fchmod (cifs without unix extensions)
+        // returns 0 and leaves the file readable by everyone, with the process's memory in it.
         const bool same = finished >= 0 && ::fstat(finished, &current) == 0 && S_ISREG(current.st_mode) &&
                           current.st_dev == workingFile.st_dev && current.st_ino == workingFile.st_ino && current.st_uid == ::geteuid() &&
                           ::fchmod(finished, S_IRUSR | S_IWUSR) == 0;
         const int error = errno;
+        struct stat made = {};
+        const bool ownerOnly = same && ::fstat(finished, &made) == 0 && (made.st_mode & static_cast<mode_t>(S_IRWXG | S_IRWXO)) == 0;
         if (finished >= 0)
         {
             ::close(finished);
+        }
+        if (same && !ownerOnly)
+        {
+            std::filesystem::remove(written, ec);
+            releaseName();
+            return std::unexpected(std::format(
+                "Couldn't make the dump file {} private: its filesystem keeps it readable by others (it ignores permissions), so "
+                "it was removed. Choose a folder on a local disk",
+                written.string()));
         }
         if (!same)
         {

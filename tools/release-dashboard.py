@@ -6,12 +6,13 @@ Usage:
     python -I -X utf8 tools/release-dashboard.py --out DIR [--previous DIR] [--milestone vX.Y.Z ...]
     python -I -X utf8 tools/release-dashboard.py --out DIR --dump-raw DIR     # also save what the API returned
     python -I -X utf8 tools/release-dashboard.py --out DIR --from-raw DIR     # rebuild from a dump, no network
+    python -I -X utf8 tools/release-dashboard.py --out DIR --previous DIR --budget-until SECONDS   # see below
 
 docs/release/ on the docs site shows, for one release milestone, what still has to happen before it ships,
 where each of those things stands and how fast it's moving. This writes the JSON that page reads: one
 `<milestone>.json` for every `vX.Y.Z` milestone, and an `index.json` that lists them and holds the figures
 the page compares between releases. .github/workflows/release-dashboard.yml runs it when an issue or main
-changes and every 10 minutes (#4604), and publishes DIR to the data-only `dashboard-data` branch; nothing
+changes and on a schedule (#4604, #4700), and publishes DIR to the data-only `dashboard-data` branch; nothing
 generated is committed to main.
 
 Nothing here is a second tracking system. Every figure is read from what the release process already keeps
@@ -43,9 +44,18 @@ in the repository. A closed milestone whose release is published is written once
 from --previous on later runs. A planned release and the cycle's pass counts are read once an hour: 14 calls
 for the branch's, and for a minor one search and two or more counts for the pull requests'. The latest runs
 come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50 GraphQL points,
-and a busy hour's 12 to 18 runs take about 150 and 900 of each budget's 5,000 (#4604: a run that a change
-started waits until the published data is five minutes old, so changes add 12 runs an hour at most to the
-schedule's 6). Every run prints what it used and what's left, and warns when that's under a quarter.
+and an hour's runs, 12 at most, take about 100 and 600 of each budget's 5,000 (#4604, #4620: every run but
+a manual one waits until the published data is five minutes old). Every run prints what it used and what's
+left, and warns when that's under a quarter. The workflow doesn't start this script at all when under 100
+REST calls or 150 GraphQL points are left: other workflows share the budgets, and it could only fail at its
+first read (#4617).
+
+When the budget is gone the page should say so, and when it returns (#4726). --budget-until does that with no
+request at all: it writes --previous out again as it is, with the time in index.json's `budget_until`. Every
+other field stays, `generated_at` too, so nothing takes it for new data. It writes nothing when --previous
+already names that time (the page is told once for each hour), and exits 1 with a warning when --previous
+can't be repeated or the time is over 75 minutes ahead (an hour's budget returns within the hour). The next
+run that reads GitHub writes an index without the field.
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run
@@ -103,6 +113,9 @@ SLOW_REFRESH = timedelta(minutes=55)
 # Say so in the run's log when a run leaves less than this share of the hour's API budget: the workflow's
 # token shares it with every other workflow in the repository (main-health.yml above all).
 BUDGET_WARNING = 0.25
+# The furthest ahead a budget can be said to return (--budget-until): GitHub's budgets are hourly, so a later
+# time is a mistake, and the page would hold its warning about old data back until then (#4726).
+BUDGET_NOTE_AHEAD = timedelta(minutes=75)
 # Whose one-line tracker comments can declare the freeze or approve the candidate: anyone can comment on a
 # public repository's issue, so an outsider's line is never read as either.
 TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
@@ -1772,6 +1785,58 @@ def _save(path: Path, value: Any, *, pretty: bool = False) -> None:
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
+def republish_with_budget_note(previous: Path, out: Path, until: str, now: datetime) -> int:
+    """The API budget is used up until @p until (seconds since 1970, as GitHub's rate_limit gives a reset), so
+    nothing can be read: write the last run's files again as they are, with that time in index.json for the
+    page to show (#4726). Makes no request.
+
+    Writes nothing, and returns 0, when the last run's index already names that time: the page is told once
+    for each hour the budget is gone. Returns 1 with a warning, having written nothing, when the last run
+    can't be repeated or the time is further ahead than a budget's hour. That's a warning, not an error: the
+    run it happens in has only a note to add, and the page is no worse off without it. The files go out as
+    they are, whatever schema they are in, as long as they agree with each other: what is written here passes
+    the workflow's "Check what was written", so a note never fails a run there either."""
+    try:
+        if not re.fullmatch(r"\d{9,11}", until):
+            raise ValueError(f"--budget-until is seconds since 1970, not {until!r}")
+        when = datetime.fromtimestamp(int(until), UTC)
+        if when - now > BUDGET_NOTE_AHEAD:
+            ahead = int(BUDGET_NOTE_AHEAD.total_seconds() // 60)
+            raise ValueError(f"--budget-until {iso(when)} is over {ahead} minutes ahead, and a budget returns within its hour")
+        index = _load(previous / "index.json")
+        if not isinstance(index, dict) or not isinstance(index.get("releases"), list):
+            raise ValueError(f"{previous / 'index.json'} isn't an index of releases")
+        titles = [release["title"] for release in index["releases"]]
+        # Only the files the index names, and only names a milestone can have: nothing else rides along.
+        if not titles or any(not isinstance(title, str) or version_of(title) is None for title in titles):
+            raise ValueError(f"{previous / 'index.json'} names no releases, or one that isn't vX.Y.Z")
+        missing = [title for title in titles if not (previous / f"{title}.json").is_file()]
+        if missing:
+            raise ValueError(f"{previous} has no file for {', '.join(missing)}")
+        # What the workflow's check holds every publish to. Data that would fail it is refused here, where
+        # that is a warning.
+        if index.get("current") not in titles:
+            raise ValueError(f"{previous / 'index.json'} names no current release among its own")
+        for title in titles:
+            release = _load(previous / f"{title}.json")
+            named = release.get("milestone") if isinstance(release, dict) else None
+            if not isinstance(named, dict) or named.get("title") != title or release.get("schema") != index.get("schema"):
+                raise ValueError(f"{previous / (title + '.json')} doesn't match index.json")
+    except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
+        print(f"::warning title=Release dashboard::The budget note couldn't be written: {error}", file=sys.stderr)
+        return 1
+    if index.get("budget_until") == iso(when):
+        print(f"The published data already says the API budget is used up until {iso(when)}: nothing to write again.")
+        return 0
+    out.mkdir(parents=True, exist_ok=True)
+    for title in titles:
+        shutil.copyfile(previous / f"{title}.json", out / f"{title}.json")
+    index["budget_until"] = iso(when)
+    _save(out / "index.json", index)
+    print(f"The API budget is used up until {iso(when)}: the data of {index.get('generated_at')} goes out again with that note.")
+    return 0
+
+
 def earlier(previous: Path | None, title: str) -> dict[str, Any] | None:
     """The earlier run's file for @p title, when there is one in this schema."""
     if previous is None:
@@ -1826,9 +1891,28 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--from-raw", type=Path, help="build from a --dump-raw folder; no network")
     parser.add_argument("--now", help="the time to compute against, ISO 8601 (default: now, or the dump's time)")
     parser.add_argument("--main-health", type=Path, default=REPO_ROOT / MAIN_HEALTH, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--budget-until",
+        metavar="SECONDS",
+        help="read nothing: write --previous again with this time (seconds since 1970) as index.json's budget_until",
+    )
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error(f"--repo must be owner/name, not {args.repo!r}")
+    if args.budget_until is not None:
+        # It reads nothing and builds nothing, so a flag that says what to read or build would be ignored.
+        ignored = [flag for flag, given in (("--from-raw", args.from_raw), ("--dump-raw", args.dump_raw),
+                                            ("--milestone", args.milestone)) if given]
+        if ignored:
+            parser.error(f"--budget-until writes --previous again as it is: it can't be given with {', '.join(ignored)}")
+        if args.previous is None:
+            parser.error("--budget-until needs --previous, the data to publish again")
+        try:
+            judged_at = parse_time(args.now) if args.now else datetime.now(UTC)
+        except ValueError:
+            parser.error(f"--now must be ISO 8601, not {args.now!r}")
+        assert judged_at is not None
+        return republish_with_budget_note(args.previous, args.out, args.budget_until, judged_at)
 
     try:
         if args.from_raw:

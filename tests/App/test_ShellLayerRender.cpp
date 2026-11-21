@@ -57,6 +57,7 @@ struct HostLog
     std::vector<std::pair<int, int>> minimumSizes;
     std::vector<Core::WindowGeometry::MinimumSizeChange> minimumSizeChanges;
     WindowOverride::CapturedWindow window; // what captureWindow() reports
+    std::vector<std::string> windowCalls;  ///< "capture" and "hide", in the order onDetach() made them (#4590)
 };
 
 class FakeShellHost final : public IShellHost
@@ -108,7 +109,12 @@ class FakeShellHost final : public IShellHost
     }
     [[nodiscard]] WindowOverride::CapturedWindow captureWindow() const override
     {
+        m_Log.windowCalls.emplace_back("capture");
         return m_Log.window;
+    }
+    void hideWindowForExit() override
+    {
+        m_Log.windowCalls.emplace_back("hide");
     }
 
   private:
@@ -376,10 +382,12 @@ class ShellLayerDetachTest : public ShellLayerRenderTest
 TEST_F(ShellLayerDetachTest, SavesTheWindowsNormalGeometryFromTheHost)
 {
     // Maximized: what Restore returns to is saved, with the scale it was measured at (#1121, #1168).
-    m_Log.window = {.normal = Core::WindowGeometry::Rect{.x = 120, .y = 80, .width = 1111, .height = 777},
-                    .normalScale = 1.5F,
-                    .canPosition = true,
-                    .maximized = true};
+    m_Log.window = {
+        .normal = Core::WindowGeometry::Rect{.x = 120, .y = 80, .width = 1111, .height = 777},
+        .normalScale = 1.5F,
+        .canPosition = true,
+        .maximized = true,
+    };
     makeShell(false);
     frame();
     m_Shell->onDetach();
@@ -399,6 +407,50 @@ TEST_F(ShellLayerDetachTest, SavesTheWindowsNormalGeometryFromTheHost)
     EXPECT_EQ(UserConfig::get().settings().windowWidth, 1111);
     EXPECT_EQ(UserConfig::get().settings().windowHeight, 777);
     EXPECT_TRUE(UserConfig::get().settings().windowMaximized);
+}
+
+// #4590: the window is hidden on exit once its geometry is read, and before the panels stop, which joins their
+// workers: closing with X no longer leaves a window on screen that Windows marks Not Responding.
+TEST_F(ShellLayerDetachTest, TheWindowIsHiddenAfterItsGeometryIsReadAndBeforeThePanelsStop)
+{
+    m_Log.window = {
+        .normal = Core::WindowGeometry::Rect{.x = 10, .y = 20, .width = 1000, .height = 700},
+        .normalScale = 1.0F,
+        .canPosition = true,
+        .maximized = false,
+    };
+    makeShell(false);
+    frame();
+    m_Log.windowCalls.clear();
+    m_Shell->onDetach();
+
+    EXPECT_EQ(m_Log.windowCalls, (std::vector<std::string>{"capture", "hide"})) << "read first, hidden once, after it";
+    EXPECT_EQ(UserConfig::get().settings().windowWidth, 1000) << "the geometry read before the hide is the one saved";
+}
+
+// #4590: Application::detachAllLayers() raises AppExitingEvent before any layer detaches. The shell saves what it
+// reads from the window and hides it then, passes the event on (unhandled, for the panels), and its onDetach()
+// later neither reads the hidden window again nor hides it twice.
+TEST_F(ShellLayerDetachTest, AppExitingHidesTheWindowOnceBeforeTheDetach)
+{
+    m_Log.window = {
+        .normal = Core::WindowGeometry::Rect{.x = 5, .y = 6, .width = 1234, .height = 567},
+        .normalScale = 1.0F,
+        .canPosition = true,
+        .maximized = false,
+    };
+    makeShell(false);
+    frame();
+    m_Log.windowCalls.clear();
+
+    Core::AppExitingEvent exiting;
+    m_Shell->onEvent(exiting);
+    EXPECT_FALSE(exiting.isHandled()) << "every layer and panel hears it";
+    EXPECT_EQ(m_Log.windowCalls, (std::vector<std::string>{"capture", "hide"}));
+
+    m_Shell->onDetach();
+    EXPECT_EQ(m_Log.windowCalls, (std::vector<std::string>{"capture", "hide"})) << "nothing read from or done to it again";
+    EXPECT_EQ(UserConfig::get().settings().windowWidth, 1234) << "the geometry read at the event is the one saved";
 }
 
 TEST_F(ShellLayerDetachTest, AnUnknownNormalRectangleKeepsTheSavedSize)
@@ -423,7 +475,9 @@ class NewerReleaseClient final : public Platform::IHttpsClient
                                                                           const std::stop_token& /*stop*/) override
     {
         return Platform::HttpsResponse{
-            .body = R"({"tag_name":"v99.0.0","html_url":"https://github.com/mgradwohl/tasksmack/releases/tag/v99.0.0"})", .status = 200};
+            .body = R"({"tag_name":"v99.0.0","html_url":"https://github.com/mgradwohl/tasksmack/releases/tag/v99.0.0"})",
+            .status = 200,
+        };
     }
 };
 

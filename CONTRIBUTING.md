@@ -396,18 +396,42 @@ it on any new target. Third-party dependencies keep their own settings.
 
 ### Text encoding and locale
 
-- **UTF-8 `std::string` everywhere.** Strings inside TaskSmack hold UTF-8. Lengths and offsets
-  are byte counts, not characters or columns.
-- **UTF-16 only at the Win32 call site.** Convert with `Platform::WinString::utf8ToWide` /
-  `wideToUtf8` right where you call the `W` API, and convert straight back. Don't use `TCHAR`,
-  `std::wstring` members or the `A` functions.
+- **UTF-8 `std::string`, but not every string is valid (#4299, D1).** Text TaskSmack makes is UTF-8,
+  and lengths and offsets are byte counts, not characters or columns. Text the OS hands over may not
+  be valid Unicode: bytes from `/proc`, `/sys`, `readlink`, D-Bus and the environment on Linux, and a
+  Windows UTF-16 name with a lone surrogate. Such text **keeps its native form for every action,
+  lookup and identity**. Make it valid **only for display**, with `Domain::sanitizedUtf8()`
+  (`Domain/Utf8Sanitize.h`), which puts U+FFFD for each ill-formed sequence, and never write invalid
+  UTF-8 to a file: config.toml, themes, logs, reports, exports and dump names. A raw byte value shown
+  as an escape (an environment value, an SSID) is the recorded exception (#4328).
+- **UTF-16 at the Win32 call site, and the wide original where it is an identity.** Convert with
+  `Platform::WinString::utf8ToWide` / `wideToUtf8` where you call the `W` API. Don't use `TCHAR` or
+  the `A` functions. `wideToUtf8` turns a lone surrogate into U+FFFD, so the UTF-8 form can't name
+  the thing again. Where an action needs that name later (a path, a startup task, a service), keep
+  the wide original, or an opaque Platform-side id mapped to it (#4304). Never rebuild it from
+  display text.
+- **Case-insensitive matching and sorting use Unicode simple case folding (#4299, D2).** For anything
+  the user types or reads (filters, search boxes, Find handles, sorted columns), use
+  `Platform/Utf8CaseFold.h`: `equalsFoldedCase`, `containsFoldedCase`, `startsWithFoldedCase`, and
+  `compareFoldedCase` for sorts, whose byte-wise tie-break keeps the order stable. There are no
+  locale or Turkish rules, and folding joins a letter's cases without stripping accents. An
+  ASCII-only fold on user-visible text is a bug. `Platform/AsciiCase.h` is for identifiers, keys and
+  protocol words only.
+- **Identity comparisons are exact.** Compare byte for byte on Linux. On Windows compare ordinally,
+  ignoring case only where Windows itself does (file paths, account and service names), with
+  `Platform::Windows::equalsOrdinalIgnoreCase` (`Platform/Windows/OrdinalCase.h`, #4309). Shared
+  code takes the comparison as a `Platform::TextEquals` parameter.
 - **The process runs in UTF-8.** On Windows the application manifest sets the active code page
   to UTF-8 (`activeCodePage`, Windows 10 1903+), so `GetACP()` is 65001 and narrow CRT calls,
   `std::filesystem::path` and `getenv` take UTF-8. The test binaries have no manifest, so code
   under test must not depend on it: convert explicitly rather than relying on the code page.
-- **Paths meet UTF-8 text only through `Core/Utf8Path.h`.** `Core::pathToUtf8(path)` for a log
-  line or a library that takes a UTF-8 file name (toml++'s `parse_file`, SDL), and
-  `Core::utf8ToPath(text)` for a path read from UTF-8. Never `path.string()` or
+- **Paths meet UTF-8 text only through `Core/Utf8Path.h`.** `Core::pathToUtf8(path)` is a display
+  form, for a log line or a label. On Windows it is lossy (a lone surrogate becomes U+FFFD), and on
+  Linux it may hold bytes that aren't UTF-8. So don't hand it to a library to open the file: read the
+  file by its path and parse the bytes, as `UserConfig` does with toml++ (#4315). A path saved to be
+  read back (config.toml) takes `Core::pathToUtf8Exact(path)`, which is nullopt when no exact UTF-8
+  form exists, and is then not saved (#4327). Use `Core::utf8ToPath(text)` for a path read from
+  UTF-8. Never `path.string()` or
   `std::filesystem::path(std::string)`: on Windows both go through the code page, so in a binary
   without the manifest (the tests, `TaskSmackUiTraining`) they throw for CJK or emoji and turn
   accented Latin into bytes that aren't UTF-8. To open a file, pass the path itself (`std::ifstream`,
@@ -1169,10 +1193,19 @@ IWYU analyzes `#include` directives and suggests additions/removals for cleaner 
 ./tools/iwyu.sh src/Domain/ProcessModel.cpp
 ```
 
-**Installation:**
+**Installation:** build IWYU from source against Clang 23, at the commit CI pins (`IWYU_COMMIT_SHA` in
+`.github/workflows/ci.yml`), so a local run matches CI's. Don't use `sudo apt install iwyu`: Ubuntu 26.04's package
+is built against Clang 19 (`include-what-you-use 0.23 based on Ubuntu clang version 19.1.7`), and `tools/iwyu.sh`
+refuses `--fix` with it (#4707). `./tools/check-prereqs.sh` prints the commit to use.
+
 ```bash
-# Ubuntu/Debian
-sudo apt install iwyu
+sha=$(grep -oE "IWYU_COMMIT_SHA: '[0-9a-f]{40}'" .github/workflows/ci.yml | grep -oE '[0-9a-f]{40}')
+git init -q /tmp/iwyu-src
+git -C /tmp/iwyu-src remote add origin https://github.com/include-what-you-use/include-what-you-use.git
+git -C /tmp/iwyu-src fetch --depth 1 origin "$sha" && git -C /tmp/iwyu-src checkout --quiet FETCH_HEAD
+cmake -G Ninja -DCMAKE_C_COMPILER=clang-23 -DCMAKE_CXX_COMPILER=clang++-23 \
+    -DCMAKE_PREFIX_PATH=/usr/lib/llvm-23 -DCMAKE_INSTALL_PREFIX="$HOME/.local" -S /tmp/iwyu-src -B /tmp/iwyu-build
+cmake --build /tmp/iwyu-build && cmake --install /tmp/iwyu-build --strip   # iwyu in ~/.local/bin
 ```
 
 **Notes:**
@@ -1183,7 +1216,7 @@ sudo apt install iwyu
 - **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
 - The project includes a `.iwyu.imp` mapping file for project-specific rules.
 - To run via pre-commit: `pre-commit run iwyu --hook-stage manual`.
-- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is typically built against an older Clang and will trigger this warning locally. For reliable local runs, build iwyu from source against Clang 23+: https://github.com/include-what-you-use/include-what-you-use
+- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is built against an older Clang and triggers this warning locally, so build it from source as **Installation** above shows.
 
 ### Formatting (required before PRs)
 
@@ -1317,8 +1350,11 @@ as verbosity or `halt_on_error` are preserved. Note that `suppressions=` is a
 scalar key — if the caller already provides a `suppressions=` entry, it overrides
 the project's; in that case add required entries to `lsan.supp` directly.
 
-This suppression filters a known SDL3 LeakSanitizer false positive that affects
-Core window/application tests.
+`lsan.supp` filters three known leaks that aren't TaskSmack's (#4351): the EGL display SDL3
+keeps after `SDL_Quit()` (`SDL_EGL_InitializeOffscreen`), and the small allocations Mesa's software
+GL driver keeps inside its first draw calls and its mipmap builds, matched at the narrowest frame of
+ours above them (`ImGui_ImplOpenGL3_RenderDrawData`, `generateBoundTextureMipmaps`). Each entry's
+comment says why it is there.
 
 UndefinedBehaviorSanitizer halts on the first error. The preset compiles with
 `-fno-sanitize-recover=undefined`, and `ctest --preset asan-ubsan` also injects:
@@ -1347,8 +1383,11 @@ after it and take precedence. Because `suppressions=` is a scalar key, a
 caller-provided `suppressions=` will override the project's — add entries to
 `tsan.supp` directly in that case.
 
-This suppression filters known ThreadSanitizer false positives in third-party
-pthread barrier paths, while preserving any caller-provided TSAN flags.
+`tsan.supp` filters races reported inside two uninstrumented libraries (#4351): Mesa's software GL
+driver (`race:libgallium`, #2042) and libsystemd (`race:libsystemd`, #2416). Both match only
+reports with a frame in that module, where TaskSmack has no code. The two `pthread_barrier`
+entries for GoogleTest 1.15 were removed, since nothing in the pinned GoogleTest or in TaskSmack
+uses pthread barriers.
 
 ## Fuzzing (Linux only)
 
@@ -1405,6 +1444,9 @@ summary line (targets, total and per-target seconds) in the release's fuzzing re
 `$OUT`), so a new target is a `tests/fuzz/fuzz_<name>.cpp` plus one `build_fuzzer` line there. The
 targets compile against the header-only toml++, spdlog, Dear ImGui and ImPlot at the commits
 `cmake/Dependencies.cmake` pins, with the same `cmake/patches/` applied (`.clusterfuzzlite/fetch-deps.sh`).
+They compile with the project's warnings (#4344), and `FUZZ_WERROR=1` makes them errors, as the PR smoke build
+("Fuzz targets build") sets it. Under ClusterFuzzLite (`$SANITIZER` set), `build.sh` also fails unless the standard
+library is libc++, since `_LIBCPP_HARDENING_MODE` does nothing under libstdc++.
 
 To build and run the targets locally with Clang, from the repo root:
 
@@ -1923,8 +1965,13 @@ On Linux, memory tracking uses `/proc/self/status` for zero-overhead measurement
 ## Performance Profiling
 
 The `profile` and `win-profile` presets build at `-O2 -g -DNDEBUG` with frame pointers
-preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). All profiling scripts
-write artifacts under `perf-data/` and emit `KEY=value` lines at exit for scripting.
+preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). The profiling scripts write their
+artifacts under `perf-data/`. For scripting, the capture and analysis scripts end by printing `KEY=value`
+lines naming those files (#4220): `profile-perf.sh` (`PERF_DATA`, `LOG`), `analyze-perf.sh` (`PERF_DATA`,
+`REPORT`), `profile-heap.sh` (`HEAPTRACK_DATA`, `LOG`), and on Windows `profile-etw.ps1` and
+`analyze-etw.ps1`. `profile-perf.sh` prints them after a failed capture too, so the file may be partial:
+check the exit status before using it. The others report differently: `measure-idle.sh` (and `.ps1`) print a
+`RESULT` line and write JSON, `pgo.sh` and `ui-compare.sh` print a summary only.
 
 ### Linux — CPU profiling (perf)
 
@@ -1992,7 +2039,8 @@ already running" or exits with code 75) fails the run instead of being profiled.
 # Analyze a captured trace (top functions + optional flamegraph SVG)
 ./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
 
-# Open in Hotspot GUI (if installed: sudo apt install hotspot)
+# Open in Hotspot GUI. It isn't packaged for Ubuntu 26.04 (#4706): `flatpak install flathub com.kdab.hotspot`
+# (then `flatpak run com.kdab.hotspot <file>`), or KDAB's AppImage from https://github.com/KDAB/hotspot/releases
 hotspot perf-data/perf-app-<timestamp>.data
 
 # Quick perf stat counters (no trace file)
@@ -2463,6 +2511,10 @@ cmake --build --preset win-profile
 $env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object $env:TEMP\resize-trace.log
 ```
 
+These run TaskSmack on your own config (and its single-instance lock, so close your TaskSmack first). For a
+clean run from the default settings, add `TASKSMACK_CONFIG_DIR="$(mktemp -d)"` (Linux) or set
+`$env:TASKSMACK_CONFIG_DIR` to a new folder (Windows), as `tools/measure-idle.sh` does for you (#4221).
+
 Just let the app sit idle for a few seconds to capture steady-state numbers, and/or resize the
 window (edges and corners) for 20–30 seconds to capture interactive numbers, then close the app.
 The log contains `ResizePerf[idle-progress|idle-end|interaction-progress|interaction-end|shutdown]` lines.
@@ -2577,7 +2629,11 @@ precedence.
 
 Idle cost is TaskSmack's first performance priority (#843): a task manager that sits open all day
 must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one idle scenario into a
-comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
+comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1` and a fresh config
+folder of its own, removed afterwards (#4221, as `measure-idle.ps1` and `profile-perf.sh app` do): the run starts
+from the default settings, never rewrites your `config.toml`, and shows no startup access notice over the window it
+measures. `--config-dir <dir>` uses (and keeps) a folder of yours instead, with a `config.toml` for non-default
+settings, and `--user-config` runs on your own config. It waits for the
 main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
 with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
 machine-readable `RESULT` line. The frame and loop figures leave out a summary of a window that drew
@@ -2588,8 +2644,9 @@ plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<time
 commit and dirty flag, preset and build type, refresh interval and history window (as the app logged
 or loaded them), synthetic spec, the window's measured geometry and any `--window` requested, GL
 renderer, display refresh rate, CPU model, logical CPU count, MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
-is above `<pct>`. Another TaskSmack running with the same settings fails the run (the
-single-instance lock would stop the new one at its "already running" box); close it first.
+is above `<pct>`. With `--user-config` (or a `--config-dir` shared with a running TaskSmack), another TaskSmack
+using that folder fails the run (the single-instance lock would stop the new one at its "already running" box);
+close it first.
 
 ```bash
 # Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
@@ -3238,9 +3295,9 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`dependency-review.yml`**: Scans PRs and merge groups to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
-- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
+- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A run that opened or closed one starts a `release-dashboard.yml` run, so the release page has it within minutes (#4700). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
-- **`release-dashboard.yml`**: When an issue changes, `main` moves or Main Health finishes, and every 10 minutes (#4604), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
+- **`release-dashboard.yml`**: When an issue closes or changes milestone, when `main` moves, when Main Health opens or closes a tracking issue, and every five minutes on a schedule (#4604, #4620, #4700), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
 - **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 

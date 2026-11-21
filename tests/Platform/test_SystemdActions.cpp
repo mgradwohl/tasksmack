@@ -220,6 +220,10 @@ class SystemdActionsFakeTest : public ::testing::Test
                                {
                                    return sd_bus_reply_method_return(call, "o", WEB_PATH);
                                }
+                               if (unit == "busy.service") // systemd busy past the call timeout (#4649)
+                               {
+                                   return sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.NoReply", "no reply");
+                               }
                                return sd_bus_reply_method_errorf(call, "org.freedesktop.systemd1.NoSuchUnit", "Unit %s not found.", name);
                            });
     }
@@ -439,6 +443,35 @@ TEST_F(SystemdActionsFakeTest, AnUnansweredDependentsReadRefusesTheStop)
     EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
 }
 
+// #4629: sd-bus names local failures too, so a dropped connection is no answer about the job: the start keeps waiting
+// for its own limit instead of reporting "It didn't start" at once.
+TEST_F(SystemdActionsFakeTest, ADroppedConnectionOnTheJobReadIsNoAnswer)
+{
+    m_Bus.failProperty(JOB_PATH, "org.freedesktop.systemd1.Job", "State", "org.freedesktop.DBus.Error.Disconnected");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveJob("StartUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit(
+        "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.message.starts_with("It didn't start within")) << result.message;
+}
+
+// #4629: systemd without its bus name for a moment (a daemon-reexec) is no answer about the dependents: the stop is
+// refused rather than sent with the "never take running dependents down" guard skipped.
+TEST_F(SystemdActionsFakeTest, SystemdWithoutItsBusNameOnADependentsReadRefusesTheStop)
+{
+    m_Bus.failProperty(CRON_PATH, UNIT, "BoundBy", "org.freedesktop.DBus.Error.ServiceUnknown");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
+}
+
 // ...while one answered with an error (a property an older systemd doesn't have) is an empty list, as before.
 TEST_F(SystemdActionsFakeTest, ADependentsListThisSystemdLacksDoesNotBlockTheStop)
 {
@@ -552,6 +585,61 @@ TEST_F(SystemdActionsFakeTest, AStopWithARunningDependentIsRefusedNamingIt)
     EXPECT_FALSE(result.ok);
     EXPECT_EQ(result.message, "Stop the services that depend on it first: web.service");
     EXPECT_TRUE(calls().empty());
+}
+
+// #4649: a listed dependent systemd doesn't answer about (its LoadUnit or its ActiveState) may be running, so the stop
+// is refused rather than sent with the guard skipped for it.
+TEST_F(SystemdActionsFakeTest, ADependentWhoseLoadUnitIsntAnsweredRefusesTheStop)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"busy.service"};
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
+}
+
+TEST_F(SystemdActionsFakeTest, ADependentWhoseStateIsntAnsweredRefusesTheStop)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
+    m_Bus.failProperty(WEB_PATH, UNIT, "ActiveState", "org.freedesktop.DBus.Error.NoReply");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "systemd didn't answer in time");
+    EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
+}
+
+// ...while a dependent systemd answers "no such unit" for is skipped, as before.
+TEST_F(SystemdActionsFakeTest, ADependentThatNoLongerExistsDoesNotBlockTheStop)
+{
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"gone.service"};
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_TRUE(result.ok) << result.message;
+    EXPECT_EQ(calls(), (std::vector<std::string>{"StopUnit cron.service replace"}));
+}
+
+// #4649: once the job is gone, a state read systemd doesn't answer is no news: the start keeps waiting for its limit
+// instead of reporting "It didn't start (state unknown)" for a start that may have worked.
+TEST_F(SystemdActionsFakeTest, AnUnansweredStateReadAfterTheJobKeepsWaiting)
+{
+    m_Bus.failProperty(CRON_PATH, UNIT, "ActiveState", "org.freedesktop.DBus.Error.NoReply");
+    serveJob("StartUnit", "active");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit(
+        "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.message.starts_with("It didn't start within")) << result.message;
 }
 
 // #2124: systemd also stops the units that are PartOf= cron (its ConsistsOf) and those that are

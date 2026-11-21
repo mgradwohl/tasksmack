@@ -2642,6 +2642,19 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+// #4652: a config.toml that can't be read through (here a folder: EISDIR, as a failing disk's EIO or an NFS home's
+// ESTALE) is never taken for an empty file: the load says it couldn't be opened, and nothing replaces it.
+TEST_F(UserConfigSaveLoadFixture, AConfigThatCantBeReadThroughIsNeitherEmptyNorReplaced)
+{
+    std::filesystem::create_directories(m_ConfigPath);
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_FALSE(config.fileProblem().empty()) << "a problem the user is told about, not silent defaults";
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_TRUE(std::filesystem::is_directory(m_ConfigPath)) << "not replaced";
+}
+
 // #3759: the save by path's own refusal of a link, as a session run as root for a user (which holds no folder) saves.
 TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
 {
@@ -3079,6 +3092,8 @@ TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveKeepsModesAndRefusesLinks)
     EXPECT_EQ(parsed(m_TempDir / "secret.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "a hard link is left alone";
     EXPECT_EQ(std::filesystem::hard_link_count(linked / "config.toml"), 2U) << "and isn't replaced";
     EXPECT_FALSE(config.fileProblem().empty()) << "and the user is told the save was refused (#4318)";
+    EXPECT_TRUE(config.fileProblem().contains("hard link")) << "with the reason (#4653): " << config.fileProblem();
+    EXPECT_FALSE(config.fileProblem().contains("default settings")) << "its settings loaded and are in use";
 
     // The VirusTotal API key's file is the user's alone (#3094): an existing 0644 config becomes 0600.
     config.resetConfigPathForTesting(kept / "config.toml");

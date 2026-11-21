@@ -11,6 +11,7 @@
 
 #include "App/PanelPlatformTypes.h"
 #include "App/Panels/ProcessesPanel.h"
+#include "App/Panels/SystemInfoSections.h"
 #include "App/PlatformOpen.h"
 #include "App/SelectOverride.h"
 #include "App/UserConfig.h"
@@ -20,10 +21,14 @@
 #include "Core/Utf8Path.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/StartAtLogin.h"
 #include "Domain/Utf8Sanitize.h"
 #include "Mocks/MockProbes.h"
 #include "NonAsciiTestNames.h"
 #include "Platform/ProcessTypes.h"
+#ifdef _WIN32
+#include "Platform/Windows/WinString.h"
+#endif
 #include "UI/ThemeLoader.h"
 
 #include <gtest/gtest.h>
@@ -58,6 +63,7 @@ namespace
 using TestSupport::allNonAsciiNames;
 using TestSupport::CJK_NAME;
 using TestSupport::EMOJI_NAME;
+using TestSupport::INVALID_UTF8_NAMES;
 using TestSupport::LATIN_NAME;
 using TestSupport::NON_ASCII_NAMES;
 using TestSupport::NonAsciiTempDir;
@@ -440,12 +446,12 @@ TEST_F(NonAsciiRoundTripTest, LogFileIsAlwaysWellFormedUtf8)
 TEST(LogFileSinkTest, WellFormedMessageCopiesOnlyWhenItMustSanitize)
 {
     std::string storage;
-    spdlog::details::log_msg valid("test", spdlog::level::info, "caf\xC3\xA9");
+    spdlog::details::log_msg const valid("test", spdlog::level::info, "caf\xC3\xA9");
     const spdlog::details::log_msg same = Core::wellFormedMessage(valid, storage);
     EXPECT_EQ(same.payload.data(), valid.payload.data()) << "well-formed text is not copied";
     EXPECT_TRUE(storage.empty());
 
-    spdlog::details::log_msg cut("test", spdlog::level::info, "caf\xC3");
+    spdlog::details::log_msg const cut("test", spdlog::level::info, "caf\xC3");
     const spdlog::details::log_msg clean = Core::wellFormedMessage(cut, storage);
     EXPECT_EQ(std::string_view(clean.payload.data(), clean.payload.size()), "caf\xEF\xBF\xBD");
 }
@@ -678,6 +684,129 @@ TEST(NonAsciiOpenTest, OpenerRefusesAnEmptyTarget)
     // Converts to nothing, as a target that isn't UTF-8 does: refused, and nothing is launched.
     ASSERT_TRUE(App::PlatformOpen::nativeTargetFromUtf8(std::string_view{}).empty());
     EXPECT_EQ(App::PlatformOpen::open(std::string_view{}), App::PlatformOpen::OpenResult::Failed);
+}
+#endif
+
+// ========== Invalid input to every writer (#4330) ==========
+//
+// Each test feeds a writer the invalid-UTF-8 fixtures of TestSupport (a truncated sequence, an overlong form, 0xFF, a
+// cut comm) and reads what was written back as bytes: it must be valid UTF-8, whatever the writer keeps or replaces.
+
+void writeBytes(const std::filesystem::path& path, std::string_view bytes)
+{
+    std::ofstream file(path, std::ios::binary | std::ios::trunc);
+    file.write(bytes.data(), static_cast<std::streamsize>(bytes.size()));
+}
+
+// config.toml: a setting that isn't UTF-8 is written as valid UTF-8, and reads back as valid UTF-8. #4327 keeps such
+// text from reaching the config at all (the dump folder, pins, run-new-task commands and theme ids are checked where
+// they're made); set here directly, past those checks, toml++ stores each stray byte as a \u00XX escape, so the file
+// stays UTF-8 and the reload is the valid text U+00XX, not the original bytes. The valid text around it survives.
+TEST_F(NonAsciiConfigTest, ConfigWrittenFromInvalidUtf8SettingsIsValidUtf8AndReadsBackAsValidUtf8)
+{
+    const std::filesystem::path configPath = dir() / "invalid-config" / "config.toml";
+    for (const std::string_view bad : INVALID_UTF8_NAMES)
+    {
+        SCOPED_TRACE(std::string(bad));
+        const std::string themeId = std::format("{}{}{}", LATIN_NAME, bad, EMOJI_NAME);
+        const std::string layout = std::format("{}|{}", bad, RTL_NAME);
+        auto& config = App::UserConfig::get();
+        config.resetConfigPathForTesting(configPath);
+        config.settings().themeId = themeId;
+        config.settings().processTableLayout = layout;
+        config.save();
+
+        const std::string text = readWholeFile(configPath);
+        ASSERT_FALSE(text.empty());
+        EXPECT_TRUE(Domain::isValidUtf8(text)) << text;
+
+        config.resetConfigPathForTesting(configPath);
+        config.load();
+        EXPECT_EQ(config.fileProblem(), "") << "what was written loads without a problem";
+        const std::string& reloadedTheme = config.settings().themeId;
+        const std::string& reloadedLayout = config.settings().processTableLayout;
+        EXPECT_TRUE(Domain::isValidUtf8(reloadedTheme)) << reloadedTheme;
+        EXPECT_TRUE(Domain::isValidUtf8(reloadedLayout)) << reloadedLayout;
+        EXPECT_TRUE(reloadedTheme.starts_with(LATIN_NAME)) << "the valid text before the stray bytes is kept";
+        EXPECT_TRUE(reloadedLayout.ends_with(std::format("|{}", RTL_NAME))) << "and the valid text after them";
+    }
+}
+
+// System Information's Save report: the .txt and the .json hold valid UTF-8 whatever the rows carry (#4305), and
+// the default file name is valid UTF-8 for a computer name that isn't (#4314).
+TEST_F(NonAsciiRoundTripTest, SystemInfoReportsReadBackAsValidUtf8)
+{
+    std::vector<App::SystemInfo::Row> rows;
+    for (const std::string_view bad : INVALID_UTF8_NAMES)
+    {
+        App::SystemInfo::Row available;
+        available.label = std::format("label-{}", bad);
+        available.value = std::format("{}{}{}", LATIN_NAME, bad, CJK_NAME);
+        available.valueTooltip = std::string(bad);
+        rows.push_back(std::move(available));
+        App::SystemInfo::Row unavailable;
+        unavailable.label = std::string(bad);
+        unavailable.unavailableReason = std::format("why {}", bad);
+        rows.push_back(std::move(unavailable));
+    }
+    const std::vector<App::SystemInfo::Section> sections{
+        {.title = std::format("Title {}", INVALID_UTF8_NAMES.back()), .icon = "", .rows = rows},
+    };
+
+    const std::filesystem::path txt = dir() / Core::utf8ToPath(std::format("report-{}.txt", CJK_NAME));
+    const std::filesystem::path json = dir() / Core::utf8ToPath(std::format("report-{}.json", CJK_NAME));
+    writeBytes(txt, App::SystemInfo::allSectionsText(sections, true));
+    writeBytes(json, App::SystemInfo::allSectionsJson(sections, true, std::format("Read at {}", INVALID_UTF8_NAMES.front())));
+    for (const std::filesystem::path& file : {txt, json})
+    {
+        const std::string bytes = readWholeFile(file);
+        ASSERT_FALSE(bytes.empty());
+        EXPECT_TRUE(Domain::isValidUtf8(bytes)) << Core::pathToUtf8(file.filename()) << ": " << bytes;
+        EXPECT_TRUE(bytes.contains(LATIN_NAME)) << "valid non-ASCII text stays UTF-8: " << bytes;
+        EXPECT_TRUE(bytes.contains(CJK_NAME)) << bytes;
+        EXPECT_TRUE(bytes.contains("datensicherung\xEF\xBF\xBD")) << "the cut comm's lead byte is U+FFFD: " << bytes;
+    }
+
+    for (const std::string_view bad : INVALID_UTF8_NAMES)
+    {
+        for (const auto format : {App::SystemInfo::ReportFormat::Text, App::SystemInfo::ReportFormat::Json})
+        {
+            const std::string name = App::SystemInfo::reportFileName(std::format("{}{}", bad, LATIN_NAME), true, "2026-11-20", format);
+            EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
+            EXPECT_TRUE(name.contains(LATIN_NAME)) << name;
+        }
+    }
+}
+
+// The Run value (Windows) and the Exec (Linux) are made from Domain::StartAtLogin::runCommand(), which only joins: its
+// text from a UTF-8 path is UTF-8, and a path that isn't is the writer's to refuse (WindowsStartAtLogin::write and
+// StartAtLoginEntry::execValue do; the Linux side is tested in tests/Platform/test_LinuxStartAtLogin.cpp).
+TEST(NonAsciiStartAtLoginTest, RunCommandOfAUtf8PathIsUtf8AndOfAnInvalidOneIsLeftToTheWriterToRefuse)
+{
+    for (const std::string_view name : NON_ASCII_NAMES)
+    {
+        const std::string path = std::format(R"(C:\Users\{}\TaskSmack.exe)", name);
+        const std::string command = Domain::StartAtLogin::runCommand(path);
+        EXPECT_TRUE(Domain::isValidUtf8(command)) << command;
+        EXPECT_EQ(Domain::StartAtLogin::commandProgram(command), std::optional<std::string>(path));
+    }
+    for (const std::string_view bad : INVALID_UTF8_NAMES)
+    {
+        EXPECT_FALSE(Domain::isValidUtf8(Domain::StartAtLogin::runCommand(std::format("C:\\{}\\TaskSmack.exe", bad))))
+            << "runCommand() doesn't repair text; the writer checks it";
+    }
+}
+
+#ifdef _WIN32
+// A path read from a wide source (the Run value, the image path) with a lone surrogate reaches runCommand() as U+FFFD:
+// valid UTF-8 that names another program (#4310), so the writer refuses it through hasLoneSurrogate().
+TEST(NonAsciiStartAtLoginTest, ALoneSurrogateImagePathBecomesValidUtf8AndIsFlagged)
+{
+    const std::wstring wide = L"C:\\" + TestSupport::loneSurrogateWideName() + L"\\TaskSmack.exe";
+    ASSERT_TRUE(Platform::WinString::hasLoneSurrogate(wide));
+    const std::string command = Domain::StartAtLogin::runCommand(Platform::WinString::wideToUtf8(wide));
+    EXPECT_TRUE(Domain::isValidUtf8(command)) << command;
+    EXPECT_TRUE(command.contains("\xEF\xBF\xBD"));
 }
 #endif
 

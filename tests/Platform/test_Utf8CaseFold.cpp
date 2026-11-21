@@ -4,6 +4,7 @@
 #include <gtest/gtest.h>
 
 #include <algorithm>
+#include <array>
 #include <string>
 #include <string_view>
 
@@ -28,6 +29,32 @@ TEST(Utf8CaseFoldTest, TheTableIsSortedAndFoldsTheIssuesLetters)
     EXPECT_EQ(simpleCaseFold(U'é'), U'é');
     EXPECT_EQ(simpleCaseFold(U'A'), U'a');
     EXPECT_EQ(simpleCaseFold(U'1'), U'1');
+}
+
+// #4662: three CaseFolding.txt S mappings the generator once missed.
+TEST(Utf8CaseFoldTest, TheThreeSMappingsTheGeneratorOnceMissedFold)
+{
+    struct Pair
+    {
+        char32_t from;
+        char32_t to;
+        std::string_view fromUtf8;
+        std::string_view toUtf8;
+    };
+    const auto pairs = std::to_array<Pair>({
+        {.from = U'ΐ', .to = U'ΐ', .fromUtf8 = "ΐ", .toUtf8 = "ΐ"}, // U+1FD3 -> U+0390 (iota with dialytika)
+        {.from = U'ΰ', .to = U'ΰ', .fromUtf8 = "ΰ", .toUtf8 = "ΰ"}, // U+1FE3 -> U+03B0 (upsilon with dialytika)
+        {.from = U'ﬅ', .to = U'ﬆ', .fromUtf8 = "ﬅ", .toUtf8 = "ﬆ"}, // U+FB05 -> U+FB06 (long s t ligature)
+    });
+    for (const auto& pair : pairs)
+    {
+        EXPECT_EQ(simpleCaseFold(pair.from), pair.to);
+        EXPECT_EQ(simpleCaseFold(pair.to), pair.to);
+        EXPECT_TRUE(equalsFoldedCase(pair.fromUtf8, pair.toUtf8));
+        EXPECT_TRUE(equalsFoldedCase(pair.toUtf8, pair.fromUtf8));
+        EXPECT_TRUE(containsFoldedCase(std::string("a") + std::string(pair.fromUtf8) + "z", pair.toUtf8));
+        EXPECT_TRUE(containsFoldedCase(std::string("a") + std::string(pair.toUtf8) + "z", pair.fromUtf8));
+    }
 }
 
 TEST(Utf8CaseFoldTest, ContainsFindsTheIssuesScenarios)
@@ -59,12 +86,15 @@ TEST(Utf8CaseFoldTest, EqualsAndAffixesFoldWhateverTheByteLengths)
 TEST(Utf8CaseFoldTest, IllFormedBytesNeverCrashAndNeverMatchACharacter)
 {
     // A truncated sequence at the end, a lone lead byte, a stray continuation, an overlong and a surrogate.
-    for (const std::string_view text : {std::string_view("caf\xC3"),
-                                        std::string_view("Caf\xE9.txt"),
-                                        std::string_view("\x80\xBF"),
-                                        std::string_view("\xC0\xAF"),
-                                        std::string_view("\xED\xA0\x80"),
-                                        std::string_view("\xF0\x9F\x98")})
+    constexpr auto texts = std::to_array<std::string_view>({
+        "caf\xC3",
+        "Caf\xE9.txt",
+        "\x80\xBF",
+        "\xC0\xAF",
+        "\xED\xA0\x80",
+        "\xF0\x9F\x98",
+    });
+    for (const std::string_view text : texts)
     {
         EXPECT_FALSE(containsFoldedCase(text, "é")) << "an ill-formed byte is not é";
         EXPECT_FALSE(containsFoldedCase(text, "\xEF\xBF\xBD")) << "nor U+FFFD";

@@ -10,8 +10,10 @@
     configure or build. One run:
 
     1. Launches TaskSmack.exe with TASKSMACK_TRACE_RESIZE_PERF=1, TASKSMACK_LOG_LEVEL=info, its own
-       TASKSMACK_CONFIG_DIR (a fresh, empty directory unless -ConfigDir names one, so the run starts
-       from default settings and never reads or rewrites the user's config.toml) and TEMP/TMP set
+       TASKSMACK_CONFIG_DIR (a fresh directory unless -ConfigDir names one, so the run starts from
+       default settings and never reads or rewrites the user's config.toml; its config.toml holds only
+       [ui] show_privilege_notice = false, so the startup access notice can't cover the measured
+       window on a run as a standard user, #4624) and TEMP/TMP set
        to a folder inside that directory, so the app's tasksmack-debug.log is written there instead
        of over the user's own %TEMP%\tasksmack-debug.log.
     2. Waits for the main window (and for "Entering main loop" in that log), then -Warmup seconds.
@@ -225,6 +227,12 @@ if (-not $ConfigDir) {
 }
 New-Item -ItemType Directory -Force -Path $ConfigDir | Out-Null
 $ConfigDir = (Resolve-Path -LiteralPath $ConfigDir).Path
+if (-not $keepConfigDir) {
+    # Default settings, except the startup access notice (#4624): with an empty config it opens over the window
+    # being measured on a run as a standard user. measure-idle.sh writes the same (#4622). A -ConfigDir the caller
+    # names is left as it is.
+    [IO.File]::WriteAllText((Join-Path $ConfigDir 'config.toml'), "[ui]`nshow_privilege_notice = false`n", [Text.UTF8Encoding]::new($false))
+}
 $appTemp = Join-Path $ConfigDir 'temp'
 New-Item -ItemType Directory -Force -Path $appTemp | Out-Null
 $appLog = Join-Path $appTemp 'tasksmack-debug.log'
