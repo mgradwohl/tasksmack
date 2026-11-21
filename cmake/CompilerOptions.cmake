@@ -2,6 +2,37 @@
 # Must be included after Options.cmake and before Dependencies.cmake so global
 # flags (coverage, hardening, compiler launcher) apply to third-party builds too.
 
+# Clang only, at least TASKSMACK_MIN_CLANG_VERSION (#4352). TaskSmack builds with clang on both platforms (libc++
+# on Linux, the MSVC STL on Windows; CONTRIBUTING.md, "Build System Notes"), and which C++23 library features exist
+# depends on that clang's libc++ or STL, so an older or another compiler fails late with confusing errors. Stop
+# here instead, saying what was found and the one command that installs the right one. The floor is the same as
+# tools/check-prereqs.ps1's and .sh's MIN_CLANG_VERSION (tests/tools/test_clang_floor.py keeps the three equal).
+set(TASKSMACK_MIN_CLANG_VERSION 23)
+if(WIN32)
+    set(_ts_clang_fix "Run `pwsh tools/setup-dev.ps1` to install Clang ${TASKSMACK_MIN_CLANG_VERSION} (LLVM), then "
+        "`pwsh tools/check-prereqs.ps1` to check it, and configure again with a new build folder (or --fresh).")
+else()
+    set(_ts_clang_fix "Run `./tools/setup-dev.sh` to install Clang ${TASKSMACK_MIN_CLANG_VERSION}, then "
+        "`./tools/check-prereqs.sh` to check it, and configure again with a new build folder (or --fresh).")
+endif()
+string(JOIN "" _ts_clang_fix ${_ts_clang_fix})
+foreach(_ts_lang IN ITEMS CXX C)
+    if(NOT DEFINED CMAKE_${_ts_lang}_COMPILER_ID)
+        continue()
+    endif()
+    if(NOT CMAKE_${_ts_lang}_COMPILER_ID STREQUAL "Clang")
+        message(FATAL_ERROR "TaskSmack builds with Clang ${TASKSMACK_MIN_CLANG_VERSION} or newer only, but the ${_ts_lang} "
+            "compiler is ${CMAKE_${_ts_lang}_COMPILER_ID} ${CMAKE_${_ts_lang}_COMPILER_VERSION} "
+            "(${CMAKE_${_ts_lang}_COMPILER}).\n${_ts_clang_fix}")
+    endif()
+    if(CMAKE_${_ts_lang}_COMPILER_VERSION VERSION_LESS TASKSMACK_MIN_CLANG_VERSION)
+        message(FATAL_ERROR "TaskSmack needs Clang ${TASKSMACK_MIN_CLANG_VERSION} or newer, but the ${_ts_lang} compiler is "
+            "Clang ${CMAKE_${_ts_lang}_COMPILER_VERSION} (${CMAKE_${_ts_lang}_COMPILER}).\n${_ts_clang_fix}")
+    endif()
+endforeach()
+unset(_ts_lang)
+unset(_ts_clang_fix)
+
 # Windows: Configure MSVC runtime library linkage for Clang.
 # Debug keeps the DLL runtime (/MDd). Every other configuration links the CRT and C++ runtime
 # statically (/MT): the release .zip ships just TaskSmack.exe, and with the DLL runtime a PC
@@ -82,26 +113,21 @@ endif()
 
 # Code coverage support (Clang only)
 if(TASKSMACK_ENABLE_COVERAGE)
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-        message(STATUS "Code coverage enabled")
-        add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
-        add_link_options(-fprofile-instr-generate -fcoverage-mapping)
-        # Continuous mode (#3108): with %c in LLVM_PROFILE_FILE the profile is opened and mapped at
-        # startup and the counters are written through the mapping, so a test child that ends with _exit(), or
-        # drops privileges before it exits, keeps its counts. On Linux (ELF)
-        # that needs the counters relocated at run time.
-        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-            add_compile_options("SHELL:-mllvm -runtime-counter-relocation")
-            # Atomic counter updates (#3165): the samplers call the same functions from several threads,
-            # and plain increments lose updates under contention. A line whose count is derived by
-            # subtracting one counter from another then came out 0, or wrapped negative (24 to 34 such
-            # lines a run), so the same source's coverage moved by a few lines between runs and flipped
-            # main around the 95% floor.
-            add_compile_options(-fprofile-update=atomic)
-        endif()
-    else()
-        message(WARNING "Code coverage is only supported with Clang. Disabling coverage.")
-        set(TASKSMACK_ENABLE_COVERAGE OFF)
+    message(STATUS "Code coverage enabled")
+    add_compile_options(-fprofile-instr-generate -fcoverage-mapping)
+    add_link_options(-fprofile-instr-generate -fcoverage-mapping)
+    # Continuous mode (#3108): with %c in LLVM_PROFILE_FILE the profile is opened and mapped at
+    # startup and the counters are written through the mapping, so a test child that ends with _exit(), or
+    # drops privileges before it exits, keeps its counts. On Linux (ELF)
+    # that needs the counters relocated at run time.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        add_compile_options("SHELL:-mllvm -runtime-counter-relocation")
+        # Atomic counter updates (#3165): the samplers call the same functions from several threads,
+        # and plain increments lose updates under contention. A line whose count is derived by
+        # subtracting one counter from another then came out 0, or wrapped negative (24 to 34 such
+        # lines a run), so the same source's coverage moved by a few lines between runs and flipped
+        # main around the 95% floor.
+        add_compile_options(-fprofile-update=atomic)
     endif()
 endif()
 
@@ -110,57 +136,45 @@ function(tasksmack_apply_default_warnings target_name)
         return()
     endif()
 
-    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" OR CMAKE_CXX_COMPILER_ID MATCHES "GNU" OR CMAKE_CXX_COMPILER_ID MATCHES "AppleClang")
-        # Baseline warnings - high signal, low noise for modern C++
+    # Clang only, which the check at the top of this file enforces: there are no GCC, AppleClang or MSVC cl
+    # branches (#4352).
+    # Baseline warnings - high signal, low noise for modern C++
+    target_compile_options(${target_name} PRIVATE
+        -Wall
+        -Wextra
+        -Wpedantic
+        -Wconversion
+        -Wsign-conversion
+        -Wshadow
+        -Wnon-virtual-dtor
+        -Woverloaded-virtual
+        -Wformat=2
+        -Wimplicit-fallthrough
+        -Wnull-dereference
+        -Wdouble-promotion
+        -Wcast-align
+        -Wundef
+        -Werror=return-type
+        $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:-Werror>
+    )
+
+    # Platform-specific warning adjustments
+    if(WIN32)
+        # Suppress noise from MSVC STL and Windows SDK headers
         target_compile_options(${target_name} PRIVATE
-            -Wall
-            -Wextra
-            -Wpedantic
-            -Wconversion
-            -Wsign-conversion
-            -Wshadow
-            -Wnon-virtual-dtor
-            -Woverloaded-virtual
-            -Wformat=2
-            -Wimplicit-fallthrough
-            -Wnull-dereference
-            -Wdouble-promotion
-            -Wcast-align
-            -Wundef
-            -Werror=return-type
-            $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:-Werror>
+            -Wno-unknown-pragmas
+            -Wno-nonportable-system-include-path
         )
-
-        # Platform-specific warning adjustments
-        if(WIN32)
-            # Suppress noise from MSVC STL and Windows SDK headers
-            target_compile_options(${target_name} PRIVATE
-                -Wno-unknown-pragmas
-                -Wno-nonportable-system-include-path
-            )
-        else()
-            # Linux/macOS-specific warnings
-            target_compile_options(${target_name} PRIVATE
-                -Wmisleading-indentation
-            )
-        endif()
-
-        # Apply extra warning flags if specified
-        if(TASKSMACK_EXTRA_WARNING_FLAGS)
-            target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
-        endif()
-    elseif(MSVC)
+    else()
+        # Linux/macOS-specific warnings
         target_compile_options(${target_name} PRIVATE
-            /W4
-            /permissive-
-            /EHsc
-            $<$<BOOL:${TASKSMACK_WARNINGS_AS_ERRORS}>:/WX>
+            -Wmisleading-indentation
         )
+    endif()
 
-        # Apply extra warning flags if specified
-        if(TASKSMACK_EXTRA_WARNING_FLAGS)
-            target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
-        endif()
+    # Apply extra warning flags if specified
+    if(TASKSMACK_EXTRA_WARNING_FLAGS)
+        target_compile_options(${target_name} PRIVATE ${TASKSMACK_EXTRA_WARNING_FLAGS})
     endif()
 endfunction()
 
@@ -200,11 +214,7 @@ if(TASKSMACK_ENABLE_IPO)
     endif()
 endif()
 
-if(CMAKE_CXX_COMPILER_ID MATCHES "Clang")
-    message(STATUS "Configuring TaskSmack with clang: ${CMAKE_CXX_COMPILER}")
-else()
-    message(WARNING "TaskSmack is validated primarily with clang; proceeding with ${CMAKE_CXX_COMPILER_ID}.")
-endif()
+message(STATUS "Configuring TaskSmack with Clang ${CMAKE_CXX_COMPILER_VERSION}: ${CMAKE_CXX_COMPILER}")
 
 # Linker selection on Unix.
 # TASKSMACK_LINKER controls which linker is used: lld (default), mold (faster incremental), default (system).

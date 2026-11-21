@@ -367,6 +367,10 @@ set_tests_properties(CppDepsSbomScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisRunUninstallScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_run_uninstall.py)
 set_tests_properties(NsisRunUninstallScript PROPERTIES TIMEOUT 60)
 
+# The Clang floor (#4352): cmake/CompilerOptions.cmake's TASKSMACK_MIN_CLANG_VERSION equals check-prereqs.ps1's and
+# .sh's MIN_CLANG_VERSION, and the configure error names each platform's setup and check scripts. Pure Python.
+add_test(NAME ClangFloorScript COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_clang_floor.py)
+
 # The NSIS installer's upgrade step (#3276), cmake/CPackProjectConfig.cmake.in: it runs the old uninstaller with
 # /TASKSMACK_UPGRADE when it installs to the same folder, and the two steps above then keep their values; run
 # against fakes, through those steps' interpreters. It also gates the old uninstaller on its folder being admin-only
