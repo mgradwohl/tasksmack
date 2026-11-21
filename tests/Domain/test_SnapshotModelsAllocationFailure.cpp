@@ -13,6 +13,9 @@
 #include "Domain/UsersModel.h"
 #include "Mocks/MockServiceProbe.h"
 #include "Mocks/MockStartupProbe.h"
+#include "Platform/AsciiCase.h"
+#include "Platform/IServiceProbe.h"
+#include "Platform/IStartupProbe.h"
 #include "Platform/IUserSessions.h"
 
 #include <gtest/gtest.h>
@@ -32,6 +35,7 @@ namespace SnapshotModelsAllocationFailureFakes
 {
 
 /// logind's sessions, read from a list the test changes.
+// NOLINTNEXTLINE(misc-use-internal-linkage) - kept out of the anonymous namespace for std::make_shared (see above)
 class ListedSessions final : public Platform::IUserSessions
 {
   public:
@@ -62,10 +66,8 @@ template<typename Model> bool sampleFailingAt(Model& model, std::int64_t failAt)
     {
         model.sample();
     }
-    catch (const std::bad_alloc&)
-    {
-        // the failure the sweep injects; the hook says whether it fired
-    }
+    catch (const std::bad_alloc&) // NOLINT(bugprone-empty-catch) - the failure the sweep injects; the hook says whether it fired
+    {}
     return !TestSupport::allocationFailurePending();
 }
 
@@ -80,7 +82,7 @@ void sweep(const Make& make, const ExpectFirst& expectFirst, const ExpectSecond&
     for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
     {
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
-        auto model = make();
+        auto const model = make();
         const auto before = model->publication();
         if (!sampleFailingAt(*model, failAt))
         {
@@ -179,7 +181,7 @@ TEST(SnapshotModelsAllocationFailureTest, AFailedStartupSampleKeepsTheLastWholeL
             auto probe = std::make_unique<Mocks::MockStartupProbe>();
             auto* raw = probe.get();
             raw->setEntries({entry("Zoom"), entry("Discord")});
-            auto model = std::make_unique<Domain::StartupModel>(std::move(probe));
+            auto model = std::make_unique<Domain::StartupModel>(std::move(probe), &Platform::equalsIgnoreCase);
             model->sample();
             raw->setEntries({entry("Zoom"), entry("Discord"), entry("OneDrive"), entry("Teams")});
             return model;
@@ -218,7 +220,7 @@ TEST(SnapshotModelsAllocationFailureTest, AFailedUsersSampleKeepsTheLastWholeLis
     sweep(
         []
         {
-            auto sessions = std::make_shared<SnapshotModelsAllocationFailureFakes::ListedSessions>();
+            auto const sessions = std::make_shared<SnapshotModelsAllocationFailureFakes::ListedSessions>();
             sessions->sessions = {session("3", "zoe"), session("2", "alex")};
             auto model = std::make_unique<Domain::UsersModel>(sessions);
             model->sample();

@@ -52,7 +52,7 @@ TaskManagerReplacementInfo TaskManagerReplacementService::read()
         info.readError = debugger.error();
         return info;
     }
-    info.status = TaskManagerReplacement::classify(*debugger, m_Setup.selfPath);
+    info.status = TaskManagerReplacement::classify(*debugger, m_Setup.selfPath, m_Setup.pathsEqual);
     const bool startsAnother = info.status.state == TaskManagerReplacement::State::OtherTaskSmack ||
                                info.status.state == TaskManagerReplacement::State::OtherProgram;
     if (startsAnother && m_Setup.fileExists)
@@ -84,14 +84,14 @@ TaskManagerReplacementService::change(Broker::TaskManagerChange change, bool rep
         if (change != Broker::TaskManagerChange::Set)
         {
             // Always allowed: applyClear() removes only a TaskSmack's Debugger.
-            return TaskManagerReplacement::applyClear(*m_Setup.direct);
+            return TaskManagerReplacement::applyClear(*m_Setup.direct, m_Setup.pathsEqual);
         }
         // Checked again here, just before the write, not trusted from the last read.
         if (const auto refused = directSetRefused(); refused.has_value())
         {
             return ProcessActionResult::error(*refused);
         }
-        return TaskManagerReplacement::applySet(*m_Setup.direct, request.path, replaceOther);
+        return TaskManagerReplacement::applySet(*m_Setup.direct, request.path, replaceOther, m_Setup.pathsEqual);
     }
     if (m_Setup.broker != nullptr)
     {

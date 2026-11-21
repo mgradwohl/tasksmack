@@ -8,7 +8,7 @@
 #include "Platform/AsciiTrim.h"
 
 #ifdef _WIN32
-#include "Platform/Windows/WinString.h"
+#include "Platform/Windows/OrdinalCase.h"
 #else
 #include "Platform/AsciiCase.h"
 #endif
@@ -21,42 +21,13 @@
 #include <string_view>
 #include <utility>
 
-#ifdef _WIN32
-#include <climits>
-#include <cstddef>
-
-#include <windows.h>
-#endif
-
 namespace App::SelectOverride
 {
-
-#ifdef _WIN32
-namespace
-{
-
-/// Ordinal, case-insensitive, on UTF-16: how Windows compares file names. Text that isn't valid
-/// UTF-8 (or too long for the API) falls back to an exact comparison.
-bool equalsOrdinalIgnoreCase(const std::string_view a, const std::string_view b)
-{
-    const std::wstring wideA = Platform::WinString::utf8ToWide(a);
-    const std::wstring wideB = Platform::WinString::utf8ToWide(b);
-    if ((wideA.empty() && !a.empty()) || (wideB.empty() && !b.empty()) || wideA.size() > static_cast<std::size_t>(INT_MAX) ||
-        wideB.size() > static_cast<std::size_t>(INT_MAX))
-    {
-        return a == b;
-    }
-    return CompareStringOrdinal(wideA.data(), static_cast<int>(wideA.size()), wideB.data(), static_cast<int>(wideB.size()), TRUE) ==
-           CSTR_EQUAL;
-}
-
-} // namespace
-#endif
 
 bool processNamesEqual(const std::string_view a, const std::string_view b)
 {
 #ifdef _WIN32
-    return equalsOrdinalIgnoreCase(a, b);
+    return Platform::Windows::equalsOrdinalIgnoreCase(a, b);
 #else
     return a == b;
 #endif
@@ -65,7 +36,7 @@ bool processNamesEqual(const std::string_view a, const std::string_view b)
 bool tabNamesEqual(const std::string_view a, const std::string_view b)
 {
 #ifdef _WIN32
-    return equalsOrdinalIgnoreCase(a, b);
+    return Platform::Windows::equalsOrdinalIgnoreCase(a, b);
 #else
     return Platform::equalsIgnoreCase(a, b);
 #endif

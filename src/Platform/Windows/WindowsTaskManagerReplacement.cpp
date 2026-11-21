@@ -3,6 +3,7 @@
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/TaskManagerReplacement.h"
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -291,7 +292,7 @@ Broker::ActionResult handleHelperRequest(const Broker::TaskManagerReplacementReq
 {
     if (request.change == Broker::TaskManagerChange::Clear)
     {
-        return Broker::ActionResult::from(TaskManagerReplacement::applyClear(registry));
+        return Broker::ActionResult::from(TaskManagerReplacement::applyClear(registry, &equalsOrdinalIgnoreCase));
     }
     if (const auto valid = TaskManagerReplacement::validateTaskSmackPath(request.path); !valid.has_value())
     {
@@ -299,13 +300,15 @@ Broker::ActionResult handleHelperRequest(const Broker::TaskManagerReplacementReq
             ProcessActionResult::error("TaskSmack's helper won't replace Task Manager with that program: " + std::string(valid.error())));
     }
     const std::string served = WinString::wideToUtf8(besideTaskSmack);
-    if (besideTaskSmack.empty() || sameFile == nullptr || !TaskManagerReplacement::samePath(request.path, served) ||
+    if (besideTaskSmack.empty() || sameFile == nullptr ||
+        !TaskManagerReplacement::samePath(request.path, served, &equalsOrdinalIgnoreCase) ||
         !sameFile(WinString::utf8ToWide(request.path), besideTaskSmack))
     {
         return Broker::ActionResult::from(
             ProcessActionResult::error("TaskSmack's helper replaces Task Manager only with the TaskSmack.exe beside it, " + served));
     }
-    return Broker::ActionResult::from(TaskManagerReplacement::applySet(registry, request.path, request.replaceOther));
+    return Broker::ActionResult::from(
+        TaskManagerReplacement::applySet(registry, request.path, request.replaceOther, &equalsOrdinalIgnoreCase));
 }
 
 bool fileExists(std::string_view path)

@@ -4,6 +4,7 @@
 #include "Domain/PublicationSlot.h"
 #include "Domain/StartupImpact.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/TextEquals.h"
 
 #include <chrono>
 #include <cstdint>
@@ -39,8 +40,10 @@ class StartupModel : public ISamplable
     using Clock = std::chrono::steady_clock;
     using NowFunction = std::function<Clock::time_point()>;
 
+    /// @param pathsEqual How an entry's program path is matched to the measured processes' (Windows: ordinal-ignore-case).
     /// @param now When each sample runs, for the impact read's cadence (tests: a fake clock).
-    explicit StartupModel(std::unique_ptr<Platform::IStartupProbe> probe, NowFunction now = [] { return Clock::now(); });
+    StartupModel(
+        std::unique_ptr<Platform::IStartupProbe> probe, Platform::TextEquals pathsEqual, NowFunction now = [] { return Clock::now(); });
 
     /// Reads the entries and publishes them, each with its Startup impact (#3073). The sign-in
     /// measurement the impact comes from is read with the first sample, then at most every
@@ -67,6 +70,7 @@ class StartupModel : public ISamplable
 
   private:
     std::unique_ptr<Platform::IStartupProbe> m_Probe; // used under m_SampleMutex only
+    Platform::TextEquals m_PathsEqual;
     NowFunction m_Now;
     Platform::StartupCapabilities m_Capabilities;
     std::mutex m_SampleMutex;
