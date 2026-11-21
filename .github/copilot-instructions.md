@@ -165,7 +165,7 @@ Separate each group with a blank line. Use `#pragma once` in all headers.
 ### Constants
 - Shared sampling defaults/guardrails live in `src/Domain/SamplingConfig.h` (refresh interval ms, history seconds, clamp helpers). Reuse these instead of re-declaring literals across App/Domain/UI.
 - Prefer `constexpr` for project constants. Keep platform-required macros (`WIN32_LEAN_AND_MEAN`, etc.) as `#define`.
-- **String encoding:** Internally everything is UTF-8. On Windows, call the wide-character (W) Win32/PDH APIs and convert at the boundary; do not use ANSI APIs. Keep Windows file/process/device names as UTF-8 in our code.
+- **String encoding (#4299 D1/D2; CONTRIBUTING.md "Text encoding and locale"):** text TaskSmack makes is UTF-8. Text from the OS may not be valid: keep its native form (the wide original, the raw bytes, or an opaque id mapped to them) for every action, lookup and identity, make it valid only for display (`Domain::sanitizedUtf8`), and never write invalid UTF-8 to a file. On Windows call the wide (W) Win32/PDH APIs and convert at the boundary; no ANSI APIs. User-visible matching and sorting fold case with `Platform/Utf8CaseFold.h`, never ASCII-only. Identity comparisons are exact (ordinal on Windows, ignoring case only where Windows does).
 
 ### SDL3/GLAD Header Order
 ```cpp
