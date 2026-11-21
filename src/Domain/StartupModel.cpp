@@ -3,6 +3,7 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/StartupImpact.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/TextEquals.h"
 #include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
@@ -15,8 +16,8 @@
 namespace Domain
 {
 
-StartupModel::StartupModel(std::unique_ptr<Platform::IStartupProbe> probe, NowFunction now)
-    : m_Probe(std::move(probe)), m_Now(std::move(now))
+StartupModel::StartupModel(std::unique_ptr<Platform::IStartupProbe> probe, Platform::TextEquals pathsEqual, NowFunction now)
+    : m_Probe(std::move(probe)), m_PathsEqual(pathsEqual), m_Now(std::move(now))
 {
     if (!m_Probe)
     {
@@ -50,7 +51,7 @@ void StartupModel::sample()
         next->impacts.reserve(next->entries.size());
         for (const auto& entry : next->entries)
         {
-            next->impacts.push_back(startupEntryImpact(entry, m_Impact));
+            next->impacts.push_back(startupEntryImpact(entry, m_Impact, m_PathsEqual));
         }
         next->impactSignInUnixSeconds = m_Impact.signInUnixSeconds;
         next->impactUnavailableReason = m_Impact.unavailableReason;

@@ -4,6 +4,7 @@
 /// didn't run or is unknown).
 
 #include "Domain/StartupImpact.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
 
 #include <gtest/gtest.h>
@@ -43,27 +44,33 @@ TEST(StartupImpactTest, TheRatingsOrderFromNoneToHigh)
 {
     Platform::StartupImpactReading measured;
     measured.processes = {
-        {.path = R"(C:\Apps\Busy.exe)",
-         .pid = 10,
-         .parentPid = 1,
-         .startTicks = 5,
-         .parentStartTicks = 1,
-         .cpuUs = 1'500'000,
-         .diskBytes = 10},
-        {.path = R"(C:\Apps\Child.exe)",
-         .pid = 11,
-         .parentPid = 10,
-         .startTicks = 6,
-         .parentStartTicks = 5,
-         .cpuUs = 100,
-         .diskBytes = 4'000'000},
-        {.path = R"(C:\Apps\Quiet.exe)",
-         .pid = 12,
-         .parentPid = 1,
-         .startTicks = 7,
-         .parentStartTicks = 1,
-         .cpuUs = 1000,
-         .diskBytes = 1000},
+        {
+            .path = R"(C:\Apps\Busy.exe)",
+            .pid = 10,
+            .parentPid = 1,
+            .startTicks = 5,
+            .parentStartTicks = 1,
+            .cpuUs = 1'500'000,
+            .diskBytes = 10,
+        },
+        {
+            .path = R"(C:\Apps\Child.exe)",
+            .pid = 11,
+            .parentPid = 10,
+            .startTicks = 6,
+            .parentStartTicks = 5,
+            .cpuUs = 100,
+            .diskBytes = 4'000'000,
+        },
+        {
+            .path = R"(C:\Apps\Quiet.exe)",
+            .pid = 12,
+            .parentPid = 1,
+            .startTicks = 7,
+            .parentStartTicks = 1,
+            .cpuUs = 1000,
+            .diskBytes = 1000,
+        },
     };
     measured.signInUnixSeconds = 1792774334;
     return measured;
@@ -79,29 +86,35 @@ TEST(StartupImpactTest, TheRatingsOrderFromNoneToHigh)
 
 TEST(StartupImpactTest, AnEntrysImpactComesFromItsProgramsProcesses)
 {
-    const StartupEntryImpact busy = startupEntryImpact(startupProgram(R"(C:\Apps\Busy.exe)"), measuredSignIn());
+    const StartupEntryImpact busy =
+        startupEntryImpact(startupProgram(R"(C:\Apps\Busy.exe)"), measuredSignIn(), &Platform::equalsIgnoreCase);
     EXPECT_EQ(busy.rating, StartupImpact::High);
     EXPECT_EQ(busy.cpuUs, 1'500'100U);
     EXPECT_EQ(busy.diskBytes, 4'000'010U);
     EXPECT_EQ(busy.processCount, 2U);
 
-    const StartupEntryImpact quiet = startupEntryImpact(startupProgram(R"(c:\apps\quiet.EXE)"), measuredSignIn());
+    const StartupEntryImpact quiet =
+        startupEntryImpact(startupProgram(R"(c:\apps\quiet.EXE)"), measuredSignIn(), &Platform::equalsIgnoreCase);
     EXPECT_EQ(quiet.rating, StartupImpact::Low);
     EXPECT_EQ(quiet.processCount, 1U);
 }
 
 TEST(StartupImpactTest, DisabledIsNoneAndUnmeasuredIsNotMeasured)
 {
-    const StartupEntryImpact disabled = startupEntryImpact(startupProgram(R"(C:\Apps\Busy.exe)", false), measuredSignIn());
+    const StartupEntryImpact disabled =
+        startupEntryImpact(startupProgram(R"(C:\Apps\Busy.exe)", false), measuredSignIn(), &Platform::equalsIgnoreCase);
     EXPECT_EQ(disabled.rating, StartupImpact::None);
     EXPECT_EQ(disabled.processCount, 0U) << "what it cost before doesn't count once it is off";
 
-    const StartupEntryImpact absent = startupEntryImpact(startupProgram(R"(C:\Apps\Absent.exe)"), measuredSignIn());
+    const StartupEntryImpact absent =
+        startupEntryImpact(startupProgram(R"(C:\Apps\Absent.exe)"), measuredSignIn(), &Platform::equalsIgnoreCase);
     EXPECT_EQ(absent.rating, StartupImpact::NotMeasured);
     EXPECT_EQ(absent.cpuUs, 0U);
 
-    EXPECT_EQ(startupEntryImpact(startupProgram(""), measuredSignIn()).rating, StartupImpact::NotMeasured) << "program unknown";
-    EXPECT_EQ(startupEntryImpact(startupProgram(R"(C:\Apps\Busy.exe)"), {}).rating, StartupImpact::NotMeasured) << "no measurement";
+    EXPECT_EQ(startupEntryImpact(startupProgram(""), measuredSignIn(), &Platform::equalsIgnoreCase).rating, StartupImpact::NotMeasured)
+        << "program unknown";
+    EXPECT_EQ(startupEntryImpact(startupProgram(R"(C:\Apps\Busy.exe)"), {}, &Platform::equalsIgnoreCase).rating, StartupImpact::NotMeasured)
+        << "no measurement";
 }
 
 } // namespace
