@@ -1313,8 +1313,11 @@ as verbosity or `halt_on_error` are preserved. Note that `suppressions=` is a
 scalar key — if the caller already provides a `suppressions=` entry, it overrides
 the project's; in that case add required entries to `lsan.supp` directly.
 
-This suppression filters a known SDL3 LeakSanitizer false positive that affects
-Core window/application tests.
+`lsan.supp` filters three known leaks that aren't TaskSmack's (#4351): the EGL display SDL3
+keeps after `SDL_Quit()` (`SDL_EGL_InitializeOffscreen`), and the small allocations Mesa's software
+GL driver keeps inside its first draw calls and its mipmap builds, matched at the narrowest frame of
+ours above them (`ImGui_ImplOpenGL3_RenderDrawData`, `generateBoundTextureMipmaps`). Each entry's
+comment says why it is there.
 
 UndefinedBehaviorSanitizer halts on the first error. The preset compiles with
 `-fno-sanitize-recover=undefined`, and `ctest --preset asan-ubsan` also injects:
@@ -1343,8 +1346,11 @@ after it and take precedence. Because `suppressions=` is a scalar key, a
 caller-provided `suppressions=` will override the project's — add entries to
 `tsan.supp` directly in that case.
 
-This suppression filters known ThreadSanitizer false positives in third-party
-pthread barrier paths, while preserving any caller-provided TSAN flags.
+`tsan.supp` filters races reported inside two uninstrumented libraries (#4351): Mesa's software GL
+driver (`race:libgallium`, #2042) and libsystemd (`race:libsystemd`, #2416). Both match only
+reports with a frame in that module, where TaskSmack has no code. The two `pthread_barrier`
+entries for GoogleTest 1.15 were removed, since nothing in the pinned GoogleTest or in TaskSmack
+uses pthread barriers.
 
 ## Fuzzing (Linux only)
 
