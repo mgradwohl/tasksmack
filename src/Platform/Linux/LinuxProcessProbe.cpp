@@ -586,8 +586,9 @@ bool LinuxProcessProbe::parseProcessStat(int pidDirFd, int32_t pid, ProcessCount
     //         minflt cminflt majflt cmajflt utime stime cutime cstime
     //         priority nice num_threads itrealvalue starttime vsize rss ...
 
-    // 1 KiB is ample: comm is kernel-capped at 15 chars, and the remaining
-    // ~22 numeric fields are at most ~462 bytes total.
+    // 1 KiB is ample (#4434): comm is at most 64 bytes (a kernel worker's name, such as
+    // kworker/u16:3-events_unbound, is longer than a task's 15), and the fields after it, through
+    // field 41, the last the parser reads, are at most about 800 bytes.
     std::array<char, 1024> buf{};
     const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
     return len != 0 && applyStat(std::string_view(buf.data(), len), pid, counters);

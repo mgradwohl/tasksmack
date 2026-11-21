@@ -221,12 +221,22 @@ int onActionReply(sd_bus_message* message, void* userdata, sd_bus_error* /*retEr
     return started;
 }
 
-/// Whether a failed call was answered with an error (a named D-Bus error that isn't a timeout), rather than not
-/// answered at all: timed out, or the connection gone (#4399).
+/// Whether a failed call was answered by systemd about the object itself (#4399, #4629): no such object (a finished
+/// job's is removed), interface, property or method, or systemd's own NoSuchJob/NoSuchUnit. Only those: sd-bus names
+/// local failures too (sd_bus_error_set_errno), so a dropped connection (Disconnected, System.Error.ENOTCONN), a
+/// timeout, or systemd briefly without its bus name in a daemon-reexec (ServiceUnknown, NameHasNoOwner) is not an
+/// answer, and the caller can't tell what systemd would have said.
 [[nodiscard]] bool answeredWithAnError(const BusError& error, int result) noexcept
 {
     const sd_bus_error& raw = error.raw();
-    return raw.name != nullptr && !timedOut(raw, result);
+    if (raw.name == nullptr || timedOut(raw, result))
+    {
+        return false;
+    }
+    const std::string_view name(raw.name);
+    return name == "org.freedesktop.DBus.Error.UnknownObject" || name == "org.freedesktop.DBus.Error.UnknownInterface" ||
+           name == "org.freedesktop.DBus.Error.UnknownProperty" || name == "org.freedesktop.DBus.Error.UnknownMethod" ||
+           name == "org.freedesktop.systemd1.NoSuchJob" || name == "org.freedesktop.systemd1.NoSuchUnit";
 }
 
 enum class JobState : std::uint8_t

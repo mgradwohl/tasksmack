@@ -156,8 +156,10 @@ class GPUModel : public ISamplable
 
     /// Gives a model built with DeferredProbeTag its probe (#2731), or null for no GPU probe (as the
     /// constructor takes it). Reads the probe's capabilities and enumerates its GPUs, as the constructor
-    /// did, so the first refresh has the device list. Meant for the sampler thread, before its first
-    /// sample (the sampler's start hook); thread-safe, and a probe already held is replaced.
+    /// did, so the first refresh has the device list. Called on the sampler thread, before its first
+    /// sample (the sampler's start hook).
+    /// Sampler thread only (#4434): the sampling path reads the probe outside the model's lock, so a call from another thread while it
+    /// samples would race. A probe already held is replaced.
     void setProbe(std::unique_ptr<Platform::IGPUProbe> probe);
 
     GPUModel(const GPUModel&) = delete;

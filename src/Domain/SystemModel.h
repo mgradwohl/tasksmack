@@ -105,9 +105,10 @@ class SystemModel : public ISamplable
     [[nodiscard]] Platform::SystemCapabilities capabilities() const;
 
     /// Gives a model built with DeferredProbeTag its probes (#2731): the system probe, and the power
-    /// probe or null for no battery. Meant for the sampler thread, before its first sample (the
-    /// sampler's start hook); thread-safe, and a probe already held is replaced. Neither probe is read
-    /// here beyond its capabilities.
+    /// probe or null for no battery, on the sampler thread before its first sample (the sampler's start
+    /// hook). Neither probe is read here beyond its capabilities.
+    /// Sampler thread only (#4434): the sampling path reads the probe outside the model's lock, so a call from another thread while it
+    /// samples would race. A probe already held is replaced.
     void setProbes(std::unique_ptr<Platform::ISystemProbe> probe, std::unique_ptr<Platform::IPowerProbe> powerProbe = nullptr);
 
     /// Configure maximum retained history duration (seconds), clamped to SamplingConfig's range.
