@@ -75,6 +75,11 @@ struct LinuxProcessSyscalls
     /// /usr/sbin/nginx may name nothing, or another file, here. Left null, the real stat(2)s are made.
     /// LinuxProcessActions only.
     bool (*isProcessExecutable)(std::int32_t pid, const std::string& path) = nullptr;
+    /// Whether the process is in TaskSmack's own mount namespace (#4650): /proc/<pid>/ns/mnt and /proc/self/ns/mnt are
+    /// the same namespace (device and inode); nullopt when either can't be read (another user's process, unless root).
+    /// A deleted executable's link can't be compared with the running file, so this says whether its path means the
+    /// same here. Left null, the real stat(2)s are made. LinuxProcessActions only.
+    std::optional<bool> (*sharesMountNamespace)(std::int32_t pid) = nullptr;
     /// org.freedesktop.FileManager1.ShowItems for file:// URI @p uri on the session bus: true when a file
     /// manager took it. Left null, the real call is made (none without sd-bus, which is a false); tests
     /// fake it so no file manager opens. LinuxProcessActions only (#3064).
