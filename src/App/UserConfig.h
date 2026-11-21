@@ -385,6 +385,13 @@ class UserConfig
         return getConfigDirectory();
     }
 
+    /// The folder config.toml will be read from, before the configuration is first read (getConfigDirectory()): main.cpp
+    /// holds it, run as root for a user, before anything opens a file in it (#4167).
+    [[nodiscard]] static auto configDirectoryAtStartup() -> std::filesystem::path
+    {
+        return getConfigDirectory();
+    }
+
   private:
     /// The file write behind save() and saveInBackground(): @p settings merged into the file as it is.
     /// Logs why when it fails. Serialised by m_WriteMutex; on success @p settings becomes m_Synced.
