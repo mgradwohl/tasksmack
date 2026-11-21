@@ -66,6 +66,9 @@ namespace Core
     }
     for (;;)
     {
+        // A caller may hold its own lock over the read of a small local file (UserConfig's config.toml, a theme), as it
+        // did over the std::ifstream read before #4652; the UI thread never waits on such a lock (#2916).
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection) - as above
         const auto got = ::read(fd, chunk.data(), chunk.size());
         if (got < 0)
         {
