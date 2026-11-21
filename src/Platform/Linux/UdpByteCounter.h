@@ -10,6 +10,7 @@
 
 #include "Platform/UdpByteCounts.h"
 
+#include <cerrno>
 #include <cstddef>
 #include <cstdint>
 #include <expected>
@@ -17,6 +18,7 @@
 #include <span>
 #include <string>
 #include <string_view>
+#include <unordered_set>
 #include <vector>
 
 namespace Platform
@@ -40,6 +42,64 @@ struct UdpAttachAttempt
 
     friend bool operator==(const UdpAttachAttempt&, const UdpAttachAttempt&) = default;
 };
+
+/// The walk of the tgid-keyed LRU map that UdpByteCounter::read() makes (#4265), over callables so the tests can fake
+/// a map whose cursor ages out. A key that aged out between two calls makes the next start over from the first, so
+/// the walk is bounded (at most @p entries processes, twice that in steps) and skips a tgid it already has.
+namespace UdpMapWalk
+{
+
+/// Why a walk gave no reading.
+struct Failure
+{
+    int kernelError = 0; ///< bpf_map_get_next_key()'s -errno; 0 when the walk ran out of steps before the last key
+};
+
+/// @p getNextKey(previous, next) is bpf_map_get_next_key() (previous null for the first key: 0, -ENOENT after the
+/// last, or -errno); @p lookup(tgid, counts) is bpf_map_lookup_elem() into a UdpByteCounts (true when found). Only a
+/// walk that reached the last key, or holds a full map's worth of processes, is a reading: one that ran out of steps
+/// (the cursor aged out again and again) would miss processes, whose lifetime bytes the next reading would then
+/// credit to one interval (#4265).
+template<typename GetNextKey, typename Lookup>
+[[nodiscard]] std::expected<std::vector<UdpByteCounts>, Failure>
+walk(std::size_t entries, const GetNextKey& getNextKey, const Lookup& lookup)
+{
+    std::vector<UdpByteCounts> counts;
+    std::unordered_set<std::uint32_t> seen;
+    std::uint32_t key = 0;
+    std::uint32_t next = 0;
+    const std::uint32_t* previous = nullptr; // nullptr asks for the first key
+    for (std::size_t step = 0; step < 2 * entries; ++step)
+    {
+        if (counts.size() >= entries)
+        {
+            return counts; // every entry the map can hold
+        }
+        if (const int error = getNextKey(previous, next); error != 0)
+        {
+            if (error == -ENOENT)
+            {
+                return counts; // the last key
+            }
+            return std::unexpected(Failure{.kernelError = error});
+        }
+        UdpByteCounts process{.tgid = next, .txBytes = 0, .rxBytes = 0};
+        // An entry can age out of the LRU map between the two calls; skip it.
+        if (seen.insert(next).second && lookup(next, process))
+        {
+            counts.push_back(process);
+        }
+        key = next;
+        previous = &key;
+    }
+    if (counts.size() >= entries)
+    {
+        return counts;
+    }
+    return std::unexpected(Failure{.kernelError = 0});
+}
+
+} // namespace UdpMapWalk
 
 /// The attempts load() makes, in order: fexit before kretprobes, and with IPv6 before without it.
 [[nodiscard]] std::span<const UdpAttachAttempt> udpAttachAttempts() noexcept;
