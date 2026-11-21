@@ -203,6 +203,7 @@ set(TASKSMACK_SOURCES
     src/App/HelpLayer.cpp
     src/App/HelpWindow.cpp
     src/App/InstanceLock.cpp
+    src/App/LinuxHeldFolder.cpp # Linux only: root for a user's held config folder (#4167)
     src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
     src/App/RenderMetricsOverride.cpp

@@ -27,8 +27,10 @@
 #else
 #include "App/NewFileOwner.h"
 #include "Core/ConfigDirOverride.h"
+#include "Platform/IHandedOverFolder.h"
 
 #include <cerrno>
+#include <cstdint>
 #include <optional>
 #include <utility>
 
@@ -116,6 +118,24 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
         m_Error = lockPath.string() + " isn't a plain file of its own (another name links to it); not using it as the lock";
         return;
     }
+    if (!lockFd(fd))
+    {
+        return;
+    }
+    // The lock file too, whether this run made it or an older one left it root's: the user's next run
+    // opens it read-write (#2437).
+    if (owner.has_value() && (testing.failChown || ::fchown(fd, owner->uid, owner->gid) != 0) && handOverError.empty())
+    {
+        handOverError =
+            "couldn't give " + lockPath.string() + " to its user: " + std::system_category().message(testing.failChown ? EPERM : errno);
+    }
+    m_Error = std::move(handOverError);
+#endif
+}
+
+#ifndef _WIN32
+bool InstanceLock::lockFd(int fd)
+{
     int result = ::flock(fd, LOCK_EX | LOCK_NB);
     while (result != 0 && errno == EINTR)
     {
@@ -133,20 +153,28 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
         {
             m_Error = std::system_category().message(lockError);
         }
-        return;
-    }
-    // The lock file too, whether this run made it or an older one left it root's: the user's next run
-    // opens it read-write (#2437).
-    if (owner.has_value() && (testing.failChown || ::fchown(fd, owner->uid, owner->gid) != 0) && handOverError.empty())
-    {
-        handOverError =
-            "couldn't give " + lockPath.string() + " to its user: " + std::system_category().message(testing.failChown ? EPERM : errno);
+        return false;
     }
     m_Fd = fd;
     m_Status = Status::Acquired;
-    m_Error = std::move(handOverError);
-#endif
+    return true;
 }
+
+InstanceLock::InstanceLock(const Platform::IHandedOverFolder& folder, const std::filesystem::path& name)
+{
+    // The folder is there (it was held at startup): nothing is created on the way to it, only the file itself, which the
+    // folder gives to its user and checks is a plain file of its own (LinuxHeldFolder::openLockFile(), #4167).
+    auto handle = folder.openLockFile(name);
+    if (!handle.has_value())
+    {
+        m_Error = std::move(handle.error());
+        return;
+    }
+    // The handle is the descriptor, as a void* (IHandedOverFolder's handle type).
+    static_cast<void>(
+        lockFd(static_cast<int>(reinterpret_cast<std::intptr_t>(*handle)))); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast)
+}
+#endif
 
 #ifdef _WIN32
 InstanceLock::InstanceLock(const Platform::IHandedOverFolder& folder, const std::filesystem::path& name)
@@ -238,7 +266,6 @@ std::unique_ptr<InstanceLock> acquireInstanceLock(const std::filesystem::path& l
     return retryLock([&lockPath] { return std::make_unique<InstanceLock>(lockPath); }, patience, retryEvery, progress);
 }
 
-#ifdef _WIN32
 std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFolder& folder,
                                                   const std::filesystem::path& name,
                                                   std::chrono::milliseconds patience,
@@ -247,5 +274,4 @@ std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFol
 {
     return retryLock([&folder, &name] { return std::make_unique<InstanceLock>(folder, name); }, patience, retryEvery, progress);
 }
-#endif
 } // namespace App
