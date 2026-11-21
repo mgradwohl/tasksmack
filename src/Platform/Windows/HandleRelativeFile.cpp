@@ -1,11 +1,13 @@
 #include "HandleRelativeFile.h"
 
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsFinalPath.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcAddress.h"
+#include "Platform/Windows/WindowsSecurityOwners.h"
 
 // clang-format off
-#include <aclapi.h> // GetSecurityInfo
 #include <sddl.h>   // ConvertStringSecurityDescriptorToSecurityDescriptorW
 // clang-format on
 
@@ -181,27 +183,9 @@ void markDeleteOnClose(HANDLE file) noexcept
 
 std::optional<std::wstring> finalPathOf(HANDLE handle, GetFinalPathFn getFinalPath)
 {
-    std::wstring path(MAX_PATH, L'\0');
-    for (int attempt = 0; attempt < 2; ++attempt)
-    {
-        const DWORD length = getFinalPath(handle, path.data(), static_cast<DWORD>(path.size()), FILE_NAME_NORMALIZED | VOLUME_NAME_DOS);
-        if (length == 0)
-        {
-            return std::nullopt;
-        }
-        if (length < path.size())
-        {
-            path.resize(length);
-            constexpr std::wstring_view LONG_PREFIX = LR"(\\?\)";
-            if (path.starts_with(LONG_PREFIX) && !path.starts_with(LR"(\\?\UNC\)"))
-            {
-                path.erase(0, LONG_PREFIX.size());
-            }
-            return path;
-        }
-        path.assign(length, L'\0'); // too short: length is the size it needs, with its terminator
-    }
-    return std::nullopt;
+    // Sized as the first answer says, and only a drive path's \\?\ dropped: a \\?\UNC\ path keeps it.
+    return readFinalPath(
+        handle, getFinalPath, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS, FinalPathBuffer::AsAnswered, FinalPathPrefix::KeptForUnc);
 }
 
 std::optional<bool> isPlainFolder(HANDLE handle)
@@ -216,21 +200,12 @@ std::optional<bool> isPlainFolder(HANDLE handle)
 
 std::optional<bool> ownerIsAdministratorsOrSystem(HANDLE handle)
 {
-    PSID owner = nullptr;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
-            ERROR_SUCCESS ||
-        owner == nullptr)
+    const auto owner = ownerSidOf(handle);
+    if (!owner.has_value())
     {
-        if (descriptor != nullptr)
-        {
-            LocalFree(descriptor);
-        }
         return std::nullopt;
     }
-    const bool trusted = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(owner, WinLocalSystemSid) != FALSE;
-    LocalFree(descriptor);
-    return trusted;
+    return isAdministratorsOrSystem(owner->sid); // not TrustedInstaller: this one never trusted it
 }
 
 OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
@@ -246,8 +221,7 @@ OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
 
 bool samePathText(std::wstring_view left, std::wstring_view right) noexcept
 {
-    return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) ==
-           CSTR_EQUAL;
+    return equalsOrdinalIgnoreCase(left, right); // the whole text: a trailing separator counts
 }
 
 std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess)

@@ -1023,6 +1023,8 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsSignatureCheck.cpp  # WinVerifyTrust, embedded and catalog, through fakes and on notepad.exe (#3070)
     Platform/test_WindowsDebugPrivilege.cpp
     Platform/test_WindowsElevation.cpp
+    Platform/test_WindowsSecurityOwners.cpp # the owner predicates over SDDL-built descriptors, and real handles' owners (#4368)
+    Platform/test_WindowsFinalPath.cpp # the shared final-path reader: its prefix policies and buffer sizings, through a fake (#4368)
     Platform/test_BrokerPipe.cpp  # the privileged broker's named-pipe transport (#2311)
     Platform/test_BrokerHelper.cpp  # TaskSmackHelper.exe: its parent checks, its session and the exe itself (#2517)
     # CI real-system tests (#3489): Realtime, Run new task, Compressed memory, Open file location and the helper's
@@ -1560,6 +1562,8 @@ if(TARGET TaskSmackHelper)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipe.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/BrokerPipeServer.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp # HelperLauncher::availability()
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsSecurityOwners.cpp # BrokerHelper's TrustedInstaller check (#4368)
+        ${CMAKE_SOURCE_DIR}/src/Platform/Windows/OrdinalCase.cpp # BrokerHelper's path comparisons (#4368)
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
         ${CMAKE_SOURCE_DIR}/src/Platform/ThreadName.cpp # PipeBroker names its launch thread (#2768)
