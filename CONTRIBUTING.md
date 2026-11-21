@@ -1271,6 +1271,10 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 
 TSan and MSan are Linux only; ASan + UBSan run on both platforms.
 
+On Linux, `asan-ubsan` also turns on `float-divide-by-zero` (#4353), which `-fsanitize=undefined` leaves out: a
+rate or percentage divided by a zero interval or total fails at the division, rather than as a NaN or infinity
+further on. Guard such a division before it, not with an `isfinite` check after it.
+
 ### Windows ASan + UBSan (x64 only)
 
 ```powershell
