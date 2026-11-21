@@ -55,7 +55,7 @@ TEST(ProcessModelAllocationFailureTest, AFailedGpuMergeKeepsPublishingAndTheNext
         caps.hasPerProcessMetrics = true;
         gpuProbe->withCapabilities(caps);
         gpuProbe->withGPU("GPU0", "Test GPU", "TestVendor").withProcessGPU(100, "GPU0", GPU_MEMORY);
-        auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
+        const auto gpuModel = std::make_shared<Domain::GPUModel>(std::move(gpuProbe));
         Domain::ProcessModel model(std::move(processProbe));
         model.setGPUModel(gpuModel);
         model.refresh(); // seed: the processes are listed before the GPU read, as in the app (#1417)
@@ -206,6 +206,103 @@ TEST(ProcessModelAllocationFailureTest, AFailedSystemHistoryAppendKeepsTheFiveSe
     EXPECT_GT(containedFailures, 0) << "some failing allocation lands in the history append";
 }
 
+// #4405: a refresh that throws inside the per-process loop leaves some processes' stored counters from it and the rest
+// from the refresh before. The interval baseline must not move on ahead of them, or the next refresh divides two
+// intervals' worth of counter growth by one and shows twice the true I/O, page-fault and power rate. Three processes
+// run at a steady rate (one second per sample); each allocation of the third sample is failed in turn, and the
+// fourth must never show a rate above the true one (a re-seed shows 0, a refresh that never threw shows the rate).
+TEST(ProcessModelAllocationFailureTest, ARefreshThatThrewPartWayNeverInflatesTheNextRates)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one refresh's
+    constexpr std::uint64_t READ_PER_SEC = 1'000'000;
+    constexpr std::uint64_t FAULTS_PER_SEC = 100;
+    constexpr std::uint64_t MICROJOULES_PER_SEC = 2'000'000; // 2 W over one second
+    constexpr double TRUE_POWER_WATTS = 2.0;
+    const auto countersAt = [&](int second, std::int32_t pid, std::uint64_t scale)
+    {
+        // Names and commands longer than the small-string buffer: copying them into the stored counters allocates.
+        Platform::ProcessCounters c = TestMocks::makeProcessCounters(
+            pid, "a_process_name_longer_than_any_small_string_buffer_" + std::to_string(pid), 'S', 100, 50, 1000, 1024, 1);
+        c.command = "a_command_line_longer_than_any_small_string_buffer_" + std::to_string(pid);
+        const auto s = static_cast<std::uint64_t>(second);
+        c.readBytes = s * READ_PER_SEC * scale;
+        c.pageFaultCount = s * FAULTS_PER_SEC * scale;
+        c.energyMicrojoules = s * MICROJOULES_PER_SEC * scale;
+        return c;
+    };
+    const auto scaleOf = [](std::int32_t pid)
+    {
+        if (pid == 100)
+        {
+            return 1.0;
+        }
+        return pid == 200 ? 3.0 : 5.0;
+    };
+    int thrownRefreshes = 0;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        Domain::ProcessModel::Clock::time_point now;
+        Domain::ProcessModel model(nullptr, [&now] { return now; });
+        int second = 0;
+        const auto sample = [&]
+        {
+            ++second;
+            now += std::chrono::seconds(1);
+            model.updateFromCounters({countersAt(second, 100, 1), countersAt(second, 200, 3), countersAt(second, 300, 5)},
+                                     std::uint64_t{1000} * static_cast<std::uint64_t>(second));
+        };
+        sample(); // seeds
+        sample(); // a measured interval
+
+        bool threw = false;
+        bool fired = false;
+        {
+            const FailAllocationAfter guard(failAt);
+            try
+            {
+                sample();
+            }
+            catch (const std::bad_alloc&)
+            {
+                threw = true;
+            }
+            fired = !TestSupport::allocationFailurePending();
+        }
+        if (!fired)
+        {
+            break; // the refresh made fewer than failAt + 1 allocations: every one has been failed
+        }
+        thrownRefreshes += threw ? 1 : 0;
+
+        sample(); // the next, whole refresh
+        const auto rows = model.snapshots();
+        ASSERT_EQ(rows.size(), 3U);
+        for (const auto& row : rows)
+        {
+            const double scale = scaleOf(row.pid);
+            SCOPED_TRACE("pid " + std::to_string(row.pid));
+            EXPECT_LE(row.ioReadBytesPerSec, static_cast<double>(READ_PER_SEC) * scale);
+            EXPECT_LE(row.pageFaultsPerSec, static_cast<double>(FAULTS_PER_SEC) * scale);
+            EXPECT_LE(row.powerWatts, TRUE_POWER_WATTS * scale);
+            if (!threw)
+            {
+                EXPECT_DOUBLE_EQ(row.ioReadBytesPerSec, static_cast<double>(READ_PER_SEC) * scale);
+                EXPECT_DOUBLE_EQ(row.pageFaultsPerSec, static_cast<double>(FAULTS_PER_SEC) * scale);
+                EXPECT_DOUBLE_EQ(row.powerWatts, TRUE_POWER_WATTS * scale);
+            }
+        }
+        if (HasFailure())
+        {
+            return; // one failing allocation point is enough to report
+        }
+    }
+    EXPECT_GT(thrownRefreshes, 0) << "some failing allocation lands in the per-process loop";
+}
+
 // #3334: a refresh that fails after rebuilding the PID -> row table for its reordered rows must not leave the
 // next refresh's held-over lookup reading the still-published rows through it. A and B share a start tick (same
 // clock tick), so only the PID tells them apart. Each allocation of the reordered refresh is failed in turn; after
@@ -226,7 +323,7 @@ TEST(ProcessModelAllocationFailureTest, AFailedRefreshLeavesNoHeldOverRowOnAnoth
         Domain::ProcessModel::Clock::time_point now;
         Domain::ProcessModel model(nullptr, [&now] { return now; });
         std::uint64_t total = 1000;
-        const auto sample = [&](std::vector<Platform::ProcessCounters> counters)
+        const auto sample = [&](const std::vector<Platform::ProcessCounters>& counters)
         {
             now += std::chrono::seconds(1);
             total += 1000;
@@ -301,7 +398,7 @@ TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFi
             Domain::ProcessModel::Clock::time_point now;
             Domain::ProcessModel model(nullptr, [&now] { return now; });
             std::uint64_t total = 1000;
-            const auto sample = [&](std::vector<Platform::ProcessCounters> counters)
+            const auto sample = [&](const std::vector<Platform::ProcessCounters>& counters)
             {
                 now += std::chrono::seconds(1);
                 total += 1000;
@@ -328,14 +425,14 @@ TEST(ProcessModelAllocationFailureTest, AHeldOverLookupThatCantRebuildItsTableFi
             Platform::ProcessCounters heldSecond = second;
             heldSecond.heldOver = true;
             heldSecond.name = "from the carried record";
-            std::vector<Platform::ProcessCounters> next{first, heldSecond};
+            const std::vector<Platform::ProcessCounters> next{first, heldSecond};
             bool lookupThrew = false;
             bool lookupFired = false;
             {
                 const FailAllocationAfter guard(failLookup);
                 try
                 {
-                    sample(std::move(next));
+                    sample(next);
                 }
                 catch (const std::bad_alloc&)
                 {
