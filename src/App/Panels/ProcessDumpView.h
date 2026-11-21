@@ -148,20 +148,25 @@ using DefaultFolderFn = std::function<std::filesystem::path(bool noDefault)>;
 /// none; the confirm then waits for Save dump to..., or the platform refuses the dump and says so.
 [[nodiscard]] std::filesystem::path defaultDumpDirectory(bool noDefault);
 
-/// The folder dumps go to: @p remembered (UserSettings::dumpFolder, UTF-8) while it is an existing
-/// folder, else @p defaultFolder(@p noDefault). Asks the file system: on the confirm's worker, never the UI thread.
+/// The folder dumps go to: @p remembered while it is an existing folder, else @p defaultFolder(@p noDefault). Asks the
+/// file system: on the confirm's worker, never the UI thread.
 [[nodiscard]] std::filesystem::path
-dumpDirectory(std::string_view remembered, bool noDefault, const DefaultFolderFn& defaultFolder = &defaultDumpDirectory);
-/// The dump folder to use from @p stored (UserSettings::dumpFolder): in a session whose config folder an elevated
-/// restart was handed (@p handedOver, #2728) only @p chosenThisSession, the one this session's user picked with
-/// Save dump to..., as the stored one is the less-privileged side's and an elevated dump there is a write to a
-/// place it chose. Empty: defaultDumpDirectory(noDefaultDumpFolder()).
-[[nodiscard]] std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::string_view chosenThisSession);
-/// The folder the user last chose (UserSettings::dumpFolder, UTF-8), from the user's config (trustedDumpFolder()): read on
-/// the UI thread, checked by dumpDirectory() on the confirm's worker (#3155).
-[[nodiscard]] std::string rememberedDumpFolder();
-/// Keeps @p directory as the folder later dumps go to, in the user's config, and saves it.
+dumpDirectory(const std::filesystem::path& remembered, bool noDefault, const DefaultFolderFn& defaultFolder = &defaultDumpDirectory);
+/// The dump folder to use from @p stored (UserSettings::dumpFolder's path). The one this session's user picked with
+/// Save dump to..., @p chosenThisSession, is used for the rest of the session (#4655), even when its name couldn't be
+/// saved. Without one: @p stored, except in a session whose config folder an elevated restart was handed (@p handedOver,
+/// #2728), as the stored one is the less-privileged side's and an elevated dump there is a write to a place it chose.
+/// Empty: defaultDumpDirectory(noDefaultDumpFolder()).
+[[nodiscard]] std::filesystem::path
+trustedDumpFolder(const std::filesystem::path& stored, bool handedOver, const std::filesystem::path& chosenThisSession);
+/// The folder the user last chose (trustedDumpFolder()), as a path, so a name that isn't valid UTF-8 is kept exactly:
+/// read on the UI thread, checked by dumpDirectory() on the confirm's worker (#3155).
+[[nodiscard]] std::filesystem::path rememberedDumpFolder();
+/// Keeps @p directory as the folder later dumps go to this session, and in the user's config when its name can be
+/// saved (#4327), and saves it.
 void rememberDumpDirectory(const std::filesystem::path& directory);
+/// Forgets the folder chosen this session, for tests that read rememberedDumpFolder() after others chose one.
+void forgetChosenDumpFolderForTesting();
 
 /// What the confirm says when SDL's folder dialog couldn't be shown, from SDL's @p error: in the user's
 /// terms where SDL found no dialog to use at all (no desktop portal and no zenity), else SDL's own.
@@ -363,13 +368,13 @@ class ProcessDumpView
                  std::filesystem::path directory,
                  Platform::IProcessActions* actions = nullptr);
 
-    /// request() into the folder the user last chose, @p remembered (UserSettings::dumpFolder, UTF-8;
+    /// request() into the folder the user last chose, @p remembered (DumpDetail::rememberedDumpFolder();
     /// empty: none): the worker checks that it still exists, and uses the default folder where it
     /// doesn't (DumpDetail::dumpDirectory(), none where needsFolder()), before reading its drive's space. The Actions card's
     /// button and the row menu's item.
     void requestInRememberedFolder(const Platform::ProcessTarget& target,
                                    std::string processName,
-                                   std::string_view remembered,
+                                   const std::filesystem::path& remembered,
                                    Platform::IProcessActions* actions);
 
     /// Takes in what the confirm's worker read for its folder (#3155) -- at once, or with @p wait after
@@ -494,7 +499,7 @@ class ProcessDumpView
     /// Has the confirm's folder read on its worker (#3155): resolved from @p remembered first where
     /// @p resolve, and its drive's space read through @p actions (null: not read). A check already
     /// running is left to finish, dropped, and this one started after it.
-    void checkFolder(Platform::IProcessActions* actions, bool resolve, std::string remembered = {});
+    void checkFolder(Platform::IProcessActions* actions, bool resolve, std::filesystem::path remembered = {});
     /// Starts the check checkFolder() asked for, once none is running.
     void startCheckIfDue();
     /// Rebuilds the confirm's question from its folder, the space warning and the folder dialog's
@@ -519,7 +524,7 @@ class ProcessDumpView
     // waits in m_CheckWanted (and its inputs) until that one is taken in, and drops it.
     BackgroundTask<DumpDetail::ConfirmCheck> m_ConfirmCheck{Platform::DUMP_CHECK_THREAD_NAME,
                                                             &DumpDetail::failedWith<DumpDetail::ConfirmCheck>};
-    std::string m_CheckRemembered;                       // UserSettings::dumpFolder, for a check that resolves it
+    std::filesystem::path m_CheckRemembered;             // the remembered folder, for a check that resolves it
     Platform::IProcessActions* m_CheckActions = nullptr; // the actions it reads the space through; may be null
     std::uint64_t m_CheckGeneration = 0;                 // bumped by each checkFolder() and each confirm opened or closed
     std::uint64_t m_RunningCheckGeneration = 0;          // the generation of the check running

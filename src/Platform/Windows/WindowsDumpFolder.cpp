@@ -1,9 +1,11 @@
 #include "WindowsDumpFolder.h"
 
 #include "HandleRelativeFile.h"
+#include "OrdinalCase.h"
 #include "Platform/IProcessActions.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
+#include "WindowsSecurityOwners.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -13,8 +15,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
-#include <aclapi.h>  // GetSecurityInfo
-#include <sddl.h>    // ConvertStringSidToSidW
+#include <aclapi.h>  // GetSecurityInfo (heldFolderReaders())
 // clang-format on
 
 #include <algorithm>
@@ -40,41 +41,24 @@ namespace
 [[nodiscard]] std::wstring withoutUncPrefix(std::wstring path)
 {
     constexpr std::wstring_view UNC_PREFIX = LR"(\\?\UNC\)";
-    if (path.size() >= UNC_PREFIX.size() && samePathText(std::wstring_view(path).substr(0, UNC_PREFIX.size()), UNC_PREFIX))
+    // A prefix, compared as text (its separator counts), not as a path: samePathText() ignores trailing separators.
+    if (path.size() >= UNC_PREFIX.size() && equalsOrdinalIgnoreCase(std::wstring_view(path).substr(0, UNC_PREFIX.size()), UNC_PREFIX))
     {
         path.replace(0, UNC_PREFIX.size(), LR"(\\)");
     }
     return path;
 }
 
-/// TrustedInstaller's service SID (NT SERVICE\TrustedInstaller), which owns and may change Windows' own folders.
-constexpr std::wstring_view TRUSTED_INSTALLER_SID = L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
-
-/// Whether @p sid is TrustedInstaller.
-[[nodiscard]] bool isTrustedInstaller(PSID sid)
-{
-    static const std::unique_ptr<void, decltype(&::LocalFree)> trustedInstaller = []
-    {
-        PSID made = nullptr;
-        const std::wstring text(TRUSTED_INSTALLER_SID);
-        if (ConvertStringSidToSidW(text.c_str(), &made) == FALSE)
-        {
-            made = nullptr; // LCOV_EXCL_LINE - a constant, well-formed SID
-        }
-        return std::unique_ptr<void, decltype(&::LocalFree)>(made, &::LocalFree);
-    }();
-    return trustedInstaller != nullptr && EqualSid(sid, trustedInstaller.get()) != FALSE;
-}
-
 /// Whether @p sid is one folderReaders() trusts (WindowsDumpFolder.h): Administrators, SYSTEM or TrustedInstaller, and
 /// CREATOR OWNER where @p creatorOwnerTrusted (an inherit-only ACE, whose CREATOR OWNER is whoever makes a subfolder).
 [[nodiscard]] bool trustedSid(PSID sid, bool creatorOwnerTrusted)
 {
-    return IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(sid, WinLocalSystemSid) != FALSE ||
-           isTrustedInstaller(sid) || (creatorOwnerTrusted && IsWellKnownSid(sid, WinCreatorOwnerSid) != FALSE);
+    return isAdministratorsOrSystem(sid) || isTrustedInstaller(sid) ||
+           (creatorOwnerTrusted && IsWellKnownSid(sid, WinCreatorOwnerSid) != FALSE);
 }
 
-/// An owner ownerIsAdministratorsOrSystem() trusts: BUILTIN\Administrators, SYSTEM or TrustedInstaller.
+/// An owner folderReaders() trusts: BUILTIN\Administrators, SYSTEM or TrustedInstaller, the owners
+/// HandleRelativeFile.h's ownerIsSystemOrAdministratorsOrTrustedInstaller() trusts.
 [[nodiscard]] bool trustedOwner(PSID owner)
 {
     return trustedSid(owner, false);
@@ -300,19 +284,6 @@ bool tokenCanOwnAsAdministrators()
                                           (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0 &&
                                           IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid) != FALSE;
                                });
-}
-
-std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle)
-{
-    PSID owner = nullptr;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    const DWORD read = GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor);
-    const std::unique_ptr<void, decltype(&::LocalFree)> owned(descriptor, &::LocalFree);
-    if (read != ERROR_SUCCESS || owner == nullptr)
-    {
-        return std::nullopt;
-    }
-    return trustedOwner(owner);
 }
 
 std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std::filesystem::path& programData,

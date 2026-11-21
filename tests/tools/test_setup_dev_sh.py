@@ -111,5 +111,28 @@ class SetupDevVenvTests(unittest.TestCase):
         self.assertIn("Using existing virtual environment", result.stdout)
 
 
+class SetupDevAlternativesTests(unittest.TestCase):
+    """#4704: the unversioned LLVM names are registered at the version's own priority and put back to automatic."""
+
+    def register(self, before=""):
+        script = f'p=$1; shift; source "$p" "$@"; {before} register_alternative clang'
+        result = subprocess.run(
+            [BASH, "-c", script, "test", SETUP_SH.as_posix(), "--dry-run"],
+            capture_output=True, text=True, check=False, timeout=60,
+        )
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return result.stdout
+
+    def test_the_priority_is_the_version_times_ten_and_the_group_goes_back_to_auto(self):
+        out = self.register()
+        self.assertIn("[dry-run] sudo update-alternatives --install /usr/bin/clang clang /usr/bin/clang-23 230", out)
+        self.assertIn("[dry-run] sudo update-alternatives --auto clang", out)
+        self.assertNotIn(" 100\n", out, "never the fixed 100 a distribution's 220 outranked")
+
+    def test_another_llvm_version_gets_its_own_priority(self):
+        out = self.register("LLVM_VERSION=24;")  # the next pinned LLVM: its own priority, no edit to the number
+        self.assertIn("/usr/bin/clang-24 240", out)
+
+
 if __name__ == "__main__":
     unittest.main()

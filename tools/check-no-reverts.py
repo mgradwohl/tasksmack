@@ -79,8 +79,9 @@ def exempt(path: str) -> bool:
 
 def header_path(line: str, side: str) -> str | None:
     r"""The path on a "--- a/x" or "+++ b/x" diff header, or None for /dev/null. git still quotes a name holding a tab,
-    newline, quote or backslash even with core.quotePath=false ("--- \"a/x\ty\""): unquote that too (#4331)."""
-    rest = line[4:]
+    newline, quote or backslash even with core.quotePath=false ("--- \"a/x\ty\""): unquote that too (#4331). A name
+    holding a space ends in a tab ("--- a/release notes.md\t", git's diff.c), which isn't part of it (#4664)."""
+    rest = line[4:].removesuffix("\t")
     if rest.startswith('"') and rest.endswith('"'):
         rest = unquote_c_style(rest[1:-1])
     prefix = side + "/"

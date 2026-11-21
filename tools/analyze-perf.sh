@@ -21,7 +21,8 @@
 #   flamegraph.pl + stackcollapse-perf.pl  — optional; install via:
 #                                     git clone https://github.com/brendangregg/FlameGraph ~/opt/FlameGraph
 #                                     then add to PATH, or pass --flamegraph-pl / --stackcollapse-pl
-#   hotspot                         — optional GUI: sudo apt install hotspot
+#   hotspot                         — optional GUI, not packaged for Ubuntu 26.04 (#4706): flatpak install flathub
+#                                     com.kdab.hotspot, or KDAB's AppImage saved as hotspot on PATH
 #
 # Examples:
 #   ./tools/analyze-perf.sh perf-data/perf-app-20260604-120000.data

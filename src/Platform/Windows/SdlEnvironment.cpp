@@ -1,6 +1,7 @@
 #include "SdlEnvironment.h"
 
 #include "WinString.h"
+#include "WindowsHandles.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -271,11 +272,11 @@ std::vector<std::wstring> removeForThisProcess(bool system32Only)
     {
         // A copy of the block: removing a variable while walking the live one would change what is walked.
         std::optional<std::wstring> block;
-        if (wchar_t* const strings = GetEnvironmentStringsW(); strings != nullptr)
+        if (const UniqueEnvironmentStrings owned(GetEnvironmentStringsW()); owned != nullptr)
         {
+            const wchar_t* const strings = owned.get();
             // NOLINTNEXTLINE(cppcoreguidelines-pro-bounds-pointer-arithmetic) - the block ends at its first empty string
             block = copyEnvironmentBlock([strings](std::size_t index) { return strings[index]; });
-            FreeEnvironmentStringsW(strings);
         }
         else
         {

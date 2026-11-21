@@ -18,8 +18,8 @@
 //     nothing swapped in between steps is followed.
 //   - TaskSmack and Logs: created fresh with ADMIN_SECURITY (owned by Administrators, a protected DACL for
 //     Administrators and SYSTEM only). An entry there already is taken over in place only when it is a plain folder that
-//     Administrators or SYSTEM owns and this process can open for WRITE_DAC: its DACL is reset to ADMIN_SECURITY
-//     (SetKernelObjectSecurity, which doesn't propagate to children). Anything else -- a user-owned folder, a protected
+//     SYSTEM, TrustedInstaller or Administrators owns and this process can open for WRITE_DAC: its DACL is reset to
+//     ADMIN_SECURITY (SetKernelObjectSecurity, which doesn't propagate to children). Anything else -- a user-owned folder, a protected
 //     DACL this process can't open for WRITE_DAC, a junction or a planted file -- is moved aside (a random
 //     TaskSmack.untrusted-<n>) through a handle opened for DELETE alone, granted by the parent folder's
 //     FILE_DELETE_CHILD, and a fresh one is made in its place, or refused when it can't be (a user can block the move by
@@ -114,7 +114,7 @@ struct Functions
     std::string folderSecurity = std::string(ADMIN_SECURITY);
 #ifdef _WIN32
     FinalPathFn finalPath = &systemFinalPath;
-    /// Unset: Administrators or SYSTEM, read from the folder.
+    /// Unset: SYSTEM, TrustedInstaller or Administrators, read from the folder.
     OwnerTrustedFn ownerTrusted{}; // NOLINT(readability-redundant-member-init) - designated initializers leave it out
 #endif
 };

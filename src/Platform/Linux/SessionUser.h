@@ -10,6 +10,7 @@
 #include "Platform/SessionAccount.h"
 #include "UserNameLookup.h"
 
+#include <algorithm>
 #include <array>
 #include <charconv>
 #include <cstddef>
@@ -459,6 +460,57 @@ invokerVariable(std::string_view name, std::optional<std::string> value, const s
         }
     }
     return false;
+}
+
+/// Whether this process holds an ambient capability (/proc/self/status CapAmb), which a program it starts inherits; true
+/// when that can't be read, so no child is assumed to hold none.
+[[nodiscard]] inline bool processHoldsAmbientCapabilities()
+{
+    std::ifstream in("/proc/self/status");
+    for (std::string line; std::getline(in, line);)
+    {
+        if (line.starts_with("CapAmb:"))
+        {
+            const std::string_view hex = std::string_view(line).substr(line.find_first_not_of(" \t", 7));
+            return hex.find_first_not_of('0') != std::string_view::npos;
+        }
+    }
+    return true;
+}
+
+/// Whether a program a non-root session starts as itself may get back the environment the session started with (#4651):
+/// only when the child runs as the very user whose environment it is, holding nothing more than they do. So not root,
+/// the real and effective uid and gid the same (a setuid or setgid TaskSmack's environment is its invoker's, and its
+/// children run as the set ids), no ambient capability (a child inherits those; a setcap session's file capabilities
+/// don't cross execve), and no SUDO_UID or PKEXEC_UID naming another uid (sudo -u: the environment is the invoker's),
+/// a malformed one included. A setcap session (the FAQ's cap_sys_ptrace) is the case it's for: its programs, xdg-open's
+/// browser and Run new task's, are the user's own, and get their GTK input method, GIO modules and shader cache back.
+[[nodiscard]] inline bool childMayGetStartingEnvironment(uid_t realUid,
+                                                         uid_t effectiveUid,
+                                                         gid_t realGid,
+                                                         gid_t effectiveGid,
+                                                         bool ambientCapabilities,
+                                                         const std::function<std::optional<std::string>(std::string_view)>& env)
+{
+    if (effectiveUid == 0 || realUid != effectiveUid || realGid != effectiveGid || ambientCapabilities)
+    {
+        return false;
+    }
+    const std::string self = std::to_string(effectiveUid);
+    return std::ranges::all_of(std::array<const char*, 2>{"SUDO_UID", "PKEXEC_UID"},
+                               [&env, &self](const char* name)
+                               {
+                                   const std::optional<std::string> text = env(name);
+                                   return !text.has_value() || text->empty() || *text == self;
+                               });
+}
+
+/// childMayGetStartingEnvironment() for this process, worked out once.
+[[nodiscard]] inline bool thisProcessChildrenMayGetStartingEnvironment()
+{
+    static const bool may = childMayGetStartingEnvironment(
+        ::getuid(), ::geteuid(), ::getgid(), ::getegid(), processHoldsAmbientCapabilities(), &processVariable);
+    return may;
 }
 
 /// environmentMayBeAnotherUsers() for this process, worked out once (#4154): the rule for the writing hooks (#4104),

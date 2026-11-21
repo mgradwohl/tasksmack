@@ -6,7 +6,8 @@ name: Main Health
 # Oct 2-5, Sanitizers asan-ubsan from Oct 8 (#1541). Each active release/* branch is tracked the
 # same way (#2741). Every run, whichever branch's workflow triggered it and a manual dispatch alike,
 # re-reads main and every release/* branch (#2951). workflow_run always runs this file from the
-# default branch, with this file's permissions.
+# default branch, with this file's permissions. A run that opened or closed a tracking issue starts a
+# Release Dashboard run, so the release page has the branch's new state within minutes (#4700).
 on:
   workflow_run:
     # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
@@ -40,7 +41,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
-      actions: read
+      actions: write  # reads the watched runs, and dispatches release-dashboard.yml when an issue opens or closes
       contents: read
       issues: write
     steps:
@@ -160,6 +161,7 @@ jobs:
                   -f body="\`$branch\` is green again: the latest finished push and nightly runs of every watched workflow on \`$branch\` passed (closed by ${run_link})."
                 gh api -X PATCH "repos/$REPO/issues/$issue" --silent -f state=closed -f state_reason=completed
                 echo "Closed #$issue."
+                changed="${changed:-}closed #$issue for $branch; "
               else
                 echo "$branch is green; no tracking issue open."
               fi
@@ -178,6 +180,7 @@ jobs:
                 -f description="Tracking issue: a workflow is failing on main or a release branch (main-health.yml)" 2>/dev/null || true
               issue=$(gh api "repos/$REPO/issues" -f title="$title" -f body="$body" -f "labels[]=$LABEL" --jq .number)
               echo "Opened #$issue."
+              changed="${changed:-}opened #$issue for $branch; "
               return 0
             fi
 
@@ -195,6 +198,23 @@ jobs:
             fi
             echo "Updated #$issue."
           }
+
+          # The release dashboard reads these issues to say whether main is green (#4524). An issue this token
+          # opens or closes starts no workflow, so the dashboard would only notice at its next run: tell it,
+          # once, when an issue's state changed in this run (#4700). A dispatch is the one event this token may
+          # start a run with. On exit, so a run that changed one branch's issue and then failed on another
+          # still tells it: the next run would find that issue already as it should be, and say nothing. A
+          # dispatch that fails isn't worth failing this check over, since the dashboard's next run reads the
+          # issue anyway, and the trap leaves the step's own exit status as it was.
+          tell_dashboard() {
+            [[ -n "${changed:-}" ]] || return 0
+            if gh api -X POST "repos/$REPO/actions/workflows/release-dashboard.yml/dispatches" --silent -f ref=main; then
+              echo "Started a Release Dashboard run: ${changed%; }."
+            else
+              echo "::warning title=Main Health::The Release Dashboard run couldn't be started (${changed%; }). Its next run reads the issue."
+            fi
+          }
+          trap tell_dashboard EXIT
 
           # Every run, automatic or dispatched, re-reads main and every release/* branch that exists
           # (#2951). Judging only the triggering branch lost that branch's update whenever another

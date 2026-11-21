@@ -118,6 +118,16 @@ create_venv() {
     run_cmd "python${PYTHON_VERSION}" -m venv "$env_dir"
 }
 
+# Point an unversioned tool name at the installed LLVM version's binary (#4704). The priority is the version times ten
+# (230 for LLVM 23), the convention a distribution's clang packages use, so the pinned LLVM outranks an older one
+# registered that way, where a fixed 100 lost to 220. Then the group goes back to automatic, so the highest priority
+# wins: --install alone leaves a group an earlier --set made manual pointing where it was.
+register_alternative() {
+    local name="$1"
+    run_cmd sudo update-alternatives --install "/usr/bin/$name" "$name" "/usr/bin/$name-$LLVM_VERSION" "$((LLVM_VERSION * 10))"
+    run_cmd sudo update-alternatives --auto "$name"
+}
+
 # Sourced (tests/tools/test_setup_dev_sh.py): define the functions only
 if [[ "${BASH_SOURCE[0]}" != "$0" ]]; then
     return 0
@@ -253,13 +263,6 @@ run_apt \
 # libclang-rt is only a Recommends of clang-N, so --no-install-recommends setups miss it; the
 # coverage, PGO and sanitizer presets link its runtimes.
 
-# Point an unversioned tool name at the installed LLVM version's binary.
-# Idempotent: re-running updates to a higher priority.
-register_alternative() {
-    local name="$1"
-    run_cmd sudo update-alternatives --install "/usr/bin/$name" "$name" "/usr/bin/$name-$LLVM_VERSION" 100
-}
-
 # Unversioned names for everything check-prereqs.sh and the tools/ scripts look up on PATH.
 # ld.lld is the name check-prereqs.sh reads the version from; `lld` alone is the generic driver,
 # which prints no version.
@@ -337,5 +340,10 @@ echo "  2. Verify environment:  ./tools/check-prereqs.sh"
 echo "  3. Configure project:   cmake --preset debug"
 echo "  4. Build:               cmake --build --preset debug"
 echo "  5. Run tests:           ctest --preset debug"
+echo ""
+echo "Not installed here (optional, build or install by hand):"
+echo "  - IWYU (./tools/iwyu.sh): build it against Clang $LLVM_VERSION as CONTRIBUTING.md's Include-What-You-Use"
+echo "    section says; apt's iwyu is built against an older Clang (#4708)"
+echo "  - perf (./tools/profile-perf.sh): linux-tools for your running kernel"
 echo ""
 echo "For full documentation see CONTRIBUTING.md"
