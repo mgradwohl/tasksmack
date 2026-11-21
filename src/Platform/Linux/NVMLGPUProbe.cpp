@@ -243,7 +243,7 @@ bool NVMLGPUProbe::Impl::loadSymbols()
         nvmlHandle = dlopen("libnvidia-ml.so", RTLD_NOW);
         if (nvmlHandle == nullptr)
         {
-            // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() is called during single-threaded initialization
+            // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() keeps its state per thread in glibc, so the GPU sampler thread reading its own is safe (#4434)
             spdlog::debug("NVMLGPUProbe: Failed to load libnvidia-ml.so - {}", dlerror());
             return false;
         }

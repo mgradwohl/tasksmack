@@ -93,9 +93,10 @@ class ProcessModel : public ISamplable
     ~ProcessModel() override = default;
 
     /// Gives a model built with DeferredProbeTag its probe (#2731). Reads the probe's capabilities, ticks
-    /// per second and total memory, as the constructor did; the probe is not otherwise read. Meant for
-    /// the sampler thread, before its first sample (the sampler's start hook); thread-safe, and a probe
-    /// already held is replaced.
+    /// per second and total memory, as the constructor did; the probe is not otherwise read. Called on
+    /// the sampler thread, before its first sample (the sampler's start hook).
+    /// Sampler thread only (#4434): the sampling path reads the probe outside the model's lock, so a call from another thread while it
+    /// samples would race. A probe already held is replaced.
     void setProbe(std::unique_ptr<Platform::IProcessProbe> probe);
 
     ProcessModel(const ProcessModel&) = delete;

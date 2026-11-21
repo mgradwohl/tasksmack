@@ -24,10 +24,9 @@ namespace Domain::Sampling
 //
 // =============================================================================
 //
-// IMPORTANT: Panels drive data polling via their onUpdate() methods using the
-// user's refresh interval. Some panels (e.g., ProcessesPanel, SystemMetricsPanel)
-// use the BackgroundSampler class to offload sampling to a background thread,
-// while others poll directly on the UI thread depending on their needs.
+// IMPORTANT (#2731, AGENTS.md): every metric is sampled on a worker of its own (a BackgroundSampler or a
+// Domain::Worker) at the refresh interval the user chose in Settings, and nothing rescales it. The UI
+// thread only reads the published snapshots and draws: it never calls a probe (#4434).
 //
 // =============================================================================
 
@@ -248,7 +247,7 @@ inline constexpr int UPDATE_CHECK_INTERVAL_HOURS = 24;
 inline constexpr int UPDATE_CHECK_TIMEOUT_MS = 10000;
 
 // -----------------------------------------------------------------------------
-// Instance Enumeration Caches (User-Configurable via TOML)
+// Instance Enumeration Caches (fixed unless an entry names its config.toml key, #4434)
 // -----------------------------------------------------------------------------
 // These control how often we discover NEW entities. They are separate from the
 // main refresh interval because discovery operations are often more expensive
@@ -308,7 +307,7 @@ inline constexpr int SOCKET_STATS_CACHE_TTL_MS_MIN = 0;    // 0 = disable cachin
 inline constexpr int SOCKET_STATS_CACHE_TTL_MS_MAX = 5000; // Cap at max refresh interval
 
 // -----------------------------------------------------------------------------
-// Metrics Calculation Parameters (User-Configurable via TOML)
+// Metrics Calculation Parameters (fixed unless an entry names its config.toml key, #4434)
 // -----------------------------------------------------------------------------
 // These control how metrics are computed from raw counter data.
 // They affect data freshness, responsiveness, and sanity checking.

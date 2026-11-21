@@ -52,8 +52,9 @@ namespace Platform::LinuxDevices
     return value;
 }
 
-/// A USB device's speed file in Mbps ("1.5", "12", "480", "5000"); 0 when unparsable. Integer
-/// parsing, as libc++'s floating-point from_chars can't be relied on.
+/// A USB device's speed file in Mbps ("1.5", "12", "480", "5000"); 0 when unparsable. Parsed as an integer and
+/// an optional fraction; the floating-point from_chars would do too (libc++ 23 has it, probed for #4434), and this
+/// keeps the result the same on every standard library.
 [[nodiscard]] inline double usbSpeedMbps(std::string_view text) noexcept
 {
     std::uint32_t whole = 0;

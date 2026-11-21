@@ -77,8 +77,9 @@ enum class InetDumpOutcome : std::uint8_t
 
 /// One INET_DIAG dump of every `protocol` (IPPROTO_TCP or IPPROTO_UDP) socket of address `family`
 /// (AF_INET or AF_INET6), in every state, appending each socket's endpoints, state and inode to
-/// `results` (#799: the Process Details Connections section). No INET_DIAG_INFO is asked for: only the
-/// inet_diag_msg header is read. `sequence` must differ from the transport's earlier requests'; replies
+/// `results` (#799: the Process Details Connections section). The endpoints, state and inode come from the
+/// inet_diag_msg header; for TCP it also asks for INET_DIAG_INFO, tcp_info's byte counters for the Connections
+/// tab's rates (#3079, #4434). `sequence` must differ from the transport's earlier requests'; replies
 /// for any other sequence, or addressed to another port, are ignored, and anything still queued from
 /// an earlier dump is drained first (as for NetlinkSocketStats, #1160).
 [[nodiscard]] InetDumpOutcome dumpInetSockets(
