@@ -43,6 +43,10 @@ struct UdpAttachAttempt
     friend bool operator==(const UdpAttachAttempt&, const UdpAttachAttempt&) = default;
 };
 
+/// UdpByteCounter::read()'s error for a walk that ran out of steps (#4265): the map changed too fast once, not a
+/// counter that stopped working, so the collector starts over from a baseline without reporting a problem (#4631).
+inline constexpr std::string_view UDP_READ_INCOMPLETE = "the UDP byte counter's map changed too fast to read in full";
+
 /// The walk of the tgid-keyed LRU map that UdpByteCounter::read() makes (#4265), over callables so the tests can fake
 /// a map whose cursor ages out. A key that aged out between two calls makes the next start over from the first, so
 /// the walk is bounded (at most @p entries processes, twice that in steps) and skips a tgid it already has.
