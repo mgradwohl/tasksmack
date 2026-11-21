@@ -27,7 +27,21 @@ struct SystemdUserDirs
     std::filesystem::path user;                  ///< ~/.config/systemd/user; empty to skip the user's units
     std::vector<std::filesystem::path> system;   ///< /etc/systemd/user: units enabled for every user
     std::vector<std::filesystem::path> unitPath; ///< Where a timer's service is looked for, in order
+    std::string home;                            ///< The user's home, for %h in an ExecStart (#4398); empty when unknown
+    /// systemd's fixed search path for an ExecStart that names a bare program (#4398): its compiled-in default.
+    std::vector<std::filesystem::path> programSearchPath = {"/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"};
 };
+
+/// The program a unit's ExecStart (prefixes already dropped) runs, and whether it is there (#4398). Its first word is
+/// read with systemd's quoting; %h is @p dirs' home and %% a percent sign; a bare name is looked for on systemd's
+/// fixed search path. Missing only for an absolute path that isn't there: another specifier, a bare name not found
+/// (a distribution can compile in a different path) or a relative path is Unresolved, as cron's rule is.
+struct UnitProgram
+{
+    std::string program; ///< Its path when found or Missing; the first word as written when Unresolved
+    StartupTargetState state = StartupTargetState::Unresolved;
+};
+[[nodiscard]] UnitProgram unitProgram(std::string_view execStart, const SystemdUserDirs& dirs);
 
 /// The directories for this user: $XDG_CONFIG_HOME (or ~/.config)/systemd/user, /etc/systemd/user, and the
 /// packages' /usr/local/lib/systemd/user and /usr/lib/systemd/user for the unit files themselves.
