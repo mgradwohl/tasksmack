@@ -533,10 +533,13 @@ main() {
     # hotspot — GUI perf viewer (analyze-perf.sh optional launch)
     local hotspot_path
     hotspot_path="$(command -v hotspot 2>/dev/null || true)"
+    # Not packaged for Ubuntu 26.04 (#4706): KDAB ships it on Flathub and as an AppImage.
     if [[ -n "${hotspot_path}" ]]; then
         echo -e "${GREEN}hotspot${NC}: ${hotspot_path}"
+    elif command -v flatpak &>/dev/null && flatpak info com.kdab.hotspot &>/dev/null; then
+        echo -e "${GREEN}hotspot${NC}: Flatpak com.kdab.hotspot (flatpak run com.kdab.hotspot <file>)"
     else
-        echo -e "${YELLOW}hotspot${NC}: not found (sudo apt install hotspot)"
+        echo -e "${YELLOW}hotspot${NC}: not found (not packaged for Ubuntu 26.04: flatpak install flathub com.kdab.hotspot, or KDAB's AppImage from https://github.com/KDAB/hotspot/releases saved as hotspot on PATH)"
     fi
 
     # heaptrack — heap allocation profiler (profile-heap.sh)

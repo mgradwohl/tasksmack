@@ -150,6 +150,16 @@ class CheckPrereqsLibraryTests(CheckerTestBase):
         )
 
 
+class CheckPrereqsHotspotTests(CheckerTestBase):
+    """#4706: hotspot isn't packaged for Ubuntu 26.04, so the hint names Flathub and KDAB's AppImage, never apt."""
+
+    def test_the_not_found_hint_names_what_exists(self):
+        match = re.search(r"(?m)^hotspot: .*$", self.run_checker())
+        self.assertIsNotNone(match)
+        self.assertIn("flatpak install flathub com.kdab.hotspot", match.group(0))
+        self.assertNotIn("apt install hotspot", match.group(0))
+
+
 class CheckPrereqsLldTests(CheckerTestBase):
     """#4705: ld.lld is found as the other LLVM tools are (the LLVM folders before PATH) and held to the clang floor."""
 
