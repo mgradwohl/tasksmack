@@ -52,6 +52,10 @@
   jobs' steps run for real, and the CI Success and OSV gates' steps run on the results. Concurrency groups never
   join two queue entries, no push or workflow_run trigger fires for a gh-readonly-queue branch, a merge group
   saves no clang-tidy result cache, and pre-commit's version guard reads the queue's base branch.
+- release-dashboard.yml generate "Wait until the published data is five minutes old" (#4604): a run that an
+  issue, a push or Main Health started waits out the rest of the five minutes and no more, every trigger but
+  the schedule, a dispatch and a pull request waits, and the job's timeout outlasts the wait. `date` and
+  `sleep` are stubs.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -3149,6 +3153,78 @@ class HeavyChecksPushScopeTests(unittest.TestCase):
         self.assertEqual(self.scope("workflow_dispatch", {"src/App/a.cpp": "x\n"}), "true")
         self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="0" * 40), "true")
         self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="1" * 40), "true")
+
+
+class ReleaseDashboardWaitTests(unittest.TestCase):
+    """#4604: a run that a change started waits until the published data is five minutes old, and no longer.
+    The schedule, a manual run and a pull request's proof don't wait."""
+
+    WORKFLOW = WORKFLOWS / "release-dashboard.yml"
+    JOB = "generate"
+    STEP = "Wait until the published data is five minutes old"
+    NOW = 1_800_000_000
+    NEVER_WAIT = {"schedule", "workflow_dispatch", "pull_request"}
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.tmp = Path(self._tmp.name)
+        self.step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def slept(self, published_at: str) -> str:
+        """Runs the step with the clock at NOW; what it slept, in seconds ('' when it didn't)."""
+        log = self.tmp / "slept"
+        log.write_text("", encoding="utf-8")
+        # `date` and `sleep` are functions here, so the step's own arithmetic runs and nothing really waits.
+        prelude = f'date() {{ echo {self.NOW}; }}\nsleep() {{ echo "$1" >> "{posix(log)}"; }}\n'
+        env = {"PUBLISHED_AT": published_at, "MIN_AGE_SECONDS": self.step.env["MIN_AGE_SECONDS"]}
+        result = run_bash(prelude + self.step.run, self.tmp, env)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return log.read_text(encoding="utf-8").strip()
+
+    def test_the_minimum_age_is_five_minutes(self):
+        self.assertEqual(self.step.env["MIN_AGE_SECONDS"], "300")
+
+    def test_fresh_data_waits_out_the_rest_of_the_five_minutes(self):
+        self.assertEqual(self.slept(str(self.NOW - 60)), "240")
+        self.assertEqual(self.slept(str(self.NOW)), "300")
+        self.assertEqual(self.slept(str(self.NOW - 299)), "1")
+
+    def test_data_five_minutes_old_or_older_doesnt_wait(self):
+        for age in (300, 301, 2220):
+            with self.subTest(age=age):
+                self.assertEqual(self.slept(str(self.NOW - age)), "")
+
+    def test_nothing_published_yet_doesnt_wait(self):
+        # The fetch step sets no output when there's no dashboard-data branch.
+        self.assertEqual(self.slept(""), "")
+
+    def test_a_clock_behind_the_commit_waits_five_minutes_at_most(self):
+        self.assertEqual(self.slept(str(self.NOW + 3600)), "300")
+
+    def test_it_reads_the_time_the_fetch_step_publishes(self):
+        self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        fetch_block = text.split("      - name: Fetch the last published data\n", 1)[1].split("\n      - name: ", 1)[0]
+        self.assertIn("        id: previous\n", fetch_block)
+        fetch = find_step(self.WORKFLOW, "Fetch the last published data", job=self.JOB)
+        self.assertIn('echo "at=$(git log -1 --format=%ct FETCH_HEAD)" >> "$GITHUB_OUTPUT"', fetch.run)
+
+    def test_every_event_that_isnt_the_schedule_a_dispatch_or_a_pull_request_waits(self):
+        # A new trigger joins the wait, or is added to NEVER_WAIT here on purpose.
+        triggers = set(workflow_triggers(self.WORKFLOW))
+        self.assertTrue(self.NEVER_WAIT < triggers, triggers)
+        listed = re.fullmatch(r"contains\(fromJSON\('(\[.*\])'\), github\.event_name\)", self.step.condition)
+        self.assertIsNotNone(listed, self.step.condition)
+        self.assertEqual(set(json.loads(listed.group(1))), triggers - self.NEVER_WAIT)
+
+    def test_the_job_outlasts_the_wait(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        minutes = int(re.search(r"(?m)^    timeout-minutes: (\d+)", job).group(1))
+        self.assertGreaterEqual(minutes * 60, int(self.step.env["MIN_AGE_SECONDS"]) + 600)
 
 
 if __name__ == "__main__":

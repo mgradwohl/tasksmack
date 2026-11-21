@@ -11,7 +11,14 @@
   const TITLE = /^v\d+\.\d+\.\d+$/;
   const REPO = /^[\w.-]+\/[\w.-]+$/;
   const REFRESH_MS = 5 * 60 * 1000;
-  const STALE_MINUTES = 45; // the schedule is every 10 minutes; GitHub can start a run a quarter of an hour late
+  // After "Refresh now" (#4604): look for the new data this often, for this long. A run takes a minute or two,
+  // and the data host can serve the old file for five more.
+  const WATCH_MS = 30 * 1000;
+  const WATCH_FOR_MS = 10 * 60 * 1000;
+  // A change starts a run within five minutes and the schedule adds one every ten, so data this old means runs
+  // are failing or GitHub isn't starting them (maintainer, 2026-11-20).
+  const STALE_MINUTES = 25;
+  const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
   const HOUR = 3600;
   const DAY = 86400;
 
@@ -63,6 +70,8 @@
   const app = document.getElementById('app');
   const base = (document.querySelector('meta[name="release-data"]') || {}).content || '';
   const view = { index: null, release: null, charts: [], width: 0, listBy: remembered(LIST_BY_KEY) === 'lane' ? 'lane' : 'kind' };
+  // When the data was last asked for, and "Refresh now": when it was clicked and until when the page looks often.
+  const polling = { asked: 0, watchFrom: 0, watchUntil: 0 };
 
   // ---- small helpers -----------------------------------------------------------------------------
 
@@ -191,6 +200,7 @@
   }
 
   async function show(title, quiet) {
+    polling.asked = Date.now();
     try {
       const index = await load('index.json');
       const pick = title || (view.release && view.release.milestone.title) || wanted(index);
@@ -199,6 +209,8 @@
       const release = await load(pick + '.json');
       view.index = index;
       view.release = release;
+      // Data generated after "Refresh now" was clicked is what it was waiting for.
+      if (seconds(index.generated_at) * 1000 > polling.watchFrom) polling.watchUntil = 0;
       render();
     } catch (error) {
       if (view.release) {
@@ -226,15 +238,18 @@
     // warning when that's too long. clock() keeps them right on a page left open.
     const stamp = el('span', { title: moment(now) });
     const age = el('span');
-    const stale = el('p', { class: 'banner', hidden: true }, 'This data is ', age, ' old. It should refresh every 10 minutes: check the ',
-      link('Release Dashboard workflow', '/actions/workflows/release-dashboard.yml'), '.');
+    const watching = el('p', { class: 'watching', role: 'status', hidden: true }, 'Looking for new data every 30 seconds');
+    const again = refreshLink();
+    const stale = el('p', { class: 'banner stale', hidden: true }, 'This data is ', age, ' old. It usually refreshes within 15 minutes.',
+      again && [' ', again, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']);
     view.clock = () => {
       const minutes = (Date.now() / 1000 - now) / 60;
       stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
       age.textContent = span(minutes / 60);
       stale.hidden = Boolean(window.__RELEASE_DATA__) || release.stage === 'released' || minutes <= STALE_MINUTES;
+      watching.hidden = Date.now() >= polling.watchUntil;
     };
-    const parts = [masthead(release, stamp), stages(release), stale];
+    const parts = [masthead(release, stamp, watching), stages(release), stale];
     if (release.stage !== 'planned') parts.push(summary(release));
     parts.push(shipList(release, now));
     if (release.stage !== 'planned') parts.push(movement(release, now));
@@ -251,19 +266,52 @@
     for (const draw of view.charts) draw();
   }
 
-  function masthead(release, stamp) {
+  /**
+   * "Refresh now" (#4604). The page is static and public, so it can't start a run itself: that call takes a
+   * token. The link opens the workflow on GitHub, where "Run workflow" does it for anyone who can write to the
+   * repository, and the page then looks for the new data every half minute. Nothing when the data names no
+   * repository to link to.
+   */
+  function refreshLink() {
+    if (!repoUrl()) return null;
+    return link('Refresh now', WORKFLOW_PATH, {
+      class: 'refresh',
+      target: '_blank',
+      rel: 'noopener',
+      title: 'Opens the Release Dashboard workflow on GitHub. Choose "Run workflow" there; the new data shows here a few minutes later.',
+      onclick: () => {
+        polling.watchFrom = Date.now();
+        polling.watchUntil = polling.watchFrom + WATCH_FOR_MS;
+        if (view.clock) view.clock();
+      },
+    });
+  }
+
+  /** Asks for the data again when it's due: every WATCH_MS after "Refresh now", every REFRESH_MS otherwise. */
+  function poll() {
+    if (document.visibilityState !== 'visible' || window.__RELEASE_DATA__) return;
+    if (view.clock) view.clock();
+    const every = Date.now() < polling.watchUntil ? WATCH_MS : REFRESH_MS;
+    // A timer fires a little early as often as late: a second's grace keeps every tick that's due.
+    if (Date.now() - polling.asked >= every - 1000) show(null, true);
+  }
+
+  function masthead(release, stamp, watching) {
     const select = el('select', { id: 'release-select', onchange: (event) => choose(event.target.value) },
       view.index.releases.map((entry) => el('option', { value: entry.title, selected: entry.title === release.milestone.title },
         entry.title + (entry.stage === 'released' ? '' : entry.stage === 'planned' ? ' (planned)' : ' (in progress)'))));
     const links = [link('Milestone', '/milestone/' + Number(release.milestone.number))];
     if (release.tracker) links.push(link('Release tracker #' + release.tracker.number, '/issues/' + Number(release.tracker.number)));
     links.push(link('Release process', '/blob/main/docs/dev/release-process.md'));
+    // A shipped release's file is written once and never again: there is nothing to refresh.
+    const again = release.stage === 'released' ? null : refreshLink();
     return el('header', { class: 'masthead' },
       el('div', null, el('p', { class: 'eyebrow', text: 'TaskSmack · Release Command Center' }), el('h1', { text: release.milestone.title }),
         el('p', { class: 'links' }, links)),
       el('div', { class: 'masthead-side' },
         el('label', { for: 'release-select' }, 'Release', select),
-        stamp));
+        el('p', { class: 'updated' }, stamp, again && [' · ', again]),
+        watching));
   }
 
   /** The release's goal: the milestone's due date. It's a calendar day, whatever time GitHub stores with it. */
@@ -1163,9 +1211,10 @@
     });
   }).observe(app);
 
-  setInterval(() => {
-    if (document.visibilityState === 'visible' && !window.__RELEASE_DATA__) show(null, true);
-  }, REFRESH_MS);
+  // One timer for both rates, and a look on coming back to the tab: "Refresh now" opens GitHub in another one,
+  // and a tab that was in the background shouldn't sit on old data until its next tick.
+  setInterval(poll, WATCH_MS);
+  document.addEventListener('visibilitychange', poll);
   setInterval(() => {
     if (view.clock) view.clock();
   }, 60 * 1000);

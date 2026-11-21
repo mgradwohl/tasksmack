@@ -261,9 +261,17 @@ How it's made:
 
 - `tools/release-dashboard.py` reads the API and writes one JSON file per `vX.Y.Z` milestone, plus an index. A
   shipped release is written once and reused.
-- `.github/workflows/release-dashboard.yml` runs it every 10 minutes and publishes the files to the `dashboard-data`
-  branch, which holds that one commit and nothing else. To refresh now: `gh workflow run release-dashboard.yml`.
-- `docs/release/` is the page: static, no library, no CDN. If the data is more than 45 minutes old it says so.
+- `.github/workflows/release-dashboard.yml` runs it and publishes the files to the `dashboard-data` branch, which
+  holds that one commit and nothing else. A run starts when an issue changes, when `main` moves and when Main
+  Health finishes, and every 10 minutes on a schedule (#4604). GitHub starts scheduled runs late and skips some
+  when it's busy, so the schedule alone left the page up to 37 minutes behind. A run that a change started waits
+  until the published data is five minutes old, so a burst of labels is one run. Comments and pull request
+  events start none: the next run reads them.
+- To refresh now: "Refresh now" on the page opens the workflow on GitHub, where "Run workflow" starts a run, or
+  `gh workflow run release-dashboard.yml`. The page can't start one itself, since that takes a token. New data
+  shows within about five minutes: the data host can serve the old file that long.
+- `docs/release/` is the page: static, no library, no CDN. It asks for new data every five minutes, and when the
+  tab comes back to the front. If the data is more than 25 minutes old it says so.
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.
