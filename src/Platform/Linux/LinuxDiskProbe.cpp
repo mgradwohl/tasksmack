@@ -5,11 +5,15 @@
 #include "LinuxDiskProbe.h"
 
 #include "Platform/StorageTypes.h"
+#include "ProcParsing.h"
+#include "SysfsValue.h"
 
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <array>
 #include <cctype>
+#include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -42,9 +46,25 @@ LinuxDiskProbe::LinuxDiskProbe() : LinuxDiskProbe("/proc/diskstats", "/sys/block
 bool LinuxDiskProbe::isAlwaysExcluded(const std::string& deviceName)
 {
     // Loop devices and RAM disks carry no disk I/O of their own; zram is compressed swap in memory; a device-mapper
-    // volume (dm-N: LVM, LUKS) is stacked on a disk that is already counted.
-    return deviceName.starts_with("loop") || deviceName.starts_with("ram") || deviceName.starts_with("zram") ||
-           deviceName.starts_with("dm-");
+    // volume (dm-N: LVM, LUKS) is stacked on a disk that is already counted. Optical drives (sr), floppies (fd) and an
+    // eMMC's boot and RPMB areas (mmcblk0boot0, mmcblk0rpmb) are whole devices in /sys/block, but not disks to list
+    // (#4628), as the name rule never listed them.
+    if (deviceName.starts_with("loop") || deviceName.starts_with("ram") || deviceName.starts_with("zram") ||
+        deviceName.starts_with("dm-") || deviceName.starts_with("sr") || deviceName.starts_with("fd"))
+    {
+        return true;
+    }
+    return deviceName.starts_with("mmcblk") && (deviceName.contains("boot") || deviceName.contains("rpmb"));
+}
+
+bool LinuxDiskProbe::hasNoMedia(const std::filesystem::path& deviceDir)
+{
+    // size is the device's length in 512-byte sectors: 0 for an empty card reader, a drive with no disc, or an nbd
+    // device nothing is connected to (the module makes 16 at load). One that can't be read is kept (#4628).
+    std::array<char, 32> buf{};
+    const std::string path = (deviceDir / "size").string();
+    const std::size_t len = ProcParsing::readProcFile(path.c_str(), buf.data(), buf.size());
+    return SysfsValue::parse<std::uint64_t>(std::string_view(buf.data(), len)) == std::optional<std::uint64_t>(0);
 }
 
 std::optional<std::vector<LinuxDiskProbe::WholeDevice>> LinuxDiskProbe::listWholeDevices(const std::filesystem::path& sysBlockPath)
@@ -61,6 +81,10 @@ std::optional<std::vector<LinuxDiskProbe::WholeDevice>> LinuxDiskProbe::listWhol
         if (error)
         {
             return std::nullopt;
+        }
+        if (hasNoMedia(entries->path()))
+        {
+            continue; // listed as no whole device, so its /proc/diskstats line is left out
         }
         WholeDevice device{.name = entries->path().filename().string()};
         std::error_code slavesError;

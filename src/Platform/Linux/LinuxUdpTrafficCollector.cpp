@@ -113,7 +113,14 @@ std::vector<UdpProcessTraffic> LinuxUdpTrafficCollector::sample()
         {
             return {}; // stopped, or stopped and started again, while this read was out
         }
-        if (!totals.has_value())
+        if (!totals.has_value() && totals.error() == UDP_READ_INCOMPLETE)
+        {
+            // One walk that ran out of steps (#4631): this sample has no reading and the next is baseline-only, but the
+            // counter works, so no problem is published and nothing is logged.
+            m_Delivering = false;
+            m_Seeding = true;
+        }
+        else if (!totals.has_value())
         {
             if (m_Problem != totals.error())
             {

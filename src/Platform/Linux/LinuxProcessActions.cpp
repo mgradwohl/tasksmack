@@ -85,7 +85,7 @@ using RootTools::isExecutableFile;
 /// The value of environment variable @p name, or empty when unset.
 [[nodiscard]] std::string_view environmentValue(const char* name)
 {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read once at construction, on the thread that builds the panels
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - nothing changes the environment once main() starts its threads, so getenv() on a worker is safe (#4434)
     const char* const value = std::getenv(name);
     return value != nullptr ? std::string_view(value) : std::string_view{};
 }
@@ -350,13 +350,23 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     return link.string();
 }
 
-/// Whether @p path is the file /proc/<pid>/exe is, by device and inode (#4397).
+/// Whether @p path may be the file /proc/<pid>/exe is (#4397): false only when this system shows it isn't, that is
+/// nothing at that path (ENOENT, ENOTDIR) or another file (a different device or inode). A stat that fails for any other
+/// reason can't tell, so the answer is yes (#4630): root reading a user's AppImage on a FUSE mount without allow_other
+/// gets EACCES from both, and opens its folder as before.
 [[nodiscard]] bool isProcessExecutableFromProc(std::int32_t pid, const std::string& path)
 {
     struct stat named{};
+    if (::stat(path.c_str(), &named) != 0)
+    {
+        return errno != ENOENT && errno != ENOTDIR;
+    }
     struct stat running{};
-    return ::stat(path.c_str(), &named) == 0 && ::stat(std::format("/proc/{}/exe", pid).c_str(), &running) == 0 &&
-           named.st_dev == running.st_dev && named.st_ino == running.st_ino;
+    if (::stat(std::format("/proc/{}/exe", pid).c_str(), &running) != 0)
+    {
+        return true; // can't tell
+    }
+    return named.st_dev == running.st_dev && named.st_ino == running.st_ino;
 }
 
 /// The real uid on /proc/<pid>/status's "Uid:" line (#4271): readable by anyone, dumpable or not.

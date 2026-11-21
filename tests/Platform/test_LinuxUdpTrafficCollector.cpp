@@ -3,6 +3,7 @@
 
 #include "Platform/IUdpTrafficCollector.h"
 #include "Platform/Linux/LinuxUdpTrafficCollector.h"
+#include "Platform/Linux/UdpByteCounter.h"
 #include "Platform/UdpByteCounts.h"
 
 #include <gtest/gtest.h>
@@ -136,6 +137,28 @@ TEST(LinuxUdpTrafficCollectorTest, AReadTheKernelRefusesIsEmptyAndTheNextOneRead
     const std::vector<UdpProcessTraffic> next = collector.sample();
     ASSERT_EQ(next.size(), 1U);
     EXPECT_FALSE(next[0].baselineOnly);
+}
+
+// #4631: one walk that ran out of steps is no reading, and the next is baseline-only, as for a refusal; but the counter
+// works, so no problem is published.
+TEST(LinuxUdpTrafficCollectorTest, AnIncompleteWalkSkipsOneReadingWithoutReportingAProblem)
+{
+    FakeCounter counter;
+    counter.next = std::vector<UdpByteCounts>{{.tgid = 42, .txBytes = 100, .rxBytes = 0}};
+    LinuxUdpTrafficCollector collector(counter.load());
+    ASSERT_EQ(collector.start(), UdpCollectorStartResult::Started);
+    ASSERT_EQ(collector.sample().size(), 1U);
+
+    counter.next = std::unexpected(std::string(UDP_READ_INCOMPLETE));
+    EXPECT_TRUE(collector.sample().empty());
+    EXPECT_TRUE(collector.problem().empty()) << "not a counter that stopped working";
+
+    counter.next = std::vector<UdpByteCounts>{{.tgid = 42, .txBytes = 500, .rxBytes = 0}};
+    const std::vector<UdpProcessTraffic> after = collector.sample();
+    ASSERT_EQ(after.size(), 1U);
+    EXPECT_TRUE(after[0].baselineOnly) << "its totals include the interval that wasn't read";
+    EXPECT_TRUE(collector.isDelivering());
+    EXPECT_TRUE(collector.problem().empty());
 }
 
 TEST(LinuxUdpTrafficCollectorTest, StopUnloadsTheCounterAndAStartAfterItIsAnotherGeneration)
