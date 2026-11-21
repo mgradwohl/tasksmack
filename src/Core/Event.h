@@ -28,6 +28,7 @@ enum class EventType : uint8_t
     CheckForUpdates,
     UpdateCheckStatus,
     OpenUpdatePage,
+    AppExiting, // #4590
 };
 
 /// Macro to implement event type boilerplate

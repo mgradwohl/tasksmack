@@ -56,6 +56,7 @@ class ShellLayer : public Core::Layer
     ShellLayer& operator=(ShellLayer&&) = delete;
 
     void onAttach() override;
+    /// Stops the panels and saves the settings, after prepareForExit() (normally run already, at AppExitingEvent).
     void onDetach() override;
     void onUpdate(float deltaTime) override;
     /// While the hidden window draws no frames (#3156): ShellPanels::updateWhileHidden().
@@ -244,6 +245,11 @@ class ShellLayer : public Core::Layer
     std::string m_ConfigProblem;
 
     // Set by a ShowProcessDetailsEvent (#1209): the next tab bar selects the Process Details tab.
+    /// What the exit needs from the window before it goes (#4590): the settings captured from the app, the window's
+    /// geometry and the Processes table's layout, then the window hidden. Once, at AppExitingEvent or else onDetach().
+    void prepareForExit();
+    bool m_ExitPrepared = false;
+
     bool m_ShowDetailsTabRequested = false;
     bool m_ShowServicesTabRequested = false; // A ShowServiceEvent (#1886): bring the Services tab forward
     // TASKSMACK_TAB (#1559): the tab the tab bar selects at startup, resolved once in onAttach() to the

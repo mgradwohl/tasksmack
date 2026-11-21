@@ -16,6 +16,7 @@
 #ifndef _WIN32
 #include "Core/RuntimeDir.h"
 #endif
+#include "Core/ApplicationEvents.h"
 #include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "Core/WindowEvents.h"
@@ -461,6 +462,13 @@ Application::~Application()
 
 void Application::detachAllLayers()
 {
+    // Every layer first hears that the app is exiting (#4590), so the window can go and the samplers start
+    // stopping before the first onDetach() below waits on any of them. raiseEvent() guards each layer's call.
+    {
+        AppExitingEvent exiting;
+        raiseEvent(exiting);
+    }
+
     // Detach layers in reverse order (topmost first). Guarded like every other per-layer callback
     // (#778): a layer that throws while detaching must not stop the rest being torn down (#1124).
     for (auto& layer : std::views::reverse(m_LayerStack))
