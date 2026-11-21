@@ -1348,7 +1348,10 @@ pthread barrier paths, while preserving any caller-provided TSAN flags.
 
 ## Fuzzing (Linux only)
 
-ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer:
+ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer. A pull request's
+changed parsers are also fuzzed under UndefinedBehaviorSanitizer (#4343), in a second leg against its own baseline
+build: signed overflow, bad shifts and misaligned loads are UBSan's findings, not ASan's. The weekly batch and pruning
+runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared by both sanitizers:
 
 | Target | Entry point | Seed corpus |
 |--------|-------------|-------------|

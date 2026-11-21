@@ -44,6 +44,9 @@ jobs:
     name: Scheduled parser fuzzing
     runs-on: ubuntu-26.04
     timeout-minutes: ${{ inputs.campaign == 'release' && 345 || 30 }}
+    # AddressSanitizer only, unlike PR fuzzing (#4343): batch mode uploads each target's corpus as one artifact named
+    # for the target alone (ClusterFuzzLite's corpus isn't per sanitizer), so a second sanitizer's leg in the same run
+    # would collide with it. PR fuzzing runs UBSan over the corpus this grows.
     steps:
       - name: Build fuzzers
         uses: google/clusterfuzzlite/actions/build_fuzzers@884713a6c30a92e5e8544c39945cd7cb630abcd1 # v1
