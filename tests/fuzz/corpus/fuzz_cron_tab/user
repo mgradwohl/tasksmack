@@ -1,0 +1,5 @@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin
+# m h dom mon dow command
+*/5 * * * * /home/u/bin/sync.sh --quiet
+@reboot "/opt/My App/run" >/dev/null 2>&1

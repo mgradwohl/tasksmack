@@ -171,3 +171,16 @@ build_fuzzer fuzz_user_config src/App/UserConfig.cpp src/Domain/VirusTotal.cpp s
 # config.toml as UserConfig::save() writes it (defaults, and every optional key set), plus legacy keys
 # and out-of-range values, and the toml++ regression seeds.
 seed_corpus fuzz_user_config tests/fuzz/corpus/fuzz_user_config/* tests/fuzz/corpus/toml-regressions/*
+
+# #4357: the Startup tab's parsers of files other users and packages write (TaskSmack may parse them as root), and the
+# kernel text read for every process: header-only.
+build_fuzzer fuzz_cron_tab
+seed_corpus fuzz_cron_tab tests/fuzz/corpus/fuzz_cron_tab/* # a user's crontab and a system table
+build_fuzzer fuzz_systemd_unit
+seed_corpus fuzz_systemd_unit tests/fuzz/corpus/fuzz_systemd_unit/* # a service and a timer
+build_fuzzer fuzz_xdg_autostart
+seed_corpus fuzz_xdg_autostart tests/fuzz/corpus/fuzz_xdg_autostart/* # one with a BOM, and a hidden entry (CRLF is LF in the repo; libFuzzer mutates \r in)
+build_fuzzer fuzz_os_release
+seed_corpus fuzz_os_release tests/fuzz/corpus/fuzz_os_release/* # os-release with escapes, and /proc/stat
+build_fuzzer fuzz_proc_text
+seed_corpus fuzz_proc_text tests/fuzz/corpus/fuzz_proc_text/* # smaps_rollup, io and pressure

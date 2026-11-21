@@ -1409,6 +1409,11 @@ runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared b
 | `fuzz_release_json` | the update check's GitHub releases JSON reader and version parser (`Domain/UpdateCheck.h`) | `tests/fuzz/corpus/fuzz_release_json/` |
 | `fuzz_virustotal_json` | the VirusTotal v3 file report reader (`Domain/VirusTotal.h`) | `tests/fuzz/corpus/fuzz_virustotal_json/` |
 | `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`, its codec `Platform/BrokerProtocol.cpp`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_cron_tab` | the Startup tab's crontab reader, a user's own and the system tables (`Platform/Linux/CronTab.h`, #4357) | `tests/fuzz/corpus/fuzz_cron_tab/` |
+| `fuzz_systemd_unit` | the systemd unit file reader and its word reader (`Platform/Linux/SystemdUnitFile.h`, #4357) | `tests/fuzz/corpus/fuzz_systemd_unit/` |
+| `fuzz_xdg_autostart` | the autostart `.desktop` reader, and switching an entry on or off (`Platform/Linux/XdgAutostart.h`, #4357) | `tests/fuzz/corpus/fuzz_xdg_autostart/` |
+| `fuzz_os_release` | `/etc/os-release` and `/proc/stat`'s btime (`Platform/Linux/LinuxOsInfo.h`, #4357) | `tests/fuzz/corpus/fuzz_os_release/` |
+| `fuzz_proc_text` | `/proc/<pid>/smaps_rollup`, `/proc/<pid>/io` and `/proc/pressure/*` (`Platform/Linux/SmapsRollupParser.h`, `ProcIoParser.h`, `PressureParser.h`, #4357) | `tests/fuzz/corpus/fuzz_proc_text/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,

@@ -1,0 +1,8 @@
+[Unit]
+Description=Backup (daily)
+[Timer]
+OnCalendar=daily
+Unit=backup.service
+[Install]
+WantedBy=timers.target \
+  default.target
