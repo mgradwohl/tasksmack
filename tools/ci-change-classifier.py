@@ -233,6 +233,9 @@ DEV_TOOL_TESTS = {
         "tests/tools/test_ui_compare_report.py",
         "tests/tools/test_ui_compare_sh.py",
         "tests/tools/test_benchmark_baselines.py",
+        # #4714: check-prereqs.sh's LLVM rows and the common.sh helpers every tool here sources.
+        "tests/tools/test_check_prereqs_sh.py",
+        "tests/tools/test_common_sh.py",
     ),
     "windows": (
         "tools/test-bench.ps1",
