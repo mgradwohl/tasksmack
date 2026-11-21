@@ -126,17 +126,19 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     # An upgrade stays where the installed copy is (#4445), and runs the old Uninstall.exe only when that is safe
     # (#4444). InstallDirRegKey reads the folder the last install wrote (Software\TaskSmack Contributors\TaskSmack,
     # the value the template's WriteRegStr SHCTX keeps) as the default $INSTDIR, so a /S install, or winget upgrade
-    # without --location, goes back to a custom folder instead of Program Files; /D= still wins. The two functions
-    # run cmake/nsis/TaskSmackUninstallerTrust.ps1 (File embeds it in the installer, nsExec runs it in Windows
-    # PowerShell with no profile; nothing is shown), each taking its arguments on the stack:
-    #   TaskSmackTrustCheck <path> <mode>: "1" on the stack when mode Uninstaller finds the old Uninstall.exe
-    #     admin-only (it and every folder above it changeable only by SYSTEM, Administrators and TrustedInstaller)
-    #     or validly signed by the expected common name, or mode Folder finds the folder admin-only; else "0",
-    #     also when PowerShell can't run (never trusted by default).
-    #   TaskSmackRemoveOldInstall <folder>: the installer's own list of what an install puts there (the exes,
-    #     LICENSE.txt, Uninstall.exe, third_party_licenses and share\tasksmack), links removed and never
-    #     followed, then the registry entries the uninstaller would remove: the Uninstall key, the install
-    #     folder value, taskmgr.exe's Debugger and the Run value when they name that folder's TaskSmack.exe.
+    # without --location, goes back to a custom folder instead of Program Files; /D= still wins. Each function takes
+    # its arguments on the stack:
+    #   TaskSmackTrustCheck <path> <mode>: runs cmake/nsis/TaskSmackUninstallerTrust.ps1 (File embeds it in the
+    #     installer, nsExec runs it in Windows PowerShell with no profile; nothing is shown). "1" on the stack when
+    #     mode Uninstaller finds the old Uninstall.exe admin-only (it and every folder above it changeable only by
+    #     SYSTEM, Administrators and TrustedInstaller), or mode Folder finds the folder admin-only; else "0", also
+    #     when PowerShell can't run (never trusted by default). A valid signature doesn't make an Uninstall.exe in
+    #     a folder standard users can write safe to run elevated (#4660): they could swap the file between the
+    #     check and the start, and the genuine one deletes by path, through any junction they planted.
+    #   TaskSmackUnregisterOldInstall <folder>: the registry entries the uninstaller would remove: the Uninstall
+    #     key, the install folder value, taskmgr.exe's Debugger and the Run value when they name that folder's
+    #     TaskSmack.exe. It deletes no file (#4659): the folder is one standard users can write, where an elevated
+    #     delete by path follows their junctions to anything on the machine.
     # The step that calls them is CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS, below. Checked by
     # tests/tools/test_nsis_upgrade.py, which runs the step and, on Windows, the script.
     # makensis's File finds no file by a path with forward slashes, so the script's path is made native here.
@@ -145,7 +147,6 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     string(APPEND CPACK_NSIS_DEFINES [=[
   ; TaskSmack's upgrade checks (#4444, #4445): BEGIN
   InstallDirRegKey HKLM "Software\TaskSmack Contributors\TaskSmack" ""
-  !define TASKSMACK_EXPECTED_SIGNER_CN "@TASKSMACK_EXPECTED_SIGNER@"
   Function TaskSmackTrustCheck
     Exch $0
     Exch
@@ -154,7 +155,7 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     Push $3
     InitPluginsDir
     File "/oname=$PLUGINSDIR\TaskSmackUninstallerTrust.ps1" "${TASKSMACK_TRUST_SCRIPT}"
-    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\TaskSmackUninstallerTrust.ps1" -Mode $0 -Path "$1" -Signer "${TASKSMACK_EXPECTED_SIGNER_CN}"'
+    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\TaskSmackUninstallerTrust.ps1" -Mode $0 -Path "$1"'
     Pop $2
     Pop $3
     DetailPrint "$3"
@@ -166,18 +167,12 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     Pop $1
     Exch $0
   FunctionEnd
-  Function TaskSmackRemoveOldInstall
+  Function TaskSmackUnregisterOldInstall
     Exch $0
     Push $1
     Push $2
     Push $3
-    DetailPrint "Removing the TaskSmack files in $0 itself, without running its Uninstall.exe"
-    InitPluginsDir
-    File "/oname=$PLUGINSDIR\TaskSmackUninstallerTrust.ps1" "${TASKSMACK_TRUST_SCRIPT}"
-    nsExec::ExecToStack '"$SYSDIR\WindowsPowerShell\v1.0\powershell.exe" -NoProfile -NonInteractive -ExecutionPolicy Bypass -File "$PLUGINSDIR\TaskSmackUninstallerTrust.ps1" -Mode Remove -Path "$0"'
-    Pop $1
-    Pop $2
-    DetailPrint "$2"
+    DetailPrint "TaskSmack's old files in $0 are left there: users who aren't administrators can change that folder, so the installer deletes nothing in it. Any user can delete them."
     SetRegView 64
     ClearErrors
     ReadRegStr $1 HKLM "SOFTWARE\Microsoft\Windows NT\CurrentVersion\Image File Execution Options\taskmgr.exe" "Debugger"
@@ -351,8 +346,8 @@ endif()
 # Before it runs the old uninstaller (#4444), the step checks that is safe, for every upgrade, in place or elsewhere
 # (TaskSmackTrustCheck, above): the uninstaller runs elevated and silent, from a folder #4445 now lets an upgrade stay
 # in even when it is a custom one that users who aren't administrators can write to. It runs only from an admin-only
-# folder or with a valid signature by the expected publisher. Otherwise it isn't started: TaskSmackRemoveOldInstall
-# removes the old install by the installer's own list, and the log says why. An $INSTDIR that isn't admin-only is
+# folder, signed or not (#4660). Otherwise it isn't started: TaskSmackUnregisterOldInstall removes the old install's
+# registry entries and deletes none of its files (#4659), and the log says why. An $INSTDIR that isn't admin-only is
 # logged as a warning. A move (#4445) removes the old Uninstall.exe and, if empty, the old folder after the old
 # uninstaller exited 0.
 # TaskSmack in use (#4436): first the install folder, then the installed copy's, is checked for a running TaskSmack
@@ -395,17 +390,17 @@ tasksmack_upgrade_path:
   ; TaskSmack in use (#4436): the installed copy's folder, before its uninstaller empties it.
   Push $1
   Call TaskSmackInUseCheck
-  ; #4444: the old Uninstall.exe runs, elevated and silent, only from an admin-only folder or when validly signed
-  ; by the expected publisher, whatever folder the new copy goes to. Otherwise its files and registry entries are
-  ; removed by this installer's own list, and it isn't started.
+  ; #4444, #4660: the old Uninstall.exe runs, elevated and silent, only from an admin-only folder, whatever folder the
+  ; new copy goes to and whoever signed it. Otherwise it isn't started, and only its registry entries are removed
+  ; (#4659): an upgrade in place writes the new files over the old ones, and a move leaves the old folder's files.
   Push $0
   Push "Uninstaller"
   Call TaskSmackTrustCheck
   Pop $2
   StrCmp $2 "1" tasksmack_upgrade_trusted
-  DetailPrint "The Uninstall.exe in $1 can be changed by users who aren't administrators and isn't signed by the expected publisher, so it isn't run."
+  DetailPrint "The Uninstall.exe in $1 can be changed by users who aren't administrators, so it isn't run."
   Push $1
-  Call TaskSmackRemoveOldInstall
+  Call TaskSmackUnregisterOldInstall
   Goto tasksmack_upgrade_uninstalled
 tasksmack_upgrade_trusted:
   ClearErrors

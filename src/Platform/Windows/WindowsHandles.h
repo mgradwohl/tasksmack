@@ -2,6 +2,10 @@
 
 // The Windows platform layer's owners for raw Win32 handles (#1183): one kernel-HANDLE owner, one
 // SC_HANDLE owner (#800) and one module owner, shared by every probe, instead of a hand-rolled wrapper per file.
+// And the owners for memory and handles a call hands back that need nothing past <windows.h> (#4367): LocalAlloc'd
+// memory, the environment block, WLAN handles and memory, and NetApi buffers. Owners whose release lives in a
+// heavier header sit beside their users instead: WindowsCoTaskMem.h, WindowsDevInfo.h, WindowsEventLogHandle.h
+// and WindowsPdhQuery.h, so this one stays cheap for everything that includes it, TaskSmackHelper.exe's sources too.
 
 #ifdef _WIN32
 // clang-format off
@@ -255,8 +259,123 @@ struct RegistryKeyTraits
 /// An owned, opened registry key.
 using UniqueRegistryKey = UniqueResource<RegistryKeyTraits>;
 
+/// Gives memory back through the C function @p Free (#4367). A template parameter, so each owner below
+/// names its own and a test can substitute a counting one; unique_ptr never calls it with null.
+template<auto Free> struct FreeWith
+{
+    template<typename T> void operator()(T* memory) const noexcept
+    {
+        if constexpr (std::is_pointer_v<T>)
+        {
+            // An array of pointers (CommandLineToArgvW's) is one block: it goes back as the void* it was allocated as.
+            static_cast<void>(Free(static_cast<void*>(memory)));
+        }
+        else
+        {
+            static_cast<void>(Free(memory));
+        }
+    }
+};
+
+/// Memory a call LocalAlloc'd for its caller (CommandLineToArgvW's array, among others), LocalFree'd once.
+template<typename T> using UniqueLocal = std::unique_ptr<T, FreeWith<&::LocalFree>>;
+
+/// The environment block GetEnvironmentStringsW returned, given back with FreeEnvironmentStringsW. Null,
+/// the call's failure, is never passed to it.
+using UniqueEnvironmentStrings = std::unique_ptr<wchar_t, FreeWith<&::FreeEnvironmentStringsW>>;
+
+/// Closes a WLAN client handle (WlanOpenHandle's) through the injected WlanCloseHandle: wlanapi.dll's,
+/// resolved at run time, or a test's fake.
+struct WlanHandleCloser
+{
+    using CloseFn = DWORD(WINAPI*)(HANDLE client, PVOID reserved);
+
+    CloseFn close = nullptr;
+
+    void operator()(HANDLE client) const noexcept
+    {
+        static_cast<void>(close(client, nullptr));
+    }
+};
+
+/// An owned WLAN client handle. Null is "no handle".
+using UniqueWlanHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, WlanHandleCloser>;
+
+/// The injected WlanFreeMemory: wlanapi.dll's, or a test's fake.
+using WlanFreeMemoryFn = VOID(WINAPI*)(PVOID memory);
+
+/// Memory a WLAN call allocated (WlanEnumInterfaces' list, WlanGetNetworkBssList's), freed once with the
+/// injected WlanFreeMemory.
+template<typename T> using UniqueWlanMemory = std::unique_ptr<T, WlanFreeMemoryFn>;
+
+/// A buffer a NetApi call allocated (NetGetJoinInformation's name), given back once with the injected
+/// NetApiBufferFree. Unlike unique_ptr, it passes a null buffer on too: a call that succeeded owes the
+/// free whatever it wrote, and NetApiBufferFree accepts null. A default or moved-from owner frees nothing.
+template<typename T> class UniqueNetApiBuffer
+{
+  public:
+    /// NetApiBufferFree's type, spelled without <lm.h> (NET_API_STATUS is DWORD).
+    using FreeFn = DWORD(WINAPI*)(LPVOID buffer);
+
+    UniqueNetApiBuffer() noexcept = default;
+    UniqueNetApiBuffer(T* buffer, FreeFn freeBuffer) noexcept : m_Buffer(buffer), m_Free(freeBuffer)
+    {}
+
+    UniqueNetApiBuffer(const UniqueNetApiBuffer&) = delete;
+    UniqueNetApiBuffer& operator=(const UniqueNetApiBuffer&) = delete;
+
+    UniqueNetApiBuffer(UniqueNetApiBuffer&& other) noexcept
+        : m_Buffer(std::exchange(other.m_Buffer, nullptr)), m_Free(std::exchange(other.m_Free, nullptr))
+    {}
+
+    UniqueNetApiBuffer& operator=(UniqueNetApiBuffer&& other) noexcept
+    {
+        if (this != &other)
+        {
+            reset();
+            m_Buffer = std::exchange(other.m_Buffer, nullptr);
+            m_Free = std::exchange(other.m_Free, nullptr);
+        }
+        return *this;
+    }
+
+    ~UniqueNetApiBuffer() noexcept
+    {
+        reset();
+    }
+
+    /// The buffer, still owned by this object; may be null.
+    [[nodiscard]] T* get() const noexcept
+    {
+        return m_Buffer;
+    }
+
+    /// Whether this object will free its buffer (null or not) when it goes.
+    [[nodiscard]] bool owns() const noexcept
+    {
+        return m_Free != nullptr;
+    }
+
+    /// Free the buffer now, if this object owns one, and own nothing.
+    void reset() noexcept
+    {
+        auto* const freeBuffer = std::exchange(m_Free, nullptr);
+        T* const buffer = std::exchange(m_Buffer, nullptr);
+        if (freeBuffer != nullptr)
+        {
+            static_cast<void>(freeBuffer(buffer));
+        }
+    }
+
+  private:
+    T* m_Buffer = nullptr;
+    FreeFn m_Free = nullptr;
+};
+
 static_assert(std::is_nothrow_move_constructible_v<UniqueHandle> && std::is_nothrow_move_assignable_v<UniqueHandle>);
 static_assert(std::is_nothrow_move_constructible_v<UniqueModule> && std::is_nothrow_move_assignable_v<UniqueModule>);
+static_assert(std::is_nothrow_move_constructible_v<UniqueNetApiBuffer<wchar_t>> &&
+              std::is_nothrow_move_assignable_v<UniqueNetApiBuffer<wchar_t>>);
 
 } // namespace Platform::Windows
 

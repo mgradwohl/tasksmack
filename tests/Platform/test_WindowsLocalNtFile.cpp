@@ -174,6 +174,27 @@ TEST_F(WindowsLocalNtFileTest, ACompressedFileACdRomAndAVirtualDiskAreKept)
     EXPECT_EQ(refusalOf(), std::nullopt);
 }
 
+// #4647: FAT, FAT32 and exFAT fail FileAttributeTagInfo with ERROR_INVALID_PARAMETER. A file there is kept, judged by
+// its basic attributes; one that says it is a reparse point is refused as a link, since its tag can't be read.
+TEST_F(WindowsLocalNtFileTest, AFileOnAVolumeWithoutReparseTagsIsKept)
+{
+    localNtFile().tagInfoFails = true;
+    EXPECT_EQ(refusalOf(), std::nullopt) << "a FAT disk's file";
+    localNtFile().attributes = FILE_ATTRIBUTE_REPARSE_POINT;
+    EXPECT_EQ(refusalOf(), LocalFileRefusal::Link);
+    localNtFile().attributes = FILE_ATTRIBUTE_ARCHIVE;
+    localNtFile().basicInfoFails = true;
+    EXPECT_EQ(refusalOf(), LocalFileRefusal::NotLocal) << "nothing about the handle can be read";
+
+    localNtFile() = {};
+    localNtFile().tagInfoFails = true;
+    localNtFile().deviceType = FILE_DEVICE_NETWORK_FILE_SYSTEM;
+    EXPECT_EQ(refusalOf(), LocalFileRefusal::NotLocal) << "the device check still runs";
+    localNtFile().deviceType = FILE_DEVICE_DISK;
+    localNtFile().remote = true;
+    EXPECT_EQ(refusalOf(), LocalFileRefusal::NotLocal) << "and the redirector's";
+}
+
 TEST_F(WindowsLocalNtFileTest, NoCallsOrAnEmptyOrOverlongNameIsUnavailable)
 {
     EXPECT_EQ(openLocalNtFile(LOCAL_NAME, READ_ONLY, LocalFileFunctions{}).error().reason, LocalFileRefusal::Unavailable);

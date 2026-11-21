@@ -12,7 +12,10 @@
 
 #include <algorithm>
 #include <clocale>
+#include <cstddef>
 #include <cstdint>
+#include <format>
+#include <numeric>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -195,6 +198,119 @@ TEST(ProcessSortUtilsTest, ServicesSortByTextIgnoringCaseWithNoneLast)
     EXPECT_TRUE(ProcessSortUtils::compareColumnKey(host, none, ProcessColumn::Services, false));
 }
 
+// #4509: Name, Command and User sort as every other user-visible text does (#4324): by Unicode simple case folding,
+// then by bytes, so only identical texts tie. Folding joins a letter's two cases; it doesn't strip accents, so "Émile"
+// still sorts after "Zoe" (é is U+00E9, after z). What changes is that "Émile" and "émile" sort together: by bytes
+// "Öland" fell between them (É, Ö, é are C3 89, C3 96, C3 A9), and "Bash" sorted far from "bash".
+TEST(ProcessSortUtilsTest, NameCommandAndUserSortByUnicodeCaseFolding)
+{
+    constexpr std::string_view UPPER_E = "\xC3\x89mile"; // Émile
+    constexpr std::string_view LOWER_E = "\xC3\xA9mile"; // émile
+    using ProcessSortUtils::compareColumnKey;
+    for (const ProcessColumn column : {ProcessColumn::Name, ProcessColumn::Command, ProcessColumn::User})
+    {
+        SCOPED_TRACE(static_cast<int>(column));
+        const auto with = [column](std::string_view text)
+        {
+            ProcessSnapshot snap = makeSnapshot(false);
+            const std::string value(text);
+            if (column == ProcessColumn::Name)
+            {
+                snap.name = value;
+            }
+            else if (column == ProcessColumn::Command)
+            {
+                snap.command = value;
+            }
+            else
+            {
+                snap.user = value;
+            }
+            return snap;
+        };
+        const ProcessSnapshot upperE = with(UPPER_E);
+        const ProcessSnapshot lowerE = with(LOWER_E);
+        const ProcessSnapshot oland = with("\xC3\x96land"); // Öland
+        const ProcessSnapshot zoe = with("Zoe");
+        const ProcessSnapshot bash = with("bash");
+        const ProcessSnapshot bashUpper = with("Bash");
+        const ProcessSnapshot cat = with("cat");
+
+        // Émile and émile fold alike, so Öland no longer sorts between them, in either direction.
+        EXPECT_TRUE(compareColumnKey(upperE, oland, column, true)) << "Émile before Öland";
+        EXPECT_TRUE(compareColumnKey(lowerE, oland, column, true)) << "and émile too, where bytes put it after Öland";
+        EXPECT_TRUE(compareColumnKey(oland, lowerE, column, false)) << "descending, Öland before both";
+        // No accent stripping: both still sort after Zoe.
+        EXPECT_TRUE(compareColumnKey(zoe, upperE, column, true));
+        EXPECT_TRUE(compareColumnKey(zoe, lowerE, column, true));
+        // bash and Bash fold alike: both before cat (by bytes Bash came before every lower-case name), and ordered
+        // by bytes between themselves, never tied.
+        EXPECT_TRUE(compareColumnKey(bash, cat, column, true));
+        EXPECT_TRUE(compareColumnKey(bashUpper, cat, column, true));
+        EXPECT_FALSE(compareColumnKey(cat, bashUpper, column, true)) << "Bash no longer sorts after cat's neighbours";
+        EXPECT_NE(compareColumnKey(bash, bashUpper, column, true), compareColumnKey(bashUpper, bash, column, true));
+        EXPECT_FALSE(compareColumnKey(bash, bash, column, true)) << "identical texts tie";
+        EXPECT_FALSE(compareColumnKey(bash, bash, column, false));
+    }
+}
+
+// #4509: sortByColumn() folds a text column's keys once per sort for speed; it must give exactly the order
+// compareByColumn() gives, for each text column, both ways, with case variants, accents, shared prefixes and ties.
+TEST(ProcessSortUtilsTest, SortByColumnGivesCompareByColumnsOrder)
+{
+    const std::vector<std::string> texts{
+        "bash",
+        "Bash",
+        "BASH",
+        "\xC3\x89mile",
+        "\xC3\xA9mile",
+        "\xC3\x96land",
+        "Zoe",
+        "zoe",
+        "cat",
+        "",
+        "C:\\Users\\\xC3\x89mile\\a.exe --x",
+        "c:\\users\\\xC3\xA9mile\\a.exe --x",
+        "bash",
+    };
+    const std::vector<std::string> domains{"PC", "pc", "CORP", ""};
+    std::vector<ProcessSnapshot> rows;
+    for (std::size_t i = 0; i < texts.size() * 2; ++i)
+    {
+        ProcessSnapshot row = makeSnapshot(false);
+        row.pid = static_cast<std::int32_t>(1000 - i); // PIDs out of order, so the tie-break is exercised
+        row.uniqueKey = i;
+        row.name = texts[i % texts.size()];
+        row.command = texts[(i * 5) % texts.size()];
+        row.user = texts[(i * 3) % texts.size()];
+        row.userDomain = domains[i % domains.size()];
+        rows.push_back(std::move(row));
+    }
+    for (const ProcessColumn column : {ProcessColumn::Name, ProcessColumn::Command, ProcessColumn::User, ProcessColumn::PID})
+    {
+        for (const bool ascending : {true, false})
+        {
+            SCOPED_TRACE(std::format("column {} {}", static_cast<int>(column), ascending ? "ascending" : "descending"));
+            std::vector<std::size_t> expected(rows.size());
+            std::ranges::iota(expected, std::size_t{0});
+            std::vector<std::size_t> actual = expected;
+            std::ranges::sort(expected,
+                              [&rows, column, ascending](std::size_t a, std::size_t b)
+                              { return ProcessSortUtils::compareByColumn(rows[a], rows[b], column, ascending); });
+            ProcessSortUtils::sortByColumn(rows, actual, column, ascending);
+            EXPECT_EQ(actual, expected);
+        }
+    }
+    // A subset of the rows (a filter), the others' keys never read.
+    std::vector<std::size_t> subset{3, 0, 7, 12};
+    std::vector<std::size_t> expected = subset;
+    std::ranges::sort(expected,
+                      [&rows](std::size_t a, std::size_t b)
+                      { return ProcessSortUtils::compareByColumn(rows[a], rows[b], ProcessColumn::Name, true); });
+    ProcessSortUtils::sortByColumn(rows, subset, ProcessColumn::Name, true);
+    EXPECT_EQ(subset, expected);
+}
+
 // #3328: the User column sorts by the user name, then the domain, so two accounts sharing a name sort next to each
 // other but never interleave; with no domain (Linux) it is the user name alone, as before.
 TEST(ProcessSortUtilsTest, UserSortsByTheNameThenTheDomain)
@@ -339,6 +455,7 @@ TEST(ProcessSortUtilsTest, SignatureSortsVerifiedBySignerThenTheRest)
     std::ranges::sort(rows,
                       [](const auto& a, const auto& b) { return ProcessSortUtils::compareByColumn(a, b, ProcessColumn::Signature, true); });
     std::vector<std::int32_t> order;
+    order.reserve(rows.size());
     for (const ProcessSnapshot& row : rows)
     {
         order.push_back(row.pid);
@@ -568,18 +685,21 @@ TEST(ProcessSortUtilsTest, AffinitySortsBeyond64Cpus)
         snap.cpuAffinity = list.empty() ? Platform::CpuAffinity{} : *Platform::CpuAffinity::fromCpuList(list);
         return snap;
     };
-    std::vector<ProcessSnapshot> rows{withAffinity("70"),
-                                      withAffinity("0-63"),
-                                      withAffinity("0-3,64-127"),
-                                      withAffinity(""),
-                                      withAffinity("200"),
-                                      withAffinity("64"),
-                                      withAffinity("0")};
+    std::vector<ProcessSnapshot> rows{
+        withAffinity("70"),
+        withAffinity("0-63"),
+        withAffinity("0-3,64-127"),
+        withAffinity(""),
+        withAffinity("200"),
+        withAffinity("64"),
+        withAffinity("0"),
+    };
     std::ranges::stable_sort(rows,
                              [](const ProcessSnapshot& a, const ProcessSnapshot& b)
                              { return ProcessSortUtils::compareColumnKey(a, b, ProcessColumn::Affinity, /*ascending=*/true); });
 
     std::vector<std::string> order;
+    order.reserve(rows.size());
     for (const auto& row : rows)
     {
         order.push_back(UI::Format::formatCpuAffinity(row.cpuAffinity.words()));

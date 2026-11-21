@@ -1,6 +1,7 @@
 #include "WindowsCrashEvents.h"
 
 #include "WinString.h"
+#include "WindowsEventLogHandle.h"
 
 // clang-format off
 #include <windows.h>
@@ -42,9 +43,9 @@ constexpr DWORD NEXT_TIMEOUT_MS = 10'000;
 /// a timeout (ERROR_TIMEOUT) among them, is its error (#4375).
 [[nodiscard]] std::expected<bool, std::uint32_t> nextEventXml(void* query, std::string& xml)
 {
-    EVT_HANDLE event = nullptr;
+    Windows::UniqueEvtHandle event; // closed however this returns
     DWORD returned = 0;
-    if (EvtNext(query, 1, &event, NEXT_TIMEOUT_MS, 0, &returned) == FALSE)
+    if (EvtNext(query, 1, event.put(), NEXT_TIMEOUT_MS, 0, &returned) == FALSE)
     {
         const DWORD error = GetLastError();
         if (error == ERROR_NO_MORE_ITEMS)
@@ -53,24 +54,24 @@ constexpr DWORD NEXT_TIMEOUT_MS = 10'000;
         }
         return std::unexpected(static_cast<std::uint32_t>(error));
     }
-    if (returned == 0 || event == nullptr)
+    if (returned == 0 || !event)
     {
         return false; // succeeded with nothing: nothing more to read
     }
     DWORD used = 0;
     DWORD properties = 0;
     std::vector<wchar_t> buffer;
-    if (EvtRender(nullptr, event, EvtRenderEventXml, 0, nullptr, &used, &properties) == FALSE &&
+    if (EvtRender(nullptr, event.get(), EvtRenderEventXml, 0, nullptr, &used, &properties) == FALSE &&
         GetLastError() == ERROR_INSUFFICIENT_BUFFER)
     {
         buffer.resize((used / sizeof(wchar_t)) + 1);
         const auto bytes = static_cast<DWORD>(buffer.size() * sizeof(wchar_t));
-        if (EvtRender(nullptr, event, EvtRenderEventXml, bytes, buffer.data(), &used, &properties) == FALSE)
+        if (EvtRender(nullptr, event.get(), EvtRenderEventXml, bytes, buffer.data(), &used, &properties) == FALSE)
         {
             buffer.clear();
         }
     }
-    EvtClose(event);
+    event.reset();
     xml = buffer.empty() ? std::string{} : WinString::wideToUtf8(std::wstring_view(buffer.data(), wcsnlen(buffer.data(), buffer.size())));
     return true;
 }

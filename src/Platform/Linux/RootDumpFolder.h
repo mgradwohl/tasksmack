@@ -6,6 +6,7 @@
 #include <string>
 #include <string_view>
 
+#include <sys/stat.h>
 #include <sys/types.h>
 
 /// A Linux root session's own default dump folder (#4181): <root's home>/TaskSmack-dumps, 0700 and root's, made by
@@ -26,6 +27,14 @@ inline constexpr std::string_view FOLDER_NAME = "TaskSmack-dumps";
 /// what it is and isn't a user's (LinuxCoreDump::userMountRefusal(); fail closed). createDump()'s check, and
 /// rootDumpFolder()'s, so the default offered is one Create will take (the #4190 review).
 [[nodiscard]] std::optional<std::string> rootDumpRefusal(const std::filesystem::path& directory);
+
+/// rootDumpRefusal() with the lstat() and the untrusted-filesystem check (RootTools::RootFs::onUntrustedFilesystem) a test
+/// gives (#4648): NFS, CIFS/SMB, CEPH, AFS, 9p, FUSE or a nosuid mount, on the folder or any folder above it, is refused
+/// as it is for root's tools (#4554, #4572): its owners and modes come from elsewhere, so the root-only check proves
+/// nothing there, and the server side, or a local user with an NFSv4 ACL, can swap the dump's name for a link.
+[[nodiscard]] std::optional<std::string> rootDumpRefusal(const std::filesystem::path& directory,
+                                                         const std::function<int(const char*, struct stat*)>& lstatOf,
+                                                         const std::function<bool(const std::string&)>& onUntrustedFilesystem);
 
 /// @p homeText without a trailing "/", then FOLDER_NAME made there for @p owner (makePrivateFolder()), if @p refusal takes
 /// it (rootDumpRefusal() for root's). Empty, with a warning once a session, when either refuses (#4262's seam: a test

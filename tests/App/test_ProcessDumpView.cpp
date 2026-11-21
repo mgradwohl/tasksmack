@@ -113,10 +113,10 @@ TEST(ProcessDumpViewTest, ASessionWithNoDefaultFolderHasNone)
     const DumpDetail::DefaultFolderFn none = &DumpDetail::tempDumpDirectory;
     EXPECT_EQ(DumpDetail::dumpDirectory("", true, none), std::filesystem::path{}) << "nothing remembered: none";
     const std::filesystem::path temp = std::filesystem::temp_directory_path();
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp / "tasksmack-no-such-dump-folder-4141"), true, none), std::filesystem::path{})
+    EXPECT_EQ(DumpDetail::dumpDirectory(temp / "tasksmack-no-such-dump-folder-4141", true, none), std::filesystem::path{})
         << "gone: none, not the temp folder";
     // A folder that exists is still used: one chosen with Save dump to... in this session (trustedDumpFolder()).
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(temp), true, none), temp);
+    EXPECT_EQ(DumpDetail::dumpDirectory(temp, true, none), temp);
 #ifndef _WIN32
 #ifdef __linux__
     EXPECT_EQ(DumpDetail::noDefaultDumpFolder(), ::geteuid() == 0) << "on Linux, any root process (#4163)";
@@ -1250,10 +1250,10 @@ TEST(ProcessDumpViewTest, EachTempFolderIsItsOwn)
 TEST(ProcessDumpViewTest, TheRememberedFolderIsUsedWhileItExists)
 {
     const TempFolder folder;
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path()), false), folder.path());
+    EXPECT_EQ(DumpDetail::dumpDirectory(folder.path(), false), folder.path());
     // Never chosen, or gone since: the temp folder, as before.
     EXPECT_EQ(DumpDetail::dumpDirectory("", false), DumpDetail::defaultDumpDirectory(false));
-    EXPECT_EQ(DumpDetail::dumpDirectory(Core::pathToUtf8(folder.path() / "gone"), false), DumpDetail::defaultDumpDirectory(false));
+    EXPECT_EQ(DumpDetail::dumpDirectory(folder.path() / "gone", false), DumpDetail::defaultDumpDirectory(false));
 }
 
 // #1891: the default view remembers a chosen folder in the user's config, saving it once; choosing the
@@ -1477,17 +1477,17 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsCheckedOnTheWorker)
     const TempFolder folder;
     struct Case
     {
-        std::string remembered;
+        std::filesystem::path remembered;
         std::filesystem::path expected;
     };
     const std::filesystem::path fallback = DumpDetail::defaultDumpDirectory(false); // a test's view has a default folder
     for (const Case& test : {
-             Case{.remembered = Core::pathToUtf8(folder.path()), .expected = folder.path()},
-             Case{.remembered = Core::pathToUtf8(folder.path() / "gone"), .expected = fallback},
+             Case{.remembered = folder.path(), .expected = folder.path()},
+             Case{.remembered = folder.path() / "gone", .expected = fallback},
              Case{.remembered = {}, .expected = fallback},
          })
     {
-        SCOPED_TRACE(test.remembered);
+        SCOPED_TRACE(Core::pathToUtf8(test.remembered));
         TestMocks::MockProcessActions mock;
         mock.setCapabilities(folderCapable());
         ProcessDumpView view([](const std::filesystem::path&) {});
@@ -1502,7 +1502,7 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsCheckedOnTheWorker)
 
     // Without actions the folder is still resolved, on the worker; no space is read.
     ProcessDumpView view([](const std::filesystem::path&) {});
-    view.requestInRememberedFolder(TARGET, "big.exe", Core::pathToUtf8(folder.path() / "gone"), nullptr);
+    view.requestInRememberedFolder(TARGET, "big.exe", folder.path() / "gone", nullptr);
     EXPECT_TRUE(view.checkingFolder());
     ASSERT_TRUE(view.takeConfirmCheck(nullptr, true));
     EXPECT_EQ(view.directory(), DumpDetail::defaultDumpDirectory(false)) << "a test's view has a default folder";
@@ -1510,10 +1510,33 @@ TEST(ProcessDumpViewTest, TheRememberedFolderIsCheckedOnTheWorker)
 
 TEST(ProcessDumpViewTest, TheRememberedFolderIsTheConfigsAsWritten)
 {
+    DumpDetail::forgetChosenDumpFolderForTesting();
     auto& config = UserConfig::get();
     const std::string original = config.settings().dumpFolder;
     config.settings().dumpFolder = "D:\\Dumps";
-    EXPECT_EQ(DumpDetail::rememberedDumpFolder(), "D:\\Dumps") << "unchecked: the worker checks it";
+    EXPECT_EQ(DumpDetail::rememberedDumpFolder(), Core::utf8ToPath("D:\\Dumps")) << "unchecked: the worker checks it";
+    config.settings().dumpFolder = original;
+}
+
+// #4655: the folder chosen with Save dump to... is used for the rest of the session, a name with no exact text included:
+// it isn't saved (#4327), and the next dump still goes there rather than back to the saved folder.
+TEST(ProcessDumpViewTest, AFolderChosenThisSessionIsUsedForItsLaterDumpsThoughItCantBeSaved)
+{
+    DumpDetail::forgetChosenDumpFolderForTesting();
+    auto& config = UserConfig::get();
+    const std::string original = config.settings().dumpFolder;
+    config.settings().dumpFolder = "D:\\Dumps";
+#ifdef _WIN32
+    const std::filesystem::path unsaveable = std::filesystem::path(std::wstring(L"E:\\M") + wchar_t{0xD800} + L"ll");
+#else
+    const std::filesystem::path unsaveable = std::filesystem::path(std::string("/home/u/M\xFCll"));
+#endif
+    ASSERT_FALSE(Core::pathToUtf8Exact(unsaveable).has_value()) << "a name with no exact UTF-8 text";
+    DumpDetail::rememberDumpDirectory(unsaveable);
+    EXPECT_EQ(config.settings().dumpFolder, "D:\\Dumps") << "never saved (#4327)";
+    EXPECT_EQ(DumpDetail::rememberedDumpFolder(), unsaveable) << "but the next dump goes there, the path exactly";
+    EXPECT_EQ(DumpDetail::trustedDumpFolder("D:\\Dumps", false, "E:\\Mine"), "E:\\Mine") << "this session's choice first";
+    DumpDetail::forgetChosenDumpFolderForTesting();
     config.settings().dumpFolder = original;
 }
 
@@ -1526,15 +1549,17 @@ TEST(ProcessDumpViewTest, AHandOffSessionIgnoresTheHandedOverDumpFolder)
     EXPECT_EQ(DumpDetail::trustedDumpFolder("C:\\Windows\\System32", true, ""), "") << "the default instead";
     EXPECT_EQ(DumpDetail::trustedDumpFolder("C:\\Windows\\System32", true, "E:\\Mine"), "E:\\Mine") << "chosen in this session";
 
+    DumpDetail::forgetChosenDumpFolderForTesting();
     auto& config = UserConfig::get();
     const std::string original = config.settings().dumpFolder;
     // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
     const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
     config.settings().dumpFolder = "C:\\Windows\\System32";
     Core::ConfigDirOverride::adoptHandedOver(std::filesystem::temp_directory_path());
-    EXPECT_NE(DumpDetail::rememberedDumpFolder(), "C:\\Windows\\System32") << "the handed-over config's folder isn't used";
+    EXPECT_NE(DumpDetail::rememberedDumpFolder(), Core::utf8ToPath("C:\\Windows\\System32"))
+        << "the handed-over config's folder isn't used";
     Core::ConfigDirOverride::setActiveForTesting(previous);
-    EXPECT_EQ(DumpDetail::rememberedDumpFolder(), "C:\\Windows\\System32") << "outside a hand-off, as written";
+    EXPECT_EQ(DumpDetail::rememberedDumpFolder(), Core::utf8ToPath("C:\\Windows\\System32")) << "outside a hand-off, as written";
     config.settings().dumpFolder = original;
 }
 } // namespace

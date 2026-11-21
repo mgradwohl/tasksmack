@@ -2465,9 +2465,8 @@ void ProcessesPanel::renderContent()
             // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
             // in natural order for the next sort to start from.
             m_CachedSortedIndices = m_CachedFilteredIndices;
-            std::ranges::sort(m_CachedSortedIndices,
-                              [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                              { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+            // A text column folds each row's key once, not on every comparison (#4509).
+            ProcessSortUtils::sortByColumn(currentSnapshots, m_CachedSortedIndices, sortCol, ascending);
             // Pinned processes ahead of the rest, each group in the sort's order (#3061); in tree view
             // that puts pinned roots first, and pinned children first among their siblings.
             ProcessPins::pinnedFirst(m_CachedSortedIndices, currentSnapshots, m_Pins);

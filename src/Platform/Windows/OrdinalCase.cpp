@@ -27,13 +27,17 @@ bool equalsOrdinalIgnoreCase(const std::string_view a, const std::string_view b)
         {
             return a == b;
         }
-        return CompareStringOrdinal(wideA.data(), static_cast<int>(wideA.size()), wideB.data(), static_cast<int>(wideB.size()), TRUE) ==
-               CSTR_EQUAL;
+        return equalsOrdinalIgnoreCase(std::wstring_view(wideA), std::wstring_view(wideB));
     }
     catch (const std::bad_alloc&)
     {
         return a == b;
     }
+}
+
+bool equalsOrdinalIgnoreCase(const std::wstring_view a, const std::wstring_view b) noexcept
+{
+    return CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
 }
 
 } // namespace Platform::Windows

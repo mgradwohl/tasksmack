@@ -420,9 +420,14 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
 
     const double maxSaneRate = m_MaxSaneNetworkRateBps.load(std::memory_order_relaxed);
     const Clock::time_point currentSampleTime = acquiredAt;
+    // The last refresh threw part way (#4405): some processes' stored counters are from it and the rest from the
+    // one before, and the interval baselines below were never committed. No rate computed from that mix is true,
+    // so this refresh only re-seeds: every counter is stored and the baselines are committed after the loop, but
+    // no rate is emitted and no history sample appended.
+    const bool reseed = m_SnapshotBuildInterrupted;
     double elapsedSeconds = 0.0;
     std::uint64_t timeDeltaUs = 0;
-    if (m_HasPrevSampleTime)
+    if (m_HasPrevSampleTime && !reseed)
     {
         const auto delta = currentSampleTime - m_PrevSampleTime;
         elapsedSeconds = std::chrono::duration<double>(delta).count();
@@ -448,7 +453,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
     if (energyAcquiredAt.has_value())
     {
         timeDeltaUs = 0;
-        if (m_PrevEnergyAt.has_value())
+        if (m_PrevEnergyAt.has_value() && !reseed)
         {
             const auto energyDelta = *energyAcquiredAt - *m_PrevEnergyAt;
             if (std::chrono::duration<double>(energyDelta).count() >= MIN_ELAPSED_FOR_RATES)
@@ -458,14 +463,11 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         }
     }
     const std::optional<Clock::time_point> lastEnergyTime = m_PrevEnergyAt; // a process carried over from now on: its read's
-    m_PrevEnergyAt = energyAcquiredAt; // a refresh without a package read forgets it: the attributor's baseline goes too
-    const bool hasElapsedForHistory = m_HasPrevSampleTime;
+    const bool hasElapsedForHistory = m_HasPrevSampleTime && !reseed;
     const Clock::time_point lastSampleTime = m_PrevSampleTime; // a process carried over from now on was read then (#3031)
-    m_PrevSampleTime = currentSampleTime;
-    m_HasPrevSampleTime = true;
 
     std::uint64_t totalCpuDelta = 0;
-    if (m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
+    if (!reseed && m_PrevTotalCpuTime > 0 && totalCpuTime > m_PrevTotalCpuTime)
     {
         totalCpuDelta = totalCpuTime - m_PrevTotalCpuTime;
     }
@@ -527,7 +529,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // Read last refresh, as nearly every process was: this refresh's interval. Read before that, because
         // the refreshes between carried it over (#3031): the interval since that read.
         RateInterval interval{.totalCpuDelta = totalCpuDelta, .elapsedSeconds = elapsedSeconds, .timeDeltaUs = timeDeltaUs};
-        if (!m_HeldOver.empty())
+        if (!m_HeldOver.empty() && !reseed)
         {
             interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime, energyAcquiredAt);
         }
@@ -633,7 +635,12 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         std::erase_if(m_HeldOver, [this](const auto& entry) { return !m_PerProcessState.contains(entry.first); });
     }
 
+    // The interval baselines are committed with the counters they belong to, after the loop (#4405): a throw
+    // inside it leaves them at the last complete refresh, which the next call re-seeds past (m_SnapshotBuildInterrupted).
     m_PrevTotalCpuTime = totalCpuTime;
+    m_PrevEnergyAt = energyAcquiredAt; // a refresh without a package read forgets it: the attributor's baseline goes too
+    m_PrevSampleTime = currentSampleTime;
+    m_HasPrevSampleTime = true;
 
     // What the GPU probe supplied per process for this generation (#1210), published with it so a
     // reader judges each sample by its own generation's support rather than the latest -- the GPU

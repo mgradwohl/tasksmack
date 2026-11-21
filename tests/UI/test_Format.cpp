@@ -146,7 +146,7 @@ TEST(FormatTest, EpochDateTimeShortOlderShowsDate)
 {
     // Use a time from several days ago
     const auto now = static_cast<std::uint64_t>(std::time(nullptr));
-    const auto twoDaysAgo = now - (2 * 24 * 60 * 60);
+    const auto twoDaysAgo = now - (std::uint64_t{2} * 24 * 60 * 60);
     const auto result = UI::Format::formatEpochDateTimeShort(twoDaysAgo);
 
     // Should show "MMM DD HH:MM" format (not "Yesterday" or "HH:MM:SS")
@@ -625,9 +625,9 @@ TEST(FormatTest, SplitBytesForAlignmentRoundingOverflow)
     // When fractional rounds to 10, we carry to whole part
     EXPECT_EQ(parts.decimalPart, "0");
     // Whole part should be 1024 (with locale-dependent thousand separator)
-    EXPECT_TRUE(parts.wholePart.contains("1"));
+    EXPECT_TRUE(parts.wholePart.contains('1'));
     EXPECT_TRUE(parts.wholePart.contains("024"));
-    EXPECT_TRUE(parts.wholePart.ends_with("."));
+    EXPECT_TRUE(parts.wholePart.ends_with('.'));
 }
 
 TEST(FormatTest, SplitBytesForAlignmentThousandRange)
@@ -637,9 +637,9 @@ TEST(FormatTest, SplitBytesForAlignmentThousandRange)
     const auto parts = UI::Format::splitBytesForAlignment(1000.0, unit);
 
     // Should contain "1" and "000" with a separator in between
-    EXPECT_TRUE(parts.wholePart.contains("1"));
+    EXPECT_TRUE(parts.wholePart.contains('1'));
     EXPECT_TRUE(parts.wholePart.contains("000"));
-    EXPECT_TRUE(parts.wholePart.ends_with("."));
+    EXPECT_TRUE(parts.wholePart.ends_with('.'));
     EXPECT_EQ(parts.decimalPart, "0");
     EXPECT_EQ(parts.unitPart, " B");
 }
@@ -652,9 +652,9 @@ TEST(FormatTest, SplitBytesForAlignmentThousandRangeKB)
     const auto parts = UI::Format::splitBytesForAlignment(bytes, unit);
 
     // Should be "1,023." or similar with locale separator
-    EXPECT_TRUE(parts.wholePart.contains("1"));
+    EXPECT_TRUE(parts.wholePart.contains('1'));
     EXPECT_TRUE(parts.wholePart.contains("023"));
-    EXPECT_TRUE(parts.wholePart.ends_with("."));
+    EXPECT_TRUE(parts.wholePart.ends_with('.'));
     EXPECT_EQ(parts.decimalPart, "0");
     EXPECT_EQ(parts.unitPart, " KiB");
 }
@@ -717,14 +717,13 @@ TEST(FormatTest, SplitBytesForAlignmentFractionalRounding)
 /// Test fixture that formats with en-US's punctuation ("1,234.5"), as the app would in that locale,
 /// so the fast and slow paths are compared with digit grouping on. The display punctuation, not the
 /// global locale, is what the formatters read (#1648, slice E).
+namespace
+{
 class FormatLocaleTest : public ::testing::Test
 {
   private:
     UI::Format::ScopedDisplayPunctuation m_EnUs{{.decimalPoint = '.', .thousandsSep = ",", .grouping = "\3"}};
 };
-
-namespace
-{
 
 /// Helper to compare AlignedNumericParts (slow) with AlignedBytesParts (fast)
 /// Returns AssertionResult with detailed mismatch info on failure
@@ -819,7 +818,7 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
 
     for (const auto& unit : units)
     {
-        for (double rawValue : edgeCases)
+        for (double const rawValue : edgeCases)
         {
             // Test the raw value as if it were already in the target unit
             const double bytes = rawValue * unit.scale;
@@ -833,7 +832,7 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowEdgeCases)
 TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
 {
     // Use a fixed seed for reproducibility
-    std::mt19937 rng(42);
+    std::mt19937 rng(42); // NOLINT(bugprone-random-generator-seed) - a fixed seed, so a failure repeats
 
     // Different distributions for different ranges
     std::uniform_real_distribution<double> smallDist(0.0, 10.0);
@@ -889,7 +888,7 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
         for (int i = 0; i < samplesPerRange; ++i)
         {
             const int whole = static_cast<int>(mediumDist(rng));
-            const double frac = static_cast<int>(fractionalDist(rng) * 10) / 10.0 + 0.05; // X.X5
+            const double frac = (static_cast<int>(fractionalDist(rng) * 10) / 10.0) + 0.05; // X.X5
             const double rawValue = whole + frac;
             const double bytes = rawValue * unit.scale;
             EXPECT_TRUE(compareBytesAlignment(bytes, unit)) << "Boundary failed for " << rawValue;
@@ -902,7 +901,7 @@ TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRandomValues)
 TEST_F(FormatLocaleTest, SplitBytesForAlignmentFastMatchesSlowRealisticWorkload)
 {
     // Simulate realistic process memory values
-    std::mt19937 rng(123);
+    std::mt19937 rng(123); // NOLINT(bugprone-random-generator-seed) - a fixed seed, so a failure repeats
 
     // Process memory typically ranges from a few KB to several GB
     std::uniform_int_distribution<std::uint64_t> memDist(1024, 16ULL * 1024 * 1024 * 1024);
@@ -1638,37 +1637,39 @@ class ScopedTestNumpunct
 /// boundaries and very large magnitudes, plus random ones across the axis ranges.
 [[nodiscard]] std::vector<double> fixedFormatSamples()
 {
-    std::vector<double> values{0.0,
-                               -0.0,
-                               0.04,
-                               0.05,
-                               0.25,
-                               1.25,
-                               2.5,
-                               -2.5,
-                               3.25,
-                               -0.04,
-                               9.95,
-                               99.95,
-                               999.95,
-                               1000.0,
-                               1023.95,
-                               12345.678,
-                               -12345.678,
-                               123456.0,
-                               1234567.891,
-                               -987654321.5,
-                               1.0e15,
-                               -1.0e15,
-                               1.0e20,
-                               123456789012345678.0,
-                               1.0e300,
-                               5e-324,
-                               0.1,
-                               0.15,
-                               0.35,
-                               1e9 / 3.0,
-                               4398046511104.0};
+    std::vector<double> values{
+        0.0,
+        -0.0,
+        0.04,
+        0.05,
+        0.25,
+        1.25,
+        2.5,
+        -2.5,
+        3.25,
+        -0.04,
+        9.95,
+        99.95,
+        999.95,
+        1000.0,
+        1023.95,
+        12345.678,
+        -12345.678,
+        123456.0,
+        1234567.891,
+        -987654321.5,
+        1.0e15,
+        -1.0e15,
+        1.0e20,
+        123456789012345678.0,
+        1.0e300,
+        5e-324,
+        0.1,
+        0.15,
+        0.35,
+        1e9 / 3.0,
+        4398046511104.0,
+    };
     std::mt19937 rng(1334); // NOLINT(bugprone-random-generator-seed) -- reproducible samples
     std::uniform_real_distribution<double> dist(-5.0e9, 5.0e9);
     for (int i = 0; i < 500; ++i)
@@ -1865,6 +1866,12 @@ TEST(FormatTest, AValueThatRoundsToTheNextUnitIsPrintedInIt)
     EXPECT_EQ(UI::Format::unitForTotalBytes(1048550).suffix, "MiB");
     const auto power = UI::Format::splitPowerForAlignment(0.99996);
     EXPECT_EQ(power.unitPart, " W");
+    // #4657: the unit changes at the smaller unit's 1000.0, not at 0.95 of the larger one.
+    EXPECT_EQ(UI::Format::formatWatts(0.96), "960" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 mW");
+    EXPECT_EQ(UI::Format::formatWatts(0.00096), "960" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 µW");
+    EXPECT_EQ(UI::Format::splitPowerForAlignment(0.96).unitPart, " mW");
+    EXPECT_EQ(UI::Format::splitPowerForAlignment(0.00096).unitPart, " µW");
+    EXPECT_EQ(UI::Format::splitPowerForAlignment(0.00099996).unitPart, " mW");
     // Below the window, the smaller unit stays.
     EXPECT_EQ(UI::Format::formatBytes(1048524.0).find("MiB"), std::string::npos) << "1023.9 KiB";
 }
@@ -1881,12 +1888,14 @@ TEST(FormatDisplayLocaleTest, EnUsGroupsWithCommasAndUsesADecimalPoint)
     EXPECT_EQ(enUs->decimalPoint, '.');
     EXPECT_EQ(enUs->thousandsSep, ",");
     expectLocale(*enUs,
-                 {.size = "1,234.5 MiB",
-                  .rate = "1,234.5 MiB/s",
-                  .percent = "4.3%",
-                  .count = "1,234,567",
-                  .celsius = "65.5 °C",
-                  .alignedCell = "1,234."});
+                 {
+                     .size = "1,234.5 MiB",
+                     .rate = "1,234.5 MiB/s",
+                     .percent = "4.3%",
+                     .count = "1,234,567",
+                     .celsius = "65.5 °C",
+                     .alignedCell = "1,234.",
+                 });
 }
 
 TEST(FormatDisplayLocaleTest, DeDeGroupsWithDotsAndUsesADecimalComma)
@@ -1899,12 +1908,14 @@ TEST(FormatDisplayLocaleTest, DeDeGroupsWithDotsAndUsesADecimalComma)
     EXPECT_EQ(deDe->decimalPoint, ',');
     EXPECT_EQ(deDe->thousandsSep, ".");
     expectLocale(*deDe,
-                 {.size = "1.234,5 MiB",
-                  .rate = "1.234,5 MiB/s",
-                  .percent = "4,3%",
-                  .count = "1.234.567",
-                  .celsius = "65,5 °C",
-                  .alignedCell = "1.234,"});
+                 {
+                     .size = "1.234,5 MiB",
+                     .rate = "1.234,5 MiB/s",
+                     .percent = "4,3%",
+                     .count = "1.234.567",
+                     .celsius = "65,5 °C",
+                     .alignedCell = "1.234,",
+                 });
 }
 
 // fr-FR groups with a no-break space: U+202F (narrow) on Windows and current glibc, U+00A0 on older
@@ -1926,12 +1937,14 @@ TEST(FormatDisplayLocaleTest, FrFrGroupsWithAWholeNoBreakSpace)
 #endif
     const std::string sep = frFr->thousandsSep;
     expectLocale(*frFr,
-                 {.size = "1" + sep + "234,5 MiB",
-                  .rate = "1" + sep + "234,5 MiB/s",
-                  .percent = "4,3%",
-                  .count = "1" + sep + "234" + sep + "567",
-                  .celsius = "65,5 °C",
-                  .alignedCell = "1" + sep + "234,"});
+                 {
+                     .size = "1" + sep + "234,5 MiB",
+                     .rate = "1" + sep + "234,5 MiB/s",
+                     .percent = "4,3%",
+                     .count = "1" + sep + "234" + sep + "567",
+                     .celsius = "65,5 °C",
+                     .alignedCell = "1" + sep + "234,",
+                 });
 }
 
 // The global C++ locale keeps the classic numeric facets in TaskSmack; display formatting must not

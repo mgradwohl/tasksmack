@@ -142,14 +142,17 @@ renameAside(HANDLE file, HANDLE parent, std::wstring_view name, NtSetInformation
 void markDeleteOnClose(HANDLE file) noexcept;
 
 /// GetFinalPathNameByHandleW's path for @p handle as a plain drive path, without the \\?\ prefix (a \\?\UNC\ path
-/// keeps it); nullopt when it can't be read.
+/// keeps it); nullopt when it can't be read. WindowsFinalPath.h's readFinalPath(), sized FinalPathBuffer::AsAnswered,
+/// FinalPathPrefix::KeptForUnc.
 [[nodiscard]] std::optional<std::wstring> finalPathOf(HANDLE handle, GetFinalPathFn getFinalPath = &::GetFinalPathNameByHandleW);
 
 /// Whether @p handle is a plain folder (not a reparse point), read through it; nullopt when it can't be read.
 [[nodiscard]] std::optional<bool> isPlainFolder(HANDLE handle);
 
 /// Whether the owner of @p handle (opened with READ_CONTROL) is BUILTIN\Administrators or SYSTEM; nullopt when it
-/// can't be read. A folder made while elevated is owned by Administrators; one a user made is not.
+/// can't be read (WindowsSecurityOwners.h). A folder made while elevated is owned by Administrators; one a user made is
+/// not. TrustedInstaller isn't one, unlike ElevatedRestart::ownerIsPrivileged() and
+/// ownerIsSystemOrAdministratorsOrTrustedInstaller().
 [[nodiscard]] std::optional<bool> ownerIsAdministratorsOrSystem(HANDLE handle);
 
 /// A security descriptor (LocalFree'd when it dies).
@@ -162,8 +165,8 @@ using OwnedSecurityDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
 /// itself, never followed: callers check isPlainFolder(). The error is GetLastError()'s message.
 [[nodiscard]] std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess = 0);
 
-/// Whether two paths are the same text, ignoring case as NTFS compares names (CompareStringOrdinal): a held folder's
-/// finalPathOf() against the path it was opened by.
+/// Whether two paths are the same text, ignoring case as NTFS compares names (equalsOrdinalIgnoreCase(), OrdinalCase.h):
+/// a held folder's finalPathOf() against the path it was opened by. The whole text, so a trailing separator counts.
 [[nodiscard]] bool samePathText(std::wstring_view left, std::wstring_view right) noexcept;
 
 /// Whether an existing folder's owner (read through the handle) is trusted to take it over in place; nullopt when the
