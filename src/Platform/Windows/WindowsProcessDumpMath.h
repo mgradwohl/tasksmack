@@ -159,11 +159,12 @@ namespace Detail
     {
         return "process";
     }
+    // Never ill-formed in a file name (#4638, #4299 D1): an ill-formed byte becomes U+FFFD, whatever the caller passed.
+    stem = Domain::sanitizedUtf8(stem);
     if (Detail::utf16Units(stem) > MAX_STEM_UTF16_UNITS)
     {
         constexpr std::size_t TAG_UNITS = 9; // "~" and eight hex digits
-        const std::string whole = Domain::sanitizedUtf8(stem);
-        stem = std::format("{}~{:08x}", Detail::utf16Prefix(whole, MAX_STEM_UTF16_UNITS - TAG_UNITS), Detail::fnv1a(whole));
+        stem = std::format("{}~{:08x}", Detail::utf16Prefix(stem, MAX_STEM_UTF16_UNITS - TAG_UNITS), Detail::fnv1a(stem));
     }
     return stem;
 }

@@ -4,6 +4,7 @@
 #include "ComScope.h"
 #include "Platform/IProcessActions.h"
 #include "WinString.h"
+#include "WindowsCoTaskMem.h"
 
 #include <spdlog/spdlog.h>
 
@@ -15,13 +16,14 @@
 #define NOMINMAX
 #endif
 #include <windows.h> // NOLINT(misc-include-cleaner) - umbrella header; symbols reside in sub-headers
-#include <objbase.h> // NOLINT(misc-include-cleaner) - CoCreateInstance, CoTaskMemFree
+#include <objbase.h> // NOLINT(misc-include-cleaner) - CoCreateInstance
 #include <shobjidl_core.h> // NOLINT(misc-include-cleaner) - IFileOpenDialog, IShellItem, SHCreateItemFromParsingName
 // clang-format on
 
 #include <expected>
 #include <filesystem>
 #include <format>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -40,14 +42,14 @@ namespace
 /// The folder @p item names, from its file-system path; empty when it has none.
 [[nodiscard]] std::filesystem::path itemPath(IShellItem& item)
 {
-    PWSTR path = nullptr;
-    if (FAILED(item.GetDisplayName(SIGDN_FILESYSPATH, &path)) || path == nullptr)
+    UniqueCoTaskMem<wchar_t> path;
+    // Its own statement: std::out_ptr hands the name to @c path only when the full expression ends.
+    const HRESULT result = item.GetDisplayName(SIGDN_FILESYSPATH, std::out_ptr(path));
+    if (FAILED(result) || path == nullptr)
     {
         return {};
     }
-    std::filesystem::path result(path);
-    CoTaskMemFree(path);
-    return result;
+    return {path.get()};
 }
 
 [[nodiscard]] std::string failure(std::string_view step, HRESULT hr)

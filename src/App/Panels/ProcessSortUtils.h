@@ -4,12 +4,15 @@
 #include "App/ProcessColumnConfig.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/ImageSignature.h"
 #include "Platform/SchedPolicy.h"
 #include "Platform/Utf8CaseFold.h"
 
 #include <algorithm>
 #include <compare>
+#include <cstddef>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -80,13 +83,36 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     {
         return ascending ? (lhs < rhs) : (rhs < lhs);
     };
+    // Text the user reads, as every other user-visible sort (#4324, #4509): by Unicode simple case folding, so "Émile"
+    // sorts before "Zoe" and "bash" beside "Bash", then by bytes, so only identical texts tie.
+    const auto compareText = [ascending](std::string_view lhs, std::string_view rhs) -> bool
+    {
+        const std::strong_ordering order = Platform::compareFoldedCase(lhs, rhs);
+        return ascending ? order < 0 : order > 0;
+    };
 
     switch (column)
     {
     case ProcessColumn::PID:
         return compare(a.pid, b.pid);
     case ProcessColumn::User: // By user name, then domain, so PC\alice's and CORP\alice's rows don't interleave (#3328)
-        return compare(std::tie(a.user, a.userDomain), std::tie(b.user, b.userDomain));
+    {
+        // Folded name, folded domain, then the bytes of each: the order sortByColumn()'s keys give.
+        std::strong_ordering order = Platform::compareFolded(a.user, b.user);
+        if (order == 0)
+        {
+            order = Platform::compareFolded(a.userDomain, b.userDomain);
+        }
+        if (order == 0)
+        {
+            order = a.user <=> b.user;
+        }
+        if (order == 0)
+        {
+            order = a.userDomain <=> b.userDomain;
+        }
+        return ascending ? order < 0 : order > 0;
+    }
     case ProcessColumn::CpuPercent:
         return compare(a.cpuPercent, b.cpuPercent);
     case ProcessColumn::MemPercent:
@@ -112,7 +138,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::Status:
         return compare(a.status, b.status);
     case ProcessColumn::Name:
-        return compare(a.name, b.name);
+        return compareText(a.name, b.name);
     case ProcessColumn::PPID:
         return compare(a.parentPid, b.parentPid);
     case ProcessColumn::Priority:
@@ -128,7 +154,7 @@ compareColumnKey(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot
     case ProcessColumn::Affinity:
         return compare(a.cpuAffinity, b.cpuAffinity);
     case ProcessColumn::Command:
-        return compare(a.command, b.command);
+        return compareText(a.command, b.command);
     case ProcessColumn::IoRead:
         return compare(readingSortKey(a.ioAvailable, a.ioReadBytesPerSec), readingSortKey(b.ioAvailable, b.ioReadBytesPerSec));
     case ProcessColumn::IoWrite:
@@ -212,6 +238,97 @@ compareByColumn(const Domain::ProcessSnapshot& a, const Domain::ProcessSnapshot&
         return ascending ? (a.pid < b.pid) : (b.pid < a.pid);
     }
     return ascending ? (a.uniqueKey < b.uniqueKey) : (b.uniqueKey < a.uniqueKey);
+}
+
+/// Appends @p text's sort key to @p key (#4509): its Unicode simple case fold, as Platform::appendFolded() makes it,
+/// with ASCII-only text (most names and command lines) lower-cased in one pass instead of decoded a code point at
+/// a time. Both give the same bytes for ASCII text: simpleCaseFold() folds A-Z and nothing else below 0x80.
+inline void appendSortKey(std::string& key, std::string_view text)
+{
+    key.reserve(key.size() + text.size());
+    if (std::ranges::all_of(text, [](char c) { return static_cast<unsigned char>(c) < 0x80U; }))
+    {
+        std::ranges::transform(text, std::back_inserter(key), [](char c) { return Platform::foldAscii(c); });
+        return;
+    }
+    Platform::appendFolded(key, text);
+}
+
+/// Whether @p column sorts by text the user reads (#4509): Name, Command and User.
+[[nodiscard]] constexpr bool isTextColumn(ProcessColumn column) noexcept
+{
+    return column == ProcessColumn::Name || column == ProcessColumn::Command || column == ProcessColumn::User;
+}
+
+/// Sorts @p order (indices into @p rows) as compareByColumn() orders them. For a text column (#4509) each row's text
+/// is folded once (Platform::appendFolded), and the sort compares those keys as bytes: a folded compare on every one of
+/// the sort's n log n comparisons cost 8-10 times a byte compare for 2,000 rows with long command lines (they share
+/// long prefixes). UTF-8's byte order is code-point order, so for well-formed text the keys order as
+/// Platform::compareFolded does; the raw bytes break their ties, then the PID and the unique key, as compareByColumn().
+inline void
+sortByColumn(const std::vector<Domain::ProcessSnapshot>& rows, std::vector<std::size_t>& order, ProcessColumn column, bool ascending)
+{
+    if (!isTextColumn(column))
+    {
+        std::ranges::sort(order,
+                          [&rows, column, ascending](std::size_t a, std::size_t b)
+                          { return compareByColumn(rows[a], rows[b], column, ascending); });
+        return;
+    }
+    // A folded key per sorted row; for User the folded name, a NUL (below every character), then the folded domain.
+    std::vector<std::string> keys(rows.size());
+    for (const std::size_t i : order)
+    {
+        const Domain::ProcessSnapshot& row = rows[i];
+        std::string& key = keys[i];
+        if (column == ProcessColumn::Name)
+        {
+            appendSortKey(key, row.name);
+        }
+        else if (column == ProcessColumn::Command)
+        {
+            appendSortKey(key, row.command);
+        }
+        else
+        {
+            appendSortKey(key, row.user);
+            key += '\0';
+            appendSortKey(key, row.userDomain);
+        }
+    }
+    const auto rawOrder = [&rows, column](std::size_t a, std::size_t b) -> std::strong_ordering
+    {
+        const Domain::ProcessSnapshot& x = rows[a];
+        const Domain::ProcessSnapshot& y = rows[b];
+        if (column == ProcessColumn::Name)
+        {
+            return x.name <=> y.name;
+        }
+        if (column == ProcessColumn::Command)
+        {
+            return x.command <=> y.command;
+        }
+        const std::strong_ordering byUser = x.user <=> y.user;
+        return byUser != 0 ? byUser : x.userDomain <=> y.userDomain;
+    };
+    std::ranges::sort(order,
+                      [&rows, &keys, &rawOrder, ascending](std::size_t a, std::size_t b)
+                      {
+                          std::strong_ordering byKey = keys[a] <=> keys[b];
+                          if (byKey == 0)
+                          {
+                              byKey = rawOrder(a, b);
+                          }
+                          if (byKey != 0)
+                          {
+                              return ascending ? byKey < 0 : byKey > 0;
+                          }
+                          if (rows[a].pid != rows[b].pid)
+                          {
+                              return ascending ? (rows[a].pid < rows[b].pid) : (rows[b].pid < rows[a].pid);
+                          }
+                          return ascending ? (rows[a].uniqueKey < rows[b].uniqueKey) : (rows[b].uniqueKey < rows[a].uniqueKey);
+                      });
 }
 
 } // namespace App::ProcessSortUtils

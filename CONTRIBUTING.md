@@ -396,18 +396,42 @@ it on any new target. Third-party dependencies keep their own settings.
 
 ### Text encoding and locale
 
-- **UTF-8 `std::string` everywhere.** Strings inside TaskSmack hold UTF-8. Lengths and offsets
-  are byte counts, not characters or columns.
-- **UTF-16 only at the Win32 call site.** Convert with `Platform::WinString::utf8ToWide` /
-  `wideToUtf8` right where you call the `W` API, and convert straight back. Don't use `TCHAR`,
-  `std::wstring` members or the `A` functions.
+- **UTF-8 `std::string`, but not every string is valid (#4299, D1).** Text TaskSmack makes is UTF-8,
+  and lengths and offsets are byte counts, not characters or columns. Text the OS hands over may not
+  be valid Unicode: bytes from `/proc`, `/sys`, `readlink`, D-Bus and the environment on Linux, and a
+  Windows UTF-16 name with a lone surrogate. Such text **keeps its native form for every action,
+  lookup and identity**. Make it valid **only for display**, with `Domain::sanitizedUtf8()`
+  (`Domain/Utf8Sanitize.h`), which puts U+FFFD for each ill-formed sequence, and never write invalid
+  UTF-8 to a file: config.toml, themes, logs, reports, exports and dump names. A raw byte value shown
+  as an escape (an environment value, an SSID) is the recorded exception (#4328).
+- **UTF-16 at the Win32 call site, and the wide original where it is an identity.** Convert with
+  `Platform::WinString::utf8ToWide` / `wideToUtf8` where you call the `W` API. Don't use `TCHAR` or
+  the `A` functions. `wideToUtf8` turns a lone surrogate into U+FFFD, so the UTF-8 form can't name
+  the thing again. Where an action needs that name later (a path, a startup task, a service), keep
+  the wide original, or an opaque Platform-side id mapped to it (#4304). Never rebuild it from
+  display text.
+- **Case-insensitive matching and sorting use Unicode simple case folding (#4299, D2).** For anything
+  the user types or reads (filters, search boxes, Find handles, sorted columns), use
+  `Platform/Utf8CaseFold.h`: `equalsFoldedCase`, `containsFoldedCase`, `startsWithFoldedCase`, and
+  `compareFoldedCase` for sorts, whose byte-wise tie-break keeps the order stable. There are no
+  locale or Turkish rules, and folding joins a letter's cases without stripping accents. An
+  ASCII-only fold on user-visible text is a bug. `Platform/AsciiCase.h` is for identifiers, keys and
+  protocol words only.
+- **Identity comparisons are exact.** Compare byte for byte on Linux. On Windows compare ordinally,
+  ignoring case only where Windows itself does (file paths, account and service names), with
+  `Platform::Windows::equalsOrdinalIgnoreCase` (`Platform/Windows/OrdinalCase.h`, #4309). Shared
+  code takes the comparison as a `Platform::TextEquals` parameter.
 - **The process runs in UTF-8.** On Windows the application manifest sets the active code page
   to UTF-8 (`activeCodePage`, Windows 10 1903+), so `GetACP()` is 65001 and narrow CRT calls,
   `std::filesystem::path` and `getenv` take UTF-8. The test binaries have no manifest, so code
   under test must not depend on it: convert explicitly rather than relying on the code page.
-- **Paths meet UTF-8 text only through `Core/Utf8Path.h`.** `Core::pathToUtf8(path)` for a log
-  line or a library that takes a UTF-8 file name (toml++'s `parse_file`, SDL), and
-  `Core::utf8ToPath(text)` for a path read from UTF-8. Never `path.string()` or
+- **Paths meet UTF-8 text only through `Core/Utf8Path.h`.** `Core::pathToUtf8(path)` is a display
+  form, for a log line or a label. On Windows it is lossy (a lone surrogate becomes U+FFFD), and on
+  Linux it may hold bytes that aren't UTF-8. So don't hand it to a library to open the file: read the
+  file by its path and parse the bytes, as `UserConfig` does with toml++ (#4315). A path saved to be
+  read back (config.toml) takes `Core::pathToUtf8Exact(path)`, which is nullopt when no exact UTF-8
+  form exists, and is then not saved (#4327). Use `Core::utf8ToPath(text)` for a path read from
+  UTF-8. Never `path.string()` or
   `std::filesystem::path(std::string)`: on Windows both go through the code page, so in a binary
   without the manifest (the tests, `TaskSmackUiTraining`) they throw for CJK or emoji and turn
   accented Latin into bytes that aren't UTF-8. To open a file, pass the path itself (`std::ifstream`,
@@ -3256,9 +3280,9 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`dependency-review.yml`**: Scans PRs and merge groups to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
-- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
+- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A run that opened or closed one starts a `release-dashboard.yml` run, so the release page has it within minutes (#4700). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
-- **`release-dashboard.yml`**: When an issue opens, closes or changes milestone, when `main` moves, and every 10 minutes (#4604, #4620), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
+- **`release-dashboard.yml`**: When an issue closes or changes milestone, when `main` moves, when Main Health opens or closes a tracking issue, and every five minutes on a schedule (#4604, #4620, #4700), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
 - **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 

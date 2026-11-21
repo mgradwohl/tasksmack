@@ -19,30 +19,44 @@ name: Release Dashboard
 # good data and says how old it is.
 on:
   schedule:
-    # Every 10 minutes (maintainer, 2026-11-19), off the hour: the backstop, and what moves the figures only
-    # the clock changes. GitHub starts scheduled runs late and skips some when it's busy (#4604: 13 of a day's
-    # 120 slots never started, three in a row at midnight UTC), so the events below carry the changes. The
-    # generator reads once an hour what changes slowly, and a usual run is about 7 REST calls and 50 GraphQL
-    # points of the hourly budget this token shares with every other workflow here. Each run's log says what
-    # it used and what's left.
+    # Two lines, each every 10 minutes (the maintainer's cadence, 2026-11-19) and off the hour: the backstop,
+    # and what moves the figures only the clock changes. GitHub starts scheduled runs late and skips some when
+    # it's busy (#4604: 13 of a day's 120 slots never started, three in a row at midnight UTC), so the events
+    # below carry the changes. The generator reads once an hour what changes slowly, and a usual run is about
+    # 7 REST calls and 50 GraphQL points of the hourly budget this token shares with every other workflow
+    # here. No run but a person's publishes sooner than five minutes after the last, so an hour is 12 runs at
+    # the most: about 100 calls and 600 points of 5,000 each. Each run's log says what it used and what's left.
     - cron: '3-59/10 * * * *'
+    # The same again, five minutes off (#4700). The hour's first slot starts about eight minutes late or not
+    # at all, and in a quiet stretch that left the page 15 to 21 minutes behind. With twice the slots, one that
+    # GitHub skips leaves half the hole. A scheduled run that finds the published figures read after it was
+    # created stops without reading, and otherwise it waits until the data is five minutes old, so in a quiet
+    # hour this publishes about every five to six minutes, not twice as often as the events allow.
+    - cron: '8-59/10 * * * *'
+  # A person's run ("Refresh now" on the page), and Main Health's when it opens or closes a `ci-red-main`
+  # issue (#4700): those issues are written with the workflow token, which starts no workflow except by a
+  # dispatch. The two are told apart by who sent them. A person's cancels the run in progress and always
+  # generates. Main Health's queues like any other run, doesn't wait for the five minutes, and stops if the
+  # published data already has main's new state.
   workflow_dispatch:
-  # What the page shows changes when an issue opens, closes or changes milestone, and when main moves
+  # What the page shows changes when an issue closes, reopens or changes milestone, and when main moves
   # (#4604), so each of those starts a run. Such a run stops at once if the published data already has its
   # event, and otherwise waits until that data is five minutes old (the "Stop here" and "Wait" steps).
   #
   # Every event starts a run, and GitHub has no way to hold one back: one run goes, one waits, and each
   # further one replaces the waiting one, which the run list shows as cancelled. So the events here are the
   # few that are worth a run (#4620). Left out on purpose, for the next run to read:
+  #   - `opened` (#4700): the page shows only issues on a milestone, and putting one there fires `milestoned`,
+  #     also when the issue is created with it. Both together were two runs for every new issue, and 23 issues
+  #     filed at once were 46 runs;
   #   - labels and edits: a new issue fires one event for each of its labels;
   #   - comments: every lane note would start a run (a freeze or an approval on the tracker is one too);
   #   - pull requests: `pull_request` below is this workflow's own proof, and can't also carry every pull
-  #     request's events;
-  #   - Main Health: it finishes several times after every push and was two runs in three, nearly all of
-  #     them changing nothing here. Its `ci-red-main` issues are opened with the workflow token, which starts
-  #     no workflow, so `issues` doesn't see them either: main's state shows at the next run.
+  #     request's events. One put on a milestone does start a run: that's an `issues` event;
+  #   - Main Health as a `workflow_run`: it finishes several times after every push and was two runs in
+  #     three, nearly all of them changing nothing here. It dispatches a run itself when main's state changes.
   issues:
-    types: [opened, closed, reopened, deleted, milestoned, demilestoned]
+    types: [closed, reopened, deleted, milestoned, demilestoned]
   push:
     branches: [main]
   pull_request:
@@ -55,13 +69,14 @@ on:
       - '.github/workflows/main-health.yml'
 
 # One publishing run at a time: a queued one replaces a waiting one, and reads fresher data anyway. GitHub
-# lists the replaced run as cancelled, so cancelled runs here are the group at work, not failures. A manual run
-# ("Refresh now" on the page) doesn't queue: it cancels the run in progress, which may be minutes into its
-# wait, and publishes what it reads itself. Stopping a run mid-publish is safe: the branch moves in one push or
-# not at all. A pull request's runs only cancel each other.
+# lists the replaced run as cancelled, so cancelled runs here are the group at work, not failures. A person's
+# manual run ("Refresh now" on the page) doesn't queue: it cancels the run in progress, which may be minutes
+# into its wait, and publishes what it reads itself. Stopping a run mid-publish is safe: the branch moves in
+# one push or not at all. Main Health's dispatch comes from the workflow token and queues: if it cancelled a
+# run and then found the API budget gone, nothing would publish. A pull request's runs only cancel each other.
 concurrency:
   group: release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || (github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]') }}
 
 permissions: {}
 
@@ -124,13 +139,14 @@ jobs:
       #     apart) and most runs that waited behind another. A scheduled run is judged the same way: whatever
       #     run it replaced in the waiting place was created before it, so data read after the scheduled run
       #     was created has that run's event too.
-      # A manual run goes on unless the budget is gone, and a pull request's proof always does: it must fail
-      # when it can't read.
+      # A person's manual run goes on unless the budget is gone, and a pull request's proof always does: it
+      # must fail when it can't read. Main Health's dispatch is judged like an issue's run.
       - name: Stop here when this run has nothing to add
         id: gate
         env:
           GH_TOKEN: ${{ github.token }}
           EVENT: ${{ github.event_name }}
+          ACTOR: ${{ github.actor }}
           RUN_PATH: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUBLISHED_AT: ${{ steps.previous.outputs.at }}
           PREVIOUS_INDEX: ${{ runner.temp }}/previous/index.json
@@ -175,7 +191,9 @@ jobs:
             echo "::warning title=Release dashboard::$said"
             stop "$said"
           fi
-          if [[ "$EVENT" == workflow_dispatch ]]; then
+          # A person's manual run. Main Health's dispatch comes from the workflow token, and goes on to the
+          # question below like an issue's run: is it in the published data already?
+          if [[ "$EVENT" == workflow_dispatch && "$ACTOR" != 'github-actions[bot]' ]]; then
             go_on "A manual run always generates."
           fi
           if [[ ! "$PUBLISHED_AT" =~ ^[0-9]+$ ]]; then
@@ -211,8 +229,8 @@ jobs:
       #   - until SETTLE_SECONDS after this run was created. A merge is a push and an issue closing two seconds
       #     apart, and reading this long after the first puts the second in the same data by more than the
       #     margin above, so the second's run stops instead of publishing the same thing five minutes later.
-      # Only a manual run can publish meanwhile, and it cancels this one, so the data fetched above is still
-      # the last when the wait ends. A manual run and a pull request's proof never wait.
+      # Only a person's manual run can publish meanwhile, and it cancels this one, so the data fetched above is
+      # still the last when the wait ends. A dispatched run and a pull request's proof never wait.
       - name: Wait until the published data is five minutes old
         if: steps.gate.outputs.proceed == 'true' && contains(fromJSON('["issues", "push", "schedule"]'), github.event_name)
         env:

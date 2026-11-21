@@ -26,22 +26,30 @@ namespace Platform::Windows::StartupMath
 /// (\\server\share\..., \\?\UNC\server\share\..., //server/share/...) or a device or object path (\\.\..., \\?\GLOBALROOT\...).
 /// Opening one can block for the SMB timeout while the server is unreachable (the list would stop updating), and
 /// an elevated TaskSmack, which lists other accounts' scheduled tasks, would authenticate to that host as the
-/// administrator every pass. A drive path (C:\..., or its long form \\?\C:\...) is local here; a mapped network
-/// drive letter isn't caught, since telling it apart needs a call of its own.
+/// administrator every pass. The NT form \??\... counts too (#4646): Win32 hands it to the kernel as it is, so
+/// \??\UNC\server\share is a share and \??\GLOBALROOT\... a device. A drive path (C:\..., its long form \\?\C:\...,
+/// or its NT form \??\C:\...) is local here; a mapped network drive letter isn't caught, since telling it apart
+/// needs a call of its own.
 [[nodiscard]] constexpr bool isNetworkOrDevicePath(std::string_view path) noexcept
 {
     const auto separator = [](char c) noexcept
     {
         return c == '\\' || c == '/';
     };
-    if (path.size() < 2 || !separator(path[0]) || !separator(path[1]))
-    {
-        return false;
-    }
     const auto driveLetter = [](char c) noexcept
     {
         return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z');
     };
+    // \??\ followed by a drive (\??\C: alone, or \??\C:\...) is local; anything else under \??\ is an object path.
+    if (path.size() >= 4 && separator(path[0]) && path[1] == '?' && path[2] == '?' && separator(path[3]))
+    {
+        const bool ntDrivePath = path.size() >= 6 && driveLetter(path[4]) && path[5] == ':' && (path.size() == 6 || separator(path[6]));
+        return !ntDrivePath;
+    }
+    if (path.size() < 2 || !separator(path[0]) || !separator(path[1]))
+    {
+        return false;
+    }
     const bool longDrivePath = path.size() >= 6 && path[2] == '?' && separator(path[3]) && driveLetter(path[4]) && path[5] == ':';
     return !longDrivePath;
 }

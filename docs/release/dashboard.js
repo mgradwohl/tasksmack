@@ -16,7 +16,7 @@
   const WATCH_MS = 30 * 1000;
   const WATCH_FOR_MS = 10 * 60 * 1000;
   const LOAD_MS = 20 * 1000;
-  // A change starts a run within five minutes and the schedule adds one every ten, so data this old means runs
+  // A change starts a run within five minutes and the schedule adds one every five, so data this old means runs
   // are failing or GitHub isn't starting them (maintainer, 2026-11-20).
   const STALE_MINUTES = 25;
   const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
@@ -1224,7 +1224,7 @@
   function footer(release) {
     return el('footer', null,
       el('p', { class: 'footnote' }, 'Read from the milestone, the release tracker, the labels and the Actions runs: nothing is kept anywhere else. Generated ' + moment(seconds(release.generated_at)) + ' by ',
-        link('tools/release-dashboard.py', '/blob/main/tools/release-dashboard.py'), ', which runs when an issue or main changes and every 10 minutes.'),
+        link('tools/release-dashboard.py', '/blob/main/tools/release-dashboard.py'), ', which runs when an issue or main changes, and on a schedule.'),
       el('p', { class: 'footnote' }, link('How the page reads the tracker and the labels', '/blob/main/docs/dev/release-process.md'), ' · ',
         link('All milestones', '/milestones'), ' · ', link('Actions', '/actions')));
   }

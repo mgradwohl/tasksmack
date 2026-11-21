@@ -7,6 +7,8 @@
 
 #include <gtest/gtest.h>
 
+#include <string_view>
+
 namespace Platform::Windows
 {
 namespace
@@ -51,6 +53,24 @@ TEST(OrdinalCaseTest, InvalidUtf8IsComparedExactly)
     EXPECT_TRUE(equalsOrdinalIgnoreCase("a\xFF", "a\xFF"));
     EXPECT_FALSE(equalsOrdinalIgnoreCase("A\xFF", "a\xFF")) << "no folding of text that isn't UTF-8";
     EXPECT_FALSE(equalsOrdinalIgnoreCase("a\xFF", "a\xFE"));
+}
+
+// The UTF-16 form the elevated code's paths and account names use (#4368): the same fold, on the text as it is, the
+// whole of it (a trailing separator counts), an unpaired surrogate compared as itself.
+TEST(OrdinalCaseTest, Utf16TextFoldsAsWindowsFoldsIt)
+{
+    using std::wstring_view;
+    EXPECT_TRUE(equalsOrdinalIgnoreCase(wstring_view(L"C:\\Users\\\u00C9mile"), wstring_view(L"c:\\users\\\u00E9mile")));
+    EXPECT_TRUE(equalsOrdinalIgnoreCase(wstring_view(L"TaskSmack.exe"), wstring_view(L"TASKSMACK.EXE")));
+    EXPECT_TRUE(equalsOrdinalIgnoreCase(wstring_view(L""), wstring_view(L"")));
+    EXPECT_FALSE(equalsOrdinalIgnoreCase(wstring_view(L"C:\\Dumps"), wstring_view(L"C:\\Dumps\\"))) << "a trailing separator counts";
+    EXPECT_FALSE(equalsOrdinalIgnoreCase(wstring_view(L"C:\\Dumps"), wstring_view(L"D:\\Dumps")));
+    EXPECT_FALSE(equalsOrdinalIgnoreCase(wstring_view(L"\u00C9"), wstring_view(L"E"))) << "no accent stripping: it's ordinal";
+    EXPECT_TRUE(equalsOrdinalIgnoreCase(wstring_view(L"a\xD800"), wstring_view(L"A\xD800")));
+    EXPECT_FALSE(equalsOrdinalIgnoreCase(wstring_view(L"a\xD800"), wstring_view(L"a\xDC00"))) << "unpaired surrogates aren't one";
+    // Only each view's own length is read, never up to a NUL.
+    constexpr wstring_view LONGER = L"C:\\Dumps\\more";
+    EXPECT_TRUE(equalsOrdinalIgnoreCase(LONGER.substr(0, 8), wstring_view(L"c:\\dumps")));
 }
 
 } // namespace

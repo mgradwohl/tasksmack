@@ -3,7 +3,12 @@
 /// says -- access denied, a protected process, a full disk, a cancel, a process of another architecture. Pure, so
 /// built everywhere.
 
+#include "Domain/Utf8Sanitize.h"
+#include "NonAsciiTestNames.h"
 #include "Platform/Windows/WindowsProcessDumpMath.h"
+#ifdef _WIN32
+#include "Platform/Windows/WinString.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -27,6 +32,37 @@ TEST(DumpFileNameTest, ImageNamePidAndTime)
     // A later attempt, the first name taken already
     EXPECT_EQ(dumpFileName("notepad.exe", 1234, TIME, 2), "notepad_1234_2026-10-03_04-05-09 (2).dmp");
 }
+
+// #4638: whatever bytes the image name is, the file name is valid UTF-8, each ill-formed byte a U+FFFD, short name or
+// long. Today's only caller passes UTF-8 made from the wide name (WinString::wideToUtf8), always well-formed, but the
+// function takes any bytes.
+TEST(DumpFileNameTest, ANameThatIsNotUtf8GivesAUtf8FileName)
+{
+    for (const std::string_view bad : ::TestSupport::INVALID_UTF8_NAMES)
+    {
+        const std::string name = dumpFileName(std::string(bad) + ".exe", 1234, TIME);
+        EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
+        EXPECT_TRUE(name.contains("\xEF\xBF\xBD")) << name;
+        EXPECT_TRUE(name.ends_with("_1234_2026-10-03_04-05-09.dmp")) << name;
+    }
+    std::string longBad(200, 'a');
+    longBad += '\xC3';
+    const std::string longName = dumpFileName(longBad, 1234, TIME);
+    EXPECT_TRUE(Domain::isValidUtf8(longName)) << "a name cut to fit, too";
+    EXPECT_TRUE(longName.contains('~')) << longName;
+}
+
+// #4330: a name with a lone surrogate (NTFS allows one) reaches here as U+FFFD, valid UTF-8. Windows only: wchar_t is UTF-16 there,
+// and these math tests also build on Linux, where it isn't.
+#ifdef _WIN32
+TEST(DumpFileNameTest, ALoneSurrogateImageNameGivesAUtf8FileName)
+{
+    const std::string image = WinString::wideToUtf8(TestSupport::loneSurrogateWideName() + L".exe");
+    const std::string name = dumpFileName(image, 1234, TIME);
+    EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
+    EXPECT_TRUE(name.contains("\xEF\xBF\xBD")) << name;
+}
+#endif
 
 TEST(DumpFileNameTest, TheStemIsSafeForAFileName)
 {

@@ -44,6 +44,7 @@
 #include "Platform/Windows/DllSearchPolicy.h"
 #include "Platform/Windows/SdlEnvironment.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 #endif
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
@@ -932,17 +933,17 @@ auto commandLineArguments() -> CommandLineArguments
 {
     CommandLineArguments arguments;
     int count = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &count);
+    // LocalFree'd however this returns, a copy that runs out of memory included (#4367).
+    const Platform::Windows::UniqueLocal<LPWSTR> argv(CommandLineToArgvW(GetCommandLineW(), &count));
     if (argv == nullptr)
     {
         return arguments;
     }
-    for (const wchar_t* const argument : std::span<LPWSTR>(argv, static_cast<std::size_t>(std::max(count, 0))))
+    for (const wchar_t* const argument : std::span<LPWSTR>(argv.get(), static_cast<std::size_t>(std::max(count, 0))))
     {
         arguments.utf8.push_back(Platform::WinString::wideToUtf8(argument));
         arguments.native.emplace_back(std::wstring(argument));
     }
-    LocalFree(static_cast<HLOCAL>(argv));
     return arguments;
 }
 // LCOV_EXCL_STOP

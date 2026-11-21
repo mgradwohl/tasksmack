@@ -2,6 +2,7 @@
 
 #include "PerfProviderApartment.h"
 #include "WinString.h"
+#include "WindowsPdhQuery.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -64,24 +65,24 @@ namespace
 /// One collection of the thermal zone counter. Temperature is an instantaneous value, so one sample is enough.
 [[nodiscard]] std::uint32_t readZones(std::vector<ZoneSample>& zones)
 {
-    PDH_HQUERY query = nullptr;
-    PDH_STATUS status = PdhOpenQueryW(nullptr, 0, &query);
+    Windows::UniquePdhQuery query; // closed however this returns; the counter goes with it
+    PDH_STATUS status = PdhOpenQueryW(nullptr, 0, query.put());
     if (status != ERROR_SUCCESS)
     {
         return static_cast<std::uint32_t>(status);
     }
     const std::wstring path(COUNTER_PATH);
     PDH_HCOUNTER counter = nullptr;
-    status = PdhAddEnglishCounterW(query, path.c_str(), 0, &counter);
+    status = PdhAddEnglishCounterW(query.get(), path.c_str(), 0, &counter);
     if (status == ERROR_SUCCESS)
     {
-        status = PdhCollectQueryData(query);
+        status = PdhCollectQueryData(query.get());
     }
     if (status == ERROR_SUCCESS)
     {
         status = readCounterArray(counter, zones);
     }
-    PdhCloseQuery(query);
+    query.reset();
     // PDH's connection, and the perf providers it loaded, outlive the query (#1898).
     Windows::keepComForPerfProviders();
     return static_cast<std::uint32_t>(status);
