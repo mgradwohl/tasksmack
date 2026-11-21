@@ -286,9 +286,10 @@ How it's made:
   gone publishes the last data again as it is, with that time in `index.json`'s `budget_until`, which takes no
   API call. It does that once for each hour the budget is gone, and the next run that reads writes an index
   without the field. `generated_at` doesn't change, so "Updated" still gives the time the figures were read.
-  While the note shows, the page offers no "Refresh now": a run could add nothing. The `dashboard-data`
-  branch's commit time is then the note's, not the figures', and its commit message and README say the
-  figures are an earlier run's. With both budgets gone the time is the later of the two hours' ends.
+  While the note shows, the page offers no "Refresh now": a run could add nothing. The note's commit on
+  `dashboard-data` keeps the time of the data it repeats, and its message and README say the figures are an
+  earlier run's. With both budgets gone the time is the later of the two hours' ends. A note that can't be
+  written, or that names a time over 75 minutes ahead, is a warning on the run and nothing is published.
 - A run on `main` makes no artifact (#4717): its read-only job hands the JSON to the job that publishes as a
   job output. That job takes it as text that can't become commands, checks it's a flat set of JSON files
   before pushing, and tries the push three times. A run that can't publish (a pull request's, or a manual one

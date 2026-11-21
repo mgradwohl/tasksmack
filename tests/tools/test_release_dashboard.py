@@ -1707,11 +1707,13 @@ class BudgetNoteTests(unittest.TestCase):
 
     UNTIL = 1_800_003_600  # as GitHub's rate_limit gives a reset: seconds since 1970
     UNTIL_ISO = dashboard.iso(datetime.fromtimestamp(UNTIL, UTC))
+    ASKED_AT = dashboard.iso(datetime.fromtimestamp(UNTIL - 1800, UTC))  # half an hour before the budget returns
 
     def note(self, out: Path, *args: str) -> tuple[int, str]:
+        """Runs the generator's note mode as of ASKED_AT; returns its exit code and what it printed."""
         printed = io.StringIO()
         with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
-            code = dashboard.main(["--out", str(out), "--repo", REPOSITORY, *args])
+            code = dashboard.main(["--out", str(out), "--repo", REPOSITORY, "--now", self.ASKED_AT, *args])
         return code, printed.getvalue()
 
     def test_the_last_data_goes_out_again_with_the_time_and_nothing_else_changed(self):
@@ -1748,10 +1750,10 @@ class BudgetNoteTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as third:
             generate(Path(first))
             self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
-            code, printed = self.note(Path(third), "--previous", second, "--budget-until", str(self.UNTIL + 3600))
+            code, printed = self.note(Path(third), "--previous", second, "--budget-until", str(self.UNTIL + 1200))
             self.assertEqual(code, 0, printed)
             index = json.loads((Path(third) / "index.json").read_text(encoding="utf-8"))
-            self.assertEqual(index["budget_until"], dashboard.iso(datetime.fromtimestamp(self.UNTIL + 3600, UTC)))
+            self.assertEqual(index["budget_until"], dashboard.iso(datetime.fromtimestamp(self.UNTIL + 1200, UTC)))
 
     def test_the_next_run_that_reads_writes_an_index_without_the_note(self):
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as third:
@@ -1780,9 +1782,10 @@ class BudgetNoteTests(unittest.TestCase):
         # generator doesn't write is no reason to refuse. Refusing made every run of the hour fail.
         with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
             generate(Path(first))
-            index = json.loads((Path(first) / "index.json").read_text(encoding="utf-8"))
-            index["schema"] = dashboard.SCHEMA + 1
-            (Path(first) / "index.json").write_text(json.dumps(index), encoding="utf-8")
+            for path in Path(first).glob("*.json"):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                data["schema"] = dashboard.SCHEMA + 1
+                path.write_text(json.dumps(data), encoding="utf-8")
             code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
             self.assertEqual(code, 0, printed)
             after = json.loads((Path(second) / "index.json").read_text(encoding="utf-8"))
@@ -1791,13 +1794,20 @@ class BudgetNoteTests(unittest.TestCase):
     def test_a_flag_it_would_ignore_is_a_usage_error(self):
         with tempfile.TemporaryDirectory() as first:
             generate(Path(first))
-            for flags in (["--from-raw", first], ["--dump-raw", first], ["--milestone", "v1.1.0"], ["--now", "2026-01-20T12:00:00Z"]):
+            for flags in (["--from-raw", first], ["--dump-raw", first], ["--milestone", "v1.1.0"], ["--now", "yesterday"]):
                 with self.subTest(flags=flags), self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
                     dashboard.main(["--out", "x", "--previous", first, "--budget-until", str(self.UNTIL), *flags])
                 self.assertEqual(raised.exception.code, 2)
             with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
                 dashboard.main(["--out", "x", "--budget-until", str(self.UNTIL)])
             self.assertEqual(raised.exception.code, 2)
+
+    def test_a_time_up_to_75_minutes_ahead_is_written(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL - 1800 + 75 * 60))
+            self.assertEqual(code, 0, printed)
+            self.assertIn("budget_until", json.loads((Path(second) / "index.json").read_text(encoding="utf-8")))
 
     def test_with_nothing_to_repeat_it_warns_and_writes_nothing(self):
         def broken(change) -> str:  # noqa: ANN001 - a function that spoils a copy of the last run
@@ -1819,6 +1829,13 @@ class BudgetNoteTests(unittest.TestCase):
             "an index that names no release": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(releases=[]))), "--budget-until", str(self.UNTIL)],
             "a release that isn't a milestone's name": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index["releases"][0].update(title="../v1.0.0"))), "--budget-until", str(self.UNTIL)],
             "a release whose file is gone": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").unlink()), "--budget-until", str(self.UNTIL)],
+            # What the workflow's "Check what was written" would refuse is refused here, where it's a warning.
+            "a release file in another schema than the index": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").write_text(json.dumps({**json.loads((folder / "v1.1.0.json").read_text(encoding="utf-8")), "schema": dashboard.SCHEMA + 1}), encoding="utf-8")), "--budget-until", str(self.UNTIL)],
+            "a release file that names another milestone": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").write_text((folder / "v1.2.0.json").read_text(encoding="utf-8"), encoding="utf-8")), "--budget-until", str(self.UNTIL)],
+            "a current release the index doesn't list": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(current="v9.9.9"))), "--budget-until", str(self.UNTIL)],
+            # GitHub's budgets are hourly: a time further ahead is a mistake, and the page would hold its
+            # warning about old data back until then.
+            "a time over 75 minutes ahead": ["--previous", good, "--budget-until", str(self.UNTIL - 1800 + 76 * 60)],
             "a time in words": ["--previous", good, "--budget-until", "soon"],
             "a negative time": ["--previous", good, "--budget-until=-5"],
             "no time": ["--previous", good, "--budget-until", ""],

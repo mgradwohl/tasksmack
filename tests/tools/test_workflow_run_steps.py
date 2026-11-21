@@ -3728,6 +3728,7 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         self.assertIn("    outputs:\n", generate)
         self.assertIn(f"      publish: ${{{{ {has_data} }}}}\n", generate)
         self.assertIn("      note: ${{ steps.note.outputs.wrote }}\n", generate)
+        self.assertIn("      published_at: ${{ steps.previous.outputs.at }}\n", generate)
         publish = text.split("\n  publish:\n", 1)[1]
         condition = publish.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
         self.assertIn("needs.generate.outputs.publish == 'true'", condition)
@@ -3763,7 +3764,7 @@ class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
     JOB = "generate"
     STEP = "Tell the page when the budget returns"
     FIXTURES = REPO / "tests" / "tools" / "fixtures" / "release-dashboard"
-    UNTIL = 1_800_003_600
+    UNTIL = int(time.time()) + 1800  # half an hour from now: the generator refuses a time beyond a budget's hour
 
     def test_it_runs_for_either_steps_note_and_only_with_data_to_repeat(self):
         step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
@@ -3793,7 +3794,7 @@ class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
         self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
         told = json.loads((self.FIXTURES / "index.json").read_text(encoding="utf-8"))
         told["budget_until"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.UNTIL))
-        cases = {"not told yet": None, "told already": told, "nothing to repeat": "missing"}
+        cases = {"not told yet": None, "told already": told, "nothing to repeat": "missing", "data the check would refuse": "odd"}
         script = [f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}']
         for index, previous in enumerate(cases.values()):
             runner = tmp / f"runner-{index}"
@@ -3802,6 +3803,10 @@ class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
                 shutil.copytree(self.FIXTURES, runner / "previous", dirs_exist_ok=True)
             if isinstance(previous, dict):
                 (runner / "previous" / "index.json").write_text(json.dumps(previous), encoding="utf-8")
+            if previous == "odd":
+                # One release file in another schema than the index: "Check what was written" exits 1 on it.
+                current = runner / "previous" / f"{told['current']}.json"
+                current.write_text(json.dumps({**json.loads(current.read_text(encoding="utf-8")), "schema": 99}), encoding="utf-8")
             script += [
                 f'( cd "$CHECKOUT"; export RUNNER_TEMP="$DIR/runner-{index}"',
                 f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
@@ -3822,9 +3827,19 @@ class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
                 self.assertEqual(read(f"status-{index}"), "0", read(f"log-{index}"))
                 self.assertEqual(read(f"output-{index}"), "wrote=true" if wrote else "", read(f"log-{index}"))
                 self.assertEqual((tmp / f"runner-{index}" / "data" / "index.json").is_file(), wrote)
-                self.assertIn("The page is told when the budget returns" if wrote else "Nothing published.", read(f"summary-{index}"))
-        self.assertIn("::warning title=Release dashboard::The budget note couldn't be written", read("log-2"))
+                self.assertIn("The last data goes to the publish job again" if wrote else "Nothing published.", read(f"summary-{index}"))
         self.assertIn("already says the API budget is used up until", read("log-1"))
+        for index in (2, 3):
+            self.assertIn("::warning title=Release dashboard::The budget note couldn't be written", read(f"log-{index}"))
+        # The second review's finding: such data, written out, would have failed the run at the check step.
+        # The generator refuses it first, so the check never sees it. The check's own script, on that data:
+        check = find_step(self.WORKFLOW, "Check what was written", job=self.JOB)
+        refused = subprocess.run(
+            [sys.executable, "-I", "-X", "utf8", "-", str(tmp / "runner-3" / "previous")],
+            input=check.run.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0],
+            capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
+        )
+        self.assertNotEqual(refused.returncode, 0, refused.stdout + refused.stderr)
 
     def test_what_it_writes_passes_the_workflows_own_check(self):
         # The note's output goes through "Check what was written" like generated data. Run both for real:
@@ -3935,7 +3950,9 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         script = [
             "git() {",
             '  if [[ " $* " == *" --amend "* ]]; then echo "commit again" >> "$CALLS"; fi',
-            '  if [[ " $* " == *" commit "* && " $* " != *" --amend "* ]]; then echo "${@: -1}" > "$CALLS.commit"; fi',
+            '  if [[ " $* " == *" commit "* && " $* " != *" --amend "* ]]; then',
+            '    echo "${@: -1}" > "$CALLS.commit"; echo "${GIT_COMMITTER_DATE:-now}" > "$CALLS.date"',
+            "  fi",
             '  if [[ " $* " != *" push "* ]]; then return 0; fi',
             '  echo "push" >> "$CALLS"',
             '  (( $(grep -c "^push$" "$CALLS") > FAILING_PUSHES ))',
@@ -3951,7 +3968,7 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
             (folder / "index.json").write_text("{}", encoding="utf-8")
             script += [
                 f'( cd "$DIR/push-{index}"; export FAILING_PUSHES={failing} CALLS="$DIR/push-calls-{index}"',
-                f'  export NOTE="{"true" if name == "a budget note" else ""}"',
+                f'  export NOTE="{"true" if name == "a budget note" else ""}" PUBLISHED_AT="1800000000"',
                 f'  export GITHUB_STEP_SUMMARY="$DIR/push-summary-{index}"; : > "$CALLS"',
                 cls.push.run,
                 f') > "$DIR/push-log-{index}" 2>&1',
@@ -4088,6 +4105,11 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         self.assertIn("(`budget_until` in index.json)", theirs)
         for readme in (ours, theirs):
             self.assertIn("This branch holds one commit", readme)
+        # The second review's finding: a note's commit, stamped now, made the next run wait five minutes on
+        # it before reading. It keeps the time of the data it repeats; a run's own data is stamped now.
+        self.assertEqual(self.push.env["PUBLISHED_AT"], "${{ needs.generate.outputs.published_at }}")
+        self.assertEqual(self.read(f"push-calls-{note}.date"), "1800000000 +0000")
+        self.assertEqual(self.read(f"push-calls-{data}.date"), "now")
 
     def test_the_publish_job_outlasts_three_pushes(self):
         text = self.WORKFLOW.read_text(encoding="utf-8")

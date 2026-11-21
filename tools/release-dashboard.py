@@ -54,7 +54,8 @@ When the budget is gone the page should say so, and when it returns (#4726). --b
 request at all: it writes --previous out again as it is, with the time in index.json's `budget_until`. Every
 other field stays, `generated_at` too, so nothing takes it for new data. It writes nothing when --previous
 already names that time (the page is told once for each hour), and exits 1 with a warning when --previous
-can't be repeated. The next run that reads GitHub writes an index without the field.
+can't be repeated or the time is over 75 minutes ahead (an hour's budget returns within the hour). The next
+run that reads GitHub writes an index without the field.
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run
@@ -112,6 +113,9 @@ SLOW_REFRESH = timedelta(minutes=55)
 # Say so in the run's log when a run leaves less than this share of the hour's API budget: the workflow's
 # token shares it with every other workflow in the repository (main-health.yml above all).
 BUDGET_WARNING = 0.25
+# The furthest ahead a budget can be said to return (--budget-until): GitHub's budgets are hourly, so a later
+# time is a mistake, and the page would hold its warning about old data back until then (#4726).
+BUDGET_NOTE_AHEAD = timedelta(minutes=75)
 # Whose one-line tracker comments can declare the freeze or approve the candidate: anyone can comment on a
 # public repository's issue, so an outsider's line is never read as either.
 TRUSTED_AUTHORS = ("OWNER", "MEMBER", "COLLABORATOR")
@@ -1781,19 +1785,24 @@ def _save(path: Path, value: Any, *, pretty: bool = False) -> None:
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
-def republish_with_budget_note(previous: Path, out: Path, until: str) -> int:
+def republish_with_budget_note(previous: Path, out: Path, until: str, now: datetime) -> int:
     """The API budget is used up until @p until (seconds since 1970, as GitHub's rate_limit gives a reset), so
     nothing can be read: write the last run's files again as they are, with that time in index.json for the
     page to show (#4726). Makes no request.
 
     Writes nothing, and returns 0, when the last run's index already names that time: the page is told once
     for each hour the budget is gone. Returns 1 with a warning, having written nothing, when the last run
-    can't be repeated. That's a warning, not an error: the run it happens in has only a note to add, and the
-    page is no worse off without it. The files go out as they are, whatever schema they are in."""
+    can't be repeated or the time is further ahead than a budget's hour. That's a warning, not an error: the
+    run it happens in has only a note to add, and the page is no worse off without it. The files go out as
+    they are, whatever schema they are in, as long as they agree with each other: what is written here passes
+    the workflow's "Check what was written", so a note never fails a run there either."""
     try:
         if not re.fullmatch(r"\d{9,11}", until):
             raise ValueError(f"--budget-until is seconds since 1970, not {until!r}")
         when = datetime.fromtimestamp(int(until), UTC)
+        if when - now > BUDGET_NOTE_AHEAD:
+            ahead = int(BUDGET_NOTE_AHEAD.total_seconds() // 60)
+            raise ValueError(f"--budget-until {iso(when)} is over {ahead} minutes ahead, and a budget returns within its hour")
         index = _load(previous / "index.json")
         if not isinstance(index, dict) or not isinstance(index.get("releases"), list):
             raise ValueError(f"{previous / 'index.json'} isn't an index of releases")
@@ -1804,6 +1813,15 @@ def republish_with_budget_note(previous: Path, out: Path, until: str) -> int:
         missing = [title for title in titles if not (previous / f"{title}.json").is_file()]
         if missing:
             raise ValueError(f"{previous} has no file for {', '.join(missing)}")
+        # What the workflow's check holds every publish to. Data that would fail it is refused here, where
+        # that is a warning.
+        if index.get("current") not in titles:
+            raise ValueError(f"{previous / 'index.json'} names no current release among its own")
+        for title in titles:
+            release = _load(previous / f"{title}.json")
+            named = release.get("milestone") if isinstance(release, dict) else None
+            if not isinstance(named, dict) or named.get("title") != title or release.get("schema") != index.get("schema"):
+                raise ValueError(f"{previous / (title + '.json')} doesn't match index.json")
     except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
         print(f"::warning title=Release dashboard::The budget note couldn't be written: {error}", file=sys.stderr)
         return 1
@@ -1884,12 +1902,17 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.budget_until is not None:
         # It reads nothing and builds nothing, so a flag that says what to read or build would be ignored.
         ignored = [flag for flag, given in (("--from-raw", args.from_raw), ("--dump-raw", args.dump_raw),
-                                            ("--milestone", args.milestone), ("--now", args.now)) if given]
+                                            ("--milestone", args.milestone)) if given]
         if ignored:
             parser.error(f"--budget-until writes --previous again as it is: it can't be given with {', '.join(ignored)}")
         if args.previous is None:
             parser.error("--budget-until needs --previous, the data to publish again")
-        return republish_with_budget_note(args.previous, args.out, args.budget_until)
+        try:
+            judged_at = parse_time(args.now) if args.now else datetime.now(UTC)
+        except ValueError:
+            parser.error(f"--now must be ISO 8601, not {args.now!r}")
+        assert judged_at is not None
+        return republish_with_budget_note(args.previous, args.out, args.budget_until, judged_at)
 
     try:
         if args.from_raw:

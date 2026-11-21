@@ -19,6 +19,9 @@
   // A change starts a run within five minutes and the schedule adds one every five, so data this old means runs
   // are failing or GitHub isn't starting them (maintainer, 2026-11-20).
   const STALE_MINUTES = 25;
+  // GitHub's API budgets are hourly, so a note that one returns later than this is a mistake, and isn't shown:
+  // it would hold the stale warning back until then (#4726).
+  const BUDGET_AHEAD_MINUTES = 75;
   const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
   const HOUR = 3600;
   const DAY = 86400;
@@ -234,7 +237,8 @@
       // Whole data generated after "Refresh now" was clicked is what it was waiting for. So is the word that
       // the budget is gone (#4726): no newer data can come before it returns.
       if (!view.behind && seconds(index.generated_at) * 1000 > polling.watchFrom) polling.watchUntil = 0;
-      if (seconds(index.budget_until) * 1000 > Date.now()) polling.watchUntil = 0;
+      const returns = (seconds(index.budget_until) || 0) * 1000 - Date.now();
+      if (returns > 0 && returns <= BUDGET_AHEAD_MINUTES * 60 * 1000) polling.watchUntil = 0;
       render();
     } catch (error) {
       if (turn !== polling.turn) return;
@@ -277,7 +281,7 @@
     // banner's place, whose "Refresh now" couldn't help.
     const until = seconds(view.index.budget_until);
     const budget = el('p', { class: 'banner budget', hidden: true }, "GitHub's API budget for this repository is used up until ",
-      el('strong', { text: until ? hour(until) : '' }), '. These figures are from ', moment(ran), ', and nothing can refresh them before then.');
+      el('strong', { text: until ? hour(until) : '' }), ', and nothing can refresh these figures before then. The last run was at ', moment(ran), '.');
     // "Refresh now", beside the page's age. Only a release that every run writes has something to refresh:
     // not a shipped one, nor a planned one. And not while the budget is gone: a run could add nothing.
     const again = live(release) ? refreshLink() : null;
@@ -285,7 +289,8 @@
     view.clock = () => {
       const minutes = (Date.now() / 1000 - ran) / 60;
       const still = release.stage !== 'released' && !window.__RELEASE_DATA__;
-      const spent = Boolean(until) && Date.now() / 1000 < until;
+      const left = until ? (until - Date.now() / 1000) / 60 : 0;
+      const spent = left > 0 && left <= BUDGET_AHEAD_MINUTES;
       stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
       age.textContent = span(minutes / 60);
       budget.hidden = !still || !spent;

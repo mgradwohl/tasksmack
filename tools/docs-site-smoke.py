@@ -695,7 +695,7 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
     (#4726). The page says so until then, in place of the stale banner, and stops when new data arrives."""
     index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
     generated = datetime.datetime.fromisoformat(index["generated_at"].replace("Z", "+00:00"))
-    until = generated + datetime.timedelta(minutes=40)
+    until = generated + datetime.timedelta(minutes=46)
     # What the data host serves: the fixtures, with these fields over index.json's own.
     served: dict[str, str] = {}
 
@@ -734,12 +734,21 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
     refresh.click()
     watching.wait_for(state="visible", timeout=TIMEOUT_MS)
 
+    # A time further ahead than a budget's hour is a mistake: the page doesn't take it, or it would hold the
+    # warning about old data back until then. It goes on looking, as "Refresh now" asked.
+    served["budget_until"] = stamp(generated + datetime.timedelta(hours=3))
+    with page.expect_response(lambda response: response.url.endswith("/index.json")):
+        page.clock.fast_forward(6 * 60 * 1000)
+    page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+    if note.is_visible() or not watching.is_visible():
+        raise AssertionError("a budget note three hours ahead is shown, or stopped the page looking for new data")
+
     # The budget goes: the same data comes again with the time it returns. The page's next look shows it.
     served["budget_until"] = stamp(until)
     page.clock.fast_forward(6 * 60 * 1000)
     note.wait_for(state="visible", timeout=TIMEOUT_MS)
     text = note.text_content() or ""
-    if "GitHub's API budget for this repository is used up until" not in text or "nothing can refresh them before then" not in text:
+    if "GitHub's API budget for this repository is used up until" not in text or "nothing can refresh these figures before then. The last run was at" not in text:
         raise AssertionError(f"the budget note reads {text!r}")
     told = page.evaluate("iso => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(iso))", stamp(until))
     if note.locator("strong").text_content() != told:
@@ -750,12 +759,12 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
 
     # Past 25 minutes the data is stale, but the reason is known: the note stands, and the stale banner, whose
     # "Refresh now" couldn't help, stays away.
-    page.clock.fast_forward(15 * 60 * 1000)
+    page.clock.fast_forward(9 * 60 * 1000)
     if not note.is_visible() or stale.is_visible():
         raise AssertionError("31 minutes on with the budget still gone, the page shows the stale banner or no note")
 
     # The time passes and no new data has come yet: the note goes, and the stale banner says what is left to say.
-    page.clock.fast_forward(11 * 60 * 1000)
+    page.clock.fast_forward(16 * 60 * 1000)
     stale.wait_for(state="visible", timeout=TIMEOUT_MS)
     if note.is_visible():
         raise AssertionError("the budget note is still shown after the time it gave")
@@ -764,7 +773,7 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
 
     # New data, without the note: nothing is shown.
     served.clear()
-    served["generated_at"] = stamp(generated + datetime.timedelta(minutes=43))
+    served["generated_at"] = stamp(generated + datetime.timedelta(minutes=49))
     page.clock.fast_forward(6 * 60 * 1000)
     stale.wait_for(state="hidden", timeout=TIMEOUT_MS)
     if note.is_visible():
