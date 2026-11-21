@@ -350,6 +350,15 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     return link.string();
 }
 
+/// Whether @p path is the file /proc/<pid>/exe is, by device and inode (#4397).
+[[nodiscard]] bool isProcessExecutableFromProc(std::int32_t pid, const std::string& path)
+{
+    struct stat named{};
+    struct stat running{};
+    return ::stat(path.c_str(), &named) == 0 && ::stat(std::format("/proc/{}/exe", pid).c_str(), &running) == 0 &&
+           named.st_dev == running.st_dev && named.st_ino == running.st_ino;
+}
+
 /// The real uid on /proc/<pid>/status's "Uid:" line (#4271): readable by anyone, dumpable or not.
 [[nodiscard]] std::optional<uid_t> processRealUidFromProc(std::int32_t pid)
 {
@@ -459,6 +468,10 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     if (syscalls.processRealUid == nullptr)
     {
         syscalls.processRealUid = &processRealUidFromProc;
+    }
+    if (syscalls.isProcessExecutable == nullptr)
+    {
+        syscalls.isProcessExecutable = &isProcessExecutableFromProc;
     }
     if (syscalls.showItemInFileManager == nullptr)
     {
@@ -689,6 +702,10 @@ ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& t
         return identity;
     }
     const std::expected<std::string, int> link = syscalls().executableLink(target.pid);
+    // The link's text is the path in the process's mount namespace (#4397): unless the file has since been deleted or
+    // replaced, check that it names the running file here too, before the pidfd says the process lasted.
+    const bool deleted = link.has_value() && FileManagerReveal::withoutDeletedSuffix(*link).size() != link->size();
+    const bool namesItHere = !link.has_value() || deleted || syscalls().isProcessExecutable(target.pid, *link);
     int exited = syscalls().pollPidfd(pidfd.get());
     while (exited < 0 && errno == EINTR)
     {
@@ -710,9 +727,15 @@ ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& t
         }
         return ProcessActionResult::error(std::format("Its executable can't be read: {}", std::system_category().message(link.error())));
     }
+    if (!namesItHere)
+    {
+        // A Flatpak's /app/bin/x, a container's /usr/sbin/nginx: nothing, or another file, at that path here.
+        spdlog::info("PID {}'s executable {} is not that file on this system (another mount namespace)", target.pid, *link);
+        return ProcessActionResult::error("Its executable is inside a sandbox or container, and has no folder on this system");
+    }
     const std::string_view path = FileManagerReveal::withoutDeletedSuffix(*link);
     // Deleted or replaced since it started (an upgraded package): its folder is still worth opening.
-    std::string note = (path.size() != link->size()) ? std::string("its file has since been deleted or replaced") : std::string{};
+    std::string note = deleted ? std::string("its file has since been deleted or replaced") : std::string{};
 
     // Root for another user (sudo, pkexec): xdg-open as them, in their session (#2461), and no D-Bus.
     const std::optional<DetachedSpawn::RunAs> user = SessionUser::invokingUserSession();
