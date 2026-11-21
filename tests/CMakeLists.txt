@@ -311,6 +311,12 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(IwyuShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
+# tools/prune-artifacts.py, artifact-prune.yml's nightly selection (#4617): the newest copy of a name on its branch,
+# anything under 6 hours old, and the benchmark and dashboard artifacts are kept.
+add_test(NAME PruneArtifactsScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_prune_artifacts.py)
+set_tests_properties(PruneArtifactsScript PROPERTIES TIMEOUT 60)
+
 # tools/md-link-audit.sh, the docs-hygiene link check: code spans and fenced blocks aren't links (#3001), and
 # a root-absolute link under docs/ resolves from docs/ (#2953). Linux, as its CI job is.
 if(TASKSMACK_BASH AND NOT WIN32)
