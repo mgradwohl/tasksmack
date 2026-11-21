@@ -899,11 +899,6 @@ TEST_F(ProcessesPanelRenderTest, ARowMenuStillOffersKillWhenTheCpuLayoutReadThro
 // instead of drawing an empty table and "0 processes".
 TEST_F(ProcessesPanelRenderTest, AThrowingPlatformFactoryGivesTheUnavailableEmptyState)
 {
-#if defined(_WIN32) && (defined(__SANITIZE_ADDRESS__) || (defined(__has_feature) && __has_feature(address_sanitizer)))
-    // The sampler's start hook rethrows (`throw;`) after recording the failure, and clang 23's ASan runtime on Windows
-    // crashes the process on any rethrow (#4518). Normal builds, and ASan on Linux, run it.
-    GTEST_SKIP() << "ASan's Windows runtime crashes on a rethrow (#4518)";
-#endif
     const auto panel = std::make_unique<ProcessesPanel>([] -> ProcessesPanelPlatform { throw std::runtime_error("no probe"); },
                                                         [](Core::Event& /*event*/) {});
     panel->onAttach();
@@ -1119,7 +1114,7 @@ TEST_F(ProcessesPanelRenderTest, AProcessStuckInDiskSleepHasItsRowTinted)
             init.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
             auto server = TestMocks::makeProcessCounters(100, "server", 'R', 200, 50, 1000, std::uint64_t{8} << 20U, 1);
             server.ioPriority = Platform::IoPriority{.ioClass = Platform::IoPriorityClass::BestEffort, .level = 2};
-            auto worker = TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
+            const auto worker = TestMocks::makeProcessCounters(101, "worker", 'S', 30, 10, 1100, std::uint64_t{2} << 20U, 100);
             for (const auto& counters : {init, server, worker})
             {
                 probe->withProcess(counters);

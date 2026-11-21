@@ -1,5 +1,6 @@
 #include "BrokerHelper.h"
 
+#include "Domain/ScopeFail.h"
 #include "Domain/Worker.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
@@ -925,20 +926,14 @@ void ProcessWatch::watch(WatchWorker::JobContext& context)
         SetEvent(m_Wake.get());
     };
     const auto armed = context.armCancel(wake);
-    try
+    // Fails closed: a watch that can't go on stops the session before the Worker records why. A guard, not
+    // `catch (...) { ...; throw; }`, since a throw inside a handler crashes clang's Windows ASan runtime (#4518).
+    const Domain::ScopeFail failClosed([this] noexcept { m_Stop.request_stop(); });
+    const std::array<HANDLE, 2> handles{m_Process, m_Wake.get()};
+    // Either ends the wait: the process (or a failed wait) stops the session, the wake ends this job.
+    if (m_Wait(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE) != WAIT_OBJECT_0 + 1)
     {
-        const std::array<HANDLE, 2> handles{m_Process, m_Wake.get()};
-        // Either ends the wait: the process (or a failed wait) stops the session, the wake ends this job.
-        if (m_Wait(static_cast<DWORD>(handles.size()), handles.data(), FALSE, INFINITE) != WAIT_OBJECT_0 + 1)
-        {
-            m_Stop.request_stop();
-        }
-    }
-    catch (...)
-    {
-        // Fails closed: a watch that can't go on stops the session before the Worker records why.
         m_Stop.request_stop();
-        throw;
     }
 }
 
