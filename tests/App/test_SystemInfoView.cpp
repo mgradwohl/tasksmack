@@ -1238,6 +1238,8 @@ TEST(SystemInfoSectionsTest, RedactsTheLoginNameOnlyAsAWholePathComponent)
     EXPECT_EQ(SystemInfo::redactLoginName("x crashed, /home/alice/src/x, pid 1", "alice", LINUX), "x crashed, /home/<user>/src/x, pid 1");
     EXPECT_EQ(SystemInfo::redactLoginName("nfs4 on server:/home/alice, network", "alice", LINUX), "nfs4 on server:/home/<user>, network");
     EXPECT_EQ(SystemInfo::redactLoginName("(/home/alice)", "alice", LINUX), "(/home/<user>)");
+    // #4309: on Windows a login's non-ASCII letter matches in either case too.
+    EXPECT_EQ(SystemInfo::redactLoginName("D:\\Users\\\xC3\xA9lodie\\x", "\xC3\x89lodie", WINDOWS), "D:\\Users\\<user>\\x");
     // Linux paths are case-sensitive, and a component only matches whole.
     EXPECT_EQ(SystemInfo::redactLoginName("/home/Alice", "alice", LINUX), "/home/Alice");
     EXPECT_EQ(SystemInfo::redactLoginName("/home/alice2/x /srv/malice /home/alice.old", "alice", LINUX),
@@ -1280,8 +1282,14 @@ TEST(SystemInfoSectionsTest, RedactsTheProfileFolderWhateverItIsNamed)
     EXPECT_EQ(SystemInfo::redactHomeDirectory(R"(C:\Users\bobby\x, D:\Users\bob)", R"(C:\Users\bob)", WINDOWS),
               R"(C:\Users\bobby\x, D:\Users\bob)");
     EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/bob/x and /home/bob", "/home/bob", LINUX), "/home/<user>/x and /home/<user>");
+    // #4309: Windows ignores a non-ASCII letter's case too, so a lower-cased profile path is still redacted.
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("c:/users/\xC3\xA9lodie/AppData/x.exe", "C:\\Users\\\xC3\x89lodie", WINDOWS),
+              "c:/users/<user>/AppData/x.exe");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("C:\\Users\\Elodie\\x", "C:\\Users\\\xC3\x89lodie", WINDOWS), "C:\\Users\\Elodie\\x")
+        << "É isn't E";
     // Linux paths are case-sensitive.
     EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/Bob/x /home/bobby", "/home/bob", LINUX), "/home/Bob/x /home/bobby");
+    EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/\xC3\xA9lodie/x", "/home/\xC3\x89lodie", LINUX), "/home/\xC3\xA9lodie/x");
     // Nothing to redact by.
     EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/bob", "", LINUX), "/home/bob");
     EXPECT_EQ(SystemInfo::redactHomeDirectory("/home/bob", "/", LINUX), "/home/bob");
