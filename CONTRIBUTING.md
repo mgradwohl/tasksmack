@@ -1271,6 +1271,10 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 
 TSan and MSan are Linux only; ASan + UBSan run on both platforms.
 
+On Linux, `asan-ubsan` also turns on `float-divide-by-zero` (#4353), which `-fsanitize=undefined` leaves out: a
+rate or percentage divided by a zero interval or total fails at the division, rather than as a NaN or infinity
+further on. Guard such a division before it, not with an `isfinite` check after it.
+
 ### Windows ASan + UBSan (x64 only)
 
 ```powershell
@@ -1313,8 +1317,11 @@ as verbosity or `halt_on_error` are preserved. Note that `suppressions=` is a
 scalar key — if the caller already provides a `suppressions=` entry, it overrides
 the project's; in that case add required entries to `lsan.supp` directly.
 
-This suppression filters a known SDL3 LeakSanitizer false positive that affects
-Core window/application tests.
+`lsan.supp` filters three known leaks that aren't TaskSmack's (#4351): the EGL display SDL3
+keeps after `SDL_Quit()` (`SDL_EGL_InitializeOffscreen`), and the small allocations Mesa's software
+GL driver keeps inside its first draw calls and its mipmap builds, matched at the narrowest frame of
+ours above them (`ImGui_ImplOpenGL3_RenderDrawData`, `generateBoundTextureMipmaps`). Each entry's
+comment says why it is there.
 
 UndefinedBehaviorSanitizer halts on the first error. The preset compiles with
 `-fno-sanitize-recover=undefined`, and `ctest --preset asan-ubsan` also injects:
@@ -1343,12 +1350,18 @@ after it and take precedence. Because `suppressions=` is a scalar key, a
 caller-provided `suppressions=` will override the project's — add entries to
 `tsan.supp` directly in that case.
 
-This suppression filters known ThreadSanitizer false positives in third-party
-pthread barrier paths, while preserving any caller-provided TSAN flags.
+`tsan.supp` filters races reported inside two uninstrumented libraries (#4351): Mesa's software GL
+driver (`race:libgallium`, #2042) and libsystemd (`race:libsystemd`, #2416). Both match only
+reports with a frame in that module, where TaskSmack has no code. The two `pthread_barrier`
+entries for GoogleTest 1.15 were removed, since nothing in the pinned GoogleTest or in TaskSmack
+uses pthread barriers.
 
 ## Fuzzing (Linux only)
 
-ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer:
+ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer. A pull request's
+changed parsers are also fuzzed under UndefinedBehaviorSanitizer (#4343), in a second leg against its own baseline
+build: signed overflow, bad shifts and misaligned loads are UBSan's findings, not ASan's. The weekly batch and pruning
+runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared by both sanitizers:
 
 | Target | Entry point | Seed corpus |
 |--------|-------------|-------------|
@@ -1911,8 +1924,13 @@ On Linux, memory tracking uses `/proc/self/status` for zero-overhead measurement
 ## Performance Profiling
 
 The `profile` and `win-profile` presets build at `-O2 -g -DNDEBUG` with frame pointers
-preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). All profiling scripts
-write artifacts under `perf-data/` and emit `KEY=value` lines at exit for scripting.
+preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). The profiling scripts write their
+artifacts under `perf-data/`. For scripting, the capture and analysis scripts end by printing `KEY=value`
+lines naming those files (#4220): `profile-perf.sh` (`PERF_DATA`, `LOG`), `analyze-perf.sh` (`PERF_DATA`,
+`REPORT`), `profile-heap.sh` (`HEAPTRACK_DATA`, `LOG`), and on Windows `profile-etw.ps1` and
+`analyze-etw.ps1`. `profile-perf.sh` prints them after a failed capture too, so the file may be partial:
+check the exit status before using it. The others report differently: `measure-idle.sh` (and `.ps1`) print a
+`RESULT` line and write JSON, `pgo.sh` and `ui-compare.sh` print a summary only.
 
 ### Linux — CPU profiling (perf)
 
@@ -2451,6 +2469,10 @@ cmake --build --preset win-profile
 $env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object $env:TEMP\resize-trace.log
 ```
 
+These run TaskSmack on your own config (and its single-instance lock, so close your TaskSmack first). For a
+clean run from the default settings, add `TASKSMACK_CONFIG_DIR="$(mktemp -d)"` (Linux) or set
+`$env:TASKSMACK_CONFIG_DIR` to a new folder (Windows), as `tools/measure-idle.sh` does for you (#4221).
+
 Just let the app sit idle for a few seconds to capture steady-state numbers, and/or resize the
 window (edges and corners) for 20–30 seconds to capture interactive numbers, then close the app.
 The log contains `ResizePerf[idle-progress|idle-end|interaction-progress|interaction-end|shutdown]` lines.
@@ -2565,7 +2587,11 @@ precedence.
 
 Idle cost is TaskSmack's first performance priority (#843): a task manager that sits open all day
 must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one idle scenario into a
-comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
+comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1` and a fresh config
+folder of its own, removed afterwards (#4221, as `measure-idle.ps1` and `profile-perf.sh app` do): the run starts
+from the default settings, never rewrites your `config.toml`, and shows no startup access notice over the window it
+measures. `--config-dir <dir>` uses (and keeps) a folder of yours instead, with a `config.toml` for non-default
+settings, and `--user-config` runs on your own config. It waits for the
 main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
 with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
 machine-readable `RESULT` line. The frame and loop figures leave out a summary of a window that drew
@@ -2576,8 +2602,9 @@ plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<time
 commit and dirty flag, preset and build type, refresh interval and history window (as the app logged
 or loaded them), synthetic spec, the window's measured geometry and any `--window` requested, GL
 renderer, display refresh rate, CPU model, logical CPU count, MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
-is above `<pct>`. Another TaskSmack running with the same settings fails the run (the
-single-instance lock would stop the new one at its "already running" box); close it first.
+is above `<pct>`. With `--user-config` (or a `--config-dir` shared with a running TaskSmack), another TaskSmack
+using that folder fails the run (the single-instance lock would stop the new one at its "already running" box);
+close it first.
 
 ```bash
 # Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
@@ -3228,7 +3255,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
-- **`release-dashboard.yml`**: Every 10 minutes, generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
+- **`release-dashboard.yml`**: When an issue opens, closes or changes milestone, when `main` moves, and every 10 minutes (#4604, #4620), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
 - **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 

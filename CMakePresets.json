@@ -180,9 +180,9 @@
             "inherits": "linux-base",
             "cacheVariables": {
                 "CMAKE_BUILD_TYPE": "Debug",
-                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer",
-                "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
-                "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined",
+                "CMAKE_CXX_FLAGS_DEBUG": "-g -ftrivial-auto-var-init=pattern -fsanitize=address,undefined,float-divide-by-zero -fno-sanitize-recover=undefined,float-divide-by-zero -fno-omit-frame-pointer",
+                "CMAKE_EXE_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined,float-divide-by-zero",
+                "CMAKE_SHARED_LINKER_FLAGS_DEBUG": "-fsanitize=address,undefined,float-divide-by-zero",
                 "CMAKE_INTERPROCEDURAL_OPTIMIZATION": "OFF",
                 "TASKSMACK_ENABLE_IPO": "OFF",
                 "TASKSMACK_ENABLE_PCH": "OFF"

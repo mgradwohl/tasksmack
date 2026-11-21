@@ -2301,7 +2301,8 @@ namespace
 
 [[nodiscard]] bool namesEqual(std::string_view a, std::string_view b, bool ignoreCase) noexcept
 {
-    return ignoreCase ? Platform::equalsIgnoreCase(a, b) : a == b;
+    // Unicode simple case folding on Windows (#4309): a login "Élodie" written "élodie" is still redacted.
+    return ignoreCase ? Platform::equalsFoldedCase(a, b) : a == b;
 }
 
 /// Whether the component that ends at the separator @p separator is "Users" (Windows' profile folders).
@@ -2363,18 +2364,38 @@ namespace
     return out;
 }
 
-/// Whether @p a and @p b name the same path: on Windows ignoring ASCII case, with '/' and '\' alike.
+/// Whether @p a and @p b name the same path: on Windows with '/' and '\' alike, and each component compared by
+/// Unicode simple case folding (#4309: a lower-cased "c:\users\élodie" is the profile "C:\Users\Élodie", so it is
+/// still redacted).
 [[nodiscard]] bool pathsEqual(std::string_view a, std::string_view b, bool windows) noexcept
 {
     if (!windows)
     {
         return a == b;
     }
-    constexpr auto fold = [](char c) noexcept
+    while (true)
     {
-        return isPathSeparator(c) ? '/' : Platform::foldAscii(c);
-    };
-    return std::ranges::equal(a, b, {}, fold, fold);
+        const auto separatorAt = [](std::string_view text) noexcept
+        {
+            return static_cast<std::size_t>(std::ranges::find_if(text, isPathSeparator) - text.begin());
+        };
+        const std::size_t endA = separatorAt(a);
+        const std::size_t endB = separatorAt(b);
+        std::string_view componentA = a;
+        std::string_view componentB = b;
+        componentA.remove_suffix(a.size() - endA);
+        componentB.remove_suffix(b.size() - endB);
+        if (!Platform::equalsFoldedCase(componentA, componentB))
+        {
+            return false;
+        }
+        if (endA == a.size() || endB == b.size())
+        {
+            return endA == a.size() && endB == b.size(); // both ended, or one has more components
+        }
+        a.remove_prefix(endA + 1);
+        b.remove_prefix(endB + 1);
+    }
 }
 
 } // namespace

@@ -10,8 +10,9 @@ Usage:
 docs/release/ on the docs site shows, for one release milestone, what still has to happen before it ships,
 where each of those things stands and how fast it's moving. This writes the JSON that page reads: one
 `<milestone>.json` for every `vX.Y.Z` milestone, and an `index.json` that lists them and holds the figures
-the page compares between releases. .github/workflows/release-dashboard.yml runs it every 10 minutes and
-publishes DIR to the data-only `dashboard-data` branch; nothing generated is committed to main.
+the page compares between releases. .github/workflows/release-dashboard.yml runs it when an issue or main
+changes and every 10 minutes (#4604), and publishes DIR to the data-only `dashboard-data` branch; nothing
+generated is committed to main.
 
 Nothing here is a second tracking system. Every figure is read from what the release process already keeps
 (docs/dev/release-process.md, docs/dev/labels.md):
@@ -42,8 +43,11 @@ in the repository. A closed milestone whose release is published is written once
 from --previous on later runs. A planned release and the cycle's pass counts are read once an hour: 14 calls
 for the branch's, and for a minor one search and two or more counts for the pull requests'. The latest runs
 come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50 GraphQL points,
-and six runs an hour take about 60 and 300 of each budget. Every run prints what it used and what's left, and
-warns when that's under a quarter.
+and an hour's runs, 12 at most, take about 100 and 600 of each budget's 5,000 (#4604, #4620: every run but
+a manual one waits until the published data is five minutes old). Every run prints what it used and what's
+left, and warns when that's under a quarter. The workflow doesn't start this script at all when under 100
+REST calls or 150 GraphQL points are left: other workflows share the budgets, and it could only fail at its
+first read (#4617).
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run

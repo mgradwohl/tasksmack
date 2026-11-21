@@ -58,9 +58,18 @@ permissions:
 
 jobs:
   fuzz:
-    name: Fuzz changed parsers
+    name: Fuzz changed parsers (${{ matrix.sanitizer }})
     runs-on: ubuntu-26.04
     timeout-minutes: 30
+    # AddressSanitizer and UndefinedBehaviorSanitizer (#4343): the harnesses drive hand-written byte and integer
+    # parsers, whose typical defects (a signed overflow in an offset-plus-length check, a shift by the operand's width,
+    # a misaligned load) only UBSan reports. Each leg fuzzes against its own sanitizer's baseline build from
+    # cflite_build.yml; code-change mode only downloads the shared corpus, so the legs can't collide. They run side by
+    # side, each with the full budget.
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, undefined]
     steps:
       # Step timeouts well above the normal times, so a stalled download (#1406: the artifacts API rate
       # limit) or a hung build fails in minutes rather than holding the job for its whole 30. Building
@@ -74,7 +83,7 @@ jobs:
         with:
           language: c++
           github-token: ${{ secrets.GITHUB_TOKEN }}
-          sanitizer: address
+          sanitizer: ${{ matrix.sanitizer }}
 
       - name: Run fuzzers
         timeout-minutes: 15
@@ -83,5 +92,5 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           fuzz-seconds: 120
           mode: code-change
-          sanitizer: address
+          sanitizer: ${{ matrix.sanitizer }}
           output-sarif: false

@@ -52,6 +52,17 @@
   jobs' steps run for real, and the CI Success and OSV gates' steps run on the results. Concurrency groups never
   join two queue entries, no push or workflow_run trigger fires for a gh-readonly-queue branch, a merge group
   saves no clang-tidy result cache, and pre-commit's version guard reads the queue's base branch.
+- release-dashboard.yml generate "Wait until the published data is five minutes old" (#4604, #4620): a run
+  that has something to add waits out the rest of the five minutes, and until 15 seconds after it was
+  created so a merge's second event is in its data, whichever is longer and no more; every trigger but a
+  dispatch and a pull request waits; the job's timeout outlasts the wait; and a manual run cancels the run in
+  its way where every other event queues. `date` and `sleep` are stubs.
+- release-dashboard.yml generate "Stop here when this run has nothing to add" (#4620): a run stops before it
+  waits or reads when the token's REST calls or GraphQL points are gone (a warning, not a failure for every
+  event), and when the published figures were read at least 10 seconds after the run was created (the second
+  run of a merge, and one that waited behind another); nothing is generated or published after a stop; and
+  only the events worth a run start one (no labels, no edits, no Main Health). `date +%s` and `gh` are
+  stubs; jq and `date -d` are real, and the cases are skipped without jq.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -3149,6 +3160,279 @@ class HeavyChecksPushScopeTests(unittest.TestCase):
         self.assertEqual(self.scope("workflow_dispatch", {"src/App/a.cpp": "x\n"}), "true")
         self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="0" * 40), "true")
         self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="1" * 40), "true")
+
+
+class ReleaseDashboardWaitTests(unittest.TestCase):
+    """#4604, #4620: a run that has something to add waits until the published data is five minutes old, and
+    until a merge's second event has had time to arrive, whichever is longer, and no more. A manual run and a
+    pull request's proof don't wait, and a manual run doesn't queue."""
+
+    WORKFLOW = WORKFLOWS / "release-dashboard.yml"
+    JOB = "generate"
+    STEP = "Wait until the published data is five minutes old"
+    NOW = 1_800_000_000
+    NEVER_WAIT = {"workflow_dispatch", "pull_request"}
+    # (how long ago the data was published, how long ago this run was created): the seconds the step sleeps.
+    # None is "no dashboard-data branch yet" and "the run's start couldn't be read"; a negative age is a
+    # runner whose clock is behind the commit's or GitHub's.
+    CASES = {
+        (None, None): None,
+        (0, None): 300,
+        (60, None): 240,
+        (299, None): 1,
+        (300, None): None,
+        (301, None): None,
+        (2220, None): None,
+        (-3600, None): 300,
+        # The second wait: read no sooner than SETTLE_SECONDS (15) after the run was created.
+        (2220, 5): 10,
+        (2220, 15): None,
+        (2220, 20): None,
+        (None, 5): 10,
+        (60, 5): 240,  # the longer of the two
+        (296, 5): 10,
+        (2220, -100): 15,
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        """Runs the step once per case in one bash process (each launch costs seconds on the ARM64 Windows
+        runner, #3643). `date` and `sleep` are functions, so the step's own arithmetic runs and nothing waits."""
+        cls.step = find_step(cls.WORKFLOW, cls.STEP, job=cls.JOB)
+        tmp = Path(tempfile.mkdtemp(prefix="4604-dashboard-wait-"))
+        cls.addClassCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        log = tmp / "log"
+        script = [f"date() {{ echo {cls.NOW}; }}", 'sleep() { echo "slept $1" >> "$LOG"; }']
+
+        def ago(seconds: int | None) -> str:
+            return "" if seconds is None else str(cls.NOW - seconds)
+
+        for index, (published, created) in enumerate(cls.CASES):
+            # A subshell per case: the step's `set -e` and `exit` end the case, not the script.
+            script += [f'echo "case {index}" >> "$LOG"',
+                       f'( export PUBLISHED_AT="{ago(published)}" CREATED_AT="{ago(created)}"', cls.step.run, ")",
+                       'echo "status $?" >> "$LOG"']
+        env = {"LOG": posix(log), **{key: cls.step.env[key] for key in ("MIN_AGE_SECONDS", "SETTLE_SECONDS")}}
+        cls.result = run_bash("\n".join(script), tmp, env)
+        cls.seen: dict[int, list[str]] = {}
+        case = -1
+        for line in log.read_text(encoding="utf-8").splitlines() if log.is_file() else []:
+            key, _, value = line.partition(" ")
+            if key == "case":
+                case = int(value)
+                cls.seen[case] = []
+            else:
+                cls.seen[case].append(line)
+
+    def test_the_minimum_age_is_five_minutes_and_the_settle_fifteen_seconds(self):
+        self.assertEqual(self.step.env["MIN_AGE_SECONDS"], "300")
+        self.assertEqual(self.step.env["SETTLE_SECONDS"], "15")
+
+    def test_each_case_waits_what_it_should_and_no_more(self):
+        self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
+        for index, (case, slept) in enumerate(self.CASES.items()):
+            with self.subTest(published_ago=case[0], created_ago=case[1]):
+                expected = ([] if slept is None else [f"slept {slept}"]) + ["status 0"]
+                self.assertEqual(self.seen[index], expected)
+
+    def test_it_reads_the_times_the_steps_before_it_publish(self):
+        self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
+        self.assertEqual(self.step.env["CREATED_AT"], "${{ steps.gate.outputs.created }}")
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        fetch_block = text.split("      - name: Fetch the last published data\n", 1)[1].split("\n      - name: ", 1)[0]
+        self.assertIn("        id: previous\n", fetch_block)
+        fetch = find_step(self.WORKFLOW, "Fetch the last published data", job=self.JOB)
+        self.assertIn('echo "at=$(git log -1 --format=%ct FETCH_HEAD)" >> "$GITHUB_OUTPUT"', fetch.run)
+
+    def test_every_event_but_a_dispatch_and_a_pull_request_waits(self):
+        # A new trigger joins the wait, or is added to NEVER_WAIT here on purpose. Only a run that has
+        # something to add waits (ReleaseDashboardGateTests).
+        triggers = set(workflow_triggers(self.WORKFLOW))
+        self.assertTrue(self.NEVER_WAIT < triggers, triggers)
+        listed = re.fullmatch(
+            r"steps\.gate\.outputs\.proceed == 'true' && contains\(fromJSON\('(\[.*\])'\), github\.event_name\)",
+            self.step.condition,
+        )
+        self.assertIsNotNone(listed, self.step.condition)
+        self.assertEqual(set(json.loads(listed.group(1))), triggers - self.NEVER_WAIT)
+
+    def test_the_job_outlasts_the_wait(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        minutes = int(re.search(r"(?m)^    timeout-minutes: (\d+)", job).group(1))
+        self.assertGreaterEqual(minutes * 60, int(self.step.env["MIN_AGE_SECONDS"]) + 600)
+
+    def test_a_manual_run_cancels_the_run_in_its_way_and_the_others_queue(self):
+        # "Refresh now" must not sit behind a run that is five minutes into nothing, or be replaced while it
+        # waits. Every other publishing event queues, so a run that is publishing is never cut short by one.
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        expression = re.search(r"(?m)^  cancel-in-progress: \$\{\{ (.+) \}\}$", text)
+        self.assertIsNotNone(expression, "no cancel-in-progress expression")
+        cancels = set()
+        for term in expression.group(1).split("||"):
+            event = re.fullmatch(r"github\.event_name == '(\w+)'", term.strip())
+            self.assertIsNotNone(event, term)
+            cancels.add(event.group(1))
+        self.assertEqual(cancels, {"pull_request", "workflow_dispatch"})
+        # One group for everything that publishes; a pull request's runs are in a group of their own.
+        self.assertEqual(concurrency_group(self.WORKFLOW),
+                         "release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}")
+
+
+@unittest.skipUnless(shutil.which("jq"), "jq not available")
+class ReleaseDashboardGateTests(unittest.TestCase):
+    """#4620: a run with nothing to add stops before it waits or reads. That's a run when the token's REST calls
+    or GraphQL points are gone (it could only fail, once for every event), and a run created before the
+    published data's figures were read: the second run of a merge, and one that waited behind another."""
+
+    WORKFLOW = WORKFLOWS / "release-dashboard.yml"
+    JOB = "generate"
+    STEP = "Stop here when this run has nothing to add"
+    NOW = 1_800_000_000
+    RESET_IN = 600  # each budget's hour ends in ten minutes
+    GOES_ON = "true"
+    STOPS = "false"
+    # name: (event, how long ago the data was published, how long ago its figures were read, REST calls left,
+    #        GraphQL points left, how long ago this run was created, what the step decides). Seconds. None is
+    #        "nothing published", "index.json doesn't say", "the budget question failed" (both budgets) and
+    #        "this run couldn't be read".
+    CASES = {
+        "a pull request with no budget left": ("pull_request", 60, 100, 0, 0, 30, GOES_ON),
+        "a manual run": ("workflow_dispatch", 60, 100, 5000, 5000, 30, GOES_ON),
+        "a manual run with the REST calls gone": ("workflow_dispatch", 60, 100, 99, 5000, 30, STOPS),
+        "the schedule with the GraphQL points gone": ("schedule", 900, 940, 5000, 149, 30, STOPS),
+        "an issue with exactly enough of both": ("issues", 20, 60, 100, 150, 10, GOES_ON),
+        "the schedule, nothing published yet": ("schedule", None, None, 5000, 5000, 30, GOES_ON),
+        "an issue the data was read 10 s after": ("issues", 20, 60, 5000, 5000, 70, STOPS),
+        "an issue the data was read 9 s after": ("issues", 20, 60, 5000, 5000, 69, GOES_ON),
+        "a push after the data was read": ("push", 20, 60, 5000, 5000, 30, GOES_ON),
+        "the schedule that waited behind the run that read": ("schedule", 20, 60, 5000, 5000, 120, STOPS),
+        "the schedule, created after the data was read": ("schedule", 370, 410, 5000, 5000, 10, GOES_ON),
+        "a push whose run can't be read": ("push", 20, 60, 5000, 5000, None, GOES_ON),
+        "an issue, the data not saying when it was read": ("issues", 20, None, 5000, 5000, 70, GOES_ON),
+        "an issue in the data, the budget question failing": ("issues", 20, 60, None, None, 70, STOPS),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        """Every case in one bash process, each in a subshell. `date +%s` and `gh` are functions: the clock
+        stands at NOW, and `gh api` answers the budgets and this run's creation time from the case's
+        environment. jq and `date -d` are the real ones, on an index.json written for the case."""
+        cls.step = find_step(cls.WORKFLOW, cls.STEP, job=cls.JOB)
+        tmp = Path(tempfile.mkdtemp(prefix="4620-dashboard-gate-"))
+        cls.addClassCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        reset = cls.NOW + cls.RESET_IN
+        script = [
+            f'date() {{ if [[ "$1" == "+%s" ]]; then echo {cls.NOW}; else command date "$@"; fi; }}',
+            "gh() {",
+            '  if [[ "$2" == rate_limit ]]; then',
+            '    [[ -n "$REST_LEFT" ]] || return 1',
+            f'    echo "$REST_LEFT {reset} $POINTS_LEFT {reset}"',
+            "  else",
+            '    [[ -n "$CREATED" ]] || return 1',
+            '    echo "$CREATED"',
+            "  fi",
+            "}",
+        ]
+
+        def ago(seconds: int | None) -> str:
+            return "" if seconds is None else str(cls.NOW - seconds)
+
+        for index, (event, published, read, rest, points, created, _) in enumerate(cls.CASES.values()):
+            if published is not None:
+                stamp = {} if read is None else {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(cls.NOW - read))}
+                (tmp / f"index-{index}.json").write_text(json.dumps({"schema": 1, **stamp}), encoding="utf-8")
+            script += [
+                f'( export EVENT="{event}" PUBLISHED_AT="{ago(published)}" PREVIOUS_INDEX="$DIR/index-{index}.json"',
+                f'  export REST_LEFT="{"" if rest is None else rest}" POINTS_LEFT="{"" if points is None else points}"',
+                f'  export CREATED="{ago(created)}"',
+                f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
+                cls.step.run,
+                f') > "$DIR/log-{index}" 2>&1',
+                f'echo "$?" > "$DIR/status-{index}"',
+            ]
+        env = {key: cls.step.env[key] for key in ("MIN_REST_CALLS", "MIN_GRAPHQL_POINTS", "MARGIN_SECONDS")}
+        env.update({"DIR": posix(tmp), "RUN_PATH": "repos/owner/repo/actions/runs/1", "GH_TOKEN": "none"})
+        cls.result = run_bash("\n".join(script), tmp, env)
+
+        def text(kind: str, index: int) -> str:
+            path = tmp / f"{kind}-{index}"
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+        cls.seen = {}
+        for index, name in enumerate(cls.CASES):
+            seen = {kind: text(kind, index) for kind in ("summary", "log", "status")}
+            seen["output"] = dict(line.split("=", 1) for line in text("output", index).splitlines() if "=" in line)
+            cls.seen[name] = seen
+
+    def test_each_case_goes_on_or_stops_as_it_should(self):
+        self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
+        for name, (*_, decision) in self.CASES.items():
+            with self.subTest(case=name):
+                seen = self.seen[name]
+                self.assertEqual(seen["status"], "0", seen["log"])
+                self.assertEqual(seen["output"].get("proceed"), decision, seen["log"])
+
+    def test_a_spent_budget_is_a_warning_that_says_which_and_for_how_long(self):
+        for name, which in (("a manual run with the REST calls gone", "99 REST calls left"),
+                            ("the schedule with the GraphQL points gone", "149 GraphQL points left")):
+            with self.subTest(case=name):
+                log = self.seen[name]["log"]
+                self.assertIn(f"::warning title=Release dashboard::The repository's API budget is used up: {which}", log)
+                self.assertIn("for about 10 more minutes", log)
+                self.assertIn("Nothing read, nothing published.", self.seen[name]["summary"])
+
+    def test_a_run_that_stops_says_why_in_its_summary_and_one_that_goes_on_writes_none(self):
+        for name, (*_, decision) in self.CASES.items():
+            with self.subTest(case=name):
+                self.assertEqual(bool(self.seen[name]["summary"]), decision == self.STOPS, self.seen[name]["log"])
+        self.assertIn("read 10 s after this run was created", self.seen["an issue the data was read 10 s after"]["summary"])
+        self.assertIn("read 60 s after this run was created",
+                      self.seen["the schedule that waited behind the run that read"]["summary"])
+
+    def test_a_run_that_goes_on_hands_the_wait_its_own_start(self):
+        # The wait step reads `created` to give a merge's second event time to arrive.
+        self.assertEqual(self.seen["a push after the data was read"]["output"].get("created"), str(self.NOW - 30))
+        self.assertEqual(self.seen["an issue, the data not saying when it was read"]["output"].get("created"), str(self.NOW - 70))
+        for name in ("a push whose run can't be read", "a manual run", "a pull request with no budget left"):
+            with self.subTest(case=name):
+                self.assertNotIn("created", self.seen[name]["output"])
+
+    def test_a_merges_second_event_is_in_the_first_runs_data_by_more_than_the_margin(self):
+        # A push and an issue closing arrive about two seconds apart. The first run reads SETTLE_SECONDS after
+        # it was created at the earliest, so that read has to clear the second event by MARGIN_SECONDS for the
+        # second run to stop; five seconds of slack covers events further apart than usual.
+        wait = find_step(self.WORKFLOW, ReleaseDashboardWaitTests.STEP, job=self.JOB)
+        self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
+        self.assertEqual(self.step.env["PREVIOUS_INDEX"], "${{ runner.temp }}/previous/index.json")
+        self.assertGreaterEqual(int(wait.env["SETTLE_SECONDS"]) - int(self.step.env["MARGIN_SECONDS"]), 5)
+        # The margin is what the two clocks may disagree by: the generator's runner stamps the read.
+        self.assertGreaterEqual(int(self.step.env["MARGIN_SECONDS"]), 10)
+
+    def test_nothing_is_read_or_published_after_a_stop(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        gate = text.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
+        self.assertIn("        id: gate\n", gate)
+        for name in ("Generate", "Check what was written", "Hand the data to the publish job"):
+            with self.subTest(step=name):
+                self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, "steps.gate.outputs.proceed == 'true'")
+        generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("    outputs:\n", generate)
+        self.assertIn("      publish: ${{ steps.gate.outputs.proceed }}\n", generate)
+        publish = text.split("\n  publish:\n", 1)[1]
+        condition = publish.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
+        self.assertIn("needs.generate.outputs.publish == 'true'", condition)
+        self.assertIn("github.event_name != 'pull_request'", condition)
+        self.assertIn("github.ref == 'refs/heads/main'", condition)
+
+    def test_only_the_events_worth_a_run_start_one(self):
+        # Each event starts a run, and a run that isn't needed shows as cancelled or stops here: Main Health
+        # was two runs in three, and a new issue fired one `labeled` for each of its labels.
+        triggers = workflow_triggers(self.WORKFLOW)
+        self.assertEqual(set(triggers), {"schedule", "workflow_dispatch", "issues", "push", "pull_request"})
+        self.assertEqual(_list_value(*triggers["issues"]["types"]),
+                         ["opened", "closed", "reopened", "deleted", "milestoned", "demilestoned"])
+        self.assertEqual(_list_value(*triggers["push"]["branches"]), ["main"])
 
 
 if __name__ == "__main__":

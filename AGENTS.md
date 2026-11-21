@@ -105,9 +105,10 @@ The rules agents act on:
   get it in; scope is the maintainer's call.
 - **Candidate:** tag only a fully green, approved commit. Nothing joins the scope after approval.
 - **The release dashboard (#4524):** <https://mgradwohl.github.io/tasksmack/release/> shows what's left before the
-  release ships, read from the milestone, the tracker, the labels and CI every 10 minutes. It keeps nothing of
-  its own, so fix what it shows at the source. Start a tracker checklist item with its issue number and the
-  page ticks it when the issue closes ([release-process.md](docs/dev/release-process.md#the-release-dashboard)).
+  release ships, read from the milestone, the tracker, the labels and CI within minutes of a change (#4604). It
+  keeps nothing of its own, so fix what it shows at the source. Start a tracker checklist item with its issue
+  number and the page ticks it when the issue closes
+  ([release-process.md](docs/dev/release-process.md#the-release-dashboard)).
 - **Who controls what:** agents never declare the freeze, approve a candidate, cut a release branch or push a tag.
 - **Versions (#3371):** main is bumped to `X.(Y+1).0` right after `release/X.Y` is cut, patch bumps stay on the
   release branch, non-release builds read `X.Y.Z-dev`, and the version guard fails if a branch is below a published tag.
