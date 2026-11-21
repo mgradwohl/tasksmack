@@ -4,6 +4,8 @@
 /// real ~/.config/autostart.
 
 #include "Domain/StartAtLogin.h"
+#include "Domain/Utf8Sanitize.h"
+#include "NonAsciiTestNames.h"
 #include "Platform/IStartAtLogin.h"
 #include "Platform/Linux/LinuxStartAtLogin.h"
 #include "ScopedTempDir.h"
@@ -11,9 +13,12 @@
 #include <gtest/gtest.h>
 
 #include <filesystem>
+#include <format>
 #include <fstream>
+#include <iterator>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <unistd.h>
 
@@ -127,6 +132,30 @@ TEST(LinuxStartAtLoginTest, WriteReadAndRemoveTheEntryInItsOwnDirectory)
     LinuxStartAtLogin installed(autostart, "/usr/bin/TaskSmack");
     EXPECT_TRUE(installed.read()->installed);
     EXPECT_TRUE(LinuxStartAtLogin(autostart, "/opt/tasksmack/TaskSmack").read()->installed);
+}
+
+// #4330: whatever the command holds, the entry file is valid UTF-8 (GNOME skips one that isn't): text that is UTF-8
+// is written and reads back as it was, text that isn't is refused and nothing is written.
+TEST(LinuxStartAtLoginTest, TheEntryFileIsValidUtf8ForEveryFixture)
+{
+    const TestSupport::ScopedTempDir home("tasksmack_start_at_login_utf8");
+    const std::filesystem::path autostart = home.path / "autostart";
+    LinuxStartAtLogin entry(autostart, "/usr/bin/TaskSmack");
+    for (const std::string_view name : ::TestSupport::NON_ASCII_NAMES)
+    {
+        const std::string command = Domain::StartAtLogin::runCommand(std::format("/home/{}/TaskSmack", name));
+        ASSERT_TRUE(entry.write(command).has_value()) << name;
+        std::ifstream file(autostart / "tasksmack.desktop", std::ios::binary);
+        const std::string text{std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>()};
+        EXPECT_TRUE(Domain::isValidUtf8(text)) << text;
+        EXPECT_EQ(entry.read()->command, std::optional<std::string>(command));
+    }
+    ASSERT_TRUE(entry.remove().has_value());
+    for (const std::string_view bad : ::TestSupport::INVALID_UTF8_NAMES)
+    {
+        EXPECT_FALSE(entry.write(Domain::StartAtLogin::runCommand(std::format("/home/{}/TaskSmack", bad))).has_value()) << "refused";
+        EXPECT_FALSE(std::filesystem::exists(autostart / "tasksmack.desktop")) << "nothing written";
+    }
 }
 
 TEST(LinuxStartAtLoginTest, NoHomeOrAnUnwritableFolderSaysWhy)
