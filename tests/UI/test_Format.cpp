@@ -1865,6 +1865,12 @@ TEST(FormatTest, AValueThatRoundsToTheNextUnitIsPrintedInIt)
     EXPECT_EQ(UI::Format::unitForTotalBytes(1048550).suffix, "MiB");
     const auto power = UI::Format::splitPowerForAlignment(0.99996);
     EXPECT_EQ(power.unitPart, " W");
+    // #4657: the unit changes at the smaller unit's 1000.0, not at 0.95 of the larger one.
+    EXPECT_EQ(UI::Format::formatWatts(0.96), "960" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 mW");
+    EXPECT_EQ(UI::Format::formatWatts(0.00096), "960" + std::string(1, UI::Format::getLocaleDecimalPoint()) + "0 µW");
+    EXPECT_EQ(UI::Format::splitPowerForAlignment(0.96).unitPart, " mW");
+    EXPECT_EQ(UI::Format::splitPowerForAlignment(0.00096).unitPart, " µW");
+    EXPECT_EQ(UI::Format::splitPowerForAlignment(0.00099996).unitPart, " mW");
     // Below the window, the smaller unit stays.
     EXPECT_EQ(UI::Format::formatBytes(1048524.0).find("MiB"), std::string::npos) << "1023.9 KiB";
 }

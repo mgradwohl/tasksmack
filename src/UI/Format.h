@@ -918,8 +918,9 @@ struct AlignedBytesParts
     return out;
 }
 
-/// The power unit @p absWatts prints in, with its scale: W, mW or µW, decided on the value rounded to one decimal as it
-/// prints (#4428), so 0.99996 W is "1.0 W", not "1000.0 mW".
+/// The power unit @p absWatts prints in, with its scale: W, mW or µW. A unit is left for the larger one only when the
+/// value, rounded to one decimal in the SMALLER unit as it prints, reaches 1000 there (#4428): 0.99996 W is "1.0 W", not
+/// "1000.0 mW", while 0.96 W stays "960.0 mW" (#4657).
 struct PowerUnit
 {
     double scale = 1.0;
@@ -927,17 +928,15 @@ struct PowerUnit
 };
 [[nodiscard]] inline auto powerUnitFor(double absWatts) -> PowerUnit
 {
-    if (roundHalfAwayFromZero(absWatts, 1) >= 1.0)
+    if (absWatts >= 1.0 || roundHalfAwayFromZero(absWatts * 1000.0, 1) >= 1000.0)
     {
         return {.scale = 1.0, .suffix = "W"};
     }
-    if (roundHalfAwayFromZero(absWatts * 1000.0, 1) >= 1.0)
+    if (absWatts >= 0.001 || roundHalfAwayFromZero(absWatts * 1'000'000.0, 1) >= 1000.0)
     {
-        return roundHalfAwayFromZero(absWatts * 1000.0, 1) >= 1000.0 ? PowerUnit{.scale = 1.0, .suffix = "W"}
-                                                                     : PowerUnit{.scale = 1000.0, .suffix = "mW"};
+        return {.scale = 1000.0, .suffix = "mW"};
     }
-    return roundHalfAwayFromZero(absWatts * 1'000'000.0, 1) >= 1000.0 ? PowerUnit{.scale = 1000.0, .suffix = "mW"}
-                                                                      : PowerUnit{.scale = 1'000'000.0, .suffix = "µW"};
+    return {.scale = 1'000'000.0, .suffix = "µW"};
 }
 
 /// Split a power value (watts) into parts for decimal-aligned rendering
