@@ -213,26 +213,33 @@ TEST(BackgroundSamplerTest, DoubleStartIsIgnored)
     sampler.stop();
 }
 
-// #4590: the exit asks every sampler to stop first, without waiting, so they wind down together. A sampler asleep for
-// a long interval wakes at once, takes no more samples, and the stop() after it joins without waiting out the interval.
-TEST(BackgroundSamplerTest, RequestStopEndsTheThreadWithoutWaitingAndStopThenJoins)
+// #4590: the exit asks every sampler to stop first, without waiting, so they wind down together. requestStop() alone
+// must end the sampling: stop() would end it too (it asks, wakes and joins itself), so the test looks at the samples
+// before stop() runs. A short interval keeps a no-op requestStop() visible as samples that go on arriving (#4658).
+TEST(BackgroundSamplerTest, RequestStopAloneEndsTheSamplingAndStopThenJoins)
 {
     Domain::SamplerConfig config;
-    config.interval = 60s; // far longer than the test: only the stop request can end the wait
+    config.interval = 30ms;
     Domain::BackgroundSampler sampler(config);
     auto const samplable = std::make_shared<MockSamplable>();
     sampler.addSamplable(samplable);
     sampler.start();
-    samplable->waitForSamples(1); // the first sample, then asleep for the interval
+    samplable->waitForSamples(2); // sampling is under way, a pass every ~30 ms
 
-    const auto asked = std::chrono::steady_clock::now();
     sampler.requestStop();
     sampler.requestStop(); // twice is fine
     EXPECT_TRUE(sampler.isRunning()) << "asked, not yet joined: stop() still joins it and logs its summary";
+
+    // Let a pass that was already in flight finish, then the count must hold still: roughly ten intervals pass with
+    // no stop() to blame. (A request that does nothing keeps sampling about every 30 ms and fails here.)
+    std::this_thread::sleep_for(150ms);
+    const int settled = samplable->getSampleCount();
+    std::this_thread::sleep_for(400ms);
+    EXPECT_EQ(samplable->getSampleCount(), settled) << "requestStop() alone ends the sampling, without stop()";
+
     sampler.stop();
-    EXPECT_LT(std::chrono::steady_clock::now() - asked, 10s) << "woken by the request, not by the 60 s interval";
     EXPECT_FALSE(sampler.isRunning());
-    EXPECT_EQ(samplable->getSampleCount(), 1) << "no sample after the request";
+    EXPECT_EQ(samplable->getSampleCount(), settled) << "stop() after the request takes no further sample";
 }
 
 TEST(BackgroundSamplerTest, RequestStopWhenNotRunningIsNoOp)
