@@ -46,7 +46,7 @@ TEST(DumpFileNameTest, ANameThatIsNotUtf8GivesAUtf8FileName)
         EXPECT_TRUE(name.ends_with("_1234_2026-10-03_04-05-09.dmp")) << name;
     }
     std::string longBad(200, 'a');
-    longBad += "\xC3";
+    longBad += '\xC3';
     const std::string longName = dumpFileName(longBad, 1234, TIME);
     EXPECT_TRUE(Domain::isValidUtf8(longName)) << "a name cut to fit, too";
     EXPECT_TRUE(longName.contains('~')) << longName;
