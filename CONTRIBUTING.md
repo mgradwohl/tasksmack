@@ -2469,6 +2469,10 @@ cmake --build --preset win-profile
 $env:TASKSMACK_TRACE_RESIZE_PERF=1; .\build\win-profile\bin\TaskSmack.exe 2>&1 | Tee-Object $env:TEMP\resize-trace.log
 ```
 
+These run TaskSmack on your own config (and its single-instance lock, so close your TaskSmack first). For a
+clean run from the default settings, add `TASKSMACK_CONFIG_DIR="$(mktemp -d)"` (Linux) or set
+`$env:TASKSMACK_CONFIG_DIR` to a new folder (Windows), as `tools/measure-idle.sh` does for you (#4221).
+
 Just let the app sit idle for a few seconds to capture steady-state numbers, and/or resize the
 window (edges and corners) for 20–30 seconds to capture interactive numbers, then close the app.
 The log contains `ResizePerf[idle-progress|idle-end|interaction-progress|interaction-end|shutdown]` lines.
@@ -2583,7 +2587,11 @@ precedence.
 
 Idle cost is TaskSmack's first performance priority (#843): a task manager that sits open all day
 must not be the thing using the CPU. `tools/measure-idle.sh` (Linux) turns one idle scenario into a
-comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1`, waits for the
+comparable set of numbers. It launches TaskSmack with `TASKSMACK_TRACE_RESIZE_PERF=1` and a fresh config
+folder of its own, removed afterwards (#4221, as `measure-idle.ps1` and `profile-perf.sh app` do): the run starts
+from the default settings, never rewrites your `config.toml`, and shows no startup access notice over the window it
+measures. `--config-dir <dir>` uses (and keeps) a folder of yours instead, with a `config.toml` for non-default
+settings, and `--user-config` runs on your own config. It waits for the
 main loop and a warm-up (as `tools/profile-perf.sh app` does), samples per-thread CPU, closes the app
 with SIGTERM (a non-zero exit or a SIGKILL fails the run), and prints a table plus one
 machine-readable `RESULT` line. The frame and loop figures leave out a summary of a window that drew
@@ -2594,8 +2602,9 @@ plus a `SUMMARY` line. Every run also writes JSON (`perf-data/idle-<label>-<time
 commit and dirty flag, preset and build type, refresh interval and history window (as the app logged
 or loaded them), synthetic spec, the window's measured geometry and any `--window` requested, GL
 renderer, display refresh rate, CPU model, logical CPU count, MHz, and whether it ran under WSL. `--fail-above <pct>` exits with status 3 when the median app CPU
-is above `<pct>`. Another TaskSmack running with the same settings fails the run (the
-single-instance lock would stop the new one at its "already running" box); close it first.
+is above `<pct>`. With `--user-config` (or a `--config-dir` shared with a running TaskSmack), another TaskSmack
+using that folder fails the run (the single-instance lock would stop the new one at its "already running" box);
+close it first.
 
 ```bash
 # Default: profile preset (built first), 15 s warm-up (45 s for a "minimized" label), 30 s sample
