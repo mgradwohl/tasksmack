@@ -1924,8 +1924,13 @@ On Linux, memory tracking uses `/proc/self/status` for zero-overhead measurement
 ## Performance Profiling
 
 The `profile` and `win-profile` presets build at `-O2 -g -DNDEBUG` with frame pointers
-preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). All profiling scripts
-write artifacts under `perf-data/` and emit `KEY=value` lines at exit for scripting.
+preserved (`-fno-omit-frame-pointer -mno-omit-leaf-frame-pointer`). The profiling scripts write their
+artifacts under `perf-data/`. For scripting, the capture and analysis scripts end by printing `KEY=value`
+lines naming those files (#4220): `profile-perf.sh` (`PERF_DATA`, `LOG`), `analyze-perf.sh` (`PERF_DATA`,
+`REPORT`), `profile-heap.sh` (`HEAPTRACK_DATA`, `LOG`), and on Windows `profile-etw.ps1` and
+`analyze-etw.ps1`. `profile-perf.sh` prints them after a failed capture too, so the file may be partial:
+check the exit status before using it. The others report differently: `measure-idle.sh` (and `.ps1`) print a
+`RESULT` line and write JSON, `pgo.sh` and `ui-compare.sh` print a summary only.
 
 ### Linux — CPU profiling (perf)
 
