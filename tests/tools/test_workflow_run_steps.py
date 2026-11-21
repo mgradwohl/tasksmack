@@ -61,8 +61,15 @@
   waits or reads when the token's REST calls or GraphQL points are gone (a warning, not a failure for every
   event), and when the published figures were read at least 10 seconds after the run was created (the second
   run of a merge, and one that waited behind another); nothing is generated or published after a stop; and
-  only the events worth a run start one (no labels, no edits, no Main Health). `date +%s` and `gh` are
+  only the events worth a run start one (no labels, no edits, no Main Health, and since #4700 no `opened`:
+  `milestoned` covers a new issue), with two schedule lines five minutes apart. `date +%s` and `gh` are
   stubs; jq and `date -d` are real, and the cases are skipped without jq.
+- main-health.yml "Open, update or close the tracking issue" (#4700): a run that opened or closed a tracking
+  issue dispatches release-dashboard.yml once, however many branches changed, and does so on exit, so also
+  when a later branch then fails the step; a run that changed nothing or only rewrote an open issue
+  dispatches nothing; and a dispatch that fails is a warning, not a failed check. In the dashboard that run
+  queues (only a person's cancels the run in progress) and stops if the data already has main's new state.
+  `gh` and `sleep` are shell functions that log each call; the step's own update_issue(), trap and loop run.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -3162,6 +3169,160 @@ class HeavyChecksPushScopeTests(unittest.TestCase):
         self.assertEqual(self.scope("push", {"src/App/a.cpp": "x\n"}, before="1" * 40), "true")
 
 
+# Stands in for every `gh api` call of update_issue() and of the dispatch it leads to, as a shell function
+# (a process per call would add about forty launches to a ctest entry that is short of time on ARM64 Windows,
+# #3643): logs each call on one line to $CALLS, lists $RELEASE_BRANCHES, finds the open tracking issues named
+# in $OPEN_ISSUES ("<branch>=<number>", space-separated), fails the lookup for $FAIL_BRANCH, opens #99, and
+# answers the dispatch with status $DISPATCH_STATUS.
+DASHBOARD_DISPATCH_GH_STUB = r"""gh() {
+  local call="$*" name entry
+  printf '%s\n' "${call//$'\n'/ }" >>"$CALLS"
+  case "$call" in
+    "api --paginate repos/owner/repo/branches?"*)
+      for name in ${RELEASE_BRANCHES:-}; do echo "$name"; done ;;
+    "api repos/owner/repo/issues?labels="*)
+      if [[ -n "${FAIL_BRANCH:-}" && "$call" == *"CI: $FAIL_BRANCH is red"* ]]; then return 1; fi
+      for entry in ${OPEN_ISSUES:-}; do
+        if [[ "$call" == *"CI: ${entry%%=*} is red"* ]]; then echo "${entry##*=}"; fi
+      done ;;
+    "api -X POST repos/owner/repo/actions/workflows/release-dashboard.yml/dispatches "*)
+      return "${DISPATCH_STATUS:-0}" ;;
+    "api repos/owner/repo/issues -f title="*) echo 99 ;;
+    "api repos/owner/repo/issues/"*" --jq .body") echo '- **Sanitizers** (push): `failure`' ;;
+    "api repos/owner/repo/labels "*|"api -X PATCH repos/owner/repo/issues/"*|"api repos/owner/repo/issues/"*"/comments "*) ;;
+    *) echo "gh stub: unexpected command $call" >&2; return 2 ;;
+  esac
+}
+sleep() { :; }
+"""
+
+
+class MainHealthTellsTheDashboardTests(unittest.TestCase):
+    """#4700: Main Health opens and closes its tracking issue with the workflow token, which starts no workflow,
+    so the release dashboard only saw main turn red or green at its next run. A run that opened or closed an
+    issue now dispatches the dashboard, once, and a dispatch that fails doesn't fail the check."""
+
+    WORKFLOW = WORKFLOWS / "main-health.yml"
+    DISPATCH = "api -X POST repos/owner/repo/actions/workflows/release-dashboard.yml/dispatches --silent -f ref=main"
+    # name: (the branches judged red, the tracking issues open before the run, the release branches that exist,
+    #        the dispatch call's exit status, the branch whose issue lookup fails)
+    CASES = {
+        "green, no issue": ("", "", "", 0, ""),
+        "main turns red": ("main", "", "", 0, ""),
+        "main stays red": ("main", "main=7", "", 0, ""),
+        "main turns green": ("", "main=7", "", 0, ""),
+        "two branches change in one run": ("main", "release/0.9=8", "release/0.9", 0, ""),
+        "the dispatch fails": ("main", "", "", 1, ""),
+        "a later branch fails after main's issue opened": ("main", "", "release/0.9", 0, "release/0.9"),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        """Every case in one bash process, each in a subshell: the step's own update_issue(), its exit trap and
+        its loop, with judge_branch() answering from the case and `gh` a stub that logs what it's asked."""
+        step = find_step(cls.WORKFLOW, MAIN_HEALTH_STEP)
+        cut = step.run.index("\n}\n", step.run.index("update_issue() {")) + 3
+        functions, selection = step.run[:cut], step.run[cut:]
+        tmp = Path(tempfile.mkdtemp(prefix="4700-main-health-dispatch-"))
+        cls.addClassCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        judge = (
+            'judge_branch() {\n'
+            '  red=""\n'
+            '  case " ${RED_BRANCHES:-} " in *" $1 "*) red="- **CI** (push): failure"$\'\\n\' ;; esac\n'
+            '}\n'
+        )
+        script = []
+        for index, (red, open_issues, release_branches, status, fails) in enumerate(cls.CASES.values()):
+            script += [
+                f'( export RED_BRANCHES="{red}" OPEN_ISSUES="{open_issues}" RELEASE_BRANCHES="{release_branches}"',
+                f'  export DISPATCH_STATUS="{status}" FAIL_BRANCH="{fails}" CALLS="$DIR/calls-{index}"',
+                '  : > "$CALLS"',
+                functions,
+                DASHBOARD_DISPATCH_GH_STUB,
+                judge,
+                selection,
+                f') > "$DIR/log-{index}" 2>&1',
+                f'echo "$?" > "$DIR/status-{index}"',
+            ]
+        env = {
+            "DIR": posix(tmp),
+            "REPO": "owner/repo",
+            "SERVER": "https://github.example",
+            "LABEL": "ci-red-main",
+            "GITHUB_WORKFLOW": "Main Health",
+            "GITHUB_RUN_ID": "42",
+            "TRIGGER_BRANCH": "main",
+            "TRIGGER_NAME": "CI",
+            "TRIGGER_URL": "https://github.example/runs/1",
+            "TRIGGER_CONCLUSION": "failure",
+            "TRIGGER_SHA": "0123456789abcdef",
+        }
+        cls.result = run_bash("\n".join(script), tmp, env)
+
+        def text(kind: str, index: int) -> str:
+            path = tmp / f"{kind}-{index}"
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+        cls.seen = {
+            name: {"calls": text("calls", index).splitlines(), "log": text("log", index), "status": text("status", index)}
+            for index, name in enumerate(cls.CASES)
+        }
+
+    def dispatches(self, name: str, status: str = "0") -> list[str]:
+        self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
+        seen = self.seen[name]
+        self.assertEqual(seen["status"], status, seen["log"])
+        return [call for call in seen["calls"] if "/dispatches " in call]
+
+    def test_an_issue_opening_starts_one_dashboard_run(self):
+        self.assertEqual(self.dispatches("main turns red"), [self.DISPATCH])
+        self.assertIn("Started a Release Dashboard run: opened #99 for main.", self.seen["main turns red"]["log"])
+
+    def test_an_issue_closing_starts_one_dashboard_run(self):
+        self.assertEqual(self.dispatches("main turns green"), [self.DISPATCH])
+        calls = self.seen["main turns green"]["calls"]
+        self.assertTrue(any(call.startswith("api -X PATCH repos/owner/repo/issues/7 ") and "state=closed" in call for call in calls), calls)
+        self.assertIn("Started a Release Dashboard run: closed #7 for main.", self.seen["main turns green"]["log"])
+
+    def test_no_change_starts_none(self):
+        # Green with nothing open, and red with its issue already open (the issue's text is rewritten, and the
+        # dashboard's own reads show which workflows are red).
+        self.assertEqual(self.dispatches("green, no issue"), [])
+        self.assertEqual(self.dispatches("main stays red"), [])
+        calls = self.seen["main stays red"]["calls"]
+        self.assertTrue(any(call.startswith("api -X PATCH repos/owner/repo/issues/7 ") and "-f body=" in call for call in calls), calls)
+
+    def test_two_branches_changing_in_one_run_start_one_run_not_two(self):
+        self.assertEqual(self.dispatches("two branches change in one run"), [self.DISPATCH])
+        self.assertIn("Started a Release Dashboard run: opened #99 for main; closed #8 for release/0.9.",
+                      self.seen["two branches change in one run"]["log"])
+
+    def test_a_dispatch_that_fails_is_a_warning_and_the_check_still_passes(self):
+        self.assertEqual(self.dispatches("the dispatch fails"), [self.DISPATCH])
+        log = self.seen["the dispatch fails"]["log"]
+        self.assertIn("Opened #99.", log)
+        self.assertIn("::warning title=Main Health::The Release Dashboard run couldn't be started (opened #99 for main).", log)
+
+    def test_a_run_that_fails_after_changing_an_issue_still_tells_the_dashboard(self):
+        # main's issue opens, then the next branch's lookup fails all four tries and the step exits 1. The
+        # next run finds main's issue already open and has nothing to say, so this run's exit says it.
+        name = "a later branch fails after main's issue opened"
+        self.assertEqual(self.dispatches(name, status="1"), [self.DISPATCH])
+        log = self.seen[name]["log"]
+        self.assertIn("try 4 of 4 failed", log)
+        self.assertIn("Started a Release Dashboard run: opened #99 for main.", log)
+
+    def test_the_job_may_dispatch_and_the_dashboard_can_be_dispatched(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split("\n  track:\n", 1)[1]
+        permissions = job.split("    permissions:\n", 1)[1].split("    steps:\n", 1)[0]
+        self.assertRegex(permissions, r"(?m)^      actions: write\b")
+        # The dispatch names main, the only ref the dashboard publishes from.
+        dashboard = WORKFLOWS / "release-dashboard.yml"
+        self.assertIn("workflow_dispatch", workflow_triggers(dashboard))
+        self.assertIn("github.ref == 'refs/heads/main'", dashboard.read_text(encoding="utf-8"))
+
+
 class ReleaseDashboardWaitTests(unittest.TestCase):
     """#4604, #4620: a run that has something to add waits until the published data is five minutes old, and
     until a merge's second event has had time to arrive, whichever is longer, and no more. A manual run and a
@@ -3265,15 +3426,16 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
     def test_a_manual_run_cancels_the_run_in_its_way_and_the_others_queue(self):
         # "Refresh now" must not sit behind a run that is five minutes into nothing, or be replaced while it
         # waits. Every other publishing event queues, so a run that is publishing is never cut short by one.
+        # Main Health's dispatch (#4700) comes from the workflow token and queues like the rest: if it
+        # cancelled a run and then found the API budget gone, nothing would publish.
         text = self.WORKFLOW.read_text(encoding="utf-8")
         expression = re.search(r"(?m)^  cancel-in-progress: \$\{\{ (.+) \}\}$", text)
         self.assertIsNotNone(expression, "no cancel-in-progress expression")
-        cancels = set()
-        for term in expression.group(1).split("||"):
-            event = re.fullmatch(r"github\.event_name == '(\w+)'", term.strip())
-            self.assertIsNotNone(event, term)
-            cancels.add(event.group(1))
-        self.assertEqual(cancels, {"pull_request", "workflow_dispatch"})
+        self.assertEqual(
+            expression.group(1),
+            "github.event_name == 'pull_request' || "
+            "(github.event_name == 'workflow_dispatch' && github.actor != 'github-actions[bot]')",
+        )
         # One group for everything that publishes; a pull request's runs are in a group of their own.
         self.assertEqual(concurrency_group(self.WORKFLOW),
                          "release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}")
@@ -3292,11 +3454,16 @@ class ReleaseDashboardGateTests(unittest.TestCase):
     RESET_IN = 600  # each budget's hour ends in ten minutes
     GOES_ON = "true"
     STOPS = "false"
+    MAIN_HEALTH = "workflow_dispatch from Main Health"  # sent with the workflow token (#4700)
     # name: (event, how long ago the data was published, how long ago its figures were read, REST calls left,
     #        GraphQL points left, how long ago this run was created, what the step decides). Seconds. None is
     #        "nothing published", "index.json doesn't say", "the budget question failed" (both budgets) and
     #        "this run couldn't be read".
     CASES = {
+        "a manual run the data already has": ("workflow_dispatch", 20, 60, 5000, 5000, 120, GOES_ON),
+        "Main Health's dispatch, main's new state already in the data": (MAIN_HEALTH, 20, 60, 5000, 5000, 120, STOPS),
+        "Main Health's dispatch, not in the data yet": (MAIN_HEALTH, 20, 60, 5000, 5000, 30, GOES_ON),
+        "Main Health's dispatch with the REST calls gone": (MAIN_HEALTH, 20, 60, 99, 5000, 30, STOPS),
         "a pull request with no budget left": ("pull_request", 60, 100, 0, 0, 30, GOES_ON),
         "a manual run": ("workflow_dispatch", 60, 100, 5000, 5000, 30, GOES_ON),
         "a manual run with the REST calls gone": ("workflow_dispatch", 60, 100, 99, 5000, 30, STOPS),
@@ -3342,8 +3509,10 @@ class ReleaseDashboardGateTests(unittest.TestCase):
             if published is not None:
                 stamp = {} if read is None else {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(cls.NOW - read))}
                 (tmp / f"index-{index}.json").write_text(json.dumps({"schema": 1, **stamp}), encoding="utf-8")
+            actor = "github-actions[bot]" if event == cls.MAIN_HEALTH else "a-person"
             script += [
-                f'( export EVENT="{event}" PUBLISHED_AT="{ago(published)}" PREVIOUS_INDEX="$DIR/index-{index}.json"',
+                f'( export EVENT="{event.split()[0]}" ACTOR="{actor}"',
+                f'  export PUBLISHED_AT="{ago(published)}" PREVIOUS_INDEX="$DIR/index-{index}.json"',
                 f'  export REST_LEFT="{"" if rest is None else rest}" POINTS_LEFT="{"" if points is None else points}"',
                 f'  export CREATED="{ago(created)}"',
                 f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
@@ -3398,6 +3567,15 @@ class ReleaseDashboardGateTests(unittest.TestCase):
             with self.subTest(case=name):
                 self.assertNotIn("created", self.seen[name]["output"])
 
+    def test_a_person_and_main_health_are_told_apart_by_who_sent_the_dispatch(self):
+        self.assertEqual(self.step.env["ACTOR"], "${{ github.actor }}")
+        self.assertIn("A manual run always generates.", self.seen["a manual run the data already has"]["log"])
+        self.assertIn("it has everything this run would add",
+                      self.seen["Main Health's dispatch, main's new state already in the data"]["summary"])
+        # Main Health's run isn't in the wait step's list: main turning red or green doesn't wait five minutes.
+        wait = find_step(self.WORKFLOW, ReleaseDashboardWaitTests.STEP, job=self.JOB)
+        self.assertNotIn("workflow_dispatch", wait.condition)
+
     def test_a_merges_second_event_is_in_the_first_runs_data_by_more_than_the_margin(self):
         # A push and an issue closing arrive about two seconds apart. The first run reads SETTLE_SECONDS after
         # it was created at the earliest, so that read has to clear the second event by MARGIN_SECONDS for the
@@ -3430,9 +3608,19 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         # was two runs in three, and a new issue fired one `labeled` for each of its labels.
         triggers = workflow_triggers(self.WORKFLOW)
         self.assertEqual(set(triggers), {"schedule", "workflow_dispatch", "issues", "push", "pull_request"})
+        # No `opened` (#4700): the page shows only issues on a milestone, and one created with a milestone
+        # fires `milestoned` too, so both together were two runs for every new issue.
         self.assertEqual(_list_value(*triggers["issues"]["types"]),
-                         ["opened", "closed", "reopened", "deleted", "milestoned", "demilestoned"])
+                         ["closed", "reopened", "deleted", "milestoned", "demilestoned"])
         self.assertEqual(_list_value(*triggers["push"]["branches"]), ["main"])
+
+    def test_the_schedule_has_two_lines_five_minutes_apart(self):
+        # #4700: the hour's first slot starts late or not at all, and one line alone left the page 15 to 21
+        # minutes behind in a quiet stretch. Five minutes is also the shortest interval GitHub schedules.
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        lines = re.findall(r"(?m)^    - cron: '(\d+)-59/10 \* \* \* \*'$", text)
+        self.assertEqual(lines, ["3", "8"])
+        self.assertEqual(len(re.findall(r"(?m)^    - cron: ", text)), 2)
 
 
 if __name__ == "__main__":
