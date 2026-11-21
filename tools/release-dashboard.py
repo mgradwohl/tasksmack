@@ -43,9 +43,11 @@ in the repository. A closed milestone whose release is published is written once
 from --previous on later runs. A planned release and the cycle's pass counts are read once an hour: 14 calls
 for the branch's, and for a minor one search and two or more counts for the pull requests'. The latest runs
 come from two listings, not a call per workflow. So a usual run is about 7 REST calls and 50 GraphQL points,
-and a busy hour's 12 to 18 runs take about 150 and 900 of each budget's 5,000 (#4604: a run that a change
-started waits until the published data is five minutes old, so changes add 12 runs an hour at most to the
-schedule's 6). Every run prints what it used and what's left, and warns when that's under a quarter.
+and an hour's runs, 12 at most, take about 100 and 600 of each budget's 5,000 (#4604, #4620: a run that a
+change started waits until the published data is five minutes old, and a scheduled run stops when it's
+younger than that). Every run prints what it used and what's left, and warns when that's under a quarter.
+The workflow doesn't start this script at all when under 100 REST calls are left: other workflows share the
+budget, and it could only fail at its first read (#4617).
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run

@@ -56,6 +56,11 @@
   issue, a push or Main Health started waits out the rest of the five minutes and no more, every trigger but
   the schedule, a dispatch and a pull request waits, the job's timeout outlasts the wait, and a manual run
   cancels the run in its way where every other event queues. `date` and `sleep` are stubs.
+- release-dashboard.yml generate "Stop here when this run has nothing to add" (#4620): a run stops before it
+  waits or reads when the token's REST budget is gone (a warning, not a failure for every event), when the
+  published data was read after the run's own event (the second run of a merge), and when a scheduled run
+  finds the data under five minutes old; nothing is generated or published after a stop; and only the events
+  worth a run start one (no labels, no edits, no Main Health). `date` and `gh` are stubs.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -3227,10 +3232,14 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         self.assertIn('echo "at=$(git log -1 --format=%ct FETCH_HEAD)" >> "$GITHUB_OUTPUT"', fetch.run)
 
     def test_every_event_that_isnt_the_schedule_a_dispatch_or_a_pull_request_waits(self):
-        # A new trigger joins the wait, or is added to NEVER_WAIT here on purpose.
+        # A new trigger joins the wait, or is added to NEVER_WAIT here on purpose. Only a run that has
+        # something to add waits (ReleaseDashboardGateTests).
         triggers = set(workflow_triggers(self.WORKFLOW))
         self.assertTrue(self.NEVER_WAIT < triggers, triggers)
-        listed = re.fullmatch(r"contains\(fromJSON\('(\[.*\])'\), github\.event_name\)", self.step.condition)
+        listed = re.fullmatch(
+            r"steps\.gate\.outputs\.proceed == 'true' && contains\(fromJSON\('(\[.*\])'\), github\.event_name\)",
+            self.step.condition,
+        )
         self.assertIsNotNone(listed, self.step.condition)
         self.assertEqual(set(json.loads(listed.group(1))), triggers - self.NEVER_WAIT)
 
@@ -3255,6 +3264,143 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         # One group for everything that publishes; a pull request's runs are in a group of their own.
         self.assertEqual(concurrency_group(self.WORKFLOW),
                          "release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}")
+
+
+class ReleaseDashboardGateTests(unittest.TestCase):
+    """#4620: a run with nothing to add stops before it waits or reads. That's a run when the token's REST
+    budget is gone (it could only fail, once for every event), an issue's or a push's run whose event the
+    published data already has, and a scheduled run that finds the data under five minutes old."""
+
+    WORKFLOW = WORKFLOWS / "release-dashboard.yml"
+    JOB = "generate"
+    STEP = "Stop here when this run has nothing to add"
+    NOW = 1_800_000_000
+    RESET_IN = 600  # the budget's hour ends in ten minutes
+    GOES_ON = "proceed=true"
+    STOPS = "proceed=false"
+    # name: (event, how long ago the data was published, how long ago its figures were read, REST calls left,
+    #        how long ago this run was created, what the step decides). Seconds; None is "no data published",
+    #        "the budget question failed" and "this run couldn't be read".
+    CASES = {
+        "a pull request with no budget left": ("pull_request", 60, 100, 0, 30, GOES_ON),
+        "a manual run": ("workflow_dispatch", 60, 100, 5000, 30, GOES_ON),
+        "a manual run with no budget left": ("workflow_dispatch", 60, 100, 99, 30, STOPS),
+        "the schedule, data a second under five minutes old": ("schedule", 299, 340, 5000, None, STOPS),
+        "the schedule, data five minutes old": ("schedule", 300, 340, 5000, None, GOES_ON),
+        "the schedule, nothing published yet": ("schedule", None, None, 5000, None, GOES_ON),
+        "the schedule with no budget left": ("schedule", 900, 940, 0, None, STOPS),
+        "an issue the data was read 2 s after": ("issues", 20, 60, 5000, 62, STOPS),
+        "an issue the data was read 1 s after": ("issues", 20, 60, 5000, 61, GOES_ON),
+        "a push after the data was read": ("push", 20, 60, 5000, 10, GOES_ON),
+        "a push whose run can't be read": ("push", 20, 60, 5000, None, GOES_ON),
+        "a push with nothing published yet": ("push", None, None, 5000, 10, GOES_ON),
+        "an issue with exactly enough budget": ("issues", 20, 60, 100, 10, GOES_ON),
+        "an issue in the data, the budget question failing": ("issues", 20, 60, None, 62, STOPS),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        """Every case in one bash process, each in a subshell. `date` and `gh` are functions: the clock stands
+        at NOW, and `gh api` answers the budget and this run's creation time from the case's environment."""
+        cls.step = find_step(cls.WORKFLOW, cls.STEP, job=cls.JOB)
+        tmp = Path(tempfile.mkdtemp(prefix="4620-dashboard-gate-"))
+        cls.addClassCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        script = [
+            f"date() {{ echo {cls.NOW}; }}",
+            "gh() {",
+            '  if [[ "$2" == rate_limit ]]; then',
+            '    [[ -n "$REST_LEFT" ]] || return 1',
+            f'    echo "$REST_LEFT {cls.NOW + cls.RESET_IN}"',
+            "  else",
+            '    [[ -n "$CREATED" ]] || return 1',
+            '    echo "$CREATED"',
+            "  fi",
+            "}",
+        ]
+
+        def ago(seconds: int | None) -> str:
+            return "" if seconds is None else str(cls.NOW - seconds)
+
+        for index, (event, published, read, left, created, _) in enumerate(cls.CASES.values()):
+            script += [
+                f'( export EVENT="{event}" PUBLISHED_AT="{ago(published)}" READ_AT="{ago(read)}"',
+                f'  export REST_LEFT="{"" if left is None else left}" CREATED="{ago(created)}"',
+                f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
+                cls.step.run,
+                f') > "$DIR/log-{index}" 2>&1',
+                f'echo "$?" > "$DIR/status-{index}"',
+            ]
+        env = {key: cls.step.env[key] for key in ("MIN_AGE_SECONDS", "MIN_REST_CALLS", "SETTLE_SECONDS")}
+        env.update({"DIR": posix(tmp), "RUN_PATH": "repos/owner/repo/actions/runs/1", "GH_TOKEN": "none"})
+        cls.result = run_bash("\n".join(script), tmp, env)
+
+        def text(kind: str, index: int) -> str:
+            path = tmp / f"{kind}-{index}"
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+        cls.seen = {
+            name: {kind: text(kind, index) for kind in ("output", "summary", "log", "status")}
+            for index, name in enumerate(cls.CASES)
+        }
+
+    def test_each_case_goes_on_or_stops_as_it_should(self):
+        self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
+        for name, (*_, decision) in self.CASES.items():
+            with self.subTest(case=name):
+                seen = self.seen[name]
+                self.assertEqual(seen["status"], "0", seen["log"])
+                self.assertEqual(seen["output"], decision, seen["log"])
+
+    def test_a_spent_budget_is_a_warning_that_says_for_how_long(self):
+        for name in ("a manual run with no budget left", "the schedule with no budget left"):
+            with self.subTest(case=name):
+                log = self.seen[name]["log"]
+                self.assertIn("::warning title=Release dashboard::The repository's API budget is used up", log)
+                self.assertIn("for about 10 more minutes", log)
+                self.assertIn("Nothing read, nothing published.", self.seen[name]["summary"])
+
+    def test_a_run_that_stops_says_why_in_its_summary_and_one_that_goes_on_writes_none(self):
+        for name, (*_, decision) in self.CASES.items():
+            with self.subTest(case=name):
+                self.assertEqual(bool(self.seen[name]["summary"]), decision == self.STOPS, self.seen[name]["log"])
+        self.assertIn("read 2 s after this run's event", self.seen["an issue the data was read 2 s after"]["summary"])
+        self.assertIn("299 s old", self.seen["the schedule, data a second under five minutes old"]["summary"])
+
+    def test_the_floor_is_the_wait_steps(self):
+        wait = find_step(self.WORKFLOW, ReleaseDashboardWaitTests.STEP, job=self.JOB)
+        self.assertEqual(self.step.env["MIN_AGE_SECONDS"], wait.env["MIN_AGE_SECONDS"])
+        self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
+        self.assertEqual(self.step.env["READ_AT"], "${{ steps.previous.outputs.read }}")
+        # A merge is a push and an issue closing two seconds apart, and the push's run reads about four
+        # seconds after the second: the margin has to be under that for the pair to be one publish.
+        self.assertLessEqual(int(self.step.env["SETTLE_SECONDS"]), 3)
+        fetch = find_step(self.WORKFLOW, "Fetch the last published data", job=self.JOB)
+        self.assertIn('echo "read=$read_at" >> "$GITHUB_OUTPUT"', fetch.run)
+
+    def test_nothing_is_read_or_published_after_a_stop(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        gate = text.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
+        self.assertIn("        id: gate\n", gate)
+        for name in ("Generate", "Check what was written", "Hand the data to the publish job"):
+            with self.subTest(step=name):
+                self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, "steps.gate.outputs.proceed == 'true'")
+        generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("    outputs:\n", generate)
+        self.assertIn("      publish: ${{ steps.gate.outputs.proceed }}\n", generate)
+        publish = text.split("\n  publish:\n", 1)[1]
+        condition = publish.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
+        self.assertIn("needs.generate.outputs.publish == 'true'", condition)
+        self.assertIn("github.event_name != 'pull_request'", condition)
+        self.assertIn("github.ref == 'refs/heads/main'", condition)
+
+    def test_only_the_events_worth_a_run_start_one(self):
+        # Each event starts a run, and a run that isn't needed shows as cancelled or stops here: Main Health
+        # was two runs in three, and a new issue fired one `labeled` for each of its labels.
+        triggers = workflow_triggers(self.WORKFLOW)
+        self.assertEqual(set(triggers), {"schedule", "workflow_dispatch", "issues", "push", "pull_request"})
+        self.assertEqual(_list_value(*triggers["issues"]["types"]),
+                         ["opened", "closed", "reopened", "deleted", "milestoned", "demilestoned"])
+        self.assertEqual(_list_value(*triggers["push"]["branches"]), ["main"])
 
 
 if __name__ == "__main__":
