@@ -9,22 +9,42 @@ name: Release Dashboard
 # Two jobs, so the token that can write never runs the generator:
 #   - generate: read-only. Runs the generator's tests, then the generator, and uploads what it wrote.
 #   - publish:  `contents: write`, and no repository code: it replaces dashboard-data's single commit with the
-#               uploaded files. The branch holds one commit, replaced on every run, so 144 runs a day don't grow
-#               the repository; every figure can be regenerated from the API, so no history is lost. The "Main
-#               Builds" ruleset covers only main and release/*, so the forced update is allowed there and
-#               nowhere else. A push made with GITHUB_TOKEN starts no workflow.
+#               uploaded files. The branch holds one commit, replaced on every run, so a few hundred runs a
+#               day don't grow the repository; every figure can be regenerated from the API, so no history is
+#               lost. The "Main Builds" ruleset covers only main and release/*, so the forced update is allowed
+#               there and nowhere else. A push made with GITHUB_TOKEN starts no workflow.
 #
 # A pull request that changes the generator, its tests or this file runs `generate` only, as that change's
 # proof: nothing is published from a pull request. A failed run publishes nothing, so the page keeps the last
 # good data and says how old it is.
 on:
   schedule:
-    # Every 10 minutes (maintainer, 2026-11-19), off the hour. GitHub starts scheduled runs late when it's busy,
-    # so the gap is often longer. The generator reads once an hour what changes slowly, and a usual run is
-    # about 7 REST calls and 50 GraphQL points of the hourly budget this token shares with every other workflow
-    # here. Each run's log says what it used and what's left.
+    # Every 10 minutes (maintainer, 2026-11-19), off the hour: the backstop, and what moves the figures only
+    # the clock changes. GitHub starts scheduled runs late and skips some when it's busy (#4604: 13 of a day's
+    # 120 slots never started, three in a row at midnight UTC), so the events below carry the changes. The
+    # generator reads once an hour what changes slowly, and a usual run is about 7 REST calls and 50 GraphQL
+    # points of the hourly budget this token shares with every other workflow here. Each run's log says what
+    # it used and what's left.
     - cron: '3-59/10 * * * *'
   workflow_dispatch:
+  # What the page shows changes when an issue does, when main moves and when main's health is judged (#4604),
+  # so each of those starts a run. Such a run waits until the published data is five minutes old (the "Wait
+  # until the published data is five minutes old" step), so a burst of labels is one run, not twenty. Left
+  # out on purpose: comments (every lane note would start a run; the next run reads a freeze or an approval
+  # on the tracker) and pull requests (`pull_request` below is this workflow's own proof, and can't also carry
+  # every pull request's events; the next run reads them).
+  issues:
+    types: [opened, edited, deleted, closed, reopened, labeled, unlabeled, milestoned, demilestoned]
+  push:
+    branches: [main]
+  # Main Health opens and closes the `ci-red-main` issues with the workflow token, and what that token does
+  # starts no workflow, so `issues` never sees them. Its runs are always on main, whichever branch they judge.
+  # Every completion counts, a skipped or a replaced run's too: a job-level `if:` on the result would let a
+  # run that does nothing take the waiting place of one that would publish.
+  workflow_run:
+    workflows: [Main Health]
+    types: [completed]
+    branches: [main]
   pull_request:
     paths:
       - 'tools/release-dashboard.py'
@@ -34,11 +54,14 @@ on:
       # The generator reads this workflow's WATCHED list, so the two judge main by the same workflows.
       - '.github/workflows/main-health.yml'
 
-# One publishing run at a time: a queued one replaces a waiting one, and reads fresher data anyway. A pull
-# request's runs only cancel each other.
+# One publishing run at a time: a queued one replaces a waiting one, and reads fresher data anyway. GitHub
+# lists the replaced run as cancelled, so cancelled runs here are the group at work, not failures. A manual run
+# ("Refresh now" on the page) doesn't queue: it cancels the run in progress, which may be minutes into its
+# wait, and publishes what it reads itself. Stopping a run mid-publish is safe: the branch moves in one push or
+# not at all. A pull request's runs only cancel each other.
 concurrency:
   group: release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
 
 permissions: {}
 
@@ -46,7 +69,7 @@ jobs:
   generate:
     name: Generate the data
     runs-on: ubuntu-26.04
-    timeout-minutes: 10
+    timeout-minutes: 15  # up to 5 minutes of waiting (below), then a run that has taken 1 to 5
     permissions:
       actions: read  # the watched workflows' runs, and release.yml's dry runs
       contents: read  # the generator, and the published releases
@@ -72,6 +95,7 @@ jobs:
       # The last run's files: a finished release is copied from them, and so are the figures that are only
       # read once an hour. With no branch yet (the first run), everything is generated.
       - name: Fetch the last published data
+        id: previous
         env:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
         run: |
@@ -81,9 +105,42 @@ jobs:
             git fetch --quiet --depth 1 "$REPO_URL" dashboard-data
             git archive FETCH_HEAD | tar -x -C "$RUNNER_TEMP/previous"
             echo "Last published: $(git log -1 --format=%s FETCH_HEAD)"
+            # When it was published, in seconds: the branch's one commit is made by the run that publishes it.
+            echo "at=$(git log -1 --format=%ct FETCH_HEAD)" >> "$GITHUB_OUTPUT"
           else
             echo "::notice title=Release dashboard::No dashboard-data branch yet: generating every release."
           fi
+
+      # A run that an issue, a push or Main Health started waits here until the published data is five minutes
+      # old (#4604). The concurrency group keeps one run going and one waiting, so every change that lands in
+      # those minutes is in this run's data or the waiting run's: nothing is dropped, and these runs publish
+      # at most every five minutes however fast the changes come. Only a manual run can publish meanwhile, and
+      # it cancels this one, so the data fetched above is still the last when the wait ends. The schedule, a
+      # manual run and a pull request's proof have no wait of their own: a scheduled run queues behind a run
+      # that is waiting, and a manual run cancels it.
+      - name: Wait until the published data is five minutes old
+        if: contains(fromJSON('["issues", "push", "workflow_run"]'), github.event_name)
+        env:
+          PUBLISHED_AT: ${{ steps.previous.outputs.at }}
+          MIN_AGE_SECONDS: 300
+        run: |
+          set -euo pipefail
+          if [[ ! "$PUBLISHED_AT" =~ ^[0-9]+$ ]]; then
+            echo "Nothing is published yet: no wait."
+            exit 0
+          fi
+          age=$(( $(date +%s) - PUBLISHED_AT ))
+          wait=$(( MIN_AGE_SECONDS - age ))
+          if (( wait <= 0 )); then
+            echo "The published data is ${age} s old: no wait."
+            exit 0
+          fi
+          # A runner whose clock is behind the commit's can't ask for more than the whole wait.
+          if (( wait > MIN_AGE_SECONDS )); then
+            wait=$MIN_AGE_SECONDS
+          fi
+          echo "The published data is ${age} s old: waiting ${wait} s."
+          sleep "$wait"
 
       - name: Generate
         env:
@@ -113,7 +170,7 @@ jobs:
           name: release-dashboard-data
           path: ${{ runner.temp }}/data
           if-no-files-found: error
-          retention-days: 3
+          retention-days: 1  # only the publish job reads it, seconds later
 
   publish:
     name: Publish to dashboard-data
@@ -144,7 +201,7 @@ jobs:
             echo
             echo "Generated by [tools/release-dashboard.py]($SOURCE/blob/main/tools/release-dashboard.py) in"
             echo "[this run]($RUN_URL), for [the Release Command Center](https://mgradwohl.github.io/tasksmack/release/)."
-            echo "This branch holds one commit, replaced every 10 minutes. Don't edit it or build on it."
+            echo "This branch holds one commit, replaced every few minutes. Don't edit it or build on it."
           } > README.md
           git init --quiet --initial-branch dashboard-data
           git config user.name 'github-actions[bot]'

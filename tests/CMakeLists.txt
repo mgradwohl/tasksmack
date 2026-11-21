@@ -661,6 +661,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
+    Domain/test_ScopeFail.cpp # runs a cleanup only when an exception leaves the scope (#4518)
     Domain/test_Worker.cpp # the background worker primitive (#3343)
     Domain/test_KeyedLookup.cpp # a lookup made once per key on a worker of its own (#3718)
     Domain/test_DrainTrigger.cpp # the drain worker KeyedLookup and ProcessIconCache share (#3790)
@@ -1077,6 +1078,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsStartAtLogin.cpp # the Run value through fakes, and a scratch HKCU key (#3093 part 2)
     Platform/test_WindowsSessionAccount.cpp # the token's user against the session's, through fakes (#3671)
     Platform/test_WinString.cpp
+    Platform/test_OrdinalCase.cpp # equalsOrdinalIgnoreCase: É and é are one letter, bad UTF-8 compares exactly (#4309)
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
     Integration/test_CrossLayer.cpp

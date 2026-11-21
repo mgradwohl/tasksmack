@@ -400,6 +400,26 @@ enum class StatParseExtent : std::uint8_t
     const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
     return parseStatStartTime(std::string_view(buf.data(), len)).value_or(0);
 }
+
+/// A process's start time and name (comm, raw bytes) from one read of its stat file, through @p pidDirFd (#4389): the
+/// name comes from the same read as the identity, never from a later open of /proc/<pid> by number. A zero start time
+/// and an empty name when it can't be read.
+struct StatIdentity
+{
+    std::uint64_t startTimeTicks = 0;
+    std::string comm;
+};
+[[nodiscard]] inline StatIdentity statIdentityAt(int pidDirFd)
+{
+    std::array<char, 1024> buf{};
+    const std::size_t len = readProcFileOnceAt(pidDirFd, "stat", buf.data(), buf.size());
+    StatFields fields;
+    if (!Detail::parseStatPrefix(std::string_view(buf.data(), len), fields, Detail::StatParseExtent::ThroughStartTime))
+    {
+        return {};
+    }
+    return {.startTimeTicks = fields.startTime, .comm = std::string(fields.comm)};
+}
 #endif
 
 } // namespace Platform::ProcParsing

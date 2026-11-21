@@ -3,10 +3,15 @@
 /// tasks, whose task is the current user's, the command an exec action runs, an indirect Author, the error
 /// wording and the entry a task becomes. Built on every platform.
 
+#include "Platform/AsciiCase.h"
 #include "Platform/IStartupActions.h"
 #include "Platform/IStartupProbe.h"
 #include "Platform/Windows/WindowsScheduledTasksMath.h"
 #include "Platform/Windows/WindowsStartupProbeMath.h"
+
+#ifdef _WIN32
+#include "Platform/Windows/OrdinalCase.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -52,16 +57,27 @@ TEST(ScheduledTaskMathTest, WindowsOwnTasksAreUnderMicrosoft)
 TEST(ScheduledTaskMathTest, TheCurrentUsersTaskIsMatchedByNameOrSid)
 {
     const std::array<std::string, 3> me{"S-1-5-21-1-2-3-1001", "PC\\alice", "alice"};
-    EXPECT_TRUE(runsAsUser("alice", me));
-    EXPECT_TRUE(runsAsUser("pc\\ALICE", me));
-    EXPECT_TRUE(runsAsUser("S-1-5-21-1-2-3-1001", me));
-    EXPECT_FALSE(runsAsUser("SYSTEM", me));
-    EXPECT_FALSE(runsAsUser("S-1-5-18", me));
-    EXPECT_FALSE(runsAsUser("PC\\bob", me));
-    EXPECT_FALSE(runsAsUser("", me)) << "a group's task runs for whoever signs in";
+    EXPECT_TRUE(runsAsUser("alice", me, &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(runsAsUser("pc\\ALICE", me, &Platform::equalsIgnoreCase));
+    EXPECT_TRUE(runsAsUser("S-1-5-21-1-2-3-1001", me, &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(runsAsUser("SYSTEM", me, &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(runsAsUser("S-1-5-18", me, &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(runsAsUser("PC\\bob", me, &Platform::equalsIgnoreCase));
+    EXPECT_FALSE(runsAsUser("", me, &Platform::equalsIgnoreCase)) << "a group's task runs for whoever signs in";
     const std::array<std::string, 1> unknown{""};
-    EXPECT_FALSE(runsAsUser("alice", unknown));
+    EXPECT_FALSE(runsAsUser("alice", unknown, &Platform::equalsIgnoreCase));
 }
+
+#ifdef _WIN32
+TEST(ScheduledTaskMathTest, TheCurrentUsersTaskIsMatchedOrdinalIgnoreCaseOnWindows)
+{
+    // Windows compares account names ordinal-ignore-case (#4309): "CORP\émile" is "CORP\Émile".
+    const std::array<std::string, 1> me{"CORP\\\xC3\x89mile"};
+    EXPECT_TRUE(runsAsUser("CORP\\\xC3\xA9mile", me, &equalsOrdinalIgnoreCase));
+    EXPECT_FALSE(runsAsUser("CORP\\\xC3\xA9mile", me, &Platform::equalsIgnoreCase)) << "an ASCII fold leaves them apart";
+    EXPECT_FALSE(runsAsUser("CORP\\Emile", me, &equalsOrdinalIgnoreCase));
+}
+#endif
 
 TEST(ScheduledTaskMathTest, TheCommandQuotesEveryPath)
 {
@@ -187,7 +203,7 @@ TEST(ScheduledTaskMathTest, ATaskBecomesAnEntry)
     task.enabled = false;
     task.execPath = "C:\\Vendor\\up.exe";
     task.userId = "S-1-5-21-9";
-    const StartupEntry entry = taskEntry(task, me);
+    const StartupEntry entry = taskEntry(task, me, &Platform::equalsIgnoreCase);
     EXPECT_EQ(entry.registrationName, "\\Vendor\\Updater");
     EXPECT_EQ(entry.command, R"("C:\Vendor\up.exe")");
     EXPECT_EQ(entry.location, StartupLocation::ScheduledTaskUser);
@@ -201,7 +217,7 @@ TEST(ScheduledTaskMathTest, ATaskBecomesAnEntry)
 
     task.path = R"(\Microsoft\Windows\Defrag\ScheduledDefrag)";
     task.userId = "SYSTEM";
-    const StartupEntry windows = taskEntry(task, me);
+    const StartupEntry windows = taskEntry(task, me, &Platform::equalsIgnoreCase);
     EXPECT_EQ(windows.location, StartupLocation::ScheduledTaskMachine);
     EXPECT_EQ(windows.scope, StartupScope::Machine);
     EXPECT_EQ(windows.scope, StartupMath::scopeOf(windows.location));

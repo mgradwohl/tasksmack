@@ -14,6 +14,7 @@
 #include "Platform/IStartupProbe.h"
 #include "Platform/TaskManagerReplacement.h"
 #include "Platform/Windows/BrokerHelper.h"
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsStartAtLogin.h"
 #include "Platform/Windows/WindowsStartupActions.h"
@@ -351,12 +352,12 @@ TEST_F(CiRealSystemTaskManagerTest, TheElevatedRouteReplacesTaskManagerAndGivesI
     ASSERT_TRUE(direct.has_value()) << "the elevated route refuses " << self << ": " << direct.error();
 
     Platform::Windows::WindowsIfeoRegistry registry;
-    const ProcessActionResult set = Replacement::applySet(registry, self, false);
+    const ProcessActionResult set = Replacement::applySet(registry, self, false, &Platform::Windows::equalsOrdinalIgnoreCase);
     ASSERT_TRUE(set.success) << set.errorMessage;
     EXPECT_EQ(taskManagerDebugger(), WinString::utf8ToWide(Replacement::debuggerFor(self)));
     const auto readBack = registry.readDebugger();
     ASSERT_TRUE(readBack.has_value()) << readBack.error();
-    EXPECT_EQ(Replacement::classify(*readBack, self).state, Replacement::State::ThisCopy);
+    EXPECT_EQ(Replacement::classify(*readBack, self, &Platform::Windows::equalsOrdinalIgnoreCase).state, Replacement::State::ThisCopy);
     const auto marked = registry.readCreatedMarker();
     ASSERT_TRUE(marked.has_value()) << marked.error();
     EXPECT_EQ(*marked, !restorer.keyExisted()) << "the marker says whether TaskSmack made the key";
@@ -381,7 +382,7 @@ TEST_F(CiRealSystemTaskManagerTest, TheElevatedRouteReplacesTaskManagerAndGivesI
     EXPECT_TRUE(App::parseLaunchOptions(arguments).asTaskManager) << commandLine;
     started.end();
 
-    const ProcessActionResult cleared = Replacement::applyClear(registry);
+    const ProcessActionResult cleared = Replacement::applyClear(registry, &Platform::Windows::equalsOrdinalIgnoreCase);
     EXPECT_TRUE(cleared.success) << cleared.errorMessage;
     EXPECT_FALSE(taskManagerDebugger().has_value());
     EXPECT_EQ(keyExists(HKEY_LOCAL_MACHINE, taskManagerKey()), restorer.keyExisted()) << "a key TaskSmack made is deleted, another's kept";
@@ -395,12 +396,13 @@ TEST_F(CiRealSystemTaskManagerTest, AnotherProgramsDebuggerIsNeitherReplacedNorR
     writeString(HKEY_LOCAL_MACHINE, taskManagerKey(), debuggerValue(), processExplorer);
     Platform::Windows::WindowsIfeoRegistry registry;
 
-    const ProcessActionResult set = Replacement::applySet(registry, R"(C:\Program Files\TaskSmack\TaskSmack.exe)", false);
+    const ProcessActionResult set =
+        Replacement::applySet(registry, R"(C:\Program Files\TaskSmack\TaskSmack.exe)", false, &Platform::Windows::equalsOrdinalIgnoreCase);
     EXPECT_FALSE(set.success);
     EXPECT_EQ(set.errorMessage, Replacement::otherProgramMessage(R"(C:\Tools\procexp64.exe)"));
     EXPECT_EQ(taskManagerDebugger(), processExplorer);
 
-    const ProcessActionResult cleared = Replacement::applyClear(registry);
+    const ProcessActionResult cleared = Replacement::applyClear(registry, &Platform::Windows::equalsOrdinalIgnoreCase);
     EXPECT_FALSE(cleared.success);
     EXPECT_EQ(taskManagerDebugger(), processExplorer);
     EXPECT_TRUE(keyExists(HKEY_LOCAL_MACHINE, taskManagerKey()));

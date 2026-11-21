@@ -3,7 +3,9 @@
 #include "Platform/IDiskProbe.h"
 
 #include <filesystem>
+#include <optional>
 #include <string>
+#include <vector>
 
 namespace Platform
 {
@@ -19,6 +21,9 @@ class LinuxDiskProbe : public IDiskProbe
     /// /proc/diskstats. Useful for unit tests that supply synthetic content.
     explicit LinuxDiskProbe(std::filesystem::path diskstatsPath);
 
+    /// Testability constructor with a stand-in for /sys/block too, whose entries are the whole block devices (#4391).
+    LinuxDiskProbe(std::filesystem::path diskstatsPath, std::filesystem::path sysBlockPath);
+
     ~LinuxDiskProbe() override = default;
 
     LinuxDiskProbe(const LinuxDiskProbe&) = delete;
@@ -29,10 +34,27 @@ class LinuxDiskProbe : public IDiskProbe
     [[nodiscard]] SystemDiskCounters read() override;
     [[nodiscard]] DiskCapabilities capabilities() const override;
 
+    /// One entry of /sys/block: a whole block device, and whether it is stacked on others (#4391).
+    struct WholeDevice
+    {
+        std::string name;
+        /// md, bcache (a non-empty slaves/) or a ZFS zvol (zd*): its I/O also reaches the member disks, so it is shown
+        /// but kept out of the totals, which would otherwise count it twice.
+        bool stacked = false;
+    };
+
+    /// The whole block devices under @p sysBlockPath, or nullopt when it can't be listed.
+    [[nodiscard]] static std::optional<std::vector<WholeDevice>> listWholeDevices(const std::filesystem::path& sysBlockPath);
+
   private:
+    /// The name rule, for when /sys/block can't be listed: a name ending in a digit is a partition unless it is an
+    /// NVMe namespace or an eMMC disk.
     [[nodiscard]] static bool shouldIncludeDevice(const std::string& deviceName);
+    /// Loop devices, RAM disks, zram (swap in memory) and device-mapper volumes are left out either way.
+    [[nodiscard]] static bool isAlwaysExcluded(const std::string& deviceName);
 
     std::filesystem::path m_DiskstatsPath;
+    std::filesystem::path m_SysBlockPath; ///< Empty: the name rule alone (the one-argument test constructor)
 };
 
 } // namespace Platform

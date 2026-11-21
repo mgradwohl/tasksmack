@@ -6,6 +6,7 @@
 #include "Platform/AsciiTrim.h"
 #include "Platform/GPUTypes.h"
 #include "PosixGuards.h"
+#include "SysfsValue.h"
 
 #include <spdlog/spdlog.h>
 
@@ -424,37 +425,17 @@ std::string DRMGPUProbe::readSysfsString(const std::string& path)
 
 uint64_t DRMGPUProbe::readSysfsUint64(const std::string& path)
 {
-    const std::string valueStr = readSysfsString(path);
-    if (valueStr.empty())
-    {
-        return 0;
-    }
+    return SysfsValue::parse<uint64_t>(readSysfsString(path)).value_or(0); // from_chars: no sign wrap (#4390)
+}
 
-    try
-    {
-        return std::stoull(valueStr);
-    }
-    catch (...)
-    {
-        return 0;
-    }
+std::optional<std::int64_t> DRMGPUProbe::readSysfsOptionalInt64(const std::string& path)
+{
+    return SysfsValue::parse<std::int64_t>(readSysfsString(path));
 }
 
 std::optional<uint64_t> DRMGPUProbe::readSysfsOptionalUint64(const std::string& path)
 {
-    const std::string valueStr = readSysfsString(path);
-    if (valueStr.empty() || !std::ranges::all_of(valueStr, [](char c) { return c >= '0' && c <= '9'; }))
-    {
-        return std::nullopt;
-    }
-    try
-    {
-        return std::stoull(valueStr);
-    }
-    catch (...)
-    {
-        return std::nullopt; // Out of range
-    }
+    return SysfsValue::parse<uint64_t>(readSysfsString(path)); // digits only, nullopt out of range (#4390)
 }
 
 std::string DRMGPUProbe::findHwmonPath(const std::string& devicePath)
@@ -1434,15 +1415,17 @@ std::vector<GPUCounters> DRMGPUProbe::readGPUCounters()
         }
         else
         {
-            // i915's temp1_input or xe's package temp2_input, in millidegrees Celsius (#1314)
-            const uint64_t tempMilliC = readSysfsUint64(card.temperaturePath);
-            if (tempMilliC > 0)
+            // i915's temp1_input or xe's package temp2_input, in signed millidegrees Celsius (#1314): read signed
+            // (#4390), so -5000 is minus 5 °C, not a wrapped 18446744073709546616, and 500 is 0 °C, not unavailable.
+            // A value that can't be read, or exactly 0 (what a sensor with no reading yet gives), is unread (#1111).
+            const std::optional<std::int64_t> tempMilliC = readSysfsOptionalInt64(card.temperaturePath);
+            if (tempMilliC.has_value() && *tempMilliC != 0)
             {
-                counter.temperatureC = static_cast<std::int32_t>(tempMilliC / 1000);
+                counter.temperatureC = static_cast<std::int32_t>(*tempMilliC / 1000);
             }
             else
             {
-                counter.temperatureAvailable = false; // Unread (0 means the read failed), not 0 °C (#1111)
+                counter.temperatureAvailable = false;
             }
         }
 

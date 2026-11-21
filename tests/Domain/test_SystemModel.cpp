@@ -3286,10 +3286,11 @@ TEST(SystemModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
     ASSERT_TRUE(result.overlapAchieved) << "only " << result.overlappingReads << " reads started during a write after " << result.trials
                                         << " trials (need " << TestPublication::MIN_OVERLAPPING_READS
                                         << "): the scheduler never ran the reader alongside the writer, so contention wasn't measured";
-    // Before #868 about one read per write waited out the copy. A quarter allows for scheduler noise.
-    EXPECT_LE(result.slowReads, WRITES / 4) << "median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
-                                            << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of "
-                                            << result.overlappingReads << " overlapping";
+    // Before #868 about one read per write waited out the copy; a trial over the budget is rerun (#4245).
+    EXPECT_LE(result.slowReads, TestPublication::slowReadBudget(WRITES))
+        << "after " << result.trials << " trials, median write " << result.medianWriteMs << " ms, slowest read " << result.maxReadMs
+        << " ms over " << result.reads << " reads, " << result.slowOverlappingReads << " slow of " << result.overlappingReads
+        << " overlapping";
 }
 
 TEST(SystemModelTest, ConcurrentWritersPublishEveryGenerationInOrder)

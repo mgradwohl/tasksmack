@@ -1,5 +1,6 @@
 #include "Platform/Factory.h"
 
+#include "OrdinalCase.h"
 #include "Platform/IDiskProbe.h"
 #include "Platform/IElevatedRestart.h"
 #include "Platform/IGPUProbe.h"
@@ -308,6 +309,7 @@ bool enableDebugPrivilege()
 std::shared_ptr<ITaskManagerReplacement> makeTaskManagerReplacement(const std::shared_ptr<IPrivilegedBroker>& broker)
 {
     TaskManagerReplacementSetup setup;
+    setup.pathsEqual = &Windows::equalsOrdinalIgnoreCase; // as Windows compares file paths (#4309)
     if (const auto image = Windows::BrokerHelper::ownImage(); image.has_value())
     {
         setup.selfPath = WinString::wideToUtf8(*image);

@@ -449,6 +449,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsServiceActions.cpp
     src/Platform/Windows/WindowsServiceProbe.cpp
     src/Platform/Windows/WinString.cpp
+    src/Platform/Windows/OrdinalCase.cpp # ordinal-ignore-case text equality, as Windows compares paths and accounts (#4309)
     src/Platform/Windows/Factory.cpp
 )
 
@@ -620,6 +621,7 @@ set(TASKSMACK_HEADERS
     src/Domain/SystemInfoModel.h
     src/Domain/CrashHistory.h
     src/Domain/LruMap.h
+    src/Domain/ScopeFail.h
     src/Domain/PidIndex.h
     src/Domain/ProcessIconCache.h
     src/Domain/ProcessIconCacheImpl.h
@@ -734,6 +736,7 @@ elseif(WIN32)
         src/Platform/Windows/WindowsServiceConfig.h
         src/Platform/Windows/WindowsServiceActions.h
         src/Platform/Windows/WinString.h
+        src/Platform/Windows/OrdinalCase.h
         src/Platform/Windows/WindowsSystemInfoProbe.h
         src/Platform/Windows/WindowsOsInfoMath.h
         src/Platform/Windows/WindowsInstalledMemory.h
@@ -1070,6 +1073,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsTaskManagerReplacement.cpp # Replace Task Manager's IFEO Debugger (#3072)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsUserSessions.cpp # another user's session disconnected or signed out (#3076)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WinString.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/OrdinalCase.cpp # WindowsTaskManagerReplacement.cpp compares paths ordinal-ignore-case (#4309)
         ${TaskSmack_SOURCE_DIR}/src/Platform/ThreadName.cpp
     )
     # Only what the helper calls (#2557), not the app's whole list. No dump writer and no COM folder
