@@ -15,11 +15,36 @@ export FUZZ_DEPS_DIR="${FUZZ_DEPS_DIR:-${WORK:-$PWD/build}/fuzz-deps}"
 # (tasksmack_apply_text_encoding, #1648). UTF-8 is clang's only charset, so this states it rather
 # than changing it. _LIBCPP_HARDENING_MODE_FAST: libc++'s bounds and precondition checks, as the app ships with
 # them (#3900), so a check that would trap in TaskSmack crashes the fuzzer first.
+#
+# The project's warnings (cmake/CompilerOptions.cmake, #4344): the harnesses are in no CMake target and clang-tidy
+# doesn't read tests/, so without them a harness could narrow a size_t length to int, or shadow a name, unnoticed.
+# -Werror only when FUZZ_WERROR=1, as the CI smoke build sets it with the pinned clang; ClusterFuzzLite's image has its
+# own clang, whose new warnings shouldn't stop the fuzzing.
+FUZZ_WARNINGS=(-Wall -Wextra -Wpedantic -Wconversion -Wsign-conversion -Wshadow -Wnon-virtual-dtor -Woverloaded-virtual
+    -Wformat=2 -Wimplicit-fallthrough -Wnull-dereference -Wdouble-promotion -Wcast-align -Wundef -Werror=return-type
+    -Wmisleading-indentation)
+if [ "${FUZZ_WERROR:-0}" = 1 ]; then
+    FUZZ_WARNINGS+=(-Werror)
+fi
+
+# _LIBCPP_HARDENING_MODE is an unused macro under libstdc++ (#4344). Where ClusterFuzzLite builds (it sets $SANITIZER)
+# the standard library must be libc++, or the hardening #3900 relies on would be off with nothing saying so.
+# shellcheck disable=SC2086
+if ! printf '#include <version>\n#ifndef _LIBCPP_VERSION\n#error not libc++\n#endif\n' |
+    "$CXX" $CXXFLAGS -std=c++23 -x c++ -fsyntax-only - 2>/dev/null; then
+    if [ -n "${SANITIZER:-}" ]; then
+        echo "error: the fuzzers aren't built with libc++, so _LIBCPP_HARDENING_MODE does nothing (#4344)" >&2
+        exit 1
+    fi
+    echo "note: building with libstdc++, where _LIBCPP_HARDENING_MODE does nothing; ClusterFuzzLite's own build checks libc++" >&2
+fi
+
 # shellcheck disable=SC2086
 build_fuzzer() {
     local name="$1"
     shift
     "$CXX" $CXXFLAGS \
+        "${FUZZ_WARNINGS[@]}" \
         -std=c++23 \
         -finput-charset=UTF-8 \
         -fexec-charset=UTF-8 \

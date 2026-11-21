@@ -85,7 +85,7 @@ using RootTools::isExecutableFile;
 /// The value of environment variable @p name, or empty when unset.
 [[nodiscard]] std::string_view environmentValue(const char* name)
 {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read once at construction, on the thread that builds the panels
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - nothing changes the environment once main() starts its threads, so getenv() on a worker is safe (#4434)
     const char* const value = std::getenv(name);
     return value != nullptr ? std::string_view(value) : std::string_view{};
 }

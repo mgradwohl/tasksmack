@@ -439,6 +439,35 @@ TEST_F(SystemdActionsFakeTest, AnUnansweredDependentsReadRefusesTheStop)
     EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
 }
 
+// #4629: sd-bus names local failures too, so a dropped connection is no answer about the job: the start keeps waiting
+// for its own limit instead of reporting "It didn't start" at once.
+TEST_F(SystemdActionsFakeTest, ADroppedConnectionOnTheJobReadIsNoAnswer)
+{
+    m_Bus.failProperty(JOB_PATH, "org.freedesktop.systemd1.Job", "State", "org.freedesktop.DBus.Error.Disconnected");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveJob("StartUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit(
+        "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.message.starts_with("It didn't start within")) << result.message;
+}
+
+// #4629: systemd without its bus name for a moment (a daemon-reexec) is no answer about the dependents: the stop is
+// refused rather than sent with the "never take running dependents down" guard skipped.
+TEST_F(SystemdActionsFakeTest, SystemdWithoutItsBusNameOnADependentsReadRefusesTheStop)
+{
+    m_Bus.failProperty(CRON_PATH, UNIT, "BoundBy", "org.freedesktop.DBus.Error.ServiceUnknown");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
+}
+
 // ...while one answered with an error (a property an older systemd doesn't have) is an empty list, as before.
 TEST_F(SystemdActionsFakeTest, ADependentsListThisSystemdLacksDoesNotBlockTheStop)
 {

@@ -280,7 +280,7 @@ bool ROCmGPUProbe::Impl::loadSymbols()
                                                                        [](const char* candidate) { return dlopen(candidate, RTLD_NOW); });
         if (handle == nullptr)
         {
-            // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() is safe in single-threaded init
+            // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() keeps its state per thread in glibc, so the GPU sampler thread reading its own is safe (#4434)
             const char* error = dlerror();
             spdlog::debug("ROCmGPUProbe: Failed to load ROCm SMI (librocm_smi64.so.7/.6/.5/.1, unversioned, /opt/rocm/lib) - {}",
                           error != nullptr ? error : "not found");
@@ -293,7 +293,7 @@ bool ROCmGPUProbe::Impl::loadSymbols()
 // Load function pointers
 // Note: dlsym returns void* by POSIX definition; reinterpret_cast to the function pointer type is required
 // and safe here because we only use it for known ROCm SMI symbols with matching signatures.
-// NOLINTBEGIN(concurrency-mt-unsafe,bugprone-macro-parentheses) - dlerror() safe in single-threaded init, macro pattern is correct
+// NOLINTBEGIN(concurrency-mt-unsafe,bugprone-macro-parentheses) - glibc keeps dlerror() per thread (#4434); the macro pattern is correct
 #define LOAD_ROCM_FUNC(name)                                                                                                               \
     name = reinterpret_cast<decltype(name)>(dlsym(rocmHandle, #name));                                                                     \
     if (name == nullptr)                                                                                                                   \
