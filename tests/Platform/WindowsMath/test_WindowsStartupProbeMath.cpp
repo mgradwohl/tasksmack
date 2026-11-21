@@ -357,7 +357,7 @@ TEST(WindowsStartupProbeMathTest, NetworkAndDevicePathsAreNotOpened)
              R"(\??\pipe\x)",
              R"(\??\C:x.exe)",
              R"(\??\)",
-             "/??/UNC/server/share/a.exe",
+             R"(/??/UNC/server/share/a.exe)", // a raw string: "??/" is a trigraph in an ordinary one
          })
     {
         EXPECT_TRUE(isNetworkOrDevicePath(path)) << path;
