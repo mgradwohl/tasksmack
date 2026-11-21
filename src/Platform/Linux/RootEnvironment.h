@@ -115,6 +115,17 @@ inline constexpr long long MOST_XAUTHORITY_BYTES = 1LL << 20;
 /// (SessionUser::userSideValues(), the second #4187 review).
 inline constexpr std::array<std::string_view, 3> USER_SIDE_NAMES = {"PATH", "XDG_DATA_DIRS", "XAUTHORITY"};
 
+/// Writes @p contents to a new 0600 file of its own in @p folder (a root-only one), named
+/// tasksmack-xauthority-<uid>-<random> (#4667): every session gets its own copy, so a second user's root session can't
+/// truncate or rewrite the first's, and no session reads another's cookies. A partly written file is removed.
+/// @return The copy's path, or nullopt when it can't be made or written whole.
+[[nodiscard]] std::optional<std::string> writeXauthorityCopy(const std::string& folder, uid_t uid, const std::string& contents);
+
+/// Removes @p copy when TaskSmack exits normally (std::atexit()), as the session's copy is no use after it (#4667). A
+/// later call replaces the path; a crash leaves it until /run is cleared at the next boot. A root program TaskSmack started
+/// keeps the X connections it has; one it opens after TaskSmack exits finds no cookie.
+void removeAtExit(const std::string& copy);
+
 /// Opens @p path read-only as @p uid would (#4187): setfsuid/setfsgid to them and their primary group for the open,
 /// then back to the effective ids, without following a final link (O_NOFOLLOW) or blocking on a FIFO
 /// (O_NONBLOCK). -1 when it can't; TaskSmack stops if the ids can't be put back. Not thread-safe (setfsuid).

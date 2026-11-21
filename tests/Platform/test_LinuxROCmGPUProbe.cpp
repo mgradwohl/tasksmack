@@ -47,6 +47,32 @@ TEST(ROCmGPUProbeMathTest, LibraryNamesTryEverySonameNewestFirst)
                                              "/opt/rocm/lib/librocm_smi64.so"}));
 }
 
+// #4668: in a root, setcap or capability-holding session, /opt/rocm's copy is opened only by the path the root-only check
+// gives, never when it refuses; a soname, and any name in an ordinary session, is opened as it is.
+TEST(ROCmGPUProbeMathTest, APrivilegedSessionOpensAnAbsoluteLibraryPathOnlyWhenItIsTrusted)
+{
+    std::vector<std::string> asked;
+    const auto trustsNone = [&asked](const std::string& path) -> std::optional<std::string>
+    {
+        asked.push_back(path);
+        return std::nullopt;
+    };
+    const auto trustsAll = [](const std::string& path) -> std::optional<std::string>
+    {
+        return "/canonical" + path;
+    };
+    using ROCmGPUProbeMath::libraryToOpen;
+    EXPECT_EQ(libraryToOpen("librocm_smi64.so.6", true, trustsNone), std::optional<std::string>("librocm_smi64.so.6"));
+    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", false, trustsNone),
+              std::optional<std::string>("/opt/rocm/lib/librocm_smi64.so"));
+    EXPECT_TRUE(asked.empty()) << "only a privileged session's absolute path is checked";
+    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsNone), std::nullopt);
+    EXPECT_EQ(asked, (std::vector<std::string>{"/opt/rocm/lib/librocm_smi64.so"}));
+    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsAll),
+              std::optional<std::string>("/canonical/opt/rocm/lib/librocm_smi64.so"))
+        << "the path the check answers is the one opened";
+}
+
 TEST(ROCmGPUProbeMathTest, OpenFirstLibraryTakesTheFirstNameThatOpens)
 {
     static int marker = 0;
