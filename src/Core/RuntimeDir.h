@@ -11,6 +11,7 @@
 #include <filesystem>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 
 #include <sys/stat.h>
@@ -123,6 +124,27 @@ namespace Core::RuntimeDir
     }
 
     return fallbackPath;
+}
+
+/// The Wayland socket a rejected XDG_RUNTIME_DIR holds, as an absolute path for WAYLAND_DISPLAY (#4709): @p dir/@p display,
+/// when @p display is a plain socket name (not empty, no '/') and that entry is a socket @p uid owns (lstat: never through
+/// a link). WSLg without systemd sets XDG_RUNTIME_DIR to /mnt/wslg/runtime-dir, which is 0777 and so refused for
+/// TaskSmack's own files, though its wayland-0 is the session's display: libwayland takes an absolute WAYLAND_DISPLAY as
+/// it is, so the session stays on Wayland instead of dropping to X11. nullopt otherwise (a display already absolute, a
+/// name with a '/', nothing there, or a socket of another account's).
+[[nodiscard]] inline std::optional<std::string> waylandSocketIn(const std::filesystem::path& dir, std::string_view display, uid_t uid)
+{
+    if (display.empty() || display.contains('/'))
+    {
+        return std::nullopt;
+    }
+    const std::filesystem::path socket = dir / std::string(display);
+    struct stat st{};
+    if (::lstat(socket.c_str(), &st) != 0 || !S_ISSOCK(st.st_mode) || st.st_uid != uid)
+    {
+        return std::nullopt;
+    }
+    return socket.string();
 }
 
 } // namespace Core::RuntimeDir
