@@ -348,6 +348,16 @@ TEST(WindowsStartupProbeMathTest, NetworkAndDevicePathsAreNotOpened)
              R"(\\?\GLOBALROOT\Device\HarddiskVolume3\a.exe)",
              R"(\\?\Volume{12345678-1234-1234-1234-123456789abc}\a.exe)",
              R"(\\)",
+             // The NT forms (#4646): Win32 passes \??\ through to the object manager, where UNC is \Device\Mup.
+             R"(\??\UNC\server\share\a.exe)",
+             R"(\??\unc\server\share)",
+             R"(\??\GLOBALROOT\Device\Mup\server\share\a.exe)",
+             R"(\??\Global\UNC\server\share\a.exe)",
+             R"(\??\Volume{12345678-1234-1234-1234-123456789abc}\a.exe)",
+             R"(\??\pipe\x)",
+             R"(\??\C:x.exe)",
+             R"(\??\)",
+             "/??/UNC/server/share/a.exe",
          })
     {
         EXPECT_TRUE(isNetworkOrDevicePath(path)) << path;
@@ -357,7 +367,10 @@ TEST(WindowsStartupProbeMathTest, NetworkAndDevicePathsAreNotOpened)
              "c:/tools/a.exe",
              R"(\\?\C:\Program Files\Vendor\agent.exe)",
              R"(\\?\z:\a.exe)",
+             R"(\??\C:\Program Files\Vendor\agent.exe)",
+             R"(\??\d:)",
              R"(\Windows\notepad.exe)",
+             R"(\?\a.exe)",
              "notepad.exe",
              "",
              R"(\)",
@@ -367,6 +380,8 @@ TEST(WindowsStartupProbeMathTest, NetworkAndDevicePathsAreNotOpened)
     }
     static_assert(isNetworkOrDevicePath(R"(\\server\share)"));
     static_assert(!isNetworkOrDevicePath(R"(C:\a.exe)"));
+    static_assert(isNetworkOrDevicePath(R"(\??\UNC\server\share)"));
+    static_assert(!isNetworkOrDevicePath(R"(\??\C:\a.exe)"));
 }
 
 } // namespace

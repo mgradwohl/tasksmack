@@ -550,9 +550,15 @@ TEST_F(WindowsScheduledTasksTest, TasksOnASharePathAreListedButNotOpened)
     TaskRecord inShare = makeTask("\\InShare", {LOGON}, "SYSTEM");
     inShare.execPath = "agent";
     inShare.workingDirectory = R"(\\tasksmack-4374.invalid\share)";
+    // #4646: the NT forms of a share, which Win32 passes through to \Device\Mup.
+    TaskRecord ntShare = makeTask("\\OnNtShare", {LOGON}, "SYSTEM");
+    ntShare.execPath = R"(\??\UNC\tasksmack-4374.invalid\share\c.exe)";
+    TaskRecord inNtShare = makeTask("\\InNtShare", {LOGON}, "SYSTEM");
+    inNtShare.execPath = "agent";
+    inNtShare.workingDirectory = R"(\??\UNC\tasksmack-4374.invalid\share)";
     TaskRecord local = makeTask("\\Local", {LOGON}, "SYSTEM");
     local.execPath = R"(C:\No Such Folder\updater.exe)";
-    m_Scheduler.tasks["\\"] = {share, device, inShare, local};
+    m_Scheduler.tasks["\\"] = {share, device, inShare, ntShare, inNtShare, local};
 
     statedPaths().clear();
     Windows::StartupProbeFunctions functions = emptyRegistry();
@@ -571,6 +577,13 @@ TEST_F(WindowsScheduledTasksTest, TasksOnASharePathAreListedButNotOpened)
     ASSERT_NE(inShareEntry, nullptr);
     EXPECT_TRUE(inShareEntry->executablePath.empty()) << "a share working directory is unknown: " << inShareEntry->executablePath;
     EXPECT_EQ(inShareEntry->target, StartupTargetState::Unresolved);
+    const StartupEntry* ntShareEntry = entryAt(entries, "\\OnNtShare");
+    ASSERT_NE(ntShareEntry, nullptr);
+    EXPECT_EQ(ntShareEntry->target, StartupTargetState::NotChecked);
+    const StartupEntry* inNtShareEntry = entryAt(entries, "\\InNtShare");
+    ASSERT_NE(inNtShareEntry, nullptr);
+    EXPECT_TRUE(inNtShareEntry->executablePath.empty()) << "an NT share working directory is unknown: " << inNtShareEntry->executablePath;
+    EXPECT_EQ(inNtShareEntry->target, StartupTargetState::Unresolved);
     const StartupEntry* localEntry = entryAt(entries, "\\Local");
     ASSERT_NE(localEntry, nullptr);
     EXPECT_EQ(localEntry->target, StartupTargetState::Missing) << "a local path is still checked";
