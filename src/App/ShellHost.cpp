@@ -85,6 +85,11 @@ class ApplicationShellHost final : public IShellHost
             .maximized = window.isMaximized(),
         };
     }
+
+    void hideWindowForExit() override
+    {
+        Core::Application::get().getWindow().hideForExit();
+    }
 };
 
 } // namespace

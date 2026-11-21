@@ -1436,6 +1436,50 @@ TEST(ApplicationHeadlessTest, LayersAttachReceiveEventsAndDetach)
 namespace
 {
 
+/// Logs "<name> exiting" for AppExitingEvent and "<name> detach" for onDetach(), in order (#4590).
+class ExitOrderLayer : public Core::Layer
+{
+  public:
+    ExitOrderLayer(std::string name, std::vector<std::string>& log) : Layer(name), m_Name(std::move(name)), m_Log(log)
+    {}
+
+    void onEvent(Core::Event& event) override
+    {
+        if (event.getEventType() == Core::EventType::AppExiting)
+        {
+            m_Log.push_back(m_Name + " exiting");
+        }
+    }
+    void onDetach() override
+    {
+        m_Log.push_back(m_Name + " detach");
+    }
+
+  private:
+    std::string m_Name;
+    std::vector<std::string>& m_Log;
+};
+
+} // namespace
+
+// #4590: every layer hears AppExitingEvent before the first one detaches, so a layer can get out of the way (the
+// window hidden) and start its stops before any onDetach() waits on a thread.
+TEST(ApplicationHeadlessTest, EveryLayerHearsAppExitingBeforeAnyDetaches)
+{
+    Core::ApplicationSpecification spec;
+    spec.Headless = true;
+    std::vector<std::string> log;
+    Core::Application app(spec);
+    app.pushLayer<ExitOrderLayer>("bottom", log);
+    app.pushLayer<ExitOrderLayer>("top", log);
+
+    app.detachAllLayers();
+    EXPECT_EQ(log, (std::vector<std::string>{"top exiting", "bottom exiting", "top detach", "bottom detach"}));
+}
+
+namespace
+{
+
 /// A layer whose onEvent() throws something that is not a std::exception (#1395).
 class ThrowingNonStdLayer : public Core::Layer
 {

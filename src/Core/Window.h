@@ -207,6 +207,11 @@ class Window
     /// Hidden), so it never appears or activates, and restores to where applySavedGeometry() put it.
     /// Elsewhere: SDL_MinimizeWindow(), with SDL told not to activate a window it shows. Startup-only.
     void showMinimizedWithoutFocus();
+    /// Hide the window for good as TaskSmack exits (#4590): SDL_HideWindow(), then SDL_SyncWindow() so the window
+    /// system has applied it before the slow part of the teardown starts. Without it the window stayed on screen
+    /// while the panels' workers stopped, with no event loop to answer it, and Windows marked it Not Responding.
+    /// Exit-only: nothing shows it again.
+    void hideForExit();
     /// Replace an OS-initiated maximize (SDL_EVENT_WINDOW_MAXIMIZED: Win+Up, snap to the top edge,
     /// ShowWindow(SW_MAXIMIZE)) with maximize()'s client-side one, which fills the current display's
     /// usable bounds and records the real normal rectangle as the restore target (#1208). Does

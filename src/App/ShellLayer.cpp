@@ -47,6 +47,7 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
+#include <chrono>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -383,8 +384,16 @@ void ShellLayer::applyContentMinimumSize(float widthPx, float heightPx, float es
     }
 }
 
-void ShellLayer::onDetach()
+void ShellLayer::prepareForExit()
 {
+    // Once: on AppExitingEvent, which Application::detachAllLayers() raises before any layer detaches, or else
+    // here at onDetach() (a test detaching the layer directly).
+    if (m_ExitPrepared)
+    {
+        return;
+    }
+    m_ExitPrepared = true;
+
     // Save user configuration
     auto& config = UserConfig::get();
     config.captureFromApplication();
@@ -406,9 +415,28 @@ void ShellLayer::onDetach()
         settings.processTableLayout = std::move(layout);
     }
 
+    // Everything read from the window is captured above, so the window goes now (#4590): stopping the panels
+    // joins their workers, which can take seconds, and with the event loop already gone a window still on the
+    // screen couldn't answer the window system, which on Windows marked it Not Responding until the app closed.
+    if (m_Host->hasWindow())
+    {
+        m_Host->hideWindowForExit();
+    }
+}
+
+void ShellLayer::onDetach()
+{
+    // Normally done already, at AppExitingEvent (#4590).
+    prepareForExit();
+    auto& config = UserConfig::get();
+
     // Stop the panels first: their samplers are torn down in order before the save, and anything
     // a panel writes back into the settings on detach is included in it (#1124, #1177).
+    const auto panelsStopping = std::chrono::steady_clock::now();
     m_Tabs.onDetach();
+    // How long the panels took to stop, the part of the exit the user used to wait on (#4590).
+    spdlog::info("Exit: the panels stopped in {} ms",
+                 std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - panelsStopping).count());
 
     // Synchronous, as nothing draws after it. save() first waits for a background save still in
     // flight or queued (a click just before exit), then writes these settings over it: nothing is
@@ -479,6 +507,15 @@ void ShellLayer::onEvent(Core::Event& event)
             {
                 m_UpdateOpenFromTitleBar = true; // withheld, it is named under the bar (#3917)
             }
+            return false;
+        });
+
+    // The app is exiting (#4590): save what's read from the window and hide it, before any layer detaches. Not
+    // handled, so the panels below still hear it and start stopping their samplers.
+    dispatcher.dispatch<Core::AppExitingEvent>(
+        [this](Core::AppExitingEvent& /*e*/)
+        {
+            prepareForExit();
             return false;
         });
 

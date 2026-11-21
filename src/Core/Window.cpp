@@ -1546,6 +1546,24 @@ void Window::restore()
     m_Geometry.restored();
 }
 
+void Window::hideForExit()
+{
+    // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)
+    if (m_Handle == nullptr)
+    {
+        return;
+    }
+    // LCOV_EXCL_STOP
+    if (!SDL_HideWindow(m_Handle))
+    {
+        spdlog::warn("Couldn't hide the window for exit: {}", SDL_GetError());
+        return;
+    }
+    // Wayland and X11 apply the hide asynchronously; SDL_SyncWindow() waits (with SDL's own timeout) until they
+    // have. Windows has already hidden it by the time SDL_HideWindow() returns.
+    static_cast<void>(SDL_SyncWindow(m_Handle));
+}
+
 void Window::showMinimizedWithoutFocus()
 {
     // LCOV_EXCL_START - m_Handle is never null: the constructor throws without it, only the destructor clears it (#3221)

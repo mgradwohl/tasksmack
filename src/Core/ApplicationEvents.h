@@ -276,4 +276,16 @@ class OpenElevationNoticeEvent : public Event
     std::uint8_t m_MissingPrivileges = 0;
 };
 
+/// The app is exiting (#4590): raised once by Application::detachAllLayers(), after the run loop has ended and
+/// before any layer's onDetach(). Not a request and can't be vetoed (WindowCloseEvent is the vetoable one). A
+/// layer handles it to get out of the user's way before the teardown's waits: ShellLayer saves what it reads from
+/// the window and hides it, and the panels ask their samplers to stop, so the joins at onDetach() overlap instead
+/// of running one after another. Every handler returns false, so every layer and panel hears it.
+class AppExitingEvent : public Event
+{
+  public:
+    AppExitingEvent() = default;
+    EVENT_CLASS_TYPE(AppExiting)
+};
+
 } // namespace Core
