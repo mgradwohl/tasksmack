@@ -661,6 +661,7 @@ set(COMMON_TEST_SOURCES
     Domain/test_SamplingConfig.cpp
     Domain/test_HistorySeries.cpp
     Domain/test_LruMap.cpp
+    Domain/test_ScopeFail.cpp # runs a cleanup only when an exception leaves the scope (#4518)
     Domain/test_Worker.cpp # the background worker primitive (#3343)
     Domain/test_KeyedLookup.cpp # a lookup made once per key on a worker of its own (#3718)
     Domain/test_DrainTrigger.cpp # the drain worker KeyedLookup and ProcessIconCache share (#3790)

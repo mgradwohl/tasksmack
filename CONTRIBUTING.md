@@ -1271,6 +1271,10 @@ pwsh tools/coverage.ps1 -Preset win-coverage   # optional; defaults to "win-cove
 
 TSan and MSan are Linux only; ASan + UBSan run on both platforms.
 
+On Linux, `asan-ubsan` also turns on `float-divide-by-zero` (#4353), which `-fsanitize=undefined` leaves out: a
+rate or percentage divided by a zero interval or total fails at the division, rather than as a NaN or infinity
+further on. Guard such a division before it, not with an `isfinite` check after it.
+
 ### Windows ASan + UBSan (x64 only)
 
 ```powershell
@@ -1354,7 +1358,10 @@ uses pthread barriers.
 
 ## Fuzzing (Linux only)
 
-ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer:
+ClusterFuzzLite continuously exercises these parsers with libFuzzer and AddressSanitizer. A pull request's
+changed parsers are also fuzzed under UndefinedBehaviorSanitizer (#4343), in a second leg against its own baseline
+build: signed overflow, bad shifts and misaligned loads are UBSan's findings, not ASan's. The weekly batch and pruning
+runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared by both sanitizers:
 
 | Target | Entry point | Seed corpus |
 |--------|-------------|-------------|
@@ -3234,7 +3241,7 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
 - **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
-- **`release-dashboard.yml`**: Every 10 minutes, generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
+- **`release-dashboard.yml`**: When an issue changes, `main` moves or Main Health finishes, and every 10 minutes (#4604), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
 - **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 

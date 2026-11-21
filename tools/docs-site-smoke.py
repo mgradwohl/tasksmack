@@ -16,6 +16,8 @@ sees:
   - the release dashboard under release/ (#4524) draws a made-up release, splits its open count by lane and
     lists the open issues by kind or by lane (#4585), switches between releases, shows a hostile issue title as
     text, and says so when its data can't be loaded;
+  - the release dashboard flags data over 25 minutes old, and its "Refresh now" link opens the workflow on GitHub
+    and has the page look for new data every 30 seconds (#4604);
   - no JavaScript error, and no first-party request that fails.
 
 Usage: tools/docs-site-smoke.py [--docs DIR] [--offline] [--headed]
@@ -27,6 +29,7 @@ Needs Playwright and its Chromium, hash-pinned in requirements-docs-site.txt:
 from __future__ import annotations
 
 import argparse
+import datetime
 import functools
 import http.server
 import json
@@ -517,6 +520,100 @@ def check_release_dashboard_without_data(page: Page, site: str, offline: bool) -
         raise AssertionError(f"unexpected notice: {notice.text_content()!r}")
 
 
+# The dashboard's "Refresh now" link (#4604): the workflow's page on GitHub, where "Run workflow" starts a run.
+RELEASE_WORKFLOW = "https://github.com/mgradwohl/tasksmack/actions/workflows/release-dashboard.yml"
+
+
+def check_release_dashboard_refresh(page: Page, site: str, offline: bool) -> None:
+    """Data over 25 minutes old is flagged, and "Refresh now" has the page look for new data every 30 seconds (#4604)."""
+    index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
+    current = index["current"]
+    generated = datetime.datetime.fromisoformat(index["generated_at"].replace("Z", "+00:00"))
+    # What a later run has published, as the data host serves it: a file's name, and the generated_at it then
+    # carries. The host keeps each file for a few minutes by itself, so the index can be a run ahead of a release.
+    newer: dict[str, str] = {}
+
+    def answer(route: Route) -> None:
+        match = RELEASE_DATA.match(route.request.url)
+        path = RELEASE_FIXTURES / match.group(1) if match else None
+        if path is None or not path.is_file():
+            route.fulfill(status=404, body="", headers={"Access-Control-Allow-Origin": "*"})
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if path.name in newer:
+            data["generated_at"] = newer[path.name]
+        route.fulfill(
+            status=200,
+            content_type="application/json",
+            body=json.dumps(data),
+            headers={"Access-Control-Allow-Origin": "*"},
+        )
+
+    page.route("https://raw.githubusercontent.com/**", answer)
+    # The page's own clock (Date and its timers), set 24 minutes after the data was generated: under the limit.
+    page.clock.install(time=generated + datetime.timedelta(minutes=24))
+    page.goto(site + "release/")
+    expect_release(page, current)
+    banner = page.locator(".banner.stale")
+    watching = page.locator(".watching")
+    updated = page.locator(".updated span")
+    if banner.is_visible():
+        raise AssertionError(f"data 24 minutes old is flagged: {banner.text_content()!r}")
+    page.clock.fast_forward(2 * 60 * 1000)
+    banner.wait_for(state="visible", timeout=TIMEOUT_MS)
+    if "No new data for 26 min" not in (banner.text_content() or ""):
+        raise AssertionError(f"the banner reads {banner.text_content()!r}, not how long ago the last run was")
+
+    # Beside the age and in the banner: the workflow's page, in a tab of its own.
+    found = [[link.get_attribute(name) for name in ("href", "target", "rel")] for link in page.locator("a.refresh").all()]
+    if found != [[RELEASE_WORKFLOW, "_blank", "noopener"]] * 2:
+        raise AssertionError(f"the 'Refresh now' links are {found}")
+
+    # The click leaves for GitHub: that is stopped here, and the page's own handler still runs.
+    if watching.is_visible():
+        raise AssertionError("the page says it's looking for new data before 'Refresh now' is clicked")
+    page.evaluate(
+        "() => document.addEventListener('click', (event) => {"
+        " if (event.target.closest('a.refresh')) event.preventDefault(); }, true)"
+    )
+    page.locator(".masthead a.refresh").click()
+    watching.wait_for(state="visible", timeout=TIMEOUT_MS)
+
+    # A run publishes 25 seconds later, and the host serves the new index before the new release file. The
+    # page's next look is half a minute on, not its usual five minutes. It draws the pair it got and keeps
+    # looking: the last run is recent, so the banner goes, and the release's figures are still the old ones.
+    published = page.evaluate("() => new Date(Date.now() + 25000).toISOString()")
+    newer["index.json"] = published
+    page.evaluate("() => { document.querySelector('.masthead').dataset.before = '1'; }")
+    page.clock.fast_forward(31 * 1000)
+    page.wait_for_function("() => !document.querySelector('.masthead').dataset.before", timeout=TIMEOUT_MS)
+    if banner.is_visible() or not watching.is_visible() or "min ago" not in (updated.text_content() or ""):
+        raise AssertionError(
+            "with a new index and the old release file, the page should drop the banner, keep the release's own "
+            f"age and keep looking: banner {banner.is_visible()}, looking {watching.is_visible()}, "
+            f"{updated.text_content()!r}"
+        )
+
+    # The release file follows. The next look, half a minute on again, has the whole run and stops looking.
+    newer[f"{current}.json"] = published
+    page.clock.fast_forward(31 * 1000)
+    page.wait_for_function(
+        "() => document.querySelector('.updated span')?.textContent === 'Updated just now'", timeout=TIMEOUT_MS
+    )
+    if banner.is_visible() or watching.is_visible():
+        raise AssertionError("new data is on the page, and the banner or the 'looking for new data' line still shows")
+
+    # A planned release's file is an hour old at most by design (27 minutes here): that isn't a run gone
+    # missing, so no banner, and there's nothing for "Refresh now" to refresh.
+    page.select_option("#release-select", "v1.2.0")
+    expect_release(page, "v1.2.0")
+    if banner.is_visible() or page.locator(".masthead a.refresh").count() != 0:
+        raise AssertionError(
+            f"the planned release: banner {banner.is_visible()}, "
+            f"{page.locator('.masthead a.refresh').count()} 'Refresh now' links beside its age"
+        )
+
+
 def check_release_dashboard_link(page: Page, site: str, offline: bool) -> None:
     """The sidebar's Release dashboard link is the page's full address, which Docsify leaves alone."""
     page.goto(site + "#/dev/developer-guide")
@@ -537,6 +634,7 @@ CHECKS: list[tuple[str, Callable[[Page, str, bool], None]]] = [
     ("an unknown route shows the 404 page, which recovers", check_not_found),
     ("the release dashboard draws a release and switches between them", check_release_dashboard),
     ("the release dashboard says when its data can't be loaded", check_release_dashboard_without_data),
+    ("the release dashboard flags old data and looks for new data after 'Refresh now'", check_release_dashboard_refresh),
     ("the sidebar links the release dashboard", check_release_dashboard_link),
 ]
 
