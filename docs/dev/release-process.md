@@ -208,7 +208,7 @@ fixed at its source:
 | The page shows | It reads |
 |---|---|
 | Scope, and what's open | the milestone's issues. The tracker itself isn't counted, and neither are pull requests. GitHub's milestone page counts both, so it reads higher: by one while the tracker is open, and by one more for each pull request on the milestone. The page says so under the count. |
-| The open count by lane, and "Open issues" listed by lane | each open issue's `agent:*` labels: one label is that lane, two or more are "Both lanes". The figures add up to the open count, and each lane's links to the same search on GitHub ("No lane" has no link: its search would list the tracker). A lane's list runs in the lanes' queue order ([labels.md](labels.md), "Queue order") (#4585). |
+| The open count by lane, and "Open issues" listed by lane | each open issue's `agent:*` labels: one label is that lane, two or more are "Both lanes". The figures add up to the open count, and each lane's links to the same search on GitHub ("No lane" has no link: its search would list the tracker). A lane's list runs in the lanes' queue order ([labels.md](labels.md), "Queue order") (#4585), and ends with a group of its own, "Waiting on the maintainer", for the issues the lane can't take (#4718). |
 | In progress, in review | the `in progress` label or a draft pull request; a pull request that's ready for review |
 | "No high-severity bug open" | open `sev:high` and `sev:medium` issues on the milestone |
 | "Every feature merged, moved or cut" | open `enhancement` issues that aren't CI, tooling or security work |
@@ -216,7 +216,7 @@ fixed at its source:
 | "Code-review findings closed" | the milestone's `code-review` issues |
 | "Performance issues closed" | the milestone's `performance` issues: stage 4's measure against the baselines files its regressions there |
 | "Tracker checklist" | the task list in the tracker's body |
-| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Each carries a "Waiting on the maintainer" chip wherever it's listed, so a lane's list shows what the lane can't take. |
+| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Listed by lane, they come after the lane's own work in a "Waiting on the maintainer" group, and the lane's count says how many (#4718). Anywhere else an issue is listed, it carries a "Waiting on the maintainer" chip. |
 | "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
 | "Pull requests merged" | the open pull requests on the milestone or closing one of its issues: how long each has been ready, and what it's waiting on (failing checks, a conflict, open review threads, a catch-up with its base, running checks) |
 | "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |

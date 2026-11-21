@@ -727,6 +727,40 @@ details[open] > summary .chevron {
   font-variant-numeric: tabular-nums;
 }
 
+/* A lane's count can run to "5 issues, 1 started, 3 waiting on the maintainer" (#4718): on a phone it wraps
+   against the right edge, and the name keeps its chevron beside it. */
+.group > summary > span:first-child {
+  flex: none;
+}
+
+.group > summary > span:last-child {
+  text-align: right;
+}
+
+/* A lane's issues that wait on the maintainer (#4718): a group of their own after the work the lane can take,
+   set in from it by a rule down the side. */
+.held {
+  margin: 8px 0 4px;
+  padding-left: 12px;
+  border-left: 2px solid var(--axis);
+}
+
+.held > h4 {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 0;
+  padding: 2px 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-2);
+}
+
+.held > h4 span:last-child {
+  font-weight: 400;
+  font-variant-numeric: tabular-nums;
+}
+
 .checklist h3 {
   margin-top: 8px;
   color: var(--ink-2);

@@ -527,14 +527,17 @@
     return new Set((row && row.issues) || []);
   }
 
-  /** The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven). */
-  function issueList(issues, now, side, asGiven) {
+  /**
+   * The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven).
+   * @p underHeld is for a list whose own heading says its issues wait on the maintainer: the rows don't repeat it.
+   */
+  function issueList(issues, now, side, asGiven, underHeld) {
     const sorted = side || asGiven ? issues : issues.slice().sort(byUrgency);
     const held = heldForMaintainer(view.release);
     return el('ul', { class: 'items' }, sorted.map((issue) => {
       const chips = [];
       if (issue.phase !== 'todo') chips.push(chip(PHASE_WORDS[issue.phase], true));
-      if (held.has(issue.n)) chips.push(chip('Waiting on the maintainer', true));
+      if (held.has(issue.n) && !underHeld) chips.push(chip('Waiting on the maintainer', true));
       if (issue.sev) chips.push(chip('sev: ' + issue.sev, issue.sev === 'high'));
       if (issue.pri) chips.push(chip('pri: ' + issue.pri, issue.pri === 'high'));
       if (issue.lane !== 'None') chips.push(chip(laneName(issue.lane)));
@@ -1035,11 +1038,17 @@
     const phases = release.counts.phases;
     const legend = el('ul', { class: 'legend' }, [['review', 'In review'], ['progress', 'In progress'], ['todo', 'Not started']].map(([phase, text]) =>
       el('li', null, el('span', { class: 'key box k-' + phase }), text + ' (' + (phases[phase] || 0) + ')')));
-    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work.
+    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work,
+    // and ends with a group of its own for the issues that wait on the maintainer (#4718): a lane can't take
+    // those, so they don't sit among the work it can.
     const byLane = groupBy(issues, 'lane');
+    const held = heldForMaintainer(release);
     const groups = view.listBy === 'lane'
-      ? ordered(LANES, byLane).map((name) => ({ key: 'open-lane-' + name, name: laneName(name), issues: byLane.get(name).slice().sort(byQueue), asGiven: true }))
-      : CATEGORIES.filter((name) => byCategory.has(name)).map((name) => ({ key: 'open-' + name, name, issues: byCategory.get(name), asGiven: false }));
+      ? ordered(LANES, byLane).map((name) => {
+        const queue = byLane.get(name).slice().sort(byQueue);
+        return { key: 'open-lane-' + name, name: laneName(name), issues: queue.filter((issue) => !held.has(issue.n)), waiting: queue.filter((issue) => held.has(issue.n)), asGiven: true };
+      })
+      : CATEGORIES.filter((name) => byCategory.has(name)).map((name) => ({ key: 'open-' + name, name, issues: byCategory.get(name), waiting: [], asGiven: false }));
     const switcher = el('div', { class: 'switch', role: 'group', 'aria-label': 'List the open issues by' }, el('span', { 'aria-hidden': 'true', text: 'List by' }),
       LIST_BY.map(([key, text]) => el('button', { type: 'button', 'data-by': key, 'aria-pressed': String(view.listBy === key), onclick: () => listBy(key) }, text)));
     // What has been in hand longest: the first place to look for something stuck.
@@ -1059,9 +1068,14 @@
       labelGaps(release),
       el('div', { class: 'open-lists' }, el('div', { class: 'list-head' }, el('h3', { text: 'Open issues' }), switcher),
         groups.map((group, index) => {
-          const begun = group.issues.filter((issue) => issue.phase !== 'todo').length;
-          return details(group.key, 'group', el('summary', null, el('span', null, group.name, el('span', { class: 'chevron', 'aria-hidden': 'true' })),
-            el('span', { text: count(group.issues.length, 'issue') + (begun ? ', ' + begun + ' started' : '') })), issueList(group.issues, now, null, group.asGiven), index === 0);
+          const all = group.issues.concat(group.waiting);
+          const begun = all.filter((issue) => issue.phase !== 'todo').length;
+          const waiting = group.waiting.length;
+          const said = count(all.length, 'issue') + (begun ? ', ' + begun + ' started' : '') + (waiting ? ', ' + waiting + ' waiting on the maintainer' : '');
+          return details(group.key, 'group', el('summary', null, el('span', null, group.name, el('span', { class: 'chevron', 'aria-hidden': 'true' })), el('span', { text: said })),
+            [group.issues.length ? issueList(group.issues, now, null, group.asGiven) : null,
+              waiting ? el('div', { class: 'held' }, el('h4', null, el('span', { text: 'Waiting on the maintainer' }), el('span', { text: count(waiting, 'issue') })),
+                issueList(group.waiting, now, null, true, true)) : null], index === 0);
         })),
       release.recently_closed.length
         ? details('recent', 'group', el('summary', null, el('span', null, 'Closed in the last 24 hours', el('span', { class: 'chevron', 'aria-hidden': 'true' })), el('span', { text: count(release.recently_closed.length, 'issue') })),
