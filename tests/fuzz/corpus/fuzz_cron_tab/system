@@ -1,0 +1,3 @@
+SHELL=/bin/sh
+17 *	* * *	root	cd / && run-parts --report /etc/cron.hourly
+@daily backup /usr/bin/backup %h

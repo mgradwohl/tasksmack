@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=Hidden one
+Exec=tool
+TryExec=tool
+Hidden=true
+NotShowIn=XFCE;
