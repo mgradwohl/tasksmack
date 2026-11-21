@@ -577,9 +577,11 @@ TEST_F(WindowsScheduledTasksTest, TasksOnASharePathAreListedButNotOpened)
     ASSERT_NE(inShareEntry, nullptr);
     EXPECT_TRUE(inShareEntry->executablePath.empty()) << "a share working directory is unknown: " << inShareEntry->executablePath;
     EXPECT_EQ(inShareEntry->target, StartupTargetState::Unresolved);
+    // A task's \??\ program is rooted with no drive (it holds no ':'), so it is unresolved, never opened. A Run
+    // value naming one is NotChecked, by isNetworkOrDevicePath() (WindowsStartupProbeMathTest).
     const StartupEntry* ntShareEntry = entryAt(entries, "\\OnNtShare");
     ASSERT_NE(ntShareEntry, nullptr);
-    EXPECT_EQ(ntShareEntry->target, StartupTargetState::NotChecked);
+    EXPECT_EQ(ntShareEntry->target, StartupTargetState::Unresolved);
     const StartupEntry* inNtShareEntry = entryAt(entries, "\\InNtShare");
     ASSERT_NE(inNtShareEntry, nullptr);
     EXPECT_TRUE(inNtShareEntry->executablePath.empty()) << "an NT share working directory is unknown: " << inNtShareEntry->executablePath;
