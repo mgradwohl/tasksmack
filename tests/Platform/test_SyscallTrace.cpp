@@ -577,6 +577,34 @@ TEST(RootToolsTest, AFolderAnotherAccountCanWriteIsNotSearchedOrPassedOnAsRoot)
     EXPECT_EQ(RootTools::findRootTool("crontab", "/usr/local/bin:/usr/bin", fs), std::optional<std::string>("/usr/bin/crontab"));
 }
 
+// #4668: a library loaded into a root or setcap session is held to rootTrustedPath()'s rules, as a regular file (a
+// library needn't be executable): /opt/rocm unpacked by the admin's own account, or a group-writable copy, is refused.
+TEST(RootToolsTest, ALibraryIsLoadedAsRootOnlyIfOnlyRootCouldHavePutItThere)
+{
+    constexpr std::uint32_t DIR = 0040000;
+    FakeTree tree;
+    tree.entries = {
+        {"/", {.uid = 0, .mode = DIR | 0755}},
+        {"/opt", {.uid = 0, .mode = DIR | 0755}},
+        {"/opt/rocm", {.uid = 0, .mode = DIR | 0755}},
+        {"/opt/rocm/lib", {.uid = 0, .mode = DIR | 0755}},
+        {"/opt/rocm/lib/librocm_smi64.so", {.uid = 0, .mode = 0100644}},
+        {"/opt/mine", {.uid = 1000, .mode = DIR | 0755}},
+        {"/opt/mine/lib", {.uid = 1000, .mode = DIR | 0755}},
+        {"/opt/mine/lib/librocm_smi64.so", {.uid = 1000, .mode = 0100644}},
+        {"/opt/shared", {.uid = 0, .mode = DIR | 0755}},
+        {"/opt/shared/librocm_smi64.so", {.uid = 0, .mode = 0100664}},
+    };
+    const RootTools::RootFs fs = tree.fs();
+    EXPECT_EQ(RootTools::rootTrustedLibrary("/opt/rocm/lib/librocm_smi64.so", fs),
+              std::optional<std::string>("/opt/rocm/lib/librocm_smi64.so"))
+        << "root's own copy, though not executable";
+    EXPECT_EQ(RootTools::rootTrustedLibrary("/opt/mine/lib/librocm_smi64.so", fs), std::nullopt) << "the admin's own account unpacked it";
+    EXPECT_EQ(RootTools::rootTrustedLibrary("/opt/shared/librocm_smi64.so", fs), std::nullopt) << "group-writable";
+    EXPECT_EQ(RootTools::rootTrustedLibrary("/opt/rocm/lib", fs), std::nullopt) << "a folder";
+    EXPECT_EQ(RootTools::rootTrustedLibrary("/opt/rocm/lib/missing.so", fs), std::nullopt);
+}
+
 // #4550: a trusted folder is given as the canonical path that was checked, once. A staff member's "bin -> /usr/bin"
 // in a staff-writable /usr/local passes on its target, so it must never reach the PATH as /usr/local/bin, which they
 // could re-point before a root child resolves a name through it; on merged-usr, /bin is /usr/bin.
