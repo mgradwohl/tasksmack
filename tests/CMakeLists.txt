@@ -377,7 +377,8 @@ if(TASKSMACK_BASH AND NOT WIN32)
     set_tests_properties(ProfilePerfShScript PROPERTIES ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}" TIMEOUT 120)
 endif()
 
-# tools/pgo.sh's help exits 0 and an unknown action 1 (#4216); nothing is built. Linux-only.
+# tools/pgo.sh's help exits 0 and an unknown action 1 (#4216), and it takes llvm-profdata from LLVM 23 only (#4226);
+# nothing is built. Linux-only.
 if(TASKSMACK_BASH AND NOT WIN32)
     add_test(NAME PgoShScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_pgo_sh.py)
@@ -461,6 +462,10 @@ endif()
 # tools/ui-compare-report.py turns two refs' UI scenario frames into the ui-compare.sh report (#2712).
 add_test(NAME UiCompareReportScript
     COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ui_compare_report.py)
+
+# tools/ninja-build-profile.py, the build-profile summary CI appends to a job's summary (#1875, #4226).
+add_test(NAME NinjaBuildProfileScript
+    COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_ninja_build_profile.py)
 
 # tools/merge-gtest-results.py folds the per-suite entries' gtest reports into CI's JUnit report (#1871).
 add_test(NAME MergeGtestResultsScript
