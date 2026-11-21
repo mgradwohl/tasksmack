@@ -173,9 +173,8 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
             return true;
         }
     }
-    // NT SERVICE\TrustedInstaller, which owns Windows' own files: its SID converted for this call, and a conversion that
-    // fails is no administrator, as this check always has it (WindowsSecurityOwners.h, #4368).
-    return isTrustedInstaller(sid).value_or(false);
+    // NT SERVICE\TrustedInstaller, which owns Windows' own files (WindowsSecurityOwners.h's static SID, #4699).
+    return isTrustedInstaller(sid);
 }
 
 /// Whether @p descriptor's owner and every ACE that applies to the object itself leave @p rights to
@@ -243,23 +242,6 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
         }
     }
     return {};
-}
-
-/// @p path without its trailing separators, for comparing a folder's names: "C:" for "C:\".
-[[nodiscard]] std::wstring_view withoutTrailingSeparators(std::wstring_view path)
-{
-    while (!path.empty() && (path.back() == L'\\' || path.back() == L'/'))
-    {
-        path.remove_suffix(1);
-    }
-    return path;
-}
-
-/// Whether two paths are the same text, ignoring case as NTFS does and trailing separators. Named apart from
-/// HandleRelativeFile.h's samePathText(), which compares the whole text, trailing separators included (#4368).
-[[nodiscard]] bool samePathIgnoringTrailingSeparators(std::wstring_view first, std::wstring_view second)
-{
-    return equalsOrdinalIgnoreCase(withoutTrailingSeparators(first), withoutTrailingSeparators(second));
 }
 
 /// @p path opened to read its attributes and security, @p folder with FILE_FLAG_BACKUP_SEMANTICS. Shared
