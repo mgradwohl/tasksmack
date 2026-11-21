@@ -15,7 +15,6 @@
 #include "Domain/PublicationWake.h"
 #include "Domain/SamplerTimingBoard.h"
 #include "Domain/SamplingConfig.h"
-#include "Platform/ThreadName.h"
 
 #include <gtest/gtest.h>
 #include <spdlog/logger.h>
@@ -23,7 +22,6 @@
 #include <spdlog/spdlog.h>
 
 #include <algorithm>
-#include <array>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
@@ -66,31 +64,31 @@ class MockSamplable : public Domain::ISamplable
   public:
     void sample() override
     {
-        std::lock_guard lock(mtx);
-        sampleCount++;
-        cv.notify_all();
+        std::scoped_lock const lock(m_Mtx);
+        m_SampleCount++;
+        m_Cv.notify_all();
     }
 
     int getSampleCount() const
     {
-        std::lock_guard lock(mtx);
-        return sampleCount;
+        std::scoped_lock const lock(m_Mtx);
+        return m_SampleCount;
     }
 
     void waitForSamples(int targetCount)
     {
-        std::unique_lock lock(mtx);
-        const bool success = cv.wait_for(lock, 2000ms, [this, targetCount] { return sampleCount >= targetCount; });
+        std::unique_lock lock(m_Mtx);
+        const bool success = m_Cv.wait_for(lock, 2000ms, [this, targetCount] { return m_SampleCount >= targetCount; });
         if (!success)
         {
-            ADD_FAILURE() << "Timeout waiting for " << targetCount << " samples. Actual: " << sampleCount;
+            ADD_FAILURE() << "Timeout waiting for " << targetCount << " samples. Actual: " << m_SampleCount;
         }
     }
 
   private:
-    mutable std::mutex mtx;
-    std::condition_variable cv;
-    int sampleCount = 0;
+    mutable std::mutex m_Mtx;
+    std::condition_variable m_Cv;
+    int m_SampleCount = 0;
 };
 
 /// A sample that blocks until the test releases it, to hold a sample in flight.
@@ -158,7 +156,7 @@ template<typename Predicate> [[nodiscard]] bool waitFor(Predicate predicate, std
 
 TEST(BackgroundSamplerTest, ConstructWithValidProbe)
 {
-    Domain::BackgroundSampler sampler;
+    Domain::BackgroundSampler const sampler;
 
     EXPECT_FALSE(sampler.isRunning());
 }
@@ -168,14 +166,14 @@ TEST(BackgroundSamplerTest, ConstructWithCustomInterval)
     Domain::SamplerConfig config;
     config.interval = 500ms;
 
-    Domain::BackgroundSampler sampler(config);
+    Domain::BackgroundSampler const sampler(config);
 
     EXPECT_EQ(sampler.interval(), 500ms);
 }
 
 TEST(BackgroundSamplerTest, DefaultIntervalIsOneSecond)
 {
-    Domain::BackgroundSampler sampler;
+    Domain::BackgroundSampler const sampler;
 
     EXPECT_EQ(sampler.interval(), 1000ms);
 }
@@ -215,6 +213,38 @@ TEST(BackgroundSamplerTest, DoubleStartIsIgnored)
     sampler.stop();
 }
 
+// #4590: the exit asks every sampler to stop first, without waiting, so they wind down together. A sampler asleep for
+// a long interval wakes at once, takes no more samples, and the stop() after it joins without waiting out the interval.
+TEST(BackgroundSamplerTest, RequestStopEndsTheThreadWithoutWaitingAndStopThenJoins)
+{
+    Domain::SamplerConfig config;
+    config.interval = 60s; // far longer than the test: only the stop request can end the wait
+    Domain::BackgroundSampler sampler(config);
+    auto const samplable = std::make_shared<MockSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    samplable->waitForSamples(1); // the first sample, then asleep for the interval
+
+    const auto asked = std::chrono::steady_clock::now();
+    sampler.requestStop();
+    sampler.requestStop(); // twice is fine
+    EXPECT_TRUE(sampler.isRunning()) << "asked, not yet joined: stop() still joins it and logs its summary";
+    sampler.stop();
+    EXPECT_LT(std::chrono::steady_clock::now() - asked, 10s) << "woken by the request, not by the 60 s interval";
+    EXPECT_FALSE(sampler.isRunning());
+    EXPECT_EQ(samplable->getSampleCount(), 1) << "no sample after the request";
+}
+
+TEST(BackgroundSamplerTest, RequestStopWhenNotRunningIsNoOp)
+{
+    Domain::BackgroundSampler sampler;
+    sampler.requestStop();
+    EXPECT_FALSE(sampler.isRunning());
+    sampler.start();
+    EXPECT_TRUE(sampler.isRunning()) << "a request before start() doesn't stop the thread it starts";
+    sampler.stop();
+}
+
 TEST(BackgroundSamplerTest, DestructorStopsSampler)
 {
     {
@@ -233,8 +263,8 @@ TEST(BackgroundSamplerTest, DestructorStopsSampler)
 
 TEST(BackgroundSamplerTest, SampleInvokedOnInterval)
 {
-    auto samplable1 = std::make_shared<MockSamplable>();
-    auto samplable2 = std::make_shared<MockSamplable>();
+    auto const samplable1 = std::make_shared<MockSamplable>();
+    auto const samplable2 = std::make_shared<MockSamplable>();
 
     Domain::SamplerConfig config;
     config.interval = 50ms; // Fast sampling for test
@@ -257,7 +287,7 @@ TEST(BackgroundSamplerTest, SampleInvokedOnInterval)
 
 TEST(BackgroundSamplerTest, SampleInvokedMultipleTimes)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
 
     Domain::SamplerConfig config;
     config.interval = 30ms; // Fast sampling for test
@@ -315,7 +345,7 @@ TEST(BackgroundSamplerTest, SetIntervalWhileRunning)
 // sampling indefinitely (the interaction throttle toggles it on every short drag).
 TEST(BackgroundSamplerTest, RepeatedIntervalChangesDoNotStarveSampling)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
     Domain::SamplerConfig config;
     config.interval = 200ms;
     Domain::BackgroundSampler sampler(config);
@@ -343,7 +373,7 @@ TEST(BackgroundSamplerTest, RepeatedIntervalChangesDoNotStarveSampling)
 // #1102: a sampler whose owner already took the seed sample waits an interval before sampling.
 TEST(BackgroundSamplerTest, SeededSamplerWaitsAnIntervalBeforeItsFirstSample)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
     Domain::SamplerConfig config;
     config.interval = 300ms;
     config.firstSampleAfterInterval = true;
@@ -408,7 +438,7 @@ TEST(BackgroundSamplerTest, StartHookRunsOnceOnTheSamplerThreadBeforeTheFirstSam
 {
     std::atomic<int> hookRuns{0};
     std::atomic<std::thread::id> hookThread{};
-    auto samplable = std::make_shared<HookObservingSamplable>(hookRuns);
+    auto const samplable = std::make_shared<HookObservingSamplable>(hookRuns);
     Domain::SamplerConfig config;
     config.interval = 100ms;
     config.onThreadStart = [&hookRuns, &hookThread]
@@ -439,7 +469,7 @@ TEST(BackgroundSamplerTest, StartHookRunsOnceOnTheSamplerThreadBeforeTheFirstSam
 // sampler still stops and reports like any other; the owner notices through its models.
 TEST(BackgroundSamplerTest, AStartHookThatThrowsIsContainedAndSamplingGoesOn)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
     Domain::SamplerConfig config;
     config.interval = 100ms;
     config.onThreadStart = []
@@ -459,13 +489,13 @@ TEST(BackgroundSamplerTest, AStartHookThatThrowsIsContainedAndSamplingGoesOn)
 // #3374: a hook that throws something that isn't a std::exception is contained the same way.
 TEST(BackgroundSamplerTest, AStartHookThatThrowsANonStdExceptionIsContainedToo)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
     Domain::SamplerConfig config;
     config.interval = 100ms;
     config.onThreadStart = []
     {
         // NOLINTNEXTLINE(hicpp-exception-baseclass) - intentionally non-std, the point of the test
-        throw 42;
+        throw 42; // NOLINT(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - under test: a throw no std::exception handler catches
     };
     Domain::BackgroundSampler sampler(config);
     sampler.addSamplable(samplable);
@@ -503,7 +533,7 @@ TEST(BackgroundSamplerTest, TheStartHookRunsInTheMultiThreadedApartmentWhenAsked
     {
         std::atomic<bool> inMta{false};
         std::atomic<bool> hookRan{false};
-        auto samplable = std::make_shared<MockSamplable>();
+        auto const samplable = std::make_shared<MockSamplable>();
         Domain::SamplerConfig config;
         config.interval = 100ms;
         config.multiThreadedApartment = wanted;
@@ -583,7 +613,7 @@ TEST(BackgroundSamplerTest, RefreshRightAfterASampleWaitsForAUsableInterval)
         std::vector<std::chrono::steady_clock::time_point> m_Times;
     };
 
-    auto samplable = std::make_shared<TimedSamplable>();
+    auto const samplable = std::make_shared<TimedSamplable>();
     Domain::SamplerConfig config;
     config.interval = 1000ms;
     Domain::BackgroundSampler sampler(config);
@@ -603,7 +633,7 @@ TEST(BackgroundSamplerTest, RefreshRightAfterASampleWaitsForAUsableInterval)
 
 TEST(BackgroundSamplerTest, RequestRefreshTriggersEarlySample)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
 
     Domain::SamplerConfig config;
     config.interval = 10000ms; // Long interval
@@ -615,7 +645,7 @@ TEST(BackgroundSamplerTest, RequestRefreshTriggersEarlySample)
 
     // Wait for first sample
     samplable->waitForSamples(1);
-    int countAfterFirst = samplable->getSampleCount();
+    int const countAfterFirst = samplable->getSampleCount();
 
     // Request refresh - should trigger another sample quickly
     sampler.requestRefresh();
@@ -641,10 +671,11 @@ TEST(BackgroundSamplerTest, ConcurrentIntervalChanges)
 
     // Multiple threads changing interval concurrently
     std::vector<std::thread> threads;
+    threads.reserve(5);
     for (int i = 0; i < 5; ++i)
     {
         threads.emplace_back(
-            [&sampler, i]()
+            [&sampler, i]
             {
                 for (int j = 0; j < 20; ++j)
                 {
@@ -721,11 +752,12 @@ TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
     std::atomic<int> ready{0};
     std::atomic<bool> go{false};
     std::vector<std::thread> threads;
+    threads.reserve(5);
     threads.reserve(THREAD_COUNT);
     for (int i = 0; i < THREAD_COUNT; ++i)
     {
         threads.emplace_back(
-            [&sampler, &ready, &go]()
+            [&sampler, &ready, &go]
             {
                 ready.fetch_add(1);
                 while (!go.load())
@@ -767,7 +799,7 @@ TEST(BackgroundSamplerTest, ConcurrentRefreshRequests)
 
 TEST(BackgroundSamplerTest, VeryShortIntervalIsClamped)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
 
     Domain::SamplerConfig config;
     config.interval = 1ms; // Very short
@@ -785,7 +817,7 @@ TEST(BackgroundSamplerTest, VeryShortIntervalIsClamped)
 
 TEST(BackgroundSamplerTest, StartStopStartCycle)
 {
-    auto samplable = std::make_shared<MockSamplable>();
+    auto const samplable = std::make_shared<MockSamplable>();
 
     Domain::SamplerConfig config;
     config.interval = 50ms;
@@ -841,6 +873,8 @@ TEST(BackgroundSamplerTest, ZeroIntervalIsClamped)
 // Exception Safety Tests
 // =============================================================================
 
+namespace
+{
 class ThrowingSamplable : public Domain::ISamplable
 {
   public:
@@ -887,7 +921,7 @@ class ThrowingNonStdSamplable : public Domain::ISamplable
     {
         m_CallCount++;
         // NOLINTNEXTLINE(hicpp-exception-baseclass) - intentionally non-std for coverage
-        throw 42;
+        throw 42; // NOLINT(hicpp-exception-baseclass,bugprone-std-exception-baseclass) - under test: a throw no std::exception handler catches
     }
 
     int getCallCount() const
@@ -898,6 +932,7 @@ class ThrowingNonStdSamplable : public Domain::ISamplable
   private:
     std::atomic<int> m_CallCount{0};
 };
+} // namespace
 
 TEST(BackgroundSamplerTest, SamplableThrowingNonStdExceptionSamplerContinues)
 {

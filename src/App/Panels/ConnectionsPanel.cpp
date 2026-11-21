@@ -92,6 +92,17 @@ void ConnectionsPanel::onDetach()
 void ConnectionsPanel::onEvent(Core::Event& event)
 {
     Core::EventDispatcher dispatcher(event);
+    // The app is exiting (#4590): every sampler is told to stop now, before any panel's onDetach() joins one, so
+    // they wind down together. Not handled: every panel hears it.
+    dispatcher.dispatch<Core::AppExitingEvent>(
+        [this](Core::AppExitingEvent& /*e*/)
+        {
+            if (m_Sampler)
+            {
+                m_Sampler->requestStop();
+            }
+            return false;
+        });
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
         [this](Core::ActiveTabChangedEvent& e)
         {
