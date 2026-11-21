@@ -7,9 +7,11 @@ name: Release Dashboard
 # docs/dev/release-process.md, "The release dashboard", says what the page shows and what it reads.
 #
 # Two jobs, so the token that can write never runs the generator:
-#   - generate: read-only. Runs the generator's tests, then the generator, and uploads what it wrote.
+#   - generate: read-only. Runs the generator's tests, then the generator, and hands what it wrote to publish
+#               as a job output. No artifact (#4717): one a run was hundreds a day in a list that every
+#               ClusterFuzzLite lookup pages through (#4617).
 #   - publish:  `contents: write`, and no repository code: it replaces dashboard-data's single commit with the
-#               uploaded files. The branch holds one commit, replaced on every run, so a few hundred runs a
+#               files it was handed. The branch holds one commit, replaced on every run, so a few hundred runs a
 #               day don't grow the repository; every figure can be regenerated from the API, so no history is
 #               lost. The "Main Builds" ruleset covers only main and release/*, so the forced update is allowed
 #               there and nowhere else. A push made with GITHUB_TOKEN starts no workflow.
@@ -91,8 +93,11 @@ jobs:
       issues: read  # milestones, their issues, the release tracker and the ci-red-main issues
       pull-requests: read  # the open pull requests and the ones that close a milestone's issues
     outputs:
-      # 'true' when this run generated data for `publish` to push: see "Stop here when this run has nothing to add".
-      publish: ${{ steps.gate.outputs.proceed }}
+      # 'true' when this run generated data for `publish` to push: neither "Stop here when this run has nothing
+      # to add" nor the budget check after the wait stopped it.
+      publish: ${{ steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false' }}
+      # The JSON files as one string: see "Pack the data for the publish job".
+      data: ${{ steps.pack.outputs.data }}
     steps:
       # Only what the generator and its tests read: the generator takes main-health.yml's WATCHED list, and its
       # test checks every workflow that list names is there. A pull request runs its own copy; it has no token
@@ -232,12 +237,16 @@ jobs:
       # Only a person's manual run can publish meanwhile, and it cancels this one, so the data fetched above is
       # still the last when the wait ends. A dispatched run and a pull request's proof never wait.
       - name: Wait until the published data is five minutes old
+        id: wait
         if: steps.gate.outputs.proceed == 'true' && contains(fromJSON('["issues", "push", "schedule"]'), github.event_name)
         env:
+          GH_TOKEN: ${{ github.token }}
           PUBLISHED_AT: ${{ steps.previous.outputs.at }}
           CREATED_AT: ${{ steps.gate.outputs.created }}
           MIN_AGE_SECONDS: 300
           SETTLE_SECONDS: 15
+          MIN_REST_CALLS: 100
+          MIN_GRAPHQL_POINTS: 150
         run: |
           set -euo pipefail
           now=$(date +%s)
@@ -269,15 +278,33 @@ jobs:
           echo "Waiting ${wait} s."
           sleep "$wait"
 
+          # The step before this asked about the budget, and another workflow can spend it during the wait
+          # (#4717: a fuzzing run took the last calls in 50 seconds, and the read after it failed). So ask
+          # again, with the same floors, and stop the same way: a warning, and nothing read.
+          budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.graphql.remaining)"' 2> /dev/null || true)
+          read -r rest points <<< "$budget" || true
+          spent=""
+          if [[ "${rest:-}" =~ ^[0-9]+$ ]] && (( rest < MIN_REST_CALLS )); then
+            spent="$rest REST calls left"
+          elif [[ "${points:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
+            spent="$points GraphQL points left"
+          fi
+          if [[ -n "$spent" ]]; then
+            said="The repository's API budget was used up during this run's wait: $spent. Nothing read, nothing published."
+            echo "::warning title=Release dashboard::$said"
+            echo "$said" >> "$GITHUB_STEP_SUMMARY"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Generate
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous"
 
       # The page reads index.json, then the file each release names: check they're all there and all JSON.
       - name: Check what was written
-        if: steps.gate.outputs.proceed == 'true'
+        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
         run: |
           set -euo pipefail
           python3 -I -X utf8 - "$RUNNER_TEMP/data" <<'PY'
@@ -294,14 +321,24 @@ jobs:
           print(f"{len(titles)} releases, current {index['current']}: {', '.join(titles)}")
           PY
 
-      - name: Hand the data to the publish job
-        if: steps.gate.outputs.proceed == 'true'
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
-        with:
-          name: release-dashboard-data
-          path: ${{ runner.temp }}/data
-          if-no-files-found: error
-          retention-days: 1  # only the publish job reads it, seconds later
+      # The publish job gets the files as a job output, not as an artifact (#4717). They live a few seconds,
+      # and an artifact for every run was about 290 a day in a list that ClusterFuzzLite pages through for
+      # every lookup (#4617). tar, gzip and base64 make them one line of plain characters: about 56,000 today,
+      # of the megabyte a job's outputs may hold.
+      - name: Pack the data for the publish job
+        id: pack
+        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
+        env:
+          MAX_CHARACTERS: 900000
+        run: |
+          set -euo pipefail
+          packed=$(tar -C "$RUNNER_TEMP/data" -czf - . | base64 -w 0)
+          if (( ${#packed} > MAX_CHARACTERS )); then
+            echo "::error title=Release dashboard::The data is ${#packed} characters packed, over the $MAX_CHARACTERS a job output can safely carry: it needs another way to the publish job."
+            exit 1
+          fi
+          echo "data=$packed" >> "$GITHUB_OUTPUT"
+          echo "Packed $(find "$RUNNER_TEMP/data" -name '*.json' | wc -l) files into ${#packed} characters."
 
   publish:
     name: Publish to dashboard-data
@@ -312,14 +349,29 @@ jobs:
       github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       needs.generate.outputs.publish == 'true'
     runs-on: ubuntu-26.04
-    timeout-minutes: 5
+    timeout-minutes: 8  # three pushes of a minute each at the most, and the pauses between them
     permissions:
       contents: write  # replace the dashboard-data branch
     steps:
-      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
-        with:
-          name: release-dashboard-data
-          path: data
+      # The files, from `generate`'s output. This job holds the token that can write, so it takes nothing on
+      # trust: the string is read as text (a quoted here-document, so the shell expands nothing in it), it is
+      # unpacked into an empty folder, and anything there that isn't a plain JSON file at the top stops the run.
+      - name: Unpack the data
+        run: |
+          set -euo pipefail
+          mkdir data
+          base64 -d > data.tgz <<'PACKED'
+          ${{ needs.generate.outputs.data }}
+          PACKED
+          tar -xzf data.tgz -C data --no-same-owner
+          rm data.tgz
+          odd=$(find data -mindepth 1 \( ! -type f -o ! -name '*.json' \) -print)
+          if [[ -n "$odd" || ! -s data/index.json ]]; then
+            echo "::error title=Release dashboard::What the generate job handed over isn't a flat set of JSON files with an index.json."
+            printf '%s\n' "$odd"
+            exit 1
+          fi
+          echo "Unpacked $(find data -name '*.json' | wc -l) files."
 
       - name: Replace the branch's one commit
         env:
@@ -343,7 +395,23 @@ jobs:
           git add --all
           git commit --quiet --message "Release dashboard data, ${GITHUB_SHA::8} (run ${GITHUB_RUN_ID})"
           # A one-off credential helper hands git the token from the environment, so it is never on a command line.
-          git -c credential.helper= \
-            -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GH_TOKEN}"; }; f' \
-            push --quiet --force "$REPO_URL" HEAD:refs/heads/dashboard-data
+          # A push that can't reach github.com is tried again (#4717: one hung for two minutes and failed a run
+          # whose data was already read): three times, each cut off after a minute.
+          pushed=""
+          for pause in 0 15 45; do
+            if (( pause > 0 )); then
+              echo "Trying the push again in $pause s."
+              sleep "$pause"
+            fi
+            if timeout 60 git -c credential.helper= \
+              -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GH_TOKEN}"; }; f' \
+              push --quiet --force "$REPO_URL" HEAD:refs/heads/dashboard-data; then
+              pushed=yes
+              break
+            fi
+          done
+          if [[ -z "$pushed" ]]; then
+            echo "::error title=Release dashboard::The push to dashboard-data failed three times."
+            exit 1
+          fi
           echo "Published $(find . -name '*.json' | wc -l) files to dashboard-data." >> "$GITHUB_STEP_SUMMARY"

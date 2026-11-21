@@ -64,6 +64,11 @@
   only the events worth a run start one (no labels, no edits, no Main Health, and since #4700 no `opened`:
   `milestoned` covers a new issue), with two schedule lines five minutes apart. `date +%s` and `gh` are
   stubs; jq and `date -d` are real, and the cases are skipped without jq.
+- release-dashboard.yml (#4717): the wait asks about the budget again after waiting and stops the run with a
+  warning when it's gone; generate's "Pack the data for the publish job" and publish's "Unpack the data" hand
+  the JSON over as a job output with no artifact, and publish refuses anything but a flat set of JSON files;
+  and "Replace the branch's one commit" tries its push three times. tar, gzip and base64 are real; `git`,
+  `timeout`, `sleep` and `gh` are shell functions.
 - main-health.yml "Open, update or close the tracking issue" (#4700): a run that opened or closed a tracking
   issue dispatches release-dashboard.yml once, however many branches changed, and does so on exit, so also
   when a later branch then fails the step; a run that changed nothing or only rewrote an open issue
@@ -79,7 +84,9 @@ without them.
 
 from __future__ import annotations
 
+import base64
 import hashlib
+import io
 import json
 import os
 import re
@@ -87,6 +94,7 @@ import shutil
 import stat
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
 import unittest
@@ -3354,26 +3362,52 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         (296, 5): 10,
         (2220, -100): 15,
     }
+    ASKED = "asked about the budget"
+    # #4717: after a wait the budget is asked about again. (how long ago the data was published, REST calls
+    # left, GraphQL points left): whether the step lets the run go on. None is "the question failed".
+    AFTER_THE_WAIT = {
+        (60, 5000, 5000): True,
+        (60, 100, 150): True,  # exactly the floors
+        (60, 99, 5000): False,
+        (60, 5000, 149): False,
+        (60, 0, 0): False,
+        (60, None, None): True,
+        (2220, 0, 0): True,  # no wait, so nothing is asked: the step before it just did
+    }
 
     @classmethod
     def setUpClass(cls):
         """Runs the step once per case in one bash process (each launch costs seconds on the ARM64 Windows
-        runner, #3643). `date` and `sleep` are functions, so the step's own arithmetic runs and nothing waits."""
+        runner, #3643). `date`, `sleep` and `gh` are functions, so the step's own arithmetic runs, nothing waits
+        and the budget is what the case says."""
         cls.step = find_step(cls.WORKFLOW, cls.STEP, job=cls.JOB)
         tmp = Path(tempfile.mkdtemp(prefix="4604-dashboard-wait-"))
         cls.addClassCleanup(shutil.rmtree, tmp, ignore_errors=True)
         log = tmp / "log"
-        script = [f"date() {{ echo {cls.NOW}; }}", 'sleep() { echo "slept $1" >> "$LOG"; }']
+        script = [
+            f"date() {{ echo {cls.NOW}; }}",
+            'sleep() { echo "slept $1" >> "$LOG"; }',
+            f'gh() {{ echo "{cls.ASKED}" >> "$LOG"; [[ -n "$REST_LEFT" ]] || return 1; echo "$REST_LEFT $POINTS_LEFT"; }}',
+        ]
 
         def ago(seconds: int | None) -> str:
             return "" if seconds is None else str(cls.NOW - seconds)
 
-        for index, (published, created) in enumerate(cls.CASES):
+        runs = [(published, created, 5000, 5000) for published, created in cls.CASES]
+        runs += [(published, None, rest, points) for published, rest, points in cls.AFTER_THE_WAIT]
+        for index, (published, created, rest, points) in enumerate(runs):
             # A subshell per case: the step's `set -e` and `exit` end the case, not the script.
-            script += [f'echo "case {index}" >> "$LOG"',
-                       f'( export PUBLISHED_AT="{ago(published)}" CREATED_AT="{ago(created)}"', cls.step.run, ")",
-                       'echo "status $?" >> "$LOG"']
-        env = {"LOG": posix(log), **{key: cls.step.env[key] for key in ("MIN_AGE_SECONDS", "SETTLE_SECONDS")}}
+            script += [
+                f'echo "case {index}" >> "$LOG"',
+                f'( export PUBLISHED_AT="{ago(published)}" CREATED_AT="{ago(created)}"',
+                f'  export REST_LEFT="{"" if rest is None else rest}" POINTS_LEFT="{"" if points is None else points}"',
+                f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
+                cls.step.run,
+                f') > "$DIR/stdout-{index}" 2>&1',
+                'echo "status $?" >> "$LOG"',
+            ]
+        keys = ("MIN_AGE_SECONDS", "SETTLE_SECONDS", "MIN_REST_CALLS", "MIN_GRAPHQL_POINTS")
+        env = {"LOG": posix(log), "DIR": posix(tmp), "GH_TOKEN": "none", **{key: cls.step.env[key] for key in keys}}
         cls.result = run_bash("\n".join(script), tmp, env)
         cls.seen: dict[int, list[str]] = {}
         case = -1
@@ -3385,6 +3419,12 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
             else:
                 cls.seen[case].append(line)
 
+        def read(kind: str, index: int) -> str:
+            path = tmp / f"{kind}-{index}"
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+        cls.wrote = {index: {kind: read(kind, index) for kind in ("output", "summary", "stdout")} for index in range(len(runs))}
+
     def test_the_minimum_age_is_five_minutes_and_the_settle_fifteen_seconds(self):
         self.assertEqual(self.step.env["MIN_AGE_SECONDS"], "300")
         self.assertEqual(self.step.env["SETTLE_SECONDS"], "15")
@@ -3393,8 +3433,32 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
         for index, (case, slept) in enumerate(self.CASES.items()):
             with self.subTest(published_ago=case[0], created_ago=case[1]):
-                expected = ([] if slept is None else [f"slept {slept}"]) + ["status 0"]
+                # The budget is asked about after a wait, and only then.
+                expected = ([] if slept is None else [f"slept {slept}", self.ASKED]) + ["status 0"]
                 self.assertEqual(self.seen[index], expected)
+                self.assertEqual(self.wrote[index]["output"], "", "plenty of budget: the run goes on")
+
+    def test_a_budget_spent_during_the_wait_stops_the_run_with_a_warning(self):
+        # #4717: a run checked the budget, waited 50 seconds, and failed at its first read: a fuzzing run had
+        # taken the last calls meanwhile. The floors are the ones the step before the wait holds the run to.
+        gate = find_step(self.WORKFLOW, "Stop here when this run has nothing to add", job=self.JOB)
+        for key in ("MIN_REST_CALLS", "MIN_GRAPHQL_POINTS"):
+            self.assertEqual(self.step.env[key], gate.env[key], key)
+        self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
+        for offset, ((published, rest, points), goes_on) in enumerate(self.AFTER_THE_WAIT.items()):
+            index = len(self.CASES) + offset
+            with self.subTest(published_ago=published, rest=rest, points=points):
+                wrote = self.wrote[index]
+                self.assertEqual(self.seen[index][-1], "status 0", wrote["stdout"])
+                self.assertEqual(wrote["output"], "" if goes_on else "proceed=false", wrote["stdout"])
+                self.assertEqual(bool(wrote["summary"]), not goes_on)
+                if not goes_on:
+                    self.assertIn("::warning title=Release dashboard::The repository's API budget was used up during this run's wait",
+                                  wrote["stdout"])
+                self.assertEqual(self.ASKED in self.seen[index], published < 300, "asked only after a wait")
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        block = text.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
+        self.assertIn("        id: wait\n", block)
 
     def test_it_reads_the_times_the_steps_before_it_publish(self):
         self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
@@ -3591,12 +3655,14 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         text = self.WORKFLOW.read_text(encoding="utf-8")
         gate = text.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
         self.assertIn("        id: gate\n", gate)
-        for name in ("Generate", "Check what was written", "Hand the data to the publish job"):
+        # Two steps can stop a run: this one, and the wait when the budget went during it (#4717).
+        go_on = "steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'"
+        for name in ("Generate", "Check what was written", "Pack the data for the publish job"):
             with self.subTest(step=name):
-                self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, "steps.gate.outputs.proceed == 'true'")
+                self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, go_on)
         generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertIn("    outputs:\n", generate)
-        self.assertIn("      publish: ${{ steps.gate.outputs.proceed }}\n", generate)
+        self.assertIn(f"      publish: ${{{{ {go_on} }}}}\n", generate)
         publish = text.split("\n  publish:\n", 1)[1]
         condition = publish.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
         self.assertIn("needs.generate.outputs.publish == 'true'", condition)
@@ -3621,6 +3687,181 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         lines = re.findall(r"(?m)^    - cron: '(\d+)-59/10 \* \* \* \*'$", text)
         self.assertEqual(lines, ["3", "8"])
         self.assertEqual(len(re.findall(r"(?m)^    - cron: ", text)), 2)
+
+
+class ReleaseDashboardHandoverTests(unittest.TestCase):
+    """#4717: the generate job hands its JSON to the publish job as a job output, not as an artifact (one a run
+    was about 290 a day in the list that every ClusterFuzzLite lookup pages through, #4617). The publish job
+    holds the token that can write, so it refuses anything but a flat set of JSON files, and it tries its push
+    three times."""
+
+    WORKFLOW = WORKFLOWS / "release-dashboard.yml"
+    FILES = {
+        "index.json": json.dumps({"schema": 4, "current": "v1.1.0", "releases": [{"title": "v1.1.0"}]}),
+        "v1.1.0.json": json.dumps({"milestone": {"title": "v1.1.0"}, "note": "an em dash — and <b>markup</b> stay as written"}),
+    }
+
+    @classmethod
+    def setUpClass(cls):
+        cls.tmp = Path(tempfile.mkdtemp(prefix="4717-dashboard-handover-"))
+        cls.addClassCleanup(shutil.rmtree, cls.tmp, ignore_errors=True)
+        cls.pack = find_step(cls.WORKFLOW, "Pack the data for the publish job", job="generate")
+        cls.unpack = find_step(cls.WORKFLOW, "Unpack the data", job="publish")
+        cls.push = find_step(cls.WORKFLOW, "Replace the branch's one commit", job="publish")
+
+        # One launch: the generate job's pack step, on real files, as it is and with a limit it can't meet.
+        data = cls.tmp / "runner" / "data"
+        data.mkdir(parents=True)
+        for name, body in cls.FILES.items():
+            (data / name).write_text(body, encoding="utf-8", newline="\n")
+        script = [
+            '( export GITHUB_OUTPUT="$DIR/pack-output"', cls.pack.run, ') > "$DIR/pack-log" 2>&1',
+            'echo "$?" > "$DIR/pack-status"',
+            '( export GITHUB_OUTPUT="$DIR/small-output" MAX_CHARACTERS=10', cls.pack.run, ') > "$DIR/small-log" 2>&1',
+            'echo "$?" > "$DIR/small-status"',
+        ]
+        env = {"DIR": posix(cls.tmp), "RUNNER_TEMP": posix(cls.tmp / "runner"), "MAX_CHARACTERS": cls.pack.env["MAX_CHARACTERS"]}
+        cls.packing = run_bash("\n".join(script), cls.tmp, env)
+        output = cls.read("pack-output")
+        cls.packed = output.partition("=")[2] if output.startswith("data=") else ""
+
+        # A second launch: the publish job's unpack step on that string, and on three it must refuse.
+        def packed(files: dict[str, str], folder: str = "") -> str:
+            buffer = io.BytesIO()
+            with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+                if folder:
+                    entry = tarfile.TarInfo(folder)
+                    entry.type = tarfile.DIRTYPE
+                    entry.mode = 0o755
+                    archive.addfile(entry)
+                for name, body in files.items():
+                    raw = body.encode("utf-8")
+                    entry = tarfile.TarInfo(f"{folder}/{name}" if folder else name)
+                    entry.size = len(raw)
+                    archive.addfile(entry, io.BytesIO(raw))
+            return base64.b64encode(buffer.getvalue()).decode("ascii")
+
+        cls.handed = {
+            "what the pack step made": cls.packed,
+            "a script beside the JSON": packed({**cls.FILES, "run-me.sh": "echo hello"}),
+            "the JSON inside a folder": packed(cls.FILES, folder="nested"),
+            "no index.json": packed({"v1.1.0.json": cls.FILES["v1.1.0.json"]}),
+        }
+        script = []
+        for index, data_string in enumerate(cls.handed.values()):
+            (cls.tmp / f"unpack-{index}").mkdir()
+            script += [
+                f'( cd "$DIR/unpack-{index}"',
+                substitute(cls.unpack.run, {"needs.generate.outputs.data": data_string}),
+                f') > "$DIR/unpack-log-{index}" 2>&1',
+                f'echo "$?" > "$DIR/unpack-status-{index}"',
+            ]
+        cls.unpacking = run_bash("\n".join(script), cls.tmp, {"DIR": posix(cls.tmp)})
+
+        # A third: the push, with `git` failing as often as the case says. `timeout` and `sleep` only log.
+        script = [
+            "git() {",
+            '  if [[ " $* " != *" push "* ]]; then return 0; fi',
+            '  echo "push" >> "$CALLS"',
+            '  (( $(grep -c "^push$" "$CALLS") > FAILING_PUSHES ))',
+            "}",
+            'timeout() { echo "limit $1" >> "$CALLS"; shift; "$@"; }',
+            'sleep() { echo "slept $1" >> "$CALLS"; }',
+        ]
+        cls.push_cases = {"the first push works": 0, "the third push works": 2, "no push works": 3}
+        for index, failing in enumerate(cls.push_cases.values()):
+            folder = cls.tmp / f"push-{index}" / "data"
+            folder.mkdir(parents=True)
+            (folder / "index.json").write_text("{}", encoding="utf-8")
+            script += [
+                f'( cd "$DIR/push-{index}"; export FAILING_PUSHES={failing} CALLS="$DIR/push-calls-{index}"',
+                f'  export GITHUB_STEP_SUMMARY="$DIR/push-summary-{index}"; : > "$CALLS"',
+                cls.push.run,
+                f') > "$DIR/push-log-{index}" 2>&1',
+                f'echo "$?" > "$DIR/push-status-{index}"',
+            ]
+        env = {
+            "DIR": posix(cls.tmp),
+            "GH_TOKEN": "none",
+            "REPO_URL": "https://github.example/owner/repo.git",
+            "SOURCE": "https://github.example/owner/repo",
+            "RUN_URL": "https://github.example/owner/repo/actions/runs/42",
+            "GITHUB_SHA": "0123456789abcdef0123456789abcdef01234567",
+            "GITHUB_RUN_ID": "42",
+        }
+        cls.pushing = run_bash("\n".join(script), cls.tmp, env)
+
+    @classmethod
+    def read(cls, name: str) -> str:
+        path = cls.tmp / name
+        return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+    def test_the_data_is_one_line_of_base64_under_the_limit(self):
+        self.assertEqual(self.packing.returncode, 0, self.packing.stdout + self.packing.stderr)
+        self.assertEqual(self.read("pack-status"), "0", self.read("pack-log"))
+        self.assertRegex(self.packed, r"\A[A-Za-z0-9+/]+=*\Z")
+        self.assertIn("Packed 2 files into", self.read("pack-log"))
+        self.assertLessEqual(int(self.pack.env["MAX_CHARACTERS"]), 1_000_000, "a job's outputs hold a megabyte")
+
+    def test_data_too_large_for_an_output_fails_the_run_and_hands_over_nothing(self):
+        self.assertEqual(self.read("small-status"), "1", self.read("small-log"))
+        self.assertIn("::error title=Release dashboard::The data is", self.read("small-log"))
+        self.assertEqual(self.read("small-output"), "")
+
+    def test_what_generate_packs_is_what_publish_unpacks(self):
+        self.assertEqual(self.unpacking.returncode, 0, self.unpacking.stdout + self.unpacking.stderr)
+        self.assertEqual(self.read("unpack-status-0"), "0", self.read("unpack-log-0"))
+        folder = self.tmp / "unpack-0" / "data"
+        self.assertEqual(sorted(path.name for path in folder.iterdir()), sorted(self.FILES))
+        for name, body in self.FILES.items():
+            with self.subTest(file=name):
+                self.assertEqual((folder / name).read_text(encoding="utf-8"), body)
+        self.assertFalse((self.tmp / "unpack-0" / "data.tgz").exists())
+        self.assertIn("Unpacked 2 files.", self.read("unpack-log-0"))
+
+    def test_publish_refuses_anything_but_a_flat_set_of_json_files_with_an_index(self):
+        for index, name in enumerate(self.handed):
+            if index == 0:
+                continue
+            with self.subTest(handed=name):
+                self.assertEqual(self.read(f"unpack-status-{index}"), "1", self.read(f"unpack-log-{index}"))
+                self.assertIn("isn't a flat set of JSON files with an index.json", self.read(f"unpack-log-{index}"))
+
+    def test_the_string_is_read_as_text_not_as_shell(self):
+        # A quoted here-document: nothing in the string is expanded, whatever generate handed over.
+        self.assertIn("base64 -d > data.tgz <<'PACKED'\n${{ needs.generate.outputs.data }}\nPACKED\n", self.unpack.run)
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        self.assertIn("      data: ${{ steps.pack.outputs.data }}\n", generate)
+        self.assertIn("        id: pack\n", generate)
+
+    def test_no_artifact_is_made_or_read(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        uses = re.findall(r"(?m)^\s+(?:- )?uses: (\S+)", text)
+        self.assertEqual([action.split("@")[0] for action in uses], ["actions/checkout"], uses)
+
+    def test_a_push_is_tried_three_times_a_minute_each_before_the_run_fails(self):
+        self.assertEqual(self.pushing.returncode, 0, self.pushing.stdout + self.pushing.stderr)
+        expected = {
+            "the first push works": ("0", ["limit 60", "push"]),
+            "the third push works": ("0", ["limit 60", "push", "slept 15", "limit 60", "push", "slept 45", "limit 60", "push"]),
+            "no push works": ("1", ["limit 60", "push", "slept 15", "limit 60", "push", "slept 45", "limit 60", "push"]),
+        }
+        for index, name in enumerate(self.push_cases):
+            with self.subTest(case=name):
+                status, calls = expected[name]
+                log = self.read(f"push-log-{index}")
+                self.assertEqual(self.read(f"push-status-{index}"), status, log)
+                self.assertEqual(self.read(f"push-calls-{index}").splitlines(), calls, log)
+                published = "Published 1 files to dashboard-data." in self.read(f"push-summary-{index}")
+                self.assertEqual(published, status == "0")
+                self.assertEqual("The push to dashboard-data failed three times." in log, status == "1")
+
+    def test_the_publish_job_outlasts_three_pushes(self):
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        job = text.split("\n  publish:\n", 1)[1]
+        minutes = int(re.search(r"(?m)^    timeout-minutes: (\d+)", job).group(1))
+        self.assertGreaterEqual(minutes * 60, 3 * 60 + 15 + 45 + 120)
 
 
 if __name__ == "__main__":

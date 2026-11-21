@@ -272,9 +272,12 @@ How it's made:
   label can take until the next run to show.
 - A run stops before it reads anything when it has nothing to add (#4620): the published figures were read
   after the run was created (the second run of a merge, which is a push and an issue closing, and a run that
-  waited behind another), or the workflow token's hourly budget is used up. That last one is a warning on the
-  run, not a failure, and it stops a manual run too, so "Refresh now" publishes nothing then. Every workflow
-  here shares the budget (#4617), and the page stays as it was until the hour turns over.
+  waited behind another), or the workflow token's hourly budget is used up, before the run's wait or during it
+  (#4717). That last one is a warning on the run, not a failure, and it stops a manual run too, so "Refresh
+  now" publishes nothing then. Every workflow here shares the budget (#4617), and the page stays as it was
+  until the hour turns over.
+- The workflow makes no artifact (#4717): its read-only job hands the JSON to the job that publishes as a job
+  output, which checks it's a flat set of JSON files before pushing, and tries the push three times.
 - To refresh now: "Refresh now" on the page opens the workflow on GitHub, where "Run workflow" starts a run, or
   `gh workflow run release-dashboard.yml`. The page can't start one itself, since that takes a token. A manual
   run doesn't queue: it cancels the run in progress and publishes what it reads. New data shows within about
