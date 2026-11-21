@@ -60,7 +60,7 @@ namespace ServiceActionsDetail
 
 /// How long a finished action's result line stays up, in seconds.
 inline constexpr float RESULT_SECONDS = 8.0F;
-/// How long one offering "Authenticate and retry" stays up: long enough to read it and decide (#2304).
+/// How long a result that offers "Restart as administrator..." stays up: long enough to read it and decide (#3669).
 inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 
 /// Whether stopping @p name (a short name, case-insensitive) or a service of @p serviceType ("Driver":
@@ -141,8 +141,8 @@ class ServiceActionsView
     void renderActionBar(const Platform::ServiceInfo* selected);
     /// The row's right-click menu; call right after the row's item.
     void renderContextMenu(const Platform::ServiceInfo& service);
-    /// The progress or result line, when there is one, with "Authenticate and retry" beside a refusal
-    /// a password prompt could allow (#2304).
+    /// The progress or result line, when there is one, with "Restart as administrator..." beside a refusal
+    /// for want of an administrator's rights, where TaskSmack can restart elevated (#3669).
     void renderResultLine();
     /// The confirm dialog while one is pending; call every frame outside the table.
     void renderConfirmation();

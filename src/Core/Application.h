@@ -63,12 +63,12 @@ class Application
     void raiseEvent(Event& event);
 
     /// Push a new layer onto the layer stack and return a reference to it.
-    /// The returned reference is valid for the lifetime of the Application.
+    /// The returned reference is valid until detachAllLayers() (or the Application's destruction) destroys the layers.
     /// Use the returned reference for immediate configuration (e.g., calling setters after construction).
     /// Example: auto& shell = app.pushLayer<ShellLayer>(); shell.setContentYOffset(height);
     template<typename T, typename... Args>
         requires std::is_base_of_v<Layer, T>
-    T& pushLayer(Args&&... args) // NOLINT(cpp/unused-local-variable,cpp/unused-static-variable) - args used in std::forward pack expansion
+    T& pushLayer(Args&&... args)
     {
         const auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
         try
