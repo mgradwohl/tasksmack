@@ -3059,6 +3059,39 @@ TEST(LinuxProcessActionsTest, OpenFileLocationOfAnExecutableInAnotherMountNamesp
     }
 }
 
+// #4630: a stat that fails for another reason than "nothing there" can't tell whether the path is the running file
+// (root on a user's FUSE mount gets EACCES), so the folder is opened as before, not refused as a sandbox.
+std::string g_UnreadableExecutable; // NOLINT(cppcoreguidelines-avoid-non-const-global-variables) - the seam takes a function pointer
+
+std::expected<std::string, int> unreadableExecutableLink(std::int32_t /*pid*/)
+{
+    return g_UnreadableExecutable;
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationOpensTheFolderWhenStatCantTell)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root reads through a closed folder, and as root for another user ShowItems isn't tried";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_cant_tell");
+    const std::filesystem::path closed = dir.path / "closed";
+    std::filesystem::create_directories(closed);
+    std::ofstream(closed / "tool") << "";
+    std::filesystem::permissions(closed, std::filesystem::perms::none); // stat inside it: EACCES
+    g_UnreadableExecutable = (closed / "tool").string();
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.executableLink = &unreadableExecutableLink;
+    LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+
+    const auto result = actions.openFileLocation(ownTarget());
+
+    std::filesystem::permissions(closed, std::filesystem::perms::owner_all); // so the folder can be removed
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_EQ(showItems().uris.size(), 1U);
+    EXPECT_EQ(showItems().uris.front(), FileManagerReveal::fileUri(g_UnreadableExecutable));
+}
+
 TEST(LinuxProcessActionsTest, OpenFileLocationSaysWhyTheExecutableCantBeRead)
 {
     const TestSupport::ScopedTempDir dir("tasksmack_open_unreadable");
