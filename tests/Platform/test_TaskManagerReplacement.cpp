@@ -7,11 +7,13 @@
 
 #include "Mocks/FakeBroker.h"
 #include "Mocks/FakeIfeoRegistry.h"
+#include "Platform/AsciiCase.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/TaskManagerReplacement.h"
 #include "Platform/TaskManagerReplacementService.h"
+#include "Platform/TextEquals.h"
 
 #include <gtest/gtest.h>
 
@@ -33,6 +35,7 @@ namespace
 {
 
 constexpr std::string_view INSTALLED = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
+constexpr TextEquals EQUALS = &equalsIgnoreCase; // today's ASCII fold, as off Windows
 
 // ---------------------------------------------------------------------------------------------------------
 // validateTaskSmackPath(): what the helper (and an elevated TaskSmack) will write
@@ -134,15 +137,19 @@ TEST(TaskManagerReplacementReadTest, TheProgramIsTheValuesFirstWord)
              ProgramCase{.value = R"("C:\Program Files\TaskSmack\TaskSmack.exe" /extra)", .program = INSTALLED},
              ProgramCase{.value = R"("C:\unterminated\TaskSmack.exe)", .program = R"(C:\unterminated\TaskSmack.exe)"},
              ProgramCase{.value = R"(C:\Tools\procexp64.exe)", .program = R"(C:\Tools\procexp64.exe)"},
-             ProgramCase{.value = R"(C:\Program Files\Sysinternals\procexp64.exe /e)",
-                         .program = R"(C:\Program Files\Sysinternals\procexp64.exe)"},
+             ProgramCase{
+                 .value = R"(C:\Program Files\Sysinternals\procexp64.exe /e)",
+                 .program = R"(C:\Program Files\Sysinternals\procexp64.exe)",
+             },
              ProgramCase{.value = R"(C:\Tools\PROCEXP.EXE)", .program = R"(C:\Tools\PROCEXP.EXE)"},
              ProgramCase{.value = R"(C:\Tools\a.exefile.exe)", .program = R"(C:\Tools\a.exefile.exe)"}, // ".exe" mid-word isn't the end
              ProgramCase{.value = R"(C:\Tools\script.cmd /x)", .program = R"(C:\Tools\script.cmd)"},
-             ProgramCase{.value = "\t"
-                                  R"(C:\Tools\x.exe)"
-                                  "\t",
-                         .program = R"(C:\Tools\x.exe)"},
+             ProgramCase{
+                 .value = "\t"
+                          R"(C:\Tools\x.exe)"
+                          "\t",
+                 .program = R"(C:\Tools\x.exe)",
+             },
          })
     {
         EXPECT_EQ(programOf(c.value), c.program) << c.value;
@@ -151,20 +158,20 @@ TEST(TaskManagerReplacementReadTest, TheProgramIsTheValuesFirstWord)
 
 TEST(TaskManagerReplacementReadTest, ClassifySortsOffThisCopyAnotherTaskSmackAndAnotherProgram)
 {
-    EXPECT_EQ(classify(std::nullopt, INSTALLED).state, State::Off);
-    EXPECT_EQ(classify(std::string("  "), INSTALLED).state, State::Off);
+    EXPECT_EQ(classify(std::nullopt, INSTALLED, EQUALS).state, State::Off);
+    EXPECT_EQ(classify(std::string("  "), INSTALLED, EQUALS).state, State::Off);
 
-    const Status mine = classify(debuggerFor(INSTALLED), INSTALLED);
+    const Status mine = classify(debuggerFor(INSTALLED), INSTALLED, EQUALS);
     EXPECT_EQ(mine.state, State::ThisCopy);
     EXPECT_EQ(mine.program, INSTALLED);
-    EXPECT_EQ(classify(std::string(R"("C:\PROGRAM FILES\TASKSMACK\TASKSMACK.EXE")"), INSTALLED).state, State::ThisCopy);
+    EXPECT_EQ(classify(std::string(R"("C:\PROGRAM FILES\TASKSMACK\TASKSMACK.EXE")"), INSTALLED, EQUALS).state, State::ThisCopy);
 
-    const Status moved = classify(std::string(R"("D:\Old\TaskSmack.exe")"), INSTALLED);
+    const Status moved = classify(std::string(R"("D:\Old\TaskSmack.exe")"), INSTALLED, EQUALS);
     EXPECT_EQ(moved.state, State::OtherTaskSmack);
     EXPECT_EQ(moved.program, R"(D:\Old\TaskSmack.exe)");
-    EXPECT_EQ(classify(debuggerFor(INSTALLED), "").state, State::OtherTaskSmack) << "no self path: never this copy";
+    EXPECT_EQ(classify(debuggerFor(INSTALLED), "", EQUALS).state, State::OtherTaskSmack) << "no self path: never this copy";
 
-    const Status procexp = classify(std::string(R"("C:\Tools\procexp64.exe")"), INSTALLED);
+    const Status procexp = classify(std::string(R"("C:\Tools\procexp64.exe")"), INSTALLED, EQUALS);
     EXPECT_EQ(procexp.state, State::OtherProgram);
     EXPECT_EQ(procexp.program, R"(C:\Tools\procexp64.exe)");
 }
@@ -201,21 +208,21 @@ TEST(TaskManagerReplacementReadTest, TheStartupCheckOffersARepairOnlyWhenItShoul
 TEST(TaskManagerReplacementApplyTest, TurningOnMakesAndMarksTheKey)
 {
     Mocks::FakeIfeoRegistry registry;
-    const ProcessActionResult on = applySet(registry, INSTALLED, false);
+    const ProcessActionResult on = applySet(registry, INSTALLED, false, EQUALS);
     EXPECT_TRUE(on.success) << on.errorMessage;
     EXPECT_EQ(registry.debugger(), debuggerFor(INSTALLED));
     EXPECT_TRUE(registry.marked()) << "TaskSmack made the key, so it may remove it";
-    EXPECT_EQ(classify(*registry.readDebugger(), INSTALLED).state, State::ThisCopy);
+    EXPECT_EQ(classify(*registry.readDebugger(), INSTALLED, EQUALS).state, State::ThisCopy);
 }
 
 TEST(TaskManagerReplacementApplyTest, TurningOffRemovesTheValueAndTheKeyTaskSmackMade)
 {
     Mocks::FakeIfeoRegistry registry;
-    ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
-    const ProcessActionResult off = applyClear(registry);
+    ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
+    const ProcessActionResult off = applyClear(registry, EQUALS);
     EXPECT_TRUE(off.success) << off.errorMessage;
     EXPECT_FALSE(registry.keyExists);
-    EXPECT_EQ(classify(*registry.readDebugger(), INSTALLED).state, State::Off);
+    EXPECT_EQ(classify(*registry.readDebugger(), INSTALLED, EQUALS).state, State::Off);
 }
 
 TEST(TaskManagerReplacementApplyTest, AKeyAnotherToolMadeStaysWithItsValues)
@@ -223,9 +230,9 @@ TEST(TaskManagerReplacementApplyTest, AKeyAnotherToolMadeStaysWithItsValues)
     Mocks::FakeIfeoRegistry registry;
     registry.keyExists = true;
     registry.values["GlobalFlag"] = "0x200"; // another tool's, before TaskSmack
-    ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
+    ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
     EXPECT_FALSE(registry.marked()) << "the key was there: not TaskSmack's";
-    ASSERT_TRUE(applyClear(registry).success);
+    ASSERT_TRUE(applyClear(registry, EQUALS).success);
     EXPECT_TRUE(registry.keyExists);
     EXPECT_EQ(registry.values.size(), 1U);
     EXPECT_EQ(registry.values["GlobalFlag"], "0x200");
@@ -235,8 +242,8 @@ TEST(TaskManagerReplacementApplyTest, AnEmptyKeyAnotherToolMadeIsntDeleted)
 {
     Mocks::FakeIfeoRegistry registry;
     registry.keyExists = true; // empty, and no mark
-    ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
-    ASSERT_TRUE(applyClear(registry).success);
+    ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
+    ASSERT_TRUE(applyClear(registry, EQUALS).success);
     EXPECT_TRUE(registry.keyExists);
     EXPECT_TRUE(registry.values.empty());
 }
@@ -244,9 +251,9 @@ TEST(TaskManagerReplacementApplyTest, AnEmptyKeyAnotherToolMadeIsntDeleted)
 TEST(TaskManagerReplacementApplyTest, AValueAddedSinceKeepsTaskSmacksKey)
 {
     Mocks::FakeIfeoRegistry registry;
-    ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
+    ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
     registry.values["MitigationOptions"] = "1"; // set by another tool while TaskSmack had it
-    ASSERT_TRUE(applyClear(registry).success);
+    ASSERT_TRUE(applyClear(registry, EQUALS).success);
     EXPECT_TRUE(registry.keyExists);
     EXPECT_FALSE(registry.marked());
     EXPECT_FALSE(registry.debugger().has_value());
@@ -257,7 +264,7 @@ TEST(TaskManagerReplacementApplyTest, AnotherProgramIsNeverReplacedWithoutConfir
 {
     Mocks::FakeIfeoRegistry registry;
     Mocks::FakeIfeoRegistry::seed(registry, R"("C:\Tools\procexp64.exe")");
-    const ProcessActionResult refused = applySet(registry, INSTALLED, false);
+    const ProcessActionResult refused = applySet(registry, INSTALLED, false, EQUALS);
     EXPECT_FALSE(refused.success);
     EXPECT_NE(refused.errorMessage.find(R"(C:\Tools\procexp64.exe)"), std::string::npos) << refused.errorMessage;
     EXPECT_EQ(registry.debugger(), R"("C:\Tools\procexp64.exe")") << "untouched";
@@ -267,7 +274,7 @@ TEST(TaskManagerReplacementApplyTest, AnotherProgramIsNeverReplacedWithoutConfir
         EXPECT_NE(call, "createKey");
     }
 
-    const ProcessActionResult replaced = applySet(registry, INSTALLED, true);
+    const ProcessActionResult replaced = applySet(registry, INSTALLED, true, EQUALS);
     EXPECT_TRUE(replaced.success) << replaced.errorMessage;
     EXPECT_EQ(registry.debugger(), debuggerFor(INSTALLED));
     EXPECT_FALSE(registry.marked()) << "Process Explorer's key, not TaskSmack's";
@@ -277,7 +284,7 @@ TEST(TaskManagerReplacementApplyTest, AnotherProgramsDebuggerIsNeverRemoved)
 {
     Mocks::FakeIfeoRegistry registry;
     Mocks::FakeIfeoRegistry::seed(registry, R"(C:\Tools\procexp64.exe /e)");
-    const ProcessActionResult refused = applyClear(registry);
+    const ProcessActionResult refused = applyClear(registry, EQUALS);
     EXPECT_FALSE(refused.success);
     EXPECT_EQ(registry.debugger(), R"(C:\Tools\procexp64.exe /e)");
 }
@@ -285,8 +292,8 @@ TEST(TaskManagerReplacementApplyTest, AnotherProgramsDebuggerIsNeverRemoved)
 TEST(TaskManagerReplacementApplyTest, RepairPointsAnotherTaskSmackAtThisCopyWithoutConfirmation)
 {
     Mocks::FakeIfeoRegistry registry;
-    ASSERT_TRUE(applySet(registry, R"(D:\Old\TaskSmack.exe)", false).success);
-    const ProcessActionResult repaired = applySet(registry, INSTALLED, false);
+    ASSERT_TRUE(applySet(registry, R"(D:\Old\TaskSmack.exe)", false, EQUALS).success);
+    const ProcessActionResult repaired = applySet(registry, INSTALLED, false, EQUALS);
     EXPECT_TRUE(repaired.success) << repaired.errorMessage;
     EXPECT_EQ(registry.debugger(), debuggerFor(INSTALLED));
     EXPECT_TRUE(registry.marked()) << "still the key TaskSmack made";
@@ -295,28 +302,28 @@ TEST(TaskManagerReplacementApplyTest, RepairPointsAnotherTaskSmackAtThisCopyWith
 TEST(TaskManagerReplacementApplyTest, TurningOffRemovesAnotherTaskSmacksDebuggerToo)
 {
     Mocks::FakeIfeoRegistry registry;
-    ASSERT_TRUE(applySet(registry, R"(D:\Old\TaskSmack.exe)", false).success);
-    EXPECT_TRUE(applyClear(registry).success);
+    ASSERT_TRUE(applySet(registry, R"(D:\Old\TaskSmack.exe)", false, EQUALS).success);
+    EXPECT_TRUE(applyClear(registry, EQUALS).success);
     EXPECT_FALSE(registry.keyExists);
 }
 
 TEST(TaskManagerReplacementApplyTest, TurningOffWhenOffSucceedsAndTidiesAnEmptyMarkedKey)
 {
     Mocks::FakeIfeoRegistry none;
-    EXPECT_TRUE(applyClear(none).success);
+    EXPECT_TRUE(applyClear(none, EQUALS).success);
     EXPECT_FALSE(none.keyExists);
 
     Mocks::FakeIfeoRegistry leftOver; // a mark left behind with no Debugger
     leftOver.keyExists = true;
     leftOver.values[std::string(CREATED_MARKER_VALUE)] = "1";
-    EXPECT_TRUE(applyClear(leftOver).success);
+    EXPECT_TRUE(applyClear(leftOver, EQUALS).success);
     EXPECT_FALSE(leftOver.keyExists);
 }
 
 TEST(TaskManagerReplacementApplyTest, SetRefusesAPathThatIsntTaskSmack)
 {
     Mocks::FakeIfeoRegistry registry;
-    const ProcessActionResult refused = applySet(registry, R"(C:\Windows\System32\cmd.exe)", true);
+    const ProcessActionResult refused = applySet(registry, R"(C:\Windows\System32\cmd.exe)", true, EQUALS);
     EXPECT_FALSE(refused.success);
     EXPECT_TRUE(registry.calls.empty()) << "nothing read or written";
 }
@@ -326,48 +333,48 @@ TEST(TaskManagerReplacementApplyTest, RegistryFailuresSayWhyAndChangeNothingFurt
     {
         Mocks::FakeIfeoRegistry registry;
         registry.failures["readDebugger"] = "access denied";
-        const ProcessActionResult result = applySet(registry, INSTALLED, false);
+        const ProcessActionResult result = applySet(registry, INSTALLED, false, EQUALS);
         EXPECT_FALSE(result.success);
         EXPECT_NE(result.errorMessage.find("access denied"), std::string::npos);
-        EXPECT_FALSE(applyClear(registry).success);
+        EXPECT_FALSE(applyClear(registry, EQUALS).success);
     }
     {
         Mocks::FakeIfeoRegistry registry;
         registry.failures["createKey"] = "access denied";
-        EXPECT_FALSE(applySet(registry, INSTALLED, false).success);
+        EXPECT_FALSE(applySet(registry, INSTALLED, false, EQUALS).success);
         EXPECT_FALSE(registry.keyExists);
     }
     {
         Mocks::FakeIfeoRegistry registry;
         registry.failures["writeDebugger"] = "disk full";
-        const ProcessActionResult result = applySet(registry, INSTALLED, false);
+        const ProcessActionResult result = applySet(registry, INSTALLED, false, EQUALS);
         EXPECT_FALSE(result.success);
         EXPECT_NE(result.errorMessage.find("disk full"), std::string::npos);
     }
     {
         Mocks::FakeIfeoRegistry registry; // the mark can't be written: on anyway, and the key is only left behind
         registry.failures["writeCreatedMarker"] = "no";
-        EXPECT_TRUE(applySet(registry, INSTALLED, false).success);
-        EXPECT_TRUE(applyClear(registry).success);
+        EXPECT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
+        EXPECT_TRUE(applyClear(registry, EQUALS).success);
         EXPECT_TRUE(registry.keyExists);
     }
     {
         Mocks::FakeIfeoRegistry registry;
-        ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
+        ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
         registry.failures["deleteDebugger"] = "access denied";
-        EXPECT_FALSE(applyClear(registry).success);
+        EXPECT_FALSE(applyClear(registry, EQUALS).success);
         EXPECT_TRUE(registry.debugger().has_value());
     }
     {
         Mocks::FakeIfeoRegistry registry; // the mark can't be read or removed: the key stays
-        ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
+        ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
         registry.failures["readCreatedMarker"] = "no";
-        EXPECT_TRUE(applyClear(registry).success);
+        EXPECT_TRUE(applyClear(registry, EQUALS).success);
         EXPECT_TRUE(registry.keyExists);
         registry.failures.clear();
-        ASSERT_TRUE(applySet(registry, INSTALLED, false).success);
+        ASSERT_TRUE(applySet(registry, INSTALLED, false, EQUALS).success);
         registry.failures["deleteCreatedMarker"] = "no";
-        EXPECT_TRUE(applyClear(registry).success);
+        EXPECT_TRUE(applyClear(registry, EQUALS).success);
         EXPECT_TRUE(registry.keyExists);
     }
 }
@@ -386,7 +393,7 @@ namespace
 
 constexpr std::string_view SELF = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
 
-[[nodiscard]] TaskManagerReplacementSetup setupReading(std::shared_ptr<Mocks::FakeIfeoRegistry> registry)
+[[nodiscard]] TaskManagerReplacementSetup setupReading(const std::shared_ptr<Mocks::FakeIfeoRegistry>& registry)
 {
     TaskManagerReplacementSetup setup;
     setup.selfPath = std::string(SELF);
@@ -404,7 +411,7 @@ constexpr std::string_view SELF = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
 
 TEST(TaskManagerReplacementServiceTest, ReadSortsTheValueAndSaysWhetherTheOtherProgramExists)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto const registry = std::make_shared<Mocks::FakeIfeoRegistry>();
     TaskManagerReplacementService service(setupReading(registry));
     TaskManagerReplacementInfo info = service.read();
     EXPECT_EQ(info.status.state, TaskManagerReplacement::State::Off);
@@ -433,8 +440,8 @@ TEST(TaskManagerReplacementServiceTest, ReadWithoutAReaderFails)
 
 TEST(TaskManagerReplacementServiceTest, ChangesGoThroughTheHelperNamingThisCopy)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
-    auto broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
+    auto const registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto const broker = std::make_shared<Mocks::FakeBroker>(/*connected=*/false);
     TaskManagerReplacementSetup setup = setupReading(registry);
     setup.broker = broker;
     TaskManagerReplacementService service(std::move(setup));
@@ -487,7 +494,7 @@ TEST(TaskManagerReplacementServiceTest, AnImagePathThatCantBeWrittenExactlyRefus
 
 TEST(TaskManagerReplacementServiceTest, ADismissedPromptOrARefusalIsTheResult)
 {
-    auto broker = std::make_shared<Mocks::FakeBroker>(false);
+    auto const broker = std::make_shared<Mocks::FakeBroker>(false);
     broker->setConnectFailure("The operation was canceled by the user");
     TaskManagerReplacementSetup setup = setupReading(std::make_shared<Mocks::FakeIfeoRegistry>());
     setup.broker = broker;
@@ -516,7 +523,7 @@ TEST(TaskManagerReplacementServiceTest, ReadSaysWhetherThisCopyWritesTheKeyItsel
 
 TEST(TaskManagerReplacementServiceTest, AnElevatedCopyWritesTheRegistryItself)
 {
-    auto registry = std::make_shared<Mocks::FakeIfeoRegistry>();
+    auto const registry = std::make_shared<Mocks::FakeIfeoRegistry>();
     TaskManagerReplacementSetup setup = setupReading(registry);
     setup.direct = registry;
     TaskManagerReplacementService service(std::move(setup));
@@ -610,7 +617,7 @@ TEST(TaskManagerReplacementServiceTest, WithNeitherItSaysWhy)
 
 TEST(TaskManagerReplacementServiceTest, ACopyWhosePathIsntValidNeverAsks)
 {
-    auto broker = std::make_shared<Mocks::FakeBroker>(true);
+    auto const broker = std::make_shared<Mocks::FakeBroker>(true);
     TaskManagerReplacementSetup setup = setupReading(std::make_shared<Mocks::FakeIfeoRegistry>());
     setup.selfPath = R"(\\server\share\TaskSmack.exe)";
     setup.broker = broker;

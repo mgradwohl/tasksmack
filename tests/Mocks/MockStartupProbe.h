@@ -16,12 +16,15 @@ namespace Mocks
 class MockStartupProbe : public Platform::IStartupProbe
 {
   public:
-    explicit MockStartupProbe(Platform::StartupCapabilities capabilities = {.canEnumerate = true,
-                                                                            .hasEnabledState = true,
-                                                                            .hasDisabledTime = true,
-                                                                            .hasPublisher = true,
-                                                                            .canResolveShortcuts = true,
-                                                                            .unavailableReason = {}})
+    explicit MockStartupProbe(Platform::StartupCapabilities capabilities =
+                                  {
+                                      .canEnumerate = true,
+                                      .hasEnabledState = true,
+                                      .hasDisabledTime = true,
+                                      .hasPublisher = true,
+                                      .canResolveShortcuts = true,
+                                      .unavailableReason = {},
+                                  })
         : m_Capabilities(std::move(capabilities))
     {}
 

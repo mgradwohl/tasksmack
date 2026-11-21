@@ -410,6 +410,46 @@ TEST_F(SystemdActionsFakeTest, AStartThatNeverGetsThereGivesUpAfterTheWait)
     EXPECT_TRUE(result.message.starts_with("It didn't start within")) << result.message;
 }
 
+// #4399: a job read that isn't answered (systemd busy past the call timeout) is no news, not "the job ended": the
+// start keeps waiting and gives up on the wait, instead of reporting "It didn't start (inactive)" at once.
+TEST_F(SystemdActionsFakeTest, AnUnansweredJobReadKeepsWaitingInsteadOfReportingTheJobOver)
+{
+    m_Bus.failProperty(JOB_PATH, "org.freedesktop.systemd1.Job", "State", "org.freedesktop.DBus.Error.NoReply");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    serveJob("StartUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::startUnit(
+        "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
+    EXPECT_FALSE(result.ok);
+    EXPECT_TRUE(result.message.starts_with("It didn't start within")) << result.message;
+}
+
+// #4399: a dependents read that isn't answered refuses the stop, rather than sending it with the guard skipped.
+TEST_F(SystemdActionsFakeTest, AnUnansweredDependentsReadRefusesTheStop)
+{
+    m_Bus.failProperty(CRON_PATH, UNIT, "RequiredBy", "org.freedesktop.DBus.Error.NoReply");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
+    EXPECT_FALSE(result.ok);
+    EXPECT_EQ(result.message, "systemd didn't answer in time");
+    EXPECT_TRUE(calls().empty()) << "no StopUnit was sent";
+}
+
+// ...while one answered with an error (a property an older systemd doesn't have) is an empty list, as before.
+TEST_F(SystemdActionsFakeTest, ADependentsListThisSystemdLacksDoesNotBlockTheStop)
+{
+    m_Bus.failProperty(CRON_PATH, UNIT, "RequisiteOf", "org.freedesktop.DBus.Error.UnknownProperty");
+    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    serveJob("StopUnit", "inactive");
+    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    const std::stop_source stop;
+    EXPECT_TRUE(SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK).ok);
+}
+
 TEST_F(SystemdActionsFakeTest, AStopRequestedBeforehandSendsNothing)
 {
     serveJob("StartUnit", "active");

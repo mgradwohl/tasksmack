@@ -7,6 +7,7 @@
 
 #include "Platform/AsciiCase.h"
 #include "Platform/IStartupProbe.h"
+#include "Platform/TextEquals.h"
 
 #include <algorithm>
 #include <array>
@@ -200,16 +201,15 @@ taskProgramPath(std::string_view program, std::optional<std::string_view> workin
 }
 
 /// Whether a task whose principal is @p userId runs as the current user, known by @p currentUser ("DOMAIN\user",
-/// "user" and the SID string; ASCII case-insensitive). A task with no UserId (a group's) runs for whoever signs
-/// in, so it isn't the current user's own.
-[[nodiscard]] constexpr bool runsAsUser(std::string_view userId, std::span<const std::string> currentUser) noexcept
+/// "user" and the SID string; compared by @p equals, which on Windows is ordinal-ignore-case, so "CORP\\émile" is
+/// "CORP\\Émile"). A task with no UserId (a group's) runs for whoever signs in, so it isn't the current user's own.
+[[nodiscard]] inline bool runsAsUser(std::string_view userId, std::span<const std::string> currentUser, TextEquals equals) noexcept
 {
     if (userId.empty())
     {
         return false;
     }
-    return std::ranges::any_of(currentUser,
-                               [userId](const std::string& name) { return !name.empty() && Platform::equalsIgnoreCase(userId, name); });
+    return std::ranges::any_of(currentUser, [userId, equals](const std::string& name) { return !name.empty() && equals(userId, name); });
 }
 
 /// The command line an exec action runs: @p path, quoted unless it is already, then @p arguments. Empty when there is
@@ -302,13 +302,14 @@ taskProgramPath(std::string_view program, std::optional<std::string_view> workin
 /// The Startup tab's entry for @p task (one that startsAtSignInOrBoot): registered under its path and shown by its
 /// own name (StartupMath::startupEntryName), its exec action's command, the current user's (@p currentUser) or the
 /// machine's, and Windows' own tasks marked osComponent and read-only. The program and publisher are the probe's
-/// to fill from the command; the Author stands in for a publisher the program doesn't name.
-[[nodiscard]] inline StartupEntry taskEntry(const TaskRecord& task, std::span<const std::string> currentUser)
+/// to fill from the command; the Author stands in for a publisher the program doesn't name. The principal is matched
+/// to @p currentUser by @p equals.
+[[nodiscard]] inline StartupEntry taskEntry(const TaskRecord& task, std::span<const std::string> currentUser, TextEquals equals)
 {
     StartupEntry entry;
     entry.registrationName = task.path;
     entry.command = taskCommand(task.execPath, task.execArguments);
-    const bool own = runsAsUser(task.userId, currentUser);
+    const bool own = runsAsUser(task.userId, currentUser, equals);
     entry.location = own ? StartupLocation::ScheduledTaskUser : StartupLocation::ScheduledTaskMachine;
     entry.scope = own ? StartupScope::User : StartupScope::Machine;
     entry.enabled = task.enabled;

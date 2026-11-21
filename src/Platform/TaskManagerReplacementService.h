@@ -5,11 +5,13 @@
 // but an administrator can change (Platform::makeTaskManagerReplacement()). Platform-neutral, so the tests run it everywhere with a fake
 // registry and a fake broker (tests/Platform/test_TaskManagerReplacement.cpp).
 
+#include "Platform/AsciiCase.h"
 #include "Platform/BrokerProtocol.h"
 #include "Platform/IPrivilegedBroker.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ITaskManagerReplacement.h"
 #include "Platform/TaskManagerReplacement.h"
+#include "Platform/TextEquals.h"
 
 #include <expected>
 #include <functional>
@@ -46,6 +48,9 @@ struct TaskManagerReplacementSetup
     /// Why neither is set.
     std::string unavailableReason;
     bool installedCopy = false;
+    /// How the Debugger's program is told from @c selfPath. Windows sets its ordinal-ignore-case comparison
+    /// (#4309); the ASCII fold here is what everything else, and a test, gets.
+    TextEquals pathsEqual = &equalsIgnoreCase;
 };
 
 /// ITaskManagerReplacement over TaskManagerReplacementSetup's calls. A Set always names this copy

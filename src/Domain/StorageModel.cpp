@@ -225,11 +225,16 @@ StorageSnapshot StorageModel::computeSnapshot(const Platform::SystemDiskCounters
     }
 
     // Compute system-wide totals, and whether they are a measurement (see totalRateOrNaN()). Each
-    // device name is in snapshot.disks once, so no disk is added twice.
+    // device name is in snapshot.disks once, so no disk is added twice; and a device stacked on others (a RAID
+    // array, a zvol: not isPhysicalDevice) is left out, since its I/O is already in its member disks' (#4391).
     bool anyRates = false;
     bool anyRejected = false;
     for (const auto& disk : snapshot.disks)
     {
+        if (!disk.isPhysicalDevice)
+        {
+            continue;
+        }
         snapshot.totalReadBytesPerSec += disk.readBytesPerSec;
         snapshot.totalWriteBytesPerSec += disk.writeBytesPerSec;
         snapshot.totalReadOpsPerSec += disk.readOpsPerSec;

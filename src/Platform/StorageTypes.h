@@ -24,7 +24,8 @@ struct DiskCounters
 
     // Device info (may not be available on all platforms)
     uint64_t sectorSize = 512;    // Sector size in bytes (typically 512 or 4096)
-    bool isPhysicalDevice = true; // False for loop devices, partitions on some systems
+    bool isPhysicalDevice = true; // False for a device stacked on others (a Linux RAID array or zvol, #4391): shown, but
+                                  // kept out of the totals, which its member disks already carry
 
     // Whether the I/O counters above were read from the device. False when the probe can list the
     // device but not read its counters (Windows' logical-drive fallback, #2994): they are zeros, not a

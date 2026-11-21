@@ -1077,6 +1077,7 @@ set(WINDOWS_PLATFORM_TEST_SOURCES
     Platform/test_WindowsStartAtLogin.cpp # the Run value through fakes, and a scratch HKCU key (#3093 part 2)
     Platform/test_WindowsSessionAccount.cpp # the token's user against the session's, through fakes (#3671)
     Platform/test_WinString.cpp
+    Platform/test_OrdinalCase.cpp # equalsOrdinalIgnoreCase: É and é are one letter, bad UTF-8 compares exactly (#4309)
 )
 set(WINDOWS_INTEGRATION_TEST_SOURCES
     Integration/test_CrossLayer.cpp

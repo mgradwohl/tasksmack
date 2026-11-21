@@ -20,7 +20,6 @@
 #include <string>
 #include <string_view>
 #include <system_error>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -322,40 +321,38 @@ std::expected<UdpByteCounter, std::string> UdpByteCounter::load(std::span<const 
 
 std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() const
 {
-    std::vector<UdpByteCounts> counts;
     if (!m_State || m_State->map.get() < 0)
     {
         return std::unexpected("the UDP byte counter isn't loaded");
     }
-    // A key that aged out of the LRU map between two calls makes the next call start over from the first, so
-    // the walk is bounded (at most the map's size in processes, twice that in steps) and skips a tgid it already
-    // has.
-    std::unordered_set<std::uint32_t> seen;
-    std::uint32_t key = 0;
-    std::uint32_t next = 0;
-    const void* previous = nullptr; // nullptr asks for the first key
-    for (std::size_t step = 0; step < 2 * MAP_ENTRIES && counts.size() < MAP_ENTRIES; ++step)
-    {
-        if (const int error = bpf_map_get_next_key(m_State->map.get(), previous, &next); error != 0)
+    const int map = m_State->map.get();
+    auto counts = UdpMapWalk::walk(
+        MAP_ENTRIES,
+        [map](const std::uint32_t* previous, std::uint32_t& next) { return bpf_map_get_next_key(map, previous, &next); },
+        [map](std::uint32_t tgid, UdpByteCounts& process)
         {
-            if (error == -ENOENT)
+            MapValue value;
+            if (bpf_map_lookup_elem(map, &tgid, &value) != 0)
             {
-                return counts; // the last key
+                return false;
             }
-            // Before about 6.5, with kernel.unprivileged_bpf_disabled set, a process without CAP_BPF may not read
-            // its own map (maintainer, 2026-11-07: report it; TCP still counts).
-            return std::unexpected(std::format("the kernel refused reading the UDP byte counter: {}", errnoText(-error)));
-        }
-        MapValue value;
-        // An entry can age out of the LRU map between the two calls; skip it.
-        if (seen.insert(next).second && bpf_map_lookup_elem(m_State->map.get(), &next, &value) == 0)
-        {
-            counts.push_back({.tgid = next, .txBytes = value.tx, .rxBytes = value.rx});
-        }
-        key = next;
-        previous = &key;
+            process.txBytes = value.tx;
+            process.rxBytes = value.rx;
+            return true;
+        });
+    if (counts.has_value())
+    {
+        return std::move(*counts);
     }
-    return counts;
+    if (counts.error().kernelError == 0)
+    {
+        // The collector starts over from a baseline-only reading, rather than credit a missed process's lifetime bytes
+        // to one interval (#4265).
+        return std::unexpected(std::string("the UDP byte counter's map changed too fast to read in full"));
+    }
+    // Before about 6.5, with kernel.unprivileged_bpf_disabled set, a process without CAP_BPF may not read its own map
+    // (maintainer, 2026-11-07: report it; TCP still counts).
+    return std::unexpected(std::format("the kernel refused reading the UDP byte counter: {}", errnoText(-counts.error().kernelError)));
 }
 
 UdpAttachAttempt UdpByteCounter::attempt() const noexcept
