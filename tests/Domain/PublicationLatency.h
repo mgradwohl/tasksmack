@@ -21,6 +21,11 @@
 /// read), and a trial only counts once it has MIN_OVERLAPPING_READS of them. A trial short of that is
 /// rerun, up to MAX_TRIALS; overlapAchieved says whether one succeeded, and only then is slowReads
 /// meaningful.
+///
+/// A trial with overlap but more than slowReadBudget(writes) slow reads is rerun too (#4245): on a loaded hosted
+/// runner, a preempted reader can be slow for reasons that have nothing to do with the lock, and one such trial
+/// failed the test now and then. The regression this guards against is systematic (about one slow read per write,
+/// every trial), so it still fails every rerun, while noise rarely survives several.
 
 #include <algorithm>
 #include <atomic>
@@ -54,8 +59,15 @@ struct LatencyResult
 
 /// Reads that must land inside a write for a trial to measure contention.
 inline constexpr std::size_t MIN_OVERLAPPING_READS = 10;
-/// Trials to run before giving up on reaching MIN_OVERLAPPING_READS.
+/// Trials to run before giving up on reaching MIN_OVERLAPPING_READS, or a trial within the slow-read budget.
 inline constexpr std::size_t MAX_TRIALS = 5;
+
+/// The slow reads a trial of @p writes may have and still pass: a quarter allows for scheduler noise. Before #868 about
+/// one read per write waited out the copy.
+[[nodiscard]] constexpr std::size_t slowReadBudget(std::size_t writes) noexcept
+{
+    return writes / 4;
+}
 
 /// How long the writer waits for the reader's next read before giving up (see pacingTimedOut).
 inline constexpr std::chrono::seconds PACING_TIMEOUT{10};
@@ -233,8 +245,8 @@ template<typename Write, typename Load, typename Version, typename Consistent>
         result.trials = trial;
         result.totalWrites = totalWrites;
         result.overlapAchieved = result.overlappingReads >= MIN_OVERLAPPING_READS;
-        if (result.overlapAchieved || result.pacingTimedOut || result.versionRegressions != 0 || result.versionAheadOfPointer != 0 ||
-            result.inconsistentReads != 0)
+        if ((result.overlapAchieved && result.slowReads <= slowReadBudget(writes)) || result.pacingTimedOut ||
+            result.versionRegressions != 0 || result.versionAheadOfPointer != 0 || result.inconsistentReads != 0)
         {
             break; // done, or failed in a way another trial can't fix
         }
