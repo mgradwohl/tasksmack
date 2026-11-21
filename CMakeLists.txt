@@ -378,6 +378,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsDebugPrivilege.cpp
     src/Platform/Windows/WindowsElevation.cpp
+    src/Platform/Windows/WindowsSecurityOwners.cpp # who owns a handle, and the owners the elevated checks trust (#4368)
     # The privileged broker's named-pipe transport (#2311): the pipe, the helper's serve loop, the client
     src/Platform/Windows/BrokerPipe.cpp
     src/Platform/Windows/BrokerPipeServer.cpp
@@ -676,6 +677,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsElevation.h
+        src/Platform/Windows/WindowsSecurityOwners.h
+        src/Platform/Windows/WindowsFinalPath.h
         src/Platform/Windows/ElevatedRestart.h
         src/Platform/Windows/DllSearchPolicy.h
         src/Platform/Windows/SdlEnvironment.h
@@ -1057,6 +1060,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsDebugPrivilege.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSecurityOwners.cpp # BrokerHelper's TrustedInstaller check (#4368)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMachine.cpp
