@@ -27,23 +27,23 @@ on:
     # it used and what's left.
     - cron: '3-59/10 * * * *'
   workflow_dispatch:
-  # What the page shows changes when an issue does, when main moves and when main's health is judged (#4604),
-  # so each of those starts a run. Such a run waits until the published data is five minutes old (the "Wait
-  # until the published data is five minutes old" step), so a burst of labels is one run, not twenty. Left
-  # out on purpose: comments (every lane note would start a run; the next run reads a freeze or an approval
-  # on the tracker) and pull requests (`pull_request` below is this workflow's own proof, and can't also carry
-  # every pull request's events; the next run reads them).
+  # What the page shows changes when an issue opens, closes or changes milestone, and when main moves
+  # (#4604), so each of those starts a run. Such a run stops at once if the published data already has its
+  # event, and otherwise waits until that data is five minutes old (the "Stop here" and "Wait" steps).
+  #
+  # Every event starts a run, and GitHub has no way to hold one back: one run goes, one waits, and each
+  # further one replaces the waiting one, which the run list shows as cancelled. So the events here are the
+  # few that are worth a run (#4620). Left out on purpose, for the next run to read:
+  #   - labels and edits: a new issue fires one event for each of its labels;
+  #   - comments: every lane note would start a run (a freeze or an approval on the tracker is one too);
+  #   - pull requests: `pull_request` below is this workflow's own proof, and can't also carry every pull
+  #     request's events;
+  #   - Main Health: it finishes several times after every push and was two runs in three, nearly all of
+  #     them changing nothing here. Its `ci-red-main` issues are opened with the workflow token, which starts
+  #     no workflow, so `issues` doesn't see them either: main's state shows at the next run.
   issues:
-    types: [opened, edited, deleted, closed, reopened, labeled, unlabeled, milestoned, demilestoned]
+    types: [opened, closed, reopened, deleted, milestoned, demilestoned]
   push:
-    branches: [main]
-  # Main Health opens and closes the `ci-red-main` issues with the workflow token, and what that token does
-  # starts no workflow, so `issues` never sees them. Its runs are always on main, whichever branch they judge.
-  # Every completion counts, a skipped or a replaced run's too: a job-level `if:` on the result would let a
-  # run that does nothing take the waiting place of one that would publish.
-  workflow_run:
-    workflows: [Main Health]
-    types: [completed]
     branches: [main]
   pull_request:
     paths:
@@ -75,6 +75,9 @@ jobs:
       contents: read  # the generator, and the published releases
       issues: read  # milestones, their issues, the release tracker and the ci-red-main issues
       pull-requests: read  # the open pull requests and the ones that close a milestone's issues
+    outputs:
+      # 'true' when this run generated data for `publish` to push: see "Stop here when this run has nothing to add".
+      publish: ${{ steps.gate.outputs.proceed }}
     steps:
       # Only what the generator and its tests read: the generator takes main-health.yml's WATCHED list, and its
       # test checks every workflow that list names is there. A pull request runs its own copy; it has no token
@@ -111,44 +114,152 @@ jobs:
             echo "::notice title=Release dashboard::No dashboard-data branch yet: generating every release."
           fi
 
-      # A run that an issue, a push or Main Health started waits here until the published data is five minutes
-      # old (#4604). The concurrency group keeps one run going and one waiting, so every change that lands in
-      # those minutes is in this run's data or the waiting run's: nothing is dropped, and these runs publish
-      # at most every five minutes however fast the changes come. Only a manual run can publish meanwhile, and
-      # it cancels this one, so the data fetched above is still the last when the wait ends. The schedule, a
-      # manual run and a pull request's proof have no wait of their own: a scheduled run queues behind a run
-      # that is waiting, and a manual run cancels it.
-      - name: Wait until the published data is five minutes old
-        if: contains(fromJSON('["issues", "push", "workflow_run"]'), github.event_name)
+      # Two reasons to read nothing (#4620), each cheaper than a run that fails or publishes what's there:
+      #   - The budget. Every workflow here shares the token's hourly REST calls and GraphQL points, and when
+      #     either is gone (#4617) a run could only fail at its first read, once for every event.
+      #     GET /rate_limit costs nothing.
+      #   - The published data already has everything this run would add: its figures were read after this run
+      #     was created, by more than two clocks can disagree (the generator stamps the read on its runner,
+      #     GitHub stamps the run). That's the second run of a merge (a push and an issue closing, two seconds
+      #     apart) and most runs that waited behind another. A scheduled run is judged the same way: whatever
+      #     run it replaced in the waiting place was created before it, so data read after the scheduled run
+      #     was created has that run's event too.
+      # A manual run goes on unless the budget is gone, and a pull request's proof always does: it must fail
+      # when it can't read.
+      - name: Stop here when this run has nothing to add
+        id: gate
         env:
+          GH_TOKEN: ${{ github.token }}
+          EVENT: ${{ github.event_name }}
+          RUN_PATH: repos/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PUBLISHED_AT: ${{ steps.previous.outputs.at }}
-          MIN_AGE_SECONDS: 300
+          PREVIOUS_INDEX: ${{ runner.temp }}/previous/index.json
+          MIN_REST_CALLS: 100
+          MIN_GRAPHQL_POINTS: 150
+          MARGIN_SECONDS: 10
         run: |
           set -euo pipefail
+          go_on() {
+            echo "$1"
+            echo "proceed=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          stop() {
+            echo "$1"
+            echo "$1" >> "$GITHUB_STEP_SUMMARY"
+            echo "proceed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          }
+          if [[ "$EVENT" == pull_request ]]; then
+            go_on "A pull request's run is its proof: it always generates."
+          fi
+          now=$(date +%s)
+
+          # What's left of each budget and when its hour ends, in seconds; nothing when the question fails.
+          budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2> /dev/null || true)
+          read -r rest rest_reset points points_reset <<< "$budget" || true
+          spent=""
+          if [[ "${rest:-}" =~ ^[0-9]+$ && "${rest_reset:-}" =~ ^[0-9]+$ ]] && (( rest < MIN_REST_CALLS )); then
+            spent="$rest REST calls left"
+            reset=$rest_reset
+          elif [[ "${points:-}" =~ ^[0-9]+$ && "${points_reset:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
+            spent="$points GraphQL points left"
+            reset=$points_reset
+          fi
+          if [[ -n "$spent" ]]; then
+            minutes=$(( (reset - now + 59) / 60 ))
+            if (( minutes < 1 )); then
+              minutes=1
+            fi
+            said="The repository's API budget is used up: $spent for about $minutes more minutes. Nothing read, nothing published."
+            echo "::warning title=Release dashboard::$said"
+            stop "$said"
+          fi
+          if [[ "$EVENT" == workflow_dispatch ]]; then
+            go_on "A manual run always generates."
+          fi
           if [[ ! "$PUBLISHED_AT" =~ ^[0-9]+$ ]]; then
-            echo "Nothing is published yet: no wait."
-            exit 0
+            go_on "Nothing is published yet."
           fi
-          age=$(( $(date +%s) - PUBLISHED_AT ))
-          wait=$(( MIN_AGE_SECONDS - age ))
+
+          # When this run was created: when its event happened, or when the schedule fired. The wait below
+          # reads it too.
+          created=$(gh api "$RUN_PATH" --jq '.created_at | fromdateiso8601' 2> /dev/null || true)
+          if [[ ! "$created" =~ ^[0-9]+$ ]]; then
+            go_on "This run's own start couldn't be read, so it generates."
+          fi
+          echo "created=$created" >> "$GITHUB_OUTPUT"
+
+          # When the published figures were read: the generator stamps index.json before its first read.
+          generated=$(jq -r '.generated_at // empty' "$PREVIOUS_INDEX" 2> /dev/null || true)
+          read_at=""
+          if [[ -n "$generated" ]]; then
+            read_at=$(date -u -d "$generated" +%s 2> /dev/null || true)
+          fi
+          if [[ ! "$read_at" =~ ^[0-9]+$ ]]; then
+            go_on "The published data doesn't say when it was read, so this run generates."
+          fi
+          if (( read_at >= created + MARGIN_SECONDS )); then
+            stop "The published data was read $(( read_at - created )) s after this run was created: it has everything this run would add."
+          fi
+          go_on "The published data was read before this run was created, or too close to it to be sure."
+
+      # A run that has something to add waits here twice over, whichever is longer (#4604, #4620):
+      #   - until the published data is five minutes old. The concurrency group keeps one run going and one
+      #     waiting, so every change that lands in those minutes is in this run's data or the waiting run's:
+      #     nothing is dropped, and runs publish at most every five minutes however fast the changes come.
+      #   - until SETTLE_SECONDS after this run was created. A merge is a push and an issue closing two seconds
+      #     apart, and reading this long after the first puts the second in the same data by more than the
+      #     margin above, so the second's run stops instead of publishing the same thing five minutes later.
+      # Only a manual run can publish meanwhile, and it cancels this one, so the data fetched above is still
+      # the last when the wait ends. A manual run and a pull request's proof never wait.
+      - name: Wait until the published data is five minutes old
+        if: steps.gate.outputs.proceed == 'true' && contains(fromJSON('["issues", "push", "schedule"]'), github.event_name)
+        env:
+          PUBLISHED_AT: ${{ steps.previous.outputs.at }}
+          CREATED_AT: ${{ steps.gate.outputs.created }}
+          MIN_AGE_SECONDS: 300
+          SETTLE_SECONDS: 15
+        run: |
+          set -euo pipefail
+          now=$(date +%s)
+          wait=0
+          if [[ "$PUBLISHED_AT" =~ ^[0-9]+$ ]]; then
+            age=$(( now - PUBLISHED_AT ))
+            wait=$(( MIN_AGE_SECONDS - age ))
+            # A runner whose clock is behind the commit's can't ask for more than the whole wait.
+            if (( wait > MIN_AGE_SECONDS )); then
+              wait=$MIN_AGE_SECONDS
+            fi
+            echo "The published data is ${age} s old."
+          else
+            echo "Nothing is published yet."
+          fi
+          if [[ "$CREATED_AT" =~ ^[0-9]+$ ]]; then
+            settle=$(( CREATED_AT + SETTLE_SECONDS - now ))
+            if (( settle > SETTLE_SECONDS )); then
+              settle=$SETTLE_SECONDS
+            fi
+            if (( settle > wait )); then
+              wait=$settle
+            fi
+          fi
           if (( wait <= 0 )); then
-            echo "The published data is ${age} s old: no wait."
+            echo "No wait."
             exit 0
           fi
-          # A runner whose clock is behind the commit's can't ask for more than the whole wait.
-          if (( wait > MIN_AGE_SECONDS )); then
-            wait=$MIN_AGE_SECONDS
-          fi
-          echo "The published data is ${age} s old: waiting ${wait} s."
+          echo "Waiting ${wait} s."
           sleep "$wait"
 
       - name: Generate
+        if: steps.gate.outputs.proceed == 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous"
 
       # The page reads index.json, then the file each release names: check they're all there and all JSON.
       - name: Check what was written
+        if: steps.gate.outputs.proceed == 'true'
         run: |
           set -euo pipefail
           python3 -I -X utf8 - "$RUNNER_TEMP/data" <<'PY'
@@ -165,7 +276,9 @@ jobs:
           print(f"{len(titles)} releases, current {index['current']}: {', '.join(titles)}")
           PY
 
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+      - name: Hand the data to the publish job
+        if: steps.gate.outputs.proceed == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-dashboard-data
           path: ${{ runner.temp }}/data
@@ -175,8 +288,11 @@ jobs:
   publish:
     name: Publish to dashboard-data
     needs: generate
-    # Never from a pull request, and only main's copy of the generator publishes.
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Never from a pull request, only main's copy of the generator publishes, and only a run that generated
+    # something (`generate` stops early when it has nothing to add).
+    if: >-
+      github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
+      needs.generate.outputs.publish == 'true'
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
