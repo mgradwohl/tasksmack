@@ -9,7 +9,8 @@ name: Release Dashboard
 # Two jobs, so the token that can write never runs the generator:
 #   - generate: read-only. Runs the generator's tests, then the generator, and hands what it wrote to publish
 #               as a job output. No artifact (#4717): one a run was hundreds a day in a list that every
-#               ClusterFuzzLite lookup pages through (#4617).
+#               ClusterFuzzLite lookup pages through (#4617). Only a pull request's run keeps one, for its
+#               reviewer.
 #   - publish:  `contents: write`, and no repository code: it replaces dashboard-data's single commit with the
 #               files it was handed. The branch holds one commit, replaced on every run, so a few hundred runs a
 #               day don't grow the repository; every figure can be regenerated from the API, so no history is
@@ -323,13 +324,14 @@ jobs:
 
       # The publish job gets the files as a job output, not as an artifact (#4717). They live a few seconds,
       # and an artifact for every run was about 290 a day in a list that ClusterFuzzLite pages through for
-      # every lookup (#4617). tar, gzip and base64 make them one line of plain characters: about 56,000 today,
-      # of the megabyte a job's outputs may hold.
+      # every lookup (#4617). tar, gzip and base64 make them one line of plain characters: about 56,000 today.
+      # A job's outputs may hold a megabyte, and whether that counts characters or bytes of another encoding
+      # isn't written down, so the ceiling here is well under half of it.
       - name: Pack the data for the publish job
         id: pack
         if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
         env:
-          MAX_CHARACTERS: 900000
+          MAX_CHARACTERS: 400000
         run: |
           set -euo pipefail
           packed=$(tar -C "$RUNNER_TEMP/data" -czf - . | base64 -w 0)
@@ -339,6 +341,17 @@ jobs:
           fi
           echo "data=$packed" >> "$GITHUB_OUTPUT"
           echo "Packed $(find "$RUNNER_TEMP/data" -name '*.json' | wc -l) files into ${#packed} characters."
+
+      # A pull request's run publishes nothing, so its JSON is kept where a reviewer can open it. Only then:
+      # a handful of artifacts, where one for every run was hundreds a day.
+      - name: Keep a pull request's data for its reviewer
+        if: github.event_name == 'pull_request'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: release-dashboard-data
+          path: ${{ runner.temp }}/data
+          if-no-files-found: error
+          retention-days: 3
 
   publish:
     name: Publish to dashboard-data
@@ -353,18 +366,38 @@ jobs:
     permissions:
       contents: write  # replace the dashboard-data branch
     steps:
-      # The files, from `generate`'s output. This job holds the token that can write, so it takes nothing on
-      # trust: the string is read as text (a quoted here-document, so the shell expands nothing in it), it is
-      # unpacked into an empty folder, and anything there that isn't a plain JSON file at the top stops the run.
+      # The files, from `generate`'s output. This job holds the token that can write, and `generate` runs the
+      # generator over other people's text, so nothing it hands over is trusted:
+      #   - The string reaches this script as JSON (`toJSON`), which is always one line, inside a quoted
+      #     here-document. A line break in the string is two characters there, so it can't end the document
+      #     and have what follows run as commands, and the shell expands nothing in it.
+      #   - It must be one line of base64 and nothing else, or the step says so and stops. GitHub hands over
+      #     nothing at all when an output is too large or looks to it like a secret.
+      #   - It is unpacked into an empty folder, and anything there that isn't a plain JSON file at the top
+      #     stops the run.
       - name: Unpack the data
         run: |
           set -euo pipefail
-          mkdir data
-          base64 -d > data.tgz <<'PACKED'
-          ${{ needs.generate.outputs.data }}
+          refuse() {
+            echo "::error title=Release dashboard::$1 Nothing is published."
+            exit 1
+          }
+          # `strings` passes a string and drops anything else (a missing output is null). A jq built for
+          # Windows ends its lines with a carriage return, which is where this step's tests run.
+          jq -r 'strings' <<'PACKED' | tr -d '\r' > data.b64
+          ${{ toJSON(needs.generate.outputs.data) }}
           PACKED
-          tar -xzf data.tgz -C data --no-same-owner
-          rm data.tgz
+          if [[ ! -s data.b64 ]] || (( $(wc -c < data.b64) <= 1 )); then
+            refuse "The generate job handed over no data: GitHub drops an output that is too large or that it takes for a secret."
+          fi
+          if (( $(wc -l < data.b64) != 1 )) || ! grep -Eqx '[A-Za-z0-9+/]+=*' data.b64; then
+            refuse "The generate job handed over $(wc -c < data.b64) characters that aren't one line of base64."
+          fi
+          mkdir data
+          if ! base64 -d data.b64 > data.tgz || ! tar -xzf data.tgz -C data --no-same-owner; then
+            refuse "What the generate job handed over doesn't unpack."
+          fi
+          rm data.b64 data.tgz
           odd=$(find data -mindepth 1 \( ! -type f -o ! -name '*.json' \) -print)
           if [[ -n "$odd" || ! -s data/index.json ]]; then
             echo "::error title=Release dashboard::What the generate job handed over isn't a flat set of JSON files with an index.json."

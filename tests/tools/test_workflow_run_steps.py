@@ -66,9 +66,10 @@
   stubs; jq and `date -d` are real, and the cases are skipped without jq.
 - release-dashboard.yml (#4717): the wait asks about the budget again after waiting and stops the run with a
   warning when it's gone; generate's "Pack the data for the publish job" and publish's "Unpack the data" hand
-  the JSON over as a job output with no artifact, and publish refuses anything but a flat set of JSON files;
-  and "Replace the branch's one commit" tries its push three times. tar, gzip and base64 are real; `git`,
-  `timeout`, `sleep` and `gh` are shell functions.
+  the JSON over as a job output with no artifact (a pull request's run alone keeps one, for its reviewer), a
+  string with a line break in it is refused and never runs as shell, and publish refuses anything but a flat
+  set of JSON files; and "Replace the branch's one commit" tries its push three times. tar, gzip, base64 and
+  jq are real; `git`, `timeout`, `sleep` and `gh` are shell functions.
 - main-health.yml "Open, update or close the tracking issue" (#4700): a run that opened or closed a tracking
   issue dispatches release-dashboard.yml once, however many branches changed, and does so on exit, so also
   when a later branch then fails the step; a run that changed nothing or only rewrote an open issue
@@ -3689,11 +3690,16 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         self.assertEqual(len(re.findall(r"(?m)^    - cron: ", text)), 2)
 
 
+@unittest.skipUnless(bash_has_jq(), "jq is not on bash's PATH")
 class ReleaseDashboardHandoverTests(unittest.TestCase):
     """#4717: the generate job hands its JSON to the publish job as a job output, not as an artifact (one a run
     was about 290 a day in the list that every ClusterFuzzLite lookup pages through, #4617). The publish job
-    holds the token that can write, so it refuses anything but a flat set of JSON files, and it tries its push
-    three times."""
+    holds the token that can write, so it takes the string as text that can't become commands, refuses anything
+    but a flat set of JSON files, and tries its push three times."""
+
+    # What a generate job that had been taken over could hand on: a line break, the here-document's end marker,
+    # and a command. Pasted into the script as it is, the command would run in the job that can write.
+    INJECTED = "AAAA\nPACKED\ntouch \"$DIR/injected\"\ncat <<'PACKED'"
 
     WORKFLOW = WORKFLOWS / "release-dashboard.yml"
     FILES = {
@@ -3746,13 +3752,18 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
             "a script beside the JSON": packed({**cls.FILES, "run-me.sh": "echo hello"}),
             "the JSON inside a folder": packed(cls.FILES, folder="nested"),
             "no index.json": packed({"v1.1.0.json": cls.FILES["v1.1.0.json"]}),
+            "a line break, the end marker and a command": cls.INJECTED,
+            "nothing": "",
+            "two lines of base64": cls.packed[:40] + "\n" + cls.packed[40:80],
+            "base64 that isn't an archive": "AAAA",
         }
         script = []
         for index, data_string in enumerate(cls.handed.values()):
             (cls.tmp / f"unpack-{index}").mkdir()
             script += [
                 f'( cd "$DIR/unpack-{index}"',
-                substitute(cls.unpack.run, {"needs.generate.outputs.data": data_string}),
+                # GitHub's toJSON() of a string is the string as JSON, on one line: json.dumps is the same.
+                substitute(cls.unpack.run, {"toJSON(needs.generate.outputs.data)": json.dumps(data_string)}),
                 f') > "$DIR/unpack-log-{index}" 2>&1',
                 f'echo "$?" > "$DIR/unpack-status-{index}"',
             ]
@@ -3801,7 +3812,9 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         self.assertEqual(self.read("pack-status"), "0", self.read("pack-log"))
         self.assertRegex(self.packed, r"\A[A-Za-z0-9+/]+=*\Z")
         self.assertIn("Packed 2 files into", self.read("pack-log"))
-        self.assertLessEqual(int(self.pack.env["MAX_CHARACTERS"]), 1_000_000, "a job's outputs hold a megabyte")
+        # A job's outputs hold a megabyte; whether that's characters or bytes of a wider encoding isn't
+        # written down, so the ceiling stays under half of it.
+        self.assertLessEqual(int(self.pack.env["MAX_CHARACTERS"]), 500_000)
 
     def test_data_too_large_for_an_output_fails_the_run_and_hands_over_nothing(self):
         self.assertEqual(self.read("small-status"), "1", self.read("small-log"))
@@ -3816,29 +3829,55 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         for name, body in self.FILES.items():
             with self.subTest(file=name):
                 self.assertEqual((folder / name).read_text(encoding="utf-8"), body)
-        self.assertFalse((self.tmp / "unpack-0" / "data.tgz").exists())
+        for left_over in ("data.tgz", "data.b64"):
+            self.assertFalse((self.tmp / "unpack-0" / left_over).exists(), left_over)
         self.assertIn("Unpacked 2 files.", self.read("unpack-log-0"))
 
     def test_publish_refuses_anything_but_a_flat_set_of_json_files_with_an_index(self):
         for index, name in enumerate(self.handed):
-            if index == 0:
+            if name not in ("a script beside the JSON", "the JSON inside a folder", "no index.json"):
                 continue
             with self.subTest(handed=name):
                 self.assertEqual(self.read(f"unpack-status-{index}"), "1", self.read(f"unpack-log-{index}"))
                 self.assertIn("isn't a flat set of JSON files with an index.json", self.read(f"unpack-log-{index}"))
 
-    def test_the_string_is_read_as_text_not_as_shell(self):
-        # A quoted here-document: nothing in the string is expanded, whatever generate handed over.
-        self.assertIn("base64 -d > data.tgz <<'PACKED'\n${{ needs.generate.outputs.data }}\nPACKED\n", self.unpack.run)
+    def test_a_string_that_isnt_one_line_of_base64_is_refused_and_never_runs(self):
+        # The review's finding: pasted in as it was, a string with a line break and the here-document's end
+        # marker ran its next line as a command, in the job that can write. As JSON it is one line of text.
+        self.assertFalse((self.tmp / "injected").exists(), "the handed-over string ran as a command")
+        # Each gets the step's own error, not a raw one from gzip or tar. GitHub hands over nothing when an
+        # output is too large or looks to it like a secret.
+        says = {
+            "a line break, the end marker and a command": "characters that aren't one line of base64. Nothing is published.",
+            "two lines of base64": "characters that aren't one line of base64. Nothing is published.",
+            "nothing": "The generate job handed over no data:",
+            "base64 that isn't an archive": "What the generate job handed over doesn't unpack. Nothing is published.",
+        }
+        for index, name in enumerate(self.handed):
+            if name not in says:
+                continue
+            with self.subTest(handed=name):
+                log = self.read(f"unpack-log-{index}")
+                self.assertEqual(self.read(f"unpack-status-{index}"), "1", log)
+                self.assertIn("::error title=Release dashboard::", log)
+                self.assertIn(says[name], log)
+                self.assertFalse((self.tmp / f"unpack-{index}" / "data" / "index.json").exists(), "nothing is unpacked")
+        self.assertIn("${{ toJSON(needs.generate.outputs.data) }}", self.unpack.run)
+        self.assertNotIn("${{ needs.generate.outputs.data }}", self.WORKFLOW.read_text(encoding="utf-8"))
         text = self.WORKFLOW.read_text(encoding="utf-8")
         generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertIn("      data: ${{ steps.pack.outputs.data }}\n", generate)
         self.assertIn("        id: pack\n", generate)
 
-    def test_no_artifact_is_made_or_read(self):
+    def test_only_a_pull_requests_run_keeps_an_artifact(self):
+        # A pull request's run publishes nothing, so its JSON is kept for the reviewer. Every other run hands
+        # the data over without one, and the publish job downloads none.
         text = self.WORKFLOW.read_text(encoding="utf-8")
-        uses = re.findall(r"(?m)^\s+(?:- )?uses: (\S+)", text)
-        self.assertEqual([action.split("@")[0] for action in uses], ["actions/checkout"], uses)
+        uses = [action.split("@")[0] for action in re.findall(r"(?m)^\s+(?:- )?uses: (\S+)", text)]
+        self.assertEqual(uses, ["actions/checkout", "actions/upload-artifact"], uses)
+        keep = find_step(self.WORKFLOW, "Keep a pull request's data for its reviewer", job="generate")
+        self.assertEqual(keep.condition, "github.event_name == 'pull_request'")
+        self.assertNotIn("uses:", text.split("\n  publish:\n", 1)[1])
 
     def test_a_push_is_tried_three_times_a_minute_each_before_the_run_fails(self):
         self.assertEqual(self.pushing.returncode, 0, self.pushing.stdout + self.pushing.stderr)
