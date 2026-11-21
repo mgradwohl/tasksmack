@@ -1,6 +1,7 @@
 #include "WindowsDumpFolder.h"
 
 #include "HandleRelativeFile.h"
+#include "OrdinalCase.h"
 #include "Platform/IProcessActions.h"
 #include "WinString.h"
 #include "WindowsHandles.h"
@@ -40,7 +41,8 @@ namespace
 [[nodiscard]] std::wstring withoutUncPrefix(std::wstring path)
 {
     constexpr std::wstring_view UNC_PREFIX = LR"(\\?\UNC\)";
-    if (path.size() >= UNC_PREFIX.size() && samePathText(std::wstring_view(path).substr(0, UNC_PREFIX.size()), UNC_PREFIX))
+    // A prefix, compared as text (its separator counts), not as a path: samePathText() ignores trailing separators.
+    if (path.size() >= UNC_PREFIX.size() && equalsOrdinalIgnoreCase(std::wstring_view(path).substr(0, UNC_PREFIX.size()), UNC_PREFIX))
     {
         path.replace(0, UNC_PREFIX.size(), LR"(\\)");
     }
@@ -49,16 +51,14 @@ namespace
 
 /// Whether @p sid is one folderReaders() trusts (WindowsDumpFolder.h): Administrators, SYSTEM or TrustedInstaller, and
 /// CREATOR OWNER where @p creatorOwnerTrusted (an inherit-only ACE, whose CREATOR OWNER is whoever makes a subfolder).
-/// TrustedInstaller's SID is converted once and kept, and when that conversion failed no SID is TrustedInstaller, as
-/// this file has always had it (WindowsSecurityOwners.h, #4368).
 [[nodiscard]] bool trustedSid(PSID sid, bool creatorOwnerTrusted)
 {
-    return isAdministratorsOrSystem(sid) || isTrustedInstallerConvertedOnce(sid).value_or(false) ||
+    return isAdministratorsOrSystem(sid) || isTrustedInstaller(sid) ||
            (creatorOwnerTrusted && IsWellKnownSid(sid, WinCreatorOwnerSid) != FALSE);
 }
 
-/// An owner folderReaders() and ownerIsSystemOrAdministratorsOrTrustedInstaller() trust: BUILTIN\Administrators, SYSTEM
-/// or TrustedInstaller. (Not HandleRelativeFile's ownerIsAdministratorsOrSystem(), which leaves TrustedInstaller out.)
+/// An owner folderReaders() trusts: BUILTIN\Administrators, SYSTEM or TrustedInstaller, the owners
+/// HandleRelativeFile.h's ownerIsSystemOrAdministratorsOrTrustedInstaller() trusts.
 [[nodiscard]] bool trustedOwner(PSID owner)
 {
     return trustedSid(owner, false);
@@ -284,16 +284,6 @@ bool tokenCanOwnAsAdministrators()
                                           (group.Attributes & SE_GROUP_USE_FOR_DENY_ONLY) == 0 &&
                                           IsWellKnownSid(group.Sid, WinBuiltinAdministratorsSid) != FALSE;
                                });
-}
-
-std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle)
-{
-    const auto owner = ownerSidOf(handle);
-    if (!owner.has_value())
-    {
-        return std::nullopt;
-    }
-    return trustedOwner(owner->sid);
 }
 
 std::expected<std::filesystem::path, std::string> makeAdminDumpFolder(const std::filesystem::path& programData,

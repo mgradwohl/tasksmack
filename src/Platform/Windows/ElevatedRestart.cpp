@@ -129,9 +129,8 @@ std::optional<bool> ownerIsPrivileged(HANDLE handle)
     {
         return std::nullopt;
     }
-    // NT SERVICE\TrustedInstaller too, which owns what Windows itself installs: its SID converted for this call, and a
-    // conversion that fails ignored, so Administrators and SYSTEM alone decide (as this check always has, #4368).
-    return isAdministratorsOrSystem(owner->sid) || isTrustedInstaller(owner->sid).value_or(false);
+    // NT SERVICE\TrustedInstaller too, which owns what Windows itself installs (WindowsSecurityOwners.h's static SID, #4699).
+    return isAdministratorsOrSystem(owner->sid) || isTrustedInstaller(owner->sid);
 }
 
 HANDLE openToPin(const std::wstring& path)

@@ -1,13 +1,12 @@
 /// @file test_WindowsSecurityOwners.cpp
 /// @brief Who owns a handle, and the owners the elevated checks trust (#4368): the named predicates over owners read
-/// from security descriptors built from SDDL, ownerSidOf() on real handles (a folder this test made, owned by its own
-/// account, and the Windows folder, TrustedInstaller's), and each caller's own set of trusted owners over those same
-/// handles, which differ on purpose. Windows only: nothing here elevates, and nothing outside the test's own temp folder
-/// is written.
+/// from security descriptors built from SDDL, the static TrustedInstaller SID against its text (#4699), ownerSidOf() on
+/// real handles (a folder this test made, owned by its own account, and the Windows folder, TrustedInstaller's), and each
+/// caller's own set of trusted owners over those same handles. Windows only: nothing here elevates, and nothing outside the test's own temp
+/// folder is written.
 
 #include "Platform/Windows/ElevatedRestart.h"
 #include "Platform/Windows/HandleRelativeFile.h"
-#include "Platform/Windows/WindowsDumpFolder.h"
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsSecurityOwners.h"
@@ -22,7 +21,7 @@
 #define NOMINMAX
 #endif
 #include <windows.h>
-#include <sddl.h> // ConvertStringSecurityDescriptorToSecurityDescriptorW
+#include <sddl.h> // ConvertStringSecurityDescriptorToSecurityDescriptorW, ConvertStringSidToSidW, ConvertSidToStringSidW
 // clang-format on
 
 #include <array>
@@ -32,6 +31,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -63,6 +63,23 @@ using Descriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
         return nullptr;
     }
     return owner;
+}
+
+/// NT SERVICE\TrustedInstaller's service SID as text: the test's own copy, which the static SID is checked against.
+constexpr std::wstring_view TRUSTED_INSTALLER_SID = L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+
+/// A SID ConvertStringSidToSidW made, LocalFree'd when it dies; null when the text doesn't convert.
+using ConvertedSid = std::unique_ptr<void, decltype(&::LocalFree)>;
+
+[[nodiscard]] ConvertedSid sidFrom(std::wstring_view text)
+{
+    const std::wstring terminated(text);
+    PSID sid = nullptr;
+    if (ConvertStringSidToSidW(terminated.c_str(), &sid) == FALSE)
+    {
+        return {nullptr, &::LocalFree};
+    }
+    return {sid, &::LocalFree};
 }
 
 /// This test's own account, as an SDDL SID string.
@@ -111,23 +128,54 @@ TEST(WindowsSecurityOwnersTest, EachPredicateNamesOnlyItsOwnOwners)
         const std::string shown(row.owner.begin(), row.owner.end()); // SDDL is ASCII
         EXPECT_EQ(isAdministrators(owner), row.administrators) << shown;
         EXPECT_EQ(isAdministratorsOrSystem(owner), row.administratorsOrSystem) << shown;
-        EXPECT_EQ(isTrustedInstaller(owner), std::optional(row.trustedInstaller)) << shown;
-        EXPECT_EQ(isTrustedInstallerConvertedOnce(owner), std::optional(row.trustedInstaller)) << shown;
+        EXPECT_EQ(isTrustedInstaller(owner), row.trustedInstaller) << shown;
         const auto tokenUser = isTokenUser(owner);
         ASSERT_TRUE(tokenUser.has_value()) << tokenUser.error();
         EXPECT_EQ(*tokenUser, row.tokenUser) << shown;
     }
 }
 
-// The SID converted once gives the same answer every call: it is kept, not converted again.
-TEST(WindowsSecurityOwnersTest, TheTrustedInstallerSidConvertedOnceKeepsAnswering)
+// The static TrustedInstaller SID, built from its parts (#4699), is a valid SID and the one its text converts to, and
+// it reads back as that text: six sub-authorities, nothing past them.
+TEST(WindowsSecurityOwnersTest, TheStaticTrustedInstallerSidIsTheOneItsTextNames)
 {
-    const Descriptor descriptor = descriptorFrom(std::format(L"O:{}", TRUSTED_INSTALLER_SID));
-    ASSERT_NE(descriptor, nullptr) << GetLastError();
-    for (int call = 0; call < 3; ++call)
+    const PSID built = trustedInstallerSid();
+    ASSERT_NE(built, nullptr);
+    EXPECT_NE(IsValidSid(built), FALSE);
+    EXPECT_EQ(GetLengthSid(built), static_cast<DWORD>(SECURITY_SID_SIZE(6)));
+    EXPECT_EQ(*GetSidSubAuthorityCount(built), 6);
+    const ConvertedSid converted = sidFrom(TRUSTED_INSTALLER_SID);
+    ASSERT_NE(converted, nullptr) << GetLastError();
+    EXPECT_NE(EqualSid(built, converted.get()), FALSE);
+    LPWSTR text = nullptr;
+    ASSERT_NE(ConvertSidToStringSidW(built, &text), FALSE) << GetLastError();
+    const std::unique_ptr<wchar_t, decltype(&::LocalFree)> owned(text, &::LocalFree);
+    EXPECT_EQ(std::wstring_view(owned.get()), TRUSTED_INSTALLER_SID);
+    // The same SID every call: one constant, never rebuilt.
+    EXPECT_EQ(trustedInstallerSid(), built);
+}
+
+// The predicate is false for what isn't a SID at all, and for SIDs one part away from TrustedInstaller's.
+TEST(WindowsSecurityOwnersTest, OnlyTrustedInstallersOwnSidIsTrustedInstaller)
+{
+    EXPECT_FALSE(isTrustedInstaller(nullptr));
+    alignas(SID) std::array<BYTE, SECURITY_SID_SIZE(6)> zeroed{}; // revision 0: no SID
+    EXPECT_FALSE(isTrustedInstaller(zeroed.data()));
+    for (const std::wstring_view almost : {
+             L"S-1-5-80-956008885-3418522649-1831038044-1853292631",              // one sub-authority short
+             L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464-1", // one more
+             L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478465",   // the last one off by one
+             L"S-1-5-81-956008885-3418522649-1831038044-1853292631-2271478464",   // not a service SID
+             L"S-1-16-80-956008885-3418522649-1831038044-1853292631-2271478464",  // another authority
+         })
     {
-        EXPECT_EQ(isTrustedInstallerConvertedOnce(ownerOf(descriptor)), std::optional(true)) << call;
+        const ConvertedSid sid = sidFrom(almost);
+        ASSERT_NE(sid, nullptr) << GetLastError();
+        EXPECT_FALSE(isTrustedInstaller(sid.get())) << std::string(almost.begin(), almost.end()); // SID text is ASCII
     }
+    const ConvertedSid exact = sidFrom(TRUSTED_INSTALLER_SID);
+    ASSERT_NE(exact, nullptr) << GetLastError();
+    EXPECT_TRUE(isTrustedInstaller(exact.get()));
 }
 
 // A handle that can't be asked has no owner, with the reason: nothing reads it as anyone's.
@@ -211,20 +259,19 @@ TEST(WindowsSecurityOwnersTest, AFolderThisAccountOwnsIsTheTokenUsers)
     ASSERT_TRUE(tokenUser.has_value()) << tokenUser.error();
     EXPECT_TRUE(*tokenUser);
     EXPECT_FALSE(isAdministratorsOrSystem(owner->sid));
-    EXPECT_EQ(isTrustedInstaller(owner->sid), std::optional(false));
+    EXPECT_FALSE(isTrustedInstaller(owner->sid));
 }
 
-// Each caller's set of trusted owners, over the same two real folders. They differ on purpose and are kept so (#4368):
-// TrustedInstaller is privileged to ElevatedRestart::ownerIsPrivileged() and trusted by
-// ownerIsSystemOrAdministratorsOrTrustedInstaller(), but HandleRelativeFile's ownerIsAdministratorsOrSystem() never
-// trusted it, and the own config folder's ownerIsOwnAccountOrAdministrators() takes this account instead.
+// Each caller's set of trusted owners, over the same two real folders. TrustedInstaller is privileged to
+// ElevatedRestart::ownerIsPrivileged() and trusted by HandleRelativeFile's ownerIsSystemOrAdministratorsOrTrustedInstaller(),
+// which secureChildFolder() and makeAdminDumpFolder() share (#4699: HandleRelativeFile's own check once left it out); the own
+// config folder's ownerIsOwnAccountOrAdministrators() takes this account instead.
 TEST(WindowsSecurityOwnersTest, EachCallerKeepsItsOwnSetOfTrustedOwners)
 {
     const OwnFolder own;
     const UniqueHandle mine = openToRead(own.path());
     ASSERT_TRUE(mine) << GetLastError();
     EXPECT_EQ(ElevatedRestart::ownerIsPrivileged(mine.get()), std::optional(false));
-    EXPECT_EQ(ownerIsAdministratorsOrSystem(mine.get()), std::optional(false));
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(mine.get()), std::optional(false));
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(mine.get()), std::optional(true));
 
@@ -232,15 +279,13 @@ TEST(WindowsSecurityOwnersTest, EachCallerKeepsItsOwnSetOfTrustedOwners)
     ASSERT_TRUE(windows) << GetLastError();
     const auto owner = ownerSidOf(windows.get());
     ASSERT_TRUE(owner.has_value()) << owner.error();
-    ASSERT_EQ(isTrustedInstaller(owner->sid), std::optional(true)) << "the Windows folder is TrustedInstaller's";
+    ASSERT_TRUE(isTrustedInstaller(owner->sid)) << "the Windows folder is TrustedInstaller's";
     EXPECT_EQ(ElevatedRestart::ownerIsPrivileged(windows.get()), std::optional(true));
-    EXPECT_EQ(ownerIsAdministratorsOrSystem(windows.get()), std::optional(false));
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(windows.get()), std::optional(true));
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(windows.get()), std::optional(false));
 
     // And none of them reads a handle that can't be asked as trusted.
     EXPECT_EQ(ElevatedRestart::ownerIsPrivileged(nullptr), std::nullopt);
-    EXPECT_EQ(ownerIsAdministratorsOrSystem(nullptr), std::nullopt);
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(nullptr), std::nullopt);
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(nullptr), std::nullopt);
 }

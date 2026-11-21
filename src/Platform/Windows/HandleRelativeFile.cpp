@@ -198,14 +198,14 @@ std::optional<bool> isPlainFolder(HANDLE handle)
     return (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0 && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
 }
 
-std::optional<bool> ownerIsAdministratorsOrSystem(HANDLE handle)
+std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle)
 {
     const auto owner = ownerSidOf(handle);
     if (!owner.has_value())
     {
         return std::nullopt;
     }
-    return isAdministratorsOrSystem(owner->sid); // not TrustedInstaller: this one never trusted it
+    return isAdministratorsOrSystem(owner->sid) || isTrustedInstaller(owner->sid);
 }
 
 OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
@@ -221,7 +221,7 @@ OwnedSecurityDescriptor securityDescriptorFrom(std::string_view sddl)
 
 bool samePathText(std::wstring_view left, std::wstring_view right) noexcept
 {
-    return equalsOrdinalIgnoreCase(left, right); // the whole text: a trailing separator counts
+    return samePathIgnoringTrailingSeparators(left, right);
 }
 
 std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess)
@@ -256,11 +256,13 @@ std::expected<UniqueHandle, std::string> secureChildFolder(
         {
             return std::unexpected(std::format("{} can't be made: {}", display, ntStatusText(fresh.error())));
         }
-        // There already. A plain folder Administrators or SYSTEM owns, that this process can open for WRITE_DAC, is kept
-        // and its DACL reset; the open for WRITE_DAC is tried separately so a protected DACL doesn't stop the removal below.
+        // There already. A plain folder SYSTEM, TrustedInstaller or Administrators owns, that this process can open for
+        // WRITE_DAC, is kept and its DACL reset; the open for WRITE_DAC is tried separately so a protected DACL doesn't stop
+        // the removal below.
         if (auto dacl = openRelative(parent, name, RelativeOpen{.access = HELD, .disposition = FILE_OPEN, .kind = EntryKind::Directory});
             dacl.has_value() && isPlainFolder(dacl->handle.get()) == std::optional(true) &&
-            (ownerTrusted ? ownerTrusted(dacl->handle.get()) : ownerIsAdministratorsOrSystem(dacl->handle.get())) == std::optional(true))
+            (ownerTrusted ? ownerTrusted(dacl->handle.get()) : ownerIsSystemOrAdministratorsOrTrustedInstaller(dacl->handle.get())) ==
+                std::optional(true))
         {
             if (SetKernelObjectSecurity(dacl->handle.get(), DACL_SECURITY_INFORMATION, security) == FALSE)
             {

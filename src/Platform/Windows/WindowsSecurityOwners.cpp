@@ -4,12 +4,11 @@
 
 // clang-format off
 #include <aclapi.h> // GetSecurityInfo
-#include <sddl.h>   // ConvertStringSidToSidW
 // clang-format on
 
+#include <array>
+#include <cstddef>
 #include <expected>
-#include <memory>
-#include <optional>
 
 namespace Platform::Windows
 {
@@ -17,32 +16,30 @@ namespace Platform::Windows
 namespace
 {
 
-/// A SID ConvertStringSidToSidW allocated, LocalFree'd when it dies.
-using ConvertedSid = std::unique_ptr<void, decltype(&::LocalFree)>;
-
-/// TrustedInstaller's SID, converted from TRUSTED_INSTALLER_SID now; null when the conversion fails.
-[[nodiscard]] ConvertedSid convertTrustedInstallerSid()
+/// A SID with six sub-authorities, laid out as SID is (winnt.h declares SubAuthority[ANYSIZE_ARRAY], room for one):
+/// Revision, SubAuthorityCount, IdentifierAuthority, then the sub-authorities, each a DWORD at its natural alignment.
+struct SixSubAuthoritySid
 {
-    PSID made = nullptr;
-    // TRUSTED_INSTALLER_SID views a whole string literal, so its data() is NUL-terminated: no copy (and no allocation
-    // the old per-call conversions didn't make) is needed.
-    // NOLINTNEXTLINE(bugprone-suspicious-stringview-data-usage) - a view of a whole literal, NUL-terminated
-    if (ConvertStringSidToSidW(TRUSTED_INSTALLER_SID.data(), &made) == FALSE)
-    {
-        made = nullptr; // LCOV_EXCL_LINE - a constant, well-formed SID: only an allocation failure gets here
-    }
-    return {made, &::LocalFree};
-}
+    BYTE revision;
+    BYTE subAuthorityCount;
+    SID_IDENTIFIER_AUTHORITY identifierAuthority;
+    std::array<DWORD, 6> subAuthority;
+};
+static_assert(sizeof(SixSubAuthoritySid) == SECURITY_SID_SIZE(6), "a six-sub-authority SID, with no padding");
+static_assert(alignof(SixSubAuthoritySid) >= alignof(SID), "aligned as a SID is");
+static_assert(offsetof(SixSubAuthoritySid, revision) == offsetof(SID, Revision));
+static_assert(offsetof(SixSubAuthoritySid, subAuthorityCount) == offsetof(SID, SubAuthorityCount));
+static_assert(offsetof(SixSubAuthoritySid, identifierAuthority) == offsetof(SID, IdentifierAuthority));
+static_assert(offsetof(SixSubAuthoritySid, subAuthority) == offsetof(SID, SubAuthority));
 
-/// Whether @p sid is @p trustedInstaller; nullopt when that SID couldn't be converted.
-[[nodiscard]] std::optional<bool> equalsTrustedInstaller(PSID sid, const ConvertedSid& trustedInstaller)
-{
-    if (trustedInstaller == nullptr)
-    {
-        return std::nullopt; // LCOV_EXCL_LINE - see convertTrustedInstallerSid()
-    }
-    return EqualSid(sid, trustedInstaller.get()) != FALSE;
-}
+/// NT SERVICE\TrustedInstaller: S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464 (#4699). Constant
+/// data, built at compile time: nothing converts it, allocates it or frees it.
+constexpr SixSubAuthoritySid TRUSTED_INSTALLER{
+    .revision = SID_REVISION,
+    .subAuthorityCount = 6,
+    .identifierAuthority = {SECURITY_NT_AUTHORITY},
+    .subAuthority = {SECURITY_SERVICE_ID_BASE_RID, 956008885, 3418522649, 1831038044, 1853292631, 2271478464},
+};
 
 } // namespace
 
@@ -74,16 +71,17 @@ bool isAdministratorsOrSystem(PSID sid) noexcept
     return isAdministrators(sid) || IsWellKnownSid(sid, WinLocalSystemSid) != FALSE;
 }
 
-std::optional<bool> isTrustedInstaller(PSID sid)
+PSID trustedInstallerSid() noexcept
 {
-    const ConvertedSid trustedInstaller = convertTrustedInstallerSid();
-    return equalsTrustedInstaller(sid, trustedInstaller);
+    // PSID is a non-const void*, but every call it is handed to (EqualSid, IsValidSid, the SDDL and ACL readers) only
+    // reads it, so the constant is passed as it is, never copied.
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-const-cast) - Win32's PSID isn't const; the SID is only ever read
+    return const_cast<SixSubAuthoritySid*>(&TRUSTED_INSTALLER);
 }
 
-std::optional<bool> isTrustedInstallerConvertedOnce(PSID sid)
+bool isTrustedInstaller(PSID sid) noexcept
 {
-    static const ConvertedSid trustedInstaller = convertTrustedInstallerSid();
-    return equalsTrustedInstaller(sid, trustedInstaller);
+    return sid != nullptr && IsValidSid(sid) != FALSE && EqualSid(sid, trustedInstallerSid()) != FALSE;
 }
 
 std::expected<bool, DWORD> isTokenUser(PSID sid)
