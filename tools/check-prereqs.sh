@@ -131,10 +131,11 @@ get_ninja_version() {
 }
 
 # Get lld version
-# The ld.lld this script reports: unversioned on PATH, else the pinned LLVM's (/usr/lib/llvm-23/bin,
-# /usr/bin/ld.lld-23). A bare `lld` is the generic driver, which prints no version.
+# The ld.lld this script reports, found as find_llvm_tool() finds every other LLVM tool (#4705): the newest
+# /usr/lib/llvm-N/bin first (clang -fuse-ld=lld runs the one beside it), then PATH, then /usr/bin/ld.lld-23. PATH first
+# reported a /usr/local/bin shadow instead. A bare `lld` is the generic driver, which prints no version.
 get_lld_path() {
-    command -v ld.lld 2>/dev/null || find_llvm_tool ld.lld 2>/dev/null || command -v "ld.lld-${MIN_CLANG_VERSION}" 2>/dev/null || true
+    find_llvm_tool ld.lld 2>/dev/null || command -v "ld.lld-${MIN_CLANG_VERSION}" 2>/dev/null || true
 }
 
 get_lld_version() {
@@ -172,6 +173,54 @@ get_llvm_profdata_version() {
     else
         echo ""
     fi
+}
+
+# How to get an IWYU this project can use (#4708), for both the not-found and the wrong-Clang rows: built from source
+# against Clang 23 at the commit CI pins (.github/workflows/ci.yml's IWYU_COMMIT_SHA), so a local run matches CI's.
+# apt's iwyu is built against an older Clang (19 on Ubuntu 26.04), which tools/iwyu.sh refuses for --fix.
+print_iwyu_hint() {
+    local sha
+    sha="$(grep -oE "IWYU_COMMIT_SHA: '[0-9a-f]{40}'" "$SCRIPT_DIR/../.github/workflows/ci.yml" 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1 || true)"
+    echo -e "  ${CYAN}Hint${NC}: build it from source against Clang ${MIN_CLANG_VERSION}: the clang_${MIN_CLANG_VERSION} branch of"
+    local at=""
+    [[ -n "$sha" ]] && at=" at the commit CI pins, ${sha}"
+    echo -e "        https://github.com/include-what-you-use/include-what-you-use${at}"
+    echo -e "        (CONTRIBUTING.md, Include-What-You-Use, has the commands; apt's iwyu uses an older Clang)"
+}
+
+# One LLVM tool's row (#4714), as check-prereqs.ps1's Write-LlvmToolStatus: every LLVM tool reports through it, so none
+# can lose its floor check again (lld did, #4705; llvm-profdata and llvm-cov never had one). Prints:
+#   green   at or above MIN_CLANG_VERSION and on the major CI pins (pinned_llvm_major, .pre-commit-config.yaml);
+#   yellow  at or above the floor but another major: "CI pins LLVM N" (a warning; returns 2);
+#   yellow  below the floor: "minimum required N" ("recommended" for level recommended), or MISMATCH when given;
+#   red     not found, " (MISSING)" after it; yellow for an optional tool.
+# Below the floor or missing sets main's all_ok=1, except for an optional tool. Returns 1 then.
+# Usage: report_llvm_tool NAME SHOWN_VERSION MAJOR PATH LEVEL(required|recommended|optional) [MISSING] [MISMATCH]
+report_llvm_tool() {
+    local name="$1" shown="$2" major="$3" path="$4" level="$5" missing="${6:-}" mismatch="${7:-}"
+    if [[ -z "${shown}" ]]; then
+        if [[ "${level}" == optional ]]; then
+            echo -e "${YELLOW}${name}${NC}: not found${missing:+ (${missing})}"
+        else
+            echo -e "${RED}${name}${NC}: not found${missing:+ (${missing})}"
+            all_ok=1
+        fi
+        return 1
+    fi
+    if [[ -z "${major}" ]] || ! version_at_least "${MIN_CLANG_VERSION}" "${major}"; then
+        local word=required
+        [[ "${level}" == recommended ]] && word=recommended
+        echo -e "${YELLOW}${name}${NC}: ${shown} (${path}) - ${mismatch:-minimum ${word} ${MIN_CLANG_VERSION}}"
+        [[ "${level}" == optional ]] || all_ok=1
+        return 1
+    fi
+    if [[ -n "${PINNED_LLVM_MAJOR}" && "${major}" != "${PINNED_LLVM_MAJOR}" ]]; then
+        echo -e "${YELLOW}${name}${NC}: ${shown} (${path}) - CI pins LLVM ${PINNED_LLVM_MAJOR}"
+        llvm_skew_seen=1
+        return 2
+    fi
+    echo -e "${GREEN}${name}${NC}: ${shown} (${path})"
+    return 0
 }
 
 # Get iwyu version
@@ -258,6 +307,9 @@ main() {
     local all_ok=0
     local missing_clangd=0
     local missing_clang_format=0
+    local llvm_skew_seen=0
+    # The LLVM major CI pins (#4714): a tool at the floor but another major reads as skew, not as OK.
+    PINNED_LLVM_MAJOR="$(pinned_llvm_major)"
 
     # CMake
     local cmake_ver
@@ -276,39 +328,12 @@ main() {
         fi
     fi
 
-    # Clang
-    local clang_ver
+    # Clang, clang++ (#4714: through report_llvm_tool)
+    local clang_ver clangpp_ver
     clang_ver="$(get_clang_version)"
-    if [[ -z "${clang_ver}" ]]; then
-        echo -e "${RED}clang${NC}: not found"
-        all_ok=1
-    else
-        local clang_path
-        clang_path="$(command -v clang 2>/dev/null || true)"
-        if version_at_least "${MIN_CLANG_VERSION}" "${clang_ver}"; then
-            echo -e "${GREEN}clang${NC}: ${clang_ver} (${clang_path})"
-        else
-            echo -e "${YELLOW}clang${NC}: ${clang_ver} (${clang_path}) - minimum required ${MIN_CLANG_VERSION}"
-            all_ok=1
-        fi
-    fi
-
-    # clang++
-    local clangpp_ver
+    report_llvm_tool clang "${clang_ver}" "${clang_ver}" "$(command -v clang 2>/dev/null || true)" required || true
     clangpp_ver="$(get_clangpp_version)"
-    if [[ -z "${clangpp_ver}" ]]; then
-        echo -e "${RED}clang++${NC}: not found"
-        all_ok=1
-    else
-        local clangpp_path
-        clangpp_path="$(command -v clang++ 2>/dev/null || true)"
-        if version_at_least "${MIN_CLANG_VERSION}" "${clangpp_ver}"; then
-            echo -e "${GREEN}clang++${NC}: ${clangpp_ver} (${clangpp_path})"
-        else
-            echo -e "${YELLOW}clang++${NC}: ${clangpp_ver} (${clangpp_path}) - minimum required ${MIN_CLANG_VERSION}"
-            all_ok=1
-        fi
-    fi
+    report_llvm_tool clang++ "${clangpp_ver}" "${clangpp_ver}" "$(command -v clang++ 2>/dev/null || true)" required || true
 
     # The Linux presets name their compilers clang-23/clang++-23 and build against libc++, so the
     # unversioned clang above passing is not enough for `cmake --preset debug` to work.
@@ -326,70 +351,22 @@ main() {
         all_ok=1
     fi
 
-    # clangd (required for VS Code workspace defaults)
-    local clangd_ver
+    # clangd (required for VS Code workspace defaults), lld, clang-format (VS Code and workflow defaults), clang-tidy
+    local clangd_ver lld_ver lld_major clang_format_ver clang_tidy_ver
     clangd_ver="$(get_clangd_version)"
-    if [[ -z "${clangd_ver}" ]]; then
-        echo -e "${RED}clangd${NC}: not found (required on PATH for VS Code diagnostics)"
-        all_ok=1
-        missing_clangd=1
-    else
-        local clangd_path
-        clangd_path="$(command -v clangd 2>/dev/null || true)"
-        if version_at_least "${MIN_CLANG_VERSION}" "${clangd_ver}"; then
-            echo -e "${GREEN}clangd${NC}: ${clangd_ver} (${clangd_path})"
-        else
-            echo -e "${YELLOW}clangd${NC}: ${clangd_ver} (${clangd_path}) - minimum required ${MIN_CLANG_VERSION}"
-            all_ok=1
-        fi
-    fi
-
-    # lld
-    local lld_ver
+    report_llvm_tool clangd "${clangd_ver}" "${clangd_ver}" "$(command -v clangd 2>/dev/null || true)" required \
+        "required on PATH for VS Code diagnostics" || true
+    [[ -n "${clangd_ver}" ]] || missing_clangd=1
+    # lld shows major.minor (23.1); a stale one links the build's LLVM 23 objects (#4705).
     lld_ver="$(get_lld_version)"
-    if [[ -z "${lld_ver}" ]]; then
-        echo -e "${RED}lld${NC}: not found"
-        all_ok=1
-    else
-        local lld_path
-        lld_path="$(get_lld_path)"
-        echo -e "${GREEN}lld${NC}: ${lld_ver} (${lld_path})"
-    fi
-
-    # clang-format (required for VS Code/workflow defaults)
-    local clang_format_ver
+    lld_major="${lld_ver%%.*}"
+    report_llvm_tool lld "${lld_ver}" "${lld_major}" "$(get_lld_path)" required || true
     clang_format_ver="$(get_clang_format_version)"
-    if [[ -z "${clang_format_ver}" ]]; then
-        echo -e "${RED}clang-format${NC}: not found (required on PATH for formatting)"
-        all_ok=1
-        missing_clang_format=1
-    else
-        local clang_format_path
-        clang_format_path="$(command -v clang-format 2>/dev/null || true)"
-        if version_at_least "${MIN_CLANG_VERSION}" "${clang_format_ver}"; then
-            echo -e "${GREEN}clang-format${NC}: ${clang_format_ver} (${clang_format_path})"
-        else
-            echo -e "${YELLOW}clang-format${NC}: ${clang_format_ver} (${clang_format_path}) - minimum recommended ${MIN_CLANG_VERSION}"
-            all_ok=1
-        fi
-    fi
-
-    # clang-tidy
-    local clang_tidy_ver
+    report_llvm_tool clang-format "${clang_format_ver}" "${clang_format_ver}" "$(command -v clang-format 2>/dev/null || true)" \
+        recommended "required on PATH for formatting" || true
+    [[ -n "${clang_format_ver}" ]] || missing_clang_format=1
     clang_tidy_ver="$(get_clang_tidy_version)"
-    if [[ -z "${clang_tidy_ver}" ]]; then
-        echo -e "${RED}clang-tidy${NC}: not found"
-        all_ok=1
-    else
-        local clang_tidy_path
-        clang_tidy_path="$(command -v clang-tidy 2>/dev/null || true)"
-        if version_at_least "${MIN_CLANG_VERSION}" "${clang_tidy_ver}"; then
-            echo -e "${GREEN}clang-tidy${NC}: ${clang_tidy_ver} (${clang_tidy_path})"
-        else
-            echo -e "${YELLOW}clang-tidy${NC}: ${clang_tidy_ver} (${clang_tidy_path}) - minimum required ${MIN_CLANG_VERSION}"
-            all_ok=1
-        fi
-    fi
+    report_llvm_tool clang-tidy "${clang_tidy_ver}" "${clang_tidy_ver}" "$(command -v clang-tidy 2>/dev/null || true)" required || true
 
     # ccache (recommended, not required: CONTRIBUTING.md lists it as "recommended for faster rebuilds",
     # cmake/CompilerOptions.cmake only warns when neither ccache nor sccache is found, and
@@ -448,46 +425,29 @@ main() {
         echo -e "  ${CYAN}Hint${NC}: sudo apt install xvfb (tools/setup-dev.sh installs it)"
     fi
 
-    # iwyu (optional)
-    local iwyu_ver
+    # iwyu (optional): its own version shown, judged by the Clang it was built against, which must be CI's (tools/iwyu.sh
+    # asserts with another major); the hint says how to get one (#4708).
+    local iwyu_ver iwyu_clang
     iwyu_ver="$(get_iwyu_version)"
-    if [[ -z "${iwyu_ver}" ]]; then
-        echo -e "${YELLOW}iwyu${NC}: not found (optional; required only for ./tools/iwyu.sh)"
-        echo -e "  ${CYAN}Hint${NC}: build it from source against Clang ${MIN_CLANG_VERSION} (the clang_${MIN_CLANG_VERSION} branch of"
-        echo -e "        https://github.com/include-what-you-use/include-what-you-use), as CI does"
-    else
-        local iwyu_path iwyu_clang
-        iwyu_path="$(command -v iwyu 2>/dev/null || true)"
-        # IWYU built against another Clang major asserts on this project (tools/iwyu.sh)
+    iwyu_clang=""
+    if [[ -n "${iwyu_ver}" ]]; then
         iwyu_clang="$(iwyu --version 2>&1 | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
-        if [[ -n "${iwyu_clang}" && "${iwyu_clang}" != "${MIN_CLANG_VERSION}" ]]; then
-            echo -e "${YELLOW}iwyu${NC}: ${iwyu_ver} (${iwyu_path}) - built against Clang ${iwyu_clang}; CI builds it against Clang ${MIN_CLANG_VERSION}"
-        else
-            echo -e "${GREEN}iwyu${NC}: ${iwyu_ver} (${iwyu_path})"
-        fi
+    fi
+    # An IWYU whose Clang can't be read is shown as it was before #4714: at the floor.
+    if ! report_llvm_tool iwyu "${iwyu_ver}" "${iwyu_clang:-${MIN_CLANG_VERSION}}" "$(command -v iwyu 2>/dev/null || true)" optional \
+        "optional; required only for ./tools/iwyu.sh" \
+        "built against Clang ${iwyu_clang}; CI builds it against Clang ${MIN_CLANG_VERSION}"; then
+        print_iwyu_hint # what to do, not only what's wrong (#4708)
     fi
 
-    # llvm-profdata (informational)
-    local llvm_profdata_ver
+    # llvm-profdata, llvm-cov (informational: only coverage needs them, so below the floor is a warning, #4714)
+    local llvm_profdata_ver llvm_cov_ver
     llvm_profdata_ver="$(get_llvm_profdata_version)"
-    if [[ -z "${llvm_profdata_ver}" ]]; then
-        echo -e "${YELLOW}llvm-profdata${NC}: not found (only required for coverage)"
-    else
-        local llvm_profdata_path
-        llvm_profdata_path="$(command -v llvm-profdata 2>/dev/null || true)"
-        echo -e "${GREEN}llvm-profdata${NC}: ${llvm_profdata_ver} (${llvm_profdata_path})"
-    fi
-
-    # llvm-cov (informational)
-    local llvm_cov_ver
+    report_llvm_tool llvm-profdata "${llvm_profdata_ver}" "${llvm_profdata_ver}" "$(command -v llvm-profdata 2>/dev/null || true)" \
+        optional "only required for coverage" || true
     llvm_cov_ver="$(get_llvm_cov_version)"
-    if [[ -z "${llvm_cov_ver}" ]]; then
-        echo -e "${YELLOW}llvm-cov${NC}: not found (only required for coverage)"
-    else
-        local llvm_cov_path
-        llvm_cov_path="$(command -v llvm-cov 2>/dev/null || true)"
-        echo -e "${GREEN}llvm-cov${NC}: ${llvm_cov_ver} (${llvm_cov_path})"
-    fi
+    report_llvm_tool llvm-cov "${llvm_cov_ver}" "${llvm_cov_ver}" "$(command -v llvm-cov 2>/dev/null || true)" \
+        optional "only required for coverage" || true
 
     # ── Linux profiling tools (all optional) ────────────────────────────────
     echo
@@ -526,10 +486,13 @@ main() {
     # hotspot — GUI perf viewer (analyze-perf.sh optional launch)
     local hotspot_path
     hotspot_path="$(command -v hotspot 2>/dev/null || true)"
+    # Not packaged for Ubuntu 26.04 (#4706): KDAB ships it on Flathub and as an AppImage.
     if [[ -n "${hotspot_path}" ]]; then
         echo -e "${GREEN}hotspot${NC}: ${hotspot_path}"
+    elif command -v flatpak &>/dev/null && flatpak info com.kdab.hotspot &>/dev/null; then
+        echo -e "${GREEN}hotspot${NC}: Flatpak com.kdab.hotspot (flatpak run com.kdab.hotspot <file>)"
     else
-        echo -e "${YELLOW}hotspot${NC}: not found (sudo apt install hotspot)"
+        echo -e "${YELLOW}hotspot${NC}: not found (not packaged for Ubuntu 26.04: flatpak install flathub com.kdab.hotspot, or KDAB's AppImage from https://github.com/KDAB/hotspot/releases saved as hotspot on PATH)"
     fi
 
     # heaptrack — heap allocation profiler (profile-heap.sh)
@@ -612,6 +575,13 @@ main() {
     else
         echo -e "${RED}pkg-config${NC}: not found (sudo apt install pkg-config) - configure needs it to find libbpf"
         all_ok=1
+    fi
+
+    # Skew is a warning, as check-prereqs.ps1 says it: which rows, and why it matters (#4714, #916).
+    if [[ "${llvm_skew_seen}" -eq 1 ]]; then
+        echo
+        echo -e "${YELLOW}LLVM ${PINNED_LLVM_MAJOR} is the version CI pins (.pre-commit-config.yaml); the rows marked \"CI pins\" are another major,"
+        echo -e "so their formatting and clang-tidy findings can differ from CI's.${NC}"
     fi
 
     echo

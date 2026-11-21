@@ -23,6 +23,12 @@ std::vector<std::string>& removedNames() noexcept
     return names;
 }
 
+std::vector<std::string>& startingEnvironment() noexcept
+{
+    static std::vector<std::string> environment;
+    return environment;
+}
+
 } // namespace
 
 bool isSdlVariable(std::string_view name) noexcept
@@ -94,6 +100,12 @@ void removeForThisProcess(bool remove)
     {
         return;
     }
+    // As it started (#4651), for the programs started as this same user with no capabilities: copied before any unsetenv.
+    for (char** entry = environ; entry != nullptr && *entry != nullptr;
+         ++entry) // NOLINT(cppcoreguidelines-pro-bounds-pointer-arithmetic) - environ is a null-terminated C array
+    {
+        startingEnvironment().emplace_back(*entry);
+    }
     removedNames() = removeSdlVariables(environ,
                                         [](const std::string& name)
                                         {
@@ -126,6 +138,11 @@ void keepPrivilegedLoadersOutOfThisProcess(bool apply)
 const std::vector<std::string>& removedFromThisProcess() noexcept
 {
     return removedNames();
+}
+
+const std::vector<std::string>& environmentBeforeScrub() noexcept
+{
+    return startingEnvironment();
 }
 
 } // namespace Platform::SdlEnvironment

@@ -16,6 +16,46 @@
 namespace Platform::Windows
 {
 
+namespace
+{
+
+[[nodiscard]] constexpr bool isSeparator(wchar_t unit) noexcept
+{
+    return unit == L'\\' || unit == L'/';
+}
+
+/// Whether @p text, a path without its trailing separators, is a drive: "C:", or the device paths "\\?\C:" and "\\.\C:".
+[[nodiscard]] constexpr bool isDrive(std::wstring_view text) noexcept
+{
+    constexpr std::size_t DEVICE_PREFIX = 4; // \\?\ or \\.\, either separator
+    if (text.size() == DEVICE_PREFIX + 2 && isSeparator(text[0]) && isSeparator(text[1]) && (text[2] == L'?' || text[2] == L'.') &&
+        isSeparator(text[3]))
+    {
+        text.remove_prefix(DEVICE_PREFIX);
+    }
+    return text.size() == 2 && text[1] == L':' && ((text[0] >= L'A' && text[0] <= L'Z') || (text[0] >= L'a' && text[0] <= L'z'));
+}
+
+/// A path as samePathIgnoringTrailingSeparators() compares it: its text without trailing separators, and whether one
+/// was dropped from a root (a drive, or separators alone), where it counts.
+struct ComparedPath
+{
+    std::wstring_view text;
+    bool root = false;
+};
+
+[[nodiscard]] constexpr ComparedPath comparedPath(std::wstring_view path) noexcept
+{
+    const std::size_t length = path.size();
+    while (!path.empty() && isSeparator(path.back()))
+    {
+        path.remove_suffix(1);
+    }
+    return {.text = path, .root = path.size() != length && (path.empty() || isDrive(path))};
+}
+
+} // namespace
+
 bool equalsOrdinalIgnoreCase(const std::string_view a, const std::string_view b) noexcept
 {
     try
@@ -27,13 +67,24 @@ bool equalsOrdinalIgnoreCase(const std::string_view a, const std::string_view b)
         {
             return a == b;
         }
-        return CompareStringOrdinal(wideA.data(), static_cast<int>(wideA.size()), wideB.data(), static_cast<int>(wideB.size()), TRUE) ==
-               CSTR_EQUAL;
+        return equalsOrdinalIgnoreCase(std::wstring_view(wideA), std::wstring_view(wideB));
     }
     catch (const std::bad_alloc&)
     {
         return a == b;
     }
+}
+
+bool equalsOrdinalIgnoreCase(const std::wstring_view a, const std::wstring_view b) noexcept
+{
+    return CompareStringOrdinal(a.data(), static_cast<int>(a.size()), b.data(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+}
+
+bool samePathIgnoringTrailingSeparators(const std::wstring_view a, const std::wstring_view b) noexcept
+{
+    const ComparedPath first = comparedPath(a);
+    const ComparedPath second = comparedPath(b);
+    return first.root == second.root && equalsOrdinalIgnoreCase(first.text, second.text);
 }
 
 } // namespace Platform::Windows

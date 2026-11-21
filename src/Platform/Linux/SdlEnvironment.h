@@ -130,6 +130,12 @@ void keepPrivilegedLoadersOutOfThisProcess(bool apply);
 /// The names removeForThisProcess() removed, for runApp() to log.
 [[nodiscard]] const std::vector<std::string>& removedFromThisProcess() noexcept;
 
+/// This process's environment ("NAME=value" strings) as it started, before removeForThisProcess() and
+/// keepPrivilegedLoadersOutOfThisProcess() changed it (#4651); empty when they didn't run. For the programs a setcap
+/// session starts as its own user, who hold none of its capabilities (SessionUser::childMayGetStartingEnvironment()):
+/// the scrub keeps the user's GTK, GIO and Mesa settings out of TaskSmack, not out of their own programs.
+[[nodiscard]] const std::vector<std::string>& environmentBeforeScrub() noexcept;
+
 } // namespace Platform::SdlEnvironment
 
 #endif

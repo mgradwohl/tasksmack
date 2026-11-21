@@ -14,6 +14,7 @@
 // clang-format on
 
 #include "WinString.h"
+#include "WindowsFinalPath.h"
 
 #include <algorithm>
 #include <array>
@@ -57,27 +58,11 @@ using InjectableKey = std::unique_ptr<std::remove_pointer_t<HKEY>, InjectedKeyCl
     return Platform::WinString::win32ErrorText(static_cast<DWORD>(status));
 }
 
-/// The longest path the wide Win32 calls return, in characters (an extended-length path).
-constexpr DWORD LONGEST_PATH = 32'768;
-
-/// This process's image, through the injected GetModuleFileNameW: MAX_PATH first, then the longest path.
+/// This process's image, through the injected GetModuleFileNameW: MAX_PATH first, then the longest path, as
+/// BrokerHelper::ownImage() reads it (Windows::moduleImagePath(), #4368).
 [[nodiscard]] std::optional<std::wstring> ownImage(Windows::StartAtLoginFunctions::GetModuleFileNameFn moduleFileName)
 {
-    for (const DWORD size : {DWORD{MAX_PATH}, LONGEST_PATH})
-    {
-        std::wstring path(size, L'\0');
-        const DWORD written = moduleFileName(nullptr, path.data(), size);
-        if (written == 0)
-        {
-            return std::nullopt;
-        }
-        if (written < size)
-        {
-            path.resize(written);
-            return path;
-        }
-    }
-    return std::nullopt;
+    return Windows::moduleImagePath(moduleFileName);
 }
 
 /// Whether @p executable is under Program Files (either of them), through the injected SHGetKnownFolderPath.

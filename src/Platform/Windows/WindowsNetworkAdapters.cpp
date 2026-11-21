@@ -4,6 +4,7 @@
 #include "Platform/Windows/WindowsProcAddress.h"
 #include "WinString.h"
 #include "WindowsConversions.h"
+#include "WindowsHandles.h"
 
 // NOLINTBEGIN(misc-include-cleaner) - Windows umbrella headers, as in the header
 // clang-format off
@@ -390,18 +391,19 @@ class WlanData
 connectedFrequencyMhz(const Functions& fns, HANDLE client, const GUID& guid, const WLAN_CONNECTION_ATTRIBUTES& connection)
 {
     DOT11_SSID ssid = connection.wlanAssociationAttributes.dot11Ssid;
-    PWLAN_BSS_LIST list = nullptr;
+    PWLAN_BSS_LIST written = nullptr;
     const DWORD status = fns.wlanGetNetworkBssList(client,
                                                    &guid,
                                                    &ssid,
                                                    connection.wlanAssociationAttributes.dot11BssType,
                                                    connection.wlanSecurityAttributes.bSecurityEnabled,
                                                    nullptr,
-                                                   &list);
-    if (status != ERROR_SUCCESS || list == nullptr)
+                                                   &written);
+    if (status != ERROR_SUCCESS || written == nullptr)
     {
         return 0;
     }
+    const Windows::UniqueWlanMemory<WLAN_BSS_LIST> list(written, fns.wlanFreeMemory); // WlanFreeMemory when it goes
     std::uint32_t mhz = 0;
     const std::span<const WLAN_BSS_ENTRY> entries(&list->wlanBssEntries[0], list->dwNumberOfItems);
     for (const WLAN_BSS_ENTRY& entry : entries)
@@ -412,7 +414,6 @@ connectedFrequencyMhz(const Functions& fns, HANDLE client, const GUID& guid, con
             break;
         }
     }
-    fns.wlanFreeMemory(list);
     return mhz;
 }
 
@@ -497,15 +498,18 @@ void readWlan(const Functions& fns, std::vector<Listed>& listed, bool includeDet
         return;
     }
     DWORD negotiated = 0;
-    HANDLE client = nullptr;
-    if (fns.wlanOpenHandle(WLAN_CLIENT_VERSION, nullptr, &negotiated, &client) != ERROR_SUCCESS)
+    HANDLE opened = nullptr;
+    if (fns.wlanOpenHandle(WLAN_CLIENT_VERSION, nullptr, &negotiated, &opened) != ERROR_SUCCESS)
     {
         explainAll(NO_WLAN_SERVICE);
         return;
     }
-    PWLAN_INTERFACE_INFO_LIST interfaces = nullptr;
-    if (fns.wlanEnumInterfaces(client, nullptr, &interfaces) == ERROR_SUCCESS && interfaces != nullptr)
+    // Closed however the read ends, and the interface list freed before it.
+    Windows::UniqueWlanHandle client(opened, Windows::WlanHandleCloser{.close = fns.wlanCloseHandle});
+    if (PWLAN_INTERFACE_INFO_LIST written = nullptr;
+        fns.wlanEnumInterfaces(client.get(), nullptr, &written) == ERROR_SUCCESS && written != nullptr)
     {
+        const Windows::UniqueWlanMemory<WLAN_INTERFACE_INFO_LIST> interfaces(written, fns.wlanFreeMemory);
         const std::span<const WLAN_INTERFACE_INFO> infos(&interfaces->InterfaceInfo[0], interfaces->dwNumberOfItems);
         for (const WLAN_INTERFACE_INFO& info : infos)
         {
@@ -521,16 +525,15 @@ void readWlan(const Functions& fns, std::vector<Listed>& listed, bool includeDet
             match->adapter.wireless = true;
             if (info.isState == wlan_interface_state_connected)
             {
-                readWifi(fns, client, info.InterfaceGuid, match->adapter, includeDetails);
+                readWifi(fns, client.get(), info.InterfaceGuid, match->adapter, includeDetails);
             }
             else
             {
                 match->adapter.wifiLinkUnavailable = NOT_CONNECTED;
             }
         }
-        fns.wlanFreeMemory(interfaces);
     }
-    fns.wlanCloseHandle(client, nullptr);
+    client.reset();
     // A wireless adapter that isn't a WLAN interface, such as a Wi-Fi Direct virtual adapter, while down.
     for (Listed& entry : listed)
     {

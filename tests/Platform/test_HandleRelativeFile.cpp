@@ -499,7 +499,7 @@ TEST(HandleRelativeFileFailureTest, AHandleThatCantBeAskedIsNeitherAPlainFolderN
 {
     EXPECT_EQ(isPlainFolder(nullptr), std::nullopt);
     EXPECT_EQ(isPlainFolder(INVALID_HANDLE_VALUE), std::nullopt);
-    EXPECT_EQ(ownerIsAdministratorsOrSystem(nullptr), std::nullopt);
+    EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(nullptr), std::nullopt);
 }
 
 } // namespace

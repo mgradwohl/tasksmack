@@ -103,6 +103,10 @@ The rules agents act on:
   including Renovate and Dependabot, until `release/X.Y` is cut.
 - **Late features** go to the next minor by default. Agents never move an issue or PR onto a release milestone to
   get it in; scope is the maintainer's call.
+- **The newcomer check (#4713):** each lane runs its clean-machine contributor check in stage 1 of every cycle, and
+  on every toolchain bump: `tools/newcomer-check.ps1` in Windows Sandbox, `tools/newcomer-check.sh` in a fresh WSL
+  distro. Each runs overnight on a night agreed on #4135. `results.md` goes on the tracker, or on the bump's PR, and
+  each FINDING or FAIL becomes a cycle issue ([release-process.md](docs/dev/release-process.md#the-newcomer-check)).
 - **Candidate:** tag only a fully green, approved commit. Nothing joins the scope after approval.
 - **The release dashboard (#4524):** <https://mgradwohl.github.io/tasksmack/release/> shows what's left before the
   release ships, read from the milestone, the tracker, the labels and CI within minutes of a change (#4604). It

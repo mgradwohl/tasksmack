@@ -21,8 +21,9 @@ import re
 import sys
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools" / "release-dashboard.py"
@@ -1698,6 +1699,157 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
             dashboard.main(["--out", "x", "--repo", "not a repo"])
         self.assertEqual(raised.exception.code, 2)
+
+
+class BudgetNoteTests(unittest.TestCase):
+    """#4726: with the API budget gone nothing can be read, so the last data goes out again as it is, with the
+    time the budget returns in index.json for the page to show. No request is made for that."""
+
+    UNTIL = 1_800_003_600  # as GitHub's rate_limit gives a reset: seconds since 1970
+    UNTIL_ISO = dashboard.iso(datetime.fromtimestamp(UNTIL, UTC))
+    ASKED_AT = dashboard.iso(datetime.fromtimestamp(UNTIL - 1800, UTC))  # half an hour before the budget returns
+
+    def note(self, out: Path, *args: str) -> tuple[int, str]:
+        """Runs the generator's note mode as of ASKED_AT; returns its exit code and what it printed."""
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+            code = dashboard.main(["--out", str(out), "--repo", REPOSITORY, "--now", self.ASKED_AT, *args])
+        return code, printed.getvalue()
+
+    def test_the_last_data_goes_out_again_with_the_time_and_nothing_else_changed(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            # The branch holds a README beside the data: it isn't data, and doesn't ride along.
+            (Path(first) / "README.md").write_text("# Release dashboard data\n", encoding="utf-8")
+            code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+            self.assertEqual(
+                sorted(path.name for path in Path(second).iterdir()),
+                ["index.json", "v1.0.0.json", "v1.1.0.json", "v1.2.0.json"],
+            )
+            before = json.loads((Path(first) / "index.json").read_text(encoding="utf-8"))
+            after = json.loads((Path(second) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(after.pop("budget_until"), self.UNTIL_ISO)
+            # generated_at above all: the page's "updated" time and the workflow's "is this run covered" rule
+            # read it, and this isn't new data.
+            self.assertEqual(after, before)
+            for name in ("v1.0.0.json", "v1.1.0.json", "v1.2.0.json"):
+                self.assertEqual((Path(second) / name).read_bytes(), (Path(first) / name).read_bytes(), name)
+            self.assertIn(f"The API budget is used up until {self.UNTIL_ISO}", printed)
+            self.assertTrue((Path(second) / "index.json").read_bytes().endswith(b"}\n"))
+
+    def test_no_request_is_made_and_no_token_is_looked_for(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            refuse = AssertionError("the budget note reached for GitHub")
+            with mock.patch.object(dashboard, "GitHub", side_effect=refuse), mock.patch.object(dashboard, "find_token", side_effect=refuse):
+                code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+
+    def test_a_later_note_replaces_an_earlier_one(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as third:
+            generate(Path(first))
+            self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            code, printed = self.note(Path(third), "--previous", second, "--budget-until", str(self.UNTIL + 1200))
+            self.assertEqual(code, 0, printed)
+            index = json.loads((Path(third) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["budget_until"], dashboard.iso(datetime.fromtimestamp(self.UNTIL + 1200, UTC)))
+
+    def test_the_next_run_that_reads_writes_an_index_without_the_note(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as third:
+            generate(Path(first))
+            self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            code, printed = generate(Path(third), "--previous", second)
+            self.assertEqual(code, 0, printed)
+            self.assertNotIn("budget_until", json.loads((Path(third) / "index.json").read_text(encoding="utf-8")))
+            # The finished release is still copied from the run before, as if the note had not been between.
+            self.assertIn("v1.0.0: final, copied from the last run", printed)
+
+    def test_the_page_is_told_once_for_each_hour(self):
+        # A run that finds the published data naming this time already has nothing to add: no files, so the
+        # workflow publishes nothing, and exit 0, so it isn't a failure either.
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as parent:
+            generate(Path(first))
+            self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            again = Path(parent) / "out"
+            code, printed = self.note(again, "--previous", second, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+            self.assertIn(f"already says the API budget is used up until {self.UNTIL_ISO}", printed)
+            self.assertFalse(again.exists() and any(again.iterdir()), "nothing is written")
+
+    def test_data_in_another_schema_goes_out_again_as_it_is(self):
+        # The review's finding: the note copies the files and reads none of their figures, so a schema this
+        # generator doesn't write is no reason to refuse. Refusing made every run of the hour fail.
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            for path in Path(first).glob("*.json"):
+                data = json.loads(path.read_text(encoding="utf-8"))
+                data["schema"] = dashboard.SCHEMA + 1
+                path.write_text(json.dumps(data), encoding="utf-8")
+            code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+            after = json.loads((Path(second) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual((after["schema"], after["budget_until"]), (dashboard.SCHEMA + 1, self.UNTIL_ISO))
+
+    def test_a_flag_it_would_ignore_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as first:
+            generate(Path(first))
+            for flags in (["--from-raw", first], ["--dump-raw", first], ["--milestone", "v1.1.0"], ["--now", "yesterday"]):
+                with self.subTest(flags=flags), self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                    dashboard.main(["--out", "x", "--previous", first, "--budget-until", str(self.UNTIL), *flags])
+                self.assertEqual(raised.exception.code, 2)
+            with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                dashboard.main(["--out", "x", "--budget-until", str(self.UNTIL)])
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_a_time_up_to_75_minutes_ahead_is_written(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL - 1800 + 75 * 60))
+            self.assertEqual(code, 0, printed)
+            self.assertIn("budget_until", json.loads((Path(second) / "index.json").read_text(encoding="utf-8")))
+
+    def test_with_nothing_to_repeat_it_warns_and_writes_nothing(self):
+        def broken(change) -> str:  # noqa: ANN001 - a function that spoils a copy of the last run
+            folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            generate(folder)
+            change(folder)
+            return str(folder)
+
+        def rewrite(folder: Path, edit) -> None:  # noqa: ANN001
+            index = json.loads((folder / "index.json").read_text(encoding="utf-8"))
+            edit(index)
+            (folder / "index.json").write_text(json.dumps(index), encoding="utf-8")
+
+        good = broken(lambda folder: None)
+        cases = {
+            "an empty --previous": ["--previous", self.enterContext(tempfile.TemporaryDirectory()), "--budget-until", str(self.UNTIL)],
+            "an index that isn't JSON": ["--previous", broken(lambda folder: (folder / "index.json").write_text("{not json", encoding="utf-8")), "--budget-until", str(self.UNTIL)],
+            "an index that isn't a list of releases": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(releases="all of them"))), "--budget-until", str(self.UNTIL)],
+            "an index that names no release": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(releases=[]))), "--budget-until", str(self.UNTIL)],
+            "a release that isn't a milestone's name": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index["releases"][0].update(title="../v1.0.0"))), "--budget-until", str(self.UNTIL)],
+            "a release whose file is gone": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").unlink()), "--budget-until", str(self.UNTIL)],
+            # What the workflow's "Check what was written" would refuse is refused here, where it's a warning.
+            "a release file in another schema than the index": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").write_text(json.dumps({**json.loads((folder / "v1.1.0.json").read_text(encoding="utf-8")), "schema": dashboard.SCHEMA + 1}), encoding="utf-8")), "--budget-until", str(self.UNTIL)],
+            "a release file that names another milestone": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").write_text((folder / "v1.2.0.json").read_text(encoding="utf-8"), encoding="utf-8")), "--budget-until", str(self.UNTIL)],
+            "a current release the index doesn't list": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(current="v9.9.9"))), "--budget-until", str(self.UNTIL)],
+            # GitHub's budgets are hourly: a time further ahead is a mistake, and the page would hold its
+            # warning about old data back until then.
+            "a time over 75 minutes ahead": ["--previous", good, "--budget-until", str(self.UNTIL - 1800 + 76 * 60)],
+            "a time in words": ["--previous", good, "--budget-until", "soon"],
+            "a negative time": ["--previous", good, "--budget-until=-5"],
+            "no time": ["--previous", good, "--budget-until", ""],
+            "a time with a command after it": ["--previous", good, "--budget-until", "1800003600; echo hello"],
+        }
+        for name, args in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as parent:
+                out = Path(parent) / "out"
+                code, printed = self.note(out, *args)
+                # A warning, not an error: the run this happens in has only a note to add.
+                self.assertEqual(code, 1, printed)
+                self.assertIn("::warning title=Release dashboard::The budget note couldn't be written", printed)
+                self.assertNotIn("::error", printed)
+                self.assertFalse(out.exists() and any(out.iterdir()), "nothing is written")
 
 
 class FixtureTests(unittest.TestCase):

@@ -3034,6 +3034,55 @@ TEST(LinuxProcessActionsTest, OpenFileLocationOfADeletedExecutableOpensItsOldFol
     EXPECT_EQ(showItems().uris.front(), "file:///opt/old%20app/bin/tool");
 }
 
+// #4650: a deleted executable can't be compared with the running file, so its path is opened only when the process
+// shares TaskSmack's mount namespace: a container's upgraded /usr/sbin/nginx (deleted) isn't the host's /usr/sbin.
+std::optional<bool> inAnotherMountNamespace(std::int32_t /*pid*/)
+{
+    return false;
+}
+
+std::optional<bool> mountNamespaceUnreadable(std::int32_t /*pid*/)
+{
+    return std::nullopt;
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationOfADeletedExecutableInAnotherMountNamespaceOpensNothing)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_deleted_namespace");
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.executableLink = &deletedExecutableLink;
+    syscalls.sharesMountNamespace = &inAnotherMountNamespace;
+    LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+
+    const auto result = actions.openFileLocation(ownTarget());
+
+    EXPECT_FALSE(result.success);
+    EXPECT_EQ(result.errorMessage, "Its executable is inside a sandbox or container, and has no folder on this system");
+    EXPECT_TRUE(showItems().uris.empty()) << "no folder was opened";
+}
+
+TEST(LinuxProcessActionsTest, OpenFileLocationOfADeletedExecutableWhoseNamespaceCantBeReadOpensItsOldFolder)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "As root for another user, ShowItems isn't tried and xdg-open runs as them";
+    }
+    const TestSupport::ScopedTempDir dir("tasksmack_open_deleted_unreadable");
+    LinuxProcessSyscalls syscalls = realProcessSyscalls();
+    syscalls.executableLink = &deletedExecutableLink;
+    syscalls.sharesMountNamespace = &mountNamespaceUnreadable;
+    LinuxProcessActions actions = fileLocationActions(dir.path, true, syscalls);
+
+    const auto result = actions.openFileLocation(ownTarget());
+
+    ASSERT_TRUE(result.success) << result.errorMessage;
+    ASSERT_EQ(showItems().uris.size(), 1U) << "as before #4650, when it can't tell";
+}
+
 // #4397: /proc/<pid>/exe's text is the path in the process's own mount namespace. A path that names nothing here (a
 // Flatpak's /app/bin/x), or another file than the running one (a container's /usr/sbin/nginx), opens nothing: the
 // file manager would be shown the wrong file, or none.

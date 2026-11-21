@@ -31,6 +31,7 @@
 #include "Platform/IElevatedRestart.h"
 #include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
+#include "Platform/Windows/HandleRelativeFile.h"
 #include "Platform/Windows/HelperLauncher.h"
 #include "Platform/Windows/WindowsHandles.h"
 
@@ -102,10 +103,6 @@ struct WaitFunctions
 /// The file's hard-link count, opened without following a link; nullopt when it can't be read.
 [[nodiscard]] std::optional<DWORD> linkCountOf(const std::wstring& path);
 
-/// Whether the owner of the file or folder @p handle (opened with READ_CONTROL) is an administrator or system account
-/// (BUILTIN\Administrators, SYSTEM, TrustedInstaller); nullopt when it can't be read.
-[[nodiscard]] std::optional<bool> ownerIsPrivileged(HANDLE handle);
-
 /// The folder @p path opened to be held: without FILE_SHARE_DELETE, so it can't be renamed or deleted while open,
 /// and without following a link at its last component. INVALID_HANDLE_VALUE when it can't be opened.
 [[nodiscard]] HANDLE openToPin(const std::wstring& path);
@@ -123,9 +120,10 @@ struct ConfigDirFunctions
     AttributesFn getFileAttributes = &::GetFileAttributesW;
     LinkCountFn linkCount = &linkCountOf;
     OpenToPinFn openToPin = &ElevatedRestart::openToPin;
-    FileInformationFn getFileInformation = &::GetFileInformationByHandle;        ///< Through the held handle
-    FinalPathFn getFinalPath = &::GetFinalPathNameByHandleW;                     ///< Through the held handle
-    OwnerIsPrivilegedFn ownerIsPrivileged = &ElevatedRestart::ownerIsPrivileged; ///< Through the held handle
+    FileInformationFn getFileInformation = &::GetFileInformationByHandle; ///< Through the held handle
+    FinalPathFn getFinalPath = &::GetFinalPathNameByHandleW;              ///< Through the held handle
+    /// Through the held handle: SYSTEM, TrustedInstaller or Administrators, the one shared check (HandleRelativeFile.h, #4715).
+    OwnerIsPrivilegedFn ownerIsPrivileged = &ownerIsSystemOrAdministratorsOrTrustedInstaller;
 };
 
 /// Whether @p dir, a config directory an elevated restart was handed (--config-dir), may be used (#2728): an

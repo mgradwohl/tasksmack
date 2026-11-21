@@ -1,6 +1,7 @@
 #include "WindowsBootPerformance.h"
 
 #include "WinString.h"
+#include "WindowsEventLogHandle.h"
 
 // clang-format off
 #ifndef WIN32_LEAN_AND_MEAN
@@ -34,36 +35,36 @@ constexpr DWORD NEXT_TIMEOUT_MS = 10'000;
 {
     const std::wstring channel = WinString::utf8ToWide(CHANNEL);
     const std::wstring query = WinString::utf8ToWide(xpath);
-    EVT_HANDLE results = EvtQuery(
-        nullptr, channel.c_str(), query.c_str(), static_cast<DWORD>(EvtQueryChannelPath) | static_cast<DWORD>(EvtQueryReverseDirection));
-    if (results == nullptr)
+    // Both closed however this returns, the event before the query.
+    Windows::UniqueEvtHandle results(EvtQuery(
+        nullptr, channel.c_str(), query.c_str(), static_cast<DWORD>(EvtQueryChannelPath) | static_cast<DWORD>(EvtQueryReverseDirection)));
+    if (!results)
     {
         error = GetLastError();
         return false;
     }
-    EVT_HANDLE event = nullptr;
+    Windows::UniqueEvtHandle event;
     DWORD returned = 0;
-    if (EvtNext(results, 1, &event, NEXT_TIMEOUT_MS, 0, &returned) == FALSE || returned == 0 || event == nullptr)
+    if (EvtNext(results.get(), 1, event.put(), NEXT_TIMEOUT_MS, 0, &returned) == FALSE || returned == 0 || !event)
     {
         const DWORD last = GetLastError(); // ERROR_NO_MORE_ITEMS when nothing matched
         error = last == ERROR_SUCCESS ? ERROR_NO_MORE_ITEMS : last;
-        EvtClose(results);
         return false;
     }
     DWORD used = 0;
     DWORD properties = 0;
     std::vector<wchar_t> buffer;
     bool rendered = false;
-    if (EvtRender(nullptr, event, EvtRenderEventXml, 0, nullptr, &used, &properties) == FALSE &&
+    if (EvtRender(nullptr, event.get(), EvtRenderEventXml, 0, nullptr, &used, &properties) == FALSE &&
         GetLastError() == ERROR_INSUFFICIENT_BUFFER)
     {
         buffer.resize((used / sizeof(wchar_t)) + 1);
         const auto bytes = static_cast<DWORD>(buffer.size() * sizeof(wchar_t));
-        rendered = EvtRender(nullptr, event, EvtRenderEventXml, bytes, buffer.data(), &used, &properties) != FALSE;
+        rendered = EvtRender(nullptr, event.get(), EvtRenderEventXml, bytes, buffer.data(), &used, &properties) != FALSE;
     }
     error = rendered ? 0 : GetLastError();
-    EvtClose(event);
-    EvtClose(results);
+    event.reset();
+    results.reset();
     if (!rendered)
     {
         return false;

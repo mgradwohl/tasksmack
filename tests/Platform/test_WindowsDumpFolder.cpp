@@ -181,9 +181,15 @@ TEST(WindowsDumpFolderTest, APlainFolderIsHeldAtItsOwnPath)
     EXPECT_TRUE(missing.error().contains("can't be opened")) << missing.error();
 }
 
-TEST(WindowsDumpFolderTest, SamePathTextIgnoresCaseOnly)
+// samePathText() is the one path comparison (samePathIgnoringTrailingSeparators(), OrdinalCase.h, #4699): case and a
+// trailing separator don't count, a drive root's separator does.
+TEST(WindowsDumpFolderTest, SamePathTextIgnoresCaseAndTrailingSeparators)
 {
     EXPECT_TRUE(samePathText(LR"(C:\Dumps)", LR"(c:\dUMPS)"));
+    EXPECT_TRUE(samePathText(LR"(C:\Dumps\)", LR"(C:\Dumps)"));
+    EXPECT_TRUE(samePathText(LR"(\\server\share\)", LR"(\\server\share)"));
+    EXPECT_TRUE(samePathText(LR"(C:\)", LR"(C:\)"));
+    EXPECT_FALSE(samePathText(LR"(C:\)", LR"(C:)"));
     EXPECT_FALSE(samePathText(LR"(C:\Dumps)", LR"(C:\Dumps2)"));
     EXPECT_FALSE(samePathText(LR"(C:\Dumps)", LR"(D:\Dumps)"));
 }
