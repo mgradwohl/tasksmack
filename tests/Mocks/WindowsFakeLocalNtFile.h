@@ -62,7 +62,9 @@ struct FakeLocalNtFileState
     DWORD reparseTag = 0;
     DWORD deviceType = FILE_DEVICE_DISK;
     ULONG characteristics = 0;
-    bool remote = false; ///< FileRemoteProtocolInfo answers, as only a redirector does
+    bool remote = false;         ///< FileRemoteProtocolInfo answers, as only a redirector does
+    bool tagInfoFails = false;   ///< FileAttributeTagInfo fails with ERROR_INVALID_PARAMETER, as on FAT and exFAT (#4647)
+    bool basicInfoFails = false; ///< FileBasicInfo fails too
     std::vector<LocalNtOpen> opens;
 };
 
@@ -132,6 +134,24 @@ inline BOOL WINAPI fakeGetFileInformationByHandleEx(HANDLE file, FILE_INFO_BY_HA
     if (localNtFile().forward)
     {
         return GetFileInformationByHandleEx(file, what, information, bytes);
+    }
+    if (what == FileAttributeTagInfo && localNtFile().tagInfoFails)
+    {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return FALSE;
+    }
+    if (what == FileBasicInfo)
+    {
+        if (localNtFile().basicInfoFails)
+        {
+            SetLastError(ERROR_INVALID_PARAMETER);
+            return FALSE;
+        }
+        EXPECT_GE(bytes, sizeof(FILE_BASIC_INFO));
+        auto* basic = static_cast<FILE_BASIC_INFO*>(information);
+        *basic = {};
+        basic->FileAttributes = localNtFile().attributes;
+        return TRUE;
     }
     if (what == FileAttributeTagInfo)
     {

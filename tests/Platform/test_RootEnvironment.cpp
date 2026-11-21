@@ -133,6 +133,19 @@ TEST(RootEnvironmentTest, EverythingElseGoesAndRootsValuesReplaceTheUsers)
         << "root's own copy of the user's cookie, never a file the user names (the second #4187 review)";
 }
 
+// #4666: the process's own PATH is the one applyToThisProcess() works out (ROOT_PATH's root-only folders), not ROOT_PATH
+// itself: a /usr/local another account may write is left out of what SDL's zenity lookup searches.
+TEST(RootEnvironmentTest, PathIsTheOneGivenSoAnUntrustedUsrLocalIsLeftOut)
+{
+    const std::array<const char*, 3> environment{"PATH=/home/me/bin:/usr/bin", "DISPLAY=:0", nullptr};
+    Recorder recorder;
+    static_cast<void>(
+        applyTo(environment.data(),
+                RootValues{.home = "/root", .runtimeDir = std::nullopt, .xauthority = std::nullopt, .path = "/usr/sbin:/usr/bin"},
+                recorder.operations()));
+    EXPECT_EQ(recorder.set.at("PATH"), "/usr/sbin:/usr/bin");
+}
+
 TEST(RootEnvironmentTest, UnknownRootValuesAndAFailedSetUnsetRatherThanKeepTheUsers)
 {
     const std::array<const char*, 5> environment{"DISPLAY=:0", "HOME=/home/me", "XDG_RUNTIME_DIR=/run/user/1000", "XAUTHORITY=/x", nullptr};

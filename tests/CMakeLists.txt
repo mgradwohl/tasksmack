@@ -226,6 +226,25 @@ add_test(NAME ThirdPartyNoticesUnparsedDeclareScript
 set_tests_properties(ThirdPartyNoticesUnparsedDeclareScript PROPERTIES
     PASS_REGULAR_EXPRESSION "FetchContent_Declare\\(\\)[ \r\n]+calls,[ \r\n]+but[ \r\n]+only")
 
+# SDL's libdecor configure check (#4661): it reads the settings SDL's configure writes, never a generate-time file that a
+# fresh tree hasn't made yet, and a missing file fails rather than passing with nothing read. Each case is its own test.
+foreach(_ts_case IN ITEMS loaded none missing linked required)
+    add_test(NAME SdlLibdecorCheckScript_${_ts_case}
+        COMMAND ${CMAKE_COMMAND} -DTS_SOURCE_DIR=${CMAKE_SOURCE_DIR}
+                -DTS_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/sdl-libdecor-check-${_ts_case} -DTS_CASE=${_ts_case}
+                -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/SdlLibdecorCheck.cmake)
+endforeach()
+unset(_ts_case)
+# A failing case passes on its own message; CMake wraps it, so any run of spaces and line breaks may separate the words.
+set_tests_properties(SdlLibdecorCheckScript_loaded SdlLibdecorCheckScript_none PROPERTIES
+    PASS_REGULAR_EXPRESSION "passed the check")
+set_tests_properties(SdlLibdecorCheckScript_missing PROPERTIES
+    PASS_REGULAR_EXPRESSION "can.t[ \r\n]+be[ \r\n]+checked")
+set_tests_properties(SdlLibdecorCheckScript_linked PROPERTIES
+    PASS_REGULAR_EXPRESSION "links[ \r\n]+libdecor[ \r\n]+instead")
+set_tests_properties(SdlLibdecorCheckScript_required PROPERTIES
+    PASS_REGULAR_EXPRESSION "built[ \r\n]+without[ \r\n]+libdecor")
+
 # tools/bench.sh against a stub benchmark binary (#1423, #1424), wherever bash exists. On Windows
 # only Git for Windows' bash: a bare `bash` there can be WSL's, which cannot run this checkout.
 if(WIN32)

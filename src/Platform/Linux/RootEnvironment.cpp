@@ -1,5 +1,6 @@
 #include "RootEnvironment.h"
 
+#include "RootTools.h"
 #include "SessionUser.h"
 
 #include <algorithm>
@@ -347,7 +348,7 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
     // Never a file the user names: root's own copy of the invoking user's (applyToThisProcess()), or none (the second
     // #4187 review: a user-named Xauthority sent another account's cookie to a display the user chose).
     setOrUnset("XAUTHORITY", values.contains("DISPLAY") ? root.xauthority : std::nullopt);
-    setOrUnset("PATH", std::string(ROOT_PATH));
+    setOrUnset("PATH", root.path);
     setOrUnset("HOME", root.home);
     return removed;
 }
@@ -358,7 +359,16 @@ void applyToThisProcess(bool apply)
     {
         return;
     }
-    RootValues root{.home = rootPasswdHome(), .runtimeDir = std::nullopt, .xauthority = std::nullopt};
+    // Only ROOT_PATH's folders no other account can write (#4666): SDL and the libraries in this process run programs by
+    // name (zenity for a file dialog), and would otherwise take one from a staff-writable or chown'd /usr/local. None:
+    // a folder in /proc, where no name is found (RootTools::NO_TRUSTED_FOLDER_PATH), never an empty PATH.
+    const std::string trusted = RootTools::trustedRootPath(ROOT_PATH, RootTools::systemRootFs());
+    RootValues root{
+        .home = rootPasswdHome(),
+        .runtimeDir = std::nullopt,
+        .xauthority = std::nullopt,
+        .path = trusted.empty() ? std::string(RootTools::NO_TRUSTED_FOLDER_PATH) : trusted,
+    };
     // root's own runtime folder, only if it's root's and no one else's to write.
     if (struct stat runtime = {}; ::lstat("/run/user/0", &runtime) == 0 && S_ISDIR(runtime.st_mode) && runtime.st_uid == 0 &&
                                   (runtime.st_mode & (S_IRWXG | S_IRWXO)) == 0)
@@ -379,7 +389,7 @@ void applyToThisProcess(bool apply)
         });
     // Fail closed: a PATH that isn't root's would be the user's (#4159).
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - as above
-    if (const char* path = std::getenv("PATH"); path == nullptr || std::string_view(path) != ROOT_PATH)
+    if (const char* path = std::getenv("PATH"); path == nullptr || std::string_view(path) != root.path)
     {
         std::fputs("TaskSmack: couldn't set root's PATH in an environment that may be another user's; not starting\n", stderr);
         std::_Exit(1);

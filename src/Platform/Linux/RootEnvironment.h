@@ -76,6 +76,10 @@ struct RootValues
     std::optional<std::string> home;       ///< root's passwd home; HOME is unset when unknown
     std::optional<std::string> runtimeDir; ///< root's own runtime folder (/run/user/0), if it's root's; else unset
     std::optional<std::string> xauthority; ///< root's own copy of the invoking user's Xauthority (applyToThisProcess()); else unset
+    /// The PATH to set: applyToThisProcess() gives ROOT_PATH's root-only folders (RootTools::trustedRootPath(), #4666), so
+    /// a library that runs a program by name (SDL's zenity file dialog) never finds one in a /usr/local another account
+    /// may write, as the children TaskSmack starts haven't since #4396. ROOT_PATH when not given.
+    std::string path = std::string(ROOT_PATH);
 };
 
 /// The value XDG_DATA_DIRS gets (the XDG default): the user's could list a folder of theirs, where the Vulkan loader
@@ -98,9 +102,10 @@ inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share"
 /// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
 /// #4179, and the review of #4187): every name not kept, a TZ that isn't safe and a checked variable whose value isn't (isSafeLocale()) are
 /// unset (collected first); a relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's
-/// (or is unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH becomes ROOT_PATH
-/// and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value that can't be set is unset instead, so
-/// nothing of the user's is left by a failure. @return The names removed (a failed unset is left out), in order.
+/// (or is unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH becomes @p root's
+/// path (ROOT_PATH's root-only folders, #4666) and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value
+/// that can't be set is unset instead, so nothing of the user's is left by a failure. @return The names removed (a failed unset is left
+/// out), in order.
 [[nodiscard]] std::vector<std::string> applyTo(const char* const* environment, const RootValues& root, const Operations& ops);
 
 /// The most an Xauthority file may hold to be copied: a few hundred bytes is usual.
@@ -126,8 +131,9 @@ inline constexpr std::array<std::string_view, 3> USER_SIDE_NAMES = {"PATH", "XDG
 [[nodiscard]] std::map<std::string, std::optional<std::string>, std::less<>>
 userSideValuesFrom(const std::function<std::optional<std::string>(std::string_view)>& env);
 
-/// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment,
-/// then checks it: a PATH that isn't ROOT_PATH ends TaskSmack (fail closed). Not thread-safe (setenv, unsetenv).
+/// main()'s call, first thing, before any thread or SDL call: when @p apply, applyTo() this process's environment with
+/// PATH ROOT_PATH's root-only folders (RootTools::trustedRootPath(); a folder in /proc when none is, #4666), then checks
+/// it: a PATH that isn't that one ends TaskSmack (fail closed). Not thread-safe (setenv, unsetenv).
 void applyToThisProcess(bool apply);
 
 /// The names applyToThisProcess() removed, for runApp() to log.
