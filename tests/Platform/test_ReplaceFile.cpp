@@ -70,6 +70,22 @@ TEST(ReplaceFileTest, NothingPlantedBesideTheFileIsFollowedOrWritten)
     EXPECT_EQ(filesIn(dir.path), 4U) << "the entry, the victim and the two planted links, nothing else";
 }
 
+// #4434: a link at the path itself is replaced by the file, as rename(2) does: the file it named is left as it was.
+TEST(ReplaceFileTest, ALinkAtThePathIsReplacedAndItsTargetLeftAlone)
+{
+    const TestSupport::ScopedTempDir dir("tasksmack_replace_link");
+    const std::filesystem::path target = dir.path / "target";
+    const std::filesystem::path path = dir.path / "entry.desktop";
+    std::ofstream(target) << "the link's target";
+    std::filesystem::create_symlink(target, path);
+
+    EXPECT_EQ(ReplaceFile::replace(path, "entry\n"), "");
+    EXPECT_FALSE(std::filesystem::is_symlink(path)) << "the link was replaced";
+    EXPECT_TRUE(std::filesystem::is_regular_file(path));
+    EXPECT_EQ(contents(path), "entry\n");
+    EXPECT_EQ(contents(target), "the link's target");
+}
+
 TEST(ReplaceFileTest, AFailureLeavesTheOldFileAndNoStagingFile)
 {
     if (::geteuid() == 0)

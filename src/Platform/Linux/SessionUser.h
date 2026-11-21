@@ -165,7 +165,7 @@ invokingUserSession(uid_t effectiveUid,
 /// One of this process's environment variables, or nullopt when it isn't set.
 [[nodiscard]] inline std::optional<std::string> processVariable(std::string_view name)
 {
-    // NOLINTNEXTLINE(concurrency-mt-unsafe) - read on the UI thread; nothing sets these
+    // NOLINTNEXTLINE(concurrency-mt-unsafe) - nothing changes the environment once main() starts its threads, so getenv() on a worker is safe (#4434)
     const char* const value = std::getenv(std::string(name).c_str());
     return value != nullptr ? std::optional<std::string>(value) : std::nullopt;
 }
