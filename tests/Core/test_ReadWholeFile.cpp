@@ -3,7 +3,6 @@
 /// if whole, when it can't be opened or a read fails (a folder's EISDIR stands in for EIO or ESTALE here).
 
 #include "Core/ReadWholeFile.h"
-#include "Platform/ScopedTempDir.h"
 
 #include <gtest/gtest.h>
 
@@ -11,15 +10,39 @@
 #include <fstream>
 #include <optional>
 #include <string>
+#include <system_error>
 
 namespace Core
 {
 namespace
 {
 
+/// A fresh folder of this test's own under the temp folder, removed afterwards (portable: ScopedTempDir is Linux's).
+struct TestFolder
+{
+    explicit TestFolder(const std::string& name)
+        : path(std::filesystem::temp_directory_path() / (name + "-" + std::to_string(::testing::UnitTest::GetInstance()->random_seed()) +
+                                                         "-" + ::testing::UnitTest::GetInstance()->current_test_info()->name()))
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+        std::filesystem::create_directories(path);
+    }
+    ~TestFolder()
+    {
+        std::error_code ec;
+        std::filesystem::remove_all(path, ec);
+    }
+    TestFolder(const TestFolder&) = delete;
+    TestFolder& operator=(const TestFolder&) = delete;
+    TestFolder(TestFolder&&) = delete;
+    TestFolder& operator=(TestFolder&&) = delete;
+    std::filesystem::path path;
+};
+
 TEST(ReadWholeFileTest, ReadsEveryByteExactly)
 {
-    const Platform::TestSupport::ScopedTempDir dir("ts_read_whole_file");
+    const TestFolder dir("ts_read_whole_file");
     const std::filesystem::path path = dir.path / "config.toml";
     std::string bytes = "[ui]\r\nname = \"a\"\n";
     bytes.push_back('\0');
@@ -33,7 +56,7 @@ TEST(ReadWholeFileTest, ReadsEveryByteExactly)
 
 TEST(ReadWholeFileTest, AnEmptyFileIsEmptyAndAMissingOneIsNothing)
 {
-    const Platform::TestSupport::ScopedTempDir dir("ts_read_whole_file_empty");
+    const TestFolder dir("ts_read_whole_file_empty");
     {
         std::ofstream out(dir.path / "empty.toml");
     }
@@ -45,7 +68,7 @@ TEST(ReadWholeFileTest, AnEmptyFileIsEmptyAndAMissingOneIsNothing)
 // or ESTALE; std::ifstream's buffer took that for the end of the file and handed back "" as the whole of it.
 TEST(ReadWholeFileTest, AReadThatFailsIsNothingNotAnEmptyFile)
 {
-    const Platform::TestSupport::ScopedTempDir dir("ts_read_whole_file_dir");
+    const TestFolder dir("ts_read_whole_file_dir");
     std::filesystem::create_directories(dir.path / "config.toml");
     EXPECT_EQ(readWholeFile(dir.path / "config.toml"), std::nullopt);
 }

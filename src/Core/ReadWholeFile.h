@@ -20,6 +20,7 @@
 
 #ifdef _WIN32
 #include <cstdio>
+#include <memory>
 #else
 #include <cerrno>
 
@@ -37,23 +38,22 @@ namespace Core
     std::string text;
     std::array<char, 16384> chunk{};
 #ifdef _WIN32
-    std::FILE* file = nullptr;
-    if (::_wfopen_s(&file, path.c_str(), L"rb") != 0 || file == nullptr)
+    std::FILE* opened = nullptr;
+    if (::_wfopen_s(&opened, path.c_str(), L"rb") != 0 || opened == nullptr)
     {
         return std::nullopt;
     }
+    const std::unique_ptr<std::FILE, int (*)(std::FILE*)> file(opened, &std::fclose); // closed on every way out
     for (;;)
     {
-        const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), file);
+        const std::size_t got = std::fread(chunk.data(), 1, chunk.size(), file.get());
         text.append(chunk.data(), got);
         if (got < chunk.size())
         {
             break; // the end, or an error: ferror() tells them apart
         }
     }
-    const bool failed = std::ferror(file) != 0;
-    std::fclose(file);
-    if (failed)
+    if (std::ferror(file.get()) != 0)
     {
         return std::nullopt;
     }
