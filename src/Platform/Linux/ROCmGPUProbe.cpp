@@ -5,6 +5,8 @@
 #include "PciRuntimePm.h"
 #include "Platform/GPUTypes.h"
 #include "ROCmGPUProbeMath.h"
+#include "RootTools.h"
+#include "SessionUser.h"
 
 #include <spdlog/spdlog.h>
 
@@ -19,6 +21,9 @@
 #include <vector>
 
 #include <dlfcn.h>
+#include <elf.h>
+#include <sys/auxv.h>
+#include <unistd.h>
 
 // ROCm SMI types and constants (for dynamic loading without requiring rocm_smi.h)
 // These definitions match the ROCm SMI API but don't require ROCm installation
@@ -276,8 +281,21 @@ bool ROCmGPUProbe::Impl::loadSymbols()
     // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
     if (rocmHandle == nullptr)
     {
-        const auto [handle, name] = ROCmGPUProbeMath::openFirstLibrary(ROCmGPUProbeMath::ROCM_SMI_LIBRARY_NAMES,
-                                                                       [](const char* candidate) { return dlopen(candidate, RTLD_NOW); });
+        // A root, setcap or capability-holding session opens /opt/rocm's copy only if root alone could have put it there
+        // (#4668): its constructors would run with the session's privilege.
+        const bool privileged = ::geteuid() == 0 || ::getauxval(AT_SECURE) != 0 || SessionUser::processHoldsCapabilities();
+        const auto open = [privileged](const char* candidate) -> void*
+        {
+            const std::optional<std::string> path = ROCmGPUProbeMath::libraryToOpen(
+                candidate, privileged, [](const std::string& file) { return RootTools::rootTrustedLibrary(file); });
+            if (!path.has_value())
+            {
+                spdlog::info("ROCmGPUProbe: not loading {} in a privileged session: another account could have put it there", candidate);
+                return nullptr;
+            }
+            return dlopen(path->c_str(), RTLD_NOW);
+        };
+        const auto [handle, name] = ROCmGPUProbeMath::openFirstLibrary(ROCmGPUProbeMath::ROCM_SMI_LIBRARY_NAMES, open);
         if (handle == nullptr)
         {
             // NOLINTNEXTLINE(concurrency-mt-unsafe) - dlerror() keeps its state per thread in glibc, so the GPU sampler thread reading its own is safe (#4434)
