@@ -67,6 +67,7 @@
 #include "Domain/ProcessSnapshot.h"
 #include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
+#include "Domain/ScopeFail.h"
 #include "Platform/CurrentProcess.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/ImageSignature.h"
@@ -1126,87 +1127,85 @@ void ProcessesPanel::onAttach()
         // Once the model has its probe the table fills whatever else fails here; before that a failure leaves the panel
         // nothing to show, so the panel is told (#4412). The sampler logs the throw itself, so it is passed on.
         bool probeInstalled = false;
-        try
+        // A guard, not `catch (...) { ...; throw; }`: a throw inside a handler crashes clang's Windows ASan runtime (#4518).
+        const Domain::ScopeFail noProbe(
+            [&probeInstalled, &handoff = handoff]
+            {
+                if (!probeInstalled)
+                {
+                    const std::scoped_lock lock(handoff->mutex);
+                    handoff->failed = "The process probe could not be started, so no processes can be listed. See the log for why.";
+                    handoff->hasFailed.store(true, std::memory_order_release);
+                }
+            });
+        ProcessesPanelPlatform platform = makePlatform ? makePlatform() : makeProcessesPanelPlatform(scenario);
+        if (platform.probe)
         {
-            ProcessesPanelPlatform platform = makePlatform ? makePlatform() : makeProcessesPanelPlatform(scenario);
-            if (platform.probe)
+            platform.probe->setSocketStatsCacheTtl(socketStatsCacheTtl);
+            // The opt-in UDP event trace (#1492): the probe reads it; the panel owns its on/off from here on.
+            if (platform.udpCollector)
             {
-                platform.probe->setSocketStatsCacheTtl(socketStatsCacheTtl);
-                // The opt-in UDP event trace (#1492): the probe reads it; the panel owns its on/off from here on.
-                if (platform.udpCollector)
+                platform.probe->setUdpTrafficCollector(platform.udpCollector);
+                if (udpEventTrace)
                 {
-                    platform.probe->setUdpTrafficCollector(platform.udpCollector);
-                    if (udpEventTrace)
-                    {
-                        // Not elevated, or refused: the collector logs why, and the counters stay TCP only.
-                        (void) platform.udpCollector->start();
-                    }
+                    // Not elevated, or refused: the collector logs why, and the counters stay TCP only.
+                    (void) platform.udpCollector->start();
                 }
             }
-            model->setProbe(std::move(platform.probe));
-            probeInstalled = true;
-
-            // The rest of the platform is the UI thread's: the row menu's actions, the icons (GL textures)
-            // and the UDP toggle. Handed over here, before the seed read, which they don't depend on and which
-            // can throw: the panel adopts them on its next frame, so a failed seed doesn't strand them (#4412).
-            // Asked here, on this thread, before the actions move: the initializers run in order.
-            const Platform::ProcessActionCapabilities actionCapabilities =
-                platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
-            const FindHandlesDialog::Capabilities findCapabilities =
-                FindHandlesDialog::capabilitiesOf(platform.openFiles.get(), platform.modules.get());
-            // The Set affinity dialog's CPU layout, read here once (#3182): GetLogicalProcessorInformationEx or
-            // sysfs, which the UI thread never calls. It doesn't change while TaskSmack runs. A read that fails
-            // is no layout (the dialog then offers CPUs 0 to N-1), not a lost hand-off.
-            Platform::CpuAffinityLayout affinityLayout;
-            if (platform.actions && actionCapabilities.canSetAffinity)
-            {
-                try
-                {
-                    affinityLayout = platform.actions->affinityLayout();
-                }
-                catch (const std::exception& ex)
-                {
-                    spdlog::warn("ProcessesPanel: the CPU layout could not be read: {}", ex.what());
-                }
-            }
-            PlatformHandoff::Contents contents{
-                .actions = std::move(platform.actions),
-                .actionCapabilities = actionCapabilities,
-                .affinityLayout = std::move(affinityLayout),
-                .udpCollector = std::move(platform.udpCollector),
-                .icons = std::move(platform.icons),
-                .openFiles = std::move(platform.openFiles),
-                .modules = std::move(platform.modules),
-                .findCapabilities = findCapabilities,
-            };
-            {
-                const std::scoped_lock lock(handoff->mutex);
-                handoff->contents = std::move(contents);
-            }
-
-            // The synthetic scenario's whole history window first (#1413), then the seed continues it.
-            if (scenario != nullptr)
-            {
-                Synthetic::preloadProcessHistory(scenario, *model, std::chrono::steady_clock::now());
-            }
-
-            // Seed with one read so the first background sample produces valid CPU deltas instead of
-            // all-zero percentages (this call establishes the prev-sample baseline; the next, one interval
-            // on, computes the delta).
-            model->refresh();
-            handoff->seeded.store(true, std::memory_order_release);
-            spdlog::info("ProcessesPanel: process probe built and model seeded on the sampler thread");
         }
-        catch (...)
+        model->setProbe(std::move(platform.probe));
+        probeInstalled = true;
+
+        // The rest of the platform is the UI thread's: the row menu's actions, the icons (GL textures)
+        // and the UDP toggle. Handed over here, before the seed read, which they don't depend on and which
+        // can throw: the panel adopts them on its next frame, so a failed seed doesn't strand them (#4412).
+        // Asked here, on this thread, before the actions move: the initializers run in order.
+        const Platform::ProcessActionCapabilities actionCapabilities =
+            platform.actions ? platform.actions->actionCapabilities() : Platform::ProcessActionCapabilities{};
+        const FindHandlesDialog::Capabilities findCapabilities =
+            FindHandlesDialog::capabilitiesOf(platform.openFiles.get(), platform.modules.get());
+        // The Set affinity dialog's CPU layout, read here once (#3182): GetLogicalProcessorInformationEx or
+        // sysfs, which the UI thread never calls. It doesn't change while TaskSmack runs. A read that fails
+        // is no layout (the dialog then offers CPUs 0 to N-1), not a lost hand-off.
+        Platform::CpuAffinityLayout affinityLayout;
+        if (platform.actions && actionCapabilities.canSetAffinity)
         {
-            if (!probeInstalled)
+            try
             {
-                const std::scoped_lock lock(handoff->mutex);
-                handoff->failed = "The process probe could not be started, so no processes can be listed. See the log for why.";
-                handoff->hasFailed.store(true, std::memory_order_release);
+                affinityLayout = platform.actions->affinityLayout();
             }
-            throw;
+            catch (const std::exception& ex)
+            {
+                spdlog::warn("ProcessesPanel: the CPU layout could not be read: {}", ex.what());
+            }
         }
+        PlatformHandoff::Contents contents{
+            .actions = std::move(platform.actions),
+            .actionCapabilities = actionCapabilities,
+            .affinityLayout = std::move(affinityLayout),
+            .udpCollector = std::move(platform.udpCollector),
+            .icons = std::move(platform.icons),
+            .openFiles = std::move(platform.openFiles),
+            .modules = std::move(platform.modules),
+            .findCapabilities = findCapabilities,
+        };
+        {
+            const std::scoped_lock lock(handoff->mutex);
+            handoff->contents = std::move(contents);
+        }
+
+        // The synthetic scenario's whole history window first (#1413), then the seed continues it.
+        if (scenario != nullptr)
+        {
+            Synthetic::preloadProcessHistory(scenario, *model, std::chrono::steady_clock::now());
+        }
+
+        // Seed with one read so the first background sample produces valid CPU deltas instead of
+        // all-zero percentages (this call establishes the prev-sample baseline; the next, one interval
+        // on, computes the delta).
+        model->refresh();
+        handoff->seeded.store(true, std::memory_order_release);
+        spdlog::info("ProcessesPanel: process probe built and model seeded on the sampler thread");
     };
     m_Sampler = std::make_unique<Domain::BackgroundSampler>(samplerCfg);
     m_Sampler->addSamplable(m_ProcessModel, "processes");
