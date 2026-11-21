@@ -179,6 +179,9 @@ struct SocketOwner
     // ProcessCounters::startTimeTicks), so Domain credits the process and not a later one that
     // reused its PID (#1336). 0 = couldn't be read (unknown).
     std::uint64_t startTimeTicks = 0;
+    // Its name (comm, raw bytes) from the same stat read as the start time (#4389), so a PID reused after the walk can't
+    // lend its name to the old owner's row. Empty where the map's builder doesn't need it (LinuxProcessProbe's).
+    std::string name;
 };
 
 /// Build a mapping from socket inode to owning process by scanning <procRoot>/[pid]/fd/*

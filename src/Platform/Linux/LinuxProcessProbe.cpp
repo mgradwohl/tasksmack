@@ -1496,11 +1496,12 @@ void LinuxProcessProbe::rebuildInodeMapWithFdCounts(int procDirFd, std::vector<P
         const std::uint64_t startTimeTicks = ProcParsing::startTimeTicksAt(pidDirFd.get());
         ProcessCounters scanned{};
         scanned.pid = counters.pid;
-        countProcessFds(pidDirFd.get(),
-                        scanned,
-                        /*readEveryLink=*/true,
-                        [&](std::uint64_t inode)
-                        { addSocketOwner(inodeToPid, inode, SocketOwner{.pid = counters.pid, .startTimeTicks = startTimeTicks}); });
+        countProcessFds(
+            pidDirFd.get(),
+            scanned,
+            /*readEveryLink=*/true,
+            [&](std::uint64_t inode)
+            { addSocketOwner(inodeToPid, inode, SocketOwner{.pid = counters.pid, .startTimeTicks = startTimeTicks, .name = {}}); });
         if (startTimeTicks == 0 || startTimeTicks != counters.startTimeTicks)
         {
             // Another process now (or this one exited): the row's process is gone, as above, and the

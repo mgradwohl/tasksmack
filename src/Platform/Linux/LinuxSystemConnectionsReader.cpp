@@ -10,7 +10,6 @@
 #include "NetlinkSocketStats.h"
 #endif
 
-#include <array>
 #include <cerrno>
 #include <cstddef>
 #include <cstdint>
@@ -28,25 +27,6 @@
 
 namespace Platform
 {
-
-namespace
-{
-
-/// A process's name from <procRoot>/<pid>/comm, without its newline, as well-formed UTF-8 on one line (#4322: shown,
-/// filtered and sorted only; actions go by PID and start time); empty if it can't be read.
-[[nodiscard]] std::string processName(const std::string& procRoot, std::int32_t pid)
-{
-    const std::string path = procRoot + "/" + std::to_string(pid) + "/comm";
-    std::array<char, 64> buf{};
-    std::size_t len = ProcParsing::readProcFile(path.c_str(), buf.data(), buf.size());
-    while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\0'))
-    {
-        --len;
-    }
-    return Domain::toSingleLine(std::string_view(buf.data(), len));
-}
-
-} // namespace
 
 LinuxSystemConnectionsReader::LinuxSystemConnectionsReader() = default;
 
@@ -140,7 +120,6 @@ SystemConnectionsRead LinuxSystemConnectionsReader::read()
 #if TASKSMACK_HAS_NETLINK_SOCKET_STATS
     const std::unordered_map<std::uint64_t, SocketOwner> owners = buildInodeToPidMap(m_ProcRoot);
 #endif
-    std::unordered_map<std::int32_t, std::string> names; // each holder's name, read once per read
     SystemConnectionsRead result{.status = SystemConnectionsStatus::Ok, .connections = {}, .detail = {}, .ratesUnavailable = {}};
     result.connections.reserve(sockets.size());
     for (const InetSockets::RawInetSocket& socket : sockets)
@@ -161,12 +140,9 @@ SystemConnectionsRead LinuxSystemConnectionsReader::read()
         {
             row.pid = owner->second.pid;
             row.startTimeTicks = owner->second.startTimeTicks;
-            auto [name, added] = names.try_emplace(row.pid);
-            if (added)
-            {
-                name->second = processName(m_ProcRoot, row.pid);
-            }
-            row.processName = name->second;
+            // The name from the walk's own stat read, with the start time (#4389), as well-formed UTF-8 on one line
+            // (#4322: shown, filtered and sorted only; actions go by PID and start time).
+            row.processName = Domain::toSingleLine(owner->second.name);
         }
 #endif
         result.connections.push_back(std::move(row));

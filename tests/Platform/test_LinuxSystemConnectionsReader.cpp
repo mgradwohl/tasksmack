@@ -87,13 +87,27 @@ TEST_F(LinuxSystemConnectionsReaderTest, ListsEverySocketWithItsHolder)
 // #4322: the holder's comm, cut at 15 bytes in the middle of a character, is shown as well-formed UTF-8.
 TEST_F(LinuxSystemConnectionsReaderTest, AHoldersNameIsWellFormedUtf8)
 {
-    write("100/comm", "Sicherung-Gr\xC3\xB6\xC3\n");
+    write("100/stat", "100 (Sicherung-Gr\xC3\xB6\xC3) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 1 0 4242 1000 50\n");
     LinuxSystemConnectionsReader reader(m_Proc.path.string());
     const SystemConnectionsRead read = reader.read();
     ASSERT_EQ(read.status, SystemConnectionsStatus::Ok) << read.detail;
     const auto held = std::ranges::find_if(read.connections, [](const SystemConnection& c) { return c.pid == 100; });
     ASSERT_NE(held, read.connections.end());
     EXPECT_EQ(held->processName, "Sicherung-Gr\xC3\xB6\xEF\xBF\xBD");
+}
+
+// #4389: the holder's name comes from the stat read that gave its start time, through the same handle, not from
+// re-opening <pid>/comm by number after the walk: a PID reused meanwhile would lend the old row its name.
+TEST_F(LinuxSystemConnectionsReaderTest, AHoldersNameComesFromTheSameReadAsItsStartTime)
+{
+    write("100/comm", "newcomer\n"); // what a later open by PID would see
+    LinuxSystemConnectionsReader reader(m_Proc.path.string());
+    const SystemConnectionsRead read = reader.read();
+    ASSERT_EQ(read.status, SystemConnectionsStatus::Ok) << read.detail;
+    const auto held = std::ranges::find_if(read.connections, [](const SystemConnection& c) { return c.pid == 100; });
+    ASSERT_NE(held, read.connections.end());
+    EXPECT_EQ(held->startTimeTicks, 4242U);
+    EXPECT_EQ(held->processName, "cupsd");
 }
 
 TEST_F(LinuxSystemConnectionsReaderTest, NoReadableTableIsAFailure)

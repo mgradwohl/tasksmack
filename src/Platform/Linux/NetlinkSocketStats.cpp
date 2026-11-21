@@ -781,17 +781,20 @@ std::unordered_map<std::uint64_t, SocketOwner> buildInodeToPidMap(const std::fil
 
         // Every socket link in /proc/[pid]/fd, through the same handle: the walk LinuxProcessProbe's
         // FD count shares on the samples it rebuilds the map itself (#1426).
-        std::optional<std::uint64_t> startTimeTicks; // read once, on the process's first socket
-        (void) ProcFdScan::scanFds(pidDirFd.get(),
-                                   /*readEveryLink=*/true,
-                                   [&](std::uint64_t inode)
-                                   {
-                                       if (!startTimeTicks.has_value())
-                                       {
-                                           startTimeTicks = ProcParsing::startTimeTicksAt(pidDirFd.get());
-                                       }
-                                       addSocketOwner(inodeToPid, inode, SocketOwner{.pid = pid, .startTimeTicks = *startTimeTicks});
-                                   });
+        // Read once, on the process's first socket: its start time and name from one stat read (#4389).
+        std::optional<ProcParsing::StatIdentity> identity;
+        (void) ProcFdScan::scanFds(
+            pidDirFd.get(),
+            /*readEveryLink=*/true,
+            [&](std::uint64_t inode)
+            {
+                if (!identity.has_value())
+                {
+                    identity = ProcParsing::statIdentityAt(pidDirFd.get());
+                }
+                addSocketOwner(
+                    inodeToPid, inode, SocketOwner{.pid = pid, .startTimeTicks = identity->startTimeTicks, .name = identity->comm});
+            });
     }
 
     return inodeToPid;
@@ -801,10 +804,13 @@ void addSocketOwner(std::unordered_map<std::uint64_t, SocketOwner>& inodeToPid, 
 {
     // Shared socket: the lowest PID keeps it, whatever order readdir() lists /proc in, so the owner
     // is the same on every rebuild (#1099).
-    const auto [it, inserted] = inodeToPid.try_emplace(inode, owner);
-    if (!inserted && owner.pid < it->second.pid)
+    if (const auto it = inodeToPid.find(inode); it == inodeToPid.end())
     {
-        it->second = owner;
+        inodeToPid.emplace(inode, std::move(owner));
+    }
+    else if (owner.pid < it->second.pid)
+    {
+        it->second = std::move(owner);
     }
 }
 
