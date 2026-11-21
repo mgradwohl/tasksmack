@@ -33,6 +33,33 @@ inline constexpr std::string_view RTL_NAME = "مدير";
 
 inline constexpr std::array NON_ASCII_NAMES{CJK_NAME, EMOJI_NAME, LATIN_NAME, RTL_NAME};
 
+// Invalid input (#4330): text that is not UTF-8, as the OS hands it over (a Linux comm or file name is bytes, and a
+// 15-byte comm is cut wherever the 15th byte falls). Each writer of a file is tested against these: what it writes must
+// read back as valid UTF-8 (Domain::isValidUtf8).
+
+/// A lone lead byte: a two-byte sequence cut after its first byte.
+inline constexpr std::string_view TRUNCATED_UTF8 = "\xC3";
+/// C0 AF: an overlong encoding of '/', never valid (0xC0 and 0xC1 are never lead bytes).
+inline constexpr std::string_view OVERLONG_UTF8 = "\xC0\xAF";
+/// A lone 0xFF, a byte that appears nowhere in UTF-8.
+inline constexpr std::string_view LONE_FF_UTF8 = "\xFF";
+/// A Linux comm cut at its 15-byte limit inside a multi-byte character: "datensicherung" is 14 bytes, and the 15th is
+/// the lead byte of a two-byte sequence.
+inline constexpr std::string_view CUT_COMM_UTF8 = "datensicherung\xC3";
+
+inline constexpr std::array INVALID_UTF8_NAMES{TRUNCATED_UTF8, OVERLONG_UTF8, LONE_FF_UTF8, CUT_COMM_UTF8};
+
+#ifdef _WIN32
+/// A wide name holding a lone high surrogate (0xD800): NTFS and the registry take one, but it has no UTF-8 form.
+[[nodiscard]] inline std::wstring loneSurrogateWideName()
+{
+    std::wstring name = L"lone";
+    name.push_back(static_cast<wchar_t>(0xD800));
+    name += L"name";
+    return name;
+}
+#endif
+
 /// All four names in one string.
 [[nodiscard]] inline std::string allNonAsciiNames()
 {

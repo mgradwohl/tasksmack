@@ -2,6 +2,8 @@
 /// @brief Tests for Platform::LinuxCoreDump (#807), the pure half of "Create dump file" on Linux: the
 /// core file's name, the gcore command, what is said when gcore fails, and gcore's ptrace refusals.
 
+#include "Domain/Utf8Sanitize.h"
+#include "NonAsciiTestNames.h"
 #include "Platform/Linux/LinuxCoreDump.h"
 #include "Platform/Linux/SyscallTrace.h"
 
@@ -14,6 +16,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <sys/stat.h>
@@ -64,6 +67,21 @@ TEST(LinuxCoreDumpTest, ACommCutInsideACharacterGivesAWellFormedName)
                            1),
               "a_b_1_2026-10-15_04-07-09.core");
     EXPECT_EQ(dumpFileName("\xC3", 1, t, 1), "process_1_2026-10-15_04-07-09.core");
+}
+
+// #4330: the shared invalid-UTF-8 fixtures: every one gives a well-formed name, and a cut comm keeps its text.
+TEST(LinuxCoreDumpTest, EveryInvalidUtf8FixtureGivesAWellFormedName)
+{
+    using LinuxCoreDump::dumpFileName;
+    const std::tm t = someLocalTime();
+    for (const std::string_view bad : TestSupport::INVALID_UTF8_NAMES)
+    {
+        SCOPED_TRACE(std::string(bad));
+        const std::string name = dumpFileName(bad, 1234, t, 1);
+        EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
+        EXPECT_TRUE(name.ends_with("_1234_2026-10-15_04-07-09.core")) << name;
+    }
+    EXPECT_EQ(dumpFileName(TestSupport::CUT_COMM_UTF8, 1234, t, 1), "datensicherung_1234_2026-10-15_04-07-09.core");
 }
 
 TEST(LinuxCoreDumpTest, ANameThatCantBeAFileNameIsMadeOne)
