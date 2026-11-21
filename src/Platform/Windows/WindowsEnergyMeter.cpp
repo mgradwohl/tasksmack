@@ -1,5 +1,6 @@
 #include "WindowsEnergyMeter.h"
 
+#include "WindowsDevInfo.h"
 #include "WindowsEnergyMeterMath.h"
 #include "WindowsHandles.h"
 
@@ -79,11 +80,12 @@ template<typename T> [[nodiscard]] bool query(const EnergyMeterFunctions& api, H
 std::vector<std::wstring> enumerateEnergyMeterDevicePaths()
 {
     std::vector<std::wstring> paths;
-    HDEVINFO devices = SetupDiGetClassDevsW(&ENERGY_METER_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (devices == INVALID_HANDLE_VALUE)
+    const UniqueDevInfo owned(SetupDiGetClassDevsW(&ENERGY_METER_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
+    if (!owned)
     {
         return paths;
     }
+    HDEVINFO devices = owned.get();
     for (DWORD index = 0; index < MAX_ENERGY_METERS; ++index)
     {
         SP_DEVICE_INTERFACE_DATA iface{};
@@ -107,7 +109,6 @@ std::vector<std::wstring> enumerateEnergyMeterDevicePaths()
             paths.emplace_back(static_cast<const wchar_t*>(detail->DevicePath));
         }
     }
-    SetupDiDestroyDeviceInfoList(devices);
     return paths;
 }
 

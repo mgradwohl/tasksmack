@@ -50,8 +50,10 @@
 #include "Platform/Windows/WindowsProcAddress.h"
 #include "WinString.h"
 #include "WindowsBootPerformance.h"
+#include "WindowsCoTaskMem.h"
 #include "WindowsCommitPaging.h"
 #include "WindowsCrashEvents.h"
+#include "WindowsDevInfo.h"
 #include "WindowsDevices.h"
 #include "WindowsDriverNodes.h"
 #include "WindowsDrivers.h"
@@ -75,6 +77,7 @@
 #include <cwchar>
 #include <format>
 #include <map>
+#include <memory>
 #include <optional>
 #include <span>
 #include <string>
@@ -174,19 +177,20 @@ static_assert(std::is_same_v<decltype(&::NetApiBufferFree), decltype(SystemInfoF
 
 void readJoinInformation(const SystemInfoFunctions& fns, OsInfo& info)
 {
-    LPWSTR name = nullptr;
+    LPWSTR written = nullptr;
     DWORD rawStatus = NetSetupUnknownStatus;
-    if (fns.netGetJoinInformation(nullptr, &name, &rawStatus) != NERR_Success)
+    if (fns.netGetJoinInformation(nullptr, &written, &rawStatus) != NERR_Success)
     {
         return;
     }
+    // Freed once it's read, null included, however this returns.
+    const Windows::UniqueNetApiBuffer<wchar_t> name(written, fns.netApiBufferFree);
     const auto status = static_cast<NETSETUP_JOIN_STATUS>(rawStatus);
-    if (name != nullptr && (status == NetSetupDomainName || status == NetSetupWorkgroupName))
+    if (name.get() != nullptr && (status == NetSetupDomainName || status == NetSetupWorkgroupName))
     {
-        info.domainOrWorkgroup = WinString::wideToUtf8(name);
+        info.domainOrWorkgroup = WinString::wideToUtf8(name.get());
         info.joinedToDomain = status == NetSetupDomainName;
     }
-    fns.netApiBufferFree(name);
 }
 
 void readTimeZone(const SystemInfoFunctions& fns, OsInfo& info)
@@ -389,8 +393,9 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
     {
         return {};
     }
-    HDEVINFO devices = SetupDiGetClassDevsW(&MONITOR_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (devices == INVALID_HANDLE_VALUE)
+    const Windows::UniqueDevInfo devices(
+        SetupDiGetClassDevsW(&MONITOR_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
+    if (!devices)
     {
         return {};
     }
@@ -399,19 +404,22 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
     iface.cbSize = sizeof(iface);
     SP_DEVINFO_DATA device{};
     device.cbSize = sizeof(device);
-    if (SetupDiOpenDeviceInterfaceW(devices, static_cast<const wchar_t*>(display.DeviceID), 0, &iface) != FALSE &&
-        (SetupDiGetDeviceInterfaceDetailW(devices, &iface, nullptr, 0, nullptr, &device) != FALSE ||
+    if (SetupDiOpenDeviceInterfaceW(devices.get(), static_cast<const wchar_t*>(display.DeviceID), 0, &iface) != FALSE &&
+        (SetupDiGetDeviceInterfaceDetailW(devices.get(), &iface, nullptr, 0, nullptr, &device) != FALSE ||
          GetLastError() == ERROR_INSUFFICIENT_BUFFER))
     {
-        HKEY key = SetupDiOpenDevRegKey(devices, &device, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
-        if (key != INVALID_HANDLE_VALUE)
+        // SetupDiOpenDevRegKey fails with INVALID_HANDLE_VALUE, which UniqueRegistryKey would take for a key.
+        if (HKEY opened = SetupDiOpenDevRegKey(devices.get(), &device, DICS_FLAG_GLOBAL, 0, DIREG_DEV, KEY_READ);
+            opened != INVALID_HANDLE_VALUE)
         {
+            const Windows::UniqueRegistryKey key(opened);
             constexpr DWORD MAX_EDID_BYTES = 32768;
             DWORD size = 0;
-            if (RegQueryValueExW(key, L"EDID", nullptr, nullptr, nullptr, &size) == ERROR_SUCCESS && size > 0 && size <= MAX_EDID_BYTES)
+            if (RegQueryValueExW(key.get(), L"EDID", nullptr, nullptr, nullptr, &size) == ERROR_SUCCESS && size > 0 &&
+                size <= MAX_EDID_BYTES)
             {
                 edid.resize(size);
-                if (RegQueryValueExW(key, L"EDID", nullptr, nullptr, edid.data(), &size) == ERROR_SUCCESS)
+                if (RegQueryValueExW(key.get(), L"EDID", nullptr, nullptr, edid.data(), &size) == ERROR_SUCCESS)
                 {
                     edid.resize(size);
                 }
@@ -420,10 +428,8 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
                     edid.clear();
                 }
             }
-            RegCloseKey(key);
         }
     }
-    SetupDiDestroyDeviceInfoList(devices);
     return edid;
 }
 
@@ -450,11 +456,12 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
 /// Every present device node (all classes) with its status. Reads only: no node is changed.
 [[nodiscard]] std::optional<std::vector<WindowsDevices::DevNodeRecord>> listDevNodes()
 {
-    HDEVINFO devices = SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT);
-    if (devices == INVALID_HANDLE_VALUE)
+    const Windows::UniqueDevInfo owned(SetupDiGetClassDevsW(nullptr, nullptr, nullptr, DIGCF_ALLCLASSES | DIGCF_PRESENT));
+    if (!owned)
     {
         return std::nullopt;
     }
+    HDEVINFO devices = owned.get();
     std::vector<WindowsDevices::DevNodeRecord> nodes;
     SP_DEVINFO_DATA device{};
     device.cbSize = sizeof(device);
@@ -493,7 +500,6 @@ using D3D12CreateDeviceFn = HRESULT(WINAPI*)(IUnknown*, D3D_FEATURE_LEVEL, REFII
         node.statusRead = CM_Get_DevNode_Status(&node.status, &node.problem, device.DevInst, 0) == CR_SUCCESS;
         nodes.push_back(std::move(node));
     }
-    SetupDiDestroyDeviceInfoList(devices);
     return nodes;
 }
 
@@ -809,10 +815,12 @@ SystemInfoFunctions WindowsSystemInfoProbe::systemFunctions()
         .userName = [](LPWSTR buffer, PULONG size) -> BOOL { return GetUserNameExW(NameSamCompatible, buffer, size); },
         .profileDirectory = [](LPWSTR buffer, PULONG size) -> BOOL
         {
-            PWSTR path = nullptr;
-            const HRESULT result = SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DONT_VERIFY, nullptr, &path);
-            const std::wstring profile = SUCCEEDED(result) && path != nullptr ? std::wstring(path) : std::wstring{};
-            CoTaskMemFree(path); // freed even on failure, as the call requires; null is fine
+            // Freed even on failure, as the call requires, once the profile is copied out. Its own statement:
+            // std::out_ptr hands the path to @c path only when the full expression ends.
+            Windows::UniqueCoTaskMem<wchar_t> path;
+            const HRESULT result = SHGetKnownFolderPath(FOLDERID_Profile, KF_FLAG_DONT_VERIFY, nullptr, std::out_ptr(path));
+            const std::wstring profile = SUCCEEDED(result) && path != nullptr ? std::wstring(path.get()) : std::wstring{};
+            path.reset(); // before the SetLastError calls below, as it was freed by hand
             if (profile.empty())
             {
                 SetLastError(ERROR_PATH_NOT_FOUND);

@@ -97,10 +97,12 @@ Update this page in the same PR as the bump.
 ## Ownership and lifetimes
 
 - **Rule of zero.** A class that needs a destructor is an owner: write (or delete) all five special members.
-- **Wrap every OS resource where it is acquired:** `Windows::UniqueHandle` and its relatives in `WindowsHandles.h`,
-  `Posix::FdGuard` and `DirGuard`, `ComPtr`, a `std::unique_ptr` with a deleter for a C allocation. No allocation or
-  other call that can throw may sit between an acquire and a hand-written release. `std::out_ptr` fills an owner
-  straight from an out-parameter.
+- **Wrap every OS resource where it is acquired:** `Windows::UniqueHandle` and its relatives in `WindowsHandles.h`
+  (and, for releases in heavier headers, `WindowsCoTaskMem.h`, `WindowsDevInfo.h`, `WindowsEventLogHandle.h` and
+  `WindowsPdhQuery.h`, #4367), `Posix::FdGuard` and `DirGuard`, `ComPtr`, a `std::unique_ptr` with a deleter for a C
+  allocation. No allocation or other call that can throw may sit between an acquire and a hand-written release.
+  `std::out_ptr` fills an owner straight from an out-parameter, but only when the full expression ends: make the
+  call its own statement, and test the owner after it, not in the same `if`.
 - **`std::string_view` and `std::span` are borrowed.** Don't store one that can outlive what it refers to, and don't
   return one into a local or a temporary. `string_view::data()` isn't NUL-terminated: a function that calls a C API
   takes `const std::string&`, or builds a string.

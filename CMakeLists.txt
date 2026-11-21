@@ -721,6 +721,10 @@ elseif(WIN32)
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h
         src/Platform/Windows/WindowsHandles.h
+        src/Platform/Windows/WindowsCoTaskMem.h
+        src/Platform/Windows/WindowsDevInfo.h
+        src/Platform/Windows/WindowsEventLogHandle.h
+        src/Platform/Windows/WindowsPdhQuery.h
         src/Platform/Windows/WindowsNtQuery.h
         src/Platform/Windows/WindowsProcessSnapshotSize.h
         src/Platform/Windows/WindowsDiskProbe.h
