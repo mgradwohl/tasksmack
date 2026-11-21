@@ -278,8 +278,8 @@ How it's made:
   until the hour turns over.
 - A run on `main` makes no artifact (#4717): its read-only job hands the JSON to the job that publishes as a
   job output. That job takes it as text that can't become commands, checks it's a flat set of JSON files
-  before pushing, and tries the push three times. A pull request's run publishes nothing, so it alone keeps
-  its JSON as an artifact (`release-dashboard-data`, three days) for the reviewer.
+  before pushing, and tries the push three times. A run that can't publish (a pull request's, or a manual one
+  on a branch) keeps its JSON as an artifact instead (`release-dashboard-data`, three days) for the reviewer.
 - To refresh now: "Refresh now" on the page opens the workflow on GitHub, where "Run workflow" starts a run, or
   `gh workflow run release-dashboard.yml`. The page can't start one itself, since that takes a token. A manual
   run doesn't queue: it cancels the run in progress and publishes what it reads. New data shows within about

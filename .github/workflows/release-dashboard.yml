@@ -9,8 +9,8 @@ name: Release Dashboard
 # Two jobs, so the token that can write never runs the generator:
 #   - generate: read-only. Runs the generator's tests, then the generator, and hands what it wrote to publish
 #               as a job output. No artifact (#4717): one a run was hundreds a day in a list that every
-#               ClusterFuzzLite lookup pages through (#4617). Only a pull request's run keeps one, for its
-#               reviewer.
+#               ClusterFuzzLite lookup pages through (#4617). Only a run that can't publish keeps one, for
+#               its reviewer: a pull request's, or a manual one on a branch.
 #   - publish:  `contents: write`, and no repository code: it replaces dashboard-data's single commit with the
 #               files it was handed. The branch holds one commit, replaced on every run, so a few hundred runs a
 #               day don't grow the repository; every figure can be regenerated from the API, so no history is
@@ -342,10 +342,12 @@ jobs:
           echo "data=$packed" >> "$GITHUB_OUTPUT"
           echo "Packed $(find "$RUNNER_TEMP/data" -name '*.json' | wc -l) files into ${#packed} characters."
 
-      # A pull request's run publishes nothing, so its JSON is kept where a reviewer can open it. Only then:
-      # a handful of artifacts, where one for every run was hundreds a day.
-      - name: Keep a pull request's data for its reviewer
-        if: github.event_name == 'pull_request'
+      # A run that can't publish (a pull request's, or a manual one on a branch) keeps its JSON where a
+      # reviewer can open it. Only then: a handful of artifacts, where one for every run was hundreds a day.
+      - name: Keep the data of a run that can't publish
+        if: >-
+          (github.event_name == 'pull_request' || github.ref != 'refs/heads/main') &&
+          steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: release-dashboard-data
@@ -435,6 +437,9 @@ jobs:
             if (( pause > 0 )); then
               echo "Trying the push again in $pause s."
               sleep "$pause"
+              # The next run waits five minutes from this commit's time, so it is the time of the push that
+              # lands, not of the first try.
+              git commit --quiet --amend --no-edit
             fi
             if timeout 60 git -c credential.helper= \
               -c 'credential.helper=!f() { echo username=x-access-token; echo "password=${GH_TOKEN}"; }; f' \

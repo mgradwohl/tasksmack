@@ -66,7 +66,7 @@
   stubs; jq and `date -d` are real, and the cases are skipped without jq.
 - release-dashboard.yml (#4717): the wait asks about the budget again after waiting and stops the run with a
   warning when it's gone; generate's "Pack the data for the publish job" and publish's "Unpack the data" hand
-  the JSON over as a job output with no artifact (a pull request's run alone keeps one, for its reviewer), a
+  the JSON over as a job output with no artifact (only a run that can't publish keeps one, for its reviewer), a
   string with a line break in it is refused and never runs as shell, and publish refuses anything but a flat
   set of JSON files; and "Replace the branch's one commit" tries its push three times. tar, gzip, base64 and
   jq are real; `git`, `timeout`, `sleep` and `gh` are shell functions.
@@ -3388,7 +3388,9 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         script = [
             f"date() {{ echo {cls.NOW}; }}",
             'sleep() { echo "slept $1" >> "$LOG"; }',
-            f'gh() {{ echo "{cls.ASKED}" >> "$LOG"; [[ -n "$REST_LEFT" ]] || return 1; echo "$REST_LEFT $POINTS_LEFT"; }}',
+            # Answers only the question the step should ask, as GitHub would for its filter: REST first.
+            f'gh() {{ echo "{cls.ASKED}" >> "$LOG"; [[ "$1 $2 $3" == "api rate_limit --jq" && -n "$REST_LEFT" ]] || return 1;'
+            ' echo "$REST_LEFT $POINTS_LEFT"; }',
         ]
 
         def ago(seconds: int | None) -> str:
@@ -3445,6 +3447,8 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         gate = find_step(self.WORKFLOW, "Stop here when this run has nothing to add", job=self.JOB)
         for key in ("MIN_REST_CALLS", "MIN_GRAPHQL_POINTS"):
             self.assertEqual(self.step.env[key], gate.env[key], key)
+        # The stub answers "REST points": the step's filter must ask for them in that order.
+        self.assertIn(r"""gh api rate_limit --jq '.resources | "\(.core.remaining) \(.graphql.remaining)"'""", self.step.run)
         self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
         for offset, ((published, rest, points), goes_on) in enumerate(self.AFTER_THE_WAIT.items()):
             index = len(self.CASES) + offset
@@ -3772,6 +3776,7 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         # A third: the push, with `git` failing as often as the case says. `timeout` and `sleep` only log.
         script = [
             "git() {",
+            '  if [[ " $* " == *" --amend "* ]]; then echo "commit again" >> "$CALLS"; fi',
             '  if [[ " $* " != *" push "* ]]; then return 0; fi',
             '  echo "push" >> "$CALLS"',
             '  (( $(grep -c "^push$" "$CALLS") > FAILING_PUSHES ))',
@@ -3869,22 +3874,31 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         self.assertIn("      data: ${{ steps.pack.outputs.data }}\n", generate)
         self.assertIn("        id: pack\n", generate)
 
-    def test_only_a_pull_requests_run_keeps_an_artifact(self):
-        # A pull request's run publishes nothing, so its JSON is kept for the reviewer. Every other run hands
-        # the data over without one, and the publish job downloads none.
+    def test_only_a_run_that_cant_publish_keeps_an_artifact(self):
+        # A pull request's run and a manual run on a branch publish nothing, so their JSON is kept for the
+        # reviewer. A run on main hands the data over without one, and the publish job downloads none.
         text = self.WORKFLOW.read_text(encoding="utf-8")
         uses = [action.split("@")[0] for action in re.findall(r"(?m)^\s+(?:- )?uses: (\S+)", text)]
         self.assertEqual(uses, ["actions/checkout", "actions/upload-artifact"], uses)
-        keep = find_step(self.WORKFLOW, "Keep a pull request's data for its reviewer", job="generate")
-        self.assertEqual(keep.condition, "github.event_name == 'pull_request'")
-        self.assertNotIn("uses:", text.split("\n  publish:\n", 1)[1])
+        generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        keep = generate.split("      - name: Keep the data of a run that can't publish\n", 1)[1]
+        condition = " ".join(keep.split("        if: >-\n", 1)[1].split("\n        uses:", 1)[0].split())
+        # The opposite of the publish job's own condition, and only when there is data to keep.
+        self.assertEqual(condition, "(github.event_name == 'pull_request' || github.ref != 'refs/heads/main') && "
+                                    "steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'")
+        publish = text.split("\n  publish:\n", 1)[1]
+        self.assertIn("github.event_name != 'pull_request' && github.ref == 'refs/heads/main'", publish)
+        self.assertNotIn("uses:", publish)
 
     def test_a_push_is_tried_three_times_a_minute_each_before_the_run_fails(self):
         self.assertEqual(self.pushing.returncode, 0, self.pushing.stdout + self.pushing.stderr)
+        # Before each later try the commit is made again, so its time is the push's: the next run's five-minute
+        # wait is measured from it.
+        three = ["limit 60", "push", "slept 15", "commit again", "limit 60", "push", "slept 45", "commit again", "limit 60", "push"]
         expected = {
             "the first push works": ("0", ["limit 60", "push"]),
-            "the third push works": ("0", ["limit 60", "push", "slept 15", "limit 60", "push", "slept 45", "limit 60", "push"]),
-            "no push works": ("1", ["limit 60", "push", "slept 15", "limit 60", "push", "slept 45", "limit 60", "push"]),
+            "the third push works": ("0", three),
+            "no push works": ("1", three),
         }
         for index, name in enumerate(self.push_cases):
             with self.subTest(case=name):
