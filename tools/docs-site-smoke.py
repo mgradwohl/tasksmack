@@ -632,7 +632,7 @@ def check_release_dashboard_refresh(page: Page, site: str, offline: bool) -> Non
     expect_release(page, current)
     banner = page.locator(".banner.stale")
     watching = page.locator(".watching")
-    updated = page.locator(".updated span")
+    updated = page.locator(".updated > span:first-child")
     if banner.is_visible():
         raise AssertionError(f"data 24 minutes old is flagged: {banner.text_content()!r}")
     page.clock.fast_forward(2 * 60 * 1000)
@@ -722,8 +722,17 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
     expect_release(page, index["current"])
     note = page.locator(".banner.budget")
     stale = page.locator(".banner.stale")
+    refresh = page.locator(".masthead a.refresh")
+    watching = page.locator(".watching")
     if note.is_visible() or stale.is_visible():
         raise AssertionError("fresh data with the budget in hand shows a banner")
+    # "Refresh now" is clicked, as someone would on a page that looks behind: the page looks every 30 seconds.
+    page.evaluate(
+        "() => document.addEventListener('click', event => {"
+        " if (event.target.closest('a.refresh')) event.preventDefault(); }, true)"
+    )
+    refresh.click()
+    watching.wait_for(state="visible", timeout=TIMEOUT_MS)
 
     # The budget goes: the same data comes again with the time it returns. The page's next look shows it.
     served["budget_until"] = stamp(until)
@@ -735,6 +744,9 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
     told = page.evaluate("iso => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(iso))", stamp(until))
     if note.locator("strong").text_content() != told:
         raise AssertionError(f"the budget note gives {note.locator('strong').text_content()!r}, not {told!r}")
+    # The note says nothing can refresh the figures, so the page doesn't offer to, or go on looking for them.
+    if refresh.is_visible() or watching.is_visible():
+        raise AssertionError("beside the budget note the page still offers 'Refresh now' or says it is looking for new data")
 
     # Past 25 minutes the data is stale, but the reason is known: the note stands, and the stale banner, whose
     # "Refresh now" couldn't help, stays away.
@@ -747,6 +759,8 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
     stale.wait_for(state="visible", timeout=TIMEOUT_MS)
     if note.is_visible():
         raise AssertionError("the budget note is still shown after the time it gave")
+    if not refresh.is_visible():
+        raise AssertionError("the budget is back and 'Refresh now' isn't")
 
     # New data, without the note: nothing is shown.
     served.clear()

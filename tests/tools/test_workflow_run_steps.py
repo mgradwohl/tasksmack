@@ -64,10 +64,11 @@
   only the events worth a run start one (no labels, no edits, no Main Health, and since #4700 no `opened`:
   `milestoned` covers a new issue), with two schedule lines five minutes apart. `date +%s` and `gh` are
   stubs; jq and `date -d` are real, and the cases are skipped without jq.
-- release-dashboard.yml (#4726): a run the spent budget stops hands on when the budget returns, once for each
-  hour (not when the published data names that hour already, and not with nothing published), and "Tell the page
-  when the budget returns" writes the last data again with that time. The generator and the check step's own
-  script run for real on the committed fixtures.
+- release-dashboard.yml (#4726): a run the spent budget stops hands on when the budget returns (the later hour
+  when both budgets are gone), and "Tell the page when the budget returns" writes the last data again with that
+  time: not when the published data names it already, and never as a failure. The publish job's commit and
+  README say such figures are an earlier run's. The generator and the check step's own script run for real on
+  the committed fixtures.
 - release-dashboard.yml (#4717): the wait asks about the budget again after waiting and stops the run with a
   warning when it's gone; generate's "Pack the data for the publish job" and publish's "Unpack the data" hand
   the JSON over as a job output with no artifact (only a run that can't publish keeps one, for its reviewer), a
@@ -3369,6 +3370,7 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
     }
     ASKED = "asked about the budget"
     RESET = NOW + 900  # when the stand-in for GitHub says each budget's hour ends
+    BOTH_LATER = 1200  # in the last run, how much later GraphQL's hour ends than REST's
     # #4717: after a wait the budget is asked about again. (how long ago the data was published, REST calls
     # left, GraphQL points left): whether the step lets the run go on. None is "the question failed".
     AFTER_THE_WAIT = {
@@ -3395,7 +3397,7 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
             'sleep() { echo "slept $1" >> "$LOG"; }',
             # Answers only the question the step should ask, as GitHub would for its filter: REST first.
             f'gh() {{ echo "{cls.ASKED}" >> "$LOG"; [[ "$1 $2 $3" == "api rate_limit --jq" && -n "$REST_LEFT" ]] || return 1;'
-            f' echo "$REST_LEFT {cls.RESET} $POINTS_LEFT {cls.RESET}"; }}',
+            f' echo "$REST_LEFT {cls.RESET} $POINTS_LEFT $(( {cls.RESET} + ${{POINTS_LATER:-0}} ))"; }}',
         ]
 
         def ago(seconds: int | None) -> str:
@@ -3403,12 +3405,15 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
 
         runs = [(published, created, 5000, 5000) for published, created in cls.CASES]
         runs += [(published, None, rest, points) for published, rest, points in cls.AFTER_THE_WAIT]
+        # Last, both budgets under their floors, GraphQL's hour ending BOTH_LATER seconds after REST's.
+        runs += [(60, None, 40, 100)]
         for index, (published, created, rest, points) in enumerate(runs):
             # A subshell per case: the step's `set -e` and `exit` end the case, not the script.
             script += [
                 f'echo "case {index}" >> "$LOG"',
                 f'( export PUBLISHED_AT="{ago(published)}" CREATED_AT="{ago(created)}"',
                 f'  export REST_LEFT="{"" if rest is None else rest}" POINTS_LEFT="{"" if points is None else points}"',
+                f'  export POINTS_LATER="{cls.BOTH_LATER if index == len(runs) - 1 else 0}"',
                 f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
                 cls.step.run,
                 f') > "$DIR/stdout-{index}" 2>&1',
@@ -3470,11 +3475,18 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
                 if not goes_on:
                     self.assertIn("::warning title=Release dashboard::The repository's API budget was used up during this run's wait",
                                   wrote["stdout"])
-                    self.assertIn("Nothing read: the page is told when the budget returns.", wrote["summary"])
+                    self.assertIn("Nothing read.", wrote["summary"])
                 self.assertEqual(self.ASKED in self.seen[index], published < 300, "asked only after a wait")
         text = self.WORKFLOW.read_text(encoding="utf-8")
         block = text.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
         self.assertIn("        id: wait\n", block)
+
+    def test_with_both_budgets_gone_the_later_hour_is_the_one_handed_on(self):
+        # The review's finding: REST's hour alone could end 20 minutes before a run can read again, and the
+        # page would give the earlier time, then be told again.
+        wrote = self.wrote[len(self.CASES) + len(self.AFTER_THE_WAIT)]
+        self.assertEqual(sorted(wrote["output"].splitlines()), sorted(["proceed=false", f"note={self.RESET + self.BOTH_LATER}"]), wrote["stdout"])
+        self.assertIn("40 REST calls left and 100 GraphQL points left", wrote["summary"])
 
     def test_it_reads_the_times_the_steps_before_it_publish(self):
         self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
@@ -3558,16 +3570,11 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         "a push whose run can't be read": ("push", 20, 60, 5000, 5000, None, GOES_ON),
         "an issue, the data not saying when it was read": ("issues", 20, None, 5000, 5000, 70, GOES_ON),
         "an issue in the data, the budget question failing": ("issues", 20, 60, None, None, 70, STOPS),
-        # #4726: a spent budget is said on the page, once for each hour it is gone.
-        "the schedule, the REST calls gone and the page told already": ("schedule", 300, 900, 0, 5000, 30, STOPS),
-        "the schedule, the REST calls gone and the page told of an earlier hour": ("schedule", 300, 900, 0, 5000, 30, STOPS),
+        # #4726: a spent budget's hour is handed on for the page. With both gone it is the later hour.
         "the schedule, the REST calls gone and nothing published": ("schedule", None, None, 0, 5000, 30, STOPS),
+        "the schedule with both gone, GraphQL's hour ending later": ("schedule", 300, 900, 40, 100, 30, STOPS),
     }
-    # What the published index.json already says of the budget, in seconds from the end of this hour.
-    TOLD = {
-        "the schedule, the REST calls gone and the page told already": 0,
-        "the schedule, the REST calls gone and the page told of an earlier hour": -3600,
-    }
+    BOTH_LATER = 1200  # in that last case, how much later GraphQL's hour ends than REST's
 
     @classmethod
     def setUpClass(cls):
@@ -3583,7 +3590,7 @@ class ReleaseDashboardGateTests(unittest.TestCase):
             "gh() {",
             '  if [[ "$2" == rate_limit ]]; then',
             '    [[ -n "$REST_LEFT" ]] || return 1',
-            f'    echo "$REST_LEFT {reset} $POINTS_LEFT {reset}"',
+            f'    echo "$REST_LEFT {reset} $POINTS_LEFT $(( {reset} + ${{POINTS_LATER:-0}} ))"',
             "  else",
             '    [[ -n "$CREATED" ]] || return 1',
             '    echo "$CREATED"',
@@ -3600,15 +3607,13 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         for index, (name, (event, published, read, rest, points, created, _)) in enumerate(cls.CASES.items()):
             if published is not None:
                 stamp = {} if read is None else {"generated_at": stamp_of(cls.NOW - read)}
-                if name in cls.TOLD:
-                    stamp["budget_until"] = stamp_of(reset + cls.TOLD[name])
                 (tmp / f"index-{index}.json").write_text(json.dumps({"schema": 1, **stamp}), encoding="utf-8")
             actor = "github-actions[bot]" if event == cls.MAIN_HEALTH else "a-person"
             script += [
                 f'( export EVENT="{event.split()[0]}" ACTOR="{actor}"',
                 f'  export PUBLISHED_AT="{ago(published)}" PREVIOUS_INDEX="$DIR/index-{index}.json"',
                 f'  export REST_LEFT="{"" if rest is None else rest}" POINTS_LEFT="{"" if points is None else points}"',
-                f'  export CREATED="{ago(created)}"',
+                f'  export CREATED="{ago(created)}" POINTS_LATER="{cls.BOTH_LATER if "ending later" in name else 0}"',
                 f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
                 cls.step.run,
                 f') > "$DIR/log-{index}" 2>&1',
@@ -3643,27 +3648,28 @@ class ReleaseDashboardGateTests(unittest.TestCase):
                 log = self.seen[name]["log"]
                 self.assertIn(f"::warning title=Release dashboard::The repository's API budget is used up: {which}", log)
                 self.assertIn("for about 10 more minutes", log)
-                self.assertIn("Nothing read: the page is told when the budget returns.", self.seen[name]["summary"])
+                self.assertIn("Nothing read.", self.seen[name]["summary"])
 
-    def test_a_spent_budget_is_handed_on_for_the_page_once_for_each_hour(self):
-        # #4726: the run that finds the budget gone hands on when it returns, and the last data is published
-        # again with that time. The runs after it in the same hour find the page told, and publish nothing.
-        reset = str(self.NOW + self.RESET_IN)
+    def test_a_spent_budget_hands_on_the_time_it_returns_for_the_page(self):
+        # #4726: the run that finds the budget gone hands on when it returns. "Tell the page when the budget
+        # returns" takes it from there: whether the page is told already this hour is the generator's to say.
+        reset = self.NOW + self.RESET_IN
         handed_on = {
             "a manual run with the REST calls gone": reset,
             "the schedule with the GraphQL points gone": reset,
             "Main Health's dispatch with the REST calls gone": reset,
-            "the schedule, the REST calls gone and the page told of an earlier hour": reset,
-            "the schedule, the REST calls gone and the page told already": None,
-            "the schedule, the REST calls gone and nothing published": None,
+            "the schedule, the REST calls gone and nothing published": reset,
+            # The review's finding: REST's hour alone would be 20 minutes early here.
+            "the schedule with both gone, GraphQL's hour ending later": reset + self.BOTH_LATER,
         }
         for name, note in handed_on.items():
             with self.subTest(case=name):
                 seen = self.seen[name]
-                self.assertEqual(seen["output"].get("note"), note, seen["log"])
-                said = "Nothing read: the page is told when the budget returns." if note else "Nothing read, nothing published."
-                self.assertIn(said, seen["summary"])
+                self.assertEqual(seen["output"].get("note"), str(note), seen["log"])
+                self.assertIn("Nothing read.", seen["summary"])
                 self.assertEqual(seen["log"].count("::warning title=Release dashboard::"), 1, seen["log"])
+        both = self.seen["the schedule with both gone, GraphQL's hour ending later"]["summary"]
+        self.assertIn("40 REST calls left and 100 GraphQL points left for about 30 more minutes", both)
         # No other case hands anything on: a run that goes on, or one the data already covers.
         for name in set(self.CASES) - set(handed_on):
             with self.subTest(case=name):
@@ -3714,13 +3720,14 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         self.assertEqual(find_step(self.WORKFLOW, "Generate", job=self.JOB).condition, go_on)
         # What a stopped run may still publish is the note that the budget is gone (#4726): the last data
         # again, read from nowhere. The check and the pack run for it as for data, and nothing else does.
-        has_data = f"({go_on}) || steps.note.outcome == 'success'"
+        has_data = f"({go_on}) || steps.note.outputs.wrote == 'true'"
         for name in ("Check what was written", "Pack the data for the publish job"):
             with self.subTest(step=name):
                 self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, has_data)
         generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertIn("    outputs:\n", generate)
         self.assertIn(f"      publish: ${{{{ {has_data} }}}}\n", generate)
+        self.assertIn("      note: ${{ steps.note.outputs.wrote }}\n", generate)
         publish = text.split("\n  publish:\n", 1)[1]
         condition = publish.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
         self.assertIn("needs.generate.outputs.publish == 'true'", condition)
@@ -3763,9 +3770,9 @@ class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
         self.assertEqual(step.condition, "(steps.gate.outputs.note != '' || steps.wait.outputs.note != '') && steps.previous.outputs.at != ''")
         # The wait's note is the later look at the budget, so it wins.
         self.assertEqual(step.env["UNTIL"], "${{ steps.wait.outputs.note || steps.gate.outputs.note }}")
-        self.assertEqual(
-            step.run.strip(),
-            'python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous" --budget-until "$UNTIL"',
+        self.assertIn(
+            'python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous" --budget-until "$UNTIL" || true',
+            step.run,
         )
         text = self.WORKFLOW.read_text(encoding="utf-8")
         generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
@@ -3776,6 +3783,48 @@ class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
         names = step_names(self.WORKFLOW, job=self.JOB)
         self.assertLess(names.index("Wait until the published data is five minutes old"), names.index(self.STEP))
         self.assertLess(names.index(self.STEP), names.index("Check what was written"))
+
+    def test_a_note_it_cant_write_or_neednt_is_no_failure_and_nothing_to_publish(self):
+        """The step's own script, with the real generator, three ways: the page not told yet, the page told
+        already this hour, and data that can't be repeated. Only the first has something to publish, and none
+        fails the run (the review's finding: a refused note failed every run of the hour)."""
+        step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+        tmp = Path(tempfile.mkdtemp(prefix="4726-budget-note-step-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        told = json.loads((self.FIXTURES / "index.json").read_text(encoding="utf-8"))
+        told["budget_until"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.UNTIL))
+        cases = {"not told yet": None, "told already": told, "nothing to repeat": "missing"}
+        script = [f'python3() {{ "{posix(Path(sys.executable))}" "$@"; }}']
+        for index, previous in enumerate(cases.values()):
+            runner = tmp / f"runner-{index}"
+            (runner / "previous").mkdir(parents=True)
+            if previous != "missing":
+                shutil.copytree(self.FIXTURES, runner / "previous", dirs_exist_ok=True)
+            if isinstance(previous, dict):
+                (runner / "previous" / "index.json").write_text(json.dumps(previous), encoding="utf-8")
+            script += [
+                f'( cd "$CHECKOUT"; export RUNNER_TEMP="$DIR/runner-{index}"',
+                f'  export GITHUB_OUTPUT="$DIR/output-{index}" GITHUB_STEP_SUMMARY="$DIR/summary-{index}"',
+                step.run,
+                f') > "$DIR/log-{index}" 2>&1',
+                f'echo "$?" > "$DIR/status-{index}"',
+            ]
+        result = run_bash("\n".join(script), tmp, {"DIR": posix(tmp), "CHECKOUT": posix(REPO), "UNTIL": str(self.UNTIL)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        def read(name: str) -> str:
+            path = tmp / name
+            return path.read_text(encoding="utf-8").strip() if path.is_file() else ""
+
+        for index, name in enumerate(cases):
+            with self.subTest(case=name):
+                wrote = name == "not told yet"
+                self.assertEqual(read(f"status-{index}"), "0", read(f"log-{index}"))
+                self.assertEqual(read(f"output-{index}"), "wrote=true" if wrote else "", read(f"log-{index}"))
+                self.assertEqual((tmp / f"runner-{index}" / "data" / "index.json").is_file(), wrote)
+                self.assertIn("The page is told when the budget returns" if wrote else "Nothing published.", read(f"summary-{index}"))
+        self.assertIn("::warning title=Release dashboard::The budget note couldn't be written", read("log-2"))
+        self.assertIn("already says the API budget is used up until", read("log-1"))
 
     def test_what_it_writes_passes_the_workflows_own_check(self):
         # The note's output goes through "Check what was written" like generated data. Run both for real:
@@ -3886,6 +3935,7 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
         script = [
             "git() {",
             '  if [[ " $* " == *" --amend "* ]]; then echo "commit again" >> "$CALLS"; fi',
+            '  if [[ " $* " == *" commit "* && " $* " != *" --amend "* ]]; then echo "${@: -1}" > "$CALLS.commit"; fi',
             '  if [[ " $* " != *" push "* ]]; then return 0; fi',
             '  echo "push" >> "$CALLS"',
             '  (( $(grep -c "^push$" "$CALLS") > FAILING_PUSHES ))',
@@ -3893,13 +3943,15 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
             'timeout() { echo "limit $1" >> "$CALLS"; shift; "$@"; }',
             'sleep() { echo "slept $1" >> "$CALLS"; }',
         ]
-        cls.push_cases = {"the first push works": 0, "the third push works": 2, "no push works": 3}
-        for index, failing in enumerate(cls.push_cases.values()):
+        # The last is a run that only added the budget note (#4726): its figures are an earlier run's.
+        cls.push_cases = {"the first push works": 0, "the third push works": 2, "no push works": 3, "a budget note": 0}
+        for index, (name, failing) in enumerate(cls.push_cases.items()):
             folder = cls.tmp / f"push-{index}" / "data"
             folder.mkdir(parents=True)
             (folder / "index.json").write_text("{}", encoding="utf-8")
             script += [
                 f'( cd "$DIR/push-{index}"; export FAILING_PUSHES={failing} CALLS="$DIR/push-calls-{index}"',
+                f'  export NOTE="{"true" if name == "a budget note" else ""}"',
                 f'  export GITHUB_STEP_SUMMARY="$DIR/push-summary-{index}"; : > "$CALLS"',
                 cls.push.run,
                 f') > "$DIR/push-log-{index}" 2>&1',
@@ -4008,6 +4060,7 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
             "the first push works": ("0", ["limit 60", "push"]),
             "the third push works": ("0", three),
             "no push works": ("1", three),
+            "a budget note": ("0", ["limit 60", "push"]),
         }
         for index, name in enumerate(self.push_cases):
             with self.subTest(case=name):
@@ -4018,6 +4071,23 @@ class ReleaseDashboardHandoverTests(unittest.TestCase):
                 published = "Published 1 files to dashboard-data." in self.read(f"push-summary-{index}")
                 self.assertEqual(published, status == "0")
                 self.assertEqual("The push to dashboard-data failed three times." in log, status == "1")
+
+    def test_a_budget_notes_commit_and_readme_say_the_figures_are_an_earlier_runs(self):
+        # The review's finding: the branch credited "this run" with figures it only published again.
+        self.assertEqual(self.push.env["NOTE"], "${{ needs.generate.outputs.note }}")
+        names = list(self.push_cases)
+        data, note = names.index("the first push works"), names.index("a budget note")
+        self.assertEqual(self.read(f"push-calls-{data}.commit"), "Release dashboard data, 01234567 (run 42)")
+        self.assertEqual(self.read(f"push-calls-{note}.commit"), "Release dashboard data again, with a budget note, 01234567 (run 42)")
+        ours = (self.tmp / f"push-{data}" / "data" / "README.md").read_text(encoding="utf-8")
+        theirs = (self.tmp / f"push-{note}" / "data" / "README.md").read_text(encoding="utf-8")
+        self.assertIn("in\n[this run](https://github.example/owner/repo/actions/runs/42), for", ours)
+        self.assertNotIn("budget", ours)
+        self.assertIn("in an\nearlier run", theirs)
+        self.assertIn("[this run](https://github.example/owner/repo/actions/runs/42) read nothing", theirs)
+        self.assertIn("(`budget_until` in index.json)", theirs)
+        for readme in (ours, theirs):
+            self.assertIn("This branch holds one commit", readme)
 
     def test_the_publish_job_outlasts_three_pushes(self):
         text = self.WORKFLOW.read_text(encoding="utf-8")

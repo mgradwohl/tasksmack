@@ -52,8 +52,9 @@ first read (#4617).
 
 When the budget is gone the page should say so, and when it returns (#4726). --budget-until does that with no
 request at all: it writes --previous out again as it is, with the time in index.json's `budget_until`. Every
-other field stays, `generated_at` too, so nothing takes it for new data. The next run that reads GitHub writes
-an index without the field.
+other field stays, `generated_at` too, so nothing takes it for new data. It writes nothing when --previous
+already names that time (the page is told once for each hour), and exits 1 with a warning when --previous
+can't be repeated. The next run that reads GitHub writes an index without the field.
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run
@@ -1780,19 +1781,22 @@ def _save(path: Path, value: Any, *, pretty: bool = False) -> None:
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
-def republish_with_budget_note(previous: Path | None, out: Path, until: str) -> int:
+def republish_with_budget_note(previous: Path, out: Path, until: str) -> int:
     """The API budget is used up until @p until (seconds since 1970, as GitHub's rate_limit gives a reset), so
     nothing can be read: write the last run's files again as they are, with that time in index.json for the
-    page to show (#4726). Makes no request. Exits 1, and writes nothing, when there is no last run to repeat."""
+    page to show (#4726). Makes no request.
+
+    Writes nothing, and returns 0, when the last run's index already names that time: the page is told once
+    for each hour the budget is gone. Returns 1 with a warning, having written nothing, when the last run
+    can't be repeated. That's a warning, not an error: the run it happens in has only a note to add, and the
+    page is no worse off without it. The files go out as they are, whatever schema they are in."""
     try:
-        if previous is None:
-            raise ValueError("--budget-until needs --previous, the data to publish again")
         if not re.fullmatch(r"\d{9,11}", until):
             raise ValueError(f"--budget-until is seconds since 1970, not {until!r}")
         when = datetime.fromtimestamp(int(until), UTC)
         index = _load(previous / "index.json")
-        if not isinstance(index, dict) or index.get("schema") != SCHEMA or not isinstance(index.get("releases"), list):
-            raise ValueError(f"{previous / 'index.json'} isn't an index in schema {SCHEMA}")
+        if not isinstance(index, dict) or not isinstance(index.get("releases"), list):
+            raise ValueError(f"{previous / 'index.json'} isn't an index of releases")
         titles = [release["title"] for release in index["releases"]]
         # Only the files the index names, and only names a milestone can have: nothing else rides along.
         if not titles or any(not isinstance(title, str) or version_of(title) is None for title in titles):
@@ -1801,8 +1805,11 @@ def republish_with_budget_note(previous: Path | None, out: Path, until: str) -> 
         if missing:
             raise ValueError(f"{previous} has no file for {', '.join(missing)}")
     except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
-        print(f"::error title=Release dashboard::The budget note couldn't be written: {error}", file=sys.stderr)
+        print(f"::warning title=Release dashboard::The budget note couldn't be written: {error}", file=sys.stderr)
         return 1
+    if index.get("budget_until") == iso(when):
+        print(f"The published data already says the API budget is used up until {iso(when)}: nothing to write again.")
+        return 0
     out.mkdir(parents=True, exist_ok=True)
     for title in titles:
         shutil.copyfile(previous / f"{title}.json", out / f"{title}.json")
@@ -1875,6 +1882,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error(f"--repo must be owner/name, not {args.repo!r}")
     if args.budget_until is not None:
+        # It reads nothing and builds nothing, so a flag that says what to read or build would be ignored.
+        ignored = [flag for flag, given in (("--from-raw", args.from_raw), ("--dump-raw", args.dump_raw),
+                                            ("--milestone", args.milestone), ("--now", args.now)) if given]
+        if ignored:
+            parser.error(f"--budget-until writes --previous again as it is: it can't be given with {', '.join(ignored)}")
+        if args.previous is None:
+            parser.error("--budget-until needs --previous, the data to publish again")
         return republish_with_budget_note(args.previous, args.out, args.budget_until)
 
     try:

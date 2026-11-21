@@ -1763,7 +1763,43 @@ class BudgetNoteTests(unittest.TestCase):
             # The finished release is still copied from the run before, as if the note had not been between.
             self.assertIn("v1.0.0: final, copied from the last run", printed)
 
-    def test_with_nothing_to_repeat_it_fails_and_writes_nothing(self):
+    def test_the_page_is_told_once_for_each_hour(self):
+        # A run that finds the published data naming this time already has nothing to add: no files, so the
+        # workflow publishes nothing, and exit 0, so it isn't a failure either.
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as parent:
+            generate(Path(first))
+            self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            again = Path(parent) / "out"
+            code, printed = self.note(again, "--previous", second, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+            self.assertIn(f"already says the API budget is used up until {self.UNTIL_ISO}", printed)
+            self.assertFalse(again.exists() and any(again.iterdir()), "nothing is written")
+
+    def test_data_in_another_schema_goes_out_again_as_it_is(self):
+        # The review's finding: the note copies the files and reads none of their figures, so a schema this
+        # generator doesn't write is no reason to refuse. Refusing made every run of the hour fail.
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            index = json.loads((Path(first) / "index.json").read_text(encoding="utf-8"))
+            index["schema"] = dashboard.SCHEMA + 1
+            (Path(first) / "index.json").write_text(json.dumps(index), encoding="utf-8")
+            code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+            after = json.loads((Path(second) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual((after["schema"], after["budget_until"]), (dashboard.SCHEMA + 1, self.UNTIL_ISO))
+
+    def test_a_flag_it_would_ignore_is_a_usage_error(self):
+        with tempfile.TemporaryDirectory() as first:
+            generate(Path(first))
+            for flags in (["--from-raw", first], ["--dump-raw", first], ["--milestone", "v1.1.0"], ["--now", "2026-01-20T12:00:00Z"]):
+                with self.subTest(flags=flags), self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                    dashboard.main(["--out", "x", "--previous", first, "--budget-until", str(self.UNTIL), *flags])
+                self.assertEqual(raised.exception.code, 2)
+            with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
+                dashboard.main(["--out", "x", "--budget-until", str(self.UNTIL)])
+            self.assertEqual(raised.exception.code, 2)
+
+    def test_with_nothing_to_repeat_it_warns_and_writes_nothing(self):
         def broken(change) -> str:  # noqa: ANN001 - a function that spoils a copy of the last run
             folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
             generate(folder)
@@ -1777,10 +1813,9 @@ class BudgetNoteTests(unittest.TestCase):
 
         good = broken(lambda folder: None)
         cases = {
-            "no --previous": ["--budget-until", str(self.UNTIL)],
             "an empty --previous": ["--previous", self.enterContext(tempfile.TemporaryDirectory()), "--budget-until", str(self.UNTIL)],
             "an index that isn't JSON": ["--previous", broken(lambda folder: (folder / "index.json").write_text("{not json", encoding="utf-8")), "--budget-until", str(self.UNTIL)],
-            "an index in another schema": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(schema=dashboard.SCHEMA + 1))), "--budget-until", str(self.UNTIL)],
+            "an index that isn't a list of releases": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(releases="all of them"))), "--budget-until", str(self.UNTIL)],
             "an index that names no release": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(releases=[]))), "--budget-until", str(self.UNTIL)],
             "a release that isn't a milestone's name": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index["releases"][0].update(title="../v1.0.0"))), "--budget-until", str(self.UNTIL)],
             "a release whose file is gone": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").unlink()), "--budget-until", str(self.UNTIL)],
@@ -1793,8 +1828,10 @@ class BudgetNoteTests(unittest.TestCase):
             with self.subTest(case=name), tempfile.TemporaryDirectory() as parent:
                 out = Path(parent) / "out"
                 code, printed = self.note(out, *args)
+                # A warning, not an error: the run this happens in has only a note to add.
                 self.assertEqual(code, 1, printed)
-                self.assertIn("::error title=Release dashboard::The budget note couldn't be written", printed)
+                self.assertIn("::warning title=Release dashboard::The budget note couldn't be written", printed)
+                self.assertNotIn("::error", printed)
                 self.assertFalse(out.exists() and any(out.iterdir()), "nothing is written")
 
 
