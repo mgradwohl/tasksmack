@@ -3,10 +3,12 @@
 /// says -- access denied, a protected process, a full disk, a cancel, a process of another architecture. Pure, so
 /// built everywhere.
 
+#include "Platform/Windows/WindowsProcessDumpMath.h"
+#ifdef _WIN32
 #include "Domain/Utf8Sanitize.h"
 #include "NonAsciiTestNames.h"
 #include "Platform/Windows/WinString.h"
-#include "Platform/Windows/WindowsProcessDumpMath.h"
+#endif
 
 #include <gtest/gtest.h>
 
@@ -15,7 +17,6 @@
 #include <cstdint>
 #include <format>
 #include <string>
-#include <string_view>
 
 namespace Platform::DumpMath
 {
@@ -35,7 +36,9 @@ TEST(DumpFileNameTest, ImageNamePidAndTime)
 // #4330: an image name reaches dumpFileName() as UTF-8 made from the wide name (WinString::wideToUtf8), so it is
 // always well-formed. (dumpFileStem() itself passes bytes of an ill-formed name through unchanged; with no caller able
 // to give it one, that is not tested here.)
-// A name with a lone surrogate (NTFS allows one) reaches here as U+FFFD, valid UTF-8.
+// A name with a lone surrogate (NTFS allows one) reaches here as U+FFFD, valid UTF-8. Windows only: wchar_t is UTF-16 there,
+// and these math tests also build on Linux, where it isn't.
+#ifdef _WIN32
 TEST(DumpFileNameTest, ALoneSurrogateImageNameGivesAUtf8FileName)
 {
     const std::string image = WinString::wideToUtf8(TestSupport::loneSurrogateWideName() + L".exe");
@@ -43,6 +46,7 @@ TEST(DumpFileNameTest, ALoneSurrogateImageNameGivesAUtf8FileName)
     EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
     EXPECT_TRUE(name.contains("\xEF\xBF\xBD")) << name;
 }
+#endif
 
 TEST(DumpFileNameTest, TheStemIsSafeForAFileName)
 {
