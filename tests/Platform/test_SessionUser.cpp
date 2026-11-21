@@ -9,8 +9,10 @@
 
 #include <algorithm>
 #include <charconv>
+#include <cstddef>
 #include <cstdint>
 #include <cstdlib>
+#include <fstream>
 #include <functional>
 #include <initializer_list>
 #include <map>
@@ -22,6 +24,7 @@
 #include <vector>
 
 #include <sys/types.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace Platform::SessionUser
@@ -398,6 +401,65 @@ TEST(SessionUserTest, OnlyAnInvokerAboveTheProcessIsTrusted)
         return invokerVariable(name, name == "SUDO_UID" ? std::optional<std::string>("1001") : std::nullopt, above1000);
     };
     EXPECT_FALSE(invokingUser(0, forged, account).has_value());
+}
+
+// #4404: the three real /proc readers behind "may this root session trust SUDO_UID" (#4186, #4154), against this test
+// process: unprivileged, and changing nothing on the machine. A wrong key or field would silently switch the gate.
+TEST(SessionUserProcTest, ProcessIdsReadsThisProcesssParentAndUids)
+{
+    const std::optional<ProcessIds> self = processIds(::getpid());
+    ASSERT_TRUE(self.has_value());
+    EXPECT_EQ(self->parent, ::getppid());
+    EXPECT_EQ(self->realUid, ::getuid());
+    EXPECT_EQ(self->effectiveUid, ::geteuid());
+}
+
+TEST(SessionUserProcTest, ProcessIdsOfAProcessThatIsGoneIsNothing)
+{
+    const pid_t child = ::fork();
+    ASSERT_GE(child, 0);
+    if (child == 0)
+    {
+        ::_exit(0);
+    }
+    int status = 0;
+    ASSERT_EQ(::waitpid(child, &status, 0), child);
+    EXPECT_FALSE(processIds(child).has_value()) << "a reaped child's /proc entry is gone";
+}
+
+TEST(SessionUserProcTest, ProcessHoldsCapabilitiesAgreesWithCapEffAndCapPrm)
+{
+    // A second, independent reading of the same two lines: any set bit in either.
+    std::ifstream status("/proc/self/status");
+    bool expected = false;
+    int found = 0;
+    for (std::string line; std::getline(status, line);)
+    {
+        if (line.starts_with("CapEff:") || line.starts_with("CapPrm:"))
+        {
+            ++found;
+            const std::string_view text = std::string_view(line).substr(7);
+            const std::size_t start = text.find_first_not_of(" \t");
+            std::uint64_t bits = 0;
+            ASSERT_NE(start, std::string_view::npos) << line;
+            const auto [end, error] = std::from_chars(text.data() + start, text.data() + text.size(), bits, 16);
+            ASSERT_EQ(error, std::errc{}) << line;
+            expected = expected || bits != 0;
+        }
+    }
+    ASSERT_EQ(found, 2) << "both lines are in /proc/self/status";
+    EXPECT_EQ(processHoldsCapabilities(), expected);
+}
+
+TEST(SessionUserProcTest, ThisProcesssOwnUidIsAboveItWhenNotRoot)
+{
+    if (::getuid() == 0 || ::geteuid() == 0)
+    {
+        GTEST_SKIP() << "as root, the processes above may be root's too";
+    }
+    // The test runner (ctest, a shell) is this user's: invokerIsAboveThisProcess() walks real /proc to find it.
+    EXPECT_TRUE(invokerIsAboveThisProcess(::getuid()));
+    EXPECT_FALSE(invokerIsAboveThisProcess(::getuid() + 54321)) << "an id no process above has";
 }
 
 } // namespace Platform::SessionUser
