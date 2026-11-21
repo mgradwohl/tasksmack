@@ -351,14 +351,16 @@ UnitProgram unitProgram(std::string_view execStart, const SystemdUserDirs& dirs)
         return result; // an escape sequence isn't worked out here
     }
     std::string program;
-    for (std::size_t at = 0; at < word.size(); ++at)
+    std::string_view text = word;
+    while (!text.empty())
     {
-        if (word[at] != '%')
+        const std::size_t percent = text.find('%');
+        program += text.substr(0, percent);
+        if (percent == std::string_view::npos)
         {
-            program += word[at];
-            continue;
+            break;
         }
-        const char specifier = at + 1 < word.size() ? word[at + 1] : '\0';
+        const char specifier = percent + 1 < text.size() ? text[percent + 1] : '\0';
         if (specifier == '%')
         {
             program += '%';
@@ -371,7 +373,7 @@ UnitProgram unitProgram(std::string_view execStart, const SystemdUserDirs& dirs)
         {
             return result; // %U, %t, %E and the rest aren't worked out here
         }
-        ++at;
+        text.remove_prefix(percent + 2);
     }
     std::error_code ec;
     if (program.starts_with('/'))
