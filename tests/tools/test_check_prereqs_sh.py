@@ -150,5 +150,27 @@ class CheckPrereqsLibraryTests(CheckerTestBase):
         )
 
 
+class CheckPrereqsIwyuTests(CheckerTestBase):
+    """#4708: an IWYU built against the wrong Clang gets the same what-to-do hint as a missing one, naming CI's commit."""
+
+    CI_SHA = re.search(
+        r"IWYU_COMMIT_SHA: '([0-9a-f]{40})'", (CHECK_PREREQS_SH.parent.parent / ".github" / "workflows" / "ci.yml").read_text()
+    ).group(1)
+
+    def test_a_missing_iwyu_gets_the_hint_with_cis_commit(self):
+        out = self.run_checker()
+        self.assertRegex(out, r"(?m)^iwyu: not found")
+        self.assertIn(self.CI_SHA, out)
+
+    def test_an_iwyu_built_against_another_clang_gets_the_hint_too(self):
+        stub = self.bin / "iwyu"
+        stub.write_text("#!/bin/sh\necho 'include-what-you-use 0.23 based on Ubuntu clang version 19.1.7'\n", encoding="utf-8")
+        stub.chmod(0o755)
+        out = self.run_checker()
+        self.assertRegex(out, r"(?m)^iwyu: 0\.23 .*built against Clang 19")
+        self.assertIn("Hint", out[out.index("iwyu: 0.23"):])
+        self.assertIn(self.CI_SHA, out[out.index("iwyu: 0.23"):])
+
+
 if __name__ == "__main__":
     unittest.main()

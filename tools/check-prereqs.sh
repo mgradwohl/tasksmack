@@ -174,6 +174,19 @@ get_llvm_profdata_version() {
     fi
 }
 
+# How to get an IWYU this project can use (#4708), for both the not-found and the wrong-Clang rows: built from source
+# against Clang 23 at the commit CI pins (.github/workflows/ci.yml's IWYU_COMMIT_SHA), so a local run matches CI's.
+# apt's iwyu is built against an older Clang (19 on Ubuntu 26.04), which tools/iwyu.sh refuses for --fix.
+print_iwyu_hint() {
+    local sha
+    sha="$(grep -oE "IWYU_COMMIT_SHA: '[0-9a-f]{40}'" "$SCRIPT_DIR/../.github/workflows/ci.yml" 2>/dev/null | grep -oE '[0-9a-f]{40}' | head -1 || true)"
+    echo -e "  ${CYAN}Hint${NC}: build it from source against Clang ${MIN_CLANG_VERSION}: the clang_${MIN_CLANG_VERSION} branch of"
+    local at=""
+    [[ -n "$sha" ]] && at=" at the commit CI pins, ${sha}"
+    echo -e "        https://github.com/include-what-you-use/include-what-you-use${at}"
+    echo -e "        (CONTRIBUTING.md, Include-What-You-Use, has the commands; apt's iwyu uses an older Clang)"
+}
+
 # Get iwyu version
 get_iwyu_version() {
     if command -v iwyu &>/dev/null; then
@@ -453,8 +466,7 @@ main() {
     iwyu_ver="$(get_iwyu_version)"
     if [[ -z "${iwyu_ver}" ]]; then
         echo -e "${YELLOW}iwyu${NC}: not found (optional; required only for ./tools/iwyu.sh)"
-        echo -e "  ${CYAN}Hint${NC}: build it from source against Clang ${MIN_CLANG_VERSION} (the clang_${MIN_CLANG_VERSION} branch of"
-        echo -e "        https://github.com/include-what-you-use/include-what-you-use), as CI does"
+        print_iwyu_hint
     else
         local iwyu_path iwyu_clang
         iwyu_path="$(command -v iwyu 2>/dev/null || true)"
@@ -462,6 +474,7 @@ main() {
         iwyu_clang="$(iwyu --version 2>&1 | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
         if [[ -n "${iwyu_clang}" && "${iwyu_clang}" != "${MIN_CLANG_VERSION}" ]]; then
             echo -e "${YELLOW}iwyu${NC}: ${iwyu_ver} (${iwyu_path}) - built against Clang ${iwyu_clang}; CI builds it against Clang ${MIN_CLANG_VERSION}"
+            print_iwyu_hint # what to do, not only what's wrong (#4708)
         else
             echo -e "${GREEN}iwyu${NC}: ${iwyu_ver} (${iwyu_path})"
         fi

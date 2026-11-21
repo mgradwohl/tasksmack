@@ -1193,10 +1193,19 @@ IWYU analyzes `#include` directives and suggests additions/removals for cleaner 
 ./tools/iwyu.sh src/Domain/ProcessModel.cpp
 ```
 
-**Installation:**
+**Installation:** build IWYU from source against Clang 23, at the commit CI pins (`IWYU_COMMIT_SHA` in
+`.github/workflows/ci.yml`), so a local run matches CI's. Don't use `sudo apt install iwyu`: Ubuntu 26.04's package
+is built against Clang 19 (`include-what-you-use 0.23 based on Ubuntu clang version 19.1.7`), and `tools/iwyu.sh`
+refuses `--fix` with it (#4707). `./tools/check-prereqs.sh` prints the commit to use.
+
 ```bash
-# Ubuntu/Debian
-sudo apt install iwyu
+sha=$(grep -oE "IWYU_COMMIT_SHA: '[0-9a-f]{40}'" .github/workflows/ci.yml | grep -oE '[0-9a-f]{40}')
+git init -q /tmp/iwyu-src
+git -C /tmp/iwyu-src remote add origin https://github.com/include-what-you-use/include-what-you-use.git
+git -C /tmp/iwyu-src fetch --depth 1 origin "$sha" && git -C /tmp/iwyu-src checkout --quiet FETCH_HEAD
+cmake -G Ninja -DCMAKE_C_COMPILER=clang-23 -DCMAKE_CXX_COMPILER=clang++-23 \
+    -DCMAKE_PREFIX_PATH=/usr/lib/llvm-23 -DCMAKE_INSTALL_PREFIX="$HOME/.local" -S /tmp/iwyu-src -B /tmp/iwyu-build
+cmake --build /tmp/iwyu-build && cmake --install /tmp/iwyu-build --strip   # iwyu in ~/.local/bin
 ```
 
 **Notes:**
@@ -1207,7 +1216,7 @@ sudo apt install iwyu
 - **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
 - The project includes a `.iwyu.imp` mapping file for project-specific rules.
 - To run via pre-commit: `pre-commit run iwyu --hook-stage manual`.
-- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is typically built against an older Clang and will trigger this warning locally. For reliable local runs, build iwyu from source against Clang 23+: https://github.com/include-what-you-use/include-what-you-use
+- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is built against an older Clang and triggers this warning locally, so build it from source as **Installation** above shows.
 
 ### Formatting (required before PRs)
 
