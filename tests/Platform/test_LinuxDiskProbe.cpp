@@ -321,6 +321,48 @@ TEST_F(LinuxDiskProbeReadTest, SysBlockDecidesWholeDevicesAndMarksStackedOnes)
     std::filesystem::remove_all(sysBlock, ec);
 }
 
+// #4628: /sys/block also lists devices that aren't disks to show: an optical drive, a floppy, an eMMC's boot and RPMB
+// areas, and devices with no media (size 0, as nbd makes 16 of at load). The rows are the same as the name rule gave,
+// plus the arrays and volumes #4391 added.
+TEST_F(LinuxDiskProbeReadTest, SysBlockLeavesOutDrivesBootAreasAndDevicesWithNoMedia)
+{
+    const std::filesystem::path sysBlock = m_DiskstatsPath.string() + "_sysblock_media";
+    const auto device = [&](const char* name, const char* sectors)
+    {
+        std::filesystem::create_directories(sysBlock / name);
+        if (sectors != nullptr)
+        {
+            std::ofstream(sysBlock / name / "size") << sectors << "\n";
+        }
+    };
+    device("sda", "1953525168");
+    device("sr0", "2097151");
+    device("fd0", "2880");
+    device("mmcblk0", "61071360");
+    device("mmcblk0boot0", "8192");
+    device("mmcblk0rpmb", "8192");
+    device("nbd0", "0");
+    device("nbd1", "2097152");
+    device("md0", nullptr); // no size file: kept
+    std::string lines;
+    for (const char* name : {"sda", "sr0", "fd0", "mmcblk0", "mmcblk0boot0", "mmcblk0rpmb", "nbd0", "nbd1", "md0"})
+    {
+        lines += makeLine(name);
+    }
+    writeDiskstats(lines);
+
+    LinuxDiskProbe probe(m_DiskstatsPath, sysBlock);
+    std::vector<std::string> names;
+    for (const DiskCounters& disk : probe.read().disks)
+    {
+        names.push_back(disk.deviceName);
+    }
+    EXPECT_EQ(names, (std::vector<std::string>{"sda", "mmcblk0", "nbd1", "md0"}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sysBlock, ec);
+}
+
 // Without a /sys/block to list, the name rule is the fallback.
 TEST_F(LinuxDiskProbeReadTest, AnUnlistableSysBlockFallsBackToTheNameRule)
 {
