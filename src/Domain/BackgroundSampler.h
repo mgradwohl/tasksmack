@@ -123,6 +123,12 @@ class BackgroundSampler
     /// Stop background sampling thread (waits for completion).
     void stop();
 
+    /// Tell the sampling thread to stop, without waiting for it (#4590): the sample in progress finishes and no
+    /// other starts. stop() (or the destructor) joins it later, at once if it has ended by then. The exit asks
+    /// every sampler this first, so they wind down together and the joins at onDetach() overlap instead of each
+    /// waiting out its own sample in turn. Safe to call more than once, or on a sampler that isn't running.
+    void requestStop() noexcept;
+
     /// Check if sampler is running.
     [[nodiscard]] bool isRunning() const;
 

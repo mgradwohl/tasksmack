@@ -270,14 +270,22 @@ TEST(LinuxPublicIpTest, ASilentResolverTimesOutAndOneNotListeningRefuses)
         closedPort = closed.port(); // closed again when it goes out of scope
     }
     const auto started = std::chrono::steady_clock::now();
-    const PublicIpInfo info = LinuxPublicIp::lookUp(options(silent.port(), closedPort, std::chrono::milliseconds(300)));
+    PublicIpInfo info = LinuxPublicIp::lookUp(options(silent.port(), closedPort, std::chrono::milliseconds(300)));
     const auto took = std::chrono::steady_clock::now() - started;
     EXPECT_TRUE(info.v4.empty());
     EXPECT_EQ(info.v4Unavailable, "The resolver didn't answer within 1 s");
-    EXPECT_TRUE(info.v6.empty());
-    EXPECT_EQ(info.v6Unavailable, "The resolver refused the query");
     EXPECT_GE(took, std::chrono::milliseconds(250));
     EXPECT_LT(took, std::chrono::seconds(5));
+    // The refusal is the kernel's ICMPv6 Port Unreachable, which its global ICMP budget (icmp_msgs_per_sec, burst 50)
+    // can withhold while parallel tests probe closed ports at once (#4634): then the closed port only times out. A few
+    // tries 100 ms apart, as the budget refills, keep the assertion that a refusal is reported as one.
+    for (int attempt = 1; attempt < 5 && info.v6Unavailable != "The resolver refused the query"; ++attempt)
+    {
+        std::this_thread::sleep_for(std::chrono::milliseconds(100));
+        info = LinuxPublicIp::lookUp(options(silent.port(), closedPort, std::chrono::milliseconds(300)));
+    }
+    EXPECT_TRUE(info.v6.empty());
+    EXPECT_EQ(info.v6Unavailable, "The resolver refused the query");
 }
 
 TEST(LinuxPublicIpTest, AnErrorReplyAndAnInvalidResolver)

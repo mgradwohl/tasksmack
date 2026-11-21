@@ -348,7 +348,7 @@ std::expected<std::vector<UdpByteCounts>, std::string> UdpByteCounter::read() co
     {
         // The collector starts over from a baseline-only reading, rather than credit a missed process's lifetime bytes
         // to one interval (#4265).
-        return std::unexpected(std::string("the UDP byte counter's map changed too fast to read in full"));
+        return std::unexpected(std::string(UDP_READ_INCOMPLETE));
     }
     // Before about 6.5, with kernel.unprivileged_bpf_disabled set, a process without CAP_BPF may not read its own map
     // (maintainer, 2026-11-07: report it; TCP still counts).
