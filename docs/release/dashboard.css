@@ -242,6 +242,11 @@ section {
   gap: 8px;
 }
 
+/* "Refresh now", beside the data's age and in the banner that says the data is old (#4604). */
+.refresh {
+  font-weight: 600;
+}
+
 select {
   font: inherit;
   color: var(--ink);
