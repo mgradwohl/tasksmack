@@ -131,10 +131,11 @@ get_ninja_version() {
 }
 
 # Get lld version
-# The ld.lld this script reports: unversioned on PATH, else the pinned LLVM's (/usr/lib/llvm-23/bin,
-# /usr/bin/ld.lld-23). A bare `lld` is the generic driver, which prints no version.
+# The ld.lld this script reports, found as find_llvm_tool() finds every other LLVM tool (#4705): the newest
+# /usr/lib/llvm-N/bin first (clang -fuse-ld=lld runs the one beside it), then PATH, then /usr/bin/ld.lld-23. PATH first
+# reported a /usr/local/bin shadow instead. A bare `lld` is the generic driver, which prints no version.
 get_lld_path() {
-    command -v ld.lld 2>/dev/null || find_llvm_tool ld.lld 2>/dev/null || command -v "ld.lld-${MIN_CLANG_VERSION}" 2>/dev/null || true
+    find_llvm_tool ld.lld 2>/dev/null || command -v "ld.lld-${MIN_CLANG_VERSION}" 2>/dev/null || true
 }
 
 get_lld_version() {
@@ -366,7 +367,13 @@ main() {
     else
         local lld_path
         lld_path="$(get_lld_path)"
-        echo -e "${GREEN}lld${NC}: ${lld_ver} (${lld_path})"
+        # Held to the same floor as clang (#4705): a stale lld links the build's LLVM 23 objects.
+        if version_at_least "${MIN_CLANG_VERSION}" "${lld_ver}"; then
+            echo -e "${GREEN}lld${NC}: ${lld_ver} (${lld_path})"
+        else
+            echo -e "${YELLOW}lld${NC}: ${lld_ver} (${lld_path}) - minimum required ${MIN_CLANG_VERSION}"
+            all_ok=1
+        fi
     fi
 
     # clang-format (required for VS Code/workflow defaults)
@@ -539,10 +546,13 @@ main() {
     # hotspot — GUI perf viewer (analyze-perf.sh optional launch)
     local hotspot_path
     hotspot_path="$(command -v hotspot 2>/dev/null || true)"
+    # Not packaged for Ubuntu 26.04 (#4706): KDAB ships it on Flathub and as an AppImage.
     if [[ -n "${hotspot_path}" ]]; then
         echo -e "${GREEN}hotspot${NC}: ${hotspot_path}"
+    elif command -v flatpak &>/dev/null && flatpak info com.kdab.hotspot &>/dev/null; then
+        echo -e "${GREEN}hotspot${NC}: Flatpak com.kdab.hotspot (flatpak run com.kdab.hotspot <file>)"
     else
-        echo -e "${YELLOW}hotspot${NC}: not found (sudo apt install hotspot)"
+        echo -e "${YELLOW}hotspot${NC}: not found (not packaged for Ubuntu 26.04: flatpak install flathub com.kdab.hotspot, or KDAB's AppImage from https://github.com/KDAB/hotspot/releases saved as hotspot on PATH)"
     fi
 
     # heaptrack — heap allocation profiler (profile-heap.sh)

@@ -44,8 +44,8 @@ class CheckerTestBase(unittest.TestCase):
     def tearDown(self):
         self._tmp.cleanup()
 
-    def run_checker(self):
-        env = {"PATH": str(self.bin), "HOME": self._tmp.name}
+    def run_checker(self, extra_env=None):
+        env = {"PATH": str(self.bin), "HOME": self._tmp.name, **(extra_env or {})}
         result = subprocess.run(
             [BASH, str(CHECK_PREREQS_SH)], capture_output=True, text=True, env=env, check=False, timeout=60
         )
@@ -148,6 +148,51 @@ class CheckPrereqsLibraryTests(CheckerTestBase):
             self.row(out, "pkg-config"),
             "pkg-config: not found (sudo apt install pkg-config) - configure needs it to find libbpf",
         )
+
+
+class CheckPrereqsHotspotTests(CheckerTestBase):
+    """#4706: hotspot isn't packaged for Ubuntu 26.04, so the hint names Flathub and KDAB's AppImage, never apt."""
+
+    def test_the_not_found_hint_names_what_exists(self):
+        match = re.search(r"(?m)^hotspot: .*$", self.run_checker())
+        self.assertIsNotNone(match)
+        self.assertIn("flatpak install flathub com.kdab.hotspot", match.group(0))
+        self.assertNotIn("apt install hotspot", match.group(0))
+
+
+class CheckPrereqsLldTests(CheckerTestBase):
+    """#4705: ld.lld is found as the other LLVM tools are (the LLVM folders before PATH) and held to the clang floor."""
+
+    def stub_lld(self, folder, version):
+        folder.mkdir(parents=True, exist_ok=True)
+        stub = folder / "ld.lld"
+        stub.write_text(f"#!/bin/sh\necho 'Ubuntu LLD {version} (compatible with GNU linkers)'\n", encoding="utf-8")
+        stub.chmod(0o755)
+        return stub
+
+    def lld_row(self, out):
+        match = re.search(r"(?m)^lld: .*$", out)
+        self.assertIsNotNone(match, out)
+        return match.group(0)
+
+    def test_an_lld_older_than_the_floor_is_flagged(self):
+        root = Path(self._tmp.name) / "lib"
+        lld = self.stub_lld(root / "llvm-22" / "bin", "22.1.2")
+        out = self.run_checker({"TASKSMACK_LLVM_LIB_ROOT": str(root)})
+        row = self.lld_row(out)
+        self.assertIn("22.1", row)
+        self.assertIn(str(lld), row)
+        self.assertIn("minimum required", row, "a stale lld no longer reports green")
+
+    def test_the_llvm_folder_is_reported_before_a_path_shadow(self):
+        root = Path(self._tmp.name) / "lib"
+        lld = self.stub_lld(root / "llvm-23" / "bin", "23.1.5")
+        self.stub_lld(self.bin, "22.1.2")  # a /usr/local/bin-style shadow on PATH
+        row = self.lld_row(self.run_checker({"TASKSMACK_LLVM_LIB_ROOT": str(root)}))
+        self.assertIn(str(lld), row)
+        self.assertIn("23.1", row)
+        self.assertNotIn("minimum required", row)
+
 
 
 class CheckPrereqsIwyuTests(CheckerTestBase):
