@@ -23,6 +23,9 @@ __pycache__/
 /_codeql_detected_source_root
 
 # CPack output
+# A configure into the source tree writes these at its root (#4665): never commit them.
+/CPackConfig.cmake
+/CPackSourceConfig.cmake
 /dist/
 /packaging/dist/
 
