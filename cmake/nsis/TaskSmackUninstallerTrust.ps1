@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    The NSIS installer's checks on a previously installed TaskSmack folder (#4444, #4445, #4659, #4660).
+    The NSIS installer's checks on a TaskSmack folder, and its lock of the install folder (#4444, #4445, #4659,
+    #4660, #4669).
 .DESCRIPTION
     cmake/CPackProjectConfig.cmake.in embeds this script in the installer and runs it (Windows PowerShell,
     through nsExec) from the upgrade step, which an elevated installer, or a SYSTEM WinGet or Intune
@@ -13,19 +14,28 @@
       apply to an install (BrokerHelper::checkUnchangeableNamed). A valid signature isn't enough (#4660): the
       verdict is on a path a standard user could swap before the installer starts it, and even the genuine
       uninstaller deletes its files by path, through any junction a standard user planted in the folder.
-    -Mode Folder: exit 0 when -Path, or the nearest folder above it that exists, is admin-only (a
-      warning in the installer's log otherwise; nothing is refused).
+    -Mode Folder: exit 0 when -Path, or the nearest folder above it that exists, is admin-only (the
+      uninstaller deletes nothing in one that isn't).
+    -Mode CanLock: exit 0 when the install folder -Path is admin-only, or Lock can make it so; 1 when it can't:
+      it holds something an install doesn't put there, it or a folder above it is a link or junction, or a
+      folder above it isn't admin-only, so the folder itself could be replaced. Changes nothing (#4669).
+    -Mode Lock: makes the install folder -Path admin-only, as Program Files is, or exits 1 and says why. The
+      folder is owned by Administrators, with only SYSTEM and Administrators able to change it and Users able to
+      read and run what is in it, and everything in it inherits that. It goes top-down, and each folder is locked
+      before what is in it is read, so no one who isn't an administrator can add, remove or swap anything in it by
+      then. icacls runs with /L, so a link or junction is changed itself, never its target, and any link or
+      junction in the folder refuses the lock. The whole tree is checked afterwards (#4669).
 
-    Any error counts as not trusted. The first line written says why. It only reads (#4659: an elevated
-    delete in a folder a standard user can write follows their junctions), so tests/tools/test_nsis_upgrade.py
-    runs it on temporary folders, unelevated.
+    Any error counts as not trusted. The first line written says why. Only Lock changes anything (#4659: an
+    elevated delete in a folder a standard user can write follows their junctions; #4669: so does an elevated
+    write). tests/tools/test_nsis_upgrade.py runs the script on temporary folders, unelevated.
 .PARAMETER Mode
-    Uninstaller or Folder.
+    Uninstaller, Folder, CanLock or Lock.
 .PARAMETER Path
     The Uninstall.exe, or the folder.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('Uninstaller', 'Folder')][string]$Mode,
+    [Parameter(Mandatory)][ValidateSet('Uninstaller', 'Folder', 'CanLock', 'Lock')][string]$Mode,
     [Parameter(Mandatory)][string]$Path
 )
 $ErrorActionPreference = 'Stop'
@@ -83,6 +93,95 @@ function Get-AdminOnlyProblem([string]$Target) {
     return $null
 }
 
+# What an install puts in its folder (CPack's file list): the only names a folder may hold for Lock to take it.
+$InstallNames = @('TaskSmack.exe', 'TaskSmackHelper.exe', 'LICENSE.txt', 'Uninstall.exe', 'third_party_licenses', 'share')
+$AdministratorsSid = '*S-1-5-32-544'
+$Icacls = Join-Path ([System.Environment]::SystemDirectory) 'icacls.exe'
+
+# Whether $Item is a reparse point (a link, a junction, a mount point): its own attributes, never its target's.
+function Test-ReparsePoint([string]$Item) {
+    return ([System.IO.File]::GetAttributes($Item) -band [System.IO.FileAttributes]::ReparsePoint) -ne 0
+}
+
+# Why a folder above $Folder could be replaced by someone who isn't an administrator (and with it $Folder), or $null.
+function Get-AboveProblem([string]$Folder) {
+    $root = [System.IO.Path]::GetPathRoot($Folder)
+    if (-not $root -or $root.StartsWith('\\')) { return "$Folder isn't on a local drive" }
+    $drive = New-Object System.IO.DriveInfo($root)
+    if ($drive.DriveType -ne 'Fixed' -or $drive.DriveFormat -ne 'NTFS') { return "$root isn't a fixed NTFS volume" }
+    $parent = [System.IO.Path]::GetDirectoryName($Folder)
+    while ($parent) {
+        $problem = Get-ChangeProblem $parent $ChangesChildren
+        if ($problem) { return $problem }
+        $parent = [System.IO.Path]::GetDirectoryName($parent)
+    }
+    return $null
+}
+
+# The first thing in $Folder an install doesn't put there (anything in share but share\tasksmack too), or $null.
+function Get-ForeignEntry([string]$Folder) {
+    foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($Folder)) {
+        if ([System.IO.Path]::GetFileName($child) -notin $InstallNames) { return $child }
+    }
+    $share = Join-Path $Folder 'share'
+    if ([System.IO.Directory]::Exists($share)) {
+        if (Test-ReparsePoint $share) { return "$share (a link or junction)" }
+        foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($share)) {
+            if ([System.IO.Path]::GetFileName($child) -ne 'tasksmack') { return $child }
+        }
+    }
+    return $null
+}
+
+# Why Lock can't take the install folder $Folder, or $null when it can. Changes nothing.
+function Get-LockProblem([string]$Folder) {
+    if (-not [System.IO.Directory]::Exists($Folder)) { return "$Folder doesn't exist" }
+    if (Test-ReparsePoint $Folder) { return "$Folder is a link or junction" }
+    $foreign = Get-ForeignEntry $Folder
+    if ($foreign) { return "$Folder holds $foreign, which isn't TaskSmack's" }
+    return Get-AboveProblem $Folder
+}
+
+# icacls on $Arguments, on a link or junction itself and never its target (/L), quietly; throws when it fails.
+function Invoke-Icacls([string[]]$Arguments) {
+    $output = & $Icacls @Arguments /L /C /Q 2>&1
+    if ($LASTEXITCODE -ne 0) { throw "icacls $($Arguments -join ' ') failed ($LASTEXITCODE): $output" }
+}
+
+# Makes what is in $Folder, itself admin-only already, owned by Administrators and inherit $Folder's permissions,
+# then each folder in it the same way. Nothing in $Folder can be added, removed or swapped by anyone else by now.
+function Lock-Contents([string]$Folder) {
+    $children = @([System.IO.Directory]::EnumerateFileSystemEntries($Folder))
+    foreach ($child in $children) {
+        if (Test-ReparsePoint $child) { throw "$child is a link or junction" }
+    }
+    if ($children.Count -eq 0) { return }
+    $all = Join-Path $Folder '*'
+    Invoke-Icacls @($all, '/setowner', $AdministratorsSid)
+    Invoke-Icacls @($all, '/reset')
+    foreach ($child in $children) {
+        # Again, now that no one else can change it: a folder made a junction since the first look isn't entered.
+        if (Test-ReparsePoint $child) { throw "$child is a link or junction" }
+        if ([System.IO.Directory]::Exists($child)) { Lock-Contents $child }
+    }
+}
+
+# Why something in $Folder (not $Folder itself) can be changed by someone who isn't an administrator, or $null.
+function Get-TreeProblem([string]$Folder) {
+    foreach ($child in [System.IO.Directory]::EnumerateFileSystemEntries($Folder)) {
+        if (Test-ReparsePoint $child) { return "$child is a link or junction" }
+        $isFolder = [System.IO.Directory]::Exists($child)
+        $mask = if ($isFolder) { $ChangesItem -bor $ChangesChildren } else { $ChangesItem }
+        $problem = Get-ChangeProblem $child $mask
+        if ($problem) { return $problem }
+        if ($isFolder) {
+            $problem = Get-TreeProblem $child
+            if ($problem) { return $problem }
+        }
+    }
+    return $null
+}
+
 try {
     switch ($Mode) {
         'Uninstaller' {
@@ -99,6 +198,41 @@ try {
             if (-not $problem) { Write-Output "$Path can be changed only by administrators."; exit 0 }
             Write-Output "$Path isn't admin-only: $problem."
             exit 1
+        }
+        'CanLock' {
+            $folder = [System.IO.Path]::GetFullPath($Path)
+            if ([System.IO.Directory]::Exists($folder) -and -not (Get-AdminOnlyProblem $folder)) {
+                Write-Output "$folder can be changed only by administrators."
+                exit 0
+            }
+            $problem = Get-LockProblem $folder
+            if ($problem) { Write-Output "$folder can't be made admin-only: $problem."; exit 1 }
+            Write-Output "$folder can be made admin-only."
+            exit 0
+        }
+        'Lock' {
+            $folder = [System.IO.Path]::GetFullPath($Path)
+            if ([System.IO.Directory]::Exists($folder) -and -not (Get-AdminOnlyProblem $folder)) {
+                Write-Output "$folder can be changed only by administrators."
+                exit 0
+            }
+            $problem = Get-LockProblem $folder
+            if ($problem) { Write-Output "$folder can't be made admin-only: $problem."; exit 1 }
+            # The folder first: Administrators own it, so no one else keeps an owner's right to change its permissions;
+            # then its own entries go and its parent's stop applying, and only these three remain.
+            Invoke-Icacls @($folder, '/setowner', $AdministratorsSid)
+            Invoke-Icacls @($folder, '/reset')
+            Invoke-Icacls @($folder, '/inheritance:r', '/grant:r', '*S-1-5-18:(OI)(CI)F', "${AdministratorsSid}:(OI)(CI)F", '*S-1-5-32-545:(OI)(CI)RX')
+            # Now no one else can change what it holds: what was checked above is checked again, for good.
+            if (Test-ReparsePoint $folder) { throw "$folder is a link or junction" }
+            $foreign = Get-ForeignEntry $folder
+            if ($foreign) { throw "$folder holds $foreign, which isn't TaskSmack's" }
+            Lock-Contents $folder
+            $problem = Get-AdminOnlyProblem $folder
+            if (-not $problem) { $problem = Get-TreeProblem $folder }
+            if ($problem) { Write-Output "$folder couldn't be made admin-only: $problem."; exit 1 }
+            Write-Output "Made $folder admin-only: only SYSTEM and Administrators can change it."
+            exit 0
         }
     }
 } catch {

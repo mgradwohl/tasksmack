@@ -21,7 +21,9 @@
 # TaskSmack.exe or TaskSmackHelper.exe in the folder is running, in any user's session (TASKSMACK_IN_USE_EXIT_CODE,
 # cmake/CPackProjectConfig.cmake.in). packageInUse has winget say "Application is currently running. Exit the
 # application then try again." rather than report a failed install. At the root, so both installers have it;
-# tools/check-winget-manifests.ps1 checks it is there.
+# tools/check-winget-manifests.ps1 checks it is there. 87 (#4669): the installer, before it changes anything, when the
+# install folder (--location) can be changed by users who aren't administrators and can't be made admin-only: it holds
+# files that aren't TaskSmack's, or a folder above it isn't admin-only (TASKSMACK_UNSAFE_FOLDER_EXIT_CODE).
 # yaml-language-server: $schema=https://aka.ms/winget-manifest.installer.1.12.0.schema.json
 
 PackageIdentifier: TaskSmack.TaskSmack
@@ -47,6 +49,8 @@ InstallationMetadata:
 ExpectedReturnCodes:
   - InstallerReturnCode: 32
     ReturnResponse: packageInUse
+  - InstallerReturnCode: 87
+    ReturnResponse: invalidParameter
 Installers:
   - Architecture: x64
     InstallerUrl: https://github.com/mgradwohl/tasksmack/releases/download/v${VERSION}/TaskSmack-${VERSION}-win64.exe
