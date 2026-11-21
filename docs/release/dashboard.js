@@ -106,8 +106,10 @@
   const dateFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
   const timeFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const number = new Intl.NumberFormat();
+  const hourFormat = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
   const day = (s) => dateFormat.format(new Date(s * 1000));
   const moment = (s) => timeFormat.format(new Date(s * 1000));
+  const hour = (s) => hourFormat.format(new Date(s * 1000));
 
   /** A length of time, from hours: 18 min, 5.2 h, 3.1 d. */
   function span(hours) {
@@ -218,9 +220,10 @@
       if (turn !== polling.turn) return;
       const pick = polling.chosen || (view.release && view.release.milestone.title) || wanted(index);
       if (!TITLE.test(pick || '')) throw new Error('no release to show');
-      // Nothing new: this run's data is on the page already, whole, for this release.
+      // Nothing new: this run's data is on the page already, whole, for this release. The budget note counts
+      // as news: it comes with the same data, republished (#4726).
       if (quiet && view.release && !view.behind && view.release.milestone.title === pick &&
-        view.index.generated_at === index.generated_at) return;
+        view.index.generated_at === index.generated_at && view.index.budget_until === index.budget_until) return;
       const release = await load(pick + '.json');
       if (turn !== polling.turn) return;
       view.index = index;
@@ -267,14 +270,23 @@
     // The banner goes by the last run, which is the index's time: a planned release's own file is an hour old
     // at most by design, and that isn't a run gone missing.
     const ran = seconds(view.index.generated_at) || now;
+    // The repository's hourly API budget on GitHub is used up (#4726): the workflow can read nothing until it
+    // returns, and said so by publishing the last data again with that time. Until then this takes the stale
+    // banner's place, whose "Refresh now" couldn't help.
+    const until = seconds(view.index.budget_until);
+    const budget = el('p', { class: 'banner budget', hidden: true }, "GitHub's API budget for this repository is used up until ",
+      el('strong', { text: until ? hour(until) : '' }), '. These figures are from ', moment(ran), ', and nothing can refresh them before then.');
     view.clock = () => {
       const minutes = (Date.now() / 1000 - ran) / 60;
+      const still = release.stage !== 'released' && !window.__RELEASE_DATA__;
+      const spent = Boolean(until) && Date.now() / 1000 < until;
       stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
       age.textContent = span(minutes / 60);
-      stale.hidden = Boolean(window.__RELEASE_DATA__) || release.stage === 'released' || minutes <= STALE_MINUTES;
+      budget.hidden = !still || !spent;
+      stale.hidden = !still || spent || minutes <= STALE_MINUTES;
       watching.hidden = Date.now() >= polling.watchUntil;
     };
-    const parts = [masthead(release, stamp, watching), stages(release), stale];
+    const parts = [masthead(release, stamp, watching), stages(release), budget, stale];
     if (release.stage !== 'planned') parts.push(summary(release));
     parts.push(shipList(release, now));
     if (release.stage !== 'planned') parts.push(movement(release, now));

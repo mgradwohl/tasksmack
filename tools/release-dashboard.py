@@ -6,6 +6,7 @@ Usage:
     python -I -X utf8 tools/release-dashboard.py --out DIR [--previous DIR] [--milestone vX.Y.Z ...]
     python -I -X utf8 tools/release-dashboard.py --out DIR --dump-raw DIR     # also save what the API returned
     python -I -X utf8 tools/release-dashboard.py --out DIR --from-raw DIR     # rebuild from a dump, no network
+    python -I -X utf8 tools/release-dashboard.py --out DIR --previous DIR --budget-until SECONDS   # see below
 
 docs/release/ on the docs site shows, for one release milestone, what still has to happen before it ships,
 where each of those things stands and how fast it's moving. This writes the JSON that page reads: one
@@ -48,6 +49,11 @@ a manual one waits until the published data is five minutes old). Every run prin
 left, and warns when that's under a quarter. The workflow doesn't start this script at all when under 100
 REST calls or 150 GraphQL points are left: other workflows share the budgets, and it could only fail at its
 first read (#4617).
+
+When the budget is gone the page should say so, and when it returns (#4726). --budget-until does that with no
+request at all: it writes --previous out again as it is, with the time in index.json's `budget_until`. Every
+other field stays, `generated_at` too, so nothing takes it for new data. The next run that reads GitHub writes
+an index without the field.
 
 The token is GH_TOKEN or GITHUB_TOKEN, or else `gh auth token`; it needs read access only. Needs nothing
 beyond the standard library. Exits 1 when the API can't be read (nothing is written then, so a failed run
@@ -1774,6 +1780,38 @@ def _save(path: Path, value: Any, *, pretty: bool = False) -> None:
     path.write_text(text + "\n", encoding="utf-8", newline="\n")
 
 
+def republish_with_budget_note(previous: Path | None, out: Path, until: str) -> int:
+    """The API budget is used up until @p until (seconds since 1970, as GitHub's rate_limit gives a reset), so
+    nothing can be read: write the last run's files again as they are, with that time in index.json for the
+    page to show (#4726). Makes no request. Exits 1, and writes nothing, when there is no last run to repeat."""
+    try:
+        if previous is None:
+            raise ValueError("--budget-until needs --previous, the data to publish again")
+        if not re.fullmatch(r"\d{9,11}", until):
+            raise ValueError(f"--budget-until is seconds since 1970, not {until!r}")
+        when = datetime.fromtimestamp(int(until), UTC)
+        index = _load(previous / "index.json")
+        if not isinstance(index, dict) or index.get("schema") != SCHEMA or not isinstance(index.get("releases"), list):
+            raise ValueError(f"{previous / 'index.json'} isn't an index in schema {SCHEMA}")
+        titles = [release["title"] for release in index["releases"]]
+        # Only the files the index names, and only names a milestone can have: nothing else rides along.
+        if not titles or any(not isinstance(title, str) or version_of(title) is None for title in titles):
+            raise ValueError(f"{previous / 'index.json'} names no releases, or one that isn't vX.Y.Z")
+        missing = [title for title in titles if not (previous / f"{title}.json").is_file()]
+        if missing:
+            raise ValueError(f"{previous} has no file for {', '.join(missing)}")
+    except (OSError, ValueError, KeyError, TypeError, OverflowError) as error:
+        print(f"::error title=Release dashboard::The budget note couldn't be written: {error}", file=sys.stderr)
+        return 1
+    out.mkdir(parents=True, exist_ok=True)
+    for title in titles:
+        shutil.copyfile(previous / f"{title}.json", out / f"{title}.json")
+    index["budget_until"] = iso(when)
+    _save(out / "index.json", index)
+    print(f"The API budget is used up until {iso(when)}: the data of {index.get('generated_at')} goes out again with that note.")
+    return 0
+
+
 def earlier(previous: Path | None, title: str) -> dict[str, Any] | None:
     """The earlier run's file for @p title, when there is one in this schema."""
     if previous is None:
@@ -1828,9 +1866,16 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--from-raw", type=Path, help="build from a --dump-raw folder; no network")
     parser.add_argument("--now", help="the time to compute against, ISO 8601 (default: now, or the dump's time)")
     parser.add_argument("--main-health", type=Path, default=REPO_ROOT / MAIN_HEALTH, help=argparse.SUPPRESS)
+    parser.add_argument(
+        "--budget-until",
+        metavar="SECONDS",
+        help="read nothing: write --previous again with this time (seconds since 1970) as index.json's budget_until",
+    )
     args = parser.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         parser.error(f"--repo must be owner/name, not {args.repo!r}")
+    if args.budget_until is not None:
+        return republish_with_budget_note(args.previous, args.out, args.budget_until)
 
     try:
         if args.from_raw:

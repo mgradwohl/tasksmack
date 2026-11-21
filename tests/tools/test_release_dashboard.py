@@ -21,8 +21,9 @@ import re
 import sys
 import tempfile
 import unittest
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest import mock
 
 REPO = Path(__file__).resolve().parents[2]
 SCRIPT = REPO / "tools" / "release-dashboard.py"
@@ -1698,6 +1699,103 @@ class RunTests(unittest.TestCase):
         with self.assertRaises(SystemExit) as raised, contextlib.redirect_stderr(io.StringIO()):
             dashboard.main(["--out", "x", "--repo", "not a repo"])
         self.assertEqual(raised.exception.code, 2)
+
+
+class BudgetNoteTests(unittest.TestCase):
+    """#4726: with the API budget gone nothing can be read, so the last data goes out again as it is, with the
+    time the budget returns in index.json for the page to show. No request is made for that."""
+
+    UNTIL = 1_800_003_600  # as GitHub's rate_limit gives a reset: seconds since 1970
+    UNTIL_ISO = dashboard.iso(datetime.fromtimestamp(UNTIL, UTC))
+
+    def note(self, out: Path, *args: str) -> tuple[int, str]:
+        printed = io.StringIO()
+        with contextlib.redirect_stdout(printed), contextlib.redirect_stderr(printed):
+            code = dashboard.main(["--out", str(out), "--repo", REPOSITORY, *args])
+        return code, printed.getvalue()
+
+    def test_the_last_data_goes_out_again_with_the_time_and_nothing_else_changed(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            # The branch holds a README beside the data: it isn't data, and doesn't ride along.
+            (Path(first) / "README.md").write_text("# Release dashboard data\n", encoding="utf-8")
+            code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+            self.assertEqual(
+                sorted(path.name for path in Path(second).iterdir()),
+                ["index.json", "v1.0.0.json", "v1.1.0.json", "v1.2.0.json"],
+            )
+            before = json.loads((Path(first) / "index.json").read_text(encoding="utf-8"))
+            after = json.loads((Path(second) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(after.pop("budget_until"), self.UNTIL_ISO)
+            # generated_at above all: the page's "updated" time and the workflow's "is this run covered" rule
+            # read it, and this isn't new data.
+            self.assertEqual(after, before)
+            for name in ("v1.0.0.json", "v1.1.0.json", "v1.2.0.json"):
+                self.assertEqual((Path(second) / name).read_bytes(), (Path(first) / name).read_bytes(), name)
+            self.assertIn(f"The API budget is used up until {self.UNTIL_ISO}", printed)
+            self.assertTrue((Path(second) / "index.json").read_bytes().endswith(b"}\n"))
+
+    def test_no_request_is_made_and_no_token_is_looked_for(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second:
+            generate(Path(first))
+            refuse = AssertionError("the budget note reached for GitHub")
+            with mock.patch.object(dashboard, "GitHub", side_effect=refuse), mock.patch.object(dashboard, "find_token", side_effect=refuse):
+                code, printed = self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            self.assertEqual(code, 0, printed)
+
+    def test_a_later_note_replaces_an_earlier_one(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as third:
+            generate(Path(first))
+            self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            code, printed = self.note(Path(third), "--previous", second, "--budget-until", str(self.UNTIL + 3600))
+            self.assertEqual(code, 0, printed)
+            index = json.loads((Path(third) / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["budget_until"], dashboard.iso(datetime.fromtimestamp(self.UNTIL + 3600, UTC)))
+
+    def test_the_next_run_that_reads_writes_an_index_without_the_note(self):
+        with tempfile.TemporaryDirectory() as first, tempfile.TemporaryDirectory() as second, tempfile.TemporaryDirectory() as third:
+            generate(Path(first))
+            self.note(Path(second), "--previous", first, "--budget-until", str(self.UNTIL))
+            code, printed = generate(Path(third), "--previous", second)
+            self.assertEqual(code, 0, printed)
+            self.assertNotIn("budget_until", json.loads((Path(third) / "index.json").read_text(encoding="utf-8")))
+            # The finished release is still copied from the run before, as if the note had not been between.
+            self.assertIn("v1.0.0: final, copied from the last run", printed)
+
+    def test_with_nothing_to_repeat_it_fails_and_writes_nothing(self):
+        def broken(change) -> str:  # noqa: ANN001 - a function that spoils a copy of the last run
+            folder = Path(self.enterContext(tempfile.TemporaryDirectory()))
+            generate(folder)
+            change(folder)
+            return str(folder)
+
+        def rewrite(folder: Path, edit) -> None:  # noqa: ANN001
+            index = json.loads((folder / "index.json").read_text(encoding="utf-8"))
+            edit(index)
+            (folder / "index.json").write_text(json.dumps(index), encoding="utf-8")
+
+        good = broken(lambda folder: None)
+        cases = {
+            "no --previous": ["--budget-until", str(self.UNTIL)],
+            "an empty --previous": ["--previous", self.enterContext(tempfile.TemporaryDirectory()), "--budget-until", str(self.UNTIL)],
+            "an index that isn't JSON": ["--previous", broken(lambda folder: (folder / "index.json").write_text("{not json", encoding="utf-8")), "--budget-until", str(self.UNTIL)],
+            "an index in another schema": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(schema=dashboard.SCHEMA + 1))), "--budget-until", str(self.UNTIL)],
+            "an index that names no release": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index.update(releases=[]))), "--budget-until", str(self.UNTIL)],
+            "a release that isn't a milestone's name": ["--previous", broken(lambda folder: rewrite(folder, lambda index: index["releases"][0].update(title="../v1.0.0"))), "--budget-until", str(self.UNTIL)],
+            "a release whose file is gone": ["--previous", broken(lambda folder: (folder / "v1.1.0.json").unlink()), "--budget-until", str(self.UNTIL)],
+            "a time in words": ["--previous", good, "--budget-until", "soon"],
+            "a negative time": ["--previous", good, "--budget-until=-5"],
+            "no time": ["--previous", good, "--budget-until", ""],
+            "a time with a command after it": ["--previous", good, "--budget-until", "1800003600; echo hello"],
+        }
+        for name, args in cases.items():
+            with self.subTest(case=name), tempfile.TemporaryDirectory() as parent:
+                out = Path(parent) / "out"
+                code, printed = self.note(out, *args)
+                self.assertEqual(code, 1, printed)
+                self.assertIn("::error title=Release dashboard::The budget note couldn't be written", printed)
+                self.assertFalse(out.exists() and any(out.iterdir()), "nothing is written")
 
 
 class FixtureTests(unittest.TestCase):

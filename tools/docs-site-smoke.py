@@ -19,6 +19,8 @@ sees:
     when its data can't be loaded;
   - the release dashboard flags data over 25 minutes old, and its "Refresh now" link opens the workflow on GitHub
     and has the page look for new data every 30 seconds (#4604);
+  - the release dashboard says when GitHub's API budget is used up and when it returns, in place of the
+    stale banner, until that time passes or new data arrives (#4726);
   - no JavaScript error, and no first-party request that fails.
 
 Usage: tools/docs-site-smoke.py [--docs DIR] [--offline] [--headed]
@@ -688,6 +690,74 @@ def check_release_dashboard_refresh(page: Page, site: str, offline: bool) -> Non
         )
 
 
+def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) -> None:
+    """With the API budget gone the workflow publishes the last data again with the time the budget returns
+    (#4726). The page says so until then, in place of the stale banner, and stops when new data arrives."""
+    index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
+    generated = datetime.datetime.fromisoformat(index["generated_at"].replace("Z", "+00:00"))
+    until = generated + datetime.timedelta(minutes=40)
+    # What the data host serves: the fixtures, with these fields over index.json's own.
+    served: dict[str, str] = {}
+
+    def answer(route: Route) -> None:
+        match = RELEASE_DATA.match(route.request.url)
+        path = RELEASE_FIXTURES / match.group(1) if match else None
+        if path is None or not path.is_file():
+            route.fulfill(status=404, body="", headers={"Access-Control-Allow-Origin": "*"})
+            return
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if path.name == "index.json":
+            data.update(served)
+        elif "generated_at" in served and data.get("milestone", {}).get("title") == index["current"]:
+            data["generated_at"] = served["generated_at"]
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(data), headers={"Access-Control-Allow-Origin": "*"})
+
+    def stamp(moment: datetime.datetime) -> str:
+        return moment.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    page.route("https://raw.githubusercontent.com/**", answer)
+    # Ten minutes after the data was read: nothing is stale, and nothing is said of the budget yet.
+    page.clock.install(time=generated + datetime.timedelta(minutes=10))
+    page.goto(site + "release/")
+    expect_release(page, index["current"])
+    note = page.locator(".banner.budget")
+    stale = page.locator(".banner.stale")
+    if note.is_visible() or stale.is_visible():
+        raise AssertionError("fresh data with the budget in hand shows a banner")
+
+    # The budget goes: the same data comes again with the time it returns. The page's next look shows it.
+    served["budget_until"] = stamp(until)
+    page.clock.fast_forward(6 * 60 * 1000)
+    note.wait_for(state="visible", timeout=TIMEOUT_MS)
+    text = note.text_content() or ""
+    if "GitHub's API budget for this repository is used up until" not in text or "nothing can refresh them before then" not in text:
+        raise AssertionError(f"the budget note reads {text!r}")
+    told = page.evaluate("iso => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(iso))", stamp(until))
+    if note.locator("strong").text_content() != told:
+        raise AssertionError(f"the budget note gives {note.locator('strong').text_content()!r}, not {told!r}")
+
+    # Past 25 minutes the data is stale, but the reason is known: the note stands, and the stale banner, whose
+    # "Refresh now" couldn't help, stays away.
+    page.clock.fast_forward(15 * 60 * 1000)
+    if not note.is_visible() or stale.is_visible():
+        raise AssertionError("31 minutes on with the budget still gone, the page shows the stale banner or no note")
+
+    # The time passes and no new data has come yet: the note goes, and the stale banner says what is left to say.
+    page.clock.fast_forward(11 * 60 * 1000)
+    stale.wait_for(state="visible", timeout=TIMEOUT_MS)
+    if note.is_visible():
+        raise AssertionError("the budget note is still shown after the time it gave")
+
+    # New data, without the note: nothing is shown.
+    served.clear()
+    served["generated_at"] = stamp(generated + datetime.timedelta(minutes=43))
+    page.clock.fast_forward(6 * 60 * 1000)
+    stale.wait_for(state="hidden", timeout=TIMEOUT_MS)
+    if note.is_visible():
+        raise AssertionError("new data came and the budget note is still shown")
+    page.unroute("https://raw.githubusercontent.com/**")
+
+
 def check_release_dashboard_link(page: Page, site: str, offline: bool) -> None:
     """The sidebar's Release dashboard link is the page's full address, which Docsify leaves alone."""
     page.goto(site + "#/dev/developer-guide")
@@ -708,6 +778,7 @@ CHECKS: list[tuple[str, Callable[[Page, str, bool], None]]] = [
     ("an unknown route shows the 404 page, which recovers", check_not_found),
     ("the release dashboard draws a release and switches between them", check_release_dashboard),
     ("the release dashboard says when its data can't be loaded", check_release_dashboard_without_data),
+    ("the release dashboard says when the API budget is used up, and until when", check_release_dashboard_budget_note),
     ("the release dashboard flags old data and looks for new data after 'Refresh now'", check_release_dashboard_refresh),
     ("a lane's list on the release dashboard ends with what waits on the maintainer", check_release_dashboard_lane_all_waiting),
     ("the sidebar links the release dashboard", check_release_dashboard_link),

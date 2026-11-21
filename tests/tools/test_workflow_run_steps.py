@@ -64,6 +64,10 @@
   only the events worth a run start one (no labels, no edits, no Main Health, and since #4700 no `opened`:
   `milestoned` covers a new issue), with two schedule lines five minutes apart. `date +%s` and `gh` are
   stubs; jq and `date -d` are real, and the cases are skipped without jq.
+- release-dashboard.yml (#4726): a run the spent budget stops hands on when the budget returns, once for each
+  hour (not when the published data names that hour already, and not with nothing published), and "Tell the page
+  when the budget returns" writes the last data again with that time. The generator and the check step's own
+  script run for real on the committed fixtures.
 - release-dashboard.yml (#4717): the wait asks about the budget again after waiting and stops the run with a
   warning when it's gone; generate's "Pack the data for the publish job" and publish's "Unpack the data" hand
   the JSON over as a job output with no artifact (only a run that can't publish keeps one, for its reviewer), a
@@ -3364,6 +3368,7 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         (2220, -100): 15,
     }
     ASKED = "asked about the budget"
+    RESET = NOW + 900  # when the stand-in for GitHub says each budget's hour ends
     # #4717: after a wait the budget is asked about again. (how long ago the data was published, REST calls
     # left, GraphQL points left): whether the step lets the run go on. None is "the question failed".
     AFTER_THE_WAIT = {
@@ -3390,7 +3395,7 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
             'sleep() { echo "slept $1" >> "$LOG"; }',
             # Answers only the question the step should ask, as GitHub would for its filter: REST first.
             f'gh() {{ echo "{cls.ASKED}" >> "$LOG"; [[ "$1 $2 $3" == "api rate_limit --jq" && -n "$REST_LEFT" ]] || return 1;'
-            ' echo "$REST_LEFT $POINTS_LEFT"; }',
+            f' echo "$REST_LEFT {cls.RESET} $POINTS_LEFT {cls.RESET}"; }}',
         ]
 
         def ago(seconds: int | None) -> str:
@@ -3447,19 +3452,25 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         gate = find_step(self.WORKFLOW, "Stop here when this run has nothing to add", job=self.JOB)
         for key in ("MIN_REST_CALLS", "MIN_GRAPHQL_POINTS"):
             self.assertEqual(self.step.env[key], gate.env[key], key)
-        # The stub answers "REST points": the step's filter must ask for them in that order.
-        self.assertIn(r"""gh api rate_limit --jq '.resources | "\(.core.remaining) \(.graphql.remaining)"'""", self.step.run)
+        # The stub answers "REST, its reset, points, their reset": the step's filter must ask in that order.
+        self.assertIn(
+            r"""gh api rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"'""",
+            self.step.run,
+        )
         self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
         for offset, ((published, rest, points), goes_on) in enumerate(self.AFTER_THE_WAIT.items()):
             index = len(self.CASES) + offset
             with self.subTest(published_ago=published, rest=rest, points=points):
                 wrote = self.wrote[index]
                 self.assertEqual(self.seen[index][-1], "status 0", wrote["stdout"])
-                self.assertEqual(wrote["output"], "" if goes_on else "proceed=false", wrote["stdout"])
+                # A stopped run also hands on when the budget returns, for the page to say (#4726).
+                stopped = sorted(["proceed=false", f"note={self.RESET}"])
+                self.assertEqual(sorted(wrote["output"].splitlines()), [] if goes_on else stopped, wrote["stdout"])
                 self.assertEqual(bool(wrote["summary"]), not goes_on)
                 if not goes_on:
                     self.assertIn("::warning title=Release dashboard::The repository's API budget was used up during this run's wait",
                                   wrote["stdout"])
+                    self.assertIn("Nothing read: the page is told when the budget returns.", wrote["summary"])
                 self.assertEqual(self.ASKED in self.seen[index], published < 300, "asked only after a wait")
         text = self.WORKFLOW.read_text(encoding="utf-8")
         block = text.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
@@ -3547,6 +3558,15 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         "a push whose run can't be read": ("push", 20, 60, 5000, 5000, None, GOES_ON),
         "an issue, the data not saying when it was read": ("issues", 20, None, 5000, 5000, 70, GOES_ON),
         "an issue in the data, the budget question failing": ("issues", 20, 60, None, None, 70, STOPS),
+        # #4726: a spent budget is said on the page, once for each hour it is gone.
+        "the schedule, the REST calls gone and the page told already": ("schedule", 300, 900, 0, 5000, 30, STOPS),
+        "the schedule, the REST calls gone and the page told of an earlier hour": ("schedule", 300, 900, 0, 5000, 30, STOPS),
+        "the schedule, the REST calls gone and nothing published": ("schedule", None, None, 0, 5000, 30, STOPS),
+    }
+    # What the published index.json already says of the budget, in seconds from the end of this hour.
+    TOLD = {
+        "the schedule, the REST calls gone and the page told already": 0,
+        "the schedule, the REST calls gone and the page told of an earlier hour": -3600,
     }
 
     @classmethod
@@ -3574,9 +3594,14 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         def ago(seconds: int | None) -> str:
             return "" if seconds is None else str(cls.NOW - seconds)
 
-        for index, (event, published, read, rest, points, created, _) in enumerate(cls.CASES.values()):
+        def stamp_of(seconds: int) -> str:
+            return time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(seconds))
+
+        for index, (name, (event, published, read, rest, points, created, _)) in enumerate(cls.CASES.items()):
             if published is not None:
-                stamp = {} if read is None else {"generated_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(cls.NOW - read))}
+                stamp = {} if read is None else {"generated_at": stamp_of(cls.NOW - read)}
+                if name in cls.TOLD:
+                    stamp["budget_until"] = stamp_of(reset + cls.TOLD[name])
                 (tmp / f"index-{index}.json").write_text(json.dumps({"schema": 1, **stamp}), encoding="utf-8")
             actor = "github-actions[bot]" if event == cls.MAIN_HEALTH else "a-person"
             script += [
@@ -3618,7 +3643,31 @@ class ReleaseDashboardGateTests(unittest.TestCase):
                 log = self.seen[name]["log"]
                 self.assertIn(f"::warning title=Release dashboard::The repository's API budget is used up: {which}", log)
                 self.assertIn("for about 10 more minutes", log)
-                self.assertIn("Nothing read, nothing published.", self.seen[name]["summary"])
+                self.assertIn("Nothing read: the page is told when the budget returns.", self.seen[name]["summary"])
+
+    def test_a_spent_budget_is_handed_on_for_the_page_once_for_each_hour(self):
+        # #4726: the run that finds the budget gone hands on when it returns, and the last data is published
+        # again with that time. The runs after it in the same hour find the page told, and publish nothing.
+        reset = str(self.NOW + self.RESET_IN)
+        handed_on = {
+            "a manual run with the REST calls gone": reset,
+            "the schedule with the GraphQL points gone": reset,
+            "Main Health's dispatch with the REST calls gone": reset,
+            "the schedule, the REST calls gone and the page told of an earlier hour": reset,
+            "the schedule, the REST calls gone and the page told already": None,
+            "the schedule, the REST calls gone and nothing published": None,
+        }
+        for name, note in handed_on.items():
+            with self.subTest(case=name):
+                seen = self.seen[name]
+                self.assertEqual(seen["output"].get("note"), note, seen["log"])
+                said = "Nothing read: the page is told when the budget returns." if note else "Nothing read, nothing published."
+                self.assertIn(said, seen["summary"])
+                self.assertEqual(seen["log"].count("::warning title=Release dashboard::"), 1, seen["log"])
+        # No other case hands anything on: a run that goes on, or one the data already covers.
+        for name in set(self.CASES) - set(handed_on):
+            with self.subTest(case=name):
+                self.assertNotIn("note", self.seen[name]["output"], self.seen[name]["log"])
 
     def test_a_run_that_stops_says_why_in_its_summary_and_one_that_goes_on_writes_none(self):
         for name, (*_, decision) in self.CASES.items():
@@ -3662,12 +3711,16 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         self.assertIn("        id: gate\n", gate)
         # Two steps can stop a run: this one, and the wait when the budget went during it (#4717).
         go_on = "steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'"
-        for name in ("Generate", "Check what was written", "Pack the data for the publish job"):
+        self.assertEqual(find_step(self.WORKFLOW, "Generate", job=self.JOB).condition, go_on)
+        # What a stopped run may still publish is the note that the budget is gone (#4726): the last data
+        # again, read from nowhere. The check and the pack run for it as for data, and nothing else does.
+        has_data = f"({go_on}) || steps.note.outcome == 'success'"
+        for name in ("Check what was written", "Pack the data for the publish job"):
             with self.subTest(step=name):
-                self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, go_on)
+                self.assertEqual(find_step(self.WORKFLOW, name, job=self.JOB).condition, has_data)
         generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
         self.assertIn("    outputs:\n", generate)
-        self.assertIn(f"      publish: ${{{{ {go_on} }}}}\n", generate)
+        self.assertIn(f"      publish: ${{{{ {has_data} }}}}\n", generate)
         publish = text.split("\n  publish:\n", 1)[1]
         condition = publish.split("    if: >-\n", 1)[1].split("\n    runs-on:", 1)[0]
         self.assertIn("needs.generate.outputs.publish == 'true'", condition)
@@ -3692,6 +3745,62 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         lines = re.findall(r"(?m)^    - cron: '(\d+)-59/10 \* \* \* \*'$", text)
         self.assertEqual(lines, ["3", "8"])
         self.assertEqual(len(re.findall(r"(?m)^    - cron: ", text)), 2)
+
+
+class ReleaseDashboardBudgetNoteTests(unittest.TestCase):
+    """#4726: when the API budget is gone the page says so, and when it returns. The step that stopped the run
+    hands on that time, and "Tell the page when the budget returns" writes the last data again with it, by the
+    generator's --budget-until. No API call: the data came by git and goes back by git."""
+
+    WORKFLOW = WORKFLOWS / "release-dashboard.yml"
+    JOB = "generate"
+    STEP = "Tell the page when the budget returns"
+    FIXTURES = REPO / "tests" / "tools" / "fixtures" / "release-dashboard"
+    UNTIL = 1_800_003_600
+
+    def test_it_runs_for_either_steps_note_and_only_with_data_to_repeat(self):
+        step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+        self.assertEqual(step.condition, "(steps.gate.outputs.note != '' || steps.wait.outputs.note != '') && steps.previous.outputs.at != ''")
+        # The wait's note is the later look at the budget, so it wins.
+        self.assertEqual(step.env["UNTIL"], "${{ steps.wait.outputs.note || steps.gate.outputs.note }}")
+        self.assertEqual(
+            step.run.strip(),
+            'python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous" --budget-until "$UNTIL"',
+        )
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        generate = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
+        block = generate.split(f"      - name: {self.STEP}\n", 1)[1].split("\n      - name: ", 1)[0]
+        self.assertIn("        id: note\n", block)
+        # It needs no token: nothing in it may reach for the API.
+        self.assertNotIn("GH_TOKEN", block)
+        names = step_names(self.WORKFLOW, job=self.JOB)
+        self.assertLess(names.index("Wait until the published data is five minutes old"), names.index(self.STEP))
+        self.assertLess(names.index(self.STEP), names.index("Check what was written"))
+
+    def test_what_it_writes_passes_the_workflows_own_check(self):
+        # The note's output goes through "Check what was written" like generated data. Run both for real:
+        # the generator on the committed fixtures as the last data, then the check step's own script.
+        check = find_step(self.WORKFLOW, "Check what was written", job=self.JOB)
+        script = check.run.split("<<'PY'\n", 1)[1].rsplit("\nPY", 1)[0]
+        with tempfile.TemporaryDirectory(prefix="4726-budget-note-") as out:
+            wrote = subprocess.run(
+                [sys.executable, "-I", "-X", "utf8", str(REPO / "tools" / "release-dashboard.py"), "--out", out,
+                 "--previous", str(self.FIXTURES), "--budget-until", str(self.UNTIL)],
+                capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
+            )
+            self.assertEqual(wrote.returncode, 0, wrote.stdout + wrote.stderr)
+            index = json.loads((Path(out) / "index.json").read_text(encoding="utf-8"))
+            before = json.loads((self.FIXTURES / "index.json").read_text(encoding="utf-8"))
+            self.assertEqual(index["budget_until"], time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(self.UNTIL)))
+            self.assertEqual(index["generated_at"], before["generated_at"])
+            checked = subprocess.run(
+                [sys.executable, "-I", "-X", "utf8", "-", out], input=script,
+                capture_output=True, text=True, encoding="utf-8", timeout=60, check=False,
+            )
+            self.assertEqual(checked.returncode, 0, checked.stdout + checked.stderr)
+            self.assertIn(f"current {before['current']}", checked.stdout)
+            # Flat JSON with an index.json, which is all the publish job accepts.
+            self.assertEqual({path.suffix for path in Path(out).iterdir()}, {".json"})
 
 
 @unittest.skipUnless(bash_has_jq(), "jq is not on bash's PATH")

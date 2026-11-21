@@ -94,9 +94,10 @@ jobs:
       issues: read  # milestones, their issues, the release tracker and the ci-red-main issues
       pull-requests: read  # the open pull requests and the ones that close a milestone's issues
     outputs:
-      # 'true' when this run generated data for `publish` to push: neither "Stop here when this run has nothing
-      # to add" nor the budget check after the wait stopped it.
-      publish: ${{ steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false' }}
+      # 'true' when this run has something for `publish` to push. Either it generated data (neither "Stop here
+      # when this run has nothing to add" nor the budget check after the wait stopped it), or the budget is
+      # gone and the last data goes out again with the time it returns (#4726).
+      publish: ${{ (steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false') || steps.note.outcome == 'success' }}
       # The JSON files as one string: see "Pack the data for the publish job".
       data: ${{ steps.pack.outputs.data }}
     steps:
@@ -193,7 +194,21 @@ jobs:
             if (( minutes < 1 )); then
               minutes=1
             fi
-            said="The repository's API budget is used up: $spent for about $minutes more minutes. Nothing read, nothing published."
+            said="The repository's API budget is used up: $spent for about $minutes more minutes. Nothing read"
+            # The page says so too (#4726), once for each hour the budget is gone. When the published data
+            # doesn't already name this hour's end, "Tell the page when the budget returns" below publishes
+            # it again with that time. Nothing published yet means nothing to say it on.
+            noted=$(jq -r '.budget_until // empty' "$PREVIOUS_INDEX" 2> /dev/null || true)
+            noted_at=""
+            if [[ -n "$noted" ]]; then
+              noted_at=$(date -u -d "$noted" +%s 2> /dev/null || true)
+            fi
+            if [[ -f "$PREVIOUS_INDEX" && "$noted_at" != "$reset" ]]; then
+              echo "note=$reset" >> "$GITHUB_OUTPUT"
+              said="$said: the page is told when the budget returns."
+            else
+              said="$said, nothing published."
+            fi
             echo "::warning title=Release dashboard::$said"
             stop "$said"
           fi
@@ -281,21 +296,42 @@ jobs:
 
           # The step before this asked about the budget, and another workflow can spend it during the wait
           # (#4717: a fuzzing run took the last calls in 50 seconds, and the read after it failed). So ask
-          # again, with the same floors, and stop the same way: a warning, and nothing read.
-          budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.graphql.remaining)"' 2> /dev/null || true)
-          read -r rest points <<< "$budget" || true
+          # again, with the same floors, and stop the same way: a warning, nothing read, and the page told
+          # when the budget returns (#4726).
+          budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2> /dev/null || true)
+          read -r rest rest_reset points points_reset <<< "$budget" || true
           spent=""
+          reset=""
           if [[ "${rest:-}" =~ ^[0-9]+$ ]] && (( rest < MIN_REST_CALLS )); then
             spent="$rest REST calls left"
+            reset=${rest_reset:-}
           elif [[ "${points:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
             spent="$points GraphQL points left"
+            reset=${points_reset:-}
           fi
           if [[ -n "$spent" ]]; then
-            said="The repository's API budget was used up during this run's wait: $spent. Nothing read, nothing published."
+            said="The repository's API budget was used up during this run's wait: $spent. Nothing read"
+            if [[ "$reset" =~ ^[0-9]+$ ]]; then
+              echo "note=$reset" >> "$GITHUB_OUTPUT"
+              said="$said: the page is told when the budget returns."
+            else
+              said="$said, nothing published."
+            fi
             echo "::warning title=Release dashboard::$said"
             echo "$said" >> "$GITHUB_STEP_SUMMARY"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
           fi
+
+      # The budget is gone, so nothing can be read until its hour ends. The page says so (#4726): the last
+      # data goes out again as it is, with that time in index.json. This takes no API call, which is the
+      # point: the data came from the branch by git above, and the publish job pushes it back by git. Once for
+      # each hour the budget is gone, since the step that stopped the run found the page not yet told.
+      - name: Tell the page when the budget returns
+        id: note
+        if: (steps.gate.outputs.note != '' || steps.wait.outputs.note != '') && steps.previous.outputs.at != ''
+        env:
+          UNTIL: ${{ steps.wait.outputs.note || steps.gate.outputs.note }}
+        run: python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous" --budget-until "$UNTIL"
 
       - name: Generate
         if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
@@ -305,7 +341,7 @@ jobs:
 
       # The page reads index.json, then the file each release names: check they're all there and all JSON.
       - name: Check what was written
-        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
+        if: (steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false') || steps.note.outcome == 'success'
         run: |
           set -euo pipefail
           python3 -I -X utf8 - "$RUNNER_TEMP/data" <<'PY'
@@ -329,7 +365,7 @@ jobs:
       # isn't written down, so the ceiling here is well under half of it.
       - name: Pack the data for the publish job
         id: pack
-        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
+        if: (steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false') || steps.note.outcome == 'success'
         env:
           MAX_CHARACTERS: 400000
         run: |
