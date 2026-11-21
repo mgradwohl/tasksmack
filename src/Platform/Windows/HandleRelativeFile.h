@@ -152,8 +152,8 @@ void markDeleteOnClose(HANDLE file) noexcept;
 /// Whether the owner of @p handle (opened with READ_CONTROL) is SYSTEM, TrustedInstaller or BUILTIN\Administrators;
 /// nullopt when it can't be read (WindowsSecurityOwners.h). A folder made while elevated is owned by Administrators,
 /// %ProgramData% by SYSTEM and Windows' own folders by TrustedInstaller; one a user made is none of them, and only an
-/// administrator can give a folder any of these owners (#4699). The owners ElevatedRestart::ownerIsPrivileged() and
-/// WindowsDumpFolder's folderReaders() trust too.
+/// administrator can give a folder any of these owners (#4699). ElevatedRestart's checkConfigDir() and
+/// WindowsDumpFolder's folderReaders() use it too (#4715).
 [[nodiscard]] std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle);
 
 /// A security descriptor (LocalFree'd when it dies).
