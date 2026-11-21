@@ -19,6 +19,9 @@
   // A change starts a run within five minutes and the schedule adds one every five, so data this old means runs
   // are failing or GitHub isn't starting them (maintainer, 2026-11-20).
   const STALE_MINUTES = 25;
+  // GitHub's API budgets are hourly, so a note that one returns later than this is a mistake, and isn't shown:
+  // it would hold the stale warning back until then (#4726).
+  const BUDGET_AHEAD_MINUTES = 75;
   const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
   const HOUR = 3600;
   const DAY = 86400;
@@ -106,8 +109,10 @@
   const dateFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
   const timeFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const number = new Intl.NumberFormat();
+  const hourFormat = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
   const day = (s) => dateFormat.format(new Date(s * 1000));
   const moment = (s) => timeFormat.format(new Date(s * 1000));
+  const hour = (s) => hourFormat.format(new Date(s * 1000));
 
   /** A length of time, from hours: 18 min, 5.2 h, 3.1 d. */
   function span(hours) {
@@ -218,9 +223,10 @@
       if (turn !== polling.turn) return;
       const pick = polling.chosen || (view.release && view.release.milestone.title) || wanted(index);
       if (!TITLE.test(pick || '')) throw new Error('no release to show');
-      // Nothing new: this run's data is on the page already, whole, for this release.
+      // Nothing new: this run's data is on the page already, whole, for this release. The budget note counts
+      // as news: it comes with the same data, republished (#4726).
       if (quiet && view.release && !view.behind && view.release.milestone.title === pick &&
-        view.index.generated_at === index.generated_at) return;
+        view.index.generated_at === index.generated_at && view.index.budget_until === index.budget_until) return;
       const release = await load(pick + '.json');
       if (turn !== polling.turn) return;
       view.index = index;
@@ -228,8 +234,11 @@
       // The data host keeps each file for a few minutes by itself, so a new index can come with the release
       // file of the run before. That pair is shown, and the next look asks for both again.
       view.behind = live(release) && seconds(release.generated_at) < seconds(index.generated_at);
-      // Whole data generated after "Refresh now" was clicked is what it was waiting for.
+      // Whole data generated after "Refresh now" was clicked is what it was waiting for. So is the word that
+      // the budget is gone (#4726): no newer data can come before it returns.
       if (!view.behind && seconds(index.generated_at) * 1000 > polling.watchFrom) polling.watchUntil = 0;
+      const returns = (seconds(index.budget_until) || 0) * 1000 - Date.now();
+      if (returns > 0 && returns <= BUDGET_AHEAD_MINUTES * 60 * 1000) polling.watchUntil = 0;
       render();
     } catch (error) {
       if (turn !== polling.turn) return;
@@ -261,20 +270,35 @@
     const stamp = el('span', { title: moment(now) });
     const age = el('span');
     const watching = el('p', { class: 'watching', role: 'status', hidden: true }, 'Looking for new data every 30 seconds');
-    const again = refreshLink();
+    const run = refreshLink();
     const stale = el('p', { class: 'banner stale', hidden: true }, 'No new data for ', age, '. It usually refreshes within 15 minutes.',
-      again && [' ', again, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']);
+      run && [' ', run, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']);
     // The banner goes by the last run, which is the index's time: a planned release's own file is an hour old
     // at most by design, and that isn't a run gone missing.
     const ran = seconds(view.index.generated_at) || now;
+    // The repository's hourly API budget on GitHub is used up (#4726): the workflow can read nothing until it
+    // returns, and said so by publishing the last data again with that time. Until then this takes the stale
+    // banner's place, whose "Refresh now" couldn't help.
+    const until = seconds(view.index.budget_until);
+    const budget = el('p', { class: 'banner budget', hidden: true }, "GitHub's API budget for this repository is used up until ",
+      el('strong', { text: until ? hour(until) : '' }), ', and nothing can refresh these figures before then. The last run was at ', moment(ran), '.');
+    // "Refresh now", beside the page's age. Only a release that every run writes has something to refresh:
+    // not a shipped one, nor a planned one. And not while the budget is gone: a run could add nothing.
+    const again = live(release) ? refreshLink() : null;
+    const refresh = again ? el('span', { class: 'refresh-now' }, ' · ', again) : null;
     view.clock = () => {
       const minutes = (Date.now() / 1000 - ran) / 60;
+      const still = release.stage !== 'released' && !window.__RELEASE_DATA__;
+      const left = until ? (until - Date.now() / 1000) / 60 : 0;
+      const spent = left > 0 && left <= BUDGET_AHEAD_MINUTES;
       stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
       age.textContent = span(minutes / 60);
-      stale.hidden = Boolean(window.__RELEASE_DATA__) || release.stage === 'released' || minutes <= STALE_MINUTES;
-      watching.hidden = Date.now() >= polling.watchUntil;
+      budget.hidden = !still || !spent;
+      stale.hidden = !still || spent || minutes <= STALE_MINUTES;
+      if (refresh) refresh.hidden = spent;
+      watching.hidden = spent || Date.now() >= polling.watchUntil;
     };
-    const parts = [masthead(release, stamp, watching), stages(release), stale];
+    const parts = [masthead(release, stamp, watching, refresh), stages(release), budget, stale];
     if (release.stage !== 'planned') parts.push(summary(release));
     parts.push(shipList(release, now));
     if (release.stage !== 'planned') parts.push(movement(release, now));
@@ -326,21 +350,19 @@
     if (Date.now() - polling.asked >= every - 1000) show(null, true);
   }
 
-  function masthead(release, stamp, watching) {
+  function masthead(release, stamp, watching, refresh) {
     const select = el('select', { id: 'release-select', onchange: (event) => choose(event.target.value) },
       view.index.releases.map((entry) => el('option', { value: entry.title, selected: entry.title === release.milestone.title },
         entry.title + (entry.stage === 'released' ? '' : entry.stage === 'planned' ? ' (planned)' : ' (in progress)'))));
     const links = [link('Milestone', '/milestone/' + Number(release.milestone.number))];
     if (release.tracker) links.push(link('Release tracker #' + release.tracker.number, '/issues/' + Number(release.tracker.number)));
     links.push(link('Release process', '/blob/main/docs/dev/release-process.md'));
-    // Only a release that every run writes has something to refresh: not a shipped one, nor a planned one.
-    const again = live(release) ? refreshLink() : null;
     return el('header', { class: 'masthead' },
       el('div', null, el('p', { class: 'eyebrow', text: 'TaskSmack · Release Command Center' }), el('h1', { text: release.milestone.title }),
         el('p', { class: 'links' }, links)),
       el('div', { class: 'masthead-side' },
         el('label', { for: 'release-select' }, 'Release', select),
-        el('p', { class: 'updated' }, stamp, again && [' · ', again]),
+        el('p', { class: 'updated' }, stamp, refresh),
         watching));
   }
 

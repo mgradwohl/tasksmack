@@ -279,8 +279,17 @@ How it's made:
   after the run was created (the second run of a merge, which is a push and an issue closing, and a run that
   waited behind another), or the workflow token's hourly budget is used up, before the run's wait or during it
   (#4717). That last one is a warning on the run, not a failure, and it stops a manual run too, so "Refresh
-  now" publishes nothing then. Every workflow here shares the budget (#4617), and the page stays as it was
-  until the hour turns over.
+  now" publishes nothing new then. Every workflow here shares the budget (#4617), and the figures stay as they
+  were until the hour turns over.
+- When the budget is used up, the page says so and when it returns (#4726): "GitHub's API budget for this
+  repository is used up until 1:18 PM", in place of the warning about old data. The run that finds the budget
+  gone publishes the last data again as it is, with that time in `index.json`'s `budget_until`, which takes no
+  API call. It does that once for each hour the budget is gone, and the next run that reads writes an index
+  without the field. `generated_at` doesn't change, so "Updated" still gives the time the figures were read.
+  While the note shows, the page offers no "Refresh now": a run could add nothing. The note's commit on
+  `dashboard-data` keeps the time of the data it repeats, and its message and README say the figures are an
+  earlier run's. With both budgets gone the time is the later of the two hours' ends. A note that can't be
+  written, or that names a time over 75 minutes ahead, is a warning on the run and nothing is published.
 - A run on `main` makes no artifact (#4717): its read-only job hands the JSON to the job that publishes as a
   job output. That job takes it as text that can't become commands, checks it's a flat set of JSON files
   before pushing, and tries the push three times. A run that can't publish (a pull request's, or a manual one
@@ -290,8 +299,9 @@ How it's made:
   run doesn't queue: it cancels the run in progress and publishes what it reads. New data shows within about
   five minutes: the data host can serve the old file that long.
 - `docs/release/` is the page: static, no library, no CDN. It asks for new data every five minutes, and when the
-  tab comes back to the front. If the last run was more than 25 minutes ago it says so. A planned release's own
-  figures are up to an hour old by design, and a shipped release's never change, so neither has "Refresh now".
+  tab comes back to the front. If the last run was more than 25 minutes ago it says so, unless the budget note
+  above already gives the reason. A planned release's own figures are up to an hour old by design, and a
+  shipped release's never change, so neither has "Refresh now".
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.

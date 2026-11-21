@@ -27,8 +27,9 @@ on:
     # it's busy (#4604: 13 of a day's 120 slots never started, three in a row at midnight UTC), so the events
     # below carry the changes. The generator reads once an hour what changes slowly, and a usual run is about
     # 7 REST calls and 50 GraphQL points of the hourly budget this token shares with every other workflow
-    # here. No run but a person's publishes sooner than five minutes after the last, so an hour is 12 runs at
-    # the most: about 100 calls and 600 points of 5,000 each. Each run's log says what it used and what's left.
+    # here. No run but a person's reads sooner than five minutes after the last data was published, so an hour
+    # is 12 reads at the most: about 100 calls and 600 points of 5,000 each. Each run's log says what it used
+    # and what's left. (The note that the budget is gone, #4726, is published without a read or a wait.)
     - cron: '3-59/10 * * * *'
     # The same again, five minutes off (#4700). The hour's first slot starts about eight minutes late or not
     # at all, and in a quiet stretch that left the page 15 to 21 minutes behind. With twice the slots, one that
@@ -94,9 +95,14 @@ jobs:
       issues: read  # milestones, their issues, the release tracker and the ci-red-main issues
       pull-requests: read  # the open pull requests and the ones that close a milestone's issues
     outputs:
-      # 'true' when this run generated data for `publish` to push: neither "Stop here when this run has nothing
-      # to add" nor the budget check after the wait stopped it.
-      publish: ${{ steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false' }}
+      # 'true' when this run has something for `publish` to push. Either it generated data (neither "Stop here
+      # when this run has nothing to add" nor the budget check after the wait stopped it), or the budget is
+      # gone and the last data goes out again with the time it returns (#4726).
+      publish: ${{ (steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false') || steps.note.outputs.wrote == 'true' }}
+      # 'true' when what is published is that note: an earlier run's figures, not this run's.
+      note: ${{ steps.note.outputs.wrote }}
+      # When those figures were published, in seconds: the note's commit keeps that time.
+      published_at: ${{ steps.previous.outputs.at }}
       # The JSON files as one string: see "Pack the data for the publish job".
       data: ${{ steps.pack.outputs.data }}
     steps:
@@ -180,20 +186,28 @@ jobs:
           # What's left of each budget and when its hour ends, in seconds; nothing when the question fails.
           budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2> /dev/null || true)
           read -r rest rest_reset points points_reset <<< "$budget" || true
+          # Either budget under its floor stops the run. With both under, it is the later of the two hours
+          # that has to end before a run can read again.
           spent=""
+          reset=0
           if [[ "${rest:-}" =~ ^[0-9]+$ && "${rest_reset:-}" =~ ^[0-9]+$ ]] && (( rest < MIN_REST_CALLS )); then
             spent="$rest REST calls left"
             reset=$rest_reset
-          elif [[ "${points:-}" =~ ^[0-9]+$ && "${points_reset:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
-            spent="$points GraphQL points left"
-            reset=$points_reset
+          fi
+          if [[ "${points:-}" =~ ^[0-9]+$ && "${points_reset:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
+            spent="${spent:+$spent and }$points GraphQL points left"
+            if (( points_reset > reset )); then
+              reset=$points_reset
+            fi
           fi
           if [[ -n "$spent" ]]; then
             minutes=$(( (reset - now + 59) / 60 ))
             if (( minutes < 1 )); then
               minutes=1
             fi
-            said="The repository's API budget is used up: $spent for about $minutes more minutes. Nothing read, nothing published."
+            # The page says so too (#4726): "Tell the page when the budget returns" below gets this time.
+            echo "note=$reset" >> "$GITHUB_OUTPUT"
+            said="The repository's API budget is used up: $spent for about $minutes more minutes. Nothing read."
             echo "::warning title=Release dashboard::$said"
             stop "$said"
           fi
@@ -236,7 +250,8 @@ jobs:
       #     apart, and reading this long after the first puts the second in the same data by more than the
       #     margin above, so the second's run stops instead of publishing the same thing five minutes later.
       # Only a person's manual run can publish meanwhile, and it cancels this one, so the data fetched above is
-      # still the last when the wait ends. A dispatched run and a pull request's proof never wait.
+      # still the last when the wait ends. A dispatched run and a pull request's proof never wait. A budget
+      # note (#4726) keeps the commit time of the data it repeats, so it doesn't start these five minutes again.
       - name: Wait until the published data is five minutes old
         id: wait
         if: steps.gate.outputs.proceed == 'true' && contains(fromJSON('["issues", "push", "schedule"]'), github.event_name)
@@ -281,20 +296,54 @@ jobs:
 
           # The step before this asked about the budget, and another workflow can spend it during the wait
           # (#4717: a fuzzing run took the last calls in 50 seconds, and the read after it failed). So ask
-          # again, with the same floors, and stop the same way: a warning, and nothing read.
-          budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.graphql.remaining)"' 2> /dev/null || true)
-          read -r rest points <<< "$budget" || true
+          # again, with the same floors, and stop the same way: a warning, nothing read, and the page told
+          # when the budget returns (#4726).
+          budget=$(gh api rate_limit --jq '.resources | "\(.core.remaining) \(.core.reset) \(.graphql.remaining) \(.graphql.reset)"' 2> /dev/null || true)
+          read -r rest rest_reset points points_reset <<< "$budget" || true
           spent=""
+          reset=0
           if [[ "${rest:-}" =~ ^[0-9]+$ ]] && (( rest < MIN_REST_CALLS )); then
             spent="$rest REST calls left"
-          elif [[ "${points:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
-            spent="$points GraphQL points left"
+            if [[ "${rest_reset:-}" =~ ^[0-9]+$ ]]; then
+              reset=$rest_reset
+            fi
+          fi
+          if [[ "${points:-}" =~ ^[0-9]+$ ]] && (( points < MIN_GRAPHQL_POINTS )); then
+            spent="${spent:+$spent and }$points GraphQL points left"
+            if [[ "${points_reset:-}" =~ ^[0-9]+$ ]] && (( points_reset > reset )); then
+              reset=$points_reset
+            fi
           fi
           if [[ -n "$spent" ]]; then
-            said="The repository's API budget was used up during this run's wait: $spent. Nothing read, nothing published."
+            if (( reset > 0 )); then
+              echo "note=$reset" >> "$GITHUB_OUTPUT"
+            fi
+            said="The repository's API budget was used up during this run's wait: $spent. Nothing read."
             echo "::warning title=Release dashboard::$said"
             echo "$said" >> "$GITHUB_STEP_SUMMARY"
             echo "proceed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # The budget is gone, so nothing can be read until its hour ends. The page says so (#4726): the last
+      # data goes out again as it is, with that time in index.json. This takes no API call, which is the
+      # point: the data came from the branch by git above, and the publish job pushes it back by git.
+      #   - Once for each hour the budget is gone: the generator writes nothing when the published data
+      #     already names this time.
+      #   - Never a failed run: data the generator can't repeat is its warning, and nothing is published,
+      #     which is what a run stopped by the budget did before there was a note.
+      - name: Tell the page when the budget returns
+        id: note
+        if: (steps.gate.outputs.note != '' || steps.wait.outputs.note != '') && steps.previous.outputs.at != ''
+        env:
+          UNTIL: ${{ steps.wait.outputs.note || steps.gate.outputs.note }}
+        run: |
+          set -euo pipefail
+          python3 -I -X utf8 tools/release-dashboard.py --out "$RUNNER_TEMP/data" --previous "$RUNNER_TEMP/previous" --budget-until "$UNTIL" || true
+          if [[ -s "$RUNNER_TEMP/data/index.json" ]]; then
+            echo "wrote=true" >> "$GITHUB_OUTPUT"
+            echo "The last data goes to the publish job again, with the time the budget returns for the page to say." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "Nothing published." >> "$GITHUB_STEP_SUMMARY"
           fi
 
       - name: Generate
@@ -305,7 +354,7 @@ jobs:
 
       # The page reads index.json, then the file each release names: check they're all there and all JSON.
       - name: Check what was written
-        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
+        if: (steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false') || steps.note.outputs.wrote == 'true'
         run: |
           set -euo pipefail
           python3 -I -X utf8 - "$RUNNER_TEMP/data" <<'PY'
@@ -329,7 +378,7 @@ jobs:
       # isn't written down, so the ceiling here is well under half of it.
       - name: Pack the data for the publish job
         id: pack
-        if: steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false'
+        if: (steps.gate.outputs.proceed == 'true' && steps.wait.outputs.proceed != 'false') || steps.note.outputs.wrote == 'true'
         env:
           MAX_CHARACTERS: 400000
         run: |
@@ -358,8 +407,8 @@ jobs:
   publish:
     name: Publish to dashboard-data
     needs: generate
-    # Never from a pull request, only main's copy of the generator publishes, and only a run that generated
-    # something (`generate` stops early when it has nothing to add).
+    # Never from a pull request, only main's copy of the generator publishes, and only a run with something to
+    # publish: data it generated, or the note that the budget is gone (`generate` stops early otherwise).
     if: >-
       github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       needs.generate.outputs.publish == 'true'
@@ -414,21 +463,39 @@ jobs:
           REPO_URL: ${{ github.server_url }}/${{ github.repository }}.git
           SOURCE: ${{ github.server_url }}/${{ github.repository }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          NOTE: ${{ needs.generate.outputs.note }}
+          PUBLISHED_AT: ${{ needs.generate.outputs.published_at }}
         run: |
           set -euo pipefail
           cd data
+          # A run that only added the budget note (#4726) read nothing: the README and the commit say whose
+          # figures these are, so nobody looks in this run for the reads behind them. And the commit keeps the
+          # time those figures were published: the next run measures its five-minute wait from the branch's
+          # commit, and a note is not new data to wait on.
+          if [[ "${NOTE:-}" == true && "${PUBLISHED_AT:-}" =~ ^[0-9]+$ ]]; then
+            export GIT_AUTHOR_DATE="$PUBLISHED_AT +0000" GIT_COMMITTER_DATE="$PUBLISHED_AT +0000"
+          fi
+          what="Release dashboard data"
           {
             echo "# Release dashboard data"
             echo
-            echo "Generated by [tools/release-dashboard.py]($SOURCE/blob/main/tools/release-dashboard.py) in"
-            echo "[this run]($RUN_URL), for [the Release Command Center](https://mgradwohl.github.io/tasksmack/release/)."
+            if [[ "${NOTE:-}" == true ]]; then
+              what="Release dashboard data again, with a budget note"
+              echo "Generated by [tools/release-dashboard.py]($SOURCE/blob/main/tools/release-dashboard.py) in an"
+              echo "earlier run, for [the Release Command Center](https://mgradwohl.github.io/tasksmack/release/)."
+              echo "GitHub's API budget for the repository was used up, so [this run]($RUN_URL) read nothing: it"
+              echo "published the same figures again with the time the budget returns (\`budget_until\` in index.json)."
+            else
+              echo "Generated by [tools/release-dashboard.py]($SOURCE/blob/main/tools/release-dashboard.py) in"
+              echo "[this run]($RUN_URL), for [the Release Command Center](https://mgradwohl.github.io/tasksmack/release/)."
+            fi
             echo "This branch holds one commit, replaced every few minutes. Don't edit it or build on it."
           } > README.md
           git init --quiet --initial-branch dashboard-data
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add --all
-          git commit --quiet --message "Release dashboard data, ${GITHUB_SHA::8} (run ${GITHUB_RUN_ID})"
+          git commit --quiet --message "$what, ${GITHUB_SHA::8} (run ${GITHUB_RUN_ID})"
           # A one-off credential helper hands git the token from the environment, so it is never on a command line.
           # A push that can't reach github.com is tried again (#4717: one hung for two minutes and failed a run
           # whose data was already read): three times, each cut off after a minute.
