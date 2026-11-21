@@ -130,6 +130,28 @@ TEST_F(RootDumpFolderTest, TheFolderIsMadeInTheHomeWithoutItsTrailingSlashAndOnl
     EXPECT_EQ(rootDumpFolderIn(m_Parent.string(), ::geteuid() + 1, takes), std::filesystem::path{}) << "not the owner's home";
 }
 
+// #4648: root's dump folder on a network or user filesystem is refused, on the folder or any folder above it, as root's
+// tools are (#4554, #4572): every component lstat()s as root:0755 here (a cifs mount with uid=0 shows exactly that), and
+// only the filesystem check tells them apart.
+TEST_F(RootDumpFolderTest, ARootDumpFolderOnANetworkFilesystemIsRefusedEvenWhenItLooksRootOnly)
+{
+    const auto rootOnly = [](const char* /*path*/, struct stat* info)
+    {
+        *info = {};
+        info->st_mode = S_IFDIR | S_IRWXU | S_IRGRP | S_IXGRP | S_IROTH | S_IXOTH;
+        info->st_uid = 0;
+        return 0;
+    };
+    const std::string mountAbove = m_Parent.parent_path().string();
+    const auto refusal = rootDumpRefusal(m_Parent, rootOnly, [&mountAbove](const std::string& path) { return path == mountAbove; });
+    ASSERT_TRUE(refusal.has_value());
+    EXPECT_TRUE(refusal->contains("network or user filesystem")) << *refusal;
+
+    // On a trusted filesystem this check doesn't refuse it (the real mount's own flags may still: a nosuid /tmp does).
+    const auto trusted = rootDumpRefusal(m_Parent, rootOnly, [](const std::string&) { return false; });
+    EXPECT_FALSE(trusted.has_value() && trusted->contains("network or user filesystem")) << trusted.value_or("");
+}
+
 /// As root only (CI's root pass, root_test_filter): rootDumpRefusal(), the real check, refuses a home under a folder
 /// anyone may write (/tmp), so no default is offered there.
 TEST(RootDumpFolderRootTest, ARootHomeUnderAFolderOthersMayWriteGetsNoDefault)
@@ -143,7 +165,8 @@ TEST(RootDumpFolderRootTest, ARootHomeUnderAFolderOthersMayWriteGetsNoDefault)
     const std::filesystem::path home = std::filesystem::path("/tmp") / ("tasksmack-root-home-4262-" + std::to_string(::getpid()));
     std::filesystem::create_directories(home);
     std::filesystem::permissions(home, std::filesystem::perms::owner_all);
-    EXPECT_EQ(rootDumpFolderIn(home.string() + "/", 0, &rootDumpRefusal), std::filesystem::path{});
+    EXPECT_EQ(rootDumpFolderIn(home.string() + "/", 0, [](const std::filesystem::path& dir) { return rootDumpRefusal(dir); }),
+              std::filesystem::path{});
     std::error_code error;
     std::filesystem::remove_all(home, error);
 }
