@@ -20,4 +20,12 @@ namespace Platform::Windows
 /// read as NUL-terminated; each must be at most INT_MAX units, the API's limit.
 [[nodiscard]] bool equalsOrdinalIgnoreCase(std::wstring_view a, std::wstring_view b) noexcept;
 
+/// Whether UTF-16 paths @p a and @p b name the same path as text, the elevated code's one path comparison (#4699):
+/// equalsOrdinalIgnoreCase() after any trailing separators ('\' or '/') are dropped, except a root's, which counts. So
+/// "C:\a\" equals "C:\a" and "\\server\share\" equals "\\server\share", but "C:\" (the drive's root folder) isn't "C:"
+/// (the drive itself, or its current folder): a drive root, "\\?\C:\" and "\\.\C:\" among them, and a path of
+/// separators alone keep one separator, and which one doesn't matter. Nothing else is normalized: "." and "..", doubled
+/// separators inside and the \\?\ prefix compare as written. Compared on views of the text, nothing copied.
+[[nodiscard]] bool samePathIgnoringTrailingSeparators(std::wstring_view a, std::wstring_view b) noexcept;
+
 } // namespace Platform::Windows
