@@ -72,6 +72,7 @@ add_executable(TaskSmackBenchmarks
     bench_ProcessRowMeter.cpp
     bench_ProcessIcons.cpp
     bench_ProcessTree.cpp
+    bench_ProcessSort.cpp # the Processes table sorted by a text column (#4509)
     ${PLATFORM_BENCH_SOURCES}
     $<TARGET_OBJECTS:TaskSmackApp>
 )

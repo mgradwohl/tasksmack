@@ -20,7 +20,9 @@
 // After the open, a handle that is a name-surrogate reparse point (a link, opened as itself), on a device that isn't a
 // disk, a virtual disk or a CD-ROM, on a remote device, or that a redirector serves, is closed and refused: a backstop
 // for whatever reads the file, not for the connection, which the open itself guards. A reparse point that isn't a
-// name surrogate (a CompactOS file's WOF tag, a deduplicated or cloud file) is the file itself, so it is kept.
+// name surrogate (a CompactOS file's WOF tag, a deduplicated or cloud file) is the file itself, so it is kept. A
+// volume that can't report reparse tags (FAT, FAT32, exFAT: no reparse points at all, #4647) is judged by the file's
+// basic attributes instead, and a reparse point there is refused, since its tag can't be read.
 //
 // Its own file, so TaskSmackHelper.exe, which reads modules for an administrator (#2309), builds it in without the
 // image file code (TASKSMACK_WINDOWS_HELPER_SOURCES).

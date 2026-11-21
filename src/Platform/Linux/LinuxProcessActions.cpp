@@ -1008,13 +1008,26 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
         const int finished = ::open(written.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
         struct stat current = {};
+        // And owner-only as the filesystem now says (#4648): one that ignores the fchmod (cifs without unix extensions)
+        // returns 0 and leaves the file readable by everyone, with the process's memory in it.
         const bool same = finished >= 0 && ::fstat(finished, &current) == 0 && S_ISREG(current.st_mode) &&
                           current.st_dev == workingFile.st_dev && current.st_ino == workingFile.st_ino && current.st_uid == ::geteuid() &&
                           ::fchmod(finished, S_IRUSR | S_IWUSR) == 0;
         const int error = errno;
+        struct stat made = {};
+        const bool ownerOnly = same && ::fstat(finished, &made) == 0 && (made.st_mode & static_cast<mode_t>(S_IRWXG | S_IRWXO)) == 0;
         if (finished >= 0)
         {
             ::close(finished);
+        }
+        if (same && !ownerOnly)
+        {
+            std::filesystem::remove(written, ec);
+            releaseName();
+            return std::unexpected(std::format(
+                "Couldn't make the dump file {} private: its filesystem keeps it readable by others (it ignores permissions), so "
+                "it was removed. Choose a folder on a local disk",
+                written.string()));
         }
         if (!same)
         {
