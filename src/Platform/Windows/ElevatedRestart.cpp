@@ -122,17 +122,6 @@ std::optional<DWORD> linkCountOf(const std::wstring& path)
     return info.nNumberOfLinks;
 }
 
-std::optional<bool> ownerIsPrivileged(HANDLE handle)
-{
-    const auto owner = ownerSidOf(handle);
-    if (!owner.has_value())
-    {
-        return std::nullopt;
-    }
-    // NT SERVICE\TrustedInstaller too, which owns what Windows itself installs (WindowsSecurityOwners.h's static SID, #4699).
-    return isAdministratorsOrSystem(owner->sid) || isTrustedInstaller(owner->sid);
-}
-
 HANDLE openToPin(const std::wstring& path)
 {
     // No FILE_SHARE_DELETE: while this is open the folder can't be renamed or deleted. READ_CONTROL: its owner is read

@@ -19,6 +19,9 @@
   // A change starts a run within five minutes and the schedule adds one every five, so data this old means runs
   // are failing or GitHub isn't starting them (maintainer, 2026-11-20).
   const STALE_MINUTES = 25;
+  // GitHub's API budgets are hourly, so a note that one returns later than this is a mistake, and isn't shown:
+  // it would hold the stale warning back until then (#4726).
+  const BUDGET_AHEAD_MINUTES = 75;
   const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
   const HOUR = 3600;
   const DAY = 86400;
@@ -106,8 +109,10 @@
   const dateFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
   const timeFormat = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' });
   const number = new Intl.NumberFormat();
+  const hourFormat = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
   const day = (s) => dateFormat.format(new Date(s * 1000));
   const moment = (s) => timeFormat.format(new Date(s * 1000));
+  const hour = (s) => hourFormat.format(new Date(s * 1000));
 
   /** A length of time, from hours: 18 min, 5.2 h, 3.1 d. */
   function span(hours) {
@@ -218,9 +223,10 @@
       if (turn !== polling.turn) return;
       const pick = polling.chosen || (view.release && view.release.milestone.title) || wanted(index);
       if (!TITLE.test(pick || '')) throw new Error('no release to show');
-      // Nothing new: this run's data is on the page already, whole, for this release.
+      // Nothing new: this run's data is on the page already, whole, for this release. The budget note counts
+      // as news: it comes with the same data, republished (#4726).
       if (quiet && view.release && !view.behind && view.release.milestone.title === pick &&
-        view.index.generated_at === index.generated_at) return;
+        view.index.generated_at === index.generated_at && view.index.budget_until === index.budget_until) return;
       const release = await load(pick + '.json');
       if (turn !== polling.turn) return;
       view.index = index;
@@ -228,8 +234,11 @@
       // The data host keeps each file for a few minutes by itself, so a new index can come with the release
       // file of the run before. That pair is shown, and the next look asks for both again.
       view.behind = live(release) && seconds(release.generated_at) < seconds(index.generated_at);
-      // Whole data generated after "Refresh now" was clicked is what it was waiting for.
+      // Whole data generated after "Refresh now" was clicked is what it was waiting for. So is the word that
+      // the budget is gone (#4726): no newer data can come before it returns.
       if (!view.behind && seconds(index.generated_at) * 1000 > polling.watchFrom) polling.watchUntil = 0;
+      const returns = (seconds(index.budget_until) || 0) * 1000 - Date.now();
+      if (returns > 0 && returns <= BUDGET_AHEAD_MINUTES * 60 * 1000) polling.watchUntil = 0;
       render();
     } catch (error) {
       if (turn !== polling.turn) return;
@@ -261,20 +270,35 @@
     const stamp = el('span', { title: moment(now) });
     const age = el('span');
     const watching = el('p', { class: 'watching', role: 'status', hidden: true }, 'Looking for new data every 30 seconds');
-    const again = refreshLink();
+    const run = refreshLink();
     const stale = el('p', { class: 'banner stale', hidden: true }, 'No new data for ', age, '. It usually refreshes within 15 minutes.',
-      again && [' ', again, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']);
+      run && [' ', run, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']);
     // The banner goes by the last run, which is the index's time: a planned release's own file is an hour old
     // at most by design, and that isn't a run gone missing.
     const ran = seconds(view.index.generated_at) || now;
+    // The repository's hourly API budget on GitHub is used up (#4726): the workflow can read nothing until it
+    // returns, and said so by publishing the last data again with that time. Until then this takes the stale
+    // banner's place, whose "Refresh now" couldn't help.
+    const until = seconds(view.index.budget_until);
+    const budget = el('p', { class: 'banner budget', hidden: true }, "GitHub's API budget for this repository is used up until ",
+      el('strong', { text: until ? hour(until) : '' }), ', and nothing can refresh these figures before then. The last run was at ', moment(ran), '.');
+    // "Refresh now", beside the page's age. Only a release that every run writes has something to refresh:
+    // not a shipped one, nor a planned one. And not while the budget is gone: a run could add nothing.
+    const again = live(release) ? refreshLink() : null;
+    const refresh = again ? el('span', { class: 'refresh-now' }, ' · ', again) : null;
     view.clock = () => {
       const minutes = (Date.now() / 1000 - ran) / 60;
+      const still = release.stage !== 'released' && !window.__RELEASE_DATA__;
+      const left = until ? (until - Date.now() / 1000) / 60 : 0;
+      const spent = left > 0 && left <= BUDGET_AHEAD_MINUTES;
       stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
       age.textContent = span(minutes / 60);
-      stale.hidden = Boolean(window.__RELEASE_DATA__) || release.stage === 'released' || minutes <= STALE_MINUTES;
-      watching.hidden = Date.now() >= polling.watchUntil;
+      budget.hidden = !still || !spent;
+      stale.hidden = !still || spent || minutes <= STALE_MINUTES;
+      if (refresh) refresh.hidden = spent;
+      watching.hidden = spent || Date.now() >= polling.watchUntil;
     };
-    const parts = [masthead(release, stamp, watching), stages(release), stale];
+    const parts = [masthead(release, stamp, watching, refresh), stages(release), budget, stale];
     if (release.stage !== 'planned') parts.push(summary(release));
     parts.push(shipList(release, now));
     if (release.stage !== 'planned') parts.push(movement(release, now));
@@ -326,21 +350,19 @@
     if (Date.now() - polling.asked >= every - 1000) show(null, true);
   }
 
-  function masthead(release, stamp, watching) {
+  function masthead(release, stamp, watching, refresh) {
     const select = el('select', { id: 'release-select', onchange: (event) => choose(event.target.value) },
       view.index.releases.map((entry) => el('option', { value: entry.title, selected: entry.title === release.milestone.title },
         entry.title + (entry.stage === 'released' ? '' : entry.stage === 'planned' ? ' (planned)' : ' (in progress)'))));
     const links = [link('Milestone', '/milestone/' + Number(release.milestone.number))];
     if (release.tracker) links.push(link('Release tracker #' + release.tracker.number, '/issues/' + Number(release.tracker.number)));
     links.push(link('Release process', '/blob/main/docs/dev/release-process.md'));
-    // Only a release that every run writes has something to refresh: not a shipped one, nor a planned one.
-    const again = live(release) ? refreshLink() : null;
     return el('header', { class: 'masthead' },
       el('div', null, el('p', { class: 'eyebrow', text: 'TaskSmack · Release Command Center' }), el('h1', { text: release.milestone.title }),
         el('p', { class: 'links' }, links)),
       el('div', { class: 'masthead-side' },
         el('label', { for: 'release-select' }, 'Release', select),
-        el('p', { class: 'updated' }, stamp, again && [' · ', again]),
+        el('p', { class: 'updated' }, stamp, refresh),
         watching));
   }
 
@@ -465,7 +487,8 @@
     const rows = release.ship_list.map((row) => {
       let body = null;
       if (row.issues && row.issues.length) {
-        body = issueList(row.issues.map((n) => byNumber.get(n)).filter(Boolean), now);
+        // The maintainer's row says what its issues wait on: they don't each say it again.
+        body = issueList(row.issues.map((n) => byNumber.get(n)).filter(Boolean), now, null, false, row.id === 'maintainer');
       } else if (row.id === 'checklist') {
         body = checklist(release);
       } else if (row.id === 'pull_requests' && release.live && release.live.pull_requests.length) {
@@ -527,14 +550,17 @@
     return new Set((row && row.issues) || []);
   }
 
-  /** The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven). */
-  function issueList(issues, now, side, asGiven) {
+  /**
+   * The issues as a list, by urgency unless they come in an order of their own (@p side, or @p asGiven).
+   * @p underHeld is for a list whose own heading says its issues wait on the maintainer: the rows don't repeat it.
+   */
+  function issueList(issues, now, side, asGiven, underHeld) {
     const sorted = side || asGiven ? issues : issues.slice().sort(byUrgency);
     const held = heldForMaintainer(view.release);
     return el('ul', { class: 'items' }, sorted.map((issue) => {
       const chips = [];
       if (issue.phase !== 'todo') chips.push(chip(PHASE_WORDS[issue.phase], true));
-      if (held.has(issue.n)) chips.push(chip('Waiting on the maintainer', true));
+      if (held.has(issue.n) && !underHeld) chips.push(chip('Waiting on the maintainer', true));
       if (issue.sev) chips.push(chip('sev: ' + issue.sev, issue.sev === 'high'));
       if (issue.pri) chips.push(chip('pri: ' + issue.pri, issue.pri === 'high'));
       if (issue.lane !== 'None') chips.push(chip(laneName(issue.lane)));
@@ -1035,11 +1061,17 @@
     const phases = release.counts.phases;
     const legend = el('ul', { class: 'legend' }, [['review', 'In review'], ['progress', 'In progress'], ['todo', 'Not started']].map(([phase, text]) =>
       el('li', null, el('span', { class: 'key box k-' + phase }), text + ' (' + (phases[phase] || 0) + ')')));
-    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work.
+    // The lists below, by kind or by lane (#4585). A lane's list runs in the order the lane takes its work,
+    // and ends with a group of its own for the issues that wait on the maintainer (#4718): a lane can't take
+    // those, so they don't sit among the work it can.
     const byLane = groupBy(issues, 'lane');
+    const held = heldForMaintainer(release);
     const groups = view.listBy === 'lane'
-      ? ordered(LANES, byLane).map((name) => ({ key: 'open-lane-' + name, name: laneName(name), issues: byLane.get(name).slice().sort(byQueue), asGiven: true }))
-      : CATEGORIES.filter((name) => byCategory.has(name)).map((name) => ({ key: 'open-' + name, name, issues: byCategory.get(name), asGiven: false }));
+      ? ordered(LANES, byLane).map((name) => {
+        const queue = byLane.get(name).slice().sort(byQueue);
+        return { key: 'open-lane-' + name, name: laneName(name), issues: queue.filter((issue) => !held.has(issue.n)), waiting: queue.filter((issue) => held.has(issue.n)), asGiven: true };
+      })
+      : CATEGORIES.filter((name) => byCategory.has(name)).map((name) => ({ key: 'open-' + name, name, issues: byCategory.get(name), waiting: [], asGiven: false }));
     const switcher = el('div', { class: 'switch', role: 'group', 'aria-label': 'List the open issues by' }, el('span', { 'aria-hidden': 'true', text: 'List by' }),
       LIST_BY.map(([key, text]) => el('button', { type: 'button', 'data-by': key, 'aria-pressed': String(view.listBy === key), onclick: () => listBy(key) }, text)));
     // What has been in hand longest: the first place to look for something stuck.
@@ -1059,9 +1091,16 @@
       labelGaps(release),
       el('div', { class: 'open-lists' }, el('div', { class: 'list-head' }, el('h3', { text: 'Open issues' }), switcher),
         groups.map((group, index) => {
+          // "Started" is the lane's own work: an issue that waits on the maintainer is counted once, as waiting,
+          // whatever label it still carries.
           const begun = group.issues.filter((issue) => issue.phase !== 'todo').length;
-          return details(group.key, 'group', el('summary', null, el('span', null, group.name, el('span', { class: 'chevron', 'aria-hidden': 'true' })),
-            el('span', { text: count(group.issues.length, 'issue') + (begun ? ', ' + begun + ' started' : '') })), issueList(group.issues, now, null, group.asGiven), index === 0);
+          const waiting = group.waiting.length;
+          const said = count(group.issues.length + waiting, 'issue') + (begun ? ', ' + begun + ' started' : '') + (waiting ? ', ' + waiting + ' waiting on the maintainer' : '');
+          return details(group.key, 'group', el('summary', null, el('span', null, group.name, el('span', { class: 'chevron', 'aria-hidden': 'true' })), el('span', { text: said })),
+            [group.issues.length ? issueList(group.issues, now, null, group.asGiven) : null,
+              // The space is for a screen reader and a copy: the two are set apart, so it isn't drawn.
+              waiting ? el('div', { class: 'held' }, el('h4', null, el('span', { text: 'Waiting on the maintainer' }), ' ', el('span', { text: count(waiting, 'issue') })),
+                issueList(group.waiting, now, null, true, true)) : null], index === 0);
         })),
       release.recently_closed.length
         ? details('recent', 'group', el('summary', null, el('span', null, 'Closed in the last 24 hours', el('span', { class: 'chevron', 'aria-hidden': 'true' })), el('span', { text: count(release.recently_closed.length, 'issue') })),

@@ -263,15 +263,16 @@ TEST(WindowsSecurityOwnersTest, AFolderThisAccountOwnsIsTheTokenUsers)
 }
 
 // Each caller's set of trusted owners, over the same two real folders. TrustedInstaller is privileged to
-// ElevatedRestart::ownerIsPrivileged() and trusted by HandleRelativeFile's ownerIsSystemOrAdministratorsOrTrustedInstaller(),
-// which secureChildFolder() and makeAdminDumpFolder() share (#4699: HandleRelativeFile's own check once left it out); the own
+// trusted by HandleRelativeFile's ownerIsSystemOrAdministratorsOrTrustedInstaller(), which secureChildFolder(),
+// makeAdminDumpFolder() and ElevatedRestart's checkConfigDir() (through ConfigDirFunctions::ownerIsPrivileged, #4715) share
+// (#4699: HandleRelativeFile's own check once left it out); the own
 // config folder's ownerIsOwnAccountOrAdministrators() takes this account instead.
 TEST(WindowsSecurityOwnersTest, EachCallerKeepsItsOwnSetOfTrustedOwners)
 {
     const OwnFolder own;
     const UniqueHandle mine = openToRead(own.path());
     ASSERT_TRUE(mine) << GetLastError();
-    EXPECT_EQ(ElevatedRestart::ownerIsPrivileged(mine.get()), std::optional(false));
+    EXPECT_EQ(ElevatedRestart::ConfigDirFunctions{}.ownerIsPrivileged(mine.get()), std::optional(false));
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(mine.get()), std::optional(false));
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(mine.get()), std::optional(true));
 
@@ -280,12 +281,12 @@ TEST(WindowsSecurityOwnersTest, EachCallerKeepsItsOwnSetOfTrustedOwners)
     const auto owner = ownerSidOf(windows.get());
     ASSERT_TRUE(owner.has_value()) << owner.error();
     ASSERT_TRUE(isTrustedInstaller(owner->sid)) << "the Windows folder is TrustedInstaller's";
-    EXPECT_EQ(ElevatedRestart::ownerIsPrivileged(windows.get()), std::optional(true));
+    EXPECT_EQ(ElevatedRestart::ConfigDirFunctions{}.ownerIsPrivileged(windows.get()), std::optional(true));
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(windows.get()), std::optional(true));
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(windows.get()), std::optional(false));
 
     // And none of them reads a handle that can't be asked as trusted.
-    EXPECT_EQ(ElevatedRestart::ownerIsPrivileged(nullptr), std::nullopt);
+    EXPECT_EQ(ElevatedRestart::ConfigDirFunctions{}.ownerIsPrivileged(nullptr), std::nullopt);
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(nullptr), std::nullopt);
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(nullptr), std::nullopt);
 }

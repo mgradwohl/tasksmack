@@ -194,5 +194,72 @@ class CheckPrereqsLldTests(CheckerTestBase):
         self.assertNotIn("minimum required", row)
 
 
+
+class CheckPrereqsIwyuTests(CheckerTestBase):
+    """#4708: an IWYU built against the wrong Clang gets the same what-to-do hint as a missing one, naming CI's commit."""
+
+    CI_SHA = re.search(
+        r"IWYU_COMMIT_SHA: '([0-9a-f]{40})'", (CHECK_PREREQS_SH.parent.parent / ".github" / "workflows" / "ci.yml").read_text()
+    ).group(1)
+
+    def test_a_missing_iwyu_gets_the_hint_with_cis_commit(self):
+        out = self.run_checker()
+        self.assertRegex(out, r"(?m)^iwyu: not found")
+        self.assertIn(self.CI_SHA, out)
+
+    def test_an_iwyu_built_against_another_clang_gets_the_hint_too(self):
+        stub = self.bin / "iwyu"
+        stub.write_text("#!/bin/sh\necho 'include-what-you-use 0.23 based on Ubuntu clang version 19.1.7'\n", encoding="utf-8")
+        stub.chmod(0o755)
+        out = self.run_checker()
+        self.assertRegex(out, r"(?m)^iwyu: 0\.23 .*built against Clang 19")
+        self.assertIn("Hint", out[out.index("iwyu: 0.23"):])
+        self.assertIn(self.CI_SHA, out[out.index("iwyu: 0.23"):])
+
+
+
+class CheckPrereqsLlvmRowTests(CheckerTestBase):
+    """#4714: every LLVM tool reports through one helper, held to the floor and to the major CI pins, as
+    tools/test-check-prereqs.ps1 checks check-prereqs.ps1's: below the floor, on the pin, off it, and not found."""
+
+    # As common.sh's pinned_llvm_major() reads it: the rev line after mirrors-clang-format, "frozen: vN." or "vN.".
+    _REV = re.search(r"mirrors-clang-format\n\s*(rev:[^\n]*)", (REPO_ROOT / ".pre-commit-config.yaml").read_text(encoding="utf-8")).group(1)
+    PINNED = (re.search(r"frozen:\s*v?(\d+)\.", _REV) or re.search(r"rev:\s*v?(\d+)\.", _REV)).group(1)
+
+    def stub(self, tool, text):
+        path = self.bin / tool
+        path.write_text(f"#!/bin/sh\necho '{text}'\n", encoding="utf-8")
+        path.chmod(0o755)
+        return path
+
+    def row(self, out, tool):
+        match = re.search(rf"(?m)^{re.escape(tool)}: .*$", out)
+        self.assertIsNotNone(match, out)
+        return match.group(0)
+
+    def test_below_the_floor_is_flagged(self):
+        path = self.stub("clang-tidy", "LLVM version 22.1.2")
+        self.assertEqual(self.row(self.run_checker(), "clang-tidy"), f"clang-tidy: 22 ({path}) - minimum required 23")
+
+    def test_on_the_pin_is_green(self):
+        path = self.stub("clang-tidy", f"LLVM version {self.PINNED}.1.5")
+        self.assertEqual(self.row(self.run_checker(), "clang-tidy"), f"clang-tidy: {self.PINNED} ({path})")
+
+    def test_above_the_floor_but_off_the_pin_is_skew(self):
+        other = str(int(self.PINNED) + 1)
+        path = self.stub("clang-tidy", f"LLVM version {other}.0.0")
+        out = self.run_checker()
+        self.assertEqual(self.row(out, "clang-tidy"), f"clang-tidy: {other} ({path}) - CI pins LLVM {self.PINNED}")
+        self.assertIn(f"LLVM {self.PINNED} is the version CI pins", out)
+
+    def test_not_found(self):
+        self.assertEqual(self.row(self.run_checker(), "clang-tidy"), "clang-tidy: not found")
+
+    def test_coverage_tools_below_the_floor_are_flagged_now(self):
+        # They read a version and printed it green whatever it was (#4714).
+        path = self.stub("llvm-cov", "Ubuntu LLVM version 21.1.8")
+        self.assertEqual(self.row(self.run_checker(), "llvm-cov"), f"llvm-cov: 21 ({path}) - minimum required 23")
+
+
 if __name__ == "__main__":
     unittest.main()
