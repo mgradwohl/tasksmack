@@ -44,6 +44,7 @@ INSTDIR = r"C:\Program Files\TaskSmack"
 UNINSTALLER = INSTDIR + r"\Uninstall.exe"
 REGISTERS = {"$0": "zero", "$1": "one", "$2": "two"}
 IN_USE_EXIT_CODE = 32
+UNSAFE_FOLDER_EXIT_CODE = 87  # #4669: an install folder that can't be made admin-only
 MARK_KEY = r"Software\TaskSmack"
 MARK_BEGIN = "; TaskSmack's uninstall mark (#3276): BEGIN"
 MARK_END = "; TaskSmack's uninstall mark (#3276): END"
@@ -71,14 +72,23 @@ class Installer:
         busy: set[str] | None = None,
         exit_code: int = 0,
         untrusted: set[str] | None = None,
+        unlockable: set[str] | None = None,
+        lock_fails: set[str] | None = None,
     ) -> None:
         self.uninstall_string = uninstall_string
         self.files = {name.lower() for name in files}
         self.can_start = can_start
         self.busy = {name.lower() for name in busy or set()}
         self.exit_code = exit_code
-        self.untrusted = {name.lower() for name in untrusted or set()}
-        self.vars = {"$INSTDIR": instdir, **REGISTERS, "${TASKSMACK_IN_USE_EXIT_CODE}": str(IN_USE_EXIT_CODE)}
+        self.untrusted = {name.lower() for name in untrusted or set()}  # mode Uninstaller or Folder says no
+        self.unlockable = {name.lower() for name in unlockable or set()}  # mode CanLock says no (#4669)
+        self.lock_fails = {name.lower() for name in lock_fails or set()}  # mode Lock fails (#4669)
+        self.vars = {
+            "$INSTDIR": instdir,
+            **REGISTERS,
+            "${TASKSMACK_IN_USE_EXIT_CODE}": str(IN_USE_EXIT_CODE),
+            "${TASKSMACK_UNSAFE_FOLDER_EXIT_CODE}": str(UNSAFE_FOLDER_EXIT_CODE),
+        }
         self.stack: list[str] = []
         self.error = False
         self.executed: list[str] = []
@@ -172,10 +182,11 @@ class Installer:
                     self.error = True
                 elif len(args) > 1:
                     self.vars[args[1]] = str(self.exit_code)
-            elif op == "Call" and args[0] == "TaskSmackTrustCheck":
+            elif op == "Call" and args[0] in ("TaskSmackTrustCheck", "un.TaskSmackTrustCheck"):
                 mode, path = self.stack.pop(), self.stack.pop()  # the path is pushed first, then the mode
                 self.trust_checks.append((mode, path))
-                self.stack.append("0" if path.lower() in self.untrusted else "1")
+                refused = {"CanLock": self.unlockable, "Lock": self.lock_fails}.get(mode, self.untrusted)
+                self.stack.append("0" if path.lower() in refused else "1")
             elif op == "Call" and args[0] == "TaskSmackUnregisterOldInstall":
                 self.unregistered.append(self.stack.pop())  # its registry entries only: every file stays (#4659)
             elif op == "Call":
@@ -315,12 +326,35 @@ def install(
     busy: set[str] | None = None,
     exit_code: int = 0,
     untrusted: set[str] | None = None,
+    unlockable: set[str] | None = None,
+    lock_fails: set[str] | None = None,
 ) -> Installer:
     installer = Installer(
-        uninstall_string, instdir, {UNINSTALLER} if files is None else files, can_start, busy, exit_code, untrusted
+        uninstall_string,
+        instdir,
+        {UNINSTALLER} if files is None else files,
+        can_start,
+        busy,
+        exit_code,
+        untrusted,
+        unlockable,
+        lock_fails,
     )
     installer.run(step_lines())
     return installer
+
+
+def uninstall_folder_lines() -> list[str]:
+    """The uninstaller's install-folder check (#4669): the CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS block appended last."""
+    text = CONFIG.read_text(encoding="utf-8")
+    match = re.search(
+        r"string\(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS \[=\[\n(  ; TaskSmack's install folder \(#4669\).*?)\]=\]\)",
+        text,
+        re.DOTALL,
+    )
+    if not match:
+        raise AssertionError("no #4669 uninstall block in " + str(CONFIG))
+    return match.group(1).splitlines()
 
 
 class UpgradeStepTest(unittest.TestCase):
@@ -428,20 +462,71 @@ class UpgradeStepTest(unittest.TestCase):
         for instdir in (INSTDIR, r"D:\Apps\TaskSmack"):
             with self.subTest(instdir=instdir):
                 installer = install(f'"{UNINSTALLER}"', instdir=instdir)
-                self.assertEqual(installer.trust_checks[-1], ("Uninstaller", UNINSTALLER))
+                self.assertIn(("Uninstaller", UNINSTALLER), installer.trust_checks)
                 self.assertEqual(len(installer.executed), 1)
                 self.assertEqual(installer.unregistered, [])
         installer = install(None)
-        self.assertEqual(installer.trust_checks, [("Folder", INSTDIR)], "a first install only checks its folder")
+        self.assertEqual(installer.trust_checks, [("CanLock", INSTDIR), ("Lock", INSTDIR)], "a first install only its folder")
 
-    def test_an_install_folder_that_isnt_admin_only_is_logged(self) -> None:
-        custom = r"D:\Apps\TaskSmack"
-        warned = install(f'"{UNINSTALLER}"', instdir=custom, untrusted={custom})
-        self.assertTrue(any(line.startswith("Warning:") and custom in line for line in warned.details))
-        self.assertEqual(len(warned.executed), 1, "a warning only: the trusted old uninstaller still runs")
-        quiet = install(f'"{UNINSTALLER}"')
-        self.assertFalse(any(line.startswith("Warning:") for line in quiet.details))
+    def test_the_install_folder_is_checked_first_and_locked_last(self) -> None:
+        # #4669: CanLock before anything changes; Lock once the old Uninstall.exe is judged, so locking can't make a
+        # file a user changed look safe to run.
+        for instdir in (INSTDIR, r"D:\Apps\TaskSmack"):
+            with self.subTest(instdir=instdir):
+                installer = install(f'"{UNINSTALLER}"', instdir=instdir)
+                self.assertEqual(installer.trust_checks[0], ("CanLock", instdir))
+                self.assertEqual(installer.trust_checks[1], ("Uninstaller", UNINSTALLER))
+                self.assertEqual(installer.trust_checks[-1], ("Lock", instdir))
+                self.assertEqual(len(installer.executed), 1, "the trusted old uninstaller still runs")
+                self.assertFalse(installer.quit)
+                self.assert_registers_back(installer)
 
+    def test_a_folder_that_cant_be_made_admin_only_is_refused_before_anything_changes(self) -> None:
+        # #4669: files that aren't TaskSmack's, or a folder above that isn't admin-only: refused, nothing changed.
+        custom = r"D:\Shared\Tools"
+        installer = install(f'"{UNINSTALLER}"', instdir=custom, unlockable={custom})
+        self.assertEqual(installer.trust_checks, [("CanLock", custom)], "nothing else is asked")
+        self.assertEqual(installer.executed, [], "the old uninstaller isn't run")
+        self.assertEqual(installer.unregistered, [], "and the old install isn't unregistered")
+        self.assertEqual(installer.out_paths, [])
+        self.assertEqual(installer.error_level, UNSAFE_FOLDER_EXIT_CODE)
+        self.assertTrue(installer.quit)
+        self.assertEqual(len(installer.messages), 1)
+        self.assertIn("can't be installed in " + custom, installer.messages[0])
+
+    def test_a_lock_that_fails_stops_the_install(self) -> None:
+        installer = install(None, lock_fails={INSTDIR})
+        self.assertEqual(installer.trust_checks, [("CanLock", INSTDIR), ("Lock", INSTDIR)])
+        self.assertEqual(installer.error_level, UNSAFE_FOLDER_EXIT_CODE)
+        self.assertTrue(installer.quit)
+        self.assertIn("couldn't be made safe", installer.messages[0])
+
+    def test_the_uninstaller_deletes_nothing_in_a_folder_that_isnt_admin_only(self) -> None:
+        # #4669: CPack's deletes that follow are pointed at an empty folder of the uninstaller's own.
+        unsafe = r"D:\Shared\TaskSmack"
+        left = Installer(None, unsafe, set(), untrusted={unsafe})
+        left.run(uninstall_folder_lines())
+        self.assertEqual(left.trust_checks, [("Folder", unsafe)])
+        self.assertEqual(left.vars["$INSTDIR"], r"$PLUGINSDIR\TaskSmack-left-in-place")
+        self.assertTrue(any("left there" in line for line in left.details), "the log says so")
+        self.assert_registers_back(left)
+        kept = Installer(None, INSTDIR, set())
+        kept.run(uninstall_folder_lines())
+        self.assertEqual(kept.vars["$INSTDIR"], INSTDIR, "an admin-only folder is uninstalled as before")
+        self.assert_registers_back(kept)
+
+    def test_the_uninstall_check_runs_last_and_the_uninstaller_has_the_function(self) -> None:
+        text = CONFIG.read_text(encoding="utf-8")
+        block = text.index("string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[\n  ; TaskSmack's install folder (#4669)")
+        # Every other block but the in-use check's prepend (which must stay last in the file, to run first) comes before.
+        others = [m.start() for m in re.finditer(r"(?<!PREPEND )CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS \[=\[", text)]
+        self.assertEqual(max(others), block + len("string(APPEND "), "after the lines that compare against $INSTDIR")
+        self.assertIn('!insertmacro TASKSMACK_TRUST_CHECK "un."', text)
+        self.assertIn("!define TASKSMACK_UNSAFE_FOLDER_EXIT_CODE " + str(UNSAFE_FOLDER_EXIT_CODE), text)
+
+    def test_winget_knows_the_folder_exit_code(self) -> None:
+        manifest = (REPO / "packaging" / "winget" / "TaskSmack.TaskSmack.installer.yaml").read_text(encoding="utf-8")
+        self.assertRegex(manifest, rf"- InstallerReturnCode: {UNSAFE_FOLDER_EXIT_CODE}\n\s+ReturnResponse: invalidParameter")
     def test_a_users_uninstall_still_removes_both(self) -> None:
         # What an uninstall from Settings > Apps runs, after NSIS copied it to %TEMP%.
         machine = Machine(INSTDIR)
@@ -641,6 +726,121 @@ class TrustScriptTest(unittest.TestCase):
         code = "\n".join(line for line in TRUST_SCRIPT.read_text(encoding="utf-8").splitlines() if not line.lstrip().startswith("#"))
         for word in ("Delete(", "Remove-Item", "Move-Item", "Rename-Item", "Set-Content", "Out-File", "SetAttributes"):
             self.assertNotIn(word, code)
+
+    def sddl(self, path: Path) -> str:
+        command = [windows_powershell(), "-NoProfile", "-NonInteractive", "-Command"]
+        command += [f"[System.IO.Directory]::GetAccessControl('{path}').GetSecurityDescriptorSddlForm('All')"]
+        return subprocess.run(command, capture_output=True, text=True, timeout=120, check=True).stdout.strip()
+
+    def install_like(self, folder: Path) -> None:
+        """What an install puts in its folder, so only Lock's other checks can refuse it."""
+        (folder / "share" / "tasksmack" / "themes").mkdir(parents=True)
+        (folder / "third_party_licenses").mkdir()
+        for name in ("TaskSmack.exe", "TaskSmackHelper.exe", "LICENSE.txt", "Uninstall.exe"):
+            (folder / name).write_text("x", encoding="utf-8")
+        (folder / "share" / "tasksmack" / "themes" / "arctic-fire.toml").write_text("x", encoding="utf-8")
+
+    def test_a_folder_holding_files_that_arent_taskSmacks_is_not_locked(self) -> None:
+        # #4669: CanLock and Lock refuse it before anything changes, whoever runs them.
+        folder = self.users_writable("Tools")
+        self.install_like(folder)
+        (folder / "notes.txt").write_text("not TaskSmack's", encoding="utf-8")
+        before = self.sddl(folder)
+        for mode in ("CanLock", "Lock"):
+            with self.subTest(mode=mode):
+                result = self.script(mode, folder)
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn("notes.txt, which isn't TaskSmack's", result.stdout)
+        self.assertEqual(self.sddl(folder), before, "nothing changed")
+
+    def test_a_link_where_share_should_be_is_not_locked_and_its_target_untouched(self) -> None:
+        folder = self.users_writable("Linked")
+        outside = self.root / "outside"
+        (outside / "tasksmack").mkdir(parents=True)
+        link = subprocess.run(["cmd", "/c", "mklink", "/J", str(folder / "share"), str(outside)], capture_output=True, text=True, check=False)
+        self.assertEqual(link.returncode, 0, link.stdout + link.stderr)
+        before = self.sddl(outside)
+        result = self.script("Lock", folder)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("a link or junction", result.stdout)
+        self.assertEqual(self.sddl(outside), before, "the junction's target is untouched")
+
+    def test_a_folder_whose_folders_above_arent_admin_only_is_not_locked(self) -> None:
+        # The temporary folder is in this account's profile, which the account can change: the install folder could be
+        # swapped through it, so locking it would protect nothing.
+        folder = self.users_writable("TaskSmack")
+        self.install_like(folder)
+        before = self.sddl(folder)
+        result = self.script("CanLock", folder)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("can't be made admin-only", result.stdout)
+        self.assertEqual(self.script("Lock", folder).returncode, 1)
+        self.assertEqual(self.sddl(folder), before, "nothing changed")
+
+    def test_an_admin_only_folder_is_left_as_it_is(self) -> None:
+        system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
+        before = self.sddl(system)
+        for mode in ("CanLock", "Lock"):
+            with self.subTest(mode=mode):
+                result = self.script(mode, system)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn("can be changed only by administrators", result.stdout)
+        self.assertEqual(self.sddl(system), before)
+
+    def test_the_folder_check_refuses_a_folder_that_isnt_there(self) -> None:
+        self.assertEqual(self.script("CanLock", self.root / "missing").returncode, 1)
+
+
+def elevated() -> bool:
+    if sys.platform != "win32":
+        return False
+    import ctypes  # noqa: PLC0415 - Windows only
+
+    return bool(ctypes.windll.shell32.IsUserAnAdmin())
+
+
+@unittest.skipUnless(
+    windows_powershell() and elevated() and os.environ.get("TASKSMACK_CI_REAL_SYSTEM") == "1",
+    "Lock changes owners and permissions, which only an administrator can: CI's real-system runs only (#3489)",
+)
+class TrustScriptLockTest(unittest.TestCase):
+    """Mode Lock for real (#4669), on folders it makes at the system drive's root, as an install there would be."""
+
+    def setUp(self) -> None:
+        self.root = Path(tempfile.mkdtemp(prefix="tasksmack-lock-", dir=Path(os.environ.get("SystemDrive", "C:") + "\\")))
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+        grant = subprocess.run(["icacls", str(self.root), "/grant", "*S-1-5-32-545:(OI)(CI)M"], capture_output=True, text=True, check=False)
+        self.assertEqual(grant.returncode, 0, grant.stdout + grant.stderr)
+
+    def script(self, mode: str, path: Path) -> subprocess.CompletedProcess[str]:
+        command = [windows_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"]
+        command += [str(TRUST_SCRIPT), "-Mode", mode, "-Path", str(path)]
+        return subprocess.run(command, capture_output=True, text=True, timeout=300, check=False)
+
+    def test_a_taskSmack_folder_users_can_change_is_made_admin_only(self) -> None:
+        (self.root / "share" / "tasksmack" / "themes").mkdir(parents=True)
+        for name in ("TaskSmack.exe", "Uninstall.exe"):
+            (self.root / name).write_text("x", encoding="utf-8")
+        (self.root / "share" / "tasksmack" / "themes" / "arctic-fire.toml").write_text("x", encoding="utf-8")
+        self.assertEqual(self.script("Folder", self.root).returncode, 1, "Users can change it to begin with")
+        result = self.script("Lock", self.root)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("Made", result.stdout)
+        self.assertEqual(self.script("Folder", self.root).returncode, 0, "only administrators can change it now")
+        self.assertEqual(self.script("Uninstaller", self.root / "Uninstall.exe").returncode, 0)
+
+    def test_a_junction_inside_refuses_the_lock_and_its_target_is_untouched(self) -> None:
+        outside = Path(tempfile.mkdtemp(prefix="tasksmack-outside-"))
+        self.addCleanup(shutil.rmtree, outside, ignore_errors=True)
+        (self.root / "share" / "tasksmack").mkdir(parents=True)
+        link = subprocess.run(["cmd", "/c", "mklink", "/J", str(self.root / "share" / "tasksmack" / "themes"), str(outside)], capture_output=True, text=True, check=False)
+        self.assertEqual(link.returncode, 0, link.stdout + link.stderr)
+        acl = ["icacls", str(outside)]
+        before = subprocess.run(acl, capture_output=True, text=True, check=False).stdout
+        result = self.script("Lock", self.root)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("a link or junction", result.stdout)
+        self.assertEqual(subprocess.run(acl, capture_output=True, text=True, check=False).stdout, before, "never followed")
 
 if __name__ == "__main__":
     unittest.main()

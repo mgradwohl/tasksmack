@@ -594,9 +594,23 @@ jobs:
             Write-Host "::error title=Real-system tests::$($unexpected.Count) CiRealSystem test(s) skipped that aren't expected to: $(($unexpected | ForEach-Object { $_.Test }) -join ', ')"
             exit 1
           }
+          # The installer's folder lock for real (#4669): TrustScriptLockTest (tests/tools/test_nsis_upgrade.py) makes
+          # folders at the system drive's root, locks them as an elevated installer would and removes them. It skips
+          # unless elevated with TASKSMACK_CI_REAL_SYSTEM=1, which this step is, so a skip here is an error. Run with
+          # the Python the build's ctest uses.
+          $python = (Select-String -Path "$env:BUILD_DIR/CMakeCache.txt" -Pattern '^Python3_EXECUTABLE:\w+=(.+)$').Matches[0].Groups[1].Value
+          $lock = & $python tests/tools/test_nsis_upgrade.py TrustScriptLockTest -v 2>&1
+          $lockCode = $LASTEXITCODE
+          $lock | ForEach-Object { Write-Host $_ }
+          if ($lockCode -ne 0 -or ($lock -match 'skipped')) {
+            Write-Host "::error title=Real-system tests::the installer's folder lock tests failed or skipped (exit $lockCode)"
+            exit 1
+          }
+          "| TrustScriptLockTest (installer folder lock, #4669) | COMPLETED | |" | Out-File -Append $env:GITHUB_STEP_SUMMARY
           # The runner's state after them (#3490): each test removes what it made in a scope guard, and the later
           # steps share the runner, so anything left is an error.
           $left = @()
+          $left += Get-ChildItem "$env:SystemDrive\" -Directory -Filter 'tasksmack-lock-*' | ForEach-Object { "folder $($_.FullName)" }
           $left += Get-LocalUser | Where-Object Name -match '^tsci[0-9a-f]{8}$' | ForEach-Object { "account $($_.Name)" }
           $left += Get-ChildItem "$env:SystemDrive\Users" -Directory -Filter 'tsci*' | ForEach-Object { "profile $($_.FullName)" }
           $left += Get-Service -Name 'TaskSmackCi*' -ErrorAction SilentlyContinue | ForEach-Object { "service $($_.Name)" }

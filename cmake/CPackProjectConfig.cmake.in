@@ -131,8 +131,10 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     #   TaskSmackTrustCheck <path> <mode>: runs cmake/nsis/TaskSmackUninstallerTrust.ps1 (File embeds it in the
     #     installer, nsExec runs it in Windows PowerShell with no profile; nothing is shown). "1" on the stack when
     #     mode Uninstaller finds the old Uninstall.exe admin-only (it and every folder above it changeable only by
-    #     SYSTEM, Administrators and TrustedInstaller), or mode Folder finds the folder admin-only; else "0", also
-    #     when PowerShell can't run (never trusted by default). A valid signature doesn't make an Uninstall.exe in
+    #     SYSTEM, Administrators and TrustedInstaller), mode Folder finds the folder admin-only, mode CanLock finds
+    #     the install folder admin-only or one Lock can make so, or mode Lock made it so (#4669); else "0", also
+    #     when PowerShell can't run (never trusted by default). The uninstaller has it too (un.TaskSmackTrustCheck,
+    #     for mode Folder). A valid signature doesn't make an Uninstall.exe in
     #     a folder standard users can write safe to run elevated (#4660): they could swap the file between the
     #     check and the start, and the genuine one deletes by path, through any junction they planted.
     #   TaskSmackUnregisterOldInstall <folder>: the registry entries the uninstaller would remove: the Uninstall
@@ -147,7 +149,10 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     string(APPEND CPACK_NSIS_DEFINES [=[
   ; TaskSmack's upgrade checks (#4444, #4445): BEGIN
   InstallDirRegKey HKLM "Software\TaskSmack Contributors\TaskSmack" ""
-  Function TaskSmackTrustCheck
+  ; #4669: an install folder that can't be made admin-only (ERROR_INVALID_PARAMETER's number; WinGet's invalidParameter).
+  !define TASKSMACK_UNSAFE_FOLDER_EXIT_CODE 87
+  !macro TASKSMACK_TRUST_CHECK UN
+  Function ${UN}TaskSmackTrustCheck
     Exch $0
     Exch
     Exch $1
@@ -167,6 +172,9 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
     Pop $1
     Exch $0
   FunctionEnd
+  !macroend
+  !insertmacro TASKSMACK_TRUST_CHECK ""
+  !insertmacro TASKSMACK_TRUST_CHECK "un."
   Function TaskSmackUnregisterOldInstall
     Exch $0
     Push $1
@@ -347,8 +355,14 @@ endif()
 # (TaskSmackTrustCheck, above): the uninstaller runs elevated and silent, from a folder #4445 now lets an upgrade stay
 # in even when it is a custom one that users who aren't administrators can write to. It runs only from an admin-only
 # folder, signed or not (#4660). Otherwise it isn't started: TaskSmackUnregisterOldInstall removes the old install's
-# registry entries and deletes none of its files (#4659), and the log says why. An $INSTDIR that isn't admin-only is
-# logged as a warning. A move (#4445) removes the old Uninstall.exe and, if empty, the old folder after the old
+# registry entries and deletes none of its files (#4659), and the log says why.
+# The install folder (#4669): one users who aren't administrators can change is made admin-only, as Program Files is,
+# before anything is written to it, since every write and delete there runs elevated and would follow a junction they
+# planted. First, before anything changes, CanLock: a folder that holds anything an install doesn't put there, or
+# whose folders above aren't admin-only, is refused with TASKSMACK_UNSAFE_FOLDER_EXIT_CODE. Then, once the old copy
+# is dealt with, Lock: after the old Uninstall.exe is judged, so locking can't make a file a user changed look safe
+# to run. A Lock that fails (someone racing it) stops the install with the same code. The uninstaller deletes nothing
+# in a folder that isn't admin-only (the last block in this file). A move (#4445) removes the old Uninstall.exe and, if empty, the old folder after the old
 # uninstaller exited 0.
 # TaskSmack in use (#4436): first the install folder, then the installed copy's, is checked for a running TaskSmack
 # (TaskSmackInUseCheck, above), so a silent install over a running one exits with TASKSMACK_IN_USE_EXIT_CODE and
@@ -364,13 +378,15 @@ if(CPACK_GENERATOR STREQUAL "NSIS")
   Push $0
   Push $1
   Push $2
-  ; An install folder other than an admin-only one (#4445 keeps an upgrade in the folder it was in): logged only.
+  ; #4669: an install folder that isn't admin-only, and can't be made so, is refused before anything changes.
   Push $INSTDIR
-  Push "Folder"
+  Push "CanLock"
   Call TaskSmackTrustCheck
   Pop $2
   StrCmp $2 "1" tasksmack_upgrade_dir_ok
-  DetailPrint "Warning: $INSTDIR isn't admin-only, so a user who isn't an administrator may be able to change TaskSmack there. TaskSmack's helper and Replace Task Manager won't trust it."
+  MessageBox MB_OK|MB_ICONSTOP "TaskSmack can't be installed in $INSTDIR.$\r$\n$\r$\nUsers who aren't administrators can change that folder, and it holds files that aren't TaskSmack's, or a folder above it isn't protected either. Install TaskSmack in Program Files, or in a new folder." /SD IDOK
+  SetErrorLevel ${TASKSMACK_UNSAFE_FOLDER_EXIT_CODE}
+  Quit
 tasksmack_upgrade_dir_ok:
   ClearErrors
   ReadRegStr $0 HKLM "Software\Microsoft\Windows\CurrentVersion\Uninstall\TaskSmack" "UninstallString"
@@ -434,10 +450,42 @@ tasksmack_upgrade_failed:
 tasksmack_upgrade_uninstalled:
   SetOutPath $INSTDIR
 tasksmack_upgrade_done:
+  ; #4669: the install folder made admin-only before anything is written to it, now that the old copy is dealt with.
+  Push $INSTDIR
+  Push "Lock"
+  Call TaskSmackTrustCheck
+  Pop $2
+  StrCmp $2 "1" tasksmack_upgrade_locked
+  MessageBox MB_OK|MB_ICONSTOP "TaskSmack can't be installed in $INSTDIR: that folder couldn't be made safe from users who aren't administrators. The installer's log says why." /SD IDOK
+  SetErrorLevel ${TASKSMACK_UNSAFE_FOLDER_EXIT_CODE}
+  Quit
+tasksmack_upgrade_locked:
   Pop $2
   Pop $1
   Pop $0
   ; TaskSmack's upgrade (#3276): END
+]=])
+endif()
+
+# The install folder (#4669): the uninstaller's last lines before CPack's own deletions. In a folder that isn't
+# admin-only, they would follow any junction a user who isn't an administrator planted there, as the elevated
+# uninstaller, so they're pointed at an empty folder of the uninstaller's own ($PLUGINSDIR) and delete nothing; the
+# registry entries and shortcuts still go, and the log says the files were left. Appended here, after every block
+# above but the in-use check's prepend, so the lines that compare against $INSTDIR (taskmgr.exe's Debugger, the Run value) have run first. Checked
+# by tests/tools/test_nsis_upgrade.py.
+if(CPACK_GENERATOR STREQUAL "NSIS")
+    string(APPEND CPACK_NSIS_EXTRA_UNINSTALL_COMMANDS [=[
+  ; TaskSmack's install folder (#4669): deleted from only when it is admin-only.
+  Push $0
+  Push $INSTDIR
+  Push "Folder"
+  Call un.TaskSmackTrustCheck
+  Pop $0
+  StrCmp $0 "1" tasksmack_uninstall_folder_ok
+  DetailPrint "TaskSmack's files in $INSTDIR are left there: users who aren't administrators can change that folder, so the uninstaller deletes nothing in it. Any user can delete them."
+  StrCpy $INSTDIR "$PLUGINSDIR\TaskSmack-left-in-place"
+tasksmack_uninstall_folder_ok:
+  Pop $0
 ]=])
 endif()
 
