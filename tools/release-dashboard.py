@@ -11,7 +11,7 @@ docs/release/ on the docs site shows, for one release milestone, what still has 
 where each of those things stands and how fast it's moving. This writes the JSON that page reads: one
 `<milestone>.json` for every `vX.Y.Z` milestone, and an `index.json` that lists them and holds the figures
 the page compares between releases. .github/workflows/release-dashboard.yml runs it when an issue or main
-changes and every 10 minutes (#4604), and publishes DIR to the data-only `dashboard-data` branch; nothing
+changes and on a schedule (#4604, #4700), and publishes DIR to the data-only `dashboard-data` branch; nothing
 generated is committed to main.
 
 Nothing here is a second tracking system. Every figure is read from what the release process already keeps

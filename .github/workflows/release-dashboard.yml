@@ -26,23 +26,33 @@ on:
     # points of the hourly budget this token shares with every other workflow here. Each run's log says what
     # it used and what's left.
     - cron: '3-59/10 * * * *'
+    # The same again, five minutes off (#4700). The hour's first slot starts about eight minutes late or not
+    # at all, and in a quiet stretch that left the page 15 to 21 minutes behind. With twice the slots, one that
+    # GitHub skips leaves half the hole. A scheduled run that finds the published figures read after it was
+    # created stops without reading, and otherwise it waits until the data is five minutes old, so in a quiet
+    # hour this publishes about every five to six minutes, not twice as often as the events allow.
+    - cron: '8-59/10 * * * *'
+  # A manual run: "Refresh now" on the page, and Main Health when it opens or closes a `ci-red-main` issue
+  # (#4700). Those issues are written with the workflow token, which starts no workflow except by a dispatch.
   workflow_dispatch:
-  # What the page shows changes when an issue opens, closes or changes milestone, and when main moves
+  # What the page shows changes when an issue closes, reopens or changes milestone, and when main moves
   # (#4604), so each of those starts a run. Such a run stops at once if the published data already has its
   # event, and otherwise waits until that data is five minutes old (the "Stop here" and "Wait" steps).
   #
   # Every event starts a run, and GitHub has no way to hold one back: one run goes, one waits, and each
   # further one replaces the waiting one, which the run list shows as cancelled. So the events here are the
   # few that are worth a run (#4620). Left out on purpose, for the next run to read:
+  #   - `opened` (#4700): the page shows only issues on a milestone, and putting one there fires `milestoned`,
+  #     also when the issue is created with it. Both together were two runs for every new issue, and 23 issues
+  #     filed at once were 46 runs;
   #   - labels and edits: a new issue fires one event for each of its labels;
   #   - comments: every lane note would start a run (a freeze or an approval on the tracker is one too);
   #   - pull requests: `pull_request` below is this workflow's own proof, and can't also carry every pull
-  #     request's events;
-  #   - Main Health: it finishes several times after every push and was two runs in three, nearly all of
-  #     them changing nothing here. Its `ci-red-main` issues are opened with the workflow token, which starts
-  #     no workflow, so `issues` doesn't see them either: main's state shows at the next run.
+  #     request's events. One put on a milestone does start a run: that's an `issues` event;
+  #   - Main Health as a `workflow_run`: it finishes several times after every push and was two runs in
+  #     three, nearly all of them changing nothing here. It dispatches a run itself when main's state changes.
   issues:
-    types: [opened, closed, reopened, deleted, milestoned, demilestoned]
+    types: [closed, reopened, deleted, milestoned, demilestoned]
   push:
     branches: [main]
   pull_request:
@@ -56,9 +66,9 @@ on:
 
 # One publishing run at a time: a queued one replaces a waiting one, and reads fresher data anyway. GitHub
 # lists the replaced run as cancelled, so cancelled runs here are the group at work, not failures. A manual run
-# ("Refresh now" on the page) doesn't queue: it cancels the run in progress, which may be minutes into its
-# wait, and publishes what it reads itself. Stopping a run mid-publish is safe: the branch moves in one push or
-# not at all. A pull request's runs only cancel each other.
+# ("Refresh now" on the page, or Main Health's dispatch) doesn't queue: it cancels the run in progress, which
+# may be minutes into its wait, and publishes what it reads itself. Stopping a run mid-publish is safe: the
+# branch moves in one push or not at all. A pull request's runs only cancel each other.
 concurrency:
   group: release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
