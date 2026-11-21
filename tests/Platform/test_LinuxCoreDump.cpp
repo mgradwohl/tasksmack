@@ -74,14 +74,14 @@ TEST(LinuxCoreDumpTest, EveryInvalidUtf8FixtureGivesAWellFormedName)
 {
     using LinuxCoreDump::dumpFileName;
     const std::tm t = someLocalTime();
-    for (const std::string_view bad : TestSupport::INVALID_UTF8_NAMES)
+    for (const std::string_view bad : ::TestSupport::INVALID_UTF8_NAMES)
     {
         SCOPED_TRACE(std::string(bad));
         const std::string name = dumpFileName(bad, 1234, t, 1);
         EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
         EXPECT_TRUE(name.ends_with("_1234_2026-10-15_04-07-09.core")) << name;
     }
-    EXPECT_EQ(dumpFileName(TestSupport::CUT_COMM_UTF8, 1234, t, 1), "datensicherung_1234_2026-10-15_04-07-09.core");
+    EXPECT_EQ(dumpFileName(::TestSupport::CUT_COMM_UTF8, 1234, t, 1), "datensicherung_1234_2026-10-15_04-07-09.core");
 }
 
 TEST(LinuxCoreDumpTest, ANameThatCantBeAFileNameIsMadeOne)

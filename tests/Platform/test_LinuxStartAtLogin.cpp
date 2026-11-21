@@ -141,7 +141,7 @@ TEST(LinuxStartAtLoginTest, TheEntryFileIsValidUtf8ForEveryFixture)
     const TestSupport::ScopedTempDir home("tasksmack_start_at_login_utf8");
     const std::filesystem::path autostart = home.path / "autostart";
     LinuxStartAtLogin entry(autostart, "/usr/bin/TaskSmack");
-    for (const std::string_view name : TestSupport::NON_ASCII_NAMES)
+    for (const std::string_view name : ::TestSupport::NON_ASCII_NAMES)
     {
         const std::string command = Domain::StartAtLogin::runCommand(std::format("/home/{}/TaskSmack", name));
         ASSERT_TRUE(entry.write(command).has_value()) << name;
@@ -151,7 +151,7 @@ TEST(LinuxStartAtLoginTest, TheEntryFileIsValidUtf8ForEveryFixture)
         EXPECT_EQ(entry.read()->command, std::optional<std::string>(command));
     }
     ASSERT_TRUE(entry.remove().has_value());
-    for (const std::string_view bad : TestSupport::INVALID_UTF8_NAMES)
+    for (const std::string_view bad : ::TestSupport::INVALID_UTF8_NAMES)
     {
         EXPECT_FALSE(entry.write(Domain::StartAtLogin::runCommand(std::format("/home/{}/TaskSmack", bad))).has_value()) << "refused";
         EXPECT_FALSE(std::filesystem::exists(autostart / "tasksmack.desktop")) << "nothing written";
