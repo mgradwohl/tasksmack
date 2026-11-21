@@ -265,28 +265,8 @@ option(TASKSMACK_REQUIRE_LIBDECOR "Linux: fail the configure unless SDL loads li
        ${_tasksmack_require_libdecor_default})
 unset(_tasksmack_require_libdecor_default)
 if(UNIX AND NOT APPLE)
-    file(GLOB_RECURSE _tasksmack_sdl_build_configs "${sdl3_BINARY_DIR}/include-config-*/build_config/SDL_build_config.h")
-    foreach(_tasksmack_sdl_build_config IN LISTS _tasksmack_sdl_build_configs)
-        # Only a #define counts: an option SDL left off is still in the file, as "/* #undef NAME */" (#4440).
-        file(STRINGS "${_tasksmack_sdl_build_config}" _tasksmack_libdecor_lines REGEX "^#define (HAVE_LIBDECOR_H|SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR)")
-        set(_tasksmack_libdecor_loaded FALSE)
-        if(_tasksmack_libdecor_lines MATCHES "#define SDL_VIDEO_DRIVER_WAYLAND_DYNAMIC_LIBDECOR")
-            set(_tasksmack_libdecor_loaded TRUE)
-        endif()
-        if(_tasksmack_libdecor_lines MATCHES "#define HAVE_LIBDECOR_H 1" AND NOT _tasksmack_libdecor_loaded)
-            message(FATAL_ERROR "SDL links libdecor instead of loading it (${_tasksmack_sdl_build_config}): "
-                                "SDL_VIDEO_WAYLAND_ALLOW_LIBDECOR would be ignored (#4254). Keep SDL_WAYLAND_LIBDECOR_SHARED ON.")
-        endif()
-        if(TASKSMACK_REQUIRE_LIBDECOR AND NOT _tasksmack_libdecor_loaded)
-            message(FATAL_ERROR "SDL was built without libdecor (${_tasksmack_sdl_build_config}), so native Wayland "
-                                "decorations would leave a window with no frame on GNOME (#4440). Install libdecor-0-dev, "
-                                "or configure with -DTASKSMACK_REQUIRE_LIBDECOR=OFF.")
-        endif()
-    endforeach()
-    unset(_tasksmack_sdl_build_configs)
-    unset(_tasksmack_sdl_build_config)
-    unset(_tasksmack_libdecor_lines)
-    unset(_tasksmack_libdecor_loaded)
+    include("${CMAKE_CURRENT_LIST_DIR}/SdlLibdecorCheck.cmake")
+    ts_check_sdl_libdecor("${sdl3_BINARY_DIR}" "${TASKSMACK_REQUIRE_LIBDECOR}")
 endif()
 
 # Prefer the project-local environment created by tools/setup-dev.sh / tools/setup-dev.ps1
