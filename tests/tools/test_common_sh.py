@@ -215,5 +215,44 @@ class PinnedLlvmMajorTests(unittest.TestCase):
         self.assertEqual(result.stdout.strip(), match.group(1))
 
 
+@unittest.skipIf(os.name == "nt", "the stub LLVM tools are POSIX shell scripts")
+class CoveragePrereqsTests(unittest.TestCase):
+    """#4711: llvm-cov and llvm-profdata are found as coverage.sh runs them (the LLVM folders first) and held to 23."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self.root = Path(self._tmp.name) / "lib"
+
+    def tearDown(self):
+        self._tmp.cleanup()
+
+    def stub_llvm(self, major, version):
+        folder = self.root / f"llvm-{major}" / "bin"
+        folder.mkdir(parents=True, exist_ok=True)
+        for tool in ("llvm-cov", "llvm-profdata"):
+            path = folder / tool
+            path.write_text(f"#!/bin/sh\necho 'Ubuntu LLVM version {version}'\n", encoding="utf-8", newline="\n")
+            path.chmod(0o755)
+
+    def validate(self):
+        env = dict(os.environ, TASKSMACK_LLVM_LIB_ROOT=posix(self.root))
+        return subprocess.run(
+            [BASH, "-c", 'source "$1"; validate_coverage_prereqs', "test", posix(COMMON_SH)],
+            capture_output=True, text=True, check=False, env=env,
+        )
+
+    def test_the_llvm_folders_tools_are_enough_without_unversioned_names(self):
+        self.stub_llvm(23, "23.1.5")  # a --minimal setup: llvm-23 installed, no alternatives registered
+        result = self.validate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_an_llvm_older_than_the_floor_is_refused_naming_the_versioned_package(self):
+        self.stub_llvm(22, "22.1.2")
+        result = self.validate()
+        self.assertEqual(result.returncode, 1)
+        self.assertIn(">= 23 required, found: 22", result.stderr)
+        self.assertIn("apt install llvm-23", result.stderr)
+
+
 if __name__ == "__main__":
     unittest.main()

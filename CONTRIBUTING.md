@@ -2025,7 +2025,8 @@ already running" or exits with code 75) fails the run instead of being profiled.
 # Analyze a captured trace (top functions + optional flamegraph SVG)
 ./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
 
-# Open in Hotspot GUI (if installed: sudo apt install hotspot)
+# Open in Hotspot GUI. It isn't packaged for Ubuntu 26.04 (#4706): `flatpak install flathub com.kdab.hotspot`
+# (then `flatpak run com.kdab.hotspot <file>`), or KDAB's AppImage from https://github.com/KDAB/hotspot/releases
 hotspot perf-data/perf-app-<timestamp>.data
 
 # Quick perf stat counters (no trace file)
