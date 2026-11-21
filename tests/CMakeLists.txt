@@ -598,6 +598,7 @@ set(COMMON_TEST_SOURCES
     Benchmarks/test_ProcessTreeFixture.cpp
     Core/test_Application.cpp
     Core/test_ConfigDirOverride.cpp
+    Core/test_ReadWholeFile.cpp  # a read that fails part-way is a failure, not the end of the file (#4652)
     Core/test_EnvUtils.cpp
     Core/test_FramebufferCapture.cpp
     Core/test_GraphicsReset.cpp

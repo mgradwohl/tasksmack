@@ -2642,6 +2642,19 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
+// #4652: a config.toml that can't be read through (here a folder: EISDIR, as a failing disk's EIO or an NFS home's
+// ESTALE) is never taken for an empty file: the load says it couldn't be opened, and nothing replaces it.
+TEST_F(UserConfigSaveLoadFixture, AConfigThatCantBeReadThroughIsNeitherEmptyNorReplaced)
+{
+    std::filesystem::create_directories(m_ConfigPath);
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_FALSE(config.fileProblem().empty()) << "a problem the user is told about, not silent defaults";
+    config.settings().themeId = "mocha";
+    config.save();
+    EXPECT_TRUE(std::filesystem::is_directory(m_ConfigPath)) << "not replaced";
+}
+
 // #3759: the save by path's own refusal of a link, as a session run as root for a user (which holds no folder) saves.
 TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
 {
