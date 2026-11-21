@@ -3079,6 +3079,8 @@ TEST_F(UserConfigSaveLoadFixture, ARootForAUserSaveKeepsModesAndRefusesLinks)
     EXPECT_EQ(parsed(m_TempDir / "secret.toml")["theme"]["id"].value<std::string>(), "arctic-fire") << "a hard link is left alone";
     EXPECT_EQ(std::filesystem::hard_link_count(linked / "config.toml"), 2U) << "and isn't replaced";
     EXPECT_FALSE(config.fileProblem().empty()) << "and the user is told the save was refused (#4318)";
+    EXPECT_TRUE(config.fileProblem().contains("hard link")) << "with the reason (#4653): " << config.fileProblem();
+    EXPECT_FALSE(config.fileProblem().contains("default settings")) << "its settings loaded and are in use";
 
     // The VirusTotal API key's file is the user's alone (#3094): an existing 0644 config becomes 0600.
     config.resetConfigPathForTesting(kept / "config.toml");
