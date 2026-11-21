@@ -54,8 +54,8 @@
   saves no clang-tidy result cache, and pre-commit's version guard reads the queue's base branch.
 - release-dashboard.yml generate "Wait until the published data is five minutes old" (#4604): a run that an
   issue, a push or Main Health started waits out the rest of the five minutes and no more, every trigger but
-  the schedule, a dispatch and a pull request waits, and the job's timeout outlasts the wait. `date` and
-  `sleep` are stubs.
+  the schedule, a dispatch and a pull request waits, the job's timeout outlasts the wait, and a manual run
+  cancels the run in its way where every other event queues. `date` and `sleep` are stubs.
 
 Each step is read from the workflow file itself (tests/tools/workflow_steps.py), its `${{ }}`
 expressions replaced by fixed values, and run with bash (pwsh for the pwsh step). Needs bash; the
@@ -3157,52 +3157,66 @@ class HeavyChecksPushScopeTests(unittest.TestCase):
 
 class ReleaseDashboardWaitTests(unittest.TestCase):
     """#4604: a run that a change started waits until the published data is five minutes old, and no longer.
-    The schedule, a manual run and a pull request's proof don't wait."""
+    The schedule, a manual run and a pull request's proof don't wait, and a manual run doesn't queue."""
 
     WORKFLOW = WORKFLOWS / "release-dashboard.yml"
     JOB = "generate"
     STEP = "Wait until the published data is five minutes old"
     NOW = 1_800_000_000
     NEVER_WAIT = {"schedule", "workflow_dispatch", "pull_request"}
+    # How old the published data is in each case, in seconds; None is no dashboard-data branch yet (the fetch
+    # step sets no output), and a negative age is a runner whose clock is behind the commit's.
+    AGES = (None, 0, 60, 299, 300, 301, 2220, -3600)
 
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.tmp = Path(self._tmp.name)
-        self.step = find_step(self.WORKFLOW, self.STEP, job=self.JOB)
+    @classmethod
+    def setUpClass(cls):
+        """Runs the step once per case in one bash process (each launch costs seconds on the ARM64 Windows
+        runner, #3643). `date` and `sleep` are functions, so the step's own arithmetic runs and nothing waits."""
+        cls.step = find_step(cls.WORKFLOW, cls.STEP, job=cls.JOB)
+        tmp = Path(tempfile.mkdtemp(prefix="4604-dashboard-wait-"))
+        cls.addClassCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        log = tmp / "log"
+        script = [f"date() {{ echo {cls.NOW}; }}", 'sleep() { echo "slept $1" >> "$LOG"; }']
+        for age in cls.AGES:
+            published = "" if age is None else str(cls.NOW - age)
+            # A subshell per case: the step's `set -e` and `exit` end the case, not the script.
+            script += [f'echo "case {age}" >> "$LOG"', f'( export PUBLISHED_AT="{published}"', cls.step.run, ")",
+                       'echo "status $?" >> "$LOG"']
+        env = {"LOG": posix(log), "MIN_AGE_SECONDS": cls.step.env["MIN_AGE_SECONDS"]}
+        cls.result = run_bash("\n".join(script), tmp, env)
+        cls.slept: dict[str, list[str]] = {}
+        case = ""
+        for line in log.read_text(encoding="utf-8").splitlines() if log.is_file() else []:
+            key, _, value = line.partition(" ")
+            if key == "case":
+                case = value
+                cls.slept[case] = []
+            else:
+                cls.slept[case].append(line)
 
-    def tearDown(self):
-        self._tmp.cleanup()
-
-    def slept(self, published_at: str) -> str:
-        """Runs the step with the clock at NOW; what it slept, in seconds ('' when it didn't)."""
-        log = self.tmp / "slept"
-        log.write_text("", encoding="utf-8")
-        # `date` and `sleep` are functions here, so the step's own arithmetic runs and nothing really waits.
-        prelude = f'date() {{ echo {self.NOW}; }}\nsleep() {{ echo "$1" >> "{posix(log)}"; }}\n'
-        env = {"PUBLISHED_AT": published_at, "MIN_AGE_SECONDS": self.step.env["MIN_AGE_SECONDS"]}
-        result = run_bash(prelude + self.step.run, self.tmp, env)
-        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        return log.read_text(encoding="utf-8").strip()
+    def waited(self, age: int | None) -> list[str]:
+        """What the step did for data @p age seconds old: its sleeps, then its exit status."""
+        self.assertEqual(self.result.returncode, 0, self.result.stdout + self.result.stderr)
+        return self.slept[str(age)]
 
     def test_the_minimum_age_is_five_minutes(self):
         self.assertEqual(self.step.env["MIN_AGE_SECONDS"], "300")
 
     def test_fresh_data_waits_out_the_rest_of_the_five_minutes(self):
-        self.assertEqual(self.slept(str(self.NOW - 60)), "240")
-        self.assertEqual(self.slept(str(self.NOW)), "300")
-        self.assertEqual(self.slept(str(self.NOW - 299)), "1")
+        self.assertEqual(self.waited(60), ["slept 240", "status 0"])
+        self.assertEqual(self.waited(0), ["slept 300", "status 0"])
+        self.assertEqual(self.waited(299), ["slept 1", "status 0"])
 
     def test_data_five_minutes_old_or_older_doesnt_wait(self):
         for age in (300, 301, 2220):
             with self.subTest(age=age):
-                self.assertEqual(self.slept(str(self.NOW - age)), "")
+                self.assertEqual(self.waited(age), ["status 0"])
 
     def test_nothing_published_yet_doesnt_wait(self):
-        # The fetch step sets no output when there's no dashboard-data branch.
-        self.assertEqual(self.slept(""), "")
+        self.assertEqual(self.waited(None), ["status 0"])
 
     def test_a_clock_behind_the_commit_waits_five_minutes_at_most(self):
-        self.assertEqual(self.slept(str(self.NOW + 3600)), "300")
+        self.assertEqual(self.waited(-3600), ["slept 300", "status 0"])
 
     def test_it_reads_the_time_the_fetch_step_publishes(self):
         self.assertEqual(self.step.env["PUBLISHED_AT"], "${{ steps.previous.outputs.at }}")
@@ -3225,6 +3239,22 @@ class ReleaseDashboardWaitTests(unittest.TestCase):
         job = text.split("\n  generate:\n", 1)[1].split("\n  publish:\n", 1)[0]
         minutes = int(re.search(r"(?m)^    timeout-minutes: (\d+)", job).group(1))
         self.assertGreaterEqual(minutes * 60, int(self.step.env["MIN_AGE_SECONDS"]) + 600)
+
+    def test_a_manual_run_cancels_the_run_in_its_way_and_the_others_queue(self):
+        # "Refresh now" must not sit behind a run that is five minutes into nothing, or be replaced while it
+        # waits. Every other publishing event queues, so a run that is publishing is never cut short by one.
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        expression = re.search(r"(?m)^  cancel-in-progress: \$\{\{ (.+) \}\}$", text)
+        self.assertIsNotNone(expression, "no cancel-in-progress expression")
+        cancels = set()
+        for term in expression.group(1).split("||"):
+            event = re.fullmatch(r"github\.event_name == '(\w+)'", term.strip())
+            self.assertIsNotNone(event, term)
+            cancels.add(event.group(1))
+        self.assertEqual(cancels, {"pull_request", "workflow_dispatch"})
+        # One group for everything that publishes; a pull request's runs are in a group of their own.
+        self.assertEqual(concurrency_group(self.WORKFLOW),
+                         "release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}")
 
 
 if __name__ == "__main__":

@@ -55,11 +55,13 @@ on:
       - '.github/workflows/main-health.yml'
 
 # One publishing run at a time: a queued one replaces a waiting one, and reads fresher data anyway. GitHub
-# lists the replaced run as cancelled, so cancelled runs here are the group at work, not failures. A pull
-# request's runs only cancel each other.
+# lists the replaced run as cancelled, so cancelled runs here are the group at work, not failures. A manual run
+# ("Refresh now" on the page) doesn't queue: it cancels the run in progress, which may be minutes into its
+# wait, and publishes what it reads itself. Stopping a run mid-publish is safe: the branch moves in one push or
+# not at all. A pull request's runs only cancel each other.
 concurrency:
   group: release-dashboard-${{ github.event_name == 'pull_request' && github.ref || 'publish' }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' }}
 
 permissions: {}
 
@@ -112,8 +114,10 @@ jobs:
       # A run that an issue, a push or Main Health started waits here until the published data is five minutes
       # old (#4604). The concurrency group keeps one run going and one waiting, so every change that lands in
       # those minutes is in this run's data or the waiting run's: nothing is dropped, and these runs publish
-      # at most every five minutes however fast the changes come. Nothing else can publish meanwhile, so the
-      # data fetched above is still the last. The schedule, a manual run and a pull request's proof never wait.
+      # at most every five minutes however fast the changes come. Only a manual run can publish meanwhile, and
+      # it cancels this one, so the data fetched above is still the last when the wait ends. The schedule, a
+      # manual run and a pull request's proof have no wait of their own: a scheduled run queues behind a run
+      # that is waiting, and a manual run cancels it.
       - name: Wait until the published data is five minutes old
         if: contains(fromJSON('["issues", "push", "workflow_run"]'), github.event_name)
         env:

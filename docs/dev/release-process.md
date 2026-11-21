@@ -268,10 +268,12 @@ How it's made:
   until the published data is five minutes old, so a burst of labels is one run. Comments and pull request
   events start none: the next run reads them.
 - To refresh now: "Refresh now" on the page opens the workflow on GitHub, where "Run workflow" starts a run, or
-  `gh workflow run release-dashboard.yml`. The page can't start one itself, since that takes a token. New data
-  shows within about five minutes: the data host can serve the old file that long.
+  `gh workflow run release-dashboard.yml`. The page can't start one itself, since that takes a token. A manual
+  run doesn't queue: it cancels the run in progress and publishes what it reads. New data shows within about
+  five minutes: the data host can serve the old file that long.
 - `docs/release/` is the page: static, no library, no CDN. It asks for new data every five minutes, and when the
-  tab comes back to the front. If the data is more than 25 minutes old it says so.
+  tab comes back to the front. If the last run was more than 25 minutes ago it says so. A planned release's own
+  figures are up to an hour old by design, and a shipped release's never change, so neither has "Refresh now".
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.
