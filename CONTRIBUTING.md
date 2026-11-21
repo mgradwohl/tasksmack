@@ -1418,10 +1418,18 @@ runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared b
 | `fuzz_release_json` | the update check's GitHub releases JSON reader and version parser (`Domain/UpdateCheck.h`) | `tests/fuzz/corpus/fuzz_release_json/` |
 | `fuzz_virustotal_json` | the VirusTotal v3 file report reader (`Domain/VirusTotal.h`) | `tests/fuzz/corpus/fuzz_virustotal_json/` |
 | `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`, its codec `Platform/BrokerProtocol.cpp`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_version_resource` | the version resource walk the Publisher column and the Modules section read a held file with: PE headers, resource directory, `VS_VERSIONINFO` tree, `VS_FIXEDFILEINFO` (`Platform/Windows/WindowsVersionResourceMath.h`) | `tests/fuzz/corpus/fuzz_version_resource/` |
+| `fuzz_crash_event_xml` | the Application Error and Hang event XML reader and the WDI StartupInfo file reader, UTF-16 decoding included (`Platform/Windows/WindowsCrashEvents.h`, `Platform/Windows/WindowsStartupImpact.h`) | `tests/fuzz/corpus/fuzz_crash_event_xml/` |
+| `fuzz_etw_udp` | the ETW UDP event payload decoder, its per-process sums and the trace session name (`Platform/Windows/WindowsEtwNetMath.h`) | `tests/fuzz/corpus/fuzz_etw_udp/` |
+| `fuzz_smart_pages` | ATA SMART pages and IDENTIFY DEVICE, `STORAGE_DEVICE_DESCRIPTOR` strings, the NVMe health log, and the Energy Meter Interface's blocks (`Platform/Windows/WindowsStorageSmartMath.h`, `Platform/Windows/WindowsEnergyMeterMath.h`) | `tests/fuzz/corpus/fuzz_smart_pages/` |
+
+The last four targets (#4358) fuzz the Windows probes' pure parsers: they include no Windows header, so they build and
+run on Linux like the rest.
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
-`ThemeLoader.{cpp,h}`, and the types they fill, such as `Theme.h` and `ProcessColumnConfig.h`), the fuzz build's other inputs
+`ThemeLoader.{cpp,h}`, `Domain/Utf8Sanitize.h`, and the types they fill, such as `Theme.h`, `ProcessColumnConfig.h`,
+`IStartupProbe.h` and `IUdpTrafficCollector.h`), the fuzz build's other inputs
 (`assets/themes/**`, the theme seed corpus, and `tests/Mocks/ThemeStub.cpp`), or the dependency
 pins and patches (`cmake/Dependencies.cmake`, `cmake/patches/**`) run a short
 code-change fuzzing job (`cflite_pr.yml`'s path filter); pushes to `main` touching the same paths
