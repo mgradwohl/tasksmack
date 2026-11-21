@@ -63,6 +63,21 @@ TEST(StartAtLoginTest, InsideAFolderMeansBelowIt)
     EXPECT_FALSE(isInside(INSTALLED, R"(\\)", true));
 }
 
+// #4309: Windows compares a non-ASCII letter's case too, so TaskSmack under C:\Users\Émile run as ...\émile is this
+// copy, not another one Settings would offer to repair. Byte for byte without ignoreCase (Linux).
+TEST(StartAtLoginTest, ANonAsciiLetterInAnotherCaseIsTheSamePathOnWindows)
+{
+    constexpr std::string_view UPPER = "C:\\Users\\\xC3\x89mile\\TaskSmack\\TaskSmack.exe"; // É
+    constexpr std::string_view LOWER = "c:\\users\\\xC3\xA9mile\\TaskSmack\\TaskSmack.exe"; // é
+    EXPECT_TRUE(samePath(UPPER, LOWER, true));
+    EXPECT_FALSE(samePath(UPPER, LOWER, false));
+    EXPECT_TRUE(isInside(UPPER, "c:\\users\\\xC3\xA9mile", true));
+    EXPECT_FALSE(isInside(UPPER, "c:\\users\\\xC3\xA9mile", false));
+    EXPECT_FALSE(samePath(UPPER, "C:\\Users\\Emile\\TaskSmack\\TaskSmack.exe", true)) << "É isn't E";
+    EXPECT_EQ(classify(runCommand(LOWER), UPPER, false, true).state, State::On) << "this copy, not one to repair";
+    EXPECT_EQ(classify(runCommand(LOWER), UPPER, false, false).state, State::OtherCopy);
+}
+
 TEST(StartAtLoginTest, NoEntryIsOff)
 {
     const Status status = classify(std::nullopt, INSTALLED, true, true);

@@ -57,15 +57,28 @@ TEST(CrashMatchTest, WindowsMatchesTheFileNameIgnoringCase)
     EXPECT_FALSE(crashMatchesExecutable(event, "", OsFamily::Windows));
 }
 
-TEST(CrashMatchTest, WindowsFoldsAsciiLettersOnlyNeverAByteOfUtf8)
+TEST(CrashMatchTest, WindowsFoldsUnicodeCaseButNeverALocalesByte)
 {
-    // Mixed case in every letter folds; a byte of 0x80 and up is compared as itself whatever the
-    // locale (#2566): 0xC4 is Latin-1's Ä, which a Latin-1 C locale would fold to 0xE4 (ä).
+    // Mixed case in every letter folds; a byte that isn't UTF-8 is compared as itself whatever the
+    // locale (#2566): a lone 0xC4 is Latin-1's Ä, which a Latin-1 C locale would fold to 0xE4 (ä).
     EXPECT_TRUE(crashMatchesExecutable(crash("mY\xC4pP.ExE", 1), "My\xC4Pp.eXe", OsFamily::Windows));
     EXPECT_FALSE(crashMatchesExecutable(crash("\xC4pp.exe", 1), "\xE4pp.exe", OsFamily::Windows));
-    EXPECT_TRUE(crashMatchesExecutable(crash("Caf\xC3\xA9.exe", 1), "CAF\xC3\xA9.EXE", OsFamily::Windows));  // é in UTF-8
-    EXPECT_FALSE(crashMatchesExecutable(crash("Caf\xC3\xA9.exe", 1), "Caf\xC3\x89.exe", OsFamily::Windows)); // É: not é
-    EXPECT_FALSE(crashMatchesExecutable(crash("", 1), "app.exe", OsFamily::Windows));                        // no application name
+    EXPECT_TRUE(crashMatchesExecutable(crash("Caf\xC3\xA9.exe", 1), "CAF\xC3\xA9.EXE", OsFamily::Windows)); // é in UTF-8
+    // #4309: Unicode simple case folding, as Windows compares file names: WER's "ÜBER.EXE" is Über.exe, and É is é.
+    EXPECT_TRUE(crashMatchesExecutable(crash("Caf\xC3\xA9.exe", 1), "Caf\xC3\x89.exe", OsFamily::Windows));
+    EXPECT_TRUE(crashMatchesExecutable(crash("\xC3\x9C"
+                                             "BER.EXE",
+                                             1),
+                                       R"(C:\Tools\)"
+                                       "\xC3\x9C"
+                                       "ber.exe",
+                                       OsFamily::Windows));
+    EXPECT_FALSE(crashMatchesExecutable(crash("\xC3\x9C"
+                                              "ber.exe",
+                                              1),
+                                        "Uber.exe",
+                                        OsFamily::Windows));                          // Ü isn't U
+    EXPECT_FALSE(crashMatchesExecutable(crash("", 1), "app.exe", OsFamily::Windows)); // no application name
 }
 
 TEST(CrashMatchTest, LinuxMatchesTheCommsFifteenBytesAndIsCaseSensitive)
@@ -96,13 +109,15 @@ TEST(CrashMatchTest, UnknownFamilyMatchesExactly)
 TEST(CrashCountsTest, CountsCrashesAndHangsWithTheNewestFirst)
 {
     const CrashesInfo info = listed(OsFamily::Windows,
-                                    {crash("dllhost.exe", 500, true),
-                                     crash("other.exe", 450),
-                                     crash("DLLHOST.EXE", 400),
-                                     crash("dllhost.exe", 300),
-                                     crash("dllhost.exe", 200),
-                                     crash("dllhost.exe", 150),
-                                     crash("dllhost.exe", 100)});
+                                    {
+                                        crash("dllhost.exe", 500, true),
+                                        crash("other.exe", 450),
+                                        crash("DLLHOST.EXE", 400),
+                                        crash("dllhost.exe", 300),
+                                        crash("dllhost.exe", 200),
+                                        crash("dllhost.exe", 150),
+                                        crash("dllhost.exe", 100),
+                                    });
     const ExecutableCrashCounts counts = crashCountsFor(info, "dllhost.exe");
     EXPECT_EQ(counts.crashes, 5U);
     EXPECT_EQ(counts.hangs, 1U);
@@ -165,7 +180,7 @@ TEST(CrashHistoryTest, ReadsOnlyWhenAskedAndPublishesEachRead)
 
 TEST(CrashHistoryTest, AThrowingReadIsPublishedAsUnlisted)
 {
-    CrashHistory history([]() -> CrashesInfo { throw std::runtime_error("log gone"); });
+    CrashHistory history([] -> CrashesInfo { throw std::runtime_error("log gone"); });
     history.read();
     const auto snapshot = history.snapshot();
     EXPECT_EQ(snapshot->version, 1U);

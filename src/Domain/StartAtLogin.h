@@ -6,6 +6,8 @@
 // finds means for this copy: Off, On, or another copy of TaskSmack (a zip copy that moved, say), which
 // Settings offers to repair. Header-only and pure, so it is compiled and tested on every host.
 
+#include "Platform/Utf8CaseFold.h"
+
 #include <algorithm>
 #include <cstddef>
 #include <cstdint>
@@ -59,31 +61,35 @@ inline constexpr std::string_view MINIMIZED_ARGUMENT = "--minimized";
 namespace Detail
 {
 
-/// @p path with '/' as '\', and ASCII letters lower-cased when @p ignoreCase, for comparing Windows paths.
-[[nodiscard]] inline std::string comparable(std::string_view path, bool ignoreCase)
+/// @p path with '/' as '\', for comparing Windows paths.
+[[nodiscard]] inline std::string comparable(std::string_view path)
 {
     std::string out(path);
     std::ranges::replace(out, '/', '\\');
-    if (ignoreCase)
-    {
-        std::ranges::transform(out, out.begin(), [](char c) { return (c >= 'A' && c <= 'Z') ? static_cast<char>(c - 'A' + 'a') : c; });
-    }
     return out;
+}
+
+/// Whether @p a and @p b are the same text: by Unicode simple case folding with @p ignoreCase (Windows, #4309:
+/// "C:\Users\Émile" is "c:\users\émile"), else byte for byte.
+[[nodiscard]] constexpr bool sameText(std::string_view a, std::string_view b, bool ignoreCase) noexcept
+{
+    return ignoreCase ? Platform::equalsFoldedCase(a, b) : a == b;
 }
 
 } // namespace Detail
 
 /// Whether @p a and @p b name the same file: equal once '/' is read as '\' and, with @p ignoreCase (Windows),
-/// ignoring the case of ASCII letters. An empty path is never the same as another.
+/// ignoring case by Unicode simple case folding, so a non-ASCII letter's case doesn't make another copy (#4309).
+/// An empty path is never the same as another.
 [[nodiscard]] inline bool samePath(std::string_view a, std::string_view b, bool ignoreCase)
 {
-    return !a.empty() && !b.empty() && Detail::comparable(a, ignoreCase) == Detail::comparable(b, ignoreCase);
+    return !a.empty() && !b.empty() && Detail::sameText(Detail::comparable(a), Detail::comparable(b), ignoreCase);
 }
 
 /// Whether @p path lies inside the directory @p directory (at any depth), compared as samePath() does.
 [[nodiscard]] inline bool isInside(std::string_view path, std::string_view directory, bool ignoreCase)
 {
-    std::string dir = Detail::comparable(directory, ignoreCase);
+    std::string dir = Detail::comparable(directory);
     while (!dir.empty() && dir.back() == '\\')
     {
         dir.pop_back();
@@ -93,8 +99,12 @@ namespace Detail
         return false;
     }
     dir += '\\';
-    const std::string file = Detail::comparable(path, ignoreCase);
-    return file.size() > dir.size() && file.starts_with(dir);
+    const std::string file = Detail::comparable(path);
+    if (file.size() <= dir.size())
+    {
+        return false;
+    }
+    return ignoreCase ? Platform::startsWithFoldedCase(file, dir) : file.starts_with(dir);
 }
 
 /// What the sign-in entry means for this copy.
