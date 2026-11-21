@@ -222,6 +222,23 @@ inline constexpr std::array<const char*, 6> ROCM_SMI_LIBRARY_NAMES{
     "/opt/rocm/lib/librocm_smi64.so",
 };
 
+/// What to dlopen() for the library name @p candidate (#4668). A soname is given as it is: ld.so finds it in the system's
+/// library folders, which a secure-execution session can't widen (LD_LIBRARY_PATH is ignored). An absolute path is ld.so's
+/// to open with no check of who put the file there, so in a @p privileged session (root, AT_SECURE or holding
+/// capabilities, where the library's constructors would run with that privilege) it is opened only by the path
+/// @p trusted gives for it (RootTools::rootTrustedLibrary(): a file only root could have put there), and not at all
+/// when that's nullopt. An unprivileged session opens it as it is: a library its own user placed runs as that user.
+template<typename Trusted>
+[[nodiscard]] std::optional<std::string> libraryToOpen(const char* candidate, bool privileged, const Trusted& trusted)
+{
+    std::string name(candidate);
+    if (!privileged || !name.starts_with('/'))
+    {
+        return name;
+    }
+    return trusted(name);
+}
+
 /// The first of @p names that @p open (dlopen, in the probe) gives a handle for, and that name; {nullptr, nullptr}
 /// when none does.
 template<typename Open> [[nodiscard]] std::pair<void*, const char*> openFirstLibrary(std::span<const char* const> names, const Open& open)
