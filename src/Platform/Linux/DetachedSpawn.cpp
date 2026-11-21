@@ -2,6 +2,8 @@
 
 #include "PosixGuards.h"
 #include "RootTools.h"
+#include "SdlEnvironment.h"
+#include "SessionUser.h"
 
 #include <spdlog/spdlog.h>
 
@@ -465,6 +467,12 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     {
         rootEnvironment = RootTools::withRootPath(environ);
         environment = &rootEnvironment;
+    }
+    else if (!SdlEnvironment::environmentBeforeScrub().empty() && SessionUser::thisProcessChildrenMayGetStartingEnvironment())
+    {
+        // A setcap session's program, as its own user with none of its capabilities (#4651): the environment it started
+        // with, not the one scrubbed of GTK, GIO and Mesa settings to protect TaskSmack itself.
+        environment = &SdlEnvironment::environmentBeforeScrub();
     }
     std::vector<char*> envPointers;
     if (environment != nullptr)
