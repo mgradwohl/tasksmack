@@ -17,10 +17,10 @@
 #include <functional>
 #include <iterator>
 #include <limits>
-#include <locale>
 #include <span>
 #include <string>
 #include <string_view>
+#include <system_error>
 #include <utility>
 
 namespace UI::Format
