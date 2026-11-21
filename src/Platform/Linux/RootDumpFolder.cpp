@@ -1,6 +1,7 @@
 #include "RootDumpFolder.h"
 
 #include "LinuxCoreDump.h"
+#include "RootTools.h"
 
 #include <spdlog/spdlog.h>
 
@@ -96,10 +97,38 @@ std::optional<std::string> makePrivateFolder(const std::filesystem::path& parent
 
 std::optional<std::string> rootDumpRefusal(const std::filesystem::path& directory)
 {
-    std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, &::lstat);
+    return rootDumpRefusal(directory, &::lstat, RootTools::systemRootFs().onUntrustedFilesystem);
+}
+
+std::optional<std::string> rootDumpRefusal(const std::filesystem::path& directory,
+                                           const std::function<int(const char*, struct stat*)>& lstatOf,
+                                           const std::function<bool(const std::string&)>& onUntrustedFilesystem)
+{
+    std::optional<std::string> refusal = LinuxCoreDump::rootOnlyFolderRefusal(directory, lstatOf);
     if (refusal.has_value())
     {
         return refusal;
+    }
+    // Every component was a plain root-only folder (no link), so this is the folder itself. Its filesystem, and every one
+    // above it, must be one whose owners and modes are this machine's (#4648, as root's tools since #4554, #4572).
+    std::string path = directory.lexically_normal().string();
+    while (path.size() > 1 && path.ends_with('/'))
+    {
+        path.pop_back();
+    }
+    const RootTools::RootFs rootFs{
+        .ownership = {},
+        .readLink = {},
+        .canonical = {},
+        .executable = {},
+        .onProcfs = {},
+        .onUntrustedFilesystem = onUntrustedFilesystem,
+    };
+    if (RootTools::onUntrustedMount(path, rootFs))
+    {
+        return std::format("{} is on a network or user filesystem (NFS, SMB, FUSE, 9p or a nosuid mount), whose owners and permissions "
+                           "another account can set; TaskSmack run as root doesn't write a dump there",
+                           directory.string());
     }
     // Fail closed: a filesystem that won't say what it is (a FUSE daemon can refuse statfs) may be a user's (the second
     // #4177 review).
@@ -150,7 +179,7 @@ std::filesystem::path rootDumpFolder()
         spdlog::warn("No default dump folder: root's home isn't in the passwd database (#4181)");
         return {};
     }
-    return rootDumpFolderIn(entry.pw_dir, 0, &rootDumpRefusal);
+    return rootDumpFolderIn(entry.pw_dir, 0, [](const std::filesystem::path& dir) { return rootDumpRefusal(dir); });
 }
 
 } // namespace Platform::RootDumpFolder
