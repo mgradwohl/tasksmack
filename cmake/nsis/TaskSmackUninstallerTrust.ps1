@@ -1,38 +1,32 @@
 <#
 .SYNOPSIS
-    The NSIS installer's checks on a previously installed TaskSmack folder (#4444, #4445).
+    The NSIS installer's checks on a previously installed TaskSmack folder (#4444, #4445, #4659, #4660).
 .DESCRIPTION
     cmake/CPackProjectConfig.cmake.in embeds this script in the installer and runs it (Windows PowerShell,
     through nsExec) from the upgrade step, which an elevated installer, or a SYSTEM WinGet or Intune
     upgrade, runs silently.
 
-    -Mode Uninstaller: exit 0 when running the old Uninstall.exe at -Path is safe, 1 when it isn't.
-      Safe means either of
-        - admin-only: the file, its folder and every folder above can be changed by no one but SYSTEM,
-          Administrators and TrustedInstaller (the owners, the write rights of every allow entry), none is
-          a link or junction, and the volume is a fixed NTFS one: the same test TaskSmackHelper and
-          Replace Task Manager apply to an install (BrokerHelper::checkUnchangeableNamed), or
-        - signed: a valid Authenticode signature whose signer certificate has the common name -Signer
-          (the subject's CN, never a thumbprint: Azure Artifact Signing's certificates rotate).
+    -Mode Uninstaller: exit 0 when running the old Uninstall.exe at -Path, elevated, is safe, 1 when it isn't.
+      Safe means admin-only: the file, its folder and every folder above can be changed by no one but SYSTEM,
+      Administrators and TrustedInstaller (the owners, the write rights of every allow entry), none is a link
+      or junction, and the volume is a fixed NTFS one: the same test TaskSmackHelper and Replace Task Manager
+      apply to an install (BrokerHelper::checkUnchangeableNamed). A valid signature isn't enough (#4660): the
+      verdict is on a path a standard user could swap before the installer starts it, and even the genuine
+      uninstaller deletes its files by path, through any junction a standard user planted in the folder.
     -Mode Folder: exit 0 when -Path, or the nearest folder above it that exists, is admin-only (a
       warning in the installer's log otherwise; nothing is refused).
-    -Mode Remove: delete a previous install's files from -Path (the folder) by the installer's own list,
-      when its Uninstall.exe isn't trusted. A link or junction is removed, never followed, and nothing else
-      in the folder is touched.
 
-    Any error counts as not trusted. The first line written says why. Unelevated and read-only except in
-    Remove mode, so tests/tools/test_nsis_upgrade.py runs it on temporary folders.
+    Any error counts as not trusted. The first line written says why. It only reads (#4659: an elevated
+    delete in a folder a standard user can write follows their junctions), so tests/tools/test_nsis_upgrade.py
+    runs it on temporary folders, unelevated.
 .PARAMETER Mode
-    Uninstaller, Folder or Remove.
+    Uninstaller or Folder.
 .PARAMETER Path
     The Uninstall.exe, or the folder.
-.PARAMETER Signer
-    The signer certificate's common name.
 #>
 param(
-    [Parameter(Mandatory)][ValidateSet('Uninstaller', 'Folder', 'Remove')][string]$Mode,
-    [Parameter(Mandatory)][string]$Path,
-    [string]$Signer = 'Matt Gradwohl'
+    [Parameter(Mandatory)][ValidateSet('Uninstaller', 'Folder')][string]$Mode,
+    [Parameter(Mandatory)][string]$Path
 )
 $ErrorActionPreference = 'Stop'
 
@@ -89,35 +83,12 @@ function Get-AdminOnlyProblem([string]$Target) {
     return $null
 }
 
-# Deletes $Item; a link or junction is removed itself, its target never entered.
-function Remove-Tree([string]$Item) {
-    if (-not (Test-Path -LiteralPath $Item)) { return }
-    $info = Get-Item -LiteralPath $Item -Force
-    if ($info.Attributes -band [System.IO.FileAttributes]::ReparsePoint) {
-        if ($info.PSIsContainer) { [System.IO.Directory]::Delete($info.FullName) } else { [System.IO.File]::Delete($info.FullName) }
-        return
-    }
-    if ($info.PSIsContainer) {
-        foreach ($child in Get-ChildItem -LiteralPath $Item -Force) { Remove-Tree $child.FullName }
-        [System.IO.Directory]::Delete($info.FullName)
-    } else {
-        [System.IO.File]::SetAttributes($info.FullName, [System.IO.FileAttributes]::Normal)
-        [System.IO.File]::Delete($info.FullName)
-    }
-}
-
 try {
     switch ($Mode) {
         'Uninstaller' {
             $problem = Get-AdminOnlyProblem $Path
             if (-not $problem) { Write-Output "$Path is trusted: it and its folders can be changed only by administrators."; exit 0 }
-            $sig = Get-AuthenticodeSignature -LiteralPath $Path
-            $subject = if ($sig.SignerCertificate) { $sig.SignerCertificate.Subject } else { '' }
-            if ($sig.Status -eq 'Valid' -and $subject -match "(^|,\s*)CN=$([regex]::Escape($Signer))(,|$)") {
-                Write-Output "$Path is trusted: validly signed by $Signer."
-                exit 0
-            }
-            Write-Output "$Path is not trusted: $problem, and its signature is $($sig.Status) (signer '$subject', not $Signer)."
+            Write-Output "$Path is not trusted: $problem."
             exit 1
         }
         'Folder' {
@@ -128,20 +99,6 @@ try {
             if (-not $problem) { Write-Output "$Path can be changed only by administrators."; exit 0 }
             Write-Output "$Path isn't admin-only: $problem."
             exit 1
-        }
-        'Remove' {
-            $folder = [System.IO.Path]::GetFullPath($Path)
-            if (-not (Test-Path -LiteralPath $folder -PathType Container)) { Write-Output "$folder doesn't exist."; exit 0 }
-            foreach ($name in 'TaskSmack.exe', 'TaskSmackHelper.exe', 'LICENSE.txt', 'Uninstall.exe', 'third_party_licenses', 'share\tasksmack') {
-                Remove-Tree (Join-Path $folder $name)
-            }
-            foreach ($empty in (Join-Path $folder 'share'), $folder) {
-                if ((Test-Path -LiteralPath $empty -PathType Container) -and -not (Get-ChildItem -LiteralPath $empty -Force)) {
-                    [System.IO.Directory]::Delete($empty)
-                }
-            }
-            Write-Output "Removed TaskSmack's files from $folder."
-            exit 0
         }
     }
 } catch {
