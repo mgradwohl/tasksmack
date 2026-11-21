@@ -14,8 +14,9 @@ sees:
   - every section link on the sidebar's pages reaches a heading on its page;
   - an unknown route shows the custom 404 page, and its User Guide link recovers;
   - the release dashboard under release/ (#4524) draws a made-up release, splits its open count by lane and
-    lists the open issues by kind or by lane (#4585), switches between releases, shows a hostile issue title as
-    text, and says so when its data can't be loaded;
+    lists the open issues by kind or by lane (#4585), ends a lane's list with its own group for the issues that
+    wait on the maintainer (#4718), switches between releases, shows a hostile issue title as text, and says so
+    when its data can't be loaded;
   - the release dashboard flags data over 25 minutes old, and its "Refresh now" link opens the workflow on GitHub
     and has the page look for new data every 30 seconds (#4604);
   - no JavaScript error, and no first-party request that fails.
@@ -287,21 +288,22 @@ HEADERS_OFF_THEIR_COLUMNS = r"""
 """
 
 
-def serve_release_data(page: Page, *, missing: bool = False) -> None:
-    """Answers the dashboard's data requests from RELEASE_FIXTURES, or with 404 when @p missing."""
+def serve_release_data(page: Page, *, missing: bool = False, change: Callable[[str, dict], None] | None = None) -> None:
+    """Answers the dashboard's data requests from RELEASE_FIXTURES, or with 404 when @p missing. @p change may
+    alter a file's data before it is served: it gets the file's name and what the file holds."""
 
     def answer(route: Route) -> None:
         match = RELEASE_DATA.match(route.request.url)
         path = RELEASE_FIXTURES / match.group(1) if match else None
         if missing or path is None or not path.is_file():
             route.fulfill(status=404, body="", headers={"Access-Control-Allow-Origin": "*"})
-        else:
-            route.fulfill(
-                status=200,
-                content_type="application/json",
-                body=path.read_text(encoding="utf-8"),
-                headers={"Access-Control-Allow-Origin": "*"},
-            )
+            return
+        body = path.read_text(encoding="utf-8")
+        if change is not None:
+            data = json.loads(body)
+            change(path.name, data)
+            body = json.dumps(data)
+        route.fulfill(status=200, content_type="application/json", body=body, headers={"Access-Control-Allow-Origin": "*"})
 
     page.route("https://raw.githubusercontent.com/**", answer)
 
@@ -482,24 +484,39 @@ def _check_release_lists(page: Page, current: dict) -> None:
         kind = "Bug" if issue["category"] == "Security" else issue["category"]
         return (steps.index(kind), levels.get(issue["pri"], 3), levels.get(issue["sev"], 3), issue["n"])
 
-    for lane in ("Windows", "WSL", "Shared"):
-        expected = [f"#{issue['n']}" for issue in sorted((issue for issue in current["open_issues"] if issue["lane"] == lane), key=queue)]
-        listed = page.evaluate(
-            "key => [...document.querySelectorAll(`details[data-key='${key}'] .item-number`)].map(node => node.textContent)",
-            f"open-lane-{lane}",
-        )
-        if listed != expected:
-            raise AssertionError(f"the {lane} list runs {listed}, not in queue order {expected}")
-    # An issue the ship list counts as waiting on the maintainer says so in its lane's list: the lane can't take it.
+    # A lane can't take an issue the ship list counts as waiting on the maintainer, so those come after the
+    # lane's own work, in a group of their own (#4718). Each part runs in queue order.
     held = next(row["issues"] for row in current["ship_list"] if row["id"] == "maintainer")
     if not held:
         raise AssertionError("the fixtures hold no issue waiting on the maintainer: tests/tools/test_release_dashboard.py")
-    marked = page.evaluate(
-        "() => [...document.querySelectorAll('.open-lists .items > li')].filter(row => [...row.querySelectorAll('.chip')]"
-        ".some(chip => chip.textContent === 'Waiting on the maintainer')).map(row => row.querySelector('.item-number').textContent)"
-    )
-    if sorted(marked) != sorted(f"#{number}" for number in held):
-        raise AssertionError(f"the issues marked as waiting on the maintainer are {marked}, not {held}")
+    with_waiting = 0
+    for lane in ("Windows", "WSL", "Shared"):
+        in_queue = sorted((issue for issue in current["open_issues"] if issue["lane"] == lane), key=queue)
+        own = [f"#{issue['n']}" for issue in in_queue if issue["n"] not in held]
+        waiting = [f"#{issue['n']}" for issue in in_queue if issue["n"] in held]
+        listed = lane_list(page, lane)
+        if listed["all"] != own + waiting:
+            raise AssertionError(f"the {lane} list runs {listed['all']}, not its own work {own} and then what waits on the maintainer {waiting}")
+        if listed["held"] != waiting:
+            raise AssertionError(f"the {lane} list's waiting group holds {listed['held']}, not {waiting}")
+        said = f"{len(waiting)} waiting on the maintainer"
+        if waiting:
+            with_waiting += 1
+            if listed["heading"] != ["Waiting on the maintainer", f"{len(waiting)} issue{'' if len(waiting) == 1 else 's'}"]:
+                raise AssertionError(f"the {lane} list's waiting group is headed {listed['heading']}")
+            if listed["heading_text"] != f"Waiting on the maintainer {len(waiting)} issue{'' if len(waiting) == 1 else 's'}":
+                raise AssertionError(f"the {lane} list's waiting group reads {listed['heading_text']!r} to a screen reader")
+            started = sum(1 for issue in in_queue if issue["n"] not in held and issue["phase"] != "todo")
+            summary = f"{len(in_queue)} issue{'' if len(in_queue) == 1 else 's'}" + (f", {started} started" if started else "") + f", {said}"
+            if listed["summary"] != summary:
+                raise AssertionError(f"the {lane} list's summary reads {listed['summary']!r}, not {summary!r}")
+            # The heading says it once: the rows under it don't each say it again.
+            if "Waiting on the maintainer" in listed["held_chips"]:
+                raise AssertionError(f"the {lane} list's waiting rows repeat their heading: {listed['held_chips']}")
+        elif listed["heading"] or "waiting" in listed["summary"]:
+            raise AssertionError(f"the {lane} list has nothing waiting, and shows {listed['heading']} and {listed['summary']!r}")
+    if with_waiting in (0, 3):
+        raise AssertionError("the fixtures need a lane with an issue waiting on the maintainer and a lane with none")
     # Under "Both lanes" an issue's chip says so, not the data's word for it.
     chips = page.evaluate("() => [...document.querySelectorAll(\"details[data-key='open-lane-Shared'] .chip\")].map(node => node.textContent)")
     if "Both lanes" not in chips or "Shared" in chips:
@@ -508,6 +525,63 @@ def _check_release_lists(page: Page, current: dict) -> None:
     page.locator(".switch button[data-by='kind']").click()
     if groups()[0][0] != kinds[0][0]:
         raise AssertionError("the switch didn't go back to listing by kind")
+    # Listed by kind there is no such group, so each waiting issue says so on its own row.
+    marked = page.evaluate(
+        "() => [...document.querySelectorAll('.open-lists .items > li')].filter(row => [...row.querySelectorAll('.chip')]"
+        ".some(chip => chip.textContent === 'Waiting on the maintainer')).map(row => row.querySelector('.item-number').textContent)"
+    )
+    if sorted(marked) != sorted(f"#{number}" for number in held):
+        raise AssertionError(f"listed by kind, the issues marked as waiting on the maintainer are {marked}, not {held}")
+    if page.locator(".open-lists .held").count():
+        raise AssertionError("listed by kind, a list has a waiting-on-the-maintainer group")
+
+
+def lane_list(page: Page, lane: str) -> dict:
+    """What a lane's list shows when the open issues are listed by lane: its issue numbers in order, the ones in
+    its waiting-on-the-maintainer group, that group's heading and chips, and the summary's count."""
+    return page.evaluate(
+        "key => { const group = document.querySelector(`details[data-key='${key}']`);"
+        " const texts = nodes => [...nodes].map(node => node.textContent);"
+        " return { all: texts(group.querySelectorAll('.item-number')),"
+        " own: texts(group.querySelectorAll(':scope > .items .item-number')),"
+        " held: texts(group.querySelectorAll('.held .item-number')),"
+        " heading: texts(group.querySelectorAll('.held > h4 span')),"
+        " heading_text: (group.querySelector('.held > h4') || {}).textContent || '',"
+        " held_chips: texts(group.querySelectorAll('.held .chip')),"
+        " summary: group.querySelector('summary > span:last-child').textContent }; }",
+        f"open-lane-{lane}",
+    )
+
+
+def check_release_dashboard_lane_all_waiting(page: Page, site: str, offline: bool) -> None:
+    """A lane whose every open issue waits on the maintainer shows that group alone, and says so in its summary (#4718)."""
+    index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
+    current = json.loads((RELEASE_FIXTURES / f"{index['current']}.json").read_text(encoding="utf-8"))
+    windows = sorted(issue["n"] for issue in current["open_issues"] if issue["lane"] == "Windows")
+    if len(windows) < 2:
+        raise AssertionError("the fixtures need two open Windows issues: tests/tools/test_release_dashboard.py")
+
+    def hold_the_lane(name: str, data: dict) -> None:
+        for row in data.get("ship_list", []):
+            if row["id"] == "maintainer":
+                row["issues"] = sorted(set(row["issues"]) | set(windows))
+
+    serve_release_data(page, change=hold_the_lane)
+    page.goto(site + "release/")
+    expect_release(page, index["current"])
+    page.locator(".switch button[data-by='lane']").click()
+    listed = lane_list(page, "Windows")
+    if listed["own"] or sorted(int(text.lstrip("#")) for text in listed["held"]) != windows:
+        raise AssertionError(f"with every Windows issue waiting, the list shows its own work {listed['own']} and waiting {listed['held']}")
+    if page.locator("details[data-key='open-lane-Windows'] > .items").count():
+        raise AssertionError("with every Windows issue waiting, the list still draws an empty list of the lane's own work")
+    # No "started" here, whatever labels the issues carry: that count is the lane's own work, and it has none.
+    expected = f"{len(windows)} issues, {len(windows)} waiting on the maintainer"
+    if listed["summary"] != expected:
+        raise AssertionError(f"the Windows list's summary reads {listed['summary']!r}, not {expected!r}")
+    untouched = lane_list(page, "WSL")
+    if untouched["held"] or untouched["heading"]:
+        raise AssertionError(f"the WSL list has nothing waiting, and shows {untouched['held']}")
 
 
 def check_release_dashboard_without_data(page: Page, site: str, offline: bool) -> None:
@@ -635,6 +709,7 @@ CHECKS: list[tuple[str, Callable[[Page, str, bool], None]]] = [
     ("the release dashboard draws a release and switches between them", check_release_dashboard),
     ("the release dashboard says when its data can't be loaded", check_release_dashboard_without_data),
     ("the release dashboard flags old data and looks for new data after 'Refresh now'", check_release_dashboard_refresh),
+    ("a lane's list on the release dashboard ends with what waits on the maintainer", check_release_dashboard_lane_all_waiting),
     ("the sidebar links the release dashboard", check_release_dashboard_link),
 ]
 
