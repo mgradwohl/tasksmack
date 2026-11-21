@@ -363,6 +363,46 @@ TEST_F(LinuxDiskProbeReadTest, SysBlockLeavesOutDrivesBootAreasAndDevicesWithNoM
     std::filesystem::remove_all(sysBlock, ec);
 }
 
+// #4697: /sys/block is listed again only when /proc/diskstats' device names change or the interval passes, not every
+// sample: a listing reads each device's size and slaves/, about 3x the read's cost.
+TEST_F(LinuxDiskProbeReadTest, TheSysBlockListingIsKeptUntilTheDeviceNamesChangeOrTheIntervalPasses)
+{
+    const std::filesystem::path sysBlock = m_DiskstatsPath.string() + "_sysblock_cache";
+    const auto device = [&sysBlock](const char* name, const char* size)
+    {
+        std::filesystem::create_directories(sysBlock / name);
+        std::ofstream(sysBlock / name / "size") << size << "\n";
+    };
+    const auto namesOf = [](const SystemDiskCounters& counters)
+    {
+        std::vector<std::string> names;
+        for (const DiskCounters& disk : counters.disks)
+        {
+            names.push_back(disk.deviceName);
+        }
+        return names;
+    };
+    device("sda", "1000");
+    device("sdb", "0"); // a card reader with no card
+    writeDiskstats(makeLine("sda") + makeLine("sdb"));
+    LinuxDiskProbe probe(m_DiskstatsPath, sysBlock);
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda"}));
+
+    device("sdb", "2000"); // a card put in: the same names, so the listing is kept until the interval passes
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda"})) << "listed again although nothing in diskstats changed";
+
+    device("sdc", "3000"); // a disk plugged in: a new name in diskstats lists /sys/block at once
+    writeDiskstats(makeLine("sda") + makeLine("sdb") + makeLine("sdc"));
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda", "sdb", "sdc"}));
+
+    device("sdb", "0"); // the card taken out again; with the interval passed (zero here), the next sample sees it
+    probe.setRescanIntervalForTesting(std::chrono::steady_clock::duration::zero());
+    EXPECT_EQ(namesOf(probe.read()), (std::vector<std::string>{"sda", "sdc"}));
+
+    std::error_code ec;
+    std::filesystem::remove_all(sysBlock, ec);
+}
+
 // Without a /sys/block to list, the name rule is the fallback.
 TEST_F(LinuxDiskProbeReadTest, AnUnlistableSysBlockFallsBackToTheNameRule)
 {
