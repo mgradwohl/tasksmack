@@ -57,8 +57,13 @@ the milestone `pri:high`, so the conveyor picks them up first.
 - **A performance analysis** with the repo's tools, on Windows and Linux, run against those baselines. It files
   product and tooling perf bugs early, when a fix can still be a refactor in stage 2.
 - **Fault-injection and regression tests** that protect stage 2's refactors.
+- **The newcomer check on both platforms:** each lane follows the documented contributor path on a clean machine,
+  from `git clone` to a first build, tests and benchmarks. Its `results.md` goes on the tracker, and each FINDING or
+  FAIL becomes a cycle issue ([The newcomer check](#the-newcomer-check)). Budget a night for each: the Linux run takes
+  an hour or more, and the Windows Sandbox run takes hours.
 
-**Done when:** main is green, the signed dry run passes, and the baselines are posted.
+**Done when:** main is green, the signed dry run passes, the baselines are posted, and both newcomer checks are on the
+tracker.
 
 ### 2. Fixes: refactors, bugs, test gaps
 
@@ -344,6 +349,51 @@ Coverage stays on Codecov, and the page links to it.
   A `release/X.Y` branch must read `X.Y.*`. It's compared only with its own line's tags, so `release/0.9` stays
   green after v0.10.0 ships.
 
+## The newcomer check
+
+Nothing else tests the path a new contributor takes: clone, `setup-dev`, `check-prereqs`, the first build, the tests
+and the benchmarks. Release validation in stage 6 checks what ships, and the dev-tool tests check the scripts' logic
+without provisioning anything. `tools/newcomer-check.sh` and `tools/newcomer-check.ps1` (#2618) follow README.md and
+CONTRIBUTING.md on a machine with nothing installed. Before each step they check that the docs still give the command
+they're about to run. They record every step as PASS, FINDING, FAIL or SKIP in `results.md`. Six provisioning bugs
+filed in one day during v0.11.0 (#4704 to #4708, #4711) were in exactly this path, and no other check could see them
+(#4713).
+
+**When it runs** (maintainer, 2026-11-21):
+- **Stage 1 of every cycle,** on both platforms.
+- **On every toolchain bump:** LLVM ([the Linux LLVM pin](#the-linux-llvm-pin), or the Windows LLVM version), the CMake
+  minimum, the Ubuntu base, or the Windows SDK. The lane whose platform the bump touches runs it, or both lanes when it
+  touches both.
+- **A patch release** runs it only when the patch bumps a toolchain.
+
+**Where the results go:**
+- **The stage 1 runs:** `results.md` goes on a comment on the cycle's release tracker, from a checklist item that
+  starts with the cycle's newcomer-check issue number, so [the release dashboard](#the-release-dashboard) ticks it.
+- **A toolchain bump's run:** `results.md` goes on the bump's PR, before it merges.
+- **Each FINDING or FAIL** becomes an ordinary issue on the cycle's milestone, with the step's log attached. A FAIL is
+  a doc that no longer matches the script, or the other way round. A FINDING is a step that breaks as written.
+
+**Windows (agent:Windows):**
+- **Where:** in Windows Sandbox, which starts clean and is thrown away when it closes.
+- **The `.wsb`:**
+  - maps a folder holding only `tools/newcomer-check.ps1`, read-only, to `C:\newcomer-in`;
+  - maps an empty writable folder to `C:\newcomer-out`;
+  - sets `Networking` on, `MemoryInMB` 8192 and `VGpu` Disable.
+- **Its logon command:** the one in the script's `.EXAMPLE`, which runs it with
+  `-WindowsSandbox -ContinueOnFinding -SetupTimeoutMinutes 360 -ShutdownWhenDone`.
+- **Watching it:** follow `progress.log` in the output folder on the host, and wait for `DONE`.
+- **How long:** hours, not minutes. Windows Installer verifies each signed `.msi` in the Sandbox, and the Windows SDK
+  installs 48. Little CPU shows meanwhile.
+- **When:** run it overnight, outside the maintainer's day. It needs the Sandbox's 8 GB beside the WSL lane's VM, so
+  the WSL lane keeps to `-j 2` and no benchmarks while it runs. Agree the night on #4135.
+
+**Linux (agent:WSL):**
+- **Where:** in a fresh WSL distro of the current Ubuntu base (26.04; `newcomer-check.sh` was retargeted from 24.04
+  in #4712), with none of TaskSmack's tools installed: `wsl --install Ubuntu-26.04 --name tasksmack-newcomer`.
+- **How:** copy only the script into the distro and run it there. It clones the repository itself, asks for sudo once,
+  and does several full builds, so expect an hour or more.
+- **When:** in the WSL lane's window, on a night agreed on #4135, so that it doesn't overlap the Windows run.
+
 ## The Linux LLVM pin
 
 The Linux release legs build with clang from apt.llvm.org. `LLVM_LINUX_RELEASE` in `release.yml` (`23.1.6`) is
@@ -389,6 +439,8 @@ purpose:
    entry by itself.
 3. Run a release dry run on the PR branch. Both Linux legs must pass. After the merge, run one from main, so the
    cache holds the new release before a tag needs it.
+4. Run [the newcomer check](#the-newcomer-check) on Linux against the PR branch (`--ref`), and put its `results.md` on
+   the PR before it merges. A bump of the LLVM major also runs it on Windows.
 
 ## Publishing to WinGet
 
@@ -640,8 +692,8 @@ A patch happens only when a shipped bug warrants one.
 | Role | Responsibilities |
 |---|---|
 | Maintainer | scope and late-feature calls; declares the freeze; approves the candidate; manual checks; cuts the release branch; pushes the tag; merges the CHANGELOG PRs; SmartScreen submission; announcement |
-| Windows lane | Windows code and its review sweep; CI and the release pipeline; dry runs; Windows validation; post-publish verification; Windows screenshots; performance baselines |
-| WSL lane | Linux code and its review sweep; Linux packaging; Linux validation; the docs site; Linux screenshots |
+| Windows lane | Windows code and its review sweep; CI and the release pipeline; dry runs; Windows validation; post-publish verification; Windows screenshots; performance baselines; the Windows newcomer check |
+| WSL lane | Linux code and its review sweep; Linux packaging; Linux validation; the docs site; Linux screenshots; the Linux newcomer check |
 | agentDash | [the release dashboard](#the-release-dashboard): its generator, page and workflow (`agent:Dash`) |
 
 ## Why these steps
