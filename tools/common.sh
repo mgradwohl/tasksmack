@@ -55,13 +55,15 @@ validate_coverage_prereqs() {
 # Find LLVM tool (tries versioned paths first, then PATH)
 # Usage: find_llvm_tool "clang-format"
 # Returns: path to tool or empty string if not found
+# TASKSMACK_LLVM_LIB_ROOT stands in for /usr/lib, for tests (tests/tools/test_check_prereqs_sh.py, #4705).
 find_llvm_tool() {
     local tool="$1"
+    local root="${TASKSMACK_LLVM_LIB_ROOT:-/usr/lib}"
 
     # Try versioned LLVM installations first
     for ver in 23 22 21 20 19 18 17; do
-        if [[ -x "/usr/lib/llvm-$ver/bin/$tool" ]]; then
-            echo "/usr/lib/llvm-$ver/bin/$tool"
+        if [[ -x "$root/llvm-$ver/bin/$tool" ]]; then
+            echo "$root/llvm-$ver/bin/$tool"
             return 0
         fi
     done
