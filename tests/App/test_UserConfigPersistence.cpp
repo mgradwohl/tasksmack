@@ -11,6 +11,11 @@
 #include "Domain/SamplingConfig.h"
 #include "Domain/UpdateCheck.h"
 #include "Mocks/HandedOverTestFolder.h"
+#ifdef __linux__
+#include "App/LinuxHeldFolder.h"
+
+#include <unistd.h>
+#endif
 #include "Platform/ProcessTypes.h"
 #include "UI/ChartWidgets.h"
 #include "UI/FontPointSize.h"
@@ -2641,6 +2646,60 @@ TEST_F(UserConfigSaveLoadFixture, AHandedOverFolderIsNeverWrittenThroughALink)
     EXPECT_TRUE(std::filesystem::is_symlink(link));
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
+
+#ifdef __linux__
+// #4167, #4257: run as root for a user, the config folder is held (App::LinuxHeldFolder) and adopted as a hand-off is:
+// config.toml is read only through it, so a link the user swaps in for it is refused, and settings fall back to defaults.
+TEST_F(UserConfigSaveLoadFixture, ALinuxHeldFolderIsReadOnlyThroughAndALinkedConfigIsRefused)
+{
+    writeFile(m_ConfigPath, "[theme]\nid = \"mocha\"\n");
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    auto held = App::LinuxHeldFolder::hold(m_TempDir, ::geteuid());
+    ASSERT_TRUE(held.has_value()) << held.error();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, *held);
+    auto& config = UserConfig::get();
+    config.load();
+    EXPECT_EQ(config.settings().themeId, "mocha") << "read through the folder held";
+
+    const auto target = m_TempDir / "elsewhere.toml";
+    writeFile(target, "[theme]\nid = \"latte\"\n");
+    std::filesystem::remove(m_ConfigPath);
+    std::filesystem::create_symlink(target, m_ConfigPath);
+    config.resetConfigPathForTesting(m_ConfigPath); // defaults, and read afresh
+    config.load();
+    EXPECT_NE(config.settings().themeId, "latte") << "a linked config.toml is never followed";
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+}
+
+// The save goes to the folder held, by its descriptor: the folder moved aside and another made at its path after the
+// startup check (the swap #4167 describes) gets nothing, and the held one gets the settings.
+TEST_F(UserConfigSaveLoadFixture, ALinuxHeldFoldersSaveGoesToTheFolderHeldNotTheOneAtItsPath)
+{
+    // NOLINTNEXTLINE(performance-unnecessary-copy-initialization) - a copy: active() changes below
+    const std::optional<std::filesystem::path> previous = Core::ConfigDirOverride::active();
+    auto held = App::LinuxHeldFolder::hold(m_TempDir, ::geteuid());
+    ASSERT_TRUE(held.has_value()) << held.error();
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir, *held);
+    auto& config = UserConfig::get();
+    config.load();
+
+    std::filesystem::path moved = m_TempDir;
+    moved += "-moved";
+    std::filesystem::rename(m_TempDir, moved);
+    std::filesystem::create_directory(m_TempDir); // what a swap would leave at the path
+    config.settings().themeId = "mocha";
+    config.save();
+    Core::ConfigDirOverride::setActiveForTesting(previous);
+
+    EXPECT_FALSE(std::filesystem::exists(m_ConfigPath)) << "nothing written by path";
+    EXPECT_EQ(parsed(moved / "config.toml")["theme"]["id"].value<std::string>(), "mocha") << "written into the folder held";
+    std::error_code ec;
+    std::filesystem::remove_all(moved, ec);
+}
+#endif
 
 // #4652: a config.toml that can't be read through (here a folder: EISDIR, as a failing disk's EIO or an NFS home's
 // ESTALE) is never taken for an empty file: the load says it couldn't be opened, and nothing replaces it.

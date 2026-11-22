@@ -80,7 +80,9 @@ void adoptHandedOver(const std::filesystem::path& dir, std::weak_ptr<const Platf
 
 /// A TaskSmack run as root for a user (sudo or pkexec, #3580) keeps that user's config directory, the less-privileged
 /// side's, as an elevated restart's handed-over one is (#3759): main.cpp calls this first thing on Linux when
-/// SessionUser::invokingUserHome() names a user, and handedOver() is true from then on. Not thread-safe, as above.
+/// SessionUser::invokingUserHome() names a user, and handedOver() is true from then on. It then holds that folder
+/// (App::LinuxHeldFolder) and adopts it with adoptHandedOver() (#4167), so everything in it goes through the folder held;
+/// a folder it couldn't hold is adopted with nothing held, and fails closed. Not thread-safe, as above.
 void markLessPrivilegedFolder();
 
 /// An elevated TaskSmack (#3920) ignores TASKSMACK_CONFIG_DIR from now on: its environment can come from the
@@ -118,8 +120,9 @@ struct HandedOverFile
 readHandedOverFiles(const std::filesystem::path& folder, std::string_view extension);
 
 /// Whether an elevated restart handed a folder over (adoptHandedOver()) that is no longer held, or was never given
-/// one: such a hand-off fails closed, and UserConfig neither reads nor saves there. False with no hand-off, and in a
-/// root session for a user (markLessPrivilegedFolder()), which holds no folder.
+/// one: such a hand-off fails closed, and UserConfig neither reads nor saves there. False with no hand-off. A root
+/// session for a user (markLessPrivilegedFolder()) adopts the folder it holds the same way (#4167), so it too fails
+/// closed when that folder couldn't be held, or is no longer held.
 [[nodiscard]] bool handedOverFolderReleased();
 
 /// Whether active() is TASKSMACK_CONFIG_DIR's (a test hook), not a handed-over directory; false when there is

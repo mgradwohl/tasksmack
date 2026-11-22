@@ -889,6 +889,9 @@ constexpr std::size_t MAX_CONFIG_FILE_BYTES = std::size_t{4} * 1024U * 1024U;
     std::array<char, 16384> chunk{};
     for (;;)
     {
+        // save() holds m_WriteMutex for the whole write by design: saves are serialised on the save worker, and the UI thread
+        // never waits on it (#2916).
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection)
         const auto n = ::read(fd, chunk.data(), chunk.size());
         if (n < 0)
         {
@@ -1148,6 +1151,14 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     // Held, it is written only through the folder held, relative to its handle (#3774): no path to it is followed.
     if (held != nullptr)
     {
+#ifndef _WIN32
+        // Run as root for a user, the folder held is theirs (App::LinuxHeldFolder, #4167): saved through its descriptor
+        // by writeIntoFolderFd(), which keeps the old config.toml's owner, mode and access control list (#4546).
+        if (const int folderFd = held->posixFolderFd(); folderFd >= 0)
+        {
+            return writeIntoFolderFd(folderFd, settings, std::nullopt);
+        }
+#endif
         return writeIntoHandedOver(*held, settings);
     }
     std::error_code ec;
