@@ -311,12 +311,33 @@ function Test-StepStalled {
 }
 
 # A crash or error window a step is stuck behind: WerFault, or a "Bad Image" / "Application Error" box.
-# Returns a description, or $null.
+# Only the step's own process tree counts (#4803): a process whose Id is in TreePid, or a WerFault whose
+# "-p <pid>" argument names a process in TreePid. Anything else on the machine is somebody else's crash.
+# A process object may carry a CommandLine property (tests do); otherwise it is read from Win32_Process, and
+# a failed read just skips that process. Returns a description, or $null.
 function Get-ErrorDialog {
-    param([object[]]$Process = @(Get-Process -ErrorAction SilentlyContinue))
+    param(
+        [int[]]$TreePid = @(),
+        [object[]]$Process = @(Get-Process -ErrorAction SilentlyContinue)
+    )
+    $tree = @($TreePid)
     $hits = @($Process | Where-Object {
-            $_.ProcessName -like 'WerFault*' -or
-            ($_.MainWindowTitle -and $_.MainWindowTitle -match 'Bad Image|Application Error|stopped working')
+            $inTree = $tree -contains [int]$_.Id
+            if ($_.ProcessName -like 'WerFault*') {
+                if (-not $inTree) {
+                    $commandLine = $null
+                    try {
+                        if ($_.PSObject.Properties['CommandLine']) { $commandLine = [string]$_.CommandLine }
+                        else { $commandLine = [string](Get-CimInstance Win32_Process -Filter "ProcessId = $([int]$_.Id)" -ErrorAction Stop).CommandLine }
+                    }
+                    catch { $commandLine = $null }
+                    if ($commandLine -match '(?:^|\s)-p\s+(\d+)') { $inTree = $tree -contains [int]$Matches[1] }
+                }
+                $inTree
+            }
+            else {
+                $inTree -and $_.MainWindowTitle -and $_.MainWindowTitle -match 'Bad Image|Application Error|stopped working'
+            }
         })
     if ($hits.Count -eq 0) { return $null }
     return (($hits | Select-Object -First 3 | ForEach-Object { "$($_.ProcessName) (pid $($_.Id)) '$($_.MainWindowTitle)'" }) -join '; ')
@@ -370,8 +391,10 @@ function Invoke-Shell {
         Write-CheckLog ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ($busy -join ', '))
         Save-Diagnostic -Prefix $LogName
         if ($StallMinutes -gt 0) {
-            $null = $samples.Add((Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern))
-            $dialog = Get-ErrorDialog
+            $latest = Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern
+            $null = $samples.Add($latest)
+            $treePids = @($latest.Pids -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ })
+            $dialog = Get-ErrorDialog -TreePid $treePids
             $stall = if ($dialog) { "an error window is open: $dialog" } else { Test-StepStalled -Samples $samples.ToArray() -WindowMinutes $StallMinutes }
             if ($stall) {
                 & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null

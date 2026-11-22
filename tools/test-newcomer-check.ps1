@@ -87,14 +87,25 @@ Assert-True ($null -ne (Test-StepStalled -Samples $wasBusy -WindowMinutes 15)) '
 
 # ── Get-ErrorDialog, on fake process lists ────────────────────────────────────────────────────────
 function New-FakeProcess {
-    param([string]$Name, [string]$Title = '', [int]$Id = 1)
-    [pscustomobject]@{ ProcessName = $Name; MainWindowTitle = $Title; Id = $Id }
+    param([string]$Name, [string]$Title = '', [int]$Id = 1, [string]$CommandLine = '')
+    [pscustomobject]@{ ProcessName = $Name; MainWindowTitle = $Title; Id = $Id; CommandLine = $CommandLine }
 }
-Assert-True ($null -eq (Get-ErrorDialog -Process @((New-FakeProcess 'explorer' 'Program Manager'), (New-FakeProcess 'git')))) 'ordinary windows are not error dialogs'
-$dialog = Get-ErrorDialog -Process @((New-FakeProcess 'git' 'git.exe - Bad Image' 42))
-Assert-True ($dialog -like "git (pid 42) 'git.exe - Bad Image'*") "Bad Image box: [$dialog]"
-Assert-True ($null -ne (Get-ErrorDialog -Process @((New-FakeProcess 'WerFault' '' 7)))) 'WerFault is an error dialog'
-Assert-True ($null -ne (Get-ErrorDialog -Process @((New-FakeProcess 'app' 'app.exe - Application Error')))) 'an Application Error window is an error dialog'
+# The step's tree is pids 10 and 42 in these cases.
+$tree = @(10, 42)
+Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'explorer' 'Program Manager'), (New-FakeProcess 'git' '' 42)))) 'ordinary windows are not error dialogs'
+$dialog = Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'git' 'git.exe - Bad Image' 42))
+Assert-True ($dialog -like "git (pid 42) 'git.exe - Bad Image'*") "Bad Image box in the tree: [$dialog]"
+Assert-True ($null -ne (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'WerFault' '' 10)))) 'a WerFault in the tree is an error dialog'
+Assert-True ($null -ne (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'WerFault' '' 900 'WerFault.exe -u -p 42 -s 1234')))) 'a WerFault whose -p names a tree process is an error dialog'
+Assert-True ($null -ne (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'app' 'app.exe - Application Error' 10)))) 'an Application Error window in the tree is an error dialog'
+Assert-True ($null -ne (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'app' 'app.exe stopped working' 42)))) 'a stopped working window in the tree is an error dialog'
+# Outside the tree: somebody else's crash is not this step's stall (#4803).
+Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'WerFault' '' 900 'WerFault.exe -u -p 777 -s 1234')))) 'a WerFault for a process outside the tree is ignored'
+Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'WerFault' '' 901 'WerFault.exe -u -p 7770 -s 1')))) 'a -p prefix of a longer outside pid is ignored'
+Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'WerFault' '' 902 '')))) 'a WerFault with no command line outside the tree is ignored'
+Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'app' 'app.exe stopped working' 777)))) 'a stopped working window outside the tree is ignored'
+Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'git' 'git.exe - Bad Image' 777)))) 'a Bad Image window outside the tree is ignored'
+Assert-True ($null -eq (Get-ErrorDialog -TreePid @() -Process @((New-FakeProcess 'WerFault' '' 7)))) 'an empty tree matches nothing'
 
 # ── Invoke-Shell with -StallMinutes, on real short shells ─────────────────────────────────────────
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-newcomer-check-tests-$([guid]::NewGuid().ToString('N'))"
