@@ -4,6 +4,7 @@
 #include "Platform/IServiceActions.h"
 #include "Platform/IServiceProbe.h"
 #include "Platform/IUserSessions.h"
+#include "Platform/Linux/SessionUser.h"
 #include "Platform/Linux/SystemdActions.h"
 #include "Platform/Linux/SystemdBus.h"
 
@@ -71,7 +72,8 @@ constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
                                   : std::string(std::strerror(-result)); // NOLINT(concurrency-mt-unsafe) - one worker thread
     // Nothing is offered to finish it with a password: a Linux session that isn't Administrator never asks after it
     // starts (#3580), and the text says how to start one.
-    return ServiceActionResult::failed(SystemdActions::errorText(name, message, timedOut(raw, result)));
+    return ServiceActionResult::failed(
+        SystemdActions::errorText(name, message, timedOut(raw, result), SessionUser::capabilitiesOnlySession()));
 }
 
 /// The system bus for an action, or why not. polkit may never prompt (#3580): unprivileged, the call is refused with

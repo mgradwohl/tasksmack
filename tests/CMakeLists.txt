@@ -117,6 +117,11 @@ if(WIN32)
         # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
         add_test(NAME SetupDevScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-setup-dev.ps1)
+        # tools/newcomer-check.ps1's stall rule (#4781): a setup step whose process tree makes no progress for
+        # the window, or that sits behind a Bad Image box, is failed instead of waiting out the setup timeout.
+        # Short real shells (a sleep, a spin); nothing is installed.
+        add_test(NAME NewcomerCheckScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-newcomer-check.ps1)
         # The Authenticode gate's decision (cmake/VerifyWindowsSignatures.cmake): only an Artifact
         # Signing certificate passes, not a trusted self-signed CN=Matt Gradwohl one (#2990). The
         # certificates are made in memory; nothing is signed, stored or trusted.
@@ -175,14 +180,14 @@ if(WIN32)
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         # A new pwsh test joins both lists below (#3746: MeasureIdleScript, left out, died that way).
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
+            BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript NewcomerCheckScript VerifyWindowsSignaturesScript
             BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript WingetManifestScript
             ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
             CheckWingetManifestsScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
+            NewcomerCheckScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
             WingetManifestScript ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
             CheckWingetManifestsScript
             PROPERTIES TIMEOUT 120)
@@ -564,16 +569,28 @@ if(TASKSMACK_BASH)
     # setup-llvm's cache-key and install cases (#3635) run install-llvm.sh dozens of times and have their own
     # entry (#3643), as do Heavy Checks' benchmark-gate cases (#3709), which run its steps' bash launches
     # dozens of times: together with the rest they outran the 120 s timeout on the slow bash spawns of the
-    # windows-11-arm runner. WorkflowRunStepsScript runs everything else.
+    # windows-11-arm runner. They grew back to 114-120 s there (#4770), so release.yml's cases (the ones that
+    # start pwsh) and the release dashboard's have entries of their own too. WorkflowRunStepsScript runs
+    # everything else.
     add_test(NAME WorkflowRunStepsScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --skip-setup-llvm
-                --skip-benchmark-gate)
+                --skip-benchmark-gate --skip-release --skip-release-dashboard)
     set_tests_properties(WorkflowRunStepsScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
+        TIMEOUT 120)
+    add_test(NAME ReleaseWorkflowStepsScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-release)
+    set_tests_properties(ReleaseWorkflowStepsScript PROPERTIES
         ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         # The release.yml cases start pwsh (#2964), so it takes its turn with the pwsh script tests
         # (#2054) and gets their second attempt on windows-11-arm (#2832, #2991).
         RESOURCE_LOCK pwsh-script-tests
         LABELS pwsh-script
+        TIMEOUT 120)
+    add_test(NAME ReleaseDashboardStepsScript
+        COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-release-dashboard)
+    set_tests_properties(ReleaseDashboardStepsScript PROPERTIES
+        ENVIRONMENT "TASKSMACK_TEST_BASH=${TASKSMACK_BASH}"
         TIMEOUT 120)
     add_test(NAME SetupLlvmInstallScript
         COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_workflow_run_steps.py --only-setup-llvm)

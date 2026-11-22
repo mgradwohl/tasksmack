@@ -10,6 +10,7 @@
 #include <imgui.h>
 
 #include <string>
+#include <string_view>
 
 namespace
 {
@@ -54,6 +55,14 @@ TEST(ProcessSignatureTextTest, TheRowMarksAVerifiedSignerAndSaysWhenNotCheckedYe
     const Platform::SignatureCheck invalid{.signature = ImageSignature::Untrusted, .note = "expired", .signer = {}};
     EXPECT_EQ(App::ProcessSignatureText::detailsValue(invalid, Platform::signatureLabel(invalid)), "Invalid");
     EXPECT_EQ(App::ProcessSignatureText::detailsValue({}, ""), "Not checked yet");
+}
+
+// #4755: Process Details' Publisher is what the file says of itself; its tooltip says so and points at the Signature.
+TEST(ProcessSignatureTextTest, ThePublisherTooltipSaysItIsUnverifiedAndPointsAtTheSignature)
+{
+    const std::string_view tip = App::ProcessSignatureText::PUBLISHER_TOOLTIP;
+    EXPECT_TRUE(tip.contains("unverified")) << tip;
+    EXPECT_TRUE(tip.contains("Signature")) << tip;
 }
 
 } // namespace

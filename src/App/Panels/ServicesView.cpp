@@ -110,6 +110,12 @@ void renderServiceTooltip(const Platform::ServiceInfo& service)
     {
         UI::Widgets::labelledText("Type: ", service.serviceType);
     }
+    if (service.notLoaded)
+    {
+        ImGui::PushStyleColor(ImGuiCol_Text, scheme.textMuted);
+        ImGui::TextUnformatted(NOT_LOADED_TOOLTIP.data(), NOT_LOADED_TOOLTIP.data() + NOT_LOADED_TOOLTIP.size());
+        ImGui::PopStyleColor();
+    }
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
 }
@@ -478,7 +484,10 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
                 ImGui::Text("%u", service.pid);
             }
             ImGui::TableNextColumn();
-            cellTooltip |= UI::Widgets::cellText(service.account).tooltipShown;
+            // Not loaded (#4763): unknown, not empty, beside the loaded stopped services that show theirs.
+            cellTooltip |= UI::Widgets::cellText(service.notLoaded && service.account.empty() ? std::string_view(NOT_READ_CELL)
+                                                                                              : std::string_view(service.account))
+                               .tooltipShown;
             if (rowHovered && !cellTooltip)
             {
                 renderServiceTooltip(service);

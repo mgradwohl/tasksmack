@@ -144,7 +144,10 @@ inline constexpr std::string_view INTERACTIVE_AUTHORIZATION_REQUIRED = "org.free
 /// A refused or failed call in the user's terms, from its D-Bus error name and @p message (the error's
 /// own text). @p timedOut: the call ran out of time. No call lets polkit prompt (#3580, #3767), so a refusal reads the
 /// same however it came.
-[[nodiscard]] inline std::string errorText(std::string_view errorName, std::string_view message, bool timedOut)
+/// @p capabilitiesOnly: this TaskSmack is a capabilities session (SessionUser::capabilitiesOnlySession(), #4766), whose
+/// window says Administrator, so a refusal says why that isn't enough here rather than "start TaskSmack (Administrator)".
+[[nodiscard]] inline std::string
+errorText(std::string_view errorName, std::string_view message, bool timedOut, bool capabilitiesOnly = false)
 {
     if (timedOut)
     {
@@ -152,6 +155,11 @@ inline constexpr std::string_view INTERACTIVE_AUTHORIZATION_REQUIRED = "org.free
     }
     if (errorName == INTERACTIVE_AUTHORIZATION_REQUIRED || errorName == "org.freedesktop.DBus.Error.AccessDenied")
     {
+        if (capabilitiesOnly)
+        {
+            return "Requires root: this TaskSmack has file capabilities (setcap) only, and systemd decides service actions by "
+                   "user, not capability. Start TaskSmack (Administrator), or run it with sudo";
+        }
         return "Requires administrator: start TaskSmack (Administrator)";
     }
     if (errorName == "org.freedesktop.DBus.Error.ServiceUnknown" || errorName == "org.freedesktop.DBus.Error.NameHasNoOwner")

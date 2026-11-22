@@ -564,9 +564,10 @@ auto runApp(const App::LaunchOptions& launch) -> int
         }
         if (!ignored.empty())
         {
-            spdlog::warn("{} set but ignored: TaskSmack runs as administrator (elevated, or as root for a user), and writes "
-                         "nothing where an environment the less-privileged side may have set points (#4104)",
-                         ignored);
+            spdlog::warn(
+                "{} set but ignored: TaskSmack runs as administrator (elevated, as root for a user, or with file capabilities), and writes "
+                "nothing where an environment the less-privileged side may have set points (#4104)",
+                ignored);
         }
     }
 #ifdef _WIN32

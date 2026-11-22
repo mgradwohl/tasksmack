@@ -49,7 +49,7 @@ TEST(ProcessStateColorTest, EveryDisplayStateGetsItsStateColour)
         {.name = "Sleeping", .expected = scheme.statusSleeping},
         {.name = "Disk Sleep", .expected = scheme.statusDiskSleep},
         {.name = "Zombie", .expected = scheme.statusZombie},
-        {.name = "Stopped", .expected = scheme.statusStopped},
+        {.name = Domain::processStateName('T'), .expected = scheme.statusStopped}, // Suspended on Windows (#4755)
         {.name = "Tracing", .expected = scheme.statusStopped},
         {.name = "Dead", .expected = scheme.statusSleeping},
         {.name = "Idle", .expected = scheme.statusIdle},
@@ -71,7 +71,7 @@ TEST(ProcessStateColorTest, StoppedIsNotColouredAsSleepingAndDeadIsNotDiskSleep)
     // #1352: the column used to switch on the name's first letter, so Stopped took the sleeping
     // colour and Dead the disk-sleep colour.
     const UI::ColorScheme scheme = distinctScheme();
-    expectSameColor(App::processStateColor("Stopped", scheme), scheme.statusStopped);
+    expectSameColor(App::processStateColor(Domain::processStateName('T'), scheme), scheme.statusStopped);
     expectSameColor(App::processStateColor("Dead", scheme), scheme.statusSleeping);
 }
 

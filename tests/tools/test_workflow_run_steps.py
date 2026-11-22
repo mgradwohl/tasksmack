@@ -2986,10 +2986,38 @@ def _is_benchmark_gate(test: unittest.TestCase) -> bool:
     return type(test).__name__.startswith(("HeavyChecksBenchmark", "HeavyChecksAcrossLaunches", "HeavyChecksSecondRunner"))
 
 
+def _is_release_dashboard(test: unittest.TestCase) -> bool:
+    """The release dashboard's wait, gate, handover and budget note, and main-health's call to it (no pwsh)."""
+    return type(test).__name__.startswith(("ReleaseDashboard", "MainHealthTellsTheDashboard"))
+
+
+# release.yml's package, checksum, installer and signing cases and the winget rehearsal: the ones that start pwsh.
+_RELEASE_CLASSES = frozenset({
+    "ReleasePackageSetTests",
+    "ReleaseSha256SumsTests",
+    "PublishedSha256SumsTests",
+    "WindowsReproducibilityCompareTests",
+    "StageInstallerFirstPassTests",
+    "ReleaseConfigurationBuiltBeforeTheTagTests",
+    "SigningGalleryRegistrationTests",
+    "WingetRehearsalTests",
+})
+
+
+def _is_release(test: unittest.TestCase) -> bool:
+    return type(test).__name__ in _RELEASE_CLASSES
+
+
 # Groups ctest runs as entries of their own (--only-<group>), and WorkflowRunStepsScript runs without
-# (--skip-<group>, any of them): each spawns bash dozens of times, and on the windows-11-arm runner's slow spawns
-# all of them together outran one entry's 120 s timeout (#3643 setup-llvm, #3709 the benchmark gate).
-GROUPS = {"setup-llvm": _is_setup_llvm, "benchmark-gate": _is_benchmark_gate}
+# (--skip-<group>, any of them): each spawns bash (or pwsh) dozens of times, and on the windows-11-arm runner's slow
+# spawns all of them together outran one entry's 120 s timeout (#3643 setup-llvm, #3709 the benchmark gate, #4770
+# release.yml's cases and the release dashboard's).
+GROUPS = {
+    "setup-llvm": _is_setup_llvm,
+    "benchmark-gate": _is_benchmark_gate,
+    "release": _is_release,
+    "release-dashboard": _is_release_dashboard,
+}
 
 
 def _filtered(suite: unittest.TestSuite, keep) -> unittest.TestSuite:

@@ -247,6 +247,15 @@ sudo apt install libbpf-dev
 - FreeType: nothing to install; the build always fetches and builds the version pinned in `cmake/Dependencies.cmake` and links it statically
 - **MSVC C++ libraries and the Windows SDK**: required. Clang targets the MSVC ABI, so it compiles and links against the MSVC standard library and CRT and the Windows SDK. It finds the MSVC libraries through the Visual Studio installation and the SDK through the Windows Kits registry key. Nothing else from Visual Studio is used: not MSBuild, its CMake or Ninja, `rc.exe` or `cl.exe`, and no SDK tool. `tools/setup-dev.ps1` installs Visual Studio 2026 Build Tools (winget `Microsoft.VisualStudio.BuildTools`, the Visual Studio of CI's `windows-2025-vs2026` image) with only `Microsoft.VisualStudio.Component.VC.Tools.x86.x64` (plus `...VC.Tools.ARM64` on Windows on Arm). It installs the Windows SDK 10.0.26100 separately (winget `Microsoft.WindowsSDK.10.0.26100`) with only its desktop C++ feature for your architecture (`OptionId.DesktopCPPx64`, or `OptionId.DesktopCPParm64` on Arm), and skips it when `Windows Kits\10\Include\10.0.26100.0` and the matching `Lib` folders are already there. A Visual Studio you already have works too if its MSVC toolset is 14.51 or newer (the floor: the standard library CI builds with, VS 2026 18.6, which first shipped `<flat_map>` and `<flat_set>`; `tools/check-prereqs.ps1` warns on an older one), it has `VC.Tools.x86.x64`, and a Windows 11 SDK 10.0.26100 (its `Windows11SDK.26100` component, or the standalone SDK). See below for how the RC (resource) compiler is selected.
 
+**Smart App Control must be off for development.** On Windows 11, Smart App Control blocks unsigned programs that
+have no cloud reputation: Git for Windows' DLLs, Ninja and every TaskSmack binary you build locally. With it
+enforcing, the Git installer hangs on a "Bad Image" box (error `0xC0E90002`) and builds can't run. A clean
+Windows 11 starts it in evaluation mode and can switch it to enforce. Turning it off is your choice, in Windows
+Security > App & browser control > Smart App Control settings, and it can't be turned back on without
+reinstalling Windows ([about Smart App Control](https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4d56-882e-6698afdb7003)).
+`tools/check-prereqs.ps1` checks it: a failing row when it enforces, a warning in evaluation mode, and
+`tools/setup-dev.ps1` stops before installing anything when it enforces.
+
 **RC (resource) compiler**: the build compiles `assets/tasksmack.rc.in` (icon and version info) into
 `TaskSmack.exe`; the DPI-awareness manifest is embedded separately at link time. `cmake/RCCompiler.cmake`
 requires `llvm-rc`, which comes with the LLVM install above, and fails configuration with an actionable

@@ -70,6 +70,10 @@ ImFont* addBodyFont(UI::FontFileCache& fontFiles, const std::filesystem::path& p
         digitsConfig.Flags = ImFontFlags_NoLoadError;
         digitsConfig.GlyphExcludeRanges = UI::NON_DIGIT_GLYPH_RANGES.data();
         digitsConfig.GlyphMinAdvanceX = digitAdvance;
+        // Each digit is centred in that wider advance: snapped, by a whole pixel (#4762). A fractional offset put its
+        // quad half a texel over the atlas padding, which after a font-size change at run time held the old glyphs'
+        // pixels, drawn as a faint mark beside every digit.
+        digitsConfig.PixelSnapH = true;
         ImFont* font = addFontFromFile(fontFiles, path, sizePixels, &digitsConfig);
         if (font != nullptr)
         {

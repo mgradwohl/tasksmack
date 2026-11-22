@@ -79,6 +79,56 @@ foreach ($case in @(
     Assert-True ([bool]$script:LlvmCompilerMajor -eq ($case.RequirePinned -and $case.Major -in '22', '24')) "$label compiler major: [$($script:LlvmCompilerMajor)]"
 }
 
+# The Smart App Control row (#4781): VerifiedAndReputablePolicyState 1 (enforce) fails, 2 (evaluation) warns,
+# 0, any other value, a missing value and a missing key pass. The state is read from a scratch key under HKCU,
+# which the test deletes; the real policy key is never touched.
+. (Join-Path $PSScriptRoot 'common.ps1')
+$sacFunction = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-SmartAppControlStatus'
+    }, $true)
+Assert-True ($null -ne $sacFunction) 'Write-SmartAppControlStatus not found in check-prereqs.ps1'
+. ([scriptblock]::Create($sacFunction.Extent.Text))
+$sacKey = "HKCU:\Software\TaskSmackTests-check-prereqs-$([guid]::NewGuid().ToString('N'))"
+try {
+    foreach ($case in @(
+            @{ Value = 1; State = 1; Ok = $false; Row = '^✗ Smart App Ctl\s+ENFORCED\s+\(= off\)' }
+            @{ Value = 2; State = 2; Ok = $true; Row = '^! Smart App Ctl\s+EVALUATION\s+\(= off\)' }
+            @{ Value = 0; State = 0; Ok = $true; Row = '^✓ Smart App Ctl\s+off\s+\(= off\)' }
+            @{ Value = 7; State = 0; Ok = $true; Row = '^✓ Smart App Ctl\s+off\s' }
+            @{ Value = $null; State = 0; Ok = $true; Row = '^✓ Smart App Ctl\s+off\s' }
+        )) {
+        $null = New-Item -Path $sacKey -Force
+        if ($null -ne $case.Value) {
+            $null = New-ItemProperty -LiteralPath $sacKey -Name VerifiedAndReputablePolicyState -Value $case.Value -PropertyType DWord
+        }
+        $label = "Smart App Control value [$($case.Value)]"
+        $state = Get-SmartAppControlState -KeyPath $sacKey
+        Assert-True ($state -eq $case.State) "$label read as [$state]"
+        $printed = @(Write-SmartAppControlStatus -State $state 6>&1)
+        $result = @($printed | Where-Object { $_ -is [bool] })
+        $row = (@($printed | Where-Object { $_ -isnot [bool] }) | ForEach-Object { "$_" }) -join ''
+        Assert-True ($result.Count -eq 1 -and $result[0] -eq $case.Ok) "$label returned [$result]"
+        Assert-True ($row -match $case.Row) "$label row: [$row]"
+        Remove-Item -LiteralPath $sacKey -Recurse -Force
+    }
+    # No key at all, as on Windows 10.
+    Assert-True ((Get-SmartAppControlState -KeyPath $sacKey) -eq 0) 'a missing key must read as off'
+}
+finally {
+    Remove-Item -LiteralPath $sacKey -Recurse -Force -ErrorAction SilentlyContinue
+}
+# Enforce reads as a failure that stops the checker with its message: the explanation names what it blocks,
+# whose choice it is, the reinstall caveat and Microsoft's page.
+$sacMessage = (Get-SmartAppControlMessage) -join "`n"
+foreach ($needle in 'unsigned', 'Git', 'ninja', 'TaskSmack binary', 'Smart App Control settings', 'reinstalling Windows', 'https://support.microsoft.com/') {
+    Assert-True ($sacMessage.Contains($needle)) "The enforce message lacks [$needle]:`n$sacMessage"
+}
+# The checker prints the row, fails the summary on enforce, and prints the message under the table.
+$checkerText = Get-Content -LiteralPath $checker -Raw
+Assert-True ($checkerText -match '(?s)Write-SmartAppControlStatus -State \$smartAppControl\)\) \{\s*\$AllOK = \$false') 'check-prereqs.ps1 must fail the summary when Smart App Control enforces'
+Assert-True ($checkerText.Contains('Get-SmartAppControlMessage')) 'check-prereqs.ps1 must print the Smart App Control message'
+
 # The checker itself, with a stub ccache.cmd ahead of any real ccache: its row shows the version.
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-check-prereqs-tests-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
@@ -91,6 +141,10 @@ try {
     Assert-True ($row.Count -eq 1) "Expected one ccache row:`n$output"
     Assert-True ($row[0] -match '^\S+ ccache\s+4\.14\s') "ccache row: [$($row[0])]"
     Assert-True ($row[0] -like '*ccache.cmd*') "ccache row does not show the stub's path: [$($row[0])]"
+    # The Smart App Control row (#4781) comes first and is always printed, whatever this machine's state.
+    $sacRow = @($output -split '\r?\n' | Where-Object { $_ -match '^\S+ Smart App Ctl\s' })
+    Assert-True ($sacRow.Count -eq 1) "Expected one Smart App Ctl row:`n$output"
+    Assert-True ($sacRow[0] -match '\(= off\)') "Smart App Ctl row: [$($sacRow[0])]"
     # The MSVC STL row (#4354): present whether or not this machine has Visual Studio, with CI's floor.
     $msvcRow = @($output -split '\r?\n' | Where-Object { $_ -match '^\S+ MSVC STL\s' })
     Assert-True ($msvcRow.Count -eq 1) "Expected one MSVC STL row:`n$output"

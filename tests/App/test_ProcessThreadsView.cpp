@@ -6,6 +6,7 @@
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "App/Panels/ProcessThreadsView.h"
 #include "App/Panels/ThreadActionControl.h"
+#include "Domain/ProcessState.h"
 #include "Mocks/MockProbes.h"
 #include "Platform/IProcessActions.h"
 #include "Platform/IProcessThreads.h"
@@ -500,7 +501,9 @@ TEST(ProcessThreadsViewTest, TheStateCellSaysTheSuspendCountOrTheWaitReason)
     waiting.waitReason = "UserRequest";
     ProcessThread running = thread(3, "c", 0);
     running.state = 'R';
-    EXPECT_EQ(Detail::threadStateText(suspended), "Stopped (suspend count 2)");
+    // T is Suspended on Windows, the platform this cell is for, and Stopped elsewhere (#4755).
+    const std::string suspendedText = std::string(Domain::processStateName('T')) + " (suspend count 2)";
+    EXPECT_EQ(Detail::threadStateText(suspended), suspendedText);
     EXPECT_EQ(Detail::threadStateText(waiting), "Sleeping (UserRequest)");
     EXPECT_EQ(Detail::threadStateText(running), "Running");
     EXPECT_TRUE(Detail::threadCanResume(suspended));
@@ -511,7 +514,7 @@ TEST(ProcessThreadsViewTest, TheStateCellSaysTheSuspendCountOrTheWaitReason)
 
     ProcessThreadsView view(1);
     apply(view, threads({suspended}), 0.0);
-    EXPECT_EQ(view.rows()[0].state, "Stopped (suspend count 2)");
+    EXPECT_EQ(view.rows()[0].state, suspendedText);
 }
 
 // #3069: each confirm names the thread and its process, and End's warns that it can corrupt the process.

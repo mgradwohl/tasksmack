@@ -82,6 +82,12 @@ struct RootValues
     std::string path = std::string(ROOT_PATH);
 };
 
+/// The value DBUS_SESSION_BUS_ADDRESS gets (#4764): no session bus. Unset, libdbus (SDL's D-Bus support) autolaunches one
+/// on X11 when asked: dbus-launch starts a session bus as root, registered on the user's display, which outlives
+/// TaskSmack until the X server goes. libdbus can't parse this address, so it refuses the session bus instead (GIO reads
+/// it as "disabled"). The programs started as the user get the user's own bus (SessionUser).
+inline constexpr std::string_view NO_SESSION_BUS = "disabled:";
+
 /// The value XDG_DATA_DIRS gets (the XDG default): the user's could list a folder of theirs, where the Vulkan loader
 /// finds layers and GSettings schemas (the #4187 review).
 inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share";
@@ -102,7 +108,8 @@ inline constexpr std::string_view ROOT_DATA_DIRS = "/usr/local/share:/usr/share"
 /// Reduces @p environment ("NAME=value" strings, null-terminated, as environ is) to the allow-list (#4158, #4159,
 /// #4179, and the review of #4187): every name not kept, a TZ that isn't safe and a checked variable whose value isn't (isSafeLocale()) are
 /// unset (collected first); a relative WAYLAND_DISPLAY is made absolute in the user's runtime folder before XDG_RUNTIME_DIR becomes root's
-/// (or is unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset); PATH becomes @p root's
+/// (or is unset); XDG_DATA_DIRS becomes ROOT_DATA_DIRS; XAUTHORITY becomes root's copy of the user's (or is unset);
+/// DBUS_SESSION_BUS_ADDRESS becomes NO_SESSION_BUS (#4764); PATH becomes @p root's
 /// path (ROOT_PATH's root-only folders, #4666) and HOME root's. Each replaced name is unset first, so no duplicate entry survives. A value
 /// that can't be set is unset instead, so nothing of the user's is left by a failure. @return The names removed (a failed unset is left
 /// out), in order.

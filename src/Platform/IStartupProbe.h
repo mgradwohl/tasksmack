@@ -90,7 +90,7 @@ struct StartupEntry
     /// autostart entry for another desktop, "Starts only in KDE"). Empty otherwise.
     std::string notSwitchableReason;
     /// Part of the operating system itself (Windows: a scheduled task under \Microsoft\, #3424): hidden
-    /// unless the Startup tab's "Show Microsoft entries" is on, as Autoruns hides them.
+    /// unless the Startup tab's "Show Windows tasks" is on, as Autoruns hides them.
     bool osComponent = false;
     std::uint64_t disabledAtUnixSeconds = 0; ///< When it was disabled (Unix seconds); 0 when unknown or enabled.
     std::string publisher;                   ///< The executable's version-resource CompanyName, or the package's publisher.

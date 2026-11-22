@@ -368,6 +368,28 @@ finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
 }
 
+# ── Smart App Control (#4781): enforce stops the script before anything is installed ──────────
+. (Join-Path $PSScriptRoot 'common.ps1')
+$thrown = $null
+try { Assert-SmartAppControlOff -State 1 } catch { $thrown = $_.Exception.Message }
+Assert-True ($null -ne $thrown) 'Smart App Control enforcing must stop setup-dev.ps1'
+foreach ($needle in 'enforcing', 'unsigned', 'Smart App Control settings', 'reinstalling Windows', 'https://support.microsoft.com/', 'Nothing was installed') {
+    Assert-True ($thrown.Contains($needle)) "The stop message lacks [$needle]: $thrown"
+}
+# Evaluation and off pass silently; -DryRun installs nothing, so enforce only warns there.
+foreach ($state in 0, 2) {
+    $null = Assert-SmartAppControlOff -State $state -WarningVariable sacWarnings
+    Assert-True (@($sacWarnings).Count -eq 0) "Smart App Control state $state warned: [$sacWarnings]"
+}
+$null = Assert-SmartAppControlOff -State 1 -DryRun -WarningVariable sacWarnings 3>$null
+Assert-True (@($sacWarnings).Count -eq 1 -and $sacWarnings[0] -like '*A real run would stop here*') "dry-run enforce: [$sacWarnings]"
+# The script makes that call before its first install, and passes -DryRun through.
+$setupText = Get-Content -LiteralPath $setup -Raw
+$assertAt = $setupText.IndexOf('Assert-SmartAppControlOff -DryRun:$DryRun')
+Assert-True ($assertAt -gt 0) 'setup-dev.ps1 must call Assert-SmartAppControlOff -DryRun:$DryRun'
+Assert-True ($assertAt -lt $setupText.IndexOf('Install-WinGetPackage -Id $VisualStudioPackageId')) 'the Smart App Control check must come before the Visual Studio install'
+Assert-True ($assertAt -lt $setupText.IndexOf('Install-PinnedLlvm' + "`n")) 'the Smart App Control check must come before the LLVM step'
+
 # ── The whole script under -DryRun, with a stub winget.cmd first on PATH ───────────────────────
 # Its install lines carry the -*Version parameters; the stub makes any real winget call visible.
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-setup-dev-tests-$([guid]::NewGuid().ToString('N'))"
