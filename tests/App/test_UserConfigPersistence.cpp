@@ -2708,10 +2708,14 @@ TEST_F(UserConfigSaveLoadFixture, AConfigThatCantBeReadThroughIsNeitherEmptyNorR
     std::filesystem::create_directories(m_ConfigPath);
     auto& config = UserConfig::get();
     config.load();
-    EXPECT_FALSE(config.fileProblem().empty()) << "a problem the user is told about, not silent defaults";
+    const std::string loadNotice = config.fileProblem();
+    EXPECT_FALSE(loadNotice.empty()) << "a problem the user is told about, not silent defaults";
     config.settings().themeId = "mocha";
     config.save();
     EXPECT_TRUE(std::filesystem::is_directory(m_ConfigPath)) << "not replaced";
+    // #4744: the save's own refusal doesn't replace the load's notice, which says the defaults are in use.
+    EXPECT_EQ(config.fileProblem(), loadNotice);
+    EXPECT_TRUE(config.fileProblem().contains("default settings")) << config.fileProblem();
 }
 
 // #3759: the save by path's own refusal of a link, as a session run as root for a user (which holds no folder) saves.
