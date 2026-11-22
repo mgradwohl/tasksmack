@@ -60,6 +60,10 @@
 #include <utility>
 #include <vector>
 
+#ifdef __linux__
+#include "Platform/Linux/SessionUser.h"
+#endif
+
 namespace App
 {
 
@@ -1035,8 +1039,15 @@ void ShellLayer::renderStatusBar()
     // Standard or Administrator (#2728): Administrator when nothing is limited (Linux: root, or every capability
     // granted; Windows: elevated). Standard's chip opens the startup notice, whose Restart as administrator...
     // is Windows' way to Administrator.
-    const std::optional<StatusBarView::AccessChip> access =
+    std::optional<StatusBarView::AccessChip> access =
         isAdministratorSession(capabilities) ? StatusBarView::AccessChip::Administrator : StatusBarView::AccessChip::Standard;
+#ifdef __linux__
+    // A capabilities session (the FAQ's setcap, #4766): Administrator, with a tooltip that says services still need root.
+    if (access == StatusBarView::AccessChip::Administrator && Platform::SessionUser::capabilitiesOnlySession())
+    {
+        access = StatusBarView::AccessChip::Capabilities;
+    }
+#endif
     // config.toml's problem (#4318): a load or a save on its worker may set or clear it; copied only when it changed.
     if (const std::uint64_t version = UserConfig::get().fileProblemVersion(); version != m_ConfigProblemVersion)
     {
