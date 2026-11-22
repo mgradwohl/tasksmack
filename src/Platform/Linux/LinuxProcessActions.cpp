@@ -16,6 +16,7 @@
 #include "RunProgramLookup.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
+#include "UserFolderAccess.h"
 
 #include <spdlog/spdlog.h>
 
@@ -1093,7 +1094,16 @@ DumpFolderCheck LinuxProcessActions::dumpFolderAccess(const std::filesystem::pat
 {
     if (::geteuid() == 0)
     {
-        return {}; // root refuses such a folder before the dump (RootDumpFolder::rootDumpRefusal())
+        // Root refuses a folder on a drive that ignores permissions before the dump (RootDumpFolder::rootDumpRefusal()).
+        // Run for a user (#4765): a folder they can't open (root's own TaskSmack-dumps) is named in the result with Copy,
+        // as Windows' admin-only folder is (#4188), never handed to their file manager, which couldn't open it.
+        const std::optional<DetachedSpawn::RunAs> user = SessionUser::invokingUserSession();
+        if (user.has_value() &&
+            !UserFolderAccess::canOpenFolder(directory, user->uid, user->gid, user->groups, &UserFolderAccess::statPath))
+        {
+            return {.access = DumpFolderAccess::AdministratorsOnly, .problem = {}};
+        }
+        return {};
     }
     struct statfs stats{};
     if (::statfs(directory.c_str(), &stats) == 0 && LinuxCoreDump::mayIgnorePermissions(static_cast<std::uint64_t>(stats.f_type)))

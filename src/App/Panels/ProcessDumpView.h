@@ -122,9 +122,15 @@ inline constexpr std::string_view HANDOFF_NO_DEFAULT_FOLDER_TEXT =
 #endif
 
 /// What the result says, with the folder and a Copy button, in place of Open folder when the dump's folder is for
-/// administrators only (#4188): Explorer, running as the signed-in user, can't open it.
+/// administrators only (#4188): Explorer, running as the signed-in user, can't open it. On Linux, a root session's folder
+/// the user it runs for can't open (#4765): their file manager couldn't either.
+#ifdef _WIN32
 inline constexpr std::string_view ADMIN_ONLY_FOLDER_TEXT =
     "This folder is for administrators only: open it from Explorer or a debugger running as administrator.";
+#else
+inline constexpr std::string_view ADMIN_ONLY_FOLDER_TEXT =
+    "This folder is root's only, so your file manager can't open it: open it from a file manager or debugger running as root.";
+#endif
 
 /// The folder a confirm with nothing remembered uses, for @p noDefault (noDefaultDumpFolder()): defaultDumpDirectory(),
 /// or a test's.
