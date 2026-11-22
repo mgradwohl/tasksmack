@@ -223,10 +223,18 @@ report_llvm_tool() {
     return 0
 }
 
+# The IWYU tools/iwyu.sh runs: include-what-you-use first, the name the source build CONTRIBUTING.md prescribes installs,
+# then iwyu, Debian's link to it (#4750). Empty when neither is found.
+find_iwyu() {
+    command -v include-what-you-use 2>/dev/null || command -v iwyu 2>/dev/null || true
+}
+
 # Get iwyu version
 get_iwyu_version() {
-    if command -v iwyu &>/dev/null; then
-        iwyu --version 2>&1 | grep -oE 'include-what-you-use [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1
+    local iwyu
+    iwyu="$(find_iwyu)"
+    if [[ -n "${iwyu}" ]]; then
+        "${iwyu}" --version 2>&1 | grep -oE 'include-what-you-use [0-9]+\.[0-9]+' | grep -oE '[0-9]+\.[0-9]+' | head -1
     else
         echo ""
     fi
@@ -431,10 +439,10 @@ main() {
     iwyu_ver="$(get_iwyu_version)"
     iwyu_clang=""
     if [[ -n "${iwyu_ver}" ]]; then
-        iwyu_clang="$(iwyu --version 2>&1 | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
+        iwyu_clang="$("$(find_iwyu)" --version 2>&1 | grep -oE 'clang version [0-9]+' | grep -oE '[0-9]+' | head -1 || true)"
     fi
     # An IWYU whose Clang can't be read is shown as it was before #4714: at the floor.
-    if ! report_llvm_tool iwyu "${iwyu_ver}" "${iwyu_clang:-${MIN_CLANG_VERSION}}" "$(command -v iwyu 2>/dev/null || true)" optional \
+    if ! report_llvm_tool iwyu "${iwyu_ver}" "${iwyu_clang:-${MIN_CLANG_VERSION}}" "$(find_iwyu)" optional \
         "optional; required only for ./tools/iwyu.sh" \
         "built against Clang ${iwyu_clang}; CI builds it against Clang ${MIN_CLANG_VERSION}"; then
         print_iwyu_hint # what to do, not only what's wrong (#4708)

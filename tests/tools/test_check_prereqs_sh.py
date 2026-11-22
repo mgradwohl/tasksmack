@@ -216,6 +216,19 @@ class CheckPrereqsIwyuTests(CheckerTestBase):
         self.assertIn("Hint", out[out.index("iwyu: 0.23"):])
         self.assertIn(self.CI_SHA, out[out.index("iwyu: 0.23"):])
 
+    def test_the_source_builds_include_what_you_use_is_found_before_apts_iwyu(self):
+        # #4750: CONTRIBUTING.md's source build installs include-what-you-use, no iwyu, and tools/iwyu.sh runs it first.
+        built = self.bin / "include-what-you-use"
+        built.write_text("#!/bin/sh\necho 'include-what-you-use 0.25 based on clang version 23.1.5'\n", encoding="utf-8")
+        built.chmod(0o755)
+        apt = self.bin / "iwyu"
+        apt.write_text("#!/bin/sh\necho 'include-what-you-use 0.23 based on Ubuntu clang version 19.1.7'\n", encoding="utf-8")
+        apt.chmod(0o755)
+        out = self.run_checker()
+        self.assertRegex(out, r"(?m)^iwyu: 0\.25")
+        self.assertNotIn("built against Clang 19", out)
+        self.assertNotIn(self.CI_SHA, out[out.index("iwyu: 0.25"):].split("\n", 2)[0])
+
 
 
 class CheckPrereqsLlvmRowTests(CheckerTestBase):

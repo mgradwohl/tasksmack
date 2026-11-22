@@ -38,9 +38,12 @@ def select_for_deletion(artifacts: Iterable[dict], now: datetime.datetime, min_a
     """The artifacts to delete: each one that isn't the newest of its name on its branch (of its name alone for
     cifuzz-*), is at least min_age_hours old, isn't expired already, and isn't a kept family. Oldest first."""
     groups: dict[tuple[str, str], list[dict]] = defaultdict(list)
+    seen: set[int] = set()
     for artifact in artifacts:
-        if artifact.get("expired"):
+        # A repeat is the same artifact, never an older copy of it (#4748): it would be deleted as one.
+        if artifact.get("expired") or artifact["id"] in seen:
             continue
+        seen.add(artifact["id"])
         name = artifact["name"]
         if name.startswith(KEEP_PREFIXES):
             continue
@@ -64,11 +67,17 @@ def gh(*args: str) -> str:
 def list_artifacts(repo: str) -> list[dict]:
     """Every artifact, page by page (gh --paginate stopped short on a list this long, #4617)."""
     artifacts = []
+    seen: set[int] = set()
     page = 1
     while True:
         out = gh("api", f"repos/{repo}/actions/artifacts?per_page=100&page={page}")
         batch = json.loads(out).get("artifacts", [])
         for item in batch:
+            # The list can change between pages: an upload moves every item down one, so a page can start with the last
+            # item of the one before (#4748). It is listed once.
+            if item["id"] in seen:
+                continue
+            seen.add(item["id"])
             artifacts.append(
                 {
                     "id": item["id"],
