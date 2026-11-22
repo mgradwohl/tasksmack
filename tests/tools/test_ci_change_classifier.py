@@ -552,6 +552,10 @@ DEV_TOOLS_NAMED_WITHOUT_READING = {
 # C++ job inputs that name a developer tool without running it, with the reason.
 CXX_INPUTS_NAMING_WITHOUT_RUNNING = {
     "tools/check-benchmark-regression.py": "names bench.ps1's -Core option in its --help text",
+    # cmake/CompilerOptions.cmake names these two only in the error a configure with the wrong compiler stops
+    # with (#4352); no C++ job runs either.
+    "tools/check-prereqs.sh": "names the profiling tools in its optional-tools hint; no C++ job runs it",
+    "tools/setup-dev.sh": "names profile-perf.sh in its optional-tools hint; no C++ job runs it",
 }
 
 

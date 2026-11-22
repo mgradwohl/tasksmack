@@ -203,6 +203,7 @@ set(TASKSMACK_SOURCES
     src/App/HelpLayer.cpp
     src/App/HelpWindow.cpp
     src/App/InstanceLock.cpp
+    src/App/LinuxHeldFolder.cpp # Linux only: root for a user's held config folder (#4167)
     src/App/KeyboardInput.cpp
     src/App/PlatformOpen.cpp
     src/App/RenderMetricsOverride.cpp
@@ -378,6 +379,7 @@ set(PLATFORM_SOURCES_WINDOWS
     src/Platform/Windows/WindowsProcessActions.cpp
     src/Platform/Windows/WindowsDebugPrivilege.cpp
     src/Platform/Windows/WindowsElevation.cpp
+    src/Platform/Windows/WindowsSecurityOwners.cpp # who owns a handle, and the owners the elevated checks trust (#4368)
     # The privileged broker's named-pipe transport (#2311): the pipe, the helper's serve loop, the client
     src/Platform/Windows/BrokerPipe.cpp
     src/Platform/Windows/BrokerPipeServer.cpp
@@ -676,6 +678,8 @@ elseif(WIN32)
         src/Platform/Windows/WindowsProcessActions.h
         src/Platform/Windows/WindowsDebugPrivilege.h
         src/Platform/Windows/WindowsElevation.h
+        src/Platform/Windows/WindowsSecurityOwners.h
+        src/Platform/Windows/WindowsFinalPath.h
         src/Platform/Windows/ElevatedRestart.h
         src/Platform/Windows/DllSearchPolicy.h
         src/Platform/Windows/SdlEnvironment.h
@@ -718,6 +722,10 @@ elseif(WIN32)
         src/Platform/Windows/ProcessorPerformanceCounter.h
         src/Platform/Windows/CpuBaseClock.h
         src/Platform/Windows/WindowsHandles.h
+        src/Platform/Windows/WindowsCoTaskMem.h
+        src/Platform/Windows/WindowsDevInfo.h
+        src/Platform/Windows/WindowsEventLogHandle.h
+        src/Platform/Windows/WindowsPdhQuery.h
         src/Platform/Windows/WindowsNtQuery.h
         src/Platform/Windows/WindowsProcessSnapshotSize.h
         src/Platform/Windows/WindowsDiskProbe.h
@@ -830,6 +838,10 @@ endif()
 if(TASKSMACK_ENABLE_UNITY_BUILD)
     set(CMAKE_UNITY_BUILD ON)
     set(CMAKE_UNITY_BUILD_BATCH_SIZE 16)
+    # StbImage.cpp defines stb's implementation macros, which reach every file after it in a batch: a later
+    # <stb_image.h> (IconImageFile.cpp's) then compiled the implementation a second time (#4783). It stays its own
+    # unit, as its header comment says; tests/CMakeLists.txt does the same for the test targets.
+    set_source_files_properties(src/Platform/StbImage.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 endif()
 
 # The Windows compile definitions and system libraries the platform sources need, in one place for
@@ -1057,6 +1069,7 @@ if(WIN32)
         ${TaskSmack_SOURCE_DIR}/src/Platform/BrokerRequestMapping.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsDebugPrivilege.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsElevation.cpp
+        ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsSecurityOwners.cpp # BrokerHelper's TrustedInstaller check (#4368)
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessActions.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessIdentity.cpp
         ${TaskSmack_SOURCE_DIR}/src/Platform/Windows/WindowsProcessMachine.cpp

@@ -88,6 +88,11 @@ if (-not $LlvmTargetMajor) {
 }
 $LlvmDir = "C:\Program Files\LLVM"
 
+# Smart App Control, when it enforces, blocks unsigned developer tools (Git for Windows' DLLs, ninja) and every
+# locally built TaskSmack binary, and an installer then hangs on a "Bad Image" box (#4781). Stop before installing
+# anything; -DryRun only warns.
+Assert-SmartAppControlOff -DryRun:$DryRun
+
 # winget exit codes (https://github.com/microsoft/winget-cli/blob/master/doc/windows/package-manager/winget/returnCodes.md)
 # that mean the package is already there, so a re-run of this script doesn't throw on them:
 #   0x8A15002B APPINSTALLER_CLI_ERROR_UPDATE_NOT_APPLICABLE      -- installed, no applicable upgrade

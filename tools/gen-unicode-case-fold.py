@@ -6,7 +6,10 @@ one-to-many) and no T (Turkish) mappings. It is derived from Python's unicodedat
 Unicode version this interpreter ships (printed into the header):
   - C: a code point whose str.casefold() is one other code point maps to it;
   - S: one whose casefold() is several (an F mapping) maps to its single-code-point str.lower(), if that
-    differs (U+1E9E -> U+00DF, U+1F88 -> U+1F80), else to itself;
+    differs (U+1E9E -> U+00DF, U+1F88 -> U+1F80), else to its NFC singleton, if that differs (U+1FD3 ->
+    U+0390, U+1FE3 -> U+03B0: canonically equivalent code points), else to itself;
+  - U+FB05 (long s t ligature) -> U+FB06 is an S mapping unicodedata can't derive, so it is listed in
+    EXTRA_S_MAPPINGS (#4662);
   - U+0130 (Turkish I with dot) has only F and T mappings, so it maps to itself, as CaseFolding.txt has it.
 
 Usage: python3 tools/gen-unicode-case-fold.py > src/Platform/UnicodeCaseFoldTable.h
@@ -15,6 +18,9 @@ Usage: python3 tools/gen-unicode-case-fold.py > src/Platform/UnicodeCaseFoldTabl
 import sys
 import unicodedata
 
+# CaseFolding.txt S mappings neither casefold(), lower() nor NFC gives (#4662): "FB05; S; FB06".
+EXTRA_S_MAPPINGS = {0xFB05: 0xFB06}
+
 
 def simple_fold(cp: int) -> int:
     ch = chr(cp)
@@ -22,8 +28,13 @@ def simple_fold(cp: int) -> int:
     if len(folded) == 1:
         return ord(folded)
     lowered = ch.lower()
-    if len(lowered) == 1:
+    if len(lowered) == 1 and lowered != ch:
         return ord(lowered)
+    if cp in EXTRA_S_MAPPINGS:
+        return EXTRA_S_MAPPINGS[cp]
+    composed = unicodedata.normalize("NFC", ch)
+    if len(composed) == 1:
+        return ord(composed)
     return cp
 
 

@@ -33,7 +33,8 @@ STUB_BENCHMARKS = textwrap.dedent(
 # perf: counts only cpu-clock (as WSL2), or cycles too with STUB_PERF_CYCLES; records its record arguments, writes
 # -o's file, and exits $STUB_PERF_RECORD_EXIT from record. Attached with -p (app mode), record runs the command after
 # `--` (`sleep N` for --duration), or else waits for the process to exit, as perf record -p does.
-# `report --stats` says $STUB_PERF_SAMPLES (unless STUB_PERF_NO_STATS), and `script -G` prints that many lines.
+# `report --stats` says $STUB_PERF_SAMPLES as real perf does, with its share (unless STUB_PERF_NO_STATS), and `script -G`
+# prints that many lines, touching $STUB_PERF_SCRIPT_RAN when it's set.
 STUB_PERF = textwrap.dedent(
     """\
     #!/usr/bin/env bash
@@ -69,10 +70,11 @@ STUB_PERF = textwrap.dedent(
             fi
             exit "${STUB_PERF_RECORD_EXIT:-0}" ;;
         script)
+            [[ -n "${STUB_PERF_SCRIPT_RAN:-}" ]] && : > "$STUB_PERF_SCRIPT_RAN"
             for ((i = 0; i < ${STUB_PERF_SAMPLES:-3}; i++)); do echo "sample $i"; done ;;
         report)
             # --stats: perf's "SAMPLE events:" line, unless STUB_PERF_NO_STATS (an older perf's output).
-            [[ -z "${STUB_PERF_NO_STATS:-}" ]] && echo "           SAMPLE events:  ${STUB_PERF_SAMPLES:-3}"
+            [[ -z "${STUB_PERF_NO_STATS:-}" ]] && echo "           SAMPLE events:  ${STUB_PERF_SAMPLES:-3}  (91.4%)"
             exit 0 ;;
     esac
     exit 0
@@ -155,13 +157,17 @@ class ProfilePerfBenchTest(ProfilePerfCase):
         self.assertNotIn("Next steps", result.stdout)
 
     def test_the_sample_count_comes_from_report_stats_with_a_script_fallback(self):
-        # #4224: perf script over a large trace is slow; perf report --stats reads the headers.
-        result = self.bench(env={"STUB_PERF_SAMPLES": "42"})
+        # #4224: perf script over a large trace is slow; perf report --stats reads the headers. Its line ends with the
+        # share, as real perf prints it (#4663), and the slow perf script pass isn't run.
+        ran = self.root / "script-ran"
+        result = self.bench(env={"STUB_PERF_SAMPLES": "42", "STUB_PERF_SCRIPT_RAN": str(ran)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Captured 42 samples.", result.stdout + result.stderr)
-        result = self.bench(env={"STUB_PERF_SAMPLES": "7", "STUB_PERF_NO_STATS": "1"})
+        self.assertFalse(ran.exists(), "perf script ran though --stats gave the count")
+        result = self.bench(env={"STUB_PERF_SAMPLES": "7", "STUB_PERF_NO_STATS": "1", "STUB_PERF_SCRIPT_RAN": str(ran)})
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("Captured 7 samples.", result.stdout + result.stderr)
+        self.assertTrue(ran.exists(), "the fallback is perf script")
         result = self.bench(env={"STUB_PERF_SAMPLES": "0"})
         self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertIn("zero samples", result.stderr)

@@ -225,14 +225,19 @@ try {
             -Files (Join-Path $copy "$fixtureRel\HeaderFinding.cpp") -Jobs 1 *>&1 | Out-String
         $code = $LASTEXITCODE
         $left = @(Get-ChildItem -LiteralPath $privateTemp -Filter '*clang-tidy*' -Force)
-        Assert-True ($code -ne 0) "clang-tidy.ps1 passed (exit $code) on a malformed database:`n$output"
-        Assert-True ($left.Count -eq 0) "clang-tidy.ps1 left $(($left | Select-Object -ExpandProperty Name) -join ', ') in TEMP after a malformed database:`n$output"
-        $output = & $gitBash $copySh --build-dir ($badDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
-        $code = $LASTEXITCODE
-        $left = @(Get-ChildItem -LiteralPath $privateTemp -Filter '*clang-tidy*' -Force)
     } finally {
         $env:TEMP, $env:TMP = $savedTemp, $savedTmp
     }
+    Assert-True ($code -ne 0) "clang-tidy.ps1 passed (exit $code) on a malformed database:`n$output"
+    Assert-True ($left.Count -eq 0) "clang-tidy.ps1 left $(($left | Select-Object -ExpandProperty Name) -join ', ') in TEMP after a malformed database:`n$output"
+    # Git Bash starts with the real TEMP, and sets the private one only for clang-tidy.sh and the clang-tidy.ps1
+    # it hands off to (#4722). Git for Windows mounts /tmp from TEMP, in a mount table every Git Bash of the user
+    # shares while one runs, so a Git Bash started with the private TEMP made that folder every other Git Bash
+    # test's /tmp too, and then removed it under them (BenchShScript's bench.sh, #4720).
+    $output = & $gitBash -c 'export TEMP="$1" TMP="$1"; shift; exec bash "$@"' bash $privateTemp $copySh `
+        --build-dir ($badDir -replace '\\', '/') -j 1 "$($fixtureRel -replace '\\', '/')/HeaderFinding.cpp" 2>&1 | Out-String
+    $code = $LASTEXITCODE
+    $left = @(Get-ChildItem -LiteralPath $privateTemp -Filter '*clang-tidy*' -Force)
     Assert-True ($code -ne 0 -and $output -notmatch 'completed successfully') "clang-tidy.sh passed (exit $code) although clang-tidy.ps1 failed on a malformed database:`n$output"
     Assert-True ($left.Count -eq 0) "clang-tidy.sh's hand-off left $(($left | Select-Object -ExpandProperty Name) -join ', ') in TEMP after a malformed database:`n$output"
 

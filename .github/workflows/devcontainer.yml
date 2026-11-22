@@ -1,5 +1,6 @@
 # The dev container (#136): the image .devcontainer/Dockerfile builds from tools/setup-dev.sh must keep building, and
-# a checkout inside it must pass check-prereqs.sh and configure the debug preset. Run when the image's inputs change.
+# a checkout inside it must pass check-prereqs.sh, configure the debug preset, build it and pass the unit tests
+# (#4712: a configure alone missed what only a compile or a test shows). Run when the image's inputs change.
 name: Dev container
 
 on:
@@ -34,7 +35,7 @@ concurrency:
 jobs:
   image:
     runs-on: ubuntu-26.04
-    timeout-minutes: 45
+    timeout-minutes: 120  # the image, then a full debug build and the unit tests (#4712)
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -43,11 +44,15 @@ jobs:
       - name: Build the image
         run: docker build --file .devcontainer/Dockerfile --tag tasksmack-dev:ci .
 
-      - name: Check prerequisites and configure inside it
+      - name: Check prerequisites, configure, build and test inside it
         # What devcontainer.json's postCreateCommand does, as the image's user, on a copy of the checkout (the
-        # mounted one is owned by the runner's user).
+        # mounted one is owned by the runner's user), then what a contributor does next: build the debug preset and
+        # run the unit tests. The display suites need an X server, so they're left out, as the daytime filter does.
+        # --init: an init reaps the children the tests start (bash as PID 1 doesn't). The process-control suites stay out
+        # too: they need what a plain container lacks (cgroup delegation for efficiency mode, a host session for setsid
+        # and process groups, ptrace), and CI's own Linux jobs run them on the runner itself.
         run: |
-          docker run --rm --volume "$PWD:/src:ro" tasksmack-dev:ci bash -c '
+          docker run --rm --init --volume "$PWD:/src:ro" tasksmack-dev:ci bash -c '
             set -euo pipefail
             cp -r /src /tmp/ws && cd /tmp/ws
             python3.14 -m venv .venv
@@ -55,4 +60,7 @@ jobs:
             .venv/bin/python -m pip install --quiet --require-hashes -r requirements.txt
             ./tools/check-prereqs.sh
             cmake --preset debug
+            cmake --build --preset debug --parallel "$(nproc)" --target TaskSmack TaskSmackTests
+            ./build/debug/tests/TaskSmackTests --gtest_brief=1 \
+              --gtest_filter="-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*:LinuxEfficiencyModeActionTest.*:LinuxProcessActions*:ProcessActionsContractTest.*:DetachedSpawnTest.*:SessionUserProcTest.*:CommandOutputTest.*"
           '

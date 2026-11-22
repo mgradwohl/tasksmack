@@ -48,6 +48,18 @@
     How long tools/setup-dev.ps1 may run before the check records a FINDING, copies the installers'
     logs to OutDir and stops. Default 45, ample on an ordinary machine. Windows Sandbox needs about
     360 (see -WindowsSandbox).
+.PARAMETER StallMinutes
+    How long a setup step (the winget installs and tools/setup-dev.ps1) may make no progress before
+    the check fails it, with the installers' logs copied to OutDir, instead of waiting out
+    -SetupTimeoutMinutes (#4781). Default 15; 0 turns the rule off. A step has made no progress when,
+    over that window, its process tree (the shell and everything it started) used under 0.2 CPU
+    seconds per minute, moved under 1 MB of I/O, started and ended no process, and the step's log and
+    the installers' logs (dd_*.log, WinGet, the Windows SDK's) didn't grow. A WerFault process, or a
+    "Bad Image" or "Application Error" window, ends the step at the next 5-minute check whatever the
+    window. Smart App Control in enforce mode causes the second: it blocks Git for Windows' unsigned
+    DLLs, and the installer waits on a modal "Bad Image" box. A Windows Sandbox install that sits
+    in Windows Installer's 2-minute signature checks with no log written can look stalled; use
+    -StallMinutes 30 or more there.
 .PARAMETER SkipPerf
     Skip the benchmark and ETW steps.
 .PARAMETER ShutdownWhenDone
@@ -58,7 +70,7 @@
     # Windows Sandbox: a .wsb that maps a folder holding only this script read-only to
     # C:\newcomer-in and an empty folder writable to C:\newcomer-out, with Networking enabled,
     # MemoryInMB 8192, VGpu Disable, and this LogonCommand (one line; it shuts the sandbox down at the end):
-    cmd.exe /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\newcomer-in\newcomer-check.ps1 -WorkDir C:\work -OutDir C:\newcomer-out -ContinueOnFinding -WindowsSandbox -SetupTimeoutMinutes 360 > C:\newcomer-out\console.log 2>&1 & shutdown /s /t 60"
+    cmd.exe /c "powershell.exe -NoProfile -ExecutionPolicy Bypass -File C:\newcomer-in\newcomer-check.ps1 -WorkDir C:\work -OutDir C:\newcomer-out -ContinueOnFinding -WindowsSandbox -SetupTimeoutMinutes 360 -StallMinutes 30 > C:\newcomer-out\console.log 2>&1 & shutdown /s /t 60"
     # Then watch progress.log and wait for DONE in the output folder on the host.
 #>
 [CmdletBinding()]
@@ -71,6 +83,7 @@ param(
     [switch]$WindowsSandbox,
     [int]$BuildParallelLevel = 0,
     [int]$SetupTimeoutMinutes = 45,
+    [double]$StallMinutes = 15,
     [switch]$SkipPerf,
     [switch]$ShutdownWhenDone
 )
@@ -95,6 +108,8 @@ $script:Commit = '(not cloned)'
 $RawBase = ($RepoUrl -replace '\.git$', '') -replace '^https://github\.com/', 'https://raw.githubusercontent.com/'
 
 $script:ExtraPath = @()
+# How often Invoke-Shell wakes to log what is busy and look for a stalled step. Tests shorten it.
+$script:HeartbeatMilliseconds = 300000
 
 # Write or append a results file, retrying while something else (a host watching a Windows Sandbox
 # mapped folder) has it open. Losing a progress line must never fail a step.
@@ -225,9 +240,93 @@ function Update-SessionEnvironment {
     $env:Path = (@($machinePath, $userPath) + $script:ExtraPath | Where-Object { $_ }) -join ';'
 }
 
+# Smart App Control state (#4781): 0 off or absent, 1 enforce, 2 evaluation. The same read as
+# tools/common.ps1's Get-SmartAppControlState, which isn't here yet on a clean machine (no clone).
+function Get-SmartAppControlState {
+    param([string]$KeyPath = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy')
+    try {
+        $value = (Get-ItemProperty -LiteralPath $KeyPath -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop).VerifiedAndReputablePolicyState
+        if ($value -eq 1 -or $value -eq 2) { return [int]$value }
+    }
+    catch { $null = $_ }
+    return 0
+}
+
+# One reading of a step's process tree: CPU seconds and I/O bytes summed over the shell and everything
+# below it, which processes are in it, and how much the logs it and its installers write add up to.
+function Get-ProcessTreeSample {
+    param([int]$RootId, [string[]]$LogPattern = @())
+    $all = @(Get-CimInstance Win32_Process)
+    $ids = New-Object 'System.Collections.Generic.HashSet[int]'
+    $null = $ids.Add($RootId)
+    do {
+        $added = $false
+        foreach ($proc in $all) {
+            if ($ids.Contains([int]$proc.ParentProcessId) -and $ids.Add([int]$proc.ProcessId)) { $added = $true }
+        }
+    } while ($added)
+    $cpu = 0.0
+    $io = 0.0
+    $present = New-Object System.Collections.ArrayList
+    foreach ($proc in $all) {
+        if ($ids.Contains([int]$proc.ProcessId)) {
+            $cpu += ([double]$proc.KernelModeTime + [double]$proc.UserModeTime) / 1e7
+            $io += [double]$proc.ReadTransferCount + [double]$proc.WriteTransferCount
+            $null = $present.Add([int]$proc.ProcessId)
+        }
+    }
+    $logBytes = 0.0
+    foreach ($pattern in $LogPattern) {
+        foreach ($file in @(Get-ChildItem -Path $pattern -ErrorAction SilentlyContinue)) { $logBytes += $file.Length + 1 }
+    }
+    return [pscustomobject]@{ Time = Get-Date; Cpu = $cpu; IoBytes = $io; Pids = ((@($present) | Sort-Object) -join ','); LogBytes = $logBytes }
+}
+
+# Whether a step has stalled (#4781): $null while it made progress, else the reason. Looks at the samples from
+# the newest one at least WindowMinutes old to the latest: stalled when the tree used under CpuSecondsPerMinute
+# of CPU per minute and under MinIoBytes of I/O, no process started or ended, and no log grew.
+function Test-StepStalled {
+    param(
+        [object[]]$Samples,
+        [double]$WindowMinutes,
+        [double]$CpuSecondsPerMinute = 0.2,
+        [double]$MinIoBytes = 1048576
+    )
+    $all = @($Samples)
+    if ($WindowMinutes -le 0 -or $all.Count -lt 2) { return $null }
+    $latest = $all[$all.Count - 1]
+    $baseline = $null
+    foreach ($sample in $all) {
+        if (($latest.Time - $sample.Time).TotalMinutes -ge $WindowMinutes) { $baseline = $sample }
+    }
+    if ($null -eq $baseline) { return $null }
+    foreach ($sample in $all) {
+        if ($sample.Time -ge $baseline.Time -and ($sample.Pids -ne $baseline.Pids -or $sample.LogBytes -ne $baseline.LogBytes)) { return $null }
+    }
+    $cpu = $latest.Cpu - $baseline.Cpu
+    $io = $latest.IoBytes - $baseline.IoBytes
+    if ($cpu -ge ($CpuSecondsPerMinute * $WindowMinutes) -or $io -ge $MinIoBytes) { return $null }
+    return ('no progress in {0:N1} min: {1:N1} CPU s, {2:N0} bytes of I/O, no process or log change (processes {3})' -f `
+        ($latest.Time - $baseline.Time).TotalMinutes, $cpu, $io, $latest.Pids)
+}
+
+# A crash or error window a step is stuck behind: WerFault, or a "Bad Image" / "Application Error" box.
+# Returns a description, or $null.
+function Get-ErrorDialog {
+    param([object[]]$Process = @(Get-Process -ErrorAction SilentlyContinue))
+    $hits = @($Process | Where-Object {
+            $_.ProcessName -like 'WerFault*' -or
+            ($_.MainWindowTitle -and $_.MainWindowTitle -match 'Bad Image|Application Error|stopped working')
+        })
+    if ($hits.Count -eq 0) { return $null }
+    return (($hits | Select-Object -First 3 | ForEach-Object { "$($_.ProcessName) (pid $($_.Id)) '$($_.MainWindowTitle)'" }) -join '; ')
+}
+
 # Run a command in a new shell, as the newcomer typing it into a terminal: Windows PowerShell
 # (powershell.exe, the default on a clean Windows) or PowerShell 7 (pwsh). Output goes to
-# <OutDir>\<LogName>.log. Returns the exit code; a timeout kills the process tree and throws.
+# <OutDir>\<LogName>.log. Returns the exit code; a timeout kills the process tree and throws. With
+# -StallMinutes (setup steps), a step that makes no progress for that long, or a crash or Bad Image
+# window, also kills it and throws a message starting "stalled" (#4781).
 function Invoke-Shell {
     param(
         [ValidateSet('powershell', 'pwsh')]
@@ -238,7 +337,8 @@ function Invoke-Shell {
         [string]$WorkingDirectory = $RepoDir,
         # Only for machine setup that is not a newcomer step; newcomer commands run under the
         # machine's own execution policy.
-        [string]$ExecutionPolicy
+        [string]$ExecutionPolicy,
+        [double]$StallMinutes = 0
     )
     if (-not (Test-Path -LiteralPath $WorkingDirectory)) { $WorkingDirectory = $WorkDir }
     # UTF-8 output, so the log keeps check-prereqs.ps1's marks. The exit code is the last native
@@ -261,11 +361,24 @@ function Invoke-Shell {
     # what it is doing.
     $started = Get-Date
     $deadline = $started.AddMinutes($TimeoutMinutes)
-    while (-not $p.WaitForExit(300000)) {
+    $logPattern = @($log, (Join-Path $env:TEMP 'dd_*.log'), (Join-Path $env:TEMP 'WinGet\*.log'), (Join-Path $env:TEMP 'tasksmack-winsdksetup*.log'))
+    $samples = New-Object System.Collections.ArrayList
+    if ($StallMinutes -gt 0) { $null = $samples.Add((Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern)) }
+    while (-not $p.WaitForExit($script:HeartbeatMilliseconds)) {
         $busy = Get-Process | Where-Object { $_.CPU } | Sort-Object CPU -Descending | Select-Object -First 4 |
             ForEach-Object { '{0} {1:N0}s' -f $_.Name, $_.CPU }
         Write-CheckLog ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ($busy -join ', '))
         Save-Diagnostic -Prefix $LogName
+        if ($StallMinutes -gt 0) {
+            $null = $samples.Add((Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern))
+            $dialog = Get-ErrorDialog
+            $stall = if ($dialog) { "an error window is open: $dialog" } else { Test-StepStalled -Samples $samples.ToArray() -WindowMinutes $StallMinutes }
+            if ($stall) {
+                & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+                Write-CheckLog "  stalled: $stall"
+                throw "stalled after $([math]::Round(((Get-Date) - $started).TotalMinutes, 1)) min, $stall`n$(Get-LogTail $LogName)"
+            }
+        }
         if ((Get-Date) -ge $deadline) {
             & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
             throw "timed out after $TimeoutMinutes min: $Command"
@@ -338,7 +451,7 @@ function Test-DocMatch {
 
 function Install-WithWinGet {
     param([string]$Id, [string]$LogName)
-    $code = Invoke-Shell -Shell powershell -LogName $LogName -TimeoutMinutes 30 -WorkingDirectory $WorkDir `
+    $code = Invoke-Shell -Shell powershell -LogName $LogName -TimeoutMinutes 30 -WorkingDirectory $WorkDir -StallMinutes $StallMinutes `
         -Command "winget install --id $Id --exact --source winget --silent --accept-package-agreements --accept-source-agreements"
     if ($code -ne 0) { throw "winget install $Id failed with exit code $code`n$(Get-LogTail $LogName)" }
     Update-SessionEnvironment
@@ -399,6 +512,11 @@ Invoke-Step -Setup 'Machine: clean environment' {
     $present = @('git', 'pwsh', 'cmake', 'ninja', 'clang', 'python', 'py', 'winget') | Where-Object { Get-Command $_ -ErrorAction SilentlyContinue }
     Add-Note "Already on PATH: $(if ($present) { $present -join ', ' } else { 'none of git, pwsh, cmake, ninja, clang, python, py, winget' })"
     if ($BuildParallelLevel -gt 0) { Add-Note "CMAKE_BUILD_PARALLEL_LEVEL=$BuildParallelLevel (host-load cap, not a newcomer step)" }
+    $smartAppControl = Get-SmartAppControlState
+    Add-Note ('Smart App Control: ' + @('off or absent', 'ENFORCE', 'evaluation')[$smartAppControl])
+    if ($smartAppControl -eq 1) {
+        Add-Finding 'Smart App Control enforces on this machine (#4781): it blocks unsigned developer tools such as Git for Windows'' zlib1.dll (0xC0E90002) and every locally built TaskSmack binary, and an installer hangs on a Bad Image box. The setup steps fail as stalled; turn Smart App Control off (Windows Security > App & browser control) to get past them.'
+    }
     # A freshly started VM can take a moment to get its network.
     for ($i = 1; $i -le 24; $i++) {
         try {
@@ -415,7 +533,7 @@ if ($WindowsSandbox) {
         if (Get-Command winget -ErrorAction SilentlyContinue) { return 'SKIP: winget is already installed' }
         # Microsoft's documented way to add winget to Windows Sandbox:
         # https://learn.microsoft.com/windows/package-manager/winget/#install-winget-on-windows-sandbox
-        $code = Invoke-Shell -Shell powershell -ExecutionPolicy Bypass -LogName '00-winget-bootstrap' -TimeoutMinutes 20 -WorkingDirectory $WorkDir -Command @'
+        $code = Invoke-Shell -Shell powershell -ExecutionPolicy Bypass -LogName '00-winget-bootstrap' -TimeoutMinutes 20 -WorkingDirectory $WorkDir -StallMinutes $StallMinutes -Command @'
 $ProgressPreference = 'SilentlyContinue'
 Install-PackageProvider -Name NuGet -Force | Out-Null
 Install-Module -Name Microsoft.WinGet.Client -Force -Repository PSGallery | Out-Null
@@ -491,9 +609,14 @@ Invoke-Step 'Install PowerShell 7 (pwsh)' {
 # --- 6. Automated Setup (Windows) ------------------------------------------------------------
 Invoke-Step 'pwsh tools/setup-dev.ps1' {
     try {
-        $code = Invoke-Shell -Shell pwsh -LogName '06-setup-dev' -TimeoutMinutes $SetupTimeoutMinutes -Command 'pwsh tools/setup-dev.ps1'
+        $code = Invoke-Shell -Shell pwsh -LogName '06-setup-dev' -TimeoutMinutes $SetupTimeoutMinutes -StallMinutes $StallMinutes -Command 'pwsh tools/setup-dev.ps1'
     }
     catch {
+        # A stalled step (no progress, or a Bad Image box, #4781) is a FAIL with its diagnostics; nothing after it can run.
+        if ($_.Exception.Message.StartsWith('stalled')) {
+            Save-Diagnostic -Prefix '06-setup-dev'
+            throw
+        }
         # A setup that runs this long is a finding in itself; the installers' logs are in
         # 06-setup-dev-diagnostics. Nothing after it can run without the toolchain, so stop.
         Save-Diagnostic -Prefix '06-setup-dev'

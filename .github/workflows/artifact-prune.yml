@@ -1,0 +1,46 @@
+name: Artifact Prune
+
+# Deletes the repository's superseded artifacts nightly (#4617, the maintainer's choice on 2026-11-21): every copy of
+# a name but the newest on its branch, older than 6 hours, keeping benchmark* (#4720 ended the dashboard's own artifact on main). Each CI run
+# uploads under the same names, so the list grew to about 6,600, and ClusterFuzzLite's PR run lists every artifact for
+# each corpus lookup: about 42 REST calls per 100 artifacts, enough to empty the workflow token's hourly budget for
+# every workflow. tools/prune-artifacts.py has the rule; tests/tools/test_prune_artifacts.py tests it.
+on:
+  schedule:
+    # 02:23 PT (10:23 UTC): clear of Heavy Checks' nightly (04:01 UTC) and the working day's fuzzing runs.
+    - cron: '23 10 * * *'
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: List what would be deleted, and delete nothing
+        type: boolean
+        default: false
+
+concurrency:
+  group: artifact-prune
+  cancel-in-progress: false
+
+permissions: {}
+
+jobs:
+  prune:
+    name: Delete superseded artifacts
+    runs-on: ubuntu-26.04
+    timeout-minutes: 45
+    permissions:
+      actions: write  # lists and deletes the repository's artifacts
+      contents: read  # checks out tools/prune-artifacts.py
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          sparse-checkout: tools/prune-artifacts.py
+          sparse-checkout-cone-mode: false
+
+      - name: Delete superseded artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '' }}
+        # It stops below 1,500 REST calls left, so the other workflows keep their share of the hour.
+        run: python3 tools/prune-artifacts.py --repo "$REPO" ${DRY_RUN:+--dry-run}

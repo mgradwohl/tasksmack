@@ -79,6 +79,18 @@ function Write-Status {
     }
 }
 
+# Print the Smart App Control row (#4781): ok when off (or absent), warn in evaluation mode (it may switch itself
+# to enforce), fail when it enforces (it blocks unsigned developer tools and every local build). Returns $false
+# only on fail. State is 0 (off or missing), 1 (enforce) or 2 (evaluation), as Get-SmartAppControlState reads it.
+function Write-SmartAppControlStatus {
+    param([int]$State)
+    switch ($State) {
+        1 { Write-Status -Name "Smart App Ctl" -Status "fail" -Version "ENFORCED" -Required "= off"; return $false }
+        2 { Write-Status -Name "Smart App Ctl" -Status "warn" -Version "EVALUATION" -Required "= off"; return $true }
+        default { Write-Status -Name "Smart App Ctl" -Status "ok" -Version "off" -Required "= off"; return $true }
+    }
+}
+
 # Get tool path
 function Get-ToolPath {
     param([string]$Command)
@@ -338,6 +350,12 @@ Write-Host "Tool           Version      Required     Path" -ForegroundColor Whit
 Write-Host ('-' * 74)
 
 $AllOK = $true
+
+# Smart App Control first: when it enforces, the tools below can be installed and still not run (#4781).
+$smartAppControl = Get-SmartAppControlState
+if (-not (Write-SmartAppControlStatus -State $smartAppControl)) {
+    $AllOK = $false
+}
 $clangVersionPattern = 'clang version (\d+)'
 
 # Check clang and clang++ -- the compilers the win-* presets use
@@ -534,6 +552,16 @@ else {
 }
 
 Write-Host ('-' * 74)
+if ($smartAppControl -eq 1) {
+    foreach ($line in Get-SmartAppControlMessage) {
+        Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
+        Write-Host $line -ForegroundColor Red
+    }
+}
+elseif ($smartAppControl -eq 2) {
+    Write-Host "! " -ForegroundColor Yellow -NoNewline
+    Write-Host "Smart App Control is in evaluation mode and may switch itself to enforce, which blocks unsigned developer tools and every TaskSmack binary you build. Turn it off in Windows Security > App & browser control > Smart App Control settings if you develop here (it can't be turned back on without reinstalling Windows). About it: $SmartAppControlHelpUrl" -ForegroundColor Yellow
+}
 if ($script:LlvmCompilerMajor) {
     Write-Host "$([char]0x2717) " -ForegroundColor Red -NoNewline
     Write-Host "The win-* presets build with LLVM $PinnedLlvmMajor (.pre-commit-config.yaml), but this clang is LLVM $($script:LlvmCompilerMajor). pwsh tools/setup-dev.ps1 replaces it with LLVM $PinnedLlvmMajor." -ForegroundColor Red
