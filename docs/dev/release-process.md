@@ -107,8 +107,8 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
   plus the Linux set under Xvfb.
 - **Release notes:** drafted on the tracker, with highlights, the "Which file should I download?" guide and known
   issues. `changelog.yml` generates the body; the draft checks it reads well.
-- **`RELEASE.md` for users:** how to verify a download. That covers the Authenticode signer, `SHA256SUMS`, cosign
-  bundles and build-provenance attestations. The notes' download guide links to it.
+- **Verifying a download, for users:** the user guide's "Verifying a Release" section covers it: the Authenticode signer,
+  `SHA256SUMS`, cosign bundles and build-provenance attestations. Check it is current for the new features.
 
 **Done when:** the maintainer has read the notes draft and the docs PRs have merged.
 
