@@ -405,6 +405,8 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
     // Never a file the user names: root's own copy of the invoking user's (applyToThisProcess()), or none (the second
     // #4187 review: a user-named Xauthority sent another account's cookie to a display the user chose).
     setOrUnset("XAUTHORITY", values.contains("DISPLAY") ? root.xauthority : std::nullopt);
+    // No session bus: SDL's libdbus would otherwise autolaunch one as root on the user's X display (#4764).
+    setOrUnset("DBUS_SESSION_BUS_ADDRESS", std::string(NO_SESSION_BUS));
     setOrUnset("PATH", root.path);
     setOrUnset("HOME", root.home);
     return removed;

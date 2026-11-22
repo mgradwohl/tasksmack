@@ -274,9 +274,31 @@ struct ColumnMaxima
     }
 };
 
-/// The fraction of @p col's cell the meter fills for @p proc: 0 for a column without a meter.
+/// Whether @p col shows @p proc's CPU time where that time is the CPUs' idle time, not load: CPU % and CPU Time
+/// of Windows' System Idle Process (#4753). Those cells are drawn muted, with a tooltip saying so, and no meter.
+[[nodiscard]] constexpr bool showsIdleTime(const Domain::ProcessSnapshot& proc, ProcessColumn col) noexcept
+{
+    return proc.cpuTimeIsIdle && (col == ProcessColumn::CpuPercent || col == ProcessColumn::CpuTime);
+}
+
+/// The tooltip on a cell showsIdleTime() is true for.
+inline constexpr std::string_view IDLE_TIME_TOOLTIP =
+    "Time the CPUs spent idle, not load: the System Idle Process runs when there is nothing else to do";
+
+/// Whether @p col draws a meter, a bar or a sparkline, for @p proc: never for idle time (showsIdleTime()), which
+/// would put the deepest heat colour on a machine with nothing to do.
+[[nodiscard]] constexpr bool drawsMeterFor(const Domain::ProcessSnapshot& proc, ProcessColumn col) noexcept
+{
+    return scaleOf(col) != Scale::None && !showsIdleTime(proc, col);
+}
+
+/// The fraction of @p col's cell the meter fills for @p proc: 0 for a column without a meter, and for idle time.
 [[nodiscard]] inline float fractionOf(const Domain::ProcessSnapshot& proc, ProcessColumn col, const ColumnMaxima& maxima) noexcept
 {
+    if (!drawsMeterFor(proc, col))
+    {
+        return 0.0F;
+    }
     switch (scaleOf(col))
     {
     case Scale::Percent:

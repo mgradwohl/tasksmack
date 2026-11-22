@@ -1365,6 +1365,8 @@ ProcessSnapshot ProcessModel::computeSnapshot(const Platform::ProcessCounters& c
     snapshot.displayState = translateState(current.state);
     snapshot.status = processStatusText(current.status, current.notResponding); // The probe's, and Not responding (#3084)
     snapshot.notResponding = current.notResponding;
+    // Its CPU time is the CPUs' idle time: Windows' System Idle Process (#4753)
+    snapshot.cpuTimeIsIdle = current.cpuTimeIsIdle;
     snapshot.publisher = current.publisher; // Pass through publisher from platform probe
     snapshot.container = current.container; // Pass through container from platform probe
     snapshot.services = current.services;   // and its services (#1886)
