@@ -311,11 +311,12 @@ How it's made:
   run list can't tell a run that published from one that only checked and stopped). Otherwise for the
   workflow's newest runs, and it says one of four things: a refresh has been waiting for a runner since a
   given time (other workflows hold them all, and a manual run would only cancel it, so the page offers none),
-  a refresh is running, the last refresh failed at a given time (with a link to the runs), or none has
-  published since the figures were read and none is running (then "Refresh now" helps). It says nothing when
-  the API can't be read. That limit is 60 requests an hour for each visitor's address: the page asks at most
-  every three minutes, two requests at the most each time, only while it is late and on screen, and after a
-  refusal not until the limit resets. A pull request's run isn't counted.
+  a refresh is running, the last refresh failed at a given time (with a link to the runs), or nothing has been
+  published since the last run and none is running (then "Refresh now" helps). It says nothing when the API
+  can't be read. That limit is 60 requests an hour for each visitor's address: the page asks at most every
+  five minutes, two requests at the most each time, only while it is late and on screen, and after a refusal
+  not until the limit resets. The answer is about the published figures, so it stands while another release
+  is looked at, and falls when new figures arrive. A pull request's run isn't counted.
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.
