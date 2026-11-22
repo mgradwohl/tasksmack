@@ -7,7 +7,9 @@ name: Main Health
 # same way (#2741). Every run, whichever branch's workflow triggered it and a manual dispatch alike,
 # re-reads main and every release/* branch (#2951). workflow_run always runs this file from the
 # default branch, with this file's permissions. A run that opened or closed a tracking issue starts a
-# Release Dashboard run, so the release page has the branch's new state within minutes (#4700).
+# Release Dashboard run, so the release page has the branch's new state within minutes (#4700). So does a run
+# that finds the dashboard idle, with no run finished for six minutes (#4739): GitHub starts the hour's first
+# scheduled runs about ten minutes late.
 on:
   workflow_run:
     # Keep in sync with WATCHED below. Static Analysis is left out: since #1558 it only runs on manual
@@ -41,7 +43,7 @@ jobs:
     runs-on: ubuntu-26.04
     timeout-minutes: 5
     permissions:
-      actions: write  # reads the watched runs, and dispatches release-dashboard.yml when an issue opens or closes
+      actions: write  # reads the watched runs and the dashboard's newest, and dispatches release-dashboard.yml
       contents: read
       issues: write
     steps:
@@ -51,6 +53,11 @@ jobs:
           REPO: ${{ github.repository }}
           SERVER: ${{ github.server_url }}
           LABEL: ci-red-main
+          # Start a Release Dashboard run when it has none going and none has finished for this long (#4739).
+          # Its schedule gives it one every five minutes, so six without one is a slot GitHub hasn't started.
+          # Past the second figure the question is whether the workflow is switched on at all.
+          DASHBOARD_QUIET_MINUTES: 6
+          DASHBOARD_OFF_MINUTES: 60
           # workflow file|display name
           WATCHED: |-
             ci.yml|CI
@@ -206,12 +213,46 @@ jobs:
           # still tells it: the next run would find that issue already as it should be, and say nothing. A
           # dispatch that fails isn't worth failing this check over, since the dashboard's next run reads the
           # issue anyway, and the trap leaves the step's own exit status as it was.
+          #
+          # With no issue changed, it starts one when the dashboard is idle (#4739): none of its newest runs
+          # is queued, waiting or running, and none has finished for DASHBOARD_QUIET_MINUTES. GitHub starts
+          # the hour's first scheduled runs about ten minutes late, both schedule lines' together, and with no
+          # issue or push in that gap the page's figures were 14 to 18 minutes old. This workflow runs after
+          # every watched run on main, which is when the page is in use.
+          #   - Measured from a run's end, and never with one under way: a run started eight minutes ago may
+          #     have published a minute ago, or be about to, and a second read then would come inside the five
+          #     minutes the dashboard keeps between publishes.
+          #   - It can't loop: this workflow doesn't watch the dashboard's, and a run it starts keeps the
+          #     dashboard from being idle until six minutes after it ends.
+          #   - Quiet for over an hour is a workflow that is switched off or broken, not a late slot: it
+          #     starts one only if GitHub says the workflow is active.
+          #   - A question that fails, or a workflow that has never run, starts nothing.
+          dashboard_idle_minutes() {
+            local newest ended idle state
+            newest=$(gh api "repos/$REPO/actions/workflows/release-dashboard.yml/runs?branch=main&per_page=5" \
+              --jq '[.workflow_runs[] | select(.event != "pull_request")] | if length == 0 then empty elif any(.[]; .status != "completed") then "active" else (map(.updated_at) | max) end' 2> /dev/null) || return 1
+            [[ -n "$newest" && "$newest" != active ]] || return 1
+            ended=$(date -u -d "$newest" +%s 2> /dev/null) || return 1
+            idle=$(( ($(date +%s) - ended) / 60 ))
+            if (( idle > DASHBOARD_OFF_MINUTES )); then
+              state=$(gh api "repos/$REPO/actions/workflows/release-dashboard.yml" --jq .state 2> /dev/null) || return 1
+              [[ "$state" == active ]] || return 1
+            fi
+            echo "$idle"
+          }
           tell_dashboard() {
-            [[ -n "${changed:-}" ]] || return 0
+            local why="${changed:-}" idle next="Its next run reads the issue."
+            why="${why%; }"
+            if [[ -z "$why" ]]; then
+              idle=$(dashboard_idle_minutes) || return 0
+              (( idle >= DASHBOARD_QUIET_MINUTES )) || return 0
+              why="none has run for $idle minutes"
+              next="Its schedule starts the next."
+            fi
             if gh api -X POST "repos/$REPO/actions/workflows/release-dashboard.yml/dispatches" --silent -f ref=main; then
-              echo "Started a Release Dashboard run: ${changed%; }."
+              echo "Started a Release Dashboard run: $why."
             else
-              echo "::warning title=Main Health::The Release Dashboard run couldn't be started (${changed%; }). Its next run reads the issue."
+              echo "::warning title=Main Health::The Release Dashboard run couldn't be started ($why). $next"
             fi
           }
           trap tell_dashboard EXIT

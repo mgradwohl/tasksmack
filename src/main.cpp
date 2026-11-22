@@ -474,7 +474,12 @@ auto runApp(const App::LaunchOptions& launch) -> int
     {
         spdlog::warn("No debug log file: TaskSmack runs as administrator (elevated, or as root), and {} in its "
                      "administrators-only folder couldn't be opened safely: {}. This log goes to the debugger and the console only",
+#ifdef _WIN32
                      App::DebugLogFile::FILE_NAME,
+#else
+                     // The file it tried: root's per-user name in /run/tasksmack (#4261, #4654).
+                     App::DebugLogFile::rootLogName(App::DebugLogFile::systemInvokingUid()),
+#endif
                      logFile.error());
     }
 

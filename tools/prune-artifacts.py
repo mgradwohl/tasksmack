@@ -10,8 +10,8 @@ Kept:
 - the newest copy of each name on each branch (ClusterFuzzLite's cifuzz-* corpora and builds: of each name, since its
   action looks them up by name alone);
 - anything newer than --min-age-hours (default 6), so a run still going keeps what it uploaded for a later job;
-- benchmark* and release-dashboard-data on every branch: the benchmark gate reads main's runs' results, and the
-  dashboard its own.
+- benchmark* on every branch: the benchmark gate reads main's runs' results. (release-dashboard-data was kept too until
+  #4720 stopped the dashboard uploading it on main; nothing read one after its own run, so its old copies go like any.)
 
 The maintainer chose this rule on 2026-11-21 (#4617). The selection is a pure function (select_for_deletion), tested
 by tests/tools/test_prune_artifacts.py; the listing and deleting go through the gh CLI, as the workflow's token.
@@ -30,7 +30,7 @@ import time
 from collections import defaultdict
 from typing import Iterable
 
-KEEP_PREFIXES = ("benchmark", "release-dashboard-data")
+KEEP_PREFIXES = ("benchmark",)
 BY_NAME_ONLY_PREFIX = "cifuzz-"
 
 

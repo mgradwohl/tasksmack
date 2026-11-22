@@ -1441,6 +1441,10 @@ void ProcessesPanel::onEvent(Core::Event& event)
             {
                 m_Sampler->requestStop();
             }
+            if (m_UserSessions != nullptr)
+            {
+                m_UserSessions->requestStop(); // the sessions feed's too (#4656): its join overlaps, not follows
+            }
             return false;
         });
     dispatcher.dispatch<Core::ActiveTabChangedEvent>(
