@@ -270,11 +270,14 @@ How it's made:
   holds that one commit and nothing else. A run starts when an issue closes, reopens or changes milestone (a new
   issue on a milestone is one of those), when `main` moves, when Main Health opens or closes a `ci-red-main`
   issue, and on a schedule (#4604, #4700). GitHub starts scheduled runs late and skips some when it's busy, so
-  one schedule line alone left the page up to 37 minutes behind: there are two, five minutes apart. A run that
-  an issue, a push or the schedule started waits until the published data is five minutes old; Main Health's
-  and a person's don't. Labels, edits, comments and pull request events start none (#4620): every event is a
-  run, GitHub lists each one that wasn't needed as cancelled, and the next run reads them anyway. So a new
-  label can take until the next run to show.
+  one schedule line alone left the page up to 37 minutes behind: there are two, five minutes apart. Both
+  lines' first slots of an hour still come about ten minutes late together, so Main Health also starts a run
+  when the dashboard has none going and none has finished for six minutes (#4739). Main Health runs after
+  each watched workflow on `main` finishes, so this shortens the gap while `main` is busy and leaves it in a
+  quiet hour. A run that an issue, a push or the schedule started waits until the published data is five minutes
+  old; Main Health's and a person's don't. Labels, edits, comments and pull request events start none (#4620):
+  every event is a run, GitHub lists each one that wasn't needed as cancelled, and the next run reads them
+  anyway. So a new label can take until the next run to show.
 - A run stops before it reads anything when it has nothing to add (#4620): the published figures were read
   after the run was created (the second run of a merge, which is a push and an issue closing, and a run that
   waited behind another), or the workflow token's hourly budget is used up, before the run's wait or during it
@@ -302,6 +305,15 @@ How it's made:
   tab comes back to the front. If the last run was more than 25 minutes ago it says so, unless the budget note
   above already gives the reason. A planned release's own figures are up to an hour old by design, and a
   shipped release's never change, so neither has "Refresh now".
+- A late page says why (#4734). When its figures are over ten minutes old it asks GitHub's public API, without
+  a token, for the workflow's newest runs, and says one of four things: a refresh has been waiting for a
+  runner since a given time (other workflows hold them all, and a manual run would only cancel it, so the page
+  offers none), a refresh is running, the last refresh failed at a given time (with a link to the runs), or
+  none has started since a given time (then "Refresh now" helps). It says nothing when GitHub has newer
+  figures than the page, since only the page's copy is old then and it asks for the data again; and nothing
+  when the API can't be read. That limit is 60 requests an hour for each visitor's address: the page asks at
+  most every three minutes, only while it is late and on screen, and after a refusal not until the limit
+  resets. A pull request's run isn't counted.
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.
