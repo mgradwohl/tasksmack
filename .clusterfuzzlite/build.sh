@@ -136,6 +136,21 @@ build_fuzzer fuzz_broker_protocol src/Platform/BrokerProtocol.cpp
 seed_corpus fuzz_broker_protocol tests/fuzz/corpus/fuzz_broker_protocol/*
 cp tests/fuzz/fuzz_broker_protocol.dict "$OUT/"
 
+# The Windows probes' pure parsers (#4358): header-only, with no Windows header, so they build and run here like the
+# rest. Each is seeded with its unit tests' fixtures, written out byte for byte.
+# The version resource walk over a PE file's own bytes (#4057): PE32 and PE32+ files, several languages, and a bare block.
+build_fuzzer fuzz_version_resource
+seed_corpus fuzz_version_resource tests/fuzz/corpus/fuzz_version_resource/*
+# The Application Error and Hang event XML (#1524) and WDI's StartupInfo files (#3073), one in UTF-16 as Windows writes it.
+build_fuzzer fuzz_crash_event_xml
+seed_corpus fuzz_crash_event_xml tests/fuzz/corpus/fuzz_crash_event_xml/*
+# The ETW UDP event payloads and their per-process sums (#1492), and the trace session name.
+build_fuzzer fuzz_etw_udp
+seed_corpus fuzz_etw_udp tests/fuzz/corpus/fuzz_etw_udp/*
+# ATA SMART pages and IDENTIFY DEVICE (#2588), the device descriptor and NVMe health log (#1517), and EMI blocks (#2587).
+build_fuzzer fuzz_smart_pages
+seed_corpus fuzz_smart_pages tests/fuzz/corpus/fuzz_smart_pages/*
+
 # The partition layout parsers (#1632): header-only, seeded with GPT and MBR DRIVE_LAYOUT_INFORMATION_EX
 # buffers and udev partition type strings.
 build_fuzzer fuzz_partition_layout

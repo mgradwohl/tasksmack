@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-16"?>
+<StartupData IntervalStartMs="24308" IntervalEndMs="114308">
+	<Process Name="C:\Users\Sam\AppData\Local\Microsoft\OneDrive\OneDrive.exe" PID="7720" StartedInTraceSec="25.120">
+		<StartTime>2026/10/20:08:11:02.5000000</StartTime>
+		<CommandLine><![CDATA["C:\Users\Sam\AppData\Local\Microsoft\OneDrive\OneDrive.exe" /background]]></CommandLine>
+		<DiskUsage Units="bytes">1000</DiskUsage>
+		<CpuUsage Units="us">1000</CpuUsage>
+		<ParentPID>6600</ParentPID>
+		<ParentStartTime>2026/10/20:08:11:01.0000000</ParentStartTime>
+		<ParentName>explorer.exe</ParentName>
+	</Process>
+</StartupData>

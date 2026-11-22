@@ -1,0 +1,1 @@
+<Event><System><Provider Name="Application Error"/><EventID>1000</EventID></System><EventData><Data>legacy.exe</Data><Data>1.0.0.0</Data><Data>4a5b6c7d</Data><Data>KERNELBASE.dll</Data><Data>10.0.19041.1</Data><Data>0</Data><Data>e0434352</Data></EventData></Event>
