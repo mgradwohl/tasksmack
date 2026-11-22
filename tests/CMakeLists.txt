@@ -1159,6 +1159,7 @@ set(LINUX_PLATFORM_TEST_SOURCES
     Platform/test_RunProgramLookup.cpp  # Run new task finds the program as the account it runs as (#4532, #4400)
     Platform/test_LinuxCoreDump.cpp  # "Create dump file" on Linux: names, gcore command, refusals (#807)
     Platform/test_RootDumpFolder.cpp  # a root session's own default dump folder (#4181)
+    Platform/test_UserFolderAccess.cpp  # whether the user a root session runs for could open a folder (#4765)
     Platform/test_DetachedSpawn.cpp
     Platform/test_SessionUser.cpp  # whom a run as root opens links and folders as (#2461)
     Platform/test_RootCapabilities.cpp  # what an Administrator session keeps of root's capabilities (#3621)
