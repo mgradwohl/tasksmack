@@ -652,7 +652,7 @@ TEST_F(WindowsImageSha256Test, AnImageNameThroughAJunctionIsNotFollowed)
     std::filesystem::create_directory(link);
     const std::filesystem::path image = target / L"image.exe";
     std::ofstream(image, std::ios::binary) << "abc";
-    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(link, target);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
     const std::wstring folderName = ntNameOf(folder);
     ASSERT_FALSE(folderName.empty());
@@ -678,7 +678,7 @@ TEST_F(WindowsImageSha256Test, AnImageNameThroughAJunctionIsNotFollowed)
         << laterThrough.error();
     EXPECT_TRUE(std::filesystem::exists(link / L"image.exe")) << "a path through it that a by-name open would have followed";
 
-    const bool removed = TestSupport::removeJunction(link);
+    const bool removed = ::TestSupport::removeJunction(link);
     std::error_code ec;
     if (removed)
     {

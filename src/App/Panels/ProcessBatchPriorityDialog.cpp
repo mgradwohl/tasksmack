@@ -30,12 +30,12 @@ namespace
 {
 
 // The "###" part keeps the popup's ID fixed while its title names the count.
-constexpr const char* POPUP_ID = "###BatchPriority";
+constexpr const char* BATCH_PRIORITY_POPUP_ID = "###BatchPriority";
 
-constexpr const char* CANCEL_LABEL = "Cancel";
+constexpr const char* BATCH_PRIORITY_CANCEL_LABEL = "Cancel";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
-constexpr float BUTTON_MIN_EM = 11.25F;
+constexpr float BATCH_PRIORITY_BUTTON_MIN_EM = 11.25F;
 
 // The Windows dialog's width, in ems, unless its class slider needs more for its stop names (#1538);
 // room for the list's three columns too.
@@ -124,18 +124,18 @@ std::optional<std::int32_t> ProcessBatchPriorityDialog::render()
 {
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(BATCH_PRIORITY_POPUP_ID);
         m_ShowRequested = false;
     }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    m_Open = ImGui::IsPopupOpen(BATCH_PRIORITY_POPUP_ID);
     if (!m_Open)
     {
         return std::nullopt; // Nothing to draw; skip building the title every frame
     }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const std::string title =
-        std::format("{}  Set priority for {}{}", ICON_FA_GAUGE_HIGH, ProcessBatch::processCountText(m_Targets.size()), POPUP_ID);
+    const std::string title = std::format(
+        "{}  Set priority for {}{}", ICON_FA_GAUGE_HIGH, ProcessBatch::processCountText(m_Targets.size()), BATCH_PRIORITY_POPUP_ID);
     // Centred over the main window (#1539). A fixed width, so the slider is laid out at its own width
     // from the first frame, and a height fitted to the contents (0); both capped at the viewport, and
     // the dialog kept inside it.
@@ -185,9 +185,11 @@ std::optional<std::int32_t> ProcessBatchPriorityDialog::render()
         .pressed = theme.scheme().successButtonActive,
     };
     const UI::Widgets::DialogFooterButton applyButton{.label = m_ApplyLabel.c_str(), .fills = &applyFills, .tooltip = nullptr};
-    const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
+    const UI::Widgets::DialogFooterButton cancelButton{.label = BATCH_PRIORITY_CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
     UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
-        applyButton, cancelButton, UI::Widgets::footerButtonWidth({m_ApplyLabel.c_str(), CANCEL_LABEL}, BUTTON_MIN_EM));
+        applyButton,
+        cancelButton,
+        UI::Widgets::footerButtonWidth({m_ApplyLabel.c_str(), BATCH_PRIORITY_CANCEL_LABEL}, BATCH_PRIORITY_BUTTON_MIN_EM));
     if (escaped)
     {
         pressed = UI::Widgets::DialogFooterAction::Secondary;

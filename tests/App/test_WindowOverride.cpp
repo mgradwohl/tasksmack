@@ -24,7 +24,6 @@ namespace
 
 using App::WindowOverride::CapturedWindow;
 using App::WindowOverride::Geometry;
-using App::WindowOverride::parse;
 
 // ========== Parser ==========
 
@@ -33,7 +32,7 @@ TEST(WindowOverrideParseTest, UnsetEmptyAndOffWordsGiveNoOverrideAndNoWarning)
     for (const char* value : {static_cast<const char*>(nullptr), "", "   ", "0", "off", "OFF", "false", "no"})
     {
         SCOPED_TRACE(value == nullptr ? "(nullptr)" : value);
-        const auto result = parse(value);
+        const auto result = App::WindowOverride::parse(value);
         EXPECT_FALSE(result.geometry.has_value());
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -55,7 +54,7 @@ TEST(WindowOverrideParseTest, ValidSizesParseWithoutWarning)
          })
     {
         SCOPED_TRACE(c.value);
-        const auto result = parse(c.value);
+        const auto result = App::WindowOverride::parse(c.value);
         EXPECT_EQ(result.geometry, std::optional<Geometry>{c.expected});
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -66,7 +65,7 @@ TEST(WindowOverrideParseTest, MaximizedFlag)
     for (const char* value : {"1600x900,maximized", "1600x900, maximized", "1600x900,MAXIMIZED", "1600x900,maximised"})
     {
         SCOPED_TRACE(value);
-        const auto result = parse(value);
+        const auto result = App::WindowOverride::parse(value);
         EXPECT_EQ(result.geometry, (std::optional<Geometry>{Geometry{.width = 1600, .height = 900, .maximized = true}}));
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -91,7 +90,7 @@ TEST(WindowOverrideParseTest, InvalidValuesAreIgnoredWithAWarning)
                               "abc"})
     {
         SCOPED_TRACE(value);
-        const auto result = parse(value);
+        const auto result = App::WindowOverride::parse(value);
         EXPECT_FALSE(result.geometry.has_value());
         EXPECT_FALSE(result.warning.empty());
         EXPECT_NE(result.warning.find("ignored"), std::string::npos) << result.warning;
@@ -115,12 +114,12 @@ TEST(WindowOverrideParseTest, SizesOutsideTheWindowLimitsAreClampedWithAWarning)
          })
     {
         SCOPED_TRACE(c.value);
-        const auto result = parse(c.value);
+        const auto result = App::WindowOverride::parse(c.value);
         EXPECT_EQ(result.geometry, (std::optional<Geometry>{Geometry{.width = c.width, .height = c.height, .maximized = false}}));
         EXPECT_NE(result.warning.find("clamped"), std::string::npos) << result.warning;
     }
 
-    const auto maximized = parse("50x50,maximized");
+    const auto maximized = App::WindowOverride::parse("50x50,maximized");
     EXPECT_EQ(
         maximized.geometry,
         (std::optional<Geometry>{Geometry{.width = Core::WINDOW_MIN_DIMENSION, .height = Core::WINDOW_MIN_DIMENSION, .maximized = true}}));
@@ -344,7 +343,7 @@ TEST_F(WindowOverrideConfigFileTest, WithoutAnOverrideTheWindowSectionIsSaved)
 // copied from a Windows .env file, with its trailing CR, parses as it does without one.
 TEST(WindowOverrideParseTest, AnyAsciiWhitespaceAroundTheValueIsTrimmed)
 {
-    const auto result = parse("\t1280x720\r\n");
+    const auto result = App::WindowOverride::parse("\t1280x720\r\n");
     EXPECT_EQ(result.geometry, std::optional<Geometry>(Geometry{.width = 1280, .height = 720, .maximized = false}));
     EXPECT_TRUE(result.warning.empty()) << result.warning;
 }

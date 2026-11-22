@@ -37,11 +37,11 @@ namespace App
 namespace
 {
 
-constexpr Platform::ProcessTarget TARGET_A{.pid = 1001, .startTimeTicks = 5000};
-constexpr Platform::ProcessTarget TARGET_B{.pid = 2002, .startTimeTicks = 6000};
+constexpr Platform::ProcessTarget PRIORITY_RENDER_TARGET_A{.pid = 1001, .startTimeTicks = 5000};
+constexpr Platform::ProcessTarget PRIORITY_RENDER_TARGET_B{.pid = 2002, .startTimeTicks = 6000};
 
-constexpr Platform::ProcessActionCapabilities CAN_SET_PRIORITY{.canSetPriority = true};
-constexpr Platform::ProcessActionCapabilities NO_PRIORITY{
+constexpr Platform::ProcessActionCapabilities PRIORITY_RENDER_CAN_SET_PRIORITY{.canSetPriority = true};
+constexpr Platform::ProcessActionCapabilities PRIORITY_RENDER_NO_PRIORITY{
     .canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = false};
 
 class ProcessPriorityViewRenderTest : public ::testing::Test
@@ -88,7 +88,7 @@ class ProcessPriorityViewRenderTest : public ::testing::Test
         runFrame(
             [&]
             {
-                view.render(&mock, CAN_SET_PRIORITY, currentNice, target);
+                view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, currentNice, target);
                 const ImVec2 min = ImGui::GetItemRectMin();
                 const ImVec2 max = ImGui::GetItemRectMax();
                 centre = ImVec2((min.x + max.x) * 0.5F, (min.y + max.y) * 0.5F);
@@ -132,7 +132,7 @@ TEST_F(ProcessPriorityViewRenderTest, NothingIsDrawnWithoutTheCapability)
         [&]
         {
             before = ImGui::GetCursorPosY();
-            view.render(&mock, NO_PRIORITY, 0, TARGET_A);
+            view.render(&mock, PRIORITY_RENDER_NO_PRIORITY, 0, PRIORITY_RENDER_TARGET_A);
             after = ImGui::GetCursorPosY();
         });
     EXPECT_FLOAT_EQ(before, after);
@@ -142,7 +142,7 @@ TEST_F(ProcessPriorityViewRenderTest, RenderShowsTheProcessValueUntilEdited)
 {
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
-    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 7, TARGET_A); });
+    runFrame([&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 7, PRIORITY_RENDER_TARGET_A); });
     EXPECT_EQ(view.niceValue(), 7);
     EXPECT_FALSE(view.hasPendingEdit());
 }
@@ -151,8 +151,8 @@ TEST_F(ProcessPriorityViewRenderTest, ApplyIsDisabledUntilAnEdit)
 {
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
-    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A);
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 0);
 }
@@ -161,18 +161,18 @@ TEST_F(ProcessPriorityViewRenderTest, ClickingApplySetsTheEditOnTheSelectedProce
 {
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
-    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
-    view.editNice(10, TARGET_A);
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A);
+    view.editNice(10, PRIORITY_RENDER_TARGET_A);
 
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     ASSERT_EQ(mock.setPriorityCount(), 1);
-    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
-    EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_EQ(mock.lastTarget().pid, PRIORITY_RENDER_TARGET_A.pid);
+    EXPECT_EQ(mock.lastTarget().startTimeTicks, PRIORITY_RENDER_TARGET_A.startTimeTicks);
     EXPECT_EQ(mock.lastSetPriorityNice(), 10);
 
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); }); // Disabled again
-    view.update(/*wait=*/true);                                               // the apply runs on its worker (#2305)
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); }); // Disabled again
+    view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 1);
 }
 
@@ -183,25 +183,25 @@ TEST_F(ProcessPriorityViewRenderTest, TheSliderKeepsAnAppliedValueUntilANewerSam
 {
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
-    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
-    view.editNice(10, TARGET_A);
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A);
+    view.editNice(10, PRIORITY_RENDER_TARGET_A);
 
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     ASSERT_EQ(mock.setPriorityCount(), 1);
 
-    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); }); // The snapshot still says 0
+    runFrame([&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); }); // The snapshot still says 0
     EXPECT_EQ(view.niceValue(), 10);
     EXPECT_FALSE(view.hasPendingEdit());
 
     view.takeProcessSample(0.0, 0); // Sampled before the apply finished: still the old value
-    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    runFrame([&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     EXPECT_EQ(view.niceValue(), 10);
 
     const double after = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count() + 1.0;
     view.takeProcessSample(after, 10); // Sampled after it, and confirms it
     EXPECT_FALSE(view.appliedNice().has_value());
-    runFrame([&] { view.render(&mock, CAN_SET_PRIORITY, 3, TARGET_A); }); // The process's own value again
+    runFrame([&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 3, PRIORITY_RENDER_TARGET_A); }); // The process's own value again
     EXPECT_EQ(view.niceValue(), 3);
 }
 
@@ -211,10 +211,10 @@ TEST_F(ProcessPriorityViewRenderTest, AnEditForAnotherProcessIsDroppedBeforeAppl
     // the edit first, so Apply is disabled and the click reaches no platform call.
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
-    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
-    view.editNice(10, TARGET_A);
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A);
+    view.editNice(10, PRIORITY_RENDER_TARGET_A);
 
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_B); });
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_B); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 0);
     EXPECT_FALSE(view.hasPendingEdit());
@@ -225,10 +225,10 @@ TEST_F(ProcessPriorityViewRenderTest, AFailedApplyShowsTheErrorLine)
     TestMocks::MockProcessActions mock;
     mock.setPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
     ProcessPriorityView view;
-    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
-    view.editNice(-10, TARGET_A);
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A);
+    view.editNice(-10, PRIORITY_RENDER_TARGET_A);
 
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     view.update(/*wait=*/true); // the apply runs on its worker (#2305)
     EXPECT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(view.error(), "Permission denied");
@@ -243,15 +243,15 @@ TEST_F(ProcessPriorityViewRenderTest, ARefusalShowsAuthenticateAndRetryWhichRetr
     mock.setCapabilities({.canSetPriority = true, .canAuthorizeInteractively = true});
     mock.setPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
     ProcessPriorityView view;
-    const ImVec2 apply = renderAndFindApply(view, mock, 0, TARGET_A);
-    view.editNice(5, TARGET_A);
-    click(apply, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    const ImVec2 apply = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A);
+    view.editNice(5, PRIORITY_RENDER_TARGET_A);
+    click(apply, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     view.update(/*wait=*/true);
     ASSERT_EQ(view.error(), "Permission denied");
     ASSERT_TRUE(view.offersAuthenticateAndRetry());
 
-    const ImVec2 retry = renderAndFindApply(view, mock, 0, TARGET_A); // now the retry button
-    click(retry, [&] { view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); });
+    const ImVec2 retry = renderAndFindApply(view, mock, 0, PRIORITY_RENDER_TARGET_A); // now the retry button
+    click(retry, [&] { view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); });
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.runAuthorizedCount(), 1);
     EXPECT_EQ(mock.lastAuthorizedAction().kind, Platform::AuthorizedAction::Kind::SetPriority);
@@ -270,7 +270,7 @@ TEST_F(ProcessPriorityViewRenderTest, ApplyIsAsWideAsItsLabel)
     runFrame(
         [&]
         {
-            view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+            view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A);
             applyWidth = ImGui::GetItemRectSize().x; // Apply is the last item while there is no error line
             labelWidth = ImGui::CalcTextSize(ICON_FA_CHECK "  Apply").x + (2.0F * ImGui::GetStyle().FramePadding.x);
         });
@@ -293,7 +293,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheRowRepeatsNoCurrentValue)
         [&]
         {
             ImGui::LogToBuffer();
-            view.render(&mock, CAN_SET_PRIORITY, 7, TARGET_A);
+            view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 7, PRIORITY_RENDER_TARGET_A);
             applyMin = ImGui::GetItemRectMin();
             applyMax = ImGui::GetItemRectMax();
             logged = ImGui::GetCurrentContext()->LogBuffer.c_str();
@@ -335,7 +335,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheClassSliderKeysStepThroughTheClasses)
             ImGui::SetFocusID(sliderId, ImGui::GetCurrentWindow());
             focus = false;
         }
-        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A); // Normal
+        view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A); // Normal
     };
     runFrame(body);
     runFrame(body);
@@ -382,7 +382,7 @@ TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessShowsRealtimeAndCanOnlyBeL
             ImGui::SetFocusID(sliderId, ImGui::GetCurrentWindow());
             focus = false;
         }
-        view.render(&mock, CAN_SET_PRIORITY, REALTIME, TARGET_A);
+        view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, REALTIME, PRIORITY_RENDER_TARGET_A);
     };
     runFrame(body);
     runFrame(body);
@@ -414,7 +414,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheSliderKeysMoveTheValue)
             ImGui::SetFocusID(sliderId, ImGui::GetCurrentWindow());
             focus = false;
         }
-        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+        view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A);
     };
     runFrame(body);
     runFrame(body);
@@ -455,7 +455,7 @@ TEST_F(ProcessPriorityViewRenderTest, DraggingTheSliderSetsTheValue)
     const auto body = [&]
     {
         sliderId = ImGui::GetID("##priority_slider");
-        view.render(&mock, CAN_SET_PRIORITY, 0, TARGET_A);
+        view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, 0, PRIORITY_RENDER_TARGET_A);
     };
     runFrame(body);
 
@@ -521,7 +521,7 @@ TEST_F(ProcessPriorityViewRenderTest, TheScaleLabelsIgnoreAnInheritedWrapPositio
                 {
                     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 2.0F);
                 }
-                view.render(&mock, CAN_SET_PRIORITY, std::optional<std::int32_t>{0}, TARGET_A);
+                view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, std::optional<std::int32_t>{0}, PRIORITY_RENDER_TARGET_A);
                 if (pushWrap)
                 {
                     ImGui::PopTextWrapPos();
@@ -550,7 +550,7 @@ TEST_F(ProcessPriorityViewRenderTest, PickingAClassOnTheSliderAndApplyingSetsTha
     TestMocks::MockProcessActions mock;
     ProcessPriorityView view;
     const std::int32_t normal = Detail::windowsPriorityClassNice(Detail::WindowsPriorityClass::Normal);
-    const ImVec2 apply = renderAndFindApply(view, mock, normal, TARGET_A);
+    const ImVec2 apply = renderAndFindApply(view, mock, normal, PRIORITY_RENDER_TARGET_A);
 
     bool focus = true;
     const auto body = [&]
@@ -560,7 +560,7 @@ TEST_F(ProcessPriorityViewRenderTest, PickingAClassOnTheSliderAndApplyingSetsTha
             ImGui::SetFocusID(ImGui::GetID(Detail::WINDOWS_PRIORITY_SLIDER_ID), ImGui::GetCurrentWindow());
             focus = false;
         }
-        view.render(&mock, CAN_SET_PRIORITY, normal, TARGET_A);
+        view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, normal, PRIORITY_RENDER_TARGET_A);
     };
     runFrame(body);
     pressKey(ImGuiKey_Home, body); // High, the high-priority end
@@ -574,7 +574,7 @@ TEST_F(ProcessPriorityViewRenderTest, PickingAClassOnTheSliderAndApplyingSetsTha
     ASSERT_EQ(mock.setPriorityCount(), 1);
     EXPECT_EQ(mock.lastSetPriorityNice(), high);
     EXPECT_EQ(Detail::windowsPriorityClassFromNice(mock.lastSetPriorityNice()), Detail::WindowsPriorityClass::High);
-    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
+    EXPECT_EQ(mock.lastTarget().pid, PRIORITY_RENDER_TARGET_A.pid);
 }
 
 TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessGetsAWarningLine)
@@ -588,7 +588,7 @@ TEST_F(ProcessPriorityViewRenderTest, ARealtimeProcessGetsAWarningLine)
             [&]
             {
                 const float top = ImGui::GetCursorPosY();
-                view.render(&mock, CAN_SET_PRIORITY, currentNice, TARGET_A);
+                view.render(&mock, PRIORITY_RENDER_CAN_SET_PRIORITY, currentNice, PRIORITY_RENDER_TARGET_A);
                 height = ImGui::GetCursorPosY() - top;
             });
         EXPECT_EQ(view.niceValue(), currentNice);

@@ -78,9 +78,9 @@ namespace App
 namespace
 {
 
-constexpr Platform::ProcessTarget TARGET{.pid = 1001, .startTimeTicks = 5000};
+constexpr Platform::ProcessTarget BLOCK_RENDER_TARGET{.pid = 1001, .startTimeTicks = 5000};
 
-constexpr Platform::ProcessActionCapabilities ALL_ACTIONS{
+constexpr Platform::ProcessActionCapabilities BLOCK_RENDER_ACTIONS{
     .canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true};
 constexpr Platform::ProcessActionCapabilities NO_PRIORITY{
     .canTerminate = true, .canKill = true, .canStop = false, .canContinue = false, .canSetPriority = false};
@@ -226,7 +226,7 @@ class ProcessActionsBlockRenderTest : public ::testing::Test
                 .actions = &mock,
                 .capabilities = capabilities,
                 .processName = &name,
-                .target = TARGET,
+                .target = BLOCK_RENDER_TARGET,
                 .currentNice = std::optional<std::int32_t>{0},
             };
         }
@@ -292,7 +292,7 @@ TEST_F(ProcessActionsBlockRenderTest, BesideTheRowTheCardsShareTheRowsHeightAndA
     // #4029: a pane wide enough puts Actions and Priority on the Identity/Runtime row, Priority to the right of
     // Actions, each as wide as its rows, and the row is as tall as its tallest card: both cards that height.
     Harness h;
-    const auto layout = renderBlock(h, ALL_ACTIONS, 1900.0F, INFO_ROW);
+    const auto layout = renderBlock(h, BLOCK_RENDER_ACTIONS, 1900.0F, INFO_ROW);
     ASSERT_TRUE(layout.onFirstRow(OverviewCard::Actions));
     ASSERT_TRUE(layout.sameRow(OverviewCard::Actions, OverviewCard::Priority));
 
@@ -371,7 +371,7 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsSitSideBySideAsO
     Harness h;
     // #4029: a pane too narrow for Actions beside the 776px Identity/Runtime row, but wide enough for Actions and
     // Priority side by side on the next.
-    const auto layout = renderBlock(h, ALL_ACTIONS, 780.0F, INFO_ROW);
+    const auto layout = renderBlock(h, BLOCK_RENDER_ACTIONS, 780.0F, INFO_ROW);
     ASSERT_FALSE(layout.onFirstRow(OverviewCard::Actions));
     ASSERT_TRUE(layout.sameRow(OverviewCard::Actions, OverviewCard::Priority));
 
@@ -394,7 +394,7 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsSitSideBySideAsO
 TEST_F(ProcessActionsBlockRenderTest, InANarrowPaneTheCardsStackHeldToItAndTheButtonsWrap)
 {
     Harness h;
-    const auto layout = renderBlock(h, ALL_ACTIONS, 120.0F, INFO_ROW);
+    const auto layout = renderBlock(h, BLOCK_RENDER_ACTIONS, 120.0F, INFO_ROW);
     ASSERT_FALSE(layout.onFirstRow(OverviewCard::Actions));
     ASSERT_FALSE(layout.sameRow(OverviewCard::Actions, OverviewCard::Priority));
 
@@ -416,14 +416,14 @@ TEST_F(ProcessActionsBlockRenderTest, InANarrowPaneTheCardsStackHeldToItAndTheBu
 TEST_F(ProcessActionsBlockRenderTest, KillFromTheCardOpensTheSharedConfirmAndActsOnNothingYet)
 {
     Harness h;
-    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name));
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(BLOCK_RENDER_ACTIONS, BLOCK_RENDER_TARGET, h.name));
 
     std::string modalName;
     const auto body = [&]
     {
-        renderCards(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F));
+        renderCards(h.context(BLOCK_RENDER_ACTIONS), layoutFor(BLOCK_RENDER_ACTIONS, 1600.0F, 600.0F));
         // As ProcessDetailsPanel does: the dialog from panel scope, every frame.
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
         {
             modalName = modal->Name;
@@ -460,7 +460,7 @@ TEST_F(ProcessActionsBlockRenderTest, AKillWindowsRefusesForWantOfAccessOffersRe
     Platform::BrokeredProcessActions actions(std::make_unique<Platform::WindowsProcessActions>(functions), broker);
 
     ProcessActionsView view;
-    view.requestAction(Detail::ProcessAction::Kill, TARGET, "elevated.exe");
+    view.requestAction(Detail::ProcessAction::Kill, BLOCK_RENDER_TARGET, "elevated.exe");
     view.dispatchConfirmed(&actions);
     view.waitForActionForTesting();
 
@@ -492,7 +492,8 @@ TEST_F(ProcessActionsBlockRenderTest, AKillWindowsRefusesForWantOfAccessOffersRe
     const std::vector<Platform::Broker::Request> requests = broker->requests();
     ASSERT_EQ(requests.size(), 1U);
     EXPECT_EQ(requests.front(),
-              (Platform::Broker::Request{Platform::Broker::SignalRequest{.target = TARGET, .signal = Platform::Broker::Signal::Kill}}));
+              (Platform::Broker::Request{
+                  Platform::Broker::SignalRequest{.target = BLOCK_RENDER_TARGET, .signal = Platform::Broker::Signal::Kill}}));
     EXPECT_TRUE(view.lastResult().ok) << view.lastResult().text;
 }
 #endif
@@ -503,7 +504,7 @@ TEST_F(ProcessActionsBlockRenderTest, AKillWindowsRefusesForWantOfAccessOffersRe
 TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndAppliesToTheProcess)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canSetAffinity = true;
     const Platform::CpuAffinity current = Platform::CpuAffinity::fromMask(0b11U);
     std::string text;
@@ -513,7 +514,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
         ProcessActionsBlock::Context context = h.context(caps);
         context.currentAffinity = &current;
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -528,7 +529,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
     h.actionsView.waitForAffinityLayoutForTesting();
     ProcessAffinityDialog& dialog = h.actionsView.affinityDialog();
     EXPECT_FALSE(dialog.awaitingLayout());
-    EXPECT_EQ(dialog.target().pid, TARGET.pid);
+    EXPECT_EQ(dialog.target().pid, BLOCK_RENDER_TARGET.pid);
     EXPECT_EQ(dialog.choice(), current);
 
     dialog.choose(2, true);
@@ -542,7 +543,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
     }
     EXPECT_EQ(h.mock.setAffinityCount(), 1);
     EXPECT_EQ(h.mock.lastAffinity(), Platform::CpuAffinity::fromMask(0b111U));
-    EXPECT_EQ(h.mock.lastTarget().pid, TARGET.pid);
+    EXPECT_EQ(h.mock.lastTarget().pid, BLOCK_RENDER_TARGET.pid);
     static_cast<void>(runFrame(body));
     EXPECT_TRUE(text.contains("CPU affinity of victim (PID 1001) set to 0-2")) << text;
 
@@ -566,7 +567,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityFromTheCardOpensTheDialogAndApp
 TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDialogAndAppliesToTheProcess)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canSetSchedPolicy = true;
     caps.canAuthorizeInteractively = true;
     h.mock.setCapabilities(caps);
@@ -577,7 +578,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
         ProcessActionsBlock::Context context = h.context(caps);
         context.currentSchedPolicy = Platform::SchedPolicy::Normal;
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -600,7 +601,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
     };
     pressButton();
     ProcessSchedPolicyDialog& dialog = h.actionsView.schedPolicyDialog();
-    EXPECT_EQ(dialog.target().pid, TARGET.pid);
+    EXPECT_EQ(dialog.target().pid, BLOCK_RENDER_TARGET.pid);
     EXPECT_EQ(dialog.choice(), Platform::SchedPolicy::Normal);
 
     pressInModal("Batch", false);
@@ -614,7 +615,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
     EXPECT_EQ(h.mock.setSchedPolicyCount(), 1);
     EXPECT_EQ(h.mock.lastSchedPolicy(), Platform::SchedPolicy::Batch);
     EXPECT_EQ(h.mock.lastRealtimeThreads(), Platform::RealtimeThreads::Keep) << "opened on Normal: no warning, none demoted";
-    EXPECT_EQ(h.mock.lastTarget().pid, TARGET.pid);
+    EXPECT_EQ(h.mock.lastTarget().pid, BLOCK_RENDER_TARGET.pid);
     static_cast<void>(runFrame(body));
     EXPECT_TRUE(text.contains("Scheduling policy of victim (PID 1001) set to Batch")) << text;
 
@@ -650,7 +651,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetSchedulingPolicyFromTheCardOpensTheDial
 TEST_F(ProcessActionsBlockRenderTest, RoundRobinFromTheCardIsSetAfterTheConfirm)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canSetSchedPolicy = true;
     caps.canSetRealtimeSchedPolicy = true;
     caps.canAuthorizeInteractively = true;
@@ -664,7 +665,7 @@ TEST_F(ProcessActionsBlockRenderTest, RoundRobinFromTheCardIsSetAfterTheConfirm)
         context.currentSchedPolicy = Platform::SchedPolicy::Fifo;
         context.currentRtPriority = 40;
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -716,7 +717,7 @@ TEST_F(ProcessActionsBlockRenderTest, NoSetSchedulingPolicyWhereThePlatformCantS
         [&]
         {
             ImGui::LogToBuffer();
-            renderCards(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F));
+            renderCards(h.context(BLOCK_RENDER_ACTIONS), layoutFor(BLOCK_RENDER_ACTIONS, 1600.0F, 600.0F));
             text = GImGui->LogBuffer.c_str();
             ImGui::LogFinish();
         });
@@ -733,7 +734,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityBeforeTheLayoutIsReadOpensTheDi
     layout.online = Platform::CpuAffinity::fromMask(0b1111U);
     h.mock.setAffinityLayout(layout);
     h.mock.holdAffinityLayout();
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canSetAffinity = true;
     const Platform::CpuAffinity current = Platform::CpuAffinity::fromMask(0b1U);
     std::string text;
@@ -743,7 +744,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetAffinityBeforeTheLayoutIsReadOpensTheDi
         ProcessActionsBlock::Context context = h.context(caps);
         context.currentAffinity = &current;
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -781,12 +782,12 @@ TEST_F(ProcessActionsBlockRenderTest, TheUpdatePathReadsTheLayoutBeforeSetAffini
     }
     h.actionsView.waitForAffinityLayoutForTesting(); // no dialog awaits it: kept for the press
 
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canSetAffinity = true;
     const auto body = [&]
     {
         renderCards(h.context(caps), layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
     };
     ASSERT_FALSE(runFrame(body));
     ImGui::ActivateItemByID(ImHashStr(Detail::SET_AFFINITY_LABEL, 0, actionsWindow()->ID));
@@ -807,14 +808,14 @@ TEST_F(ProcessActionsBlockRenderTest, ConfirmingActsAndShowsTheResultAndCancelli
     const auto body = [&]
     {
         ImGui::LogToBuffer();
-        renderCards(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        renderCards(h.context(BLOCK_RENDER_ACTIONS), layoutFor(BLOCK_RENDER_ACTIONS, 1600.0F, 600.0F));
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
 
     // Cancelled: nothing is done.
-    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name));
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(BLOCK_RENDER_ACTIONS, BLOCK_RENDER_TARGET, h.name));
     ASSERT_TRUE(runFrame(body));
     ASSERT_TRUE(runFrame(body));
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
@@ -826,7 +827,7 @@ TEST_F(ProcessActionsBlockRenderTest, ConfirmingActsAndShowsTheResultAndCancelli
     EXPECT_EQ(h.actionsView.pendingAction(), Detail::ProcessAction::None);
 
     // Confirmed: the process is killed and the result line is drawn in the card.
-    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name));
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(BLOCK_RENDER_ACTIONS, BLOCK_RENDER_TARGET, h.name));
     ASSERT_TRUE(runFrame(body));
     ASSERT_TRUE(runFrame(body));
     modal = ImGui::GetTopMostPopupModal();
@@ -856,7 +857,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAnd
         ProcessActionsBlock::Context context = h.context(CAPS);
         context.efficiencyMode = on;
         renderCards(context, layoutFor(CAPS, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -868,7 +869,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAnd
         {
             toggleWidth = ProcessActionsView::efficiencyModeToggleWidth(CAPS);
             buttons = ProcessActionsBlock::measure(CAPS, false).buttons;
-            withoutToggle = ProcessActionsView::efficiencyModeToggleWidth(ALL_ACTIONS);
+            withoutToggle = ProcessActionsView::efficiencyModeToggleWidth(BLOCK_RENDER_ACTIONS);
         });
     EXPECT_GT(toggleWidth, 0.0F);
     EXPECT_GE(buttons, toggleWidth);
@@ -902,7 +903,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheEfficiencyModeCheckboxAsksToTurnItOnAnd
     h.actionsView.waitForActionForTesting();
     EXPECT_EQ(h.mock.efficiencyModeCount(), 2);
     EXPECT_FALSE(h.mock.lastEfficiencyMode());
-    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_EQ(h.mock.lastTarget(), BLOCK_RENDER_TARGET);
 }
 
 // #3429: where the platform can set Realtime (Windows), the Priority card has Set Realtime... under the slider.
@@ -926,7 +927,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetRealtimeInThePriorityCardWarnsThenSetsR
         ProcessActionsBlock::Context context = h.context(caps);
         context.currentNice = currentNice;
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -950,7 +951,7 @@ TEST_F(ProcessActionsBlockRenderTest, SetRealtimeInThePriorityCardWarnsThenSetsR
     (void) runFrame(body);
     EXPECT_EQ(h.mock.setPriorityCount(), 1);
     EXPECT_EQ(h.mock.lastSetPriorityNice(), Detail::REALTIME_PRIORITY_NICE);
-    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_EQ(h.mock.lastTarget(), BLOCK_RENDER_TARGET);
     EXPECT_TRUE(text.contains("Priority of PID 1001 set to Realtime")) << text;
 
     // Already at Realtime (the next sample): drawn, greyed out, and a press asks nothing.
@@ -1004,10 +1005,10 @@ TEST_F(ProcessActionsBlockRenderTest, SetRealtimeWaitsForTheSlidersApply)
         ProcessActionsBlock::Context context = h.context(REALTIME_CAPS);
         context.actions = &gated;
         renderCards(context, layoutFor(REALTIME_CAPS, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&gated, TARGET);
+        h.actionsView.renderConfirmation(&gated, BLOCK_RENDER_TARGET);
     };
-    h.priorityView.editNice(Domain::Priority::classNice(Domain::Priority::PriorityClass::High), TARGET);
-    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0});
+    h.priorityView.editNice(Domain::Priority::classNice(Domain::Priority::PriorityClass::High), BLOCK_RENDER_TARGET);
+    h.priorityView.apply(&gated, BLOCK_RENDER_TARGET, std::optional<std::int32_t>{0});
     ASSERT_TRUE(h.priorityView.applying());
 
     (void) runFrame(body);
@@ -1036,11 +1037,11 @@ TEST_F(ProcessActionsBlockRenderTest, TheSlidersApplyWaitsForSetRealtime)
         ProcessActionsBlock::Context context = h.context(REALTIME_CAPS);
         context.actions = &gated;
         renderCards(context, layoutFor(REALTIME_CAPS, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&gated, TARGET);
+        h.actionsView.renderConfirmation(&gated, BLOCK_RENDER_TARGET);
     };
     const std::int32_t high = Domain::Priority::classNice(Domain::Priority::PriorityClass::High);
 
-    h.actionsView.requestAction(Detail::ProcessAction::SetRealtimePriority, TARGET, h.name);
+    h.actionsView.requestAction(Detail::ProcessAction::SetRealtimePriority, BLOCK_RENDER_TARGET, h.name);
     (void) runFrame(body);
     ASSERT_TRUE(runFrame(body)) << "its confirm is up";
     EXPECT_TRUE(h.priorityView.heldForOtherPriorityChange());
@@ -1053,8 +1054,8 @@ TEST_F(ProcessActionsBlockRenderTest, TheSlidersApplyWaitsForSetRealtime)
     ASSERT_TRUE(h.actionsView.actionRunning());
     (void) runFrame(body);
     EXPECT_TRUE(h.priorityView.heldForOtherPriorityChange()) << "still running";
-    h.priorityView.editNice(high, TARGET);
-    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0});
+    h.priorityView.editNice(high, BLOCK_RENDER_TARGET);
+    h.priorityView.apply(&gated, BLOCK_RENDER_TARGET, std::optional<std::int32_t>{0});
     EXPECT_FALSE(h.priorityView.applying()) << "Apply sends nothing while Set Realtime priority runs";
 
     gated.open();
@@ -1063,7 +1064,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheSlidersApplyWaitsForSetRealtime)
     EXPECT_EQ(gated.lastSetPriorityNice(), Detail::REALTIME_PRIORITY_NICE);
     (void) runFrame(body);
     EXPECT_FALSE(h.priorityView.heldForOtherPriorityChange());
-    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0}); // the edit is still pending
+    h.priorityView.apply(&gated, BLOCK_RENDER_TARGET, std::optional<std::int32_t>{0}); // the edit is still pending
     h.priorityView.update(/*wait=*/true);
     EXPECT_EQ(gated.setPriorityCount(), 2);
     EXPECT_EQ(gated.lastSetPriorityNice(), high);
@@ -1087,14 +1088,14 @@ TEST_F(ProcessActionsBlockRenderTest, SetRealtimesRetryWaitsForTheSlidersApply)
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
     };
 
-    h.actionsView.requestAction(Detail::ProcessAction::SetRealtimePriority, TARGET, h.name);
+    h.actionsView.requestAction(Detail::ProcessAction::SetRealtimePriority, BLOCK_RENDER_TARGET, h.name);
     h.actionsView.dispatchConfirmed(&refusing);
     h.actionsView.waitForActionForTesting();
     (void) runFrame(body);
     ASSERT_TRUE(h.actionsView.offersAuthenticateAndRetry()) << "refused: the retry is offered";
 
-    h.priorityView.editNice(Domain::Priority::classNice(Domain::Priority::PriorityClass::High), TARGET);
-    h.priorityView.apply(&gated, TARGET, std::optional<std::int32_t>{0});
+    h.priorityView.editNice(Domain::Priority::classNice(Domain::Priority::PriorityClass::High), BLOCK_RENDER_TARGET);
+    h.priorityView.apply(&gated, BLOCK_RENDER_TARGET, std::optional<std::int32_t>{0});
     ASSERT_TRUE(h.priorityView.applying());
     (void) runFrame(body);
     EXPECT_FALSE(h.actionsView.offersAuthenticateAndRetry()) << "held while the apply runs";
@@ -1113,16 +1114,16 @@ TEST(ProcessActionsViewInFlightTest, OnlySetRealtimePriorityIsAPriorityChangeInF
 {
     ProcessActionsView view;
     EXPECT_FALSE(view.priorityChangeInFlight());
-    view.requestAction(Detail::ProcessAction::Kill, TARGET, "victim");
+    view.requestAction(Detail::ProcessAction::Kill, BLOCK_RENDER_TARGET, "victim");
     EXPECT_FALSE(view.priorityChangeInFlight());
     view.cancelConfirm();
-    view.requestAction(Detail::ProcessAction::SetRealtimePriority, TARGET, "victim");
+    view.requestAction(Detail::ProcessAction::SetRealtimePriority, BLOCK_RENDER_TARGET, "victim");
     EXPECT_TRUE(view.priorityChangeInFlight());
     view.cancelConfirm();
     EXPECT_FALSE(view.priorityChangeInFlight());
 
     const Detail::RealtimePriorityItem item =
-        Detail::realtimePriorityItem(REALTIME_CAPS, TARGET, false, false, 0, /*priorityApplying=*/true);
+        Detail::realtimePriorityItem(REALTIME_CAPS, BLOCK_RENDER_TARGET, false, false, 0, /*priorityApplying=*/true);
     EXPECT_EQ(item.state, Detail::RealtimePriorityState::Disabled);
     EXPECT_TRUE(std::string_view(item.tooltip).contains("priority change being applied")) << item.tooltip;
 }
@@ -1135,7 +1136,7 @@ TEST_F(ProcessActionsBlockRenderTest, TheActionButtonsExplainThemselvesOnHover)
     const auto body = [&]
     {
         ImGui::LogToBuffer();
-        renderCards(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1600.0F, 600.0F));
+        renderCards(h.context(BLOCK_RENDER_ACTIONS), layoutFor(BLOCK_RENDER_ACTIONS, 1600.0F, 600.0F));
         seen += GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -1172,11 +1173,11 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheCardIsScrolle
         // A short scrolling Overview with the cards far below its visible part.
         ImGui::BeginChild("##OverviewContent", ImVec2(1000.0F, 100.0F));
         ImGui::Dummy(ImVec2(10.0F, 2000.0F));
-        renderCards(h.context(ALL_ACTIONS), layoutFor(ALL_ACTIONS, 1000.0F, 0.0F));
+        renderCards(h.context(BLOCK_RENDER_ACTIONS), layoutFor(BLOCK_RENDER_ACTIONS, 1000.0F, 0.0F));
         const ImGuiWindow* card = actionsWindow();
         cardSkipped = card == nullptr || card->SkipItems;
         ImGui::EndChild();
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal(); modal != nullptr)
         {
             modalName = modal->Name;
@@ -1185,7 +1186,7 @@ TEST_F(ProcessActionsBlockRenderTest, F9OpensTheKillConfirmWhileTheCardIsScrolle
     (void) runFrame(body); // Lays the Overview out, so the next frames know the card is clipped
     ASSERT_FALSE(runFrame(body));
 
-    ASSERT_TRUE(h.actionsView.requestKillShortcut(ALL_ACTIONS, TARGET, h.name)); // F9
+    ASSERT_TRUE(h.actionsView.requestKillShortcut(BLOCK_RENDER_ACTIONS, BLOCK_RENDER_TARGET, h.name)); // F9
     EXPECT_TRUE(runFrame(body));
     EXPECT_TRUE(runFrame(body));
     EXPECT_TRUE(cardSkipped) << "the card was drawn, so this does not test the scrolled-out case";
@@ -1343,7 +1344,7 @@ TEST_F(ProcessActionsBlockRenderTest, EachCardGrowsWhileItsErrorLineShowsAndShri
     const auto body = [&]
     {
         // As the panel's update path does (#2734): the I/O priority read on its worker, waited for here.
-        (void) h.priorityView.updateReads(&h.mock, TARGET, 1.0F / 60.0F, /*wait=*/true);
+        (void) h.priorityView.updateReads(&h.mock, BLOCK_RENDER_TARGET, 1.0F / 60.0F, /*wait=*/true);
         renderCards(h.context(WITH_IO_PRIORITY), layoutFor(WITH_IO_PRIORITY, 1000.0F));
     };
     const auto settle = [&]
@@ -1363,8 +1364,8 @@ TEST_F(ProcessActionsBlockRenderTest, EachCardGrowsWhileItsErrorLineShowsAndShri
     const float ioHeight = io->Size.y;
 
     // The I/O priority card's apply fails: its error line shows, and only its card grows.
-    h.priorityView.ioPriorityView().editIoPriority({.ioClass = Platform::IoPriorityClass::Idle, .level = 0}, TARGET);
-    h.priorityView.ioPriorityView().apply(&h.mock, TARGET);
+    h.priorityView.ioPriorityView().editIoPriority({.ioClass = Platform::IoPriorityClass::Idle, .level = 0}, BLOCK_RENDER_TARGET);
+    h.priorityView.ioPriorityView().apply(&h.mock, BLOCK_RENDER_TARGET);
     h.priorityView.update(/*wait=*/true);
     ASSERT_EQ(h.priorityView.ioPriorityView().error(), "Permission denied");
     settle();
@@ -1373,8 +1374,8 @@ TEST_F(ProcessActionsBlockRenderTest, EachCardGrowsWhileItsErrorLineShowsAndShri
     EXPECT_FLOAT_EQ(priority->Size.y, priorityHeight);
 
     // The Priority card's too.
-    h.priorityView.editNice(10, TARGET);
-    h.priorityView.apply(&h.mock, TARGET, std::optional<std::int32_t>{0});
+    h.priorityView.editNice(10, BLOCK_RENDER_TARGET);
+    h.priorityView.apply(&h.mock, BLOCK_RENDER_TARGET, std::optional<std::int32_t>{0});
     h.priorityView.update(/*wait=*/true);
     ASSERT_EQ(h.priorityView.error(), "Operation not permitted");
     settle();
@@ -1395,7 +1396,7 @@ TEST_F(ProcessActionsBlockRenderTest, EachCardGrowsWhileItsErrorLineShowsAndShri
 /// The four buttons and the priority row with the trace button in @p availability.
 constexpr Platform::ProcessActionCapabilities withTrace(Platform::SyscallTraceAvailability availability)
 {
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.syscallTrace = availability;
     return caps;
 }
@@ -1643,7 +1644,7 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsStartARowOfTheir
     ProcessDetailsLayout::OverviewLayout layout;
     const auto body = [&]
     {
-        layout = renderOverviewRow(h.context(ALL_ACTIONS), 780.0F, 384.0F);
+        layout = renderOverviewRow(h.context(BLOCK_RENDER_ACTIONS), 780.0F, 384.0F);
     };
     for (int frame = 0; frame < 3; ++frame)
     {
@@ -1675,13 +1676,13 @@ TEST_F(ProcessActionsBlockRenderTest, WrappedBelowTheRowTheCardsStartARowOfTheir
 TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndNamesTheFile)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     std::string text;
     const auto body = [&]
     {
         ImGui::LogToBuffer();
         renderCards(h.context(caps), layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -1722,7 +1723,7 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     EXPECT_TRUE(text.contains("A full memory dump of victim (PID 1001)")) << text;
     EXPECT_EQ(h.mock.createDumpCount(), 0); // nothing until confirmed
     // F9 waits while a dump's dialog is up.
-    EXPECT_FALSE(h.actionsView.requestKillShortcut(caps, TARGET, h.name));
+    EXPECT_FALSE(h.actionsView.requestKillShortcut(caps, BLOCK_RENDER_TARGET, h.name));
 
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);
@@ -1734,7 +1735,7 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
     }
     (void) runFrame(body);
     EXPECT_EQ(h.mock.createDumpCount(), 1);
-    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_EQ(h.mock.lastTarget(), BLOCK_RENDER_TARGET);
     EXPECT_EQ(h.mock.lastDumpDirectory(), DumpDetail::defaultDumpDirectory(false));
     EXPECT_TRUE(text.contains("Wrote a dump file of victim (PID 1001)")) << text;
     EXPECT_TRUE(text.contains(file.string())) << text;
@@ -1754,13 +1755,13 @@ TEST_F(ProcessActionsBlockRenderTest, CreateDumpFromTheCardConfirmsWritesAndName
 TEST_F(ProcessActionsBlockRenderTest, LookUpOnVirusTotalFromTheCardHashesAndShowsTheVerdict)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     std::string text;
     const auto body = [&]
     {
         ImGui::LogToBuffer();
         renderCards(h.context(caps), layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -1844,13 +1845,13 @@ TEST_F(ProcessActionsBlockRenderTest, MeasureCountsTheVirusTotalButtonWhereItIsO
 TEST_F(ProcessActionsBlockRenderTest, AnalyzeWaitChainFromTheCardOpensTheDialogForTheProcess)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     std::string text;
     const auto body = [&]
     {
         ImGui::LogToBuffer();
         renderCards(h.context(caps), layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -1892,13 +1893,13 @@ TEST_F(ProcessActionsBlockRenderTest, AnalyzeWaitChainFromTheCardOpensTheDialogF
     ImGui::ActivateItemByID(ImHashStr(WaitChainDetail::ANALYZE_WAIT_CHAIN_LABEL, 0, actionsWindow()->ID));
     (void) runFrame(body);
     EXPECT_TRUE(h.actionsView.waitChainDialog().isOpen());
-    EXPECT_EQ(h.actionsView.waitChainDialog().target(), TARGET);
+    EXPECT_EQ(h.actionsView.waitChainDialog().target(), BLOCK_RENDER_TARGET);
     h.actionsView.waitChainDialog().update(true);
     (void) runFrame(body);
     (void) runFrame(body);
     EXPECT_TRUE(text.contains("Thread 55: Running")) << text;
     EXPECT_EQ(h.mock.waitChainCount(), 1);
-    EXPECT_EQ(h.mock.lastTarget(), TARGET);
+    EXPECT_EQ(h.mock.lastTarget(), BLOCK_RENDER_TARGET);
     h.actionsView.shutdownWaitChainDialog();
     EXPECT_FALSE(h.actionsView.waitChainDialog().isOpen());
 }
@@ -1908,20 +1909,20 @@ TEST_F(ProcessActionsBlockRenderTest, AnalyzeWaitChainFromTheCardOpensTheDialogF
 TEST_F(ProcessActionsBlockRenderTest, TheDumpConfirmWarnsOfLowSpaceAndOffersAFolder)
 {
     Harness h;
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canCreateDump = true;
     caps.canChooseDumpFolder = true;
     h.mock.setCapabilities(caps);
     // Too little room for a 3 GiB process; and the folder dialog is cancelled (the mock's default), so
     // no folder is remembered in the config.
-    constexpr std::uint64_t GIB = std::uint64_t{1024} * 1024U * 1024U;
-    h.mock.setDumpSpace({.freeBytes = GIB, .processBytes = 3 * GIB});
+    constexpr std::uint64_t BLOCK_RENDER_GIB = std::uint64_t{1024} * 1024U * 1024U;
+    h.mock.setDumpSpace({.freeBytes = BLOCK_RENDER_GIB, .processBytes = 3 * BLOCK_RENDER_GIB});
     std::string text;
     const auto body = [&]
     {
         ImGui::LogToBuffer();
         renderCards(h.context(caps), layoutFor(caps, 1600.0F, 600.0F));
-        h.actionsView.renderConfirmation(&h.mock, TARGET);
+        h.actionsView.renderConfirmation(&h.mock, BLOCK_RENDER_TARGET);
         text = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
     };
@@ -1969,7 +1970,7 @@ void* folderDialogOwner()
     ProcessActionsView actionsView;
     ProcessPriorityView priorityView;
     const std::string name = "victim";
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = BLOCK_RENDER_ACTIONS;
     caps.canCreateDump = true;
     caps.canChooseDumpFolder = true;
     mock.setCapabilities(caps);
@@ -1979,7 +1980,7 @@ void* folderDialogOwner()
         .actions = &mock,
         .capabilities = caps,
         .processName = &name,
-        .target = TARGET,
+        .target = BLOCK_RENDER_TARGET,
         .currentNice = std::optional<std::int32_t>{0},
     };
     const auto frame = [&]
@@ -1989,7 +1990,7 @@ void* folderDialogOwner()
         ImGui::SetNextWindowSize(ImVec2(1600.0F, 1000.0F));
         ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         renderCards(context, layoutFor(caps, 1600.0F, 600.0F));
-        actionsView.renderConfirmation(&mock, TARGET);
+        actionsView.renderConfirmation(&mock, BLOCK_RENDER_TARGET);
         ImGui::End();
         ImGui::Render();
     };

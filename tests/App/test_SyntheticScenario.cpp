@@ -45,7 +45,7 @@ using App::Synthetic::ScenarioConfig;
 constexpr std::size_t FULL_HISTORY_SAMPLES =
     static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MAX) * 1000U / static_cast<std::size_t>(Sampling::REFRESH_INTERVAL_MIN_MS);
 
-[[nodiscard]] ScenarioConfig parsed(const char* value)
+[[nodiscard]] ScenarioConfig parsedScenario(const char* value)
 {
     const auto result = parseScenario(value);
     EXPECT_TRUE(result.config.has_value()) << value;
@@ -115,7 +115,7 @@ TEST(SyntheticScenarioParseTest, ReadsEveryKey)
 
 TEST(SyntheticScenarioParseTest, ToleratesSpacesCaseAndEmptyTokens)
 {
-    const ScenarioConfig config = parsed(" Processes = 10 ,, HISTORY=None , ");
+    const ScenarioConfig config = parsedScenario(" Processes = 10 ,, HISTORY=None , ");
     EXPECT_EQ(config.workload.processes, 10U);
     EXPECT_EQ(config.historySeconds, 0);
 }
@@ -195,19 +195,19 @@ TEST(SyntheticScenarioParseTest, RefreshIsClampedToTheSupportedRange)
 TEST(SyntheticScenarioParseTest, NumaNodesAreClamped)
 {
     // #3088: one node by default, so a plain scenario shows no NUMA view.
-    EXPECT_EQ(parsed("1").workload.numaNodes, 1U);
+    EXPECT_EQ(parsedScenario("1").workload.numaNodes, 1U);
     const auto none = parseScenario("numa=0");
     EXPECT_EQ(none.config.value_or(ScenarioConfig{}).workload.numaNodes, Platform::Synthetic::MIN_NUMA_NODES);
     EXPECT_FALSE(none.warnings.empty());
     const auto many = parseScenario("numa=1000");
     EXPECT_EQ(many.config.value_or(ScenarioConfig{}).workload.numaNodes, Platform::Synthetic::MAX_NUMA_NODES);
     EXPECT_FALSE(many.warnings.empty());
-    EXPECT_NE(App::Synthetic::describe(parsed("numa=2")).find("numa=2"), std::string::npos);
+    EXPECT_NE(App::Synthetic::describe(parsedScenario("numa=2")).find("numa=2"), std::string::npos);
 }
 
 TEST(SyntheticScenarioParseTest, DescribeNamesTheSettings)
 {
-    const std::string text = App::Synthetic::describe(parsed("processes=123,refresh=500"));
+    const std::string text = App::Synthetic::describe(parsedScenario("processes=123,refresh=500"));
     EXPECT_NE(text.find("processes=123"), std::string::npos);
     EXPECT_NE(text.find("refresh=500ms"), std::string::npos);
     EXPECT_NE(text.find(std::to_string(Sampling::HISTORY_SECONDS_MAX)), std::string::npos);
@@ -347,7 +347,7 @@ TEST(SyntheticScenarioTest, ScenarioDetailReadersAreTheUnsupportedStandIns)
 
 TEST(SyntheticScenarioTest, StartupOverridesComeFromTheScenario)
 {
-    const auto config = parsed("history=600,refresh=100");
+    const auto config = parsedScenario("history=600,refresh=100");
     const Scenario scenario(config);
     EXPECT_EQ(App::Synthetic::startupHistorySeconds(&scenario, 300), 600);
     EXPECT_EQ(App::Synthetic::startupRefreshIntervalMs(&scenario, 1000), Sampling::REFRESH_INTERVAL_MIN_MS);
@@ -444,8 +444,8 @@ TEST(SyntheticScenarioTest, PreloadIsTrimmedToAShorterWindow)
 // #2170: the same ASCII whitespace as every other TASKSMACK_* hook (Platform::trimAscii()).
 TEST(SyntheticScenarioParseTest, AnyAsciiWhitespaceAroundTheSettingsIsTrimmed)
 {
-    const ScenarioConfig plain = parsed("processes=123,refresh=500");
-    const ScenarioConfig padded = parsed("\tprocesses = 123 ,\vrefresh=500\r\n");
+    const ScenarioConfig plain = parsedScenario("processes=123,refresh=500");
+    const ScenarioConfig padded = parsedScenario("\tprocesses = 123 ,\vrefresh=500\r\n");
     EXPECT_EQ(padded.workload.processes, plain.workload.processes);
     EXPECT_EQ(padded.refreshIntervalMs, plain.refreshIntervalMs);
 }

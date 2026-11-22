@@ -64,8 +64,8 @@ namespace App
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 1600.0F;
-constexpr float DISPLAY_HEIGHT = 1200.0F;
+constexpr float METRICS_PANEL_DISPLAY_WIDTH = 1600.0F;
+constexpr float METRICS_PANEL_DISPLAY_HEIGHT = 1200.0F;
 
 using SeriesLabels = std::set<std::string>;
 
@@ -176,7 +176,7 @@ class SystemMetricsPanelRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(METRICS_PANEL_DISPLAY_WIDTH, METRICS_PANEL_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -204,7 +204,7 @@ class SystemMetricsPanelRenderTest : public ::testing::Test
         std::string captured;
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(METRICS_PANEL_DISPLAY_WIDTH, METRICS_PANEL_DISPLAY_HEIGHT));
         ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
         panel.renderContent();
@@ -660,7 +660,7 @@ TEST_F(SystemMetricsPanelRenderTest, OverviewChartsDrawTheirHistoryAsSamplesArri
     ImGuiIO& io = ImGui::GetIO();
     for (int step = 1; step < 20; ++step)
     {
-        io.AddMousePosEvent(DISPLAY_WIDTH * 0.4F, DISPLAY_HEIGHT * static_cast<float>(step) / 20.0F);
+        io.AddMousePosEvent(METRICS_PANEL_DISPLAY_WIDTH * 0.4F, METRICS_PANEL_DISPLAY_HEIGHT * static_cast<float>(step) / 20.0F);
         panel->onUpdate(1.0F / 60.0F);
         static_cast<void>(renderAndCapture(*panel));
     }
@@ -705,8 +705,9 @@ TEST_F(SystemMetricsPanelRenderTest, EachOverviewChartShowsItsTooltipWhenHovered
     std::vector<ImRect> rects;
     for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
     {
-        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i);
-            plot != nullptr && plot->PlotRect.GetWidth() > 4.0F && plot->PlotRect.Max.y < DISPLAY_HEIGHT && plot->PlotRect.Min.y >= 0.0F)
+        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i); plot != nullptr && plot->PlotRect.GetWidth() > 4.0F &&
+                                                                plot->PlotRect.Max.y < METRICS_PANEL_DISPLAY_HEIGHT &&
+                                                                plot->PlotRect.Min.y >= 0.0F)
         {
             rects.push_back(plot->PlotRect);
         }
@@ -825,7 +826,7 @@ TEST_F(SystemMetricsPanelRenderTest, ThePowerHeadingSaysWhatTheChartShows)
     }
     ASSERT_NE(card, nullptr);
 
-    ASSERT_LT(card->Pos.y, DISPLAY_HEIGHT) << "the power card is below the window";
+    ASSERT_LT(card->Pos.y, METRICS_PANEL_DISPLAY_HEIGHT) << "the power card is below the window";
 
     // A tooltip waits for the pointer to rest (ImGuiHoveredFlags_ForTooltip): not here.
     ImGuiStyle& style = ImGui::GetStyle();
@@ -1234,9 +1235,9 @@ TEST_F(SystemMetricsPanelRenderTest, APickedInterfacesChartAndLinkSpeedShowTheir
     ImPlotContext& plots = *ImPlot::GetCurrentContext();
     for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
     {
-        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i); plot != nullptr && !overviewPlots.contains(plot->ID) &&
-                                                                plot->PlotRect.GetWidth() > 4.0F && plot->PlotRect.Max.y < DISPLAY_HEIGHT &&
-                                                                plot->PlotRect.Min.y >= 0.0F)
+        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i);
+            plot != nullptr && !overviewPlots.contains(plot->ID) && plot->PlotRect.GetWidth() > 4.0F &&
+            plot->PlotRect.Max.y < METRICS_PANEL_DISPLAY_HEIGHT && plot->PlotRect.Min.y >= 0.0F)
         {
             rects.push_back(plot->PlotRect);
         }
@@ -1263,7 +1264,7 @@ TEST_F(SystemMetricsPanelRenderTest, APickedInterfacesChartAndLinkSpeedShowTheir
     // The link speed's line sits above the charts: sweep the section's top for its tooltip.
     bool byteRateShown = false;
     constexpr int SWEEP_STEP_PX = 4;
-    for (int row = 0; row * SWEEP_STEP_PX < static_cast<int>(DISPLAY_HEIGHT * 0.5F) && !byteRateShown; ++row)
+    for (int row = 0; row * SWEEP_STEP_PX < static_cast<int>(METRICS_PANEL_DISPLAY_HEIGHT * 0.5F) && !byteRateShown; ++row)
     {
         const auto y = static_cast<float>(row * SWEEP_STEP_PX);
         for (const float x : {40.0F, 120.0F, 200.0F, 300.0F})
@@ -1328,9 +1329,9 @@ TEST_F(SystemMetricsPanelRenderTest, TheDiskAndNetworkChartsShowTheirTooltips)
     ImPlotContext& plots = *ImPlot::GetCurrentContext();
     for (int i = 0; i < plots.Plots.GetBufSize(); ++i)
     {
-        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i); plot != nullptr && !overviewPlots.contains(plot->ID) &&
-                                                                plot->PlotRect.GetWidth() > 4.0F && plot->PlotRect.Max.y < DISPLAY_HEIGHT &&
-                                                                plot->PlotRect.Min.y >= 0.0F)
+        if (const ImPlotPlot* plot = plots.Plots.GetByIndex(i);
+            plot != nullptr && !overviewPlots.contains(plot->ID) && plot->PlotRect.GetWidth() > 4.0F &&
+            plot->PlotRect.Max.y < METRICS_PANEL_DISPLAY_HEIGHT && plot->PlotRect.Min.y >= 0.0F)
         {
             rects.push_back(plot->PlotRect);
         }

@@ -755,7 +755,7 @@ class OwnedSocket
 
 // A real loopback listener and client of this process, on the system's tables (#3356). In the CiRealSystem
 // group with the other real OS paths; it runs only on a disposable runner.
-class CiRealSystemWindowsConnectionsTest : public TestSupport::CiRealSystemTest
+class CiRealSystemWindowsConnectionsTest : public ::TestSupport::CiRealSystemTest
 {};
 
 TEST_F(CiRealSystemWindowsConnectionsTest, SeesThisProcesssLoopbackListenerAndClient)

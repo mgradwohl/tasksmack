@@ -25,10 +25,10 @@ using TestSupport::FailAllocationAfter;
 namespace
 {
 
-constexpr std::uint64_t WARM_UP_SAMPLES = 30;
+constexpr std::uint64_t SYSTEM_WARM_UP_SAMPLES = 30;
 
 /// Counters for sample @p step: cores 0..cores-1 and the named interfaces, all advancing.
-Platform::SystemCounters countersAt(std::uint64_t step, std::size_t cores, const std::vector<std::string>& interfaces)
+Platform::SystemCounters allocationSystemCountersAt(std::uint64_t step, std::size_t cores, const std::vector<std::string>& interfaces)
 {
     const auto cpu = [step](std::uint64_t salt)
     {
@@ -106,14 +106,14 @@ TEST(SystemModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsAnInter
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
         Domain::SystemModel model(std::make_unique<TestMocks::MockSystemProbe>());
         std::uint64_t step = 0;
-        for (; step < WARM_UP_SAMPLES; ++step)
+        for (; step < SYSTEM_WARM_UP_SAMPLES; ++step)
         {
-            model.updateFromCounters(countersAt(step, 2, before), static_cast<double>(step));
+            model.updateFromCounters(allocationSystemCountersAt(step, 2, before), static_cast<double>(step));
         }
         const auto publicationBefore = model.publication();
         const std::uint64_t versionBefore = model.publicationVersion();
         const std::size_t samplesBefore = model.publication()->timestamps.size();
-        const auto newSample = countersAt(step, 3, after);
+        const auto newSample = allocationSystemCountersAt(step, 3, after);
 
         bool threw = false;
         {
@@ -140,7 +140,7 @@ TEST(SystemModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsAnInter
         // Its publication shows the history the failure left: aligned, and either unmoved by the failed
         // sample or (a failure in publish(), after the append) moved by exactly one sample in every
         // series together.
-        model.updateFromCounters(countersAt(step + 1, 3, after), static_cast<double>(step + 1));
+        model.updateFromCounters(allocationSystemCountersAt(step + 1, 3, after), static_cast<double>(step + 1));
         expectAligned(model, after);
         EXPECT_GT(model.publicationVersion(), versionBefore);
         const std::size_t samplesAfter = model.publication()->timestamps.size();

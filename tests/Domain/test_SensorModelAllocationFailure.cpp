@@ -32,7 +32,7 @@ using namespace std::chrono_literals;
 // 63 readings fill all but one slot of each history's first 64-slot block (SharedHistoryBuffer::MIN_BLOCK), so
 // the paused sample's two appends (the break and the reading) must reserve a new block: the sweep reaches the
 // reservation path's allocations, not just the new device's.
-constexpr int WARM_UP_SAMPLES = 63;
+constexpr int SENSOR_WARM_UP_SAMPLES = 63;
 
 Platform::SensorReading temperature(const char* label, const char* id, double celsius)
 {
@@ -120,14 +120,14 @@ TEST(SensorModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADevice
                                   { return Domain::SensorModel::Reader([celsius, withNvme] { return sensors(*celsius, *withNvme); }); },
                                   1000ms,
                                   [now] { return *now; });
-        for (int step = 0; step < WARM_UP_SAMPLES; ++step)
+        for (int step = 0; step < SENSOR_WARM_UP_SAMPLES; ++step)
         {
             *celsius = 40.0 + static_cast<double>(step % 7);
             model.sample();
             *now += 1000ms;
         }
         const auto before = model.publication();
-        ASSERT_EQ(before->version, static_cast<std::uint64_t>(WARM_UP_SAMPLES));
+        ASSERT_EQ(before->version, static_cast<std::uint64_t>(SENSOR_WARM_UP_SAMPLES));
 
         // The failing sample: a new device, after a pause (each history gets its break too), into a window
         // that shrank below what the histories hold.

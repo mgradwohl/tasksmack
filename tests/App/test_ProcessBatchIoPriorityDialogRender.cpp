@@ -31,13 +31,13 @@ namespace App
 namespace
 {
 
-constexpr const char* DIALOG_POPUP_ID = "###BatchIoPriority"; // ProcessBatchIoPriorityDialog's modal
-constexpr const char* ROW_MENU_ID = "RowMenu";
-constexpr std::int32_t OWN_PID = 4000;
+constexpr const char* IO_DIALOG_POPUP_ID = "###BatchIoPriority"; // ProcessBatchIoPriorityDialog's modal
+constexpr const char* IO_ROW_MENU_ID = "RowMenu";
+constexpr std::int32_t IO_OWN_PID = 4000;
 
 constexpr Platform::ProcessActionCapabilities CAN_SET_IO_PRIORITY{.canSetIoPriority = true};
 constexpr Platform::ProcessActionCapabilities NO_IO_PRIORITY{.canSetPriority = true, .canSetIoPriority = false};
-constexpr Platform::IoPriority IDLE{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
+constexpr Platform::IoPriority BATCH_IO_IDLE{.ioClass = Platform::IoPriorityClass::Idle, .level = 0};
 
 class ProcessBatchIoPriorityDialogRenderTest : public ::testing::Test
 {
@@ -94,13 +94,13 @@ class ProcessBatchIoPriorityDialogRenderTest : public ::testing::Test
 };
 
 /// The row menu and the dialog, wired as ProcessesPanel wires them.
-struct FlowHarness
+struct IoFlowHarness
 {
     TestMocks::MockProcessActions mock;
     Platform::ProcessActionCapabilities capabilities = CAN_SET_IO_PRIORITY;
     std::vector<ProcessBatch::BatchTarget> targets{
         {.target = {.pid = 10, .startTimeTicks = 100}, .name = "a", .priority = "best-effort 4"},
-        {.target = {.pid = OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "default (best-effort 4 from nice)"},
+        {.target = {.pid = IO_OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "default (best-effort 4 from nice)"},
         {.target = {.pid = 12, .startTimeTicks = 120}, .name = "c", .priority = "idle"},
     };
     ProcessBatchIoPriorityDialog dialog;
@@ -117,17 +117,17 @@ struct FlowHarness
     {
         if (openMenu)
         {
-            ImGui::OpenPopup(ROW_MENU_ID);
+            ImGui::OpenPopup(IO_ROW_MENU_ID);
             openMenu = false;
         }
         // ProcessesPanel::renderBatchIoPriorityDialog(): Apply sets the value on the listed targets.
         if (const std::optional<Platform::IoPriority> priority = dialog.render(); priority.has_value())
         {
-            const ProcessBatch::BatchResult r = ProcessBatch::runBatchIoPriority(mock, dialog.targets(), *priority, OWN_PID);
+            const ProcessBatch::BatchResult r = ProcessBatch::runBatchIoPriority(mock, dialog.targets(), *priority, IO_OWN_PID);
             result = ProcessBatch::formatBatchIoPriorityResultMessage(*priority, r);
         }
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
-            modal != nullptr && std::string(modal->Name).contains(DIALOG_POPUP_ID))
+            modal != nullptr && std::string(modal->Name).contains(IO_DIALOG_POPUP_ID))
         {
             dialogPos = modal->Pos;
             dialogSize = modal->Size;
@@ -135,7 +135,7 @@ struct FlowHarness
         }
         // ProcessesPanel::renderRowContextMenu(), for a row of a selection
         menuItemDrawn = false;
-        if (ImGui::BeginPopup(ROW_MENU_ID))
+        if (ImGui::BeginPopup(IO_ROW_MENU_ID))
         {
             if (ProcessBatch::offersBatchIoPriority(capabilities, targets.size()))
             {
@@ -143,13 +143,13 @@ struct FlowHarness
                 if (ImGui::MenuItem("Set I/O priority for N processes...###SetIoPriority"))
                 {
                     // requestSelectionIoPriority(): the resolved selection
-                    dialog.open(targets, OWN_PID, capabilities.canSetRealtimeIoPriority, capabilities.ioPriorityHints);
+                    dialog.open(targets, IO_OWN_PID, capabilities.canSetRealtimeIoPriority, capabilities.ioPriorityHints);
                 }
                 menuItemId = ImGui::GetItemID();
             }
             ImGui::EndPopup();
         }
-        dialogOpen = ImGui::IsPopupOpen(DIALOG_POPUP_ID);
+        dialogOpen = ImGui::IsPopupOpen(IO_DIALOG_POPUP_ID);
     }
 
     /// Opens the row menu and picks its batch I/O priority item.
@@ -175,7 +175,7 @@ struct FlowHarness
 
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, RowMenuItemOnlyWithTheCapability)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.capabilities = NO_IO_PRIORITY;
     flow.openMenu = true;
     runFrame([&] { flow.frame(); });
@@ -188,7 +188,7 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, RowMenuItemOnlyWithTheCapability)
 
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, OpensCentredAtTheDefaultAndSetsNothing)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.chooseMenuItem(runFrame);
     EXPECT_TRUE(flow.dialogOpen);
     EXPECT_TRUE(flow.dialog.isPending());
@@ -201,7 +201,7 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, OpensCentredAtTheDefaultAndSetsNo
 
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, WindowsStartsAtTheNormalHint)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.capabilities.ioPriorityHints = true;
     flow.chooseMenuItem(runFrame);
     EXPECT_EQ(flow.dialog.value().ioClass, Platform::IoPriorityClass::WindowsHint);
@@ -210,7 +210,7 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, WindowsStartsAtTheNormalHint)
 
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, ListsTheProcessesWithTheirIoPriorityTaskSmackFirst)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.chooseMenuItem(runFrame);
     const ProcessBatch::ListedTargets& listed = flow.dialog.listed();
     ASSERT_EQ(listed.listed.size(), 3U);
@@ -222,9 +222,9 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, ListsTheProcessesWithTheirIoPrior
 
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, CancelClosesItAndSetsNothing)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.chooseMenuItem(runFrame);
-    flow.dialog.pick(IDLE);
+    flow.dialog.pick(BATCH_IO_IDLE);
     pressModalButton("Cancel");
     runFrame([&] { flow.frame(); });
     runFrame([&] { flow.frame(); });
@@ -236,15 +236,15 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, CancelClosesItAndSetsNothing)
 
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, ApplySetsThePickedValueOnEveryListedProcess)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.chooseMenuItem(runFrame);
-    flow.dialog.pick(IDLE);
+    flow.dialog.pick(BATCH_IO_IDLE);
     pressModalFilledButton("Apply to 3 processes");
     runFrame([&] { flow.frame(); });
     runFrame([&] { flow.frame(); });
     EXPECT_FALSE(flow.dialogOpen);
     EXPECT_EQ(flow.mock.setIoPriorityCount(), 3);
-    EXPECT_EQ(flow.mock.lastSetIoPriority(), IDLE);
+    EXPECT_EQ(flow.mock.lastSetIoPriority(), BATCH_IO_IDLE);
     EXPECT_EQ(flow.mock.setPriorityCount(), 0); // Never the nice value
     ASSERT_TRUE(flow.result.has_value());
     EXPECT_TRUE(flow.result->ok);
@@ -256,7 +256,7 @@ TEST_F(ProcessBatchIoPriorityDialogRenderTest, ApplySetsThePickedValueOnEveryLis
 // the class unset, which would give a process at nice 10 best-effort 6.
 TEST_F(ProcessBatchIoPriorityDialogRenderTest, ClickingTheHollowDefaultStopChoosesItExplicitly)
 {
-    FlowHarness flow;
+    IoFlowHarness flow;
     flow.chooseMenuItem(runFrame);
     ASSERT_EQ(flow.dialog.value().ioClass, Platform::IoPriorityClass::None);
     const auto body = [&]
@@ -320,7 +320,7 @@ TEST(ProcessBatchIoPriorityDialogTest, APickIsNormalisedAsTheSliderWouldMakeIt)
 {
     ProcessBatchIoPriorityDialog dialog;
     dialog.pick({.ioClass = Platform::IoPriorityClass::Idle, .level = 5}); // Idle has no levels
-    EXPECT_EQ(dialog.value(), IDLE);
+    EXPECT_EQ(dialog.value(), BATCH_IO_IDLE);
     dialog.pick({.ioClass = Platform::IoPriorityClass::BestEffort, .level = 3});
     EXPECT_EQ(dialog.value().level, 3);
 }

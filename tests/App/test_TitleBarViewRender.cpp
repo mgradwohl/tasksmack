@@ -24,12 +24,12 @@ namespace App
 namespace
 {
 
-using TitleBarView::Action;
+using TitleBarAction = TitleBarView::Action; // its own name: a unity batch can bring in another Action (#4783)
 
 constexpr float WIDTH = 1280.0F;
 constexpr float HEIGHT = 720.0F;
 constexpr float BAR = 32.0F;
-constexpr float BORDER = 8.0F; // the resize border at a 1.0 display scale, as TitleBarLayer passes it
+constexpr float VIEW_RENDER_BORDER = 8.0F; // the resize border at a 1.0 display scale, as TitleBarLayer passes it
 
 class TitleBarViewRenderTest : public ::testing::Test
 {
@@ -59,7 +59,7 @@ class TitleBarViewRenderTest : public ::testing::Test
             .windowHeight = HEIGHT,
             .barHeight = BAR,
             .maximized = maximized,
-            .resizeBorderPx = BORDER,
+            .resizeBorderPx = VIEW_RENDER_BORDER,
             .icon = &m_Icon,
             .openSystemMenu = openSystemMenu,
             .update = &m_Update,
@@ -152,8 +152,8 @@ class TitleBarViewRenderTest : public ::testing::Test
 
 TEST_F(TitleBarViewRenderTest, NothingIsAskedForUntilAButtonIsPressed)
 {
-    EXPECT_EQ(frame().action, Action::None);
-    EXPECT_EQ(frame().action, Action::None);
+    EXPECT_EQ(frame().action, TitleBarAction::None);
+    EXPECT_EQ(frame().action, TitleBarAction::None);
 }
 
 // #2728: the bar draws the window's title, as the OS shows it, so an Administrator session says so here too.
@@ -168,7 +168,7 @@ TEST_F(TitleBarViewRenderTest, TheBarDrawsTheWindowsTitle)
             .windowHeight = HEIGHT,
             .barHeight = BAR,
             .maximized = false,
-            .resizeBorderPx = BORDER,
+            .resizeBorderPx = VIEW_RENDER_BORDER,
             .icon = nullptr,
             .openSystemMenu = false,
             .title = title,
@@ -205,24 +205,24 @@ TEST_F(TitleBarViewRenderTest, EachButtonReportsItsAction)
     // ImGui hashes a button's whole label, glyph included. Close carries the glyph in its label when
     // the chrome icon font isn't loaded, as here.
     press(ICON_FA_WINDOW_MINIMIZE "##Minimize");
-    EXPECT_EQ(frame().action, Action::Minimize);
+    EXPECT_EQ(frame().action, TitleBarAction::Minimize);
     press(ICON_FA_WINDOW_MAXIMIZE "##Maximize");
-    EXPECT_EQ(frame().action, Action::Maximize);
+    EXPECT_EQ(frame().action, TitleBarAction::Maximize);
     press(ICON_FA_XMARK "##Close");
-    EXPECT_EQ(frame().action, Action::Close);
+    EXPECT_EQ(frame().action, TitleBarAction::Close);
     press(TitleBarButtons::SETTINGS_LABEL);
-    EXPECT_EQ(frame().action, Action::Settings);
+    EXPECT_EQ(frame().action, TitleBarAction::Settings);
     press(TitleBarButtons::HELP_LABEL);
-    EXPECT_EQ(frame().action, Action::Help);
+    EXPECT_EQ(frame().action, TitleBarAction::Help);
     press(TitleBarButtons::ABOUT_LABEL);
-    EXPECT_EQ(frame().action, Action::About);
+    EXPECT_EQ(frame().action, TitleBarAction::About);
 }
 
 TEST_F(TitleBarViewRenderTest, AMaximizedWindowOffersRestore)
 {
     static_cast<void>(frame(true));
     press(ICON_FA_WINDOW_RESTORE "##Restore");
-    EXPECT_EQ(frame(true).action, Action::Restore);
+    EXPECT_EQ(frame(true).action, TitleBarAction::Restore);
 }
 
 // #2882: the Close button's slot reaches the window's top-right corner, which is the resize border's.
@@ -239,18 +239,18 @@ TEST_F(TitleBarViewRenderTest, TheTopRightResizeCornerIsNotTheCloseButtons)
     // The corner square, outermost and innermost pixel: the corner's item hovers, and a click closes nothing.
     static_cast<void>(moveMouseTo(WIDTH - 1.0F, 0.0F));
     EXPECT_EQ(GImGui->HoveredId, corner);
-    EXPECT_EQ(click().action, Action::None);
-    static_cast<void>(moveMouseTo(WIDTH - BORDER, BORDER - 1.0F));
+    EXPECT_EQ(click().action, TitleBarAction::None);
+    static_cast<void>(moveMouseTo(WIDTH - VIEW_RENDER_BORDER, VIEW_RENDER_BORDER - 1.0F));
     EXPECT_EQ(GImGui->HoveredId, corner);
-    EXPECT_EQ(click().action, Action::None);
+    EXPECT_EQ(click().action, TitleBarAction::None);
 
     // One pixel past the square, left of it or below it: the Close button, which a click closes with.
-    static_cast<void>(moveMouseTo(WIDTH - BORDER - 1.0F, BORDER - 1.0F));
+    static_cast<void>(moveMouseTo(WIDTH - VIEW_RENDER_BORDER - 1.0F, VIEW_RENDER_BORDER - 1.0F));
     EXPECT_EQ(GImGui->HoveredId, close);
-    EXPECT_EQ(click().action, Action::Close);
-    static_cast<void>(moveMouseTo(WIDTH - 1.0F, BORDER));
+    EXPECT_EQ(click().action, TitleBarAction::Close);
+    static_cast<void>(moveMouseTo(WIDTH - 1.0F, VIEW_RENDER_BORDER));
     EXPECT_EQ(GImGui->HoveredId, close);
-    EXPECT_EQ(click().action, Action::Close);
+    EXPECT_EQ(click().action, TitleBarAction::Close);
 }
 
 TEST_F(TitleBarViewRenderTest, AMaximizedWindowsCloseButtonReachesTheCorner)
@@ -259,7 +259,7 @@ TEST_F(TitleBarViewRenderTest, AMaximizedWindowsCloseButtonReachesTheCorner)
     static_cast<void>(frame(true));
     static_cast<void>(moveMouseTo(WIDTH - 1.0F, 0.0F, true));
     EXPECT_EQ(GImGui->HoveredId, itemId(ICON_FA_XMARK "##Close"));
-    EXPECT_EQ(click(true).action, Action::Close);
+    EXPECT_EQ(click(true).action, TitleBarAction::Close);
 }
 
 TEST_F(TitleBarViewRenderTest, WithoutAnIconNoneIsDrawnOrBounded)
@@ -279,7 +279,7 @@ TEST_F(TitleBarViewRenderTest, TheSystemMenuReportsItsWindowCommands)
     const ImGuiWindow* popup = GImGui->OpenPopupStack.empty() ? nullptr : GImGui->OpenPopupStack.back().Window;
     ASSERT_NE(popup, nullptr);
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_MINIMIZE "  Minimize", 0, popup->ID));
-    EXPECT_EQ(frame().action, Action::Minimize);
+    EXPECT_EQ(frame().action, TitleBarAction::Minimize);
 }
 
 TEST_F(TitleBarViewRenderTest, TheSystemMenuOfAMaximizedWindowOffersRestoreNotMaximize)
@@ -288,12 +288,12 @@ TEST_F(TitleBarViewRenderTest, TheSystemMenuOfAMaximizedWindowOffersRestoreNotMa
     ASSERT_NE(menu, nullptr);
     // Maximize is shown but disabled: pressing it does nothing, and the menu stays open.
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_MAXIMIZE "  Maximize", 0, menu->ID));
-    EXPECT_EQ(frame(true).action, Action::None);
+    EXPECT_EQ(frame(true).action, TitleBarAction::None);
     ASSERT_FALSE(GImGui->OpenPopupStack.empty());
     // Restore is the way back.
     menu = GImGui->OpenPopupStack.back().Window;
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_RESTORE "  Restore", 0, menu->ID));
-    EXPECT_EQ(frame(true).action, Action::Restore);
+    EXPECT_EQ(frame(true).action, TitleBarAction::Restore);
 }
 
 TEST_F(TitleBarViewRenderTest, TheSystemMenuOfANormalWindowOffersMaximizeAndClose)
@@ -301,12 +301,12 @@ TEST_F(TitleBarViewRenderTest, TheSystemMenuOfANormalWindowOffersMaximizeAndClos
     const ImGuiWindow* menu = openSystemMenu(false);
     ASSERT_NE(menu, nullptr);
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_WINDOW_MAXIMIZE "  Maximize", 0, menu->ID));
-    EXPECT_EQ(frame().action, Action::Maximize);
+    EXPECT_EQ(frame().action, TitleBarAction::Maximize);
 
     menu = openSystemMenu(false);
     ASSERT_NE(menu, nullptr);
     ImGui::ActivateItemByID(ImHashStr(ICON_FA_XMARK "  Close", 0, menu->ID));
-    EXPECT_EQ(frame().action, Action::Close);
+    EXPECT_EQ(frame().action, TitleBarAction::Close);
 }
 
 // #3161: the item rule both menus follow -- the Linux one drawn above, and the native Windows one,
@@ -331,21 +331,21 @@ TEST(TitleBarSystemMenuTest, TheNativeMenusWindowCommandsAreTheButtonsActions)
 {
     using Core::WindowGeometry::decodeSystemCommand;
     using Core::WindowGeometry::SystemCommand;
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Restore), Action::Restore);
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Maximize), Action::Maximize);
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Minimize), Action::Minimize);
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Close), Action::Close);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Restore), TitleBarAction::Restore);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Maximize), TitleBarAction::Maximize);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Minimize), TitleBarAction::Minimize);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Close), TitleBarAction::Close);
     // As TrackPopupMenu() returns them: SC_RESTORE, SC_MAXIMIZE.
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(decodeSystemCommand(0xF120U)), Action::Restore);
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(decodeSystemCommand(0xF030U)), Action::Maximize);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(decodeSystemCommand(0xF120U)), TitleBarAction::Restore);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(decodeSystemCommand(0xF030U)), TitleBarAction::Maximize);
 }
 
 TEST(TitleBarSystemMenuTest, TheNativeMenusMoveAndSizeAreLeftToTheOs)
 {
     using Core::WindowGeometry::SystemCommand;
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Move), Action::None);
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Size), Action::None);
-    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Other), Action::None);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Move), TitleBarAction::None);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Size), TitleBarAction::None);
+    EXPECT_EQ(TitleBarView::actionForSystemCommand(SystemCommand::Other), TitleBarAction::None);
 }
 
 TEST_F(TitleBarViewRenderTest, TheAppButtonsSayWhatTheyDoOnHover)
@@ -386,12 +386,12 @@ TEST_F(TitleBarViewRenderTest, TheActiveUpdateButtonAsksToOpenTheReleasePage)
     };
     static_cast<void>(frame());
     press(TitleBarButtons::UPDATE_LABEL);
-    EXPECT_EQ(frame().action, Action::OpenUpdate);
+    EXPECT_EQ(frame().action, TitleBarAction::OpenUpdate);
 
     // A real click on it, through the mouse, too.
     const TitleBarView::Output output = frame();
     static_cast<void>(moveMouseTo((output.layout.update.minX + output.layout.update.maxX) * 0.5F, BAR * 0.5F));
-    EXPECT_EQ(click().action, Action::OpenUpdate);
+    EXPECT_EQ(click().action, TitleBarAction::OpenUpdate);
 }
 
 TEST_F(TitleBarViewRenderTest, TheInactiveUpdateButtonDoesNothingWhenClicked)
@@ -399,7 +399,7 @@ TEST_F(TitleBarViewRenderTest, TheInactiveUpdateButtonDoesNothingWhenClicked)
     m_Update = {.tooltip = TitleBarButtons::UPDATE_UP_TO_DATE_TOOLTIP, .url = {}, .shown = true, .active = false};
     const TitleBarView::Output output = frame();
     static_cast<void>(moveMouseTo((output.layout.update.minX + output.layout.update.maxX) * 0.5F, BAR * 0.5F));
-    EXPECT_EQ(click().action, Action::None);
+    EXPECT_EQ(click().action, TitleBarAction::None);
 }
 
 TEST_F(TitleBarViewRenderTest, TheUpdateButtonsTooltipSaysWhetherAnUpdateIsOut)

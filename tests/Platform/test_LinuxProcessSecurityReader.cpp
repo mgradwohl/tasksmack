@@ -26,7 +26,7 @@ namespace Platform
 namespace
 {
 
-constexpr ProcessTarget TARGET{.pid = 100, .startTimeTicks = 4242};
+constexpr ProcessTarget SECURITY_READER_TARGET{.pid = 100, .startTimeTicks = 4242};
 
 class LinuxProcessSecurityReaderTest : public ::testing::Test
 {
@@ -63,7 +63,7 @@ TEST_F(LinuxProcessSecurityReaderTest, ReadsTheProcessesSecurityContext)
 {
     LinuxProcessSecurityReader reader(m_Proc.path.string());
     EXPECT_TRUE(reader.hasSecurity());
-    const SecurityReadResult result = reader.readSecurity(TARGET);
+    const SecurityReadResult result = reader.readSecurity(SECURITY_READER_TARGET);
     ASSERT_EQ(result.status, SecurityReadStatus::Ok);
     const ProcessSecurity& security = result.security;
     ASSERT_TRUE(security.users.has_value());
@@ -85,7 +85,7 @@ TEST_F(LinuxProcessSecurityReaderTest, AMissingLabelOrCgroupLeavesThemEmpty)
     std::filesystem::remove(m_Proc.path / "100" / "attr" / "current");
     std::filesystem::remove(m_Proc.path / "100" / "cgroup");
     LinuxProcessSecurityReader reader(m_Proc.path.string());
-    const SecurityReadResult result = reader.readSecurity(TARGET);
+    const SecurityReadResult result = reader.readSecurity(SECURITY_READER_TARGET);
     ASSERT_EQ(result.status, SecurityReadStatus::Ok);
     EXPECT_TRUE(result.security.securityLabel.empty());
     EXPECT_TRUE(result.security.controlGroup.empty());
@@ -107,7 +107,7 @@ TEST_F(LinuxProcessSecurityReaderTest, AnEmptyStatusFromAnExitingProcessReadsAsE
     write("stat", ""); // the process went away between the identity check and the re-check
     LinuxProcessSecurityReader reader(m_Proc.path.string());
     // The first identity check already fails on the empty stat: exited, never an empty "Ok".
-    EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::ProcessExited);
+    EXPECT_EQ(reader.readSecurity(SECURITY_READER_TARGET).status, SecurityReadStatus::ProcessExited);
 }
 
 TEST_F(LinuxProcessSecurityReaderTest, AStatusThatCantBeReadSaysWhy)
@@ -116,7 +116,7 @@ TEST_F(LinuxProcessSecurityReaderTest, AStatusThatCantBeReadSaysWhy)
     std::filesystem::remove(m_Proc.path / "100" / "status");
     std::filesystem::create_directory(m_Proc.path / "100" / "status");
     LinuxProcessSecurityReader reader(m_Proc.path.string());
-    const SecurityReadResult result = reader.readSecurity(TARGET);
+    const SecurityReadResult result = reader.readSecurity(SECURITY_READER_TARGET);
     EXPECT_EQ(result.status, SecurityReadStatus::Failed);
     EXPECT_FALSE(result.detail.empty());
 }
@@ -125,7 +125,7 @@ TEST_F(LinuxProcessSecurityReaderTest, AStatusThatIsntThereReadsAsExited)
 {
     std::filesystem::remove(m_Proc.path / "100" / "status");
     LinuxProcessSecurityReader reader(m_Proc.path.string());
-    EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::ProcessExited);
+    EXPECT_EQ(reader.readSecurity(SECURITY_READER_TARGET).status, SecurityReadStatus::ProcessExited);
 }
 
 TEST_F(LinuxProcessSecurityReaderTest, AStatusThatIsntPermittedIsNotPermitted)
@@ -136,7 +136,7 @@ TEST_F(LinuxProcessSecurityReaderTest, AStatusThatIsntPermittedIsNotPermitted)
     }
     std::filesystem::permissions(m_Proc.path / "100" / "status", std::filesystem::perms::none);
     LinuxProcessSecurityReader reader(m_Proc.path.string());
-    EXPECT_EQ(reader.readSecurity(TARGET).status, SecurityReadStatus::PermissionDenied);
+    EXPECT_EQ(reader.readSecurity(SECURITY_READER_TARGET).status, SecurityReadStatus::PermissionDenied);
     std::filesystem::permissions(m_Proc.path / "100" / "status", std::filesystem::perms::owner_read | std::filesystem::perms::owner_write);
 }
 

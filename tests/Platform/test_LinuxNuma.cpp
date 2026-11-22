@@ -26,7 +26,7 @@ namespace
 
 using TestSupport::ScopedTempDir;
 
-constexpr std::uint64_t KIB = 1024;
+constexpr std::uint64_t NUMA_KIB = 1024;
 
 /// A node's meminfo as the kernel prints it: the "Node <id>" prefix, aligned values, more lines after.
 std::string meminfoText(int id, std::uint64_t totalKib, std::uint64_t freeKib)
@@ -95,16 +95,16 @@ TEST(LinuxNumaTest, MeminfoReadsTotalAndFree)
 {
     const auto memory = LinuxNuma::parseNodeMeminfo(meminfoText(0, 16'316'412, 2'335'000));
     ASSERT_TRUE(memory.has_value());
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 16'316'412 * KIB);
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 2'335'000 * KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 16'316'412 * NUMA_KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 2'335'000 * NUMA_KIB);
 }
 
 TEST(LinuxNumaTest, MeminfoFallsBackToMemUsedWithoutMemFree)
 {
     const auto memory = LinuxNuma::parseNodeMeminfo("Node 1 MemTotal: 1000 kB\nNode 1 MemUsed: 600 kB\n");
     ASSERT_TRUE(memory.has_value());
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 1000 * KIB);
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 400 * KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 1000 * NUMA_KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 400 * NUMA_KIB);
 }
 
 TEST(LinuxNumaTest, MeminfoOfAMemorylessNodeIsZero)
@@ -136,8 +136,8 @@ TEST(LinuxNumaTest, MeminfoSkipsMalformedLines)
                                                     "Node 0 MemFree:\t1024 kB\r\n"
                                                     "Node 0 MemTotal: 9 kB\n"); // a repeat: the first counts
     ASSERT_TRUE(memory.has_value());
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 2048 * KIB);
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 1024 * KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 2048 * NUMA_KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 1024 * NUMA_KIB);
 }
 
 TEST(LinuxNumaTest, MeminfoValuesWithoutTheKbUnitAreSkipped)
@@ -147,8 +147,8 @@ TEST(LinuxNumaTest, MeminfoValuesWithoutTheKbUnitAreSkipped)
                                                     "Node 0 MemTotal: 2048 kB\n"
                                                     "Node 0 MemFree: 7\n"
                                                     "Node 0 MemFree: 512 kB\n");
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 2048 * KIB);
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 512 * KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).totalBytes, 2048 * NUMA_KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 512 * NUMA_KIB);
 
     // MemUsed without a unit isn't used for the fallback either; with only unitless values, nothing reads.
     EXPECT_FALSE(LinuxNuma::parseNodeMeminfo("Node 0 MemTotal: 2048 kB\nNode 0 MemUsed: 1024\n").has_value());
@@ -166,7 +166,7 @@ TEST(LinuxNumaTest, MeminfoWithoutTotalOrFreeIsUnread)
 TEST(LinuxNumaTest, MeminfoFreeNeverExceedsTotal)
 {
     const auto memory = LinuxNuma::parseNodeMeminfo("Node 0 MemTotal: 10 kB\nNode 0 MemFree: 20 kB\n");
-    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 10 * KIB);
+    EXPECT_EQ(memory.value_or(LinuxNuma::NodeMemory{}).freeBytes, 10 * NUMA_KIB);
     const auto overUsed = LinuxNuma::parseNodeMeminfo("Node 0 MemTotal: 10 kB\nNode 0 MemUsed: 20 kB\n");
     EXPECT_EQ(overUsed.value_or(LinuxNuma::NodeMemory{.freeBytes = 1}).freeBytes, 0U);
 }
@@ -224,13 +224,13 @@ TEST(LinuxNumaTest, ReadsATwoNodeMachine)
     ASSERT_EQ(nodes.size(), 2U);
     EXPECT_EQ(nodes[0].id, 0); // sorted by id, whatever the listing order
     EXPECT_EQ(nodes[0].cpus, cpus("0-7,16-23"));
-    EXPECT_EQ(nodes[0].memTotalBytes, 16'000'000 * KIB);
-    EXPECT_EQ(nodes[0].memFreeBytes, 5'000'000 * KIB);
+    EXPECT_EQ(nodes[0].memTotalBytes, 16'000'000 * NUMA_KIB);
+    EXPECT_EQ(nodes[0].memFreeBytes, 5'000'000 * NUMA_KIB);
     EXPECT_EQ(nodes[1].id, 1);
     EXPECT_EQ(nodes[1].cpus, cpus("8-15,24-31"));
     EXPECT_EQ(nodes[1].cpus.count(), 16U);
-    EXPECT_EQ(nodes[1].memTotalBytes, 8'000'000 * KIB);
-    EXPECT_EQ(nodes[1].memFreeBytes, 3'000'000 * KIB);
+    EXPECT_EQ(nodes[1].memTotalBytes, 8'000'000 * NUMA_KIB);
+    EXPECT_EQ(nodes[1].memFreeBytes, 3'000'000 * NUMA_KIB);
 }
 
 TEST(LinuxNumaTest, MemorylessAndCpulessNodesAreKept)
@@ -246,7 +246,7 @@ TEST(LinuxNumaTest, MemorylessAndCpulessNodesAreKept)
     EXPECT_EQ(nodes[1].cpus, cpus("4-7"));
     EXPECT_EQ(nodes[1].memTotalBytes, 0U);
     EXPECT_TRUE(nodes[2].cpus.empty());
-    EXPECT_EQ(nodes[2].memTotalBytes, 2'000'000 * KIB);
+    EXPECT_EQ(nodes[2].memTotalBytes, 2'000'000 * NUMA_KIB);
 }
 
 TEST(LinuxNumaTest, MissingNodeRootOrNodeFilesAreLeftOut)
@@ -270,7 +270,7 @@ TEST(LinuxNumaTest, MissingNodeRootOrNodeFilesAreLeftOut)
     EXPECT_EQ(nodes[0].id, 0);
     EXPECT_EQ(nodes[1].id, 2);
     EXPECT_TRUE(nodes[1].cpus.empty());
-    EXPECT_EQ(nodes[1].memTotalBytes, 2000 * KIB);
+    EXPECT_EQ(nodes[1].memTotalBytes, 2000 * NUMA_KIB);
     EXPECT_EQ(nodes[2].id, 3);
     EXPECT_TRUE(nodes[2].cpus.empty());
 }

@@ -23,8 +23,8 @@ namespace App
 namespace
 {
 
-constexpr float WINDOW_WIDTH = 1900.0F;
-constexpr float WINDOW_HEIGHT = 1000.0F;
+constexpr float CPU_BLOCK_WINDOW_WIDTH = 1900.0F;
+constexpr float CPU_BLOCK_WINDOW_HEIGHT = 1000.0F;
 
 /// What one frame of the card, in a scrolling tab body, came to.
 struct CardFrame
@@ -45,7 +45,7 @@ class CpuDetailsBlockRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(WINDOW_WIDTH, WINDOW_HEIGHT);
+        io.DisplaySize = ImVec2(CPU_BLOCK_WINDOW_WIDTH, CPU_BLOCK_WINDOW_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures; // No renderer: ImGui owns the atlas
         io.Fonts->AddFontDefault();
@@ -79,7 +79,7 @@ class CpuDetailsBlockRenderTest : public ::testing::Test
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(WINDOW_WIDTH, WINDOW_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(CPU_BLOCK_WINDOW_WIDTH, CPU_BLOCK_WINDOW_HEIGHT));
         ImGui::Begin("Overview", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         body();
         ImGui::End();
@@ -108,7 +108,7 @@ class CpuDetailsBlockRenderTest : public ::testing::Test
         runFrame(
             [&]
             {
-                ImGui::BeginChild("##Body", ImVec2(bodyWidth, WINDOW_HEIGHT - 40.0F));
+                ImGui::BeginChild("##Body", ImVec2(bodyWidth, CPU_BLOCK_WINDOW_HEIGHT - 40.0F));
                 result.bodyScrollbar = ImGui::GetCurrentWindow()->ScrollbarY;
                 const CpuDetailsBlock::Content cardContent = content(true);
                 if (CpuDetailsBlock::beginCard("##CpuDetailsCard", cardContent, m_Measured))
@@ -187,7 +187,7 @@ TEST_F(CpuDetailsBlockRenderTest, TheCardIsAsTallAsItsRowsAtEveryWidth)
 {
     // Every fact is drawn inside the card -- none clipped below it -- with no gap under the last row,
     // in the very frame the width changes: the card is sized from this frame's layout (#1919)
-    for (int step = 0; 120 + (step * 37) <= static_cast<int>(WINDOW_WIDTH); ++step)
+    for (int step = 0; 120 + (step * 37) <= static_cast<int>(CPU_BLOCK_WINDOW_WIDTH); ++step)
     {
         const auto width = static_cast<float>(120 + (step * 37));
         const CardFrame frame = cardFrame(width, 0.0F);
@@ -201,7 +201,7 @@ TEST_F(CpuDetailsBlockRenderTest, TheTabBodysScrollbarDoesNotChangeTheLayout)
 {
     // The issue's loop: a taller layout showed the body's scrollbar, the narrower width took fewer
     // pairs, and so on. The pairs are now decided at the width with the scrollbar shown, either way.
-    for (int step = 0; 200 + (step * 9) <= static_cast<int>(WINDOW_WIDTH); ++step)
+    for (int step = 0; 200 + (step * 9) <= static_cast<int>(CPU_BLOCK_WINDOW_WIDTH); ++step)
     {
         const auto width = static_cast<float>(200 + (step * 9));
         // A frame for the body's scrollbar to follow its content, then one laid out afresh, with no
@@ -209,9 +209,9 @@ TEST_F(CpuDetailsBlockRenderTest, TheTabBodysScrollbarDoesNotChangeTheLayout)
         (void) cardFrame(width, 0.0F);
         m_Measured = {};
         const CardFrame without = cardFrame(width, 0.0F);
-        (void) cardFrame(width, 2.0F * WINDOW_HEIGHT);
+        (void) cardFrame(width, 2.0F * CPU_BLOCK_WINDOW_HEIGHT);
         m_Measured = {};
-        const CardFrame with = cardFrame(width, 2.0F * WINDOW_HEIGHT);
+        const CardFrame with = cardFrame(width, 2.0F * CPU_BLOCK_WINDOW_HEIGHT);
         ASSERT_FALSE(without.bodyScrollbar);
         ASSERT_TRUE(with.bodyScrollbar);
         EXPECT_EQ(without.pairs, with.pairs) << width;

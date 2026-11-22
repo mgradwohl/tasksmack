@@ -24,7 +24,6 @@ namespace App
 namespace
 {
 
-using BatteryDetailsText::buildRows;
 using BatteryDetailsText::wearPercent;
 using CpuDetailsText::Row;
 
@@ -61,7 +60,7 @@ TEST(BatteryDetailsTextTest, WearIsTheLostShareOfTheDesignCapacity)
 
 TEST(BatteryDetailsTextTest, EveryFactIsShownWhenReported)
 {
-    const std::vector<Row> rows = buildRows(fullyReported());
+    const std::vector<Row> rows = BatteryDetailsText::buildRows(fullyReported());
     ASSERT_EQ(rows.size(), 7U);
     EXPECT_EQ(rowNamed(rows, "Design capacity").value, "52.6 Wh");
     EXPECT_EQ(rowNamed(rows, "Full charge").value, "47.3 Wh");
@@ -78,7 +77,7 @@ TEST(BatteryDetailsTextTest, UnreportedFactsAreMutedDashesWithAReason)
     // A platform that reports none of them (Windows with relative-unit capacities and no counter)
     Domain::PowerStatus power;
     power.hasBattery = true;
-    const std::vector<Row> rows = buildRows(power);
+    const std::vector<Row> rows = BatteryDetailsText::buildRows(power);
     ASSERT_EQ(rows.size(), 7U);
     for (const Row& row : rows)
     {
@@ -93,7 +92,7 @@ TEST(BatteryDetailsTextTest, UnreportedFactsAreMutedDashesWithAReason)
     Domain::PowerStatus partial = fullyReported();
     partial.designCapacityWh = 0.0;
     partial.cycleCount = 0;
-    const std::vector<Row> partialRows = buildRows(partial);
+    const std::vector<Row> partialRows = BatteryDetailsText::buildRows(partial);
     EXPECT_EQ(rowNamed(partialRows, "Design capacity").tooltip, BatteryDetailsText::NOT_REPORTED_BY_BATTERY);
     EXPECT_FALSE(rowNamed(partialRows, "Wear").available);
     EXPECT_EQ(rowNamed(partialRows, "Cycles").tooltip, BatteryDetailsText::NOT_REPORTED_BY_BATTERY);
@@ -150,7 +149,7 @@ class BatteryDetailsRenderTest : public ::testing::Test
 
 TEST_F(BatteryDetailsRenderTest, DrawsEveryRowsLabelAndValue)
 {
-    const std::vector<Row> rows = buildRows(fullyReported());
+    const std::vector<Row> rows = BatteryDetailsText::buildRows(fullyReported());
     const std::string text = renderAndCapture(rows);
     for (const Row& row : rows)
     {
@@ -164,7 +163,7 @@ TEST_F(BatteryDetailsRenderTest, HoveringAnUnknownValueShowsWhy)
 {
     Domain::PowerStatus power;
     power.hasBattery = true;
-    const std::vector<Row> rows = buildRows(power);
+    const std::vector<Row> rows = BatteryDetailsText::buildRows(power);
     (void) renderAndCapture(rows); // Lays the table out and measures it
 
     // Inside the dash, half a line down

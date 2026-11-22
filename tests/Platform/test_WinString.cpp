@@ -207,21 +207,21 @@ TEST(WinStringTest, RoundTripPreservesWindowsPaths)
 TEST(WinStringTest, NonBmpCharacterIsASurrogatePair)
 {
     // U+1F525 FIRE: four UTF-8 bytes, two UTF-16 units (a surrogate pair), and back.
-    const std::wstring wide = utf8ToWide(TestSupport::EMOJI_NAME);
+    const std::wstring wide = utf8ToWide(::TestSupport::EMOJI_NAME);
     ASSERT_EQ(wide.size(), 2U);
     EXPECT_EQ(wide[0], static_cast<wchar_t>(0xD83D));
     EXPECT_EQ(wide[1], static_cast<wchar_t>(0xDD25));
-    EXPECT_EQ(wideToUtf8(wide), TestSupport::EMOJI_NAME);
-    EXPECT_EQ(wideToUtf8(std::wstring_view{wide}), TestSupport::EMOJI_NAME);
+    EXPECT_EQ(wideToUtf8(wide), ::TestSupport::EMOJI_NAME);
+    EXPECT_EQ(wideToUtf8(std::wstring_view{wide}), ::TestSupport::EMOJI_NAME);
 }
 
 TEST(WinStringTest, EveryTestScriptRoundTrips)
 {
-    for (const std::string_view name : TestSupport::NON_ASCII_NAMES)
+    for (const std::string_view name : ::TestSupport::NON_ASCII_NAMES)
     {
         EXPECT_EQ(wideToUtf8(utf8ToWide(name)), name);
     }
-    const std::string all = TestSupport::allNonAsciiNames();
+    const std::string all = ::TestSupport::allNonAsciiNames();
     EXPECT_EQ(utf8ToWide(all), L"任务管理器🔥Ünïcödéمدير");
     EXPECT_EQ(wideToUtf8(utf8ToWide(all)), all);
 }

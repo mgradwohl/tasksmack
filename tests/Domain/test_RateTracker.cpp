@@ -15,7 +15,7 @@ namespace
 
 using Domain::AcquiredAt;
 using Domain::StartedIdentity;
-using Tracker = Domain::RateTracker<StartedIdentity, std::uint64_t, Domain::StartedIdentityHash>;
+using StartedRateTracker = Domain::RateTracker<StartedIdentity, std::uint64_t, Domain::StartedIdentityHash>;
 
 [[nodiscard]] AcquiredAt at(double seconds)
 {
@@ -24,7 +24,7 @@ using Tracker = Domain::RateTracker<StartedIdentity, std::uint64_t, Domain::Star
 
 TEST(RateTrackerTest, AFirstReadingGivesNoIntervalAndTheNextGivesTheTimeBetweenAcquisitions)
 {
-    Tracker tracker;
+    StartedRateTracker tracker;
     const StartedIdentity thread{.id = 7, .startTicks = 100};
     EXPECT_FALSE(tracker.observe(thread, 1000, at(10.0)).has_value());
     const auto interval = tracker.observe(thread, 1500, at(12.0));
@@ -39,8 +39,8 @@ TEST(RateTrackerTest, AFirstReadingGivesNoIntervalAndTheNextGivesTheTimeBetweenA
 // matter: one adopted late gives the same rate as one adopted at once.
 TEST(RateTrackerTest, ADelayedAdoptionGivesTheSameRate)
 {
-    Tracker prompt;
-    Tracker late;
+    StartedRateTracker prompt;
+    StartedRateTracker late;
     const StartedIdentity process{.id = 42, .startTicks = 5};
     static_cast<void>(prompt.observe(process, 0, at(100.0)));
     static_cast<void>(late.observe(process, 0, at(100.0)));
@@ -55,7 +55,7 @@ TEST(RateTrackerTest, ADelayedAdoptionGivesTheSameRate)
 
 TEST(RateTrackerTest, TimeThatDoesNotMoveForwardGivesNoIntervalButTheReadingStillBecomesTheLast)
 {
-    Tracker tracker;
+    StartedRateTracker tracker;
     const StartedIdentity thread{.id = 1, .startTicks = 0};
     static_cast<void>(tracker.observe(thread, 10, at(5.0)));
     EXPECT_FALSE(tracker.observe(thread, 20, at(5.0)).has_value()) << "zero elapsed: nothing to divide by";
@@ -69,7 +69,7 @@ TEST(RateTrackerTest, TimeThatDoesNotMoveForwardGivesNoIntervalButTheReadingStil
 
 TEST(RateTrackerTest, AnIntervalNoLongerThanTheMinimumGivesNoRate)
 {
-    Tracker tracker(0.05);
+    StartedRateTracker tracker(0.05);
     const StartedIdentity process{.id = 3, .startTicks = 9};
     static_cast<void>(tracker.observe(process, 0, at(1.0)));
     EXPECT_FALSE(tracker.observe(process, 5, at(1.05)).has_value()) << "at the minimum: a seed reading's tiny interval";
@@ -83,7 +83,7 @@ TEST(RateTrackerTest, AnIntervalNoLongerThanTheMinimumGivesNoRate)
 // identity is forgotten when a round doesn't see it.
 TEST(RateTrackerTest, AReusedNumberIsANewIdentityAndTheOldOneIsForgottenAfterARoundWithoutIt)
 {
-    Tracker tracker;
+    StartedRateTracker tracker;
     const StartedIdentity first{.id = 500, .startTicks = 1000};
     const StartedIdentity reused{.id = 500, .startTicks = 2000};
     tracker.beginRound();
@@ -100,7 +100,7 @@ TEST(RateTrackerTest, AReusedNumberIsANewIdentityAndTheOldOneIsForgottenAfterARo
 
 TEST(RateTrackerTest, ClearMakesEveryNextReadingAFirstOne)
 {
-    Tracker tracker;
+    StartedRateTracker tracker;
     const StartedIdentity thread{.id = 2, .startTicks = 1};
     static_cast<void>(tracker.observe(thread, 1, at(1.0)));
     tracker.clear();

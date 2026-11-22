@@ -271,7 +271,7 @@ TEST(WindowsLocalNtFileRealTest, ANameThroughAJunctionIsNotFollowed)
     std::filesystem::create_directory(target);
     std::filesystem::create_directory(link);
     std::ofstream(target / L"f.bin", std::ios::binary) << "abc";
-    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(link, target);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
 
     const std::wstring folder = ntNameOf(scratch.path());
@@ -288,7 +288,7 @@ TEST(WindowsLocalNtFileRealTest, ANameThroughAJunctionIsNotFollowed)
     EXPECT_EQ(through.error().reason, LocalFileRefusal::OpenFailed);
     EXPECT_TRUE(std::filesystem::exists(link / L"f.bin")) << "a path through it that a by-name open would have followed";
 
-    ASSERT_TRUE(TestSupport::removeJunction(link)) << "an empty folder again, so removing the scratch folder removes nothing behind it";
+    ASSERT_TRUE(::TestSupport::removeJunction(link)) << "an empty folder again, so removing the scratch folder removes nothing behind it";
 }
 
 } // namespace

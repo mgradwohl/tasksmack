@@ -29,7 +29,7 @@ namespace
 using Posix::DirGuard;
 using Posix::FdGuard;
 
-[[nodiscard]] OpenFilesReadResult failure(int err)
+[[nodiscard]] OpenFilesReadResult openFilesFailure(int err)
 {
     OpenFilesReadResult result;
     switch (err)
@@ -73,7 +73,7 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
 {
     if (target.pid <= 0)
     {
-        return failure(ESRCH);
+        return openFilesFailure(ESRCH);
     }
     if (target.startTimeTicks == 0)
     {
@@ -88,17 +88,17 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
-        return failure(errno);
+        return openFilesFailure(errno);
     }
     if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH); // gone, or the PID now names another process
+        return openFilesFailure(ESRCH); // gone, or the PID now names another process
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
     const FdGuard fdDir(::openat(dir.get(), "fd", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (fdDir.get() < 0)
     {
-        return failure(errno); // EACCES: another user's process
+        return openFilesFailure(errno); // EACCES: another user's process
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
     const FdGuard fdinfoDir(::openat(dir.get(), "fdinfo", O_RDONLY | O_DIRECTORY | O_CLOEXEC));
@@ -115,7 +115,7 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
         {
             ::close(listFd);
         }
-        return failure(err);
+        return openFilesFailure(err);
     }
 
     OpenFilesReadResult result;
@@ -157,12 +157,12 @@ OpenFilesReadResult LinuxProcessOpenFilesReader::readOpenFiles(const ProcessTarg
     {
         if (deniedLinks > 0)
         {
-            return failure(EACCES);
+            return openFilesFailure(EACCES);
         }
         // An exiting process's fd/ lists empty: confirmed before that is reported as "no open files".
         if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
         {
-            return failure(ESRCH);
+            return openFilesFailure(ESRCH);
         }
     }
     std::ranges::sort(result.files, {}, &OpenFile::descriptor);

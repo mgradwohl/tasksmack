@@ -56,7 +56,7 @@ class ListedSessions final : public Platform::IUserSessions
 namespace
 {
 
-constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on each sweep, far above one sample's
+constexpr std::int64_t SNAPSHOT_MAX_ALLOCATIONS = 100'000; // a bound on each sweep, far above one sample's
 
 /// Samples the model once with the hook set to fail allocation @p failAt; true when that failure fired.
 template<typename Model> bool sampleFailingAt(Model& model, std::int64_t failAt)
@@ -79,7 +79,7 @@ template<typename Make, typename ExpectFirst, typename ExpectSecond>
 void sweep(const Make& make, const ExpectFirst& expectFirst, const ExpectSecond& expectSecond)
 {
     std::int64_t failed = 0;
-    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    for (std::int64_t failAt = 0; failAt < SNAPSHOT_MAX_ALLOCATIONS; ++failAt)
     {
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
         auto const model = make();

@@ -27,7 +27,7 @@ using Domain::ProcessRowHistory::Metric;
 using Domain::ProcessRowHistory::MetricSet;
 using Domain::ProcessRowHistory::Ring;
 using Domain::ProcessRowHistory::RING_CAPACITY;
-using Domain::ProcessRowHistory::Tracker;
+using RowHistoryTracker = Domain::ProcessRowHistory::Tracker; // its own name: a unity batch can bring in another Tracker (#4783)
 
 Domain::ProcessSnapshot makeProc(std::uint64_t key, double cpu, std::uint64_t memoryBytes = 0)
 {
@@ -98,7 +98,7 @@ TEST(ProcessRowHistoryRingTest, IsAbout120Bytes)
 
 TEST(ProcessRowHistoryTrackerTest, FillsEachProcessRingAcrossGenerations)
 {
-    Tracker tracker;
+    RowHistoryTracker tracker;
     const MetricSet cpu = bitOf(Metric::CpuPercent);
     (void) tracker.advance({makeProc(10, 1.0), makeProc(20, 5.0)}, cpu);
     // The second generation lists them in another order: rings follow the process, not the row.
@@ -114,7 +114,7 @@ TEST(ProcessRowHistoryTrackerTest, FillsEachProcessRingAcrossGenerations)
 
 TEST(ProcessRowHistoryTrackerTest, AnExitedProcessIsPrunedAndANewOneStartsEmpty)
 {
-    Tracker tracker;
+    RowHistoryTracker tracker;
     const MetricSet cpu = bitOf(Metric::CpuPercent);
     (void) tracker.advance({makeProc(10, 1.0), makeProc(20, 5.0)}, cpu);
     (void) tracker.advance({makeProc(10, 2.0)}, cpu); // 20 exited
@@ -127,7 +127,7 @@ TEST(ProcessRowHistoryTrackerTest, AnExitedProcessIsPrunedAndANewOneStartsEmpty)
 
 TEST(ProcessRowHistoryTrackerTest, APublishedGenerationNeverChanges)
 {
-    Tracker tracker;
+    RowHistoryTracker tracker;
     const MetricSet cpu = bitOf(Metric::CpuPercent);
     const auto first = tracker.advance({makeProc(10, 1.0)}, cpu);
     (void) tracker.advance({makeProc(10, 2.0)}, cpu);
@@ -136,7 +136,7 @@ TEST(ProcessRowHistoryTrackerTest, APublishedGenerationNeverChanges)
 
 TEST(ProcessRowHistoryTrackerTest, AddingAMetricKeepsTheOthersHistory)
 {
-    Tracker tracker;
+    RowHistoryTracker tracker;
     (void) tracker.advance({makeProc(10, 1.0, 100)}, bitOf(Metric::CpuPercent));
     const auto both = static_cast<MetricSet>(bitOf(Metric::CpuPercent) | bitOf(Metric::Resident));
     const auto gen = tracker.advance({makeProc(10, 2.0, 200)}, both);
@@ -146,7 +146,7 @@ TEST(ProcessRowHistoryTrackerTest, AddingAMetricKeepsTheOthersHistory)
 
 TEST(ProcessRowHistoryTrackerTest, NoMetricsDropsEverything)
 {
-    Tracker tracker;
+    RowHistoryTracker tracker;
     EXPECT_EQ(tracker.bytes(), 0U);
     (void) tracker.advance({makeProc(10, 1.0), makeProc(20, 2.0)}, bitOf(Metric::CpuPercent));
     EXPECT_GE(tracker.bytes(), 2U * sizeof(Ring));
@@ -162,7 +162,7 @@ TEST(ProcessRowHistoryTrackerTest, AKeyListedTwiceCarriesOnItsFirstRowsHistory)
 {
     // One (pid, start time) listed twice: both rows carry on the history of its first row, and the
     // next generation finds the first of them again.
-    Tracker tracker;
+    RowHistoryTracker tracker;
     const MetricSet cpu = bitOf(Metric::CpuPercent);
     (void) tracker.advance({makeProc(10, 1.0)}, cpu);
     auto gen = tracker.advance({makeProc(10, 2.0), makeProc(10, 9.0)}, cpu);
@@ -176,7 +176,7 @@ TEST(ProcessRowHistoryTrackerTest, AKeyListedTwiceCarriesOnItsFirstRowsHistory)
 // process never inherits another's.
 TEST(ProcessRowHistoryTrackerTest, ProcessesWhoseKeysCollideKeepTheirOwnHistory)
 {
-    Tracker tracker;
+    RowHistoryTracker tracker;
     const MetricSet cpu = bitOf(Metric::CpuPercent);
     Domain::ProcessSnapshot old = makeProc(1000, 1.0);
     old.startTimeTicks = 50000;
@@ -196,7 +196,7 @@ TEST(ProcessRowHistoryTrackerTest, AnUnreadValueIsKeptAsAGap)
     Domain::ProcessSnapshot proc = makeProc(10, 0.0);
     proc.ioReadBytesPerSec = 500.0;
     proc.ioAvailable = false;
-    Tracker tracker;
+    RowHistoryTracker tracker;
     const auto gen = tracker.advance({proc}, bitOf(Metric::IoRead));
     const Ring* ring = gen->ring(0, Metric::IoRead);
     ASSERT_NE(ring, nullptr);
@@ -214,7 +214,7 @@ TEST(ProcessRowHistoryTrackerTest, TheNpuMetricsFollowTheNpuFigures)
     proc.npuUtilPercent = 70.0;
     proc.npuMemoryBytes = 8192;
     const auto all = static_cast<MetricSet>(0U | bitOf(Metric::GpuPercent) | bitOf(Metric::NpuPercent) | bitOf(Metric::NpuMemory));
-    Tracker tracker;
+    RowHistoryTracker tracker;
     auto gen = tracker.advance({proc}, all);
     expectValues(*gen->ring(0, Metric::NpuPercent), {70.0F});
     expectValues(*gen->ring(0, Metric::NpuMemory), {8192.0F});

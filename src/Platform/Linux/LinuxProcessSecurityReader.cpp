@@ -28,9 +28,9 @@ namespace
 using Posix::FdGuard;
 
 /// The most of any one file read here: status is ~1.5 KiB, and a label or a cgroup path is far less.
-constexpr std::size_t MAX_FILE_BYTES = std::size_t{64} * 1024;
+constexpr std::size_t SECURITY_MAX_FILE_BYTES = std::size_t{64} * 1024;
 
-[[nodiscard]] SecurityReadResult failure(int err)
+[[nodiscard]] SecurityReadResult securityFailure(int err)
 {
     switch (err)
     {
@@ -66,7 +66,7 @@ SecurityReadResult LinuxProcessSecurityReader::readSecurity(const ProcessTarget&
 {
     if (target.pid <= 0)
     {
-        return failure(ESRCH);
+        return securityFailure(ESRCH);
     }
     if (target.startTimeTicks == 0)
     {
@@ -82,22 +82,22 @@ SecurityReadResult LinuxProcessSecurityReader::readSecurity(const ProcessTarget&
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
-        return failure(errno);
+        return securityFailure(errno);
     }
     if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH); // gone, or the PID now names another process
+        return securityFailure(ESRCH); // gone, or the PID now names another process
     }
-    const std::expected<std::string, int> status = ProcParsing::readWholeFileAt(dir.get(), "status", MAX_FILE_BYTES);
+    const std::expected<std::string, int> status = ProcParsing::readWholeFileAt(dir.get(), "status", SECURITY_MAX_FILE_BYTES);
     if (!status.has_value())
     {
-        return failure(status.error());
+        return securityFailure(status.error());
     }
 
     ProcessSecurity security = ProcStatusSecurity::parseStatus(*status);
     if (!security.users.has_value() && ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH); // an exiting process's status can read short
+        return securityFailure(ESRCH); // an exiting process's status can read short
     }
     if (security.users.has_value())
     {
@@ -119,11 +119,11 @@ SecurityReadResult LinuxProcessSecurityReader::readSecurity(const ProcessTarget&
     }
 
     // Optional extras: a label or cgroup that can't be read is left empty, not a failed read.
-    if (const auto current = ProcParsing::readWholeFileAt(dir.get(), "attr/current", MAX_FILE_BYTES); current.has_value())
+    if (const auto current = ProcParsing::readWholeFileAt(dir.get(), "attr/current", SECURITY_MAX_FILE_BYTES); current.has_value())
     {
         security.securityLabel = ProcStatusSecurity::parseSecurityLabel(*current);
     }
-    if (const auto cgroup = ProcParsing::readWholeFileAt(dir.get(), "cgroup", MAX_FILE_BYTES); cgroup.has_value())
+    if (const auto cgroup = ProcParsing::readWholeFileAt(dir.get(), "cgroup", SECURITY_MAX_FILE_BYTES); cgroup.has_value())
     {
         security.controlGroup = ProcStatusSecurity::parseControlGroup(*cgroup);
     }

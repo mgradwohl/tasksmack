@@ -34,9 +34,9 @@ using Platform::ConnectionProtocol;
 using Platform::ConnectionState;
 using Platform::ProcessConnection;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
-constexpr float WINDOW_WIDTH = 1200.0F;
-constexpr float WINDOW_HEIGHT = 800.0F;
+constexpr Platform::ProcessTarget CONNECTIONS_RENDER_TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr float CONNECTIONS_RENDER_WINDOW_WIDTH = 1200.0F;
+constexpr float CONNECTIONS_RENDER_WINDOW_HEIGHT = 800.0F;
 
 [[nodiscard]] Platform::ConnectionsReadResult sampleConnections()
 {
@@ -77,7 +77,7 @@ class ProcessConnectionsViewRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(WINDOW_WIDTH, WINDOW_HEIGHT);
+        io.DisplaySize = ImVec2(CONNECTIONS_RENDER_WINDOW_WIDTH, CONNECTIONS_RENDER_WINDOW_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         // No renderer: let ImGui build and own the font atlas itself.
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
@@ -90,11 +90,11 @@ class ProcessConnectionsViewRenderTest : public ::testing::Test
     }
 
     /// One frame of a window like the Process Details pane, @p width wide, running @p body inside it.
-    static void runFrame(const std::function<void()>& body, float width = WINDOW_WIDTH)
+    static void runFrame(const std::function<void()>& body, float width = CONNECTIONS_RENDER_WINDOW_WIDTH)
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(width, WINDOW_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(width, CONNECTIONS_RENDER_WINDOW_HEIGHT));
         ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         body();
         ImGui::End();
@@ -122,8 +122,8 @@ class ProcessConnectionsViewRenderTest : public ::testing::Test
     {
         for (int i = 0; i < 3 && !view.hasRead(); ++i)
         {
-            static_cast<void>(view.update(&reader, TARGET, 1.0F / 60.0F));
-            view.finishPendingRead(TARGET); // the read runs on a worker
+            static_cast<void>(view.update(&reader, CONNECTIONS_RENDER_TARGET, 1.0F / 60.0F));
+            view.finishPendingRead(CONNECTIONS_RENDER_TARGET); // the read runs on a worker
             static_cast<void>(renderAndCapture(view, true));
         }
         ASSERT_TRUE(view.hasRead());
@@ -139,7 +139,7 @@ class ProcessConnectionsViewRenderTest : public ::testing::Test
         float outerMaxX = 0.0F;
     };
 
-    static TableGeometry tableGeometry(ProcessConnectionsView& view, float width = WINDOW_WIDTH)
+    static TableGeometry tableGeometry(ProcessConnectionsView& view, float width = CONNECTIONS_RENDER_WINDOW_WIDTH)
     {
         TableGeometry geometry;
         runFrame(
@@ -193,7 +193,7 @@ TEST_F(ProcessConnectionsViewRenderTest, DrawsNothingWithoutConnectionsSupport)
 
     // And, never drawn open, it is never read.
     TestMocks::MockProcessConnectionsReader reader;
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F));
+    EXPECT_FALSE(view.update(&reader, CONNECTIONS_RENDER_TARGET, 10.0F));
     EXPECT_EQ(reader.readCount(), 0);
 }
 
@@ -204,7 +204,7 @@ TEST_F(ProcessConnectionsViewRenderTest, CollapsedHeaderDrawsAndReadsNothing)
     reader.setResult(sampleConnections());
     for (int i = 0; i < 3; ++i)
     {
-        static_cast<void>(view.update(&reader, TARGET, 10.0F));
+        static_cast<void>(view.update(&reader, CONNECTIONS_RENDER_TARGET, 10.0F));
         const std::string text = renderAndCapture(view, true, false);
         EXPECT_TRUE(text.contains("Connections"));
         EXPECT_FALSE(text.contains("ESTABLISHED"));
@@ -278,7 +278,7 @@ TEST_F(ProcessConnectionsViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonA
     EXPECT_FALSE(renderAndCapture(view, true).contains(AuthorizeWording::READ_TEXT)) << "the reader can't read as an administrator";
 
     reader.setAuthorizedResult(sampleConnections());
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F / 60.0F)); // takes in what the reader can do now; nothing is due
+    EXPECT_FALSE(view.update(&reader, CONNECTIONS_RENDER_TARGET, 1.0F / 60.0F)); // takes in what the reader can do now; nothing is due
     ASSERT_TRUE(view.offersAuthenticateToRead());
     EXPECT_TRUE(renderAndCapture(view, true).contains(AuthorizeWording::READ_TEXT));
     EXPECT_EQ(reader.authorizedReadCount(), 0) << "nothing is read until the button is pressed";
@@ -288,8 +288,8 @@ TEST_F(ProcessConnectionsViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonA
     // The button is in its section's ID scope (#4268).
     ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, ImHashStr("connections", 0, details->ID)));
     static_cast<void>(renderAndCapture(view, true)); // the frame the press lands in
-    EXPECT_TRUE(view.update(&reader, TARGET, 1.0F / 60.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, CONNECTIONS_RENDER_TARGET, 1.0F / 60.0F));
+    view.finishPendingRead(CONNECTIONS_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(view.rows().size(), 3U);
     const std::string text = renderAndCapture(view, true);

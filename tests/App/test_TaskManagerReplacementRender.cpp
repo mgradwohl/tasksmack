@@ -32,7 +32,7 @@ namespace
 
 using Platform::TaskManagerReplacement::State;
 
-[[nodiscard]] TaskManagerReplacementView viewOf(State state, std::string program = {}, bool installed = true)
+[[nodiscard]] TaskManagerReplacementView renderedViewOf(State state, std::string program = {}, bool installed = true)
 {
     TaskManagerReplacementView view;
     view.supported = true;
@@ -163,7 +163,7 @@ class TaskManagerReplacementRenderTest : public ::testing::Test
 // whose UAC prompt Windows raises first.
 TEST_F(TaskManagerReplacementRenderTest, TheNoteSaysWindowsAsksFirstOnlyWhenTheChangeGoesThroughTheHelper)
 {
-    TaskManagerReplacementView helper = viewOf(State::Off);
+    TaskManagerReplacementView helper = renderedViewOf(State::Off);
     ASSERT_TRUE(helper.info.has_value());
     helper.info->writesDirectly = false;
     const std::string asked = settingsText(helper);
@@ -171,7 +171,7 @@ TEST_F(TaskManagerReplacementRenderTest, TheNoteSaysWindowsAsksFirstOnlyWhenTheC
     EXPECT_TRUE(asked.contains("opens TaskSmack instead")) << asked;
     EXPECT_TRUE(asked.contains("without Save")) << asked;
 
-    TaskManagerReplacementView direct = viewOf(State::Off);
+    TaskManagerReplacementView direct = renderedViewOf(State::Off);
     ASSERT_TRUE(direct.info.has_value());
     direct.info->writesDirectly = true;
     const std::string held = settingsText(direct);
@@ -191,32 +191,32 @@ TEST_F(TaskManagerReplacementRenderTest, AnUnsupportedViewDrawsNothing)
     TaskManagerReplacementView view;
     EXPECT_EQ(settingsFrame(view), TaskManagerRequest::None);
     const float empty = m_Drawn;
-    view = viewOf(State::Off);
+    view = renderedViewOf(State::Off);
     static_cast<void>(settingsFrame(view));
     EXPECT_GT(m_Drawn, empty) << "the supported rows take room";
 }
 
 TEST_F(TaskManagerReplacementRenderTest, TheToggleTurnsItOnFromOff)
 {
-    EXPECT_EQ(clickInRows(viewOf(State::Off), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOn);
+    EXPECT_EQ(clickInRows(renderedViewOf(State::Off), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOn);
 }
 
 TEST_F(TaskManagerReplacementRenderTest, TheToggleTurnsItOffFromEitherTaskSmack)
 {
-    EXPECT_EQ(clickInRows(viewOf(State::ThisCopy), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
-    EXPECT_EQ(clickInRows(viewOf(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)"), TaskManagerReplacementText::TOGGLE_LABEL),
+    EXPECT_EQ(clickInRows(renderedViewOf(State::ThisCopy), TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::TurnOff);
+    EXPECT_EQ(clickInRows(renderedViewOf(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)"), TaskManagerReplacementText::TOGGLE_LABEL),
               TaskManagerRequest::TurnOff);
 }
 
 TEST_F(TaskManagerReplacementRenderTest, RepairShowsForAnotherTaskSmack)
 {
-    EXPECT_EQ(clickInRows(viewOf(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)"), TaskManagerReplacementText::REPAIR_LABEL),
+    EXPECT_EQ(clickInRows(renderedViewOf(State::OtherTaskSmack, R"(D:\Old\TaskSmack.exe)"), TaskManagerReplacementText::REPAIR_LABEL),
               TaskManagerRequest::Repair);
 }
 
 TEST_F(TaskManagerReplacementRenderTest, AnotherProgramIsReplacedOnlyOnceConfirmed)
 {
-    const TaskManagerReplacementView view = viewOf(State::OtherProgram, R"(C:\Tools\procexp64.exe)");
+    const TaskManagerReplacementView view = renderedViewOf(State::OtherProgram, R"(C:\Tools\procexp64.exe)");
     EXPECT_EQ(clickInRows(view, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None) << "asks first";
     EXPECT_TRUE(m_Row.confirmingReplaceOther);
 
@@ -232,17 +232,17 @@ TEST_F(TaskManagerReplacementRenderTest, AnotherProgramIsReplacedOnlyOnceConfirm
 TEST_F(TaskManagerReplacementRenderTest, AConfirmationEndsWhenTheStateChangesUnderIt)
 {
     m_Row.confirmingReplaceOther = true;
-    static_cast<void>(settingsFrame(viewOf(State::Off)));
+    static_cast<void>(settingsFrame(renderedViewOf(State::Off)));
     EXPECT_FALSE(m_Row.confirmingReplaceOther);
 }
 
 TEST_F(TaskManagerReplacementRenderTest, ACopyThatCantChangeItOrIsBusyAsksNothing)
 {
-    TaskManagerReplacementView unavailable = viewOf(State::Off);
+    TaskManagerReplacementView unavailable = renderedViewOf(State::Off);
     unavailable.info->unavailableReason = "needs the helper";
     EXPECT_EQ(clickInRows(unavailable, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
 
-    TaskManagerReplacementView busy = viewOf(State::Off);
+    TaskManagerReplacementView busy = renderedViewOf(State::Off);
     busy.busy = true;
     EXPECT_EQ(clickInRows(busy, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
 
@@ -250,7 +250,7 @@ TEST_F(TaskManagerReplacementRenderTest, ACopyThatCantChangeItOrIsBusyAsksNothin
     unread.supported = true;
     EXPECT_EQ(clickInRows(unread, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
 
-    TaskManagerReplacementView failed = viewOf(State::Off);
+    TaskManagerReplacementView failed = renderedViewOf(State::Off);
     failed.info->readFailed = true;
     failed.info->readError = "access denied";
     EXPECT_EQ(clickInRows(failed, TaskManagerReplacementText::TOGGLE_LABEL), TaskManagerRequest::None);
@@ -262,7 +262,7 @@ TEST_F(TaskManagerReplacementRenderTest, ACopyThatMayOnlyTurnItOffOffersOnlyThat
     // viewOf() with turning on refused.
     const auto refused = [](State state, std::string program = {})
     {
-        TaskManagerReplacementView view = viewOf(state, std::move(program));
+        TaskManagerReplacementView view = renderedViewOf(state, std::move(program));
         if (view.info.has_value())
         {
             view.info->turnOnUnavailableReason = "only an install no one else can change";
@@ -287,9 +287,9 @@ TEST_F(TaskManagerReplacementRenderTest, ACopyThatMayOnlyTurnItOffOffersOnlyThat
 
 TEST_F(TaskManagerReplacementRenderTest, APortableCopyIsWarnedAndResultsShow)
 {
-    static_cast<void>(settingsFrame(viewOf(State::ThisCopy, {}, /*installed=*/true)));
+    static_cast<void>(settingsFrame(renderedViewOf(State::ThisCopy, {}, /*installed=*/true)));
     const float installed = m_Drawn;
-    TaskManagerReplacementView portable = viewOf(State::ThisCopy, {}, /*installed=*/false);
+    TaskManagerReplacementView portable = renderedViewOf(State::ThisCopy, {}, /*installed=*/false);
     static_cast<void>(settingsFrame(portable));
     EXPECT_GT(m_Drawn, installed) << "the warning's line";
 
@@ -305,7 +305,7 @@ TEST_F(TaskManagerReplacementRenderTest, APortableCopyIsWarnedAndResultsShow)
 
 TEST_F(TaskManagerReplacementRenderTest, TheNoticeOffersRepairTurnOffAndNotNow)
 {
-    const TaskManagerReplacementView view = viewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
+    const TaskManagerReplacementView view = renderedViewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
     EXPECT_EQ(noticeFrame(view), TaskManagerRequest::None);
     EXPECT_EQ(noticeWindow(), nullptr) << "closed until the layer opens it";
 
@@ -323,7 +323,7 @@ TEST_F(TaskManagerReplacementRenderTest, TheNoticeOffersRepairTurnOffAndNotNow)
 
 TEST_F(TaskManagerReplacementRenderTest, TheNoticeShowsTheResultThenCloses)
 {
-    TaskManagerReplacementView view = viewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
+    TaskManagerReplacementView view = renderedViewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
     m_Notice = {.open = true, .acted = true, .kind = NoticeKind::Repair};
     view.busy = true;
     static_cast<void>(noticeFrame(view));
@@ -336,7 +336,7 @@ TEST_F(TaskManagerReplacementRenderTest, TheNoticeShowsTheResultThenCloses)
 
 TEST_F(TaskManagerReplacementRenderTest, ANoticeForACopyThatCantChangeItOffersNothing)
 {
-    TaskManagerReplacementView view = viewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
+    TaskManagerReplacementView view = renderedViewOf(State::OtherTaskSmack, R"(D:\Gone\TaskSmack.exe)");
     view.info->unavailableReason = "needs the helper";
     m_Notice.open = true;
     EXPECT_EQ(clickInNotice(view, TaskManagerReplacementText::REPAIR_LABEL), TaskManagerRequest::None);
@@ -399,7 +399,7 @@ TEST_F(TaskManagerReplacementRenderTest, TheLayerLeavesTheNoticeClosedWhenAllIsW
 // even for a copy that can't change it.
 TEST_F(TaskManagerReplacementRenderTest, TheRestoreNoticeOffersToTurnItBackOn)
 {
-    TaskManagerReplacementView view = viewOf(State::Off);
+    TaskManagerReplacementView view = renderedViewOf(State::Off);
     view.intended = true;
     m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
     static_cast<void>(noticeFrame(view));
@@ -463,7 +463,7 @@ TEST_F(TaskManagerReplacementRenderTest, TheLayerOffersToTurnBackOnWhatSomething
 // Settings, with the notice still open), it is a real TurnOff, with its checks; while a change runs, nothing.
 TEST_F(TaskManagerReplacementRenderTest, TheRestoreNoticesTurnOffTurnsOffWhatWasTurnedOnSince)
 {
-    TaskManagerReplacementView on = viewOf(State::ThisCopy);
+    TaskManagerReplacementView on = renderedViewOf(State::ThisCopy);
     on.intended = true;
     m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
     EXPECT_EQ(clickInNotice(on, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::TurnOff);
@@ -473,14 +473,14 @@ TEST_F(TaskManagerReplacementRenderTest, TheRestoreNoticesTurnOffTurnsOffWhatWas
     m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
     EXPECT_EQ(clickInNotice(on, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::None) << "TurnOff's own check";
 
-    TaskManagerReplacementView changing = viewOf(State::Off);
+    TaskManagerReplacementView changing = renderedViewOf(State::Off);
     changing.intended = true;
     changing.busy = true; // Settings turning it on right now
     m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};
     EXPECT_EQ(clickInNotice(changing, TaskManagerReplacementText::TURN_OFF_LABEL), TaskManagerRequest::None);
     EXPECT_TRUE(m_Notice.open);
 
-    TaskManagerReplacementView failed = viewOf(State::Off);
+    TaskManagerReplacementView failed = renderedViewOf(State::Off);
     failed.intended = true;
     failed.info->readFailed = true;
     m_Notice = {.open = true, .acted = false, .kind = NoticeKind::Restore};

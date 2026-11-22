@@ -36,10 +36,10 @@ using Detail::ProcessAction;
 // The popup's ID: the "###" part of its title, as ProcessActionConfirm.cpp names it.
 constexpr const char* CONFIRM_POPUP_ID = "###ConfirmAction";
 
-constexpr Platform::ProcessTarget TARGET_A{.pid = 1001, .startTimeTicks = 5000};
-constexpr Platform::ProcessTarget TARGET_B{.pid = 2002, .startTimeTicks = 6000};
+constexpr Platform::ProcessTarget CONFIRM_TARGET_A{.pid = 1001, .startTimeTicks = 5000};
+constexpr Platform::ProcessTarget CONFIRM_TARGET_B{.pid = 2002, .startTimeTicks = 6000};
 
-constexpr Platform::ProcessActionCapabilities ALL_ACTIONS{
+constexpr Platform::ProcessActionCapabilities CONFIRM_ACTIONS{
     .canTerminate = true, .canKill = true, .canStop = true, .canContinue = true, .canSetPriority = true};
 
 class ProcessActionConfirmPopupTest : public ::testing::Test
@@ -140,21 +140,21 @@ TEST_F(ProcessActionConfirmPopupTest, ClearingTheFlagAloneLeavesAnOpenModalOpen)
 {
     // The behaviour the review found: the flag only opens the modal, it does not close it.
     bool show = true;
-    EXPECT_TRUE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "a", TARGET_A.pid); }));
+    EXPECT_TRUE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "a", CONFIRM_TARGET_A.pid); }));
     show = false;
-    EXPECT_TRUE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "b", TARGET_B.pid); }));
+    EXPECT_TRUE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "b", CONFIRM_TARGET_B.pid); }));
 }
 
 TEST_F(ProcessActionConfirmPopupTest, DismissClosesAnOpenModalUnconfirmed)
 {
     bool show = true;
-    ASSERT_TRUE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "a", TARGET_A.pid); }));
+    ASSERT_TRUE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "a", CONFIRM_TARGET_A.pid); }));
 
     auto outcome = ProcessActionConfirm::Outcome::None;
-    EXPECT_FALSE(runFrame([&] { outcome = ProcessActionConfirm::render(show, ProcessAction::Kill, "a", TARGET_A.pid, true); }));
+    EXPECT_FALSE(runFrame([&] { outcome = ProcessActionConfirm::render(show, ProcessAction::Kill, "a", CONFIRM_TARGET_A.pid, true); }));
     EXPECT_EQ(outcome, ProcessActionConfirm::Outcome::Cancelled);
     EXPECT_FALSE(show);
-    EXPECT_FALSE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "a", TARGET_A.pid); }));
+    EXPECT_FALSE(runFrame([&] { (void) ProcessActionConfirm::render(show, ProcessAction::Kill, "a", CONFIRM_TARGET_A.pid); }));
 }
 
 TEST_F(ProcessActionConfirmPopupTest, BatchConfirmUsesTheSameModalAndStaysWithinTheWindow)
@@ -162,8 +162,8 @@ TEST_F(ProcessActionConfirmPopupTest, BatchConfirmUsesTheSameModalAndStaysWithin
     // The Processes table's batch confirm (#804): the caller's title and multi-line question, in the
     // same "###ConfirmAction" modal, no wider than the dialog budget however long a listed name is.
     std::vector<ProcessBatch::BatchTarget> targets;
-    targets.push_back({.target = TARGET_A, .name = std::string(400, 'x'), .priority = {}});
-    targets.push_back({.target = TARGET_B, .name = "b", .priority = {}});
+    targets.push_back({.target = CONFIRM_TARGET_A, .name = std::string(400, 'x'), .priority = {}});
+    targets.push_back({.target = CONFIRM_TARGET_B, .name = "b", .priority = {}});
     const std::string title = ProcessBatch::confirmTitle(ProcessAction::Kill, targets.size());
     const std::string question = ProcessBatch::confirmBody(ProcessAction::Kill, targets, 0);
 
@@ -238,7 +238,7 @@ TEST_F(ProcessActionConfirmPopupTest, DismissWithNothingOpenDoesNothing)
 {
     bool show = false;
     auto outcome = ProcessActionConfirm::Outcome::Cancelled;
-    EXPECT_FALSE(runFrame([&] { outcome = ProcessActionConfirm::render(show, ProcessAction::Kill, "a", TARGET_A.pid, true); }));
+    EXPECT_FALSE(runFrame([&] { outcome = ProcessActionConfirm::render(show, ProcessAction::Kill, "a", CONFIRM_TARGET_A.pid, true); }));
     EXPECT_EQ(outcome, ProcessActionConfirm::Outcome::None);
 }
 
@@ -246,12 +246,12 @@ TEST_F(ProcessActionConfirmPopupTest, ViewClosesTheModalWhenTheSelectionChanges)
 {
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Kill, TARGET_A, "a");
-    ASSERT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
+    view.requestAction(ProcessAction::Kill, CONFIRM_TARGET_A, "a");
+    ASSERT_TRUE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "a", CONFIRM_TARGET_A); }));
 
     view.onSelectionChanged(); // B is selected
-    EXPECT_FALSE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "b", TARGET_B); }));
-    EXPECT_FALSE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "b", TARGET_B); }));
+    EXPECT_FALSE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "b", CONFIRM_TARGET_B); }));
+    EXPECT_FALSE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "b", CONFIRM_TARGET_B); }));
     EXPECT_FALSE(view.confirmRequested());
     EXPECT_EQ(mock.killCount(), 0);
 }
@@ -264,12 +264,12 @@ TEST_F(ProcessActionConfirmPopupTest, AModalLeftUndrawnDoesNotReturnForTheNextPr
     // stale modal cannot come back when B is selected and the Actions block drawn again.
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Terminate, TARGET_A, "a");
-    ASSERT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
+    view.requestAction(ProcessAction::Terminate, CONFIRM_TARGET_A, "a");
+    ASSERT_TRUE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "a", CONFIRM_TARGET_A); }));
     EXPECT_TRUE(runFrame([] {})); // Not drawn, still open
 
     view.onSelectionChanged();
-    EXPECT_FALSE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "b", TARGET_B); }));
+    EXPECT_FALSE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "b", CONFIRM_TARGET_B); }));
     EXPECT_EQ(mock.terminateCount(), 0);
 }
 
@@ -277,10 +277,10 @@ TEST_F(ProcessActionConfirmPopupTest, ViewClosesTheModalWhenTheLiveTargetMovesWi
 {
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Kill, TARGET_A, "a");
-    ASSERT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
+    view.requestAction(ProcessAction::Kill, CONFIRM_TARGET_A, "a");
+    ASSERT_TRUE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "a", CONFIRM_TARGET_A); }));
 
-    EXPECT_FALSE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "b", TARGET_B); }));
+    EXPECT_FALSE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "b", CONFIRM_TARGET_B); }));
     EXPECT_FALSE(view.confirmRequested());
     EXPECT_EQ(view.pendingAction(), ProcessAction::None);
     EXPECT_EQ(mock.killCount(), 0);
@@ -290,9 +290,9 @@ TEST_F(ProcessActionConfirmPopupTest, ViewKeepsTheModalOpenForTheSameTarget)
 {
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
-    view.requestAction(ProcessAction::Stop, TARGET_A, "a");
-    ASSERT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
-    EXPECT_TRUE(runFrame([&] { view.render(&mock, ALL_ACTIONS, "a", TARGET_A); }));
+    view.requestAction(ProcessAction::Stop, CONFIRM_TARGET_A, "a");
+    ASSERT_TRUE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "a", CONFIRM_TARGET_A); }));
+    EXPECT_TRUE(runFrame([&] { view.render(&mock, CONFIRM_ACTIONS, "a", CONFIRM_TARGET_A); }));
     EXPECT_TRUE(view.confirmRequested());
     EXPECT_EQ(mock.stopCount(), 0);
 }
@@ -306,10 +306,10 @@ TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheTerminateAndKillConfirmati
         SCOPED_TRACE(static_cast<int>(action));
         TestMocks::MockProcessActions mock;
         ProcessActionsView view;
-        view.requestAction(action, TARGET_A, "a");
+        view.requestAction(action, CONFIRM_TARGET_A, "a");
         const auto draw = [&]
         {
-            view.render(&mock, ALL_ACTIONS, "a", TARGET_A);
+            view.render(&mock, CONFIRM_ACTIONS, "a", CONFIRM_TARGET_A);
         };
         ASSERT_TRUE(runFrame(draw));
         ASSERT_TRUE(runFrame(draw));
@@ -328,8 +328,8 @@ TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheTerminateAndKillConfirmati
 TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheBatchConfirmation)
 {
     std::vector<ProcessBatch::BatchTarget> targets;
-    targets.push_back({.target = TARGET_A, .name = "a", .priority = {}});
-    targets.push_back({.target = TARGET_B, .name = "b", .priority = {}});
+    targets.push_back({.target = CONFIRM_TARGET_A, .name = "a", .priority = {}});
+    targets.push_back({.target = CONFIRM_TARGET_B, .name = "b", .priority = {}});
     for (const ProcessAction action : {ProcessAction::Terminate, ProcessAction::Kill})
     {
         SCOPED_TRACE(static_cast<int>(action));
@@ -375,10 +375,10 @@ TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsALabelledConfirmation)
 
 TEST_F(ProcessActionConfirmPopupTest, AvailableTraceButtonLaunchesOnClickWithoutAConfirm)
 {
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = CONFIRM_ACTIONS;
     caps.syscallTrace = Platform::SyscallTraceAvailability::Available;
     float widthRatio = 0.0F;
-    EXPECT_EQ(clickTraceButton(caps, TARGET_A, &widthRatio), 1);
+    EXPECT_EQ(clickTraceButton(caps, CONFIRM_TARGET_A, &widthRatio), 1);
     // Drawn at its own label's width after the row, not stretched to the other buttons' or the pane's.
     EXPECT_NEAR(widthRatio, 1.0F, 0.01F);
 }
@@ -388,11 +388,11 @@ TEST_F(ProcessActionConfirmPopupTest, DisabledTraceButtonDoesNothingWhenClicked)
     for (const auto availability : {Platform::SyscallTraceAvailability::NoTracer, Platform::SyscallTraceAvailability::NoTerminal})
     {
         SCOPED_TRACE(static_cast<int>(availability));
-        Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+        Platform::ProcessActionCapabilities caps = CONFIRM_ACTIONS;
         caps.syscallTrace = availability;
-        EXPECT_EQ(clickTraceButton(caps, TARGET_A), 0);
+        EXPECT_EQ(clickTraceButton(caps, CONFIRM_TARGET_A), 0);
     }
-    Platform::ProcessActionCapabilities caps = ALL_ACTIONS;
+    Platform::ProcessActionCapabilities caps = CONFIRM_ACTIONS;
     caps.syscallTrace = Platform::SyscallTraceAvailability::Available;
     EXPECT_EQ(clickTraceButton(caps, {.pid = 0, .startTimeTicks = 0}), 0);
 }
@@ -418,10 +418,10 @@ TEST_F(ProcessActionConfirmPopupTest, EscapeCancelsTheDumpConfirmWithoutWriting)
 {
     TestMocks::MockProcessActions mock;
     ProcessDumpView view;
-    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    view.request(CONFIRM_TARGET_A, "a", std::filesystem::path("dumps"));
     const auto draw = [&]
     {
-        view.render(&mock, &TARGET_A);
+        view.render(&mock, &CONFIRM_TARGET_A);
     };
     static_cast<void>(runFrame(draw));
     static_cast<void>(runFrame(draw));
@@ -440,12 +440,12 @@ TEST_F(ProcessActionConfirmPopupTest, AnotherSelectionClosesTheDumpConfirmUnconf
 {
     TestMocks::MockProcessActions mock;
     ProcessDumpView view;
-    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
-    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_A); }));
-    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_A); }));
+    view.request(CONFIRM_TARGET_A, "a", std::filesystem::path("dumps"));
+    static_cast<void>(runFrame([&] { view.render(&mock, &CONFIRM_TARGET_A); }));
+    static_cast<void>(runFrame([&] { view.render(&mock, &CONFIRM_TARGET_A); }));
     ASSERT_NE(topModalTitle(), "");
-    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_B); }));
-    static_cast<void>(runFrame([&] { view.render(&mock, &TARGET_B); }));
+    static_cast<void>(runFrame([&] { view.render(&mock, &CONFIRM_TARGET_B); }));
+    static_cast<void>(runFrame([&] { view.render(&mock, &CONFIRM_TARGET_B); }));
     EXPECT_EQ(topModalTitle(), "");
     EXPECT_FALSE(view.active());
     EXPECT_EQ(mock.createDumpCount(), 0);
@@ -458,12 +458,12 @@ TEST_F(ProcessActionConfirmPopupTest, WithNoFolderTheDumpConfirmsButtonDoesNothi
     TestMocks::MockProcessActions mock;
     ProcessDumpView view([](const std::filesystem::path&) {});
     view.setNoDefaultFolder(true);
-    view.requestInRememberedFolder(TARGET_A, "a", "", &mock);
+    view.requestInRememberedFolder(CONFIRM_TARGET_A, "a", "", &mock);
     ASSERT_TRUE(view.takeConfirmCheck(&mock, true)); // its folder, resolved on the worker: none
     ASSERT_TRUE(view.needsFolder());
     const auto draw = [&]
     {
-        view.render(&mock, &TARGET_A);
+        view.render(&mock, &CONFIRM_TARGET_A);
     };
     static_cast<void>(runFrame(draw));
     static_cast<void>(runFrame(draw));
@@ -487,10 +487,10 @@ TEST_F(ProcessActionConfirmPopupTest, EscapeStopsADumpBeingWrittenAndClosesItsPr
     TestMocks::MockProcessActions mock;
     mock.setDumpWaitsForCancel(true);
     ProcessDumpView view;
-    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    view.request(CONFIRM_TARGET_A, "a", std::filesystem::path("dumps"));
     const auto draw = [&]
     {
-        view.render(&mock, &TARGET_A);
+        view.render(&mock, &CONFIRM_TARGET_A);
     };
     static_cast<void>(runFrame(draw));
     static_cast<void>(runFrame(draw));
@@ -518,10 +518,10 @@ TEST_F(ProcessActionConfirmPopupTest, EscapeClosesTheDumpResult)
     TestMocks::MockProcessActions mock;
     mock.setDumpResult(std::unexpected(std::string("Access denied")));
     ProcessDumpView view;
-    view.request(TARGET_A, "a", std::filesystem::path("dumps"));
+    view.request(CONFIRM_TARGET_A, "a", std::filesystem::path("dumps"));
     const auto draw = [&]
     {
-        view.render(&mock, &TARGET_A);
+        view.render(&mock, &CONFIRM_TARGET_A);
     };
     static_cast<void>(runFrame(draw));
     static_cast<void>(runFrame(draw));

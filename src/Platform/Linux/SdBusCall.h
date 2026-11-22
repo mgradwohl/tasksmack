@@ -23,6 +23,24 @@
 #include <systemd/sd-bus-protocol.h> // NOLINT(misc-include-cleaner) - see above
 #include <systemd/sd-bus.h>
 
+namespace Platform::SystemdBus
+{
+
+// systemd's and logind's bus names, once for every reader (#4783): SystemdUnits.cpp, SystemdUnitActions.cpp and
+// LogindSessions.cpp each had a file-local copy, which collided in a unity build.
+inline constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
+inline constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
+inline constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
+inline constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
+inline constexpr const char* SYSTEMD_UNIT = "org.freedesktop.systemd1.Unit";
+inline constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
+inline constexpr const char* LOGIN1 = "org.freedesktop.login1";
+inline constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
+inline constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
+inline constexpr const char* LOGIN1_SESSION = "org.freedesktop.login1.Session";
+
+} // namespace Platform::SystemdBus
+
 namespace Platform::SystemdBus::Detail
 {
 

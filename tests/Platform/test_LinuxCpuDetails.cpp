@@ -28,8 +28,8 @@ namespace Platform
 namespace
 {
 
-constexpr std::uint64_t KIB = 1024;
-constexpr std::uint64_t MIB = 1024 * KIB;
+constexpr std::uint64_t LINUX_KIB = 1024;
+constexpr std::uint64_t LINUX_MIB = 1024 * LINUX_KIB;
 
 /// A fresh directory under the temp directory, removed (best effort) when the test ends.
 class FixtureDir
@@ -142,10 +142,10 @@ class FixtureDir
 TEST(LinuxCpuDetailsTest, CacheSizesParseWithTheirUnits)
 {
     using LinuxCpuDetails::parseCacheSize;
-    EXPECT_EQ(parseCacheSize("32K\n"), 32 * KIB);
-    EXPECT_EQ(parseCacheSize("1024K"), 1 * MIB);
-    EXPECT_EQ(parseCacheSize("8M"), 8 * MIB);
-    EXPECT_EQ(parseCacheSize("16384 KB"), 16 * MIB);
+    EXPECT_EQ(parseCacheSize("32K\n"), 32 * LINUX_KIB);
+    EXPECT_EQ(parseCacheSize("1024K"), 1 * LINUX_MIB);
+    EXPECT_EQ(parseCacheSize("8M"), 8 * LINUX_MIB);
+    EXPECT_EQ(parseCacheSize("16384 KB"), 16 * LINUX_MIB);
     EXPECT_EQ(parseCacheSize("4096"), 4096U);
     EXPECT_FALSE(parseCacheSize("").has_value());
     EXPECT_FALSE(parseCacheSize("0K").has_value());
@@ -228,10 +228,10 @@ TEST(LinuxCpuDetailsTest, SingleSocketSmtSystem)
     EXPECT_EQ(details.sockets, 1U);
     EXPECT_EQ(details.physicalCores, 4U);
     EXPECT_EQ(details.logicalProcessors, 8U);
-    EXPECT_EQ(details.l1CacheBytes, 256 * KIB); // 4 cores x (32K data + 32K instruction)
-    EXPECT_EQ(details.l2CacheBytes, 2 * MIB);   // 4 x 512K, each listed by both siblings
-    EXPECT_EQ(details.l3CacheBytes, 8 * MIB);   // One instance, listed by all eight
-    EXPECT_EQ(details.baseSpeedMHz, 3600U);     // base_frequency, not the boost clock
+    EXPECT_EQ(details.l1CacheBytes, 256 * LINUX_KIB); // 4 cores x (32K data + 32K instruction)
+    EXPECT_EQ(details.l2CacheBytes, 2 * LINUX_MIB);   // 4 x 512K, each listed by both siblings
+    EXPECT_EQ(details.l3CacheBytes, 8 * LINUX_MIB);   // One instance, listed by all eight
+    EXPECT_EQ(details.baseSpeedMHz, 3600U);           // base_frequency, not the boost clock
     EXPECT_FALSE(details.performanceCores.has_value());
     EXPECT_TRUE(details.efficiencyClassByCoreId.empty());            // No cpu_capacity: not known as hybrid
     EXPECT_FALSE(details.virtualizationFirmwareEnabled.has_value()); // readVirtualization()'s, not read()'s (#2592)
@@ -261,10 +261,10 @@ TEST(LinuxCpuDetailsTest, DualSocketSystem)
     EXPECT_EQ(details.sockets, 2U);
     EXPECT_EQ(details.physicalCores, 4U); // (socket, core) pairs, not the 2 distinct core ids
     EXPECT_EQ(details.logicalProcessors, 8U);
-    EXPECT_EQ(details.l1CacheBytes, KIB * 4 * 80);
-    EXPECT_EQ(details.l2CacheBytes, 8 * MIB);
-    EXPECT_EQ(details.l3CacheBytes, 32 * MIB);      // One 16M L3 per socket
-    EXPECT_FALSE(details.baseSpeedMHz.has_value()); // No base_frequency: bios_limit is a maximum, not the base
+    EXPECT_EQ(details.l1CacheBytes, LINUX_KIB * 4 * 80);
+    EXPECT_EQ(details.l2CacheBytes, 8 * LINUX_MIB);
+    EXPECT_EQ(details.l3CacheBytes, 32 * LINUX_MIB); // One 16M L3 per socket
+    EXPECT_FALSE(details.baseSpeedMHz.has_value());  // No base_frequency: bios_limit is a maximum, not the base
 }
 
 TEST(LinuxCpuDetailsTest, MissingCacheAndCpufreqDirectoriesStayUnknown)
@@ -328,9 +328,9 @@ TEST(LinuxCpuDetailsTest, HybridCoresAreCountedAndTheirCachesSummed)
     // /proc/cpuinfo does not say which cores are which: counted, not split
     EXPECT_FALSE(details.performanceCores.has_value());
     EXPECT_FALSE(details.efficiencyCores.has_value());
-    EXPECT_EQ(details.l1CacheBytes, (KIB * 2 * 80) + (KIB * 4 * 96));
-    EXPECT_EQ(details.l2CacheBytes, (KIB * 2 * 1280) + (2 * MIB));
-    EXPECT_EQ(details.l3CacheBytes, 12 * MIB);
+    EXPECT_EQ(details.l1CacheBytes, (LINUX_KIB * 2 * 80) + (LINUX_KIB * 4 * 96));
+    EXPECT_EQ(details.l2CacheBytes, (LINUX_KIB * 2 * 1280) + (2 * LINUX_MIB));
+    EXPECT_EQ(details.l3CacheBytes, 12 * LINUX_MIB);
     EXPECT_FALSE(details.baseSpeedMHz.has_value()); // cpuinfo_max_freq is the boost clock, not the base
     // cpu_capacity ranks each logical processor: P-cores 1, E-cores 0
     EXPECT_EQ(details.efficiencyClassByCoreId, (std::vector<std::uint8_t>{1, 1, 1, 1, 0, 0, 0, 0}));
@@ -387,7 +387,7 @@ TEST(LinuxCpuDetailsTest, OfflineCpusInSysfsAreLeftOut)
     const CpuDetails details = LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs(), &online);
     EXPECT_EQ(online, (std::vector<std::size_t>{0, 1, 2})); // The set the details describe
     EXPECT_EQ(details.logicalProcessors, 3U);
-    EXPECT_EQ(details.l2CacheBytes, 3 * MIB);             // cpu3's L2 is not counted
+    EXPECT_EQ(details.l2CacheBytes, 3 * LINUX_MIB);       // cpu3's L2 is not counted
     EXPECT_TRUE(details.efficiencyClassByCoreId.empty()); // Without cpu3, one capacity: not hybrid
 }
 
@@ -398,13 +398,13 @@ TEST(LinuxCpuDetailsTest, CachesWithoutASharedListAreTakenAsPrivate)
     fixture.writeCache(0, 0, 2, "Unified", "1M", "");
     fixture.writeCache(1, 0, 2, "Unified", "1M", "");
     const CpuDetails details = LinuxCpuDetails::read(fixture.proc(), fixture.cpuSysfs());
-    EXPECT_EQ(details.l2CacheBytes, 2 * MIB);
+    EXPECT_EQ(details.l2CacheBytes, 2 * LINUX_MIB);
 }
 
 TEST(LinuxCpuDetailsTest, GigabyteCacheSizesAndTrailingJunkParse)
 {
-    EXPECT_EQ(LinuxCpuDetails::parseCacheSize("2G"), 2 * MIB * 1024U);
-    EXPECT_EQ(LinuxCpuDetails::parseCacheSize("1g"), MIB * 1024U);
+    EXPECT_EQ(LinuxCpuDetails::parseCacheSize("2G"), 2 * LINUX_MIB * 1024U);
+    EXPECT_EQ(LinuxCpuDetails::parseCacheSize("1g"), LINUX_MIB * 1024U);
     EXPECT_FALSE(LinuxCpuDetails::Detail::parseUnsigned("12x").has_value());
     EXPECT_EQ(LinuxCpuDetails::Detail::parseUnsigned(" 12 \n"), 12U);
 }
@@ -429,7 +429,7 @@ TEST(LinuxCpuDetailsTest, ZeroSizedAndUnreadableCacheEntriesAreSkipped)
 {
     const std::vector<LinuxCpuDetails::SysfsCacheEntry> entries{
         {.cpu = 0, .level = 1, .type = "Data", .bytes = 0, .sharedCpuList = "0"},
-        {.cpu = 0, .level = 2, .type = "Unified", .bytes = MIB, .sharedCpuList = "0"},
+        {.cpu = 0, .level = 2, .type = "Unified", .bytes = LINUX_MIB, .sharedCpuList = "0"},
     };
     EXPECT_EQ(LinuxCpuDetails::distinctCacheInstances(entries).size(), 1U);
 
@@ -441,7 +441,7 @@ TEST(LinuxCpuDetailsTest, ZeroSizedAndUnreadableCacheEntriesAreSkipped)
     const auto read = LinuxCpuDetails::readCacheEntries(fixture.cpuSysfs(), std::nullopt);
     ASSERT_EQ(read.size(), 1U);
     EXPECT_EQ(read[0].level, 2U);
-    EXPECT_EQ(read[0].bytes, MIB);
+    EXPECT_EQ(read[0].bytes, LINUX_MIB);
 }
 
 TEST(LinuxCpuDetailsTest, CpuModelIsTheX86ModelName)

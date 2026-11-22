@@ -31,7 +31,7 @@ using Platform::ModulesReadStatus;
 using Platform::ModuleVersion;
 using Platform::ProcessModule;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr Platform::ProcessTarget MODULES_RENDER_TARGET{.pid = 4242, .startTimeTicks = 777};
 
 [[nodiscard]] Platform::ModulesReadResult sampleModules(bool withVersions = true)
 {
@@ -82,18 +82,18 @@ TEST(ProcessModulesViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     TestMocks::MockProcessModulesReader reader;
     reader.setResult(sampleModules());
 
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F)); // never drawn open: never read
+    EXPECT_FALSE(view.update(&reader, MODULES_RENDER_TARGET, 10.0F)); // never drawn open: never read
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     EXPECT_TRUE(view.hasRead());
     EXPECT_EQ(view.rows().size(), 3U);
 
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F)); // not yet due
+    EXPECT_FALSE(view.update(&reader, MODULES_RENDER_TARGET, 1.0F)); // not yet due
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 2.5F)); // PROCESS_MODULES_REFRESH_MS since the last read
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 2.5F)); // PROCESS_MODULES_REFRESH_MS since the last read
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 
     // A new selection drops the rows and reads again as soon as it is shown.
@@ -101,8 +101,8 @@ TEST(ProcessModulesViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     EXPECT_FALSE(view.hasRead());
     EXPECT_TRUE(view.rows().empty());
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 3);
 }
 
@@ -112,9 +112,9 @@ TEST(ProcessModulesViewTest, DropsAReadForAPreviousSelection)
     TestMocks::MockProcessModulesReader reader;
     reader.setResult(sampleModules());
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
     view.onSelectionChanged();
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     EXPECT_FALSE(view.hasRead());
 }
 
@@ -218,7 +218,7 @@ TEST_F(ProcessModulesViewRenderTest, DrawsNothingWithoutSupportAndNothingReadWhi
     TestMocks::MockProcessModulesReader reader;
     for (int i = 0; i < 3; ++i)
     {
-        static_cast<void>(view.update(&reader, TARGET, 10.0F));
+        static_cast<void>(view.update(&reader, MODULES_RENDER_TARGET, 10.0F));
         EXPECT_TRUE(renderAndCapture(view, true, false).contains("Modules"));
     }
     EXPECT_EQ(reader.readCount(), 0);
@@ -300,20 +300,20 @@ TEST(ProcessModulesViewTest, ARefusedReadOffersAuthenticateToRead)
     TestMocks::MockProcessModulesReader reader;
     reader.setResult({.status = Platform::ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
-    static_cast<void>(view.update(&reader, TARGET, 0.0F)); // takes in what the reader can do
-    EXPECT_FALSE(view.offersAuthenticateToRead());         // the mock can't read as an administrator yet
+    ASSERT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MODULES_RENDER_TARGET);
+    static_cast<void>(view.update(&reader, MODULES_RENDER_TARGET, 0.0F)); // takes in what the reader can do
+    EXPECT_FALSE(view.offersAuthenticateToRead());                        // the mock can't read as an administrator yet
 
     reader.setAuthorizedResult(
         {.status = Platform::ModulesReadStatus::Ok,
          .modules = {{.path = "/usr/lib/libc.so.6", .baseAddress = 0x7f00, .sizeBytes = 4096, .version = std::nullopt, .deleted = false}},
          .detail = {}});
-    static_cast<void>(view.update(&reader, TARGET, 0.0F));
+    static_cast<void>(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
     ASSERT_TRUE(view.offersAuthenticateToRead());
     view.requestAuthorizedRead();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(view.status(), Platform::ModulesReadStatus::Ok);
     EXPECT_FALSE(view.offersAuthenticateToRead());
@@ -329,20 +329,20 @@ TEST(ProcessModulesViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
     reader.setResult({.status = Platform::ModulesReadStatus::PermissionDenied, .modules = {}, .detail = {}});
     reader.setAuthorizedResult({.status = Platform::ModulesReadStatus::Ok, .modules = {}, .detail = {}});
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     ASSERT_TRUE(view.offersAuthenticateToRead());
 
     view.requestAuthorizedRead();
     view.requestAuthorizedRead(); // pressed twice in a frame: one request
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MODULES_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(view.status(), Platform::ModulesReadStatus::Ok);
     for (int i = 0; i < 3; ++i)
     {
         view.markDrawnOpen();
-        EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)) << "frame " << i; // taken: nothing more starts
+        EXPECT_FALSE(view.update(&reader, MODULES_RENDER_TARGET, 0.0F)) << "frame " << i; // taken: nothing more starts
     }
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(reader.readCount(), 1); // the refused read; the authorized one restarted the refresh clock

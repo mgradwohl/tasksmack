@@ -48,7 +48,7 @@ namespace
 
 // Any elapsed time below half the minimum configurable refresh interval is treated as "no previous
 // data" for rate purposes (see computeSnapshotsLocked()).
-constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
+using Sampling::MIN_ELAPSED_FOR_RATES_SECONDS;
 
 // What a refresh's network counters allow: a rate over `seconds`, holding the last rate, or none.
 struct NetworkInterval
@@ -84,8 +84,8 @@ struct NetworkInterval
             return {};
         }
         const double seconds = Numeric::toDouble(current.netSampleTimeNs - previous.netSampleTimeNs) / 1.0e9;
-        return seconds >= MIN_ELAPSED_FOR_RATES ? NetworkInterval{.kind = NetworkInterval::Kind::Measure, .seconds = seconds}
-                                                : NetworkInterval{};
+        return seconds >= MIN_ELAPSED_FOR_RATES_SECONDS ? NetworkInterval{.kind = NetworkInterval::Kind::Measure, .seconds = seconds}
+                                                        : NetworkInterval{};
     }
     return refreshElapsedSeconds > 0.0 ? NetworkInterval{.kind = NetworkInterval::Kind::Measure, .seconds = refreshElapsedSeconds}
                                        : NetworkInterval{};
@@ -442,7 +442,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // Note: we zero out elapsed/timeDelta here so computeSnapshot() emits zero
         // rates; we do NOT prevent the history push below (handle counts etc. don't
         // depend on elapsed time and must still be recorded every cycle).
-        if (elapsedSeconds < MIN_ELAPSED_FOR_RATES)
+        if (elapsedSeconds < MIN_ELAPSED_FOR_RATES_SECONDS)
         {
             elapsedSeconds = 0.0;
             timeDeltaUs = 0;
@@ -456,7 +456,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         if (m_PrevEnergyAt.has_value() && !reseed)
         {
             const auto energyDelta = *energyAcquiredAt - *m_PrevEnergyAt;
-            if (std::chrono::duration<double>(energyDelta).count() >= MIN_ELAPSED_FOR_RATES)
+            if (std::chrono::duration<double>(energyDelta).count() >= MIN_ELAPSED_FOR_RATES_SECONDS)
             {
                 timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(energyDelta).count());
             }
@@ -1322,7 +1322,7 @@ ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const P
     const auto sinceRead = now - since->second.sampleTime;
     interval.elapsedSeconds = std::chrono::duration<double>(sinceRead).count();
     interval.timeDeltaUs = static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sinceRead).count());
-    if (interval.elapsedSeconds < MIN_ELAPSED_FOR_RATES)
+    if (interval.elapsedSeconds < MIN_ELAPSED_FOR_RATES_SECONDS)
     {
         interval.elapsedSeconds = 0.0;
         interval.timeDeltaUs = 0;
@@ -1335,7 +1335,7 @@ ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const P
         if (since->second.energyTime.has_value())
         {
             const auto sinceEnergy = *energyNow - *since->second.energyTime;
-            if (std::chrono::duration<double>(sinceEnergy).count() >= MIN_ELAPSED_FOR_RATES)
+            if (std::chrono::duration<double>(sinceEnergy).count() >= MIN_ELAPSED_FOR_RATES_SECONDS)
             {
                 interval.timeDeltaUs =
                     static_cast<std::uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(sinceEnergy).count());

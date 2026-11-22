@@ -51,7 +51,7 @@ namespace
 
 /// An environment variable, or null. secure_getenv ignores them in a setuid process, as
 /// LinuxPathProvider does.
-[[nodiscard]] const char* environment(const char* name)
+[[nodiscard]] const char* systemInfoEnvironment(const char* name)
 {
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
     // NOLINTNEXTLINE(misc-include-cleaner) - secure_getenv from cstdlib with _GNU_SOURCE
@@ -64,7 +64,7 @@ namespace
 
 [[nodiscard]] std::string environmentString(const char* name)
 {
-    const char* value = environment(name);
+    const char* value = systemInfoEnvironment(name);
     return value != nullptr ? std::string(value) : std::string{};
 }
 
@@ -156,7 +156,8 @@ OsInfo LinuxSystemInfoProbe::readOs()
     }
     info.userName = lookUpUserName(geteuid(), getpwuid_r).value_or(std::string{});
     info.homeDirectory = lookUpHomeDirectory(geteuid(), getpwuid_r).value_or(std::string{});
-    info.locale = LinuxOsInfo::chooseLocale(environment("LC_ALL"), environment("LC_MESSAGES"), environment("LANG"));
+    info.locale =
+        LinuxOsInfo::chooseLocale(systemInfoEnvironment("LC_ALL"), systemInfoEnvironment("LC_MESSAGES"), systemInfoEnvironment("LANG"));
     info.desktop = environmentString("XDG_CURRENT_DESKTOP");
     info.sessionType = environmentString("XDG_SESSION_TYPE");
 

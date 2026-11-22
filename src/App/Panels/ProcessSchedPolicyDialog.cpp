@@ -26,9 +26,9 @@ namespace
 {
 
 // The "###" part keeps the popup's ID fixed while its title names the process.
-constexpr const char* POPUP_ID = "###SetSchedPolicy";
-constexpr const char* APPLY_LABEL = "Apply";
-constexpr const char* CANCEL_LABEL = "Cancel";
+constexpr const char* SCHED_POLICY_POPUP_ID = "###SetSchedPolicy";
+constexpr const char* SCHED_POLICY_APPLY_LABEL = "Apply";
+constexpr const char* SCHED_POLICY_CANCEL_LABEL = "Cancel";
 constexpr const char* SET_LABEL = "Set";   // The real-time confirm step's primary button (#3219)
 constexpr const char* BACK_LABEL = "Back"; // ... and its way back to the choices
 constexpr const char* PRIORITY_SLIDER_ID = "##RtPriority";
@@ -46,9 +46,9 @@ constexpr const char* REALTIME_MAY_BE_REFUSED =
 constexpr const char* OWN_PROCESS_NO_REALTIME = "This is TaskSmack itself, which never runs real time: its window would stop responding.";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
-constexpr float BUTTON_MIN_EM = 11.25F;
+constexpr float SCHED_POLICY_BUTTON_MIN_EM = 11.25F;
 // The dialog's width in ems: room for the longest description on two lines.
-constexpr float DIALOG_WIDTH_EM = 34.0F;
+constexpr float SCHED_POLICY_DIALOG_WIDTH_EM = 34.0F;
 
 /// How the line above the choices names a policy the dialog doesn't offer, or nothing for one it does.
 [[nodiscard]] std::string_view unofferedPolicyName(Platform::SchedPolicy policy) noexcept
@@ -129,19 +129,20 @@ std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::render()
 {
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(SCHED_POLICY_POPUP_ID);
         m_ShowRequested = false;
     }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    m_Open = ImGui::IsPopupOpen(SCHED_POLICY_POPUP_ID);
     if (!m_Open)
     {
         return std::nullopt;
     }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const std::string title = std::format("{}  Set scheduling policy for {} (PID {}){}", ICON_FA_CLOCK, m_Name, m_Target.pid, POPUP_ID);
+    const std::string title =
+        std::format("{}  Set scheduling policy for {} (PID {}){}", ICON_FA_CLOCK, m_Name, m_Target.pid, SCHED_POLICY_POPUP_ID);
     UI::Widgets::centerNextDialog(m_LastWorkSize);
-    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
+    const float width = std::min((SCHED_POLICY_DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
                                  UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
     UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
@@ -200,18 +201,21 @@ std::optional<SchedPolicySetting> ProcessSchedPolicyDialog::renderFooter(bool es
                                                                  .pressed = theme.scheme().successButtonActive,
                                                              };
     const UI::Widgets::DialogFooterButton applyButton{
-        .label = confirming ? SET_LABEL : APPLY_LABEL,
+        .label = confirming ? SET_LABEL : SCHED_POLICY_APPLY_LABEL,
         .fills = &applyFills,
         .tooltip = chosen ? nullptr : "Choose a policy",
         .disabled = !chosen,
     };
     const UI::Widgets::DialogFooterButton cancelButton{
-        .label = confirming ? BACK_LABEL : CANCEL_LABEL,
+        .label = confirming ? BACK_LABEL : SCHED_POLICY_CANCEL_LABEL,
         .fills = nullptr,
         .tooltip = nullptr,
     };
     UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
-        applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL, SET_LABEL, BACK_LABEL}, BUTTON_MIN_EM));
+        applyButton,
+        cancelButton,
+        UI::Widgets::footerButtonWidth({SCHED_POLICY_APPLY_LABEL, SCHED_POLICY_CANCEL_LABEL, SET_LABEL, BACK_LABEL},
+                                       SCHED_POLICY_BUTTON_MIN_EM));
     if (escaped)
     {
         pressed = UI::Widgets::DialogFooterAction::Secondary;

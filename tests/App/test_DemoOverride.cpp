@@ -26,7 +26,6 @@ using App::DemoOverride::MachineAction;
 using App::DemoOverride::MAX_STEP_SECONDS;
 using App::DemoOverride::MetricsAction;
 using App::DemoOverride::OpenAction;
-using App::DemoOverride::parse;
 using App::DemoOverride::SectionAction;
 using App::DemoOverride::SelectAction;
 using App::DemoOverride::Step;
@@ -56,7 +55,7 @@ using App::SelectOverride::StartupDialog;
 /// What @p value parses to, as describe() spells it, or "none: <warning>".
 [[nodiscard]] std::string parsed(const char* value)
 {
-    const auto result = parse(value);
+    const auto result = App::DemoOverride::parse(value);
     return result.steps.has_value() ? describe(*result.steps) : "none: " + result.warning;
 }
 
@@ -67,7 +66,7 @@ TEST(DemoOverrideParseTest, UnsetAndBlankGiveNoScriptAndNoWarning)
     for (const char* value : {static_cast<const char*>(nullptr), "", "   ", "\t\r\n"})
     {
         SCOPED_TRACE(value == nullptr ? "(nullptr)" : value);
-        const auto result = parse(value);
+        const auto result = App::DemoOverride::parse(value);
         EXPECT_FALSE(result.steps.has_value());
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -75,8 +74,8 @@ TEST(DemoOverrideParseTest, UnsetAndBlankGiveNoScriptAndNoWarning)
 
 TEST(DemoOverrideParseTest, ParsesEveryActionAndKeepsTheStepsInOrder)
 {
-    const auto result = parse("1:tab=processes,3:select=name:explorer.exe,3:select=pid:42,5:details=network,6:open=help,"
-                              "7:close=dialog,8:theme=dracula,9:section=modules,10:machine=cores,11:metrics=export");
+    const auto result = App::DemoOverride::parse("1:tab=processes,3:select=name:explorer.exe,3:select=pid:42,5:details=network,6:open=help,"
+                                                 "7:close=dialog,8:theme=dracula,9:section=modules,10:machine=cores,11:metrics=export");
     ASSERT_TRUE(result.steps.has_value()) << result.warning;
     EXPECT_TRUE(result.warning.empty()) << result.warning;
     const std::vector<Step> steps = result.steps.value_or(std::vector<Step>{});
@@ -146,7 +145,7 @@ TEST(DemoOverrideParseTest, TimesAreSecondsWithUpToThreeDecimals)
          })
     {
         SCOPED_TRACE(c.time);
-        const auto result = parse((std::string(c.time) + ":close=dialog").c_str());
+        const auto result = App::DemoOverride::parse((std::string(c.time) + ":close=dialog").c_str());
         ASSERT_TRUE(result.steps.has_value()) << result.warning;
         const std::vector<Step> steps = result.steps.value_or(std::vector<Step>{});
         ASSERT_EQ(steps.size(), 1U);
@@ -158,7 +157,7 @@ TEST(DemoOverrideParseTest, TimesAreSecondsWithUpToThreeDecimals)
 TEST(DemoOverrideParseTest, TimesMayRepeatButNotGoBack)
 {
     EXPECT_EQ(parsed("2:close=dialog,2:open=help"), "2:close=dialog, 2:open=help");
-    const auto result = parse("2:close=dialog,1.999:open=help");
+    const auto result = App::DemoOverride::parse("2:close=dialog,1.999:open=help");
     EXPECT_FALSE(result.steps.has_value());
     EXPECT_NE(result.warning.find("step 2"), std::string::npos) << result.warning;
     EXPECT_NE(result.warning.find("earlier than the step before it"), std::string::npos) << result.warning;
@@ -215,7 +214,7 @@ TEST(DemoOverrideParseTest, InvalidScriptsAreIgnoredWholeWithAWarningNamingTheSt
          })
     {
         SCOPED_TRACE(c.value);
-        const auto result = parse(c.value);
+        const auto result = App::DemoOverride::parse(c.value);
         EXPECT_FALSE(result.steps.has_value());
         EXPECT_NE(result.warning.find(c.step), std::string::npos) << result.warning;
         EXPECT_NE(result.warning.find("ignored"), std::string::npos) << result.warning;
@@ -224,21 +223,23 @@ TEST(DemoOverrideParseTest, InvalidScriptsAreIgnoredWholeWithAWarningNamingTheSt
 
 TEST(DemoOverrideParseTest, TheWarningSaysWhatIsWrong)
 {
-    EXPECT_NE(parse("1 tab=a").warning.find("has no ':'"), std::string::npos);
-    EXPECT_NE(parse("1:tab").warning.find("has no '='"), std::string::npos);
-    EXPECT_NE(parse("1:tab=").warning.find("gives 'tab' no value"), std::string::npos);
-    EXPECT_NE(parse("x:tab=a").warning.find("isn't a number of seconds"), std::string::npos);
-    EXPECT_NE(parse("3601:tab=a").warning.find("past 3600 s"), std::string::npos);
-    EXPECT_NE(parse("1:select=pid:x").warning.find("isn't a positive PID"), std::string::npos);
-    EXPECT_NE(parse("1:details=memory").warning.find("not overview, gpu, npu or network"), std::string::npos);
-    EXPECT_NE(parse("1:machine=memory").warning.find("not overview, cores, gpu, npu or network, as the machine tab"), std::string::npos);
-    EXPECT_NE(parse("1:open=x").warning.find("not help, about or settings"), std::string::npos);
-    EXPECT_NE(parse("1:close=x").warning.find("not dialog"), std::string::npos);
-    EXPECT_NE(parse("1:section=x").warning.find("not modules, openfiles, connections, environment, security or services"),
+    EXPECT_NE(App::DemoOverride::parse("1 tab=a").warning.find("has no ':'"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:tab").warning.find("has no '='"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:tab=").warning.find("gives 'tab' no value"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("x:tab=a").warning.find("isn't a number of seconds"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("3601:tab=a").warning.find("past 3600 s"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:select=pid:x").warning.find("isn't a positive PID"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:details=memory").warning.find("not overview, gpu, npu or network"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:machine=memory").warning.find("not overview, cores, gpu, npu or network, as the machine tab"),
               std::string::npos);
-    EXPECT_NE(parse("1:metrics=show").warning.find("not on, off or export"), std::string::npos);
-    EXPECT_NE(parse("1:jump=x").warning.find("unknown action 'jump'"), std::string::npos);
-    EXPECT_NE(parse("1:tab=a,").warning.find("is empty"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:open=x").warning.find("not help, about or settings"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:close=x").warning.find("not dialog"), std::string::npos);
+    EXPECT_NE(
+        App::DemoOverride::parse("1:section=x").warning.find("not modules, openfiles, connections, environment, security or services"),
+        std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:metrics=show").warning.find("not on, off or export"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:jump=x").warning.find("unknown action 'jump'"), std::string::npos);
+    EXPECT_NE(App::DemoOverride::parse("1:tab=a,").warning.find("is empty"), std::string::npos);
 }
 
 // A process name or a tab name may hold ':', '=' and ';' (the first ':' ends the seconds, the first
@@ -261,7 +262,7 @@ TEST(DemoOverrideParseTest, AnyAsciiWhitespaceAroundTheValueIsTrimmed)
 // The value is UTF-8, as every hook's is (#1648): a process name is kept byte for byte.
 TEST(DemoOverrideParseTest, NamesAreKeptAsUtf8)
 {
-    const auto result = parse("1:select=name:процесс.exe");
+    const auto result = App::DemoOverride::parse("1:select=name:процесс.exe");
     ASSERT_TRUE(result.steps.has_value()) << result.warning;
     const std::vector<Step> steps = result.steps.value_or(std::vector<Step>{});
     ASSERT_EQ(steps.size(), 1U);

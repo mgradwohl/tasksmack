@@ -43,10 +43,10 @@ namespace App
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 1600.0F;
-constexpr float DISPLAY_HEIGHT = 1200.0F;
-constexpr std::size_t HISTORY_POINTS = 60;
-constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
+constexpr float CHARTS_DISPLAY_WIDTH = 1600.0F;
+constexpr float CHARTS_DISPLAY_HEIGHT = 1200.0F;
+constexpr std::size_t CHARTS_HISTORY_POINTS = 60;
+constexpr double CHARTS_NAN = std::numeric_limits<double>::quiet_NaN();
 
 /// One plot's series, by legend label (series with a hidden "##" label are not listed).
 using SeriesLabels = std::set<std::string>;
@@ -86,19 +86,19 @@ using Detail::ProcessSeries;
 [[nodiscard]] Detail::ProcessHistoryPoint gapPoint(std::size_t i)
 {
     Detail::ProcessHistoryPoint point = busyPoint(i);
-    point.handles = NOT_A_NUMBER;
-    point.pageFaults = NOT_A_NUMBER;
-    point.ioRead = NOT_A_NUMBER;
-    point.ioWrite = NOT_A_NUMBER;
-    point.netSent = NOT_A_NUMBER;
-    point.netReceived = NOT_A_NUMBER;
-    point.power = NOT_A_NUMBER;
-    point.gpuUtil = NOT_A_NUMBER;
-    point.gpuMemory = NOT_A_NUMBER;
-    point.gdiObjects = NOT_A_NUMBER;
-    point.npuUtil = NOT_A_NUMBER;
-    point.npuDedicatedMemory = NOT_A_NUMBER;
-    point.npuSharedMemory = NOT_A_NUMBER;
+    point.handles = CHARTS_NAN;
+    point.pageFaults = CHARTS_NAN;
+    point.ioRead = CHARTS_NAN;
+    point.ioWrite = CHARTS_NAN;
+    point.netSent = CHARTS_NAN;
+    point.netReceived = CHARTS_NAN;
+    point.power = CHARTS_NAN;
+    point.gpuUtil = CHARTS_NAN;
+    point.gpuMemory = CHARTS_NAN;
+    point.gdiObjects = CHARTS_NAN;
+    point.npuUtil = CHARTS_NAN;
+    point.npuDedicatedMemory = CHARTS_NAN;
+    point.npuSharedMemory = CHARTS_NAN;
     return point;
 }
 
@@ -121,9 +121,9 @@ struct ChartInputs
     {
         // Timestamps on historyFrameNowSeconds()'s clock, the newest at now.
         const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
-        for (std::size_t i = 0; i < HISTORY_POINTS; ++i)
+        for (std::size_t i = 0; i < CHARTS_HISTORY_POINTS; ++i)
         {
-            history.append(now - static_cast<double>(HISTORY_POINTS - 1 - i), makePoint(i), false);
+            history.append(now - static_cast<double>(CHARTS_HISTORY_POINTS - 1 - i), makePoint(i), false);
         }
         snapshot.pid = 4242;
         snapshot.name = "charttarget";
@@ -164,7 +164,7 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(CHARTS_DISPLAY_WIDTH, CHARTS_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         // No renderer: let ImGui build and own the font atlas itself.
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
@@ -191,7 +191,7 @@ class ProcessDetailsChartsRenderTest : public ::testing::Test
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(CHARTS_DISPLAY_WIDTH, CHARTS_DISPLAY_HEIGHT));
         ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         body();
         ImGui::End();
@@ -356,14 +356,14 @@ TEST_F(ProcessDetailsChartsRenderTest, OverviewDrawsCpuMemoryAndResources)
                 }
             }
         }
-        return minX == FLT_MAX ? NOT_A_NUMBER : static_cast<double>((minX - rect.Min.x) / rect.GetWidth());
+        return minX == FLT_MAX ? CHARTS_NAN : static_cast<double>((minX - rect.Min.x) / rect.GetWidth());
     }
-    return NOT_A_NUMBER;
+    return CHARTS_NAN;
 }
 
 TEST_F(ProcessDetailsChartsRenderTest, ThePeakMemoryLineStartsAtTheProcesssFirstSample)
 {
-    // HISTORY_POINTS samples a second apart (59 s) in a 5-minute window: the lifetime-peak line ran
+    // CHARTS_HISTORY_POINTS samples a second apart (59 s) in a 5-minute window: the lifetime-peak line ran
     // from the axis's left edge, minutes before the process's first sample (#3433).
     ChartInputs inputs(busyPoint);
     // The axis scales to the series, not the peak, so put the line where the plot area shows it.
@@ -553,7 +553,7 @@ TEST_F(ProcessDetailsChartsRenderTest, ChartsCutOffByTheBottomOfThePaneAreSkippe
     const auto full = plotsDrawn();
     ASSERT_EQ(full.size(), 6U); // CPU, Memory, Power, Resources; I/O, Network
 
-    for (int step = 0; static_cast<float>(step) * 6.0F < DISPLAY_HEIGHT; ++step)
+    for (int step = 0; static_cast<float>(step) * 6.0F < CHARTS_DISPLAY_HEIGHT; ++step)
     {
         const float offset = 1.0F + (static_cast<float>(step) * 6.0F);
         renderBoth(offset);
@@ -603,7 +603,7 @@ TEST_F(ProcessDetailsChartsRenderTest, TheNetworkHeadingExplainsItsRateOnHover)
     // The heading sits at the card's top-left, left of any plot: sweep down the left margin for it.
     ImGuiIO& io = ImGui::GetIO();
     bool explained = false;
-    for (int row = 0; row < static_cast<int>(DISPLAY_HEIGHT) / 4 && !explained; ++row)
+    for (int row = 0; row < static_cast<int>(CHARTS_DISPLAY_HEIGHT) / 4 && !explained; ++row)
     {
         io.AddMousePosEvent(24.0F, static_cast<float>(row * 4));
         frame();
@@ -852,7 +852,7 @@ TEST_F(ProcessDetailsChartsRenderTest, HoveringBeforeTheFirstSampleShowsNoToolti
     std::string text;
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-    ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+    ImGui::SetNextWindowSize(ImVec2(CHARTS_DISPLAY_WIDTH, CHARTS_DISPLAY_HEIGHT));
     ImGui::Begin("Details", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
     ImGui::LogToBuffer();
     charts.renderGpuTab(ctx);
@@ -1090,7 +1090,7 @@ TEST_F(ProcessDetailsChartsRenderTest, GpuAndNpuChartsCutOffByTheBottomOfThePane
     const auto full = plotsDrawn();
     ASSERT_FALSE(full.empty());
 
-    for (int step = 0; static_cast<float>(step) * 6.0F < DISPLAY_HEIGHT; ++step)
+    for (int step = 0; static_cast<float>(step) * 6.0F < CHARTS_DISPLAY_HEIGHT; ++step)
     {
         const float offset = 1.0F + (static_cast<float>(step) * 6.0F);
         renderBoth(offset);
@@ -1338,7 +1338,7 @@ TEST_F(ProcessDetailsChartsRenderTest, TheThreadsLineIsNotFlattenedByTheHandles)
     EXPECT_LT(threadAxis.Range.Max, 200.0);
     // The handles' axis covers the handles.
     EXPECT_DOUBLE_EQ(handleAxis.Range.Min, 0.0);
-    EXPECT_GE(handleAxis.Range.Max, 6000.0 + static_cast<double>(HISTORY_POINTS));
+    EXPECT_GE(handleAxis.Range.Max, 6000.0 + static_cast<double>(CHARTS_HISTORY_POINTS));
     // Both right-hand axes are on the right: their tick labels sit right of the plot.
     EXPECT_TRUE(faultAxis.IsOpposite());
     EXPECT_TRUE(handleAxis.IsOpposite());
@@ -1575,9 +1575,9 @@ void ProcessDetailsChartsRenderTest::expectEveryAxisCoversItsSeries(Detail::Proc
 [[nodiscard]] Detail::ProcessHistoryPoint newestGdiGapPoint(std::size_t i)
 {
     Detail::ProcessHistoryPoint point = busyPoint(i);
-    if (i + 3 >= HISTORY_POINTS)
+    if (i + 3 >= CHARTS_HISTORY_POINTS)
     {
-        point.gdiObjects = NOT_A_NUMBER;
+        point.gdiObjects = CHARTS_NAN;
     }
     return point;
 }
@@ -1785,8 +1785,8 @@ TEST_F(ProcessDetailsChartsRenderTest, APowerChartWithNoHistoryWaitsForAReading)
 [[nodiscard]] Detail::ProcessHistoryPoint ioUnreadPoint(std::size_t i)
 {
     Detail::ProcessHistoryPoint point = busyPoint(i);
-    point.ioRead = NOT_A_NUMBER;
-    point.ioWrite = NOT_A_NUMBER;
+    point.ioRead = CHARTS_NAN;
+    point.ioWrite = CHARTS_NAN;
     return point;
 }
 
@@ -1794,8 +1794,8 @@ TEST_F(ProcessDetailsChartsRenderTest, APowerChartWithNoHistoryWaitsForAReading)
 [[nodiscard]] Detail::ProcessHistoryPoint networkUnreadPoint(std::size_t i)
 {
     Detail::ProcessHistoryPoint point = busyPoint(i);
-    point.netSent = NOT_A_NUMBER;
-    point.netReceived = NOT_A_NUMBER;
+    point.netSent = CHARTS_NAN;
+    point.netReceived = CHARTS_NAN;
     return point;
 }
 

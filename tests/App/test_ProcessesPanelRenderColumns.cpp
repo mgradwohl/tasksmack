@@ -377,7 +377,7 @@ TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAnd
         ImGuiIO& io = ImGui::GetIO();
         for (int y = 20; y <= 140; y += 6)
         {
-            for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH); x += 6)
+            for (int x = 10; x <= static_cast<int>(PANEL_RENDER_DISPLAY_WIDTH); x += 6)
             {
                 io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
                 for (int frame = 0; frame < 3; ++frame)
@@ -422,7 +422,7 @@ TEST_F(ProcessesPanelRenderTest, AUserNoAccountWasReadForShowsTheDashAndSaysWhy)
     ImGuiIO& io = ImGui::GetIO();
     for (int y = 20; y <= 140 && !shown; y += 6)
     {
-        for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH) && !shown; x += 6)
+        for (int x = 10; x <= static_cast<int>(PANEL_RENDER_DISPLAY_WIDTH) && !shown; x += 6)
         {
             io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
             for (int frame = 0; frame < 3 && !shown; ++frame)
@@ -462,7 +462,7 @@ TEST_F(ProcessesPanelRenderTest, GpuTextCellsNotReadYetSayWhyOnHover)
     ImGuiIO& io = ImGui::GetIO();
     for (int y = 20; y <= 140 && !shown; y += 6)
     {
-        for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH) && !shown; x += 6)
+        for (int x = 10; x <= static_cast<int>(PANEL_RENDER_DISPLAY_WIDTH) && !shown; x += 6)
         {
             io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
             for (int frame = 0; frame < 3 && !shown; ++frame)
@@ -993,7 +993,7 @@ TEST_F(ProcessesPanelRenderTest, HoldingCtrlOverTheTablePausesItAndSaysSo)
     const auto panel = attachedPanel(events.sink());
     renderUntilLoaded(*panel);
     ImGuiIO& io = ImGui::GetIO();
-    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // the pane hovered
+    io.AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH * 0.5F, PANEL_RENDER_DISPLAY_HEIGHT * 0.5F); // the pane hovered
     io.AddKeyEvent(ImGuiMod_Ctrl, true);
     // The freeze engages once Ctrl has been held a moment (ProcessDisplayFreeze::ENGAGE_DELAY_SECONDS).
     std::string text;
@@ -1145,7 +1145,7 @@ TEST_F(ProcessesPanelRenderTest, ColumnsReorderedAndResizedByMouseSurviveARestar
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(PANEL_RENDER_DISPLAY_WIDTH, PANEL_RENDER_DISPLAY_HEIGHT));
         ImGui::Begin("SavingShell", nullptr, ImGuiWindowFlags_NoDecoration);
         shown.renderContent();
         ImGui::End();
@@ -1224,7 +1224,7 @@ TEST_F(ProcessesPanelRenderTest, ColumnsReorderedAndResizedByMouseSurviveARestar
     ImGuiIO& freshIo = ImGui::GetIO();
     freshIo.IniFilename = nullptr;
     freshIo.LogFilename = nullptr;
-    freshIo.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+    freshIo.DisplaySize = ImVec2(PANEL_RENDER_DISPLAY_WIDTH, PANEL_RENDER_DISPLAY_HEIGHT);
     freshIo.DeltaTime = 1.0F / 60.0F;
     freshIo.BackendFlags |= ImGuiBackendFlags_RendererHasTextures | ImGuiBackendFlags_RendererHasVtxOffset;
     freshIo.Fonts->AddFontDefault();
@@ -1270,7 +1270,7 @@ TEST_F(ProcessesPanelRenderTest, TheTreeViewDrawsOnlyTheRowsInView)
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(PANEL_RENDER_DISPLAY_WIDTH, PANEL_RENDER_DISPLAY_HEIGHT));
         ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         panel.renderContent();
         ImGui::End();

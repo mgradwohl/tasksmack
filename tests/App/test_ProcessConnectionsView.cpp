@@ -34,8 +34,8 @@ using Platform::ConnectionProtocol;
 using Platform::ConnectionState;
 using Platform::ProcessConnection;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
-constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_CONNECTIONS_REFRESH_MS) / 1000.0F;
+constexpr Platform::ProcessTarget CONNECTIONS_TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr float CONNECTIONS_REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_CONNECTIONS_REFRESH_MS) / 1000.0F;
 
 [[nodiscard]] ProcessConnection tcp4(std::array<std::uint8_t, 16> local,
                                      std::uint16_t localPort,
@@ -50,7 +50,7 @@ constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_C
             .state = state};
 }
 
-[[nodiscard]] Platform::ConnectionsReadResult okResult(std::vector<ProcessConnection> connections)
+[[nodiscard]] Platform::ConnectionsReadResult connectionsOkResult(std::vector<ProcessConnection> connections)
 {
     return {.status = Platform::ConnectionsReadStatus::Ok, .connections = std::move(connections), .detail = {}};
 }
@@ -63,18 +63,18 @@ constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_C
                           .local = {.address = {}, .port = 5353},
                           .remote = {},
                           .state = ConnectionState::Closed};
-    return okResult({tcp4({10, 0, 0, 5}, 50000, {10, 0, 0, 10}, 443, ConnectionState::TimeWait),
-                     tcp4({127, 0, 0, 1}, 631, {}, 0, ConnectionState::Listen),
-                     udp,
-                     tcp4({10, 0, 0, 5}, 50001, {10, 0, 0, 10}, 443, ConnectionState::Established),
-                     tcp4({10, 0, 0, 5}, 50002, {10, 0, 0, 9}, 443, ConnectionState::Established)});
+    return connectionsOkResult({tcp4({10, 0, 0, 5}, 50000, {10, 0, 0, 10}, 443, ConnectionState::TimeWait),
+                                tcp4({127, 0, 0, 1}, 631, {}, 0, ConnectionState::Listen),
+                                udp,
+                                tcp4({10, 0, 0, 5}, 50001, {10, 0, 0, 10}, 443, ConnectionState::Established),
+                                tcp4({10, 0, 0, 5}, 50002, {10, 0, 0, 9}, 443, ConnectionState::Established)});
 }
 
 /// One frame as the panel runs it: update (reads if due), then render drew the section open or not.
 bool frame(ProcessConnectionsView& view, TestMocks::MockProcessConnectionsReader& reader, float deltaSeconds, bool drawnOpen)
 {
-    const bool read = view.update(&reader, TARGET, deltaSeconds);
-    view.finishPendingRead(TARGET); // the read runs on a worker: wait for it, as a later frame would take it in
+    const bool read = view.update(&reader, CONNECTIONS_TARGET, deltaSeconds);
+    view.finishPendingRead(CONNECTIONS_TARGET); // the read runs on a worker: wait for it, as a later frame would take it in
     if (drawnOpen)
     {
         view.markDrawnOpen();
@@ -90,7 +90,7 @@ TEST(ProcessConnectionsViewTest, NeverReadsWhileTheSectionIsClosed)
     TestMocks::MockProcessConnectionsReader reader;
     for (int i = 0; i < 10; ++i)
     {
-        EXPECT_FALSE(frame(view, reader, REFRESH_SECONDS, false));
+        EXPECT_FALSE(frame(view, reader, CONNECTIONS_REFRESH_SECONDS, false));
     }
     EXPECT_EQ(reader.readCount(), 0);
     EXPECT_FALSE(view.hasRead());
@@ -106,13 +106,13 @@ TEST(ProcessConnectionsViewTest, ReadsOnOpeningThenAtTheRefreshCadence)
     EXPECT_FALSE(frame(view, reader, 0.016F, true));
     EXPECT_TRUE(frame(view, reader, 0.016F, true));
     EXPECT_EQ(reader.readCount(), 1);
-    EXPECT_EQ(reader.lastTarget().pid, TARGET.pid);
-    EXPECT_EQ(reader.lastTarget().startTimeTicks, TARGET.startTimeTicks);
+    EXPECT_EQ(reader.lastTarget().pid, CONNECTIONS_TARGET.pid);
+    EXPECT_EQ(reader.lastTarget().startTimeTicks, CONNECTIONS_TARGET.startTimeTicks);
     EXPECT_TRUE(view.hasRead());
 
     // Many frames within the interval: no further read.
     float elapsed = 0.0F;
-    while (elapsed + 0.1F < REFRESH_SECONDS)
+    while (elapsed + 0.1F < CONNECTIONS_REFRESH_SECONDS)
     {
         EXPECT_FALSE(frame(view, reader, 0.1F, true));
         elapsed += 0.1F;
@@ -141,7 +141,7 @@ TEST(ProcessConnectionsViewTest, StopsReadingWhenClosedAndReadsAgainWhenReopened
     // Closed for longer than the interval: nothing read meanwhile.
     for (int i = 0; i < 5; ++i)
     {
-        EXPECT_FALSE(frame(view, reader, REFRESH_SECONDS, false));
+        EXPECT_FALSE(frame(view, reader, CONNECTIONS_REFRESH_SECONDS, false));
     }
     EXPECT_EQ(reader.readCount(), 1);
 
@@ -165,8 +165,8 @@ TEST(ProcessConnectionsViewTest, SelectionChangeDropsTheRowsAndReadsAfreshWithou
     EXPECT_FALSE(view.hasRead());
     EXPECT_TRUE(view.rows().empty()) << "nothing of the previous process is shown for the next";
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.016F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, CONNECTIONS_TARGET, 0.016F));
+    view.finishPendingRead(CONNECTIONS_TARGET);
     EXPECT_EQ(reader.readCount(), 2);
     EXPECT_TRUE(view.hasRead());
 }
@@ -181,7 +181,7 @@ TEST(ProcessConnectionsViewTest, SelectionChangeForgetsThePreviousProcessOpenFra
     // The selection changes before update() consumes that frame: the new process's section has not
     // been drawn open yet, so nothing may be read for it.
     view.onSelectionChanged();
-    EXPECT_FALSE(view.update(&reader, TARGET, 0.016F));
+    EXPECT_FALSE(view.update(&reader, CONNECTIONS_TARGET, 0.016F));
     EXPECT_EQ(reader.readCount(), 0);
 }
 
@@ -189,12 +189,12 @@ TEST(ProcessConnectionsViewTest, NoReaderOrNoSupportMeansNoRead)
 {
     ProcessConnectionsView view;
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(nullptr, TARGET, 1.0F));
+    EXPECT_FALSE(view.update(nullptr, CONNECTIONS_TARGET, 1.0F));
 
     TestMocks::MockProcessConnectionsReader reader;
     reader.setHasConnections(false);
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F));
+    EXPECT_FALSE(view.update(&reader, CONNECTIONS_TARGET, 1.0F));
     EXPECT_EQ(reader.readCount(), 0);
 }
 
@@ -306,7 +306,8 @@ class BlockingConnectionsReader final : public Platform::IProcessConnectionsRead
     {
         m_Started.fetch_add(1);
         m_Gate.wait();
-        return okResult({tcp4({10, 0, 0, 5}, static_cast<std::uint16_t>(target.pid), {10, 0, 0, 9}, 443, ConnectionState::Established)});
+        return connectionsOkResult(
+            {tcp4({10, 0, 0, 5}, static_cast<std::uint16_t>(target.pid), {10, 0, 0, 9}, 443, ConnectionState::Established)});
     }
 
     void open()
@@ -331,7 +332,7 @@ TEST(ProcessConnectionsViewTest, UpdateNeverWaitsForABlockedReadAndNeverStartsAS
     {
         ProcessConnectionsView view;
         view.markDrawnOpen();
-        EXPECT_TRUE(view.update(&reader, TARGET, 0.016F)); // started on its worker
+        EXPECT_TRUE(view.update(&reader, CONNECTIONS_TARGET, 0.016F)); // started on its worker
         EXPECT_TRUE(view.readInFlight());
 
         // Frames go on while the read is stuck: each update() returns at once, starts nothing more, and
@@ -340,14 +341,14 @@ TEST(ProcessConnectionsViewTest, UpdateNeverWaitsForABlockedReadAndNeverStartsAS
         {
             view.markDrawnOpen();
             const auto before = std::chrono::steady_clock::now();
-            EXPECT_FALSE(view.update(&reader, TARGET, REFRESH_SECONDS));
+            EXPECT_FALSE(view.update(&reader, CONNECTIONS_TARGET, CONNECTIONS_REFRESH_SECONDS));
             EXPECT_LT(std::chrono::steady_clock::now() - before, std::chrono::milliseconds(100));
         }
         EXPECT_TRUE(view.readInFlight());
         EXPECT_FALSE(view.hasRead());
 
         reader.open();
-        view.finishPendingRead(TARGET);
+        view.finishPendingRead(CONNECTIONS_TARGET);
         EXPECT_FALSE(view.readInFlight());
         EXPECT_TRUE(view.hasRead());
         ASSERT_EQ(view.rows().size(), 1U);
@@ -360,7 +361,7 @@ TEST(ProcessConnectionsViewTest, AReadInFlightAcrossASelectionChangeIsDropped)
     BlockingConnectionsReader reader;
     ProcessConnectionsView view;
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.016F));
+    ASSERT_TRUE(view.update(&reader, CONNECTIONS_TARGET, 0.016F));
 
     // Another process is selected while the read for the first is stuck.
     view.onSelectionChanged();
@@ -391,7 +392,7 @@ TEST(ProcessConnectionsViewTest, DestroyingTheViewWaitsForTheReadInFlight)
     {
         ProcessConnectionsView view;
         view.markDrawnOpen();
-        ASSERT_TRUE(view.update(&reader, TARGET, 0.016F));
+        ASSERT_TRUE(view.update(&reader, CONNECTIONS_TARGET, 0.016F));
         opener = std::thread(
             [&reader]()
             {
@@ -435,7 +436,7 @@ TEST(ProcessConnectionsViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
     ProcessConnectionsView view;
     TestMocks::MockProcessConnectionsReader reader;
     reader.setResult({.status = Platform::ConnectionsReadStatus::PermissionDenied, .connections = {}, .detail = {}});
-    reader.setAuthorizedResult(okResult({}));
+    reader.setAuthorizedResult(connectionsOkResult({}));
     static_cast<void>(frame(view, reader, 0.016F, true));
     static_cast<void>(frame(view, reader, 0.016F, true));
     ASSERT_TRUE(view.offersAuthenticateToRead());

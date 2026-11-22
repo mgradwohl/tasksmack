@@ -47,7 +47,7 @@ namespace App
 namespace
 {
 
-using SystemInfo::Row;
+using SystemInfoRow = SystemInfo::Row; // its own name: a unity batch can bring in another Row (#4783)
 using SystemInfo::Section;
 
 [[nodiscard]] Platform::OsInfo windowsOs()
@@ -79,9 +79,9 @@ using SystemInfo::Section;
     return read;
 }
 
-[[nodiscard]] const Row* findRow(const Section& section, std::string_view label)
+[[nodiscard]] const SystemInfoRow* findRow(const Section& section, std::string_view label)
 {
-    const auto it = std::ranges::find(section.rows, label, &Row::label);
+    const auto it = std::ranges::find(section.rows, label, &SystemInfoRow::label);
     return it != section.rows.end() ? &*it : nullptr;
 }
 
@@ -110,7 +110,7 @@ TEST(SystemInfoSectionsTest, WindowsOsSectionRows)
     EXPECT_TRUE(findRow(os, "Computer name")->isIdentifier);
     EXPECT_EQ(findRow(os, "Kernel"), nullptr); // Linux only
 
-    const Row* installed = findRow(os, "Installed");
+    const SystemInfoRow* installed = findRow(os, "Installed");
     ASSERT_NE(installed, nullptr);
     EXPECT_FALSE(installed->available());
     EXPECT_FALSE(installed->unavailableReason.empty());
@@ -322,7 +322,7 @@ TEST(SystemInfoSectionsTest, FirmwareSectionRows)
     EXPECT_EQ(findRow(section, "SKU")->unavailableReason, "Not reported by this system");
 
     // Serials and the UUID are identifiers; nothing else is.
-    for (const Row& item : section.rows)
+    for (const SystemInfoRow& item : section.rows)
     {
         const bool identifier = item.label == "Serial number" || item.label == "UUID" || item.label == "Board serial number";
         EXPECT_EQ(item.isIdentifier, identifier) << item.label;
@@ -352,7 +352,7 @@ TEST(SystemInfoSectionsTest, FirmwareRootOnlyRowsSayWhy)
     const Section section = SystemInfo::buildFirmwareSection(rootOnly);
     for (const std::string_view label : {"Serial number", "UUID", "Board serial number", "SMBIOS version"})
     {
-        const Row* item = findRow(section, label);
+        const SystemInfoRow* item = findRow(section, label);
         ASSERT_NE(item, nullptr) << label;
         EXPECT_FALSE(item->available());
         EXPECT_TRUE(item->unavailableReason.contains("administrator")) << label;
@@ -390,7 +390,7 @@ TEST(SystemInfoSectionsTest, WithNoHelperRootOnlyFactsOfferRestartAsAdministrato
 
     Platform::FirmwareInfo readable;
     readable.available = true;
-    for (const Row& item : SystemInfo::buildFirmwareSection(readable, true).rows)
+    for (const SystemInfoRow& item : SystemInfo::buildFirmwareSection(readable, true).rows)
     {
         EXPECT_EQ(item.action, SystemInfo::RowAction::None) << "nothing refused, nothing offered: " << item.label;
     }
@@ -468,7 +468,7 @@ TEST(SystemInfoSectionsTest, MemorySectionRows)
     EXPECT_EQ(findRow(section, "DIMM A1")->value, "16 GiB DDR5 DIMM, 5600 MT/s (rated 6400 MT/s), Samsung M323R2GA3BB0-CQKOD");
     EXPECT_EQ(findRow(section, "DIMM B1")->value, "16 GiB DDR5 DIMM, 5600 MT/s");
     EXPECT_EQ(findRow(section, "Modules"), nullptr);
-    for (const Row& item : section.rows)
+    for (const SystemInfoRow& item : section.rows)
     {
         EXPECT_FALSE(item.isIdentifier) << item.label;
     }
@@ -533,7 +533,7 @@ TEST(SystemInfoSectionsTest, MemoryWithoutTheTableSaysWhy)
     EXPECT_EQ(findRow(section, "Readable by root only"), nullptr);
     for (const std::string_view label : {"Slots used", "Maximum capacity", "Installed memory", "Modules"})
     {
-        const Row* item = findRow(section, label);
+        const SystemInfoRow* item = findRow(section, label);
         ASSERT_NE(item, nullptr) << label;
         EXPECT_FALSE(item->available());
         EXPECT_TRUE(item->unavailableReason.contains("administrator")) << label;
@@ -544,7 +544,7 @@ TEST(SystemInfoSectionsTest, MemoryWithoutTheTableSaysWhy)
     empty.available = true;
     empty.tableRead = true;
     const Section emptySection = SystemInfo::buildMemorySection(empty);
-    const Row* modules = findRow(emptySection, "Modules");
+    const SystemInfoRow* modules = findRow(emptySection, "Modules");
     ASSERT_NE(modules, nullptr);
     EXPECT_FALSE(modules->unavailableReason.contains("administrator"));
 }
@@ -622,7 +622,7 @@ TEST(SystemInfoSectionsTest, CommitPagingRowsWindows)
     EXPECT_EQ(findRow(section, "Compressed memory")->value, "300 MiB");
     EXPECT_EQ(findRow(section, "Page size")->value, "4 KiB");
     EXPECT_EQ(findRow(section, "Overcommit mode"), nullptr); // Linux only
-    for (const Row& item : section.rows)
+    for (const SystemInfoRow& item : section.rows)
     {
         EXPECT_FALSE(item.isIdentifier) << item.label;
     }
@@ -686,7 +686,8 @@ TEST(SystemInfoSectionsTest, SecurityRows)
     EXPECT_EQ(findRow(section, "Meltdown")->value, "Not affected");
     EXPECT_EQ(findRow(section, "Spectre v2")->value, "Mitigation: Enhanced / Automatic IBRS");
     EXPECT_EQ(findRow(section, "MDS")->value, "Vulnerable: Clear CPU buffers attempted, no microcode");
-    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; })); // nothing names the machine
+    EXPECT_TRUE(
+        std::ranges::none_of(section.rows, [](const SystemInfoRow& item) { return item.isIdentifier; })); // nothing names the machine
 }
 
 // #1891: the value texts the other tests' fixtures don't reach.
@@ -722,7 +723,7 @@ TEST(SystemInfoSectionsTest, AnAudioEndpointOfUnknownFlowIsAnAudioDevice)
     devices.available = true;
     devices.audio = {{.name = "HDMI 0", .flow = Platform::AudioFlow::Unknown}};
     const Section section = SystemInfo::buildDevicesSection(devices);
-    const Row* item = findRow(section, "Audio device");
+    const SystemInfoRow* item = findRow(section, "Audio device");
     ASSERT_NE(item, nullptr);
     EXPECT_EQ(item->value, "HDMI 0");
 }
@@ -780,7 +781,7 @@ TEST(SystemInfoSectionsTest, BootWithAnInitramfsListsTheInitrdPhase)
     boot.userspaceUs = 2'000'000;
     boot.totalUs = 3'750'000;
     const Section section = SystemInfo::buildBootPerformanceSection(boot); // findRow points into it
-    const Row* initrd = findRow(section, "Initrd");
+    const SystemInfoRow* initrd = findRow(section, "Initrd");
     ASSERT_NE(initrd, nullptr);
     EXPECT_EQ(initrd->value, "750 ms");
 }
@@ -792,7 +793,7 @@ TEST(SystemInfoSectionsTest, SecurityUnknownsAreMutedAndNotSupportedSaysSo)
     const Section section = SystemInfo::buildSecuritySection(unread);
     for (const std::string_view label : {"Secure Boot", "TPM", "Security modules", "Kernel lockdown", "CPU vulnerabilities"})
     {
-        const Row* item = findRow(section, label);
+        const SystemInfoRow* item = findRow(section, label);
         ASSERT_NE(item, nullptr) << label;
         EXPECT_FALSE(item->available()) << label;
         EXPECT_FALSE(item->unavailableReason.empty()) << label;
@@ -842,7 +843,7 @@ TEST(SystemInfoSectionsTest, WindowsUnknownVulnerabilitiesAreCountedAndExplained
     };
     const Section section = SystemInfo::buildSecuritySection(security);
     EXPECT_EQ(findRow(section, "CPU vulnerabilities")->value, "1 vulnerable, 2 mitigated, 1 not affected, 2 unknown");
-    const Row* l1tf = findRow(section, "L1TF");
+    const SystemInfoRow* l1tf = findRow(section, "L1TF");
     ASSERT_NE(l1tf, nullptr);
     EXPECT_EQ(l1tf->value, "Unknown");
     EXPECT_EQ(l1tf->valueTooltip, "Windows didn't report whether this CPU needs this mitigation");
@@ -922,7 +923,7 @@ TEST(SystemInfoSectionsTest, SensorRows)
     EXPECT_EQ(section.rows[0].label, "coretemp: Package id 0");
     EXPECT_EQ(section.rows[0].value, "52.0 \u00B0C");
     EXPECT_EQ(section.rows[1].label, "nvme #2: Composite");
-    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; }));
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const SystemInfoRow& item) { return item.isIdentifier; }));
 }
 
 // #1648, slice E: System Information's values, and the text Copy puts on the clipboard, use the
@@ -1135,7 +1136,7 @@ TEST(SystemInfoSectionsTest, PublicAdapterAddressesAreIdentifiers)
     const std::vector<Section> sections = {SystemInfo::buildNetworkAdaptersSection(network)};
     EXPECT_EQ(findRow(sections[0], "wlan0 addresses")->value, "192.168.1.5/24, fe80::1/64");
     EXPECT_FALSE(findRow(sections[0], "wlan0 addresses")->isIdentifier);
-    const Row* publicRow = findRow(sections[0], "wlan0 public addresses");
+    const SystemInfoRow* publicRow = findRow(sections[0], "wlan0 public addresses");
     ASSERT_NE(publicRow, nullptr);
     EXPECT_EQ(publicRow->value, "81.2.69.160/28, 2a02:6b8:0:1:a65e:60ff:fe12:3456/64");
     EXPECT_TRUE(publicRow->isIdentifier);
@@ -1300,7 +1301,7 @@ TEST(SystemInfoSectionsTest, LoginNameInPathsIsRedactedWhileIdentifiersAreHidden
     EXPECT_TRUE(SystemInfo::visibleSections(sections, "alice", false).empty());
     EXPECT_FALSE(SystemInfo::visibleSections(sections, "alice", true).empty());
     const Section& storage = sections[1];
-    const Row* volume = findRow(storage, "/media/alice/USB");
+    const SystemInfoRow* volume = findRow(storage, "/media/alice/USB");
     ASSERT_NE(volume, nullptr);
     EXPECT_FALSE(volume->isIdentifier); // redacted, not hidden: the rest of the row names nothing
     EXPECT_EQ(volume->shownLabel(false), "/media/<user>/USB");
@@ -1394,7 +1395,7 @@ TEST(SystemInfoSectionsTest, RedactUserPathsCoversAProfileFolderNotNamedAfterThe
     sections[0].rows[2].label = "Program";
     sections[0].rows[2].value = R"(C:\Users\bobby\x.exe)";
     SystemInfo::redactUserPaths(sections, os);
-    const std::vector<Row>& rows = sections[0].rows;
+    const std::vector<SystemInfoRow>& rows = sections[0].rows;
     EXPECT_EQ(rows[0].shownValue(false), R"(x.exe crashed, C:\Users\<user>\Downloads\x.exe)");
     EXPECT_EQ(rows[0].shownValue(true), R"(x.exe crashed, C:\Users\Bob\Downloads\x.exe)");
     EXPECT_EQ(rows[1].shownLabel(false), R"(D:\Share\<user>)");
@@ -1412,7 +1413,7 @@ TEST(SystemInfoSectionsTest, RedactUserPathsCoversEveryTextOfARowButNotIdentifie
     os.userName = "PC\\Alice";
     const auto makeRow = [](std::string label, std::string value, std::string reason = {}, std::string tooltip = {})
     {
-        Row made;
+        SystemInfoRow made;
         made.label = std::move(label);
         made.value = std::move(value);
         made.unavailableReason = std::move(reason);
@@ -1429,7 +1430,7 @@ TEST(SystemInfoSectionsTest, RedactUserPathsCoversEveryTextOfARowButNotIdentifie
     };
     sections[0].rows[3].isIdentifier = true;
     SystemInfo::redactUserPaths(sections, os);
-    const std::vector<Row>& rows = sections[0].rows;
+    const std::vector<SystemInfoRow>& rows = sections[0].rows;
     ASSERT_TRUE(rows[0].redacted.has_value());
     EXPECT_EQ(rows[0].shownLabel(false), "C:\\Users\\<user>\\Mount drive");
     EXPECT_EQ(rows[1].shownValueTooltip(false), "c:\\users\\<user>\\x.exe");
@@ -1648,7 +1649,7 @@ TEST(SystemInfoSectionsTest, ShowWifiDetailsRowOnlyForWirelessAdaptersOnAGatedPl
     network.adapters = {ethernet, wifi, idle};
 
     const Section gated = SystemInfo::buildNetworkAdaptersSection(network, /*wifiDetailsGated=*/true);
-    const Row* details = findRow(gated, "Wi-Fi Wi-Fi details");
+    const SystemInfoRow* details = findRow(gated, "Wi-Fi Wi-Fi details");
     ASSERT_NE(details, nullptr);
     EXPECT_EQ(details->action, SystemInfo::RowAction::ShowWifiDetails);
     EXPECT_FALSE(details->available());
@@ -1661,13 +1662,13 @@ TEST(SystemInfoSectionsTest, ShowWifiDetailsRowOnlyForWirelessAdaptersOnAGatedPl
     EXPECT_EQ(findRow(gated, "Wi-Fi 2 Wi-Fi details"), nullptr) << "not connected: nothing to show";
     EXPECT_EQ(findRow(gated, "Wi-Fi 2 Wi-Fi network")->unavailableReason, "Not connected");
     EXPECT_EQ(findRow(gated, "Ethernet Wi-Fi details"), nullptr);
-    const auto withButton = std::ranges::count(gated.rows, SystemInfo::RowAction::ShowWifiDetails, &Row::action);
+    const auto withButton = std::ranges::count(gated.rows, SystemInfo::RowAction::ShowWifiDetails, &SystemInfoRow::action);
     EXPECT_EQ(withButton, 1);
     EXPECT_TRUE(SystemInfo::sectionText(gated, false).contains("Wi-Fi Wi-Fi details: unavailable")) << "Copy says why";
 
     // Not gated (Linux): no button, whatever the adapter says; the network row as before.
     const Section ungated = SystemInfo::buildNetworkAdaptersSection(network, /*wifiDetailsGated=*/false);
-    EXPECT_EQ(std::ranges::count(ungated.rows, SystemInfo::RowAction::ShowWifiDetails, &Row::action), 0);
+    EXPECT_EQ(std::ranges::count(ungated.rows, SystemInfo::RowAction::ShowWifiDetails, &SystemInfoRow::action), 0);
     EXPECT_NE(findRow(ungated, "Wi-Fi Wi-Fi network"), nullptr);
 
     // Once read with the details, the network row is back and there is no button.
@@ -1697,7 +1698,7 @@ TEST(SystemInfoSectionsTest, PublicIpRowsWaitForTheButtonThenAreIdentifiers)
 {
     EXPECT_TRUE(SystemInfo::buildPublicIpRows(/*hasPublicIp=*/false, /*included=*/true, {}).empty());
 
-    const std::vector<Row> ask = SystemInfo::buildPublicIpRows(true, false, {});
+    const std::vector<SystemInfoRow> ask = SystemInfo::buildPublicIpRows(true, false, {});
     ASSERT_EQ(ask.size(), 1U);
     EXPECT_EQ(ask[0].label, "Public IP");
     EXPECT_EQ(ask[0].action, SystemInfo::RowAction::ShowPublicIp);
@@ -1713,7 +1714,7 @@ TEST(SystemInfoSectionsTest, PublicIpRowsWaitForTheButtonThenAreIdentifiers)
         .v6Unavailable = "No IPv6 route to the internet",
         .source = "OpenDNS (myip.opendns.com)",
     };
-    const std::vector<Row> rows = SystemInfo::buildPublicIpRows(true, true, found);
+    const std::vector<SystemInfoRow> rows = SystemInfo::buildPublicIpRows(true, true, found);
     ASSERT_EQ(rows.size(), 2U);
     EXPECT_EQ(rows[0].label, "Public IPv4");
     EXPECT_EQ(rows[0].value, "203.0.113.7");
@@ -1873,7 +1874,7 @@ TEST(SystemInfoSectionsTest, BootPerformanceRows)
     EXPECT_EQ(findRow(section, "Kernel")->value, "1.50 s");
     EXPECT_EQ(findRow(section, "Initrd"), nullptr); // no initramfs
     EXPECT_EQ(findRow(section, "Userspace")->value, "2.50 s");
-    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const Row& item) { return item.isIdentifier; }));
+    EXPECT_TRUE(std::ranges::none_of(section.rows, [](const SystemInfoRow& item) { return item.isIdentifier; }));
 }
 
 TEST(SystemInfoSectionsTest, BootPerformanceUnreadAndStarting)
@@ -1941,7 +1942,7 @@ TEST(SystemInfoSectionsTest, WindowsSecurityUnknownsSayWhy)
     EXPECT_TRUE(findRow(section, "TPM")->unavailableReason.contains("tbs.dll")) << findRow(section, "TPM")->unavailableReason;
     for (const std::string_view label : {"Memory integrity (HVCI)", "Kernel DMA Protection", "CPU vulnerabilities"})
     {
-        const Row* item = findRow(section, label);
+        const SystemInfoRow* item = findRow(section, label);
         ASSERT_NE(item, nullptr) << label;
         EXPECT_FALSE(item->available()) << label;
         EXPECT_FALSE(item->unavailableReason.empty()) << label;
@@ -1964,7 +1965,7 @@ TEST(SystemInfoSectionsTest, LinuxDiskEncryptionRows)
     security.available = true;
     security.family = Platform::OsFamily::Linux;
     const Section unread = SystemInfo::buildSecuritySection(security);
-    const Row* unknown = findRow(unread, "Disk encryption");
+    const SystemInfoRow* unknown = findRow(unread, "Disk encryption");
     ASSERT_NE(unknown, nullptr);
     EXPECT_FALSE(unknown->available()); // unknown, not "None"
     EXPECT_EQ(unknown->unavailableReason, "/sys/block couldn't be read");
@@ -1981,11 +1982,11 @@ TEST(SystemInfoSectionsTest, LinuxDiskEncryptionRows)
     };
     const Section section = SystemInfo::buildSecuritySection(security);
     EXPECT_EQ(findRow(section, "Disk encryption"), nullptr);
-    const Row* root = findRow(section, "Disk encryption (nvme0n1p3)");
+    const SystemInfoRow* root = findRow(section, "Disk encryption (nvme0n1p3)");
     ASSERT_NE(root, nullptr);
     EXPECT_EQ(root->value, "LUKS2: /, /home");
     EXPECT_EQ(root->valueTooltip, "Unlocked as /dev/mapper/dm_crypt-0");
-    const Row* swap = findRow(section, "Disk encryption (cryptswap)"); // no device: named by its mapper name
+    const SystemInfoRow* swap = findRow(section, "Disk encryption (cryptswap)"); // no device: named by its mapper name
     ASSERT_NE(swap, nullptr);
     EXPECT_EQ(swap->value, "Plain: not mounted");
     EXPECT_EQ(findRow(section, "BitLocker"), nullptr); // Windows-only
@@ -2022,7 +2023,7 @@ TEST(SystemInfoSectionsTest, WindowsBitLockerRowPerDriveInEveryState)
     for (const auto& [state, text] : states)
     {
         const std::string label = std::string("BitLocker (") + letter + ":)";
-        const Row* item = findRow(section, label);
+        const SystemInfoRow* item = findRow(section, label);
         ASSERT_NE(item, nullptr) << label;
         EXPECT_EQ(item->value, text) << label;
         EXPECT_EQ(item->valueTooltip.empty(), state != BitLockerState::Unknown) << label;
@@ -2030,7 +2031,7 @@ TEST(SystemInfoSectionsTest, WindowsBitLockerRowPerDriveInEveryState)
     }
     EXPECT_EQ(findRow(section, "BitLocker (K:)")->valueTooltip, "Windows doesn't report BitLocker for this drive");
     // Never asks for administrator any more.
-    for (const Row& item : section.rows)
+    for (const SystemInfoRow& item : section.rows)
     {
         EXPECT_FALSE(item.unavailableReason.contains("administrator")) << item.label;
     }
@@ -2043,7 +2044,7 @@ TEST(SystemInfoSectionsTest, LinuxSecurityHasNoBitLockerRows)
     security.available = true;
     security.family = Platform::OsFamily::Linux;
     const Section section = SystemInfo::buildSecuritySection(security);
-    for (const Row& item : section.rows)
+    for (const SystemInfoRow& item : section.rows)
     {
         EXPECT_FALSE(item.label.starts_with("BitLocker")) << item.label;
     }
@@ -2122,7 +2123,7 @@ TEST(SystemInfoSectionsTest, CommitPagingUnreadableLinuxFilesAreMuted)
     for (const std::string_view label :
          {"Commit charge", "Overcommit mode", "Swap", "zram", "zswap", "Huge pages", "Transparent huge pages"})
     {
-        const Row* item = findRow(section, label);
+        const SystemInfoRow* item = findRow(section, label);
         ASSERT_NE(item, nullptr) << label;
         EXPECT_FALSE(item->available()) << label;
         EXPECT_FALSE(item->unavailableReason.empty()) << label;
@@ -2240,7 +2241,7 @@ TEST(SystemInfoSectionsTest, StorageRowsWindows)
     EXPECT_FALSE(findRow(section, "Disk 1 serial number")->available());
     EXPECT_EQ(findRow(section, "C: drive")->value, "Windows, NTFS, 100 GiB free of 400 GiB (75% used)");
     EXPECT_EQ(findRow(section, "Z: drive")->value, "network, size not read");
-    for (const Row& item : section.rows)
+    for (const SystemInfoRow& item : section.rows)
     {
         EXPECT_EQ(item.isIdentifier, item.label.ends_with("serial number")) << item.label;
     }
@@ -2330,7 +2331,7 @@ TEST(SystemInfoSectionsTest, StoragePartitionRows)
     // The partition rows follow their disk's rows, before the volumes.
     const auto at = [&section](std::string_view label)
     {
-        return std::ranges::find(section.rows, label, &Row::label) - section.rows.begin();
+        return std::ranges::find(section.rows, label, &SystemInfoRow::label) - section.rows.begin();
     };
     EXPECT_LT(at("Disk 0 health"), at("Disk 0 partitions"));
     EXPECT_LT(at("Disk 0 partition 3"), at("Disk 1"));
@@ -2530,7 +2531,7 @@ TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
     EXPECT_EQ(findRow(section, "OpenGL renderer")->value, "NVIDIA GeForce RTX 4070/PCIe/SSE2 (NVIDIA Corporation)");
     EXPECT_EQ(findRow(section, "Display server"), nullptr);
     ASSERT_NE(findRow(section, "Display 1"), nullptr);
-    const Row* serial = findRow(section, "Display 1 serial number");
+    const SystemInfoRow* serial = findRow(section, "Display 1 serial number");
     ASSERT_NE(serial, nullptr);
     EXPECT_TRUE(serial->isIdentifier);
     EXPECT_EQ(serial->value, "ABC1234");
@@ -2549,7 +2550,7 @@ TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
     two.adapters[1].d3dFeatureLevel.clear();
     const Section both = SystemInfo::buildGraphicsSection(two, {});
     EXPECT_EQ(findRow(both, "Direct3D on GPU 1")->value, "Feature level 12_2");
-    const Row* noD3d = findRow(both, "Direct3D on GPU 2");
+    const SystemInfoRow* noD3d = findRow(both, "Direct3D on GPU 2");
     ASSERT_NE(noD3d, nullptr);
     EXPECT_FALSE(noD3d->available());
     EXPECT_TRUE(noD3d->unavailableReason.contains("d3d12.dll"));
@@ -2559,7 +2560,7 @@ TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
     two.adapters[1].vulkanDriverVersion.clear();
     const Section noDevice = SystemInfo::buildGraphicsSection(two, {});
     EXPECT_EQ(findRow(noDevice, "Vulkan on GPU 1")->value, "1.4.303 (driver 560.94.0.0)");
-    const Row* unlisted = findRow(noDevice, "Vulkan on GPU 2");
+    const SystemInfoRow* unlisted = findRow(noDevice, "Vulkan on GPU 2");
     ASSERT_NE(unlisted, nullptr);
     EXPECT_FALSE(unlisted->available());
     EXPECT_EQ(unlisted->unavailableReason, "The Vulkan loader lists no device for this GPU");
@@ -2571,7 +2572,7 @@ TEST(SystemInfoSectionsTest, GraphicsRowsWindows)
     const Section withoutLoader = SystemInfo::buildGraphicsSection(noLoader, {});
     for (const std::string_view label : std::array<std::string_view, 2>{"Vulkan", "Vulkan on GPU"})
     {
-        const Row* vulkan = findRow(withoutLoader, label);
+        const SystemInfoRow* vulkan = findRow(withoutLoader, label);
         ASSERT_NE(vulkan, nullptr) << label;
         EXPECT_FALSE(vulkan->available());
         EXPECT_EQ(vulkan->unavailableReason, "No Vulkan loader (vulkan-1.dll / libvulkan.so.1) is installed");
@@ -2696,15 +2697,15 @@ TEST(SystemInfoSectionsTest, DevicesRowsWindows)
     EXPECT_EQ(findRow(section, "Network adapters")->value, "Intel(R) Wi-Fi 6E AX211 (8086:51F0), This device cannot start (Code 10)");
     EXPECT_EQ(findRow(section, "USB 1")->value, "Generic USB Hub (05E3:0610), 20 Gbps");
     EXPECT_EQ(findRow(section, "USB 2")->value, "SanDisk Ultra (0781:5583), 5 Gbps, via Generic USB Hub (05E3:0610)");
-    const Row* serial = findRow(section, "USB 2 serial number");
+    const SystemInfoRow* serial = findRow(section, "USB 2 serial number");
     ASSERT_NE(serial, nullptr);
     EXPECT_TRUE(serial->isIdentifier);
     EXPECT_EQ(findRow(section, "USB 1 serial number"), nullptr);
     EXPECT_EQ(findRow(section, "Audio output")->value, "Speakers (Realtek(R) Audio)");
     EXPECT_EQ(findRow(section, "Audio input")->value, "Microphone (USB Audio)");
     // PCI rows are grouped by class: Display adapters before Network adapters.
-    const auto display = std::ranges::find(section.rows, "Display adapters", &Row::label);
-    const auto network = std::ranges::find(section.rows, "Network adapters", &Row::label);
+    const auto display = std::ranges::find(section.rows, "Display adapters", &SystemInfoRow::label);
+    const auto network = std::ranges::find(section.rows, "Network adapters", &SystemInfoRow::label);
     EXPECT_LT(display, network);
 }
 
@@ -2858,11 +2859,11 @@ TEST(SystemInfoSectionsTest, DriversProblemRowsWindows)
               "Microsoft ACPI Driver, Boot start, 10.0.26100.1, Microsoft Corporation, C:\\Windows\\System32\\drivers\\ACPI.sys");
 
     // A signature that couldn't be checked: an em dash whose tooltip says why, right after the driver.
-    const Row* unknown = findRow(section, "locked signature");
+    const SystemInfoRow* unknown = findRow(section, "locked signature");
     ASSERT_NE(unknown, nullptr);
     EXPECT_FALSE(unknown->available());
     EXPECT_EQ(unknown->unavailableReason, "The signature couldn't be checked: Access is denied");
-    const auto lockedRow = std::ranges::find(section.rows, std::string("locked"), &Row::label);
+    const auto lockedRow = std::ranges::find(section.rows, std::string("locked"), &SystemInfoRow::label);
     ASSERT_NE(lockedRow, section.rows.end());
     ASSERT_NE(std::next(lockedRow), section.rows.end());
     EXPECT_EQ(std::next(lockedRow)->label, "locked signature");
@@ -3454,12 +3455,12 @@ TEST(SystemInfoSectionsTest, SensorRowsNameTheirKindForTheirChart)
 {
     const Domain::SensorPublication snap = sensorsWithHistory();
     const Section section = SystemInfo::buildSensorsSection(snap.sensors, snap.ranges);
-    const Row* temperature = findRow(section, "coretemp: Package id 0");
+    const SystemInfoRow* temperature = findRow(section, "coretemp: Package id 0");
     ASSERT_NE(temperature, nullptr);
     EXPECT_EQ(temperature->sensorKind, std::optional(Platform::SensorKind::Temperature));
     EXPECT_EQ(findRow(section, "coretemp: fan1")->sensorKind, std::optional(Platform::SensorKind::Fan));
     // Other sections' rows have no chart.
-    for (const Row& item : SystemInfo::buildOsSection(windowsOs(), 0).rows)
+    for (const SystemInfoRow& item : SystemInfo::buildOsSection(windowsOs(), 0).rows)
     {
         EXPECT_FALSE(item.sensorKind.has_value()) << item.label;
     }
@@ -3483,8 +3484,8 @@ TEST(SystemInfoSectionsTest, SensorRowsSharingALabelShowTheirOwnRange)
     };
     const Section section = SystemInfo::buildSensorsSection(sensors, ranges);
     ASSERT_GE(section.rows.size(), 2U);
-    const Row& first = section.rows[0];
-    const Row& second = section.rows[1];
+    const SystemInfoRow& first = section.rows[0];
+    const SystemInfoRow& second = section.rows[1];
     EXPECT_EQ(first.label, "Thermal zones: acpitz");
     EXPECT_EQ(second.label, "Thermal zones: acpitz");
     EXPECT_NE(first.sensorKey, second.sensorKey);
@@ -3632,7 +3633,7 @@ TEST(SystemInfoSectionsTest, ADomainAndTheAuthenticateRowsOnlyWhereSomethingNeed
     Platform::OsInfo os = windowsOs();
     os.joinedToDomain = true;
     const Section joined = SystemInfo::buildOsSection(os, 1'700'000'000); // findRow points into it
-    const Row* domain = findRow(joined, "Domain");
+    const SystemInfoRow* domain = findRow(joined, "Domain");
     ASSERT_NE(domain, nullptr);
     EXPECT_TRUE(domain->isIdentifier);
 
@@ -3660,19 +3661,19 @@ TEST(SystemInfoSectionsTest, VolumesAndAdaptersThatArentListedOrHaveNoSize)
     Platform::StorageInfo storage;
     storage.family = Platform::OsFamily::Windows;
     const Section drives = SystemInfo::buildStorageSection(storage); // findRow points into it
-    const Row* volumes = findRow(drives, "Volumes");
+    const SystemInfoRow* volumes = findRow(drives, "Volumes");
     ASSERT_NE(volumes, nullptr);
     EXPECT_EQ(volumes->unavailableReason, "GetLogicalDriveStringsW failed");
 
     Platform::GraphicsInfo graphics;
     graphics.family = Platform::OsFamily::Windows;
     const Section unlisted = SystemInfo::buildGraphicsSection(graphics, {});
-    const Row* unread = findRow(unlisted, "GPU");
+    const SystemInfoRow* unread = findRow(unlisted, "GPU");
     ASSERT_NE(unread, nullptr);
     EXPECT_EQ(unread->unavailableReason, "A DXGI factory couldn't be created");
     graphics.adaptersRead = true;
     const Section noAdapters = SystemInfo::buildGraphicsSection(graphics, {});
-    const Row* none = findRow(noAdapters, "GPU");
+    const SystemInfoRow* none = findRow(noAdapters, "GPU");
     ASSERT_NE(none, nullptr);
     EXPECT_EQ(none->value, "None found");
 }
@@ -3691,7 +3692,7 @@ TEST(SystemInfoSectionsTest, ADisplayWithoutAModeOrScaleAndAMonitorWithoutAHeigh
 TEST(SystemInfoSectionsTest, BootRowsWithoutAReasonOrATotal)
 {
     const Section notRead = SystemInfo::buildBootPerformanceSection({}); // findRow points into it
-    const Row* unread = findRow(notRead, "Last boot");
+    const SystemInfoRow* unread = findRow(notRead, "Last boot");
     ASSERT_NE(unread, nullptr);
     EXPECT_FALSE(unread->available());
     EXPECT_FALSE(unread->unavailableReason.empty()) << "the general reason, with none of the probe's";
@@ -3701,7 +3702,7 @@ TEST(SystemInfoSectionsTest, BootRowsWithoutAReasonOrATotal)
     linuxBoot.finished = true; // but no total measured
     linuxBoot.family = Platform::OsFamily::Linux;
     const Section linuxSection = SystemInfo::buildBootPerformanceSection(linuxBoot);
-    const Row* total = findRow(linuxSection, "Last boot");
+    const SystemInfoRow* total = findRow(linuxSection, "Last boot");
     ASSERT_NE(total, nullptr);
     EXPECT_FALSE(total->available());
 
@@ -3709,7 +3710,7 @@ TEST(SystemInfoSectionsTest, BootRowsWithoutAReasonOrATotal)
     windows.timingsRead = true;
     windows.family = Platform::OsFamily::Windows;
     const Section windowsSection = SystemInfo::buildBootPerformanceSection(windows);
-    const Row* windowsTotal = findRow(windowsSection, "Last boot");
+    const SystemInfoRow* windowsTotal = findRow(windowsSection, "Last boot");
     ASSERT_NE(windowsTotal, nullptr);
     EXPECT_FALSE(windowsTotal->available());
 }
@@ -3763,7 +3764,7 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     network.listed = true;
     network.searchDomains = {"corp.example.com", "lab.example.com"};
     const Section networkSection = SystemInfo::buildNetworkAdaptersSection(network);
-    const Row* domains = findRow(networkSection, "Search domains");
+    const SystemInfoRow* domains = findRow(networkSection, "Search domains");
     ASSERT_NE(domains, nullptr);
     EXPECT_EQ(domains->value, "corp.example.com, lab.example.com");
 
@@ -3776,7 +3777,7 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
         .v6Unavailable = {},
         .source = {},
     };
-    const std::vector<Row> rows = SystemInfo::buildPublicIpRows(true, true, unnamed);
+    const std::vector<SystemInfoRow> rows = SystemInfo::buildPublicIpRows(true, true, unnamed);
     ASSERT_FALSE(rows.empty());
     EXPECT_TRUE(rows[0].available());
     EXPECT_TRUE(rows[0].valueTooltip.empty());
@@ -3788,7 +3789,7 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     security.encryptedVolumesRead = true;
     security.encryptedVolumes = {{.name = {}, .type = "LUKS2", .device = "sda2", .mountPoints = {"/data"}}};
     const Section securitySection = SystemInfo::buildSecuritySection(security);
-    const Row* volume = findRow(securitySection, "Disk encryption (sda2)");
+    const SystemInfoRow* volume = findRow(securitySection, "Disk encryption (sda2)");
     ASSERT_NE(volume, nullptr);
     EXPECT_TRUE(volume->valueTooltip.empty());
 
@@ -3801,7 +3802,7 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     orphan.parent = 5;
     devices.usb = {orphan};
     const Section deviceSection = SystemInfo::buildDevicesSection(devices);
-    const Row* usb = findRow(deviceSection, "USB 1");
+    const SystemInfoRow* usb = findRow(deviceSection, "USB 1");
     ASSERT_NE(usb, nullptr);
     EXPECT_FALSE(usb->value.contains("via")) << usb->value;
 
@@ -3817,7 +3818,7 @@ TEST(SystemInfoSectionsTest, ValuesForTheLessCommonCombinations)
     unsignedDriver.state = Platform::ServiceState::Unknown;
     drivers.drivers = {unsignedDriver};
     const Section driverSection = SystemInfo::buildDriversSection(drivers);
-    const auto problem = std::ranges::find_if(driverSection.rows, [](const Row& r) { return r.label == "Problem driver"; });
+    const auto problem = std::ranges::find_if(driverSection.rows, [](const SystemInfoRow& r) { return r.label == "Problem driver"; });
     ASSERT_NE(problem, driverSection.rows.end());
     EXPECT_EQ(problem->value, "Unsigned: oddball");
     EXPECT_EQ(SystemInfo::formatDriverValue(unsignedDriver), "Unsigned");

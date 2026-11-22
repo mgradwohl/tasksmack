@@ -76,24 +76,6 @@
 namespace
 {
 
-/// A display with a GL 3.3 core context: the real one when DISPLAY or WAYLAND_DISPLAY is set and
-/// usable, else SDL's offscreen driver if Mesa EGL can back it (as test_UiLayersOnDisplay.cpp).
-bool hasDisplay()
-{
-#ifdef _WIN32
-    const bool available = TestSupport::detectWindowsDisplay();
-#else
-    // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
-    const char* display = std::getenv("DISPLAY");
-    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
-    // NOLINTEND(concurrency-mt-unsafe)
-    const bool named = (display != nullptr && *display != '\0') || (waylandDisplay != nullptr && *waylandDisplay != '\0');
-    const bool available =
-        (named && TestSupport::probeGLCapability()) || (TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability());
-#endif
-    return TestSupport::enforceDisplayRequirement(available);
-}
-
 /// A hook (TASKSMACK_SCREENSHOT, TASKSMACK_DEMO) set to @p value (UTF-8) for the test, and unset when
 /// the test ends. Set in SDL's own environment table, which Core::readEnv() (SDL_getenv()) reads, not
 /// with SDL_setenv_unsafe(): once a previous test's SDL_Quit() has freed that table, the latter falls
@@ -399,7 +381,7 @@ class ScreenshotOnDisplayTest : public TestSupport::ScratchConfigDirTest
 
 TEST_F(ScreenshotOnDisplayTest, TheHookWritesThePngOfTheShellAndClosesTheWindow)
 {
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
@@ -462,7 +444,7 @@ TEST_F(ScreenshotOnDisplayTest, TheHookWritesThePngOfTheShellAndClosesTheWindow)
 
 TEST_F(ScreenshotOnDisplayTest, ASequenceWritesItsNumberedFramesInOrderThenCloses)
 {
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
@@ -535,7 +517,7 @@ TEST_F(ScreenshotOnDisplayTest, ASequenceWritesItsNumberedFramesInOrderThenClose
 // the Processes tab in the dracula theme, in another colour than the first frame's startup theme.
 TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 {
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
@@ -646,7 +628,7 @@ TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysWhileTheSequenceIsCaptured)
 // the step that leaves it waits, bounded, until that read was taken in (#4008).
 TEST_F(ScreenshotOnDisplayTest, ADemoScriptPlaysEveryKindOfStep)
 {
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }

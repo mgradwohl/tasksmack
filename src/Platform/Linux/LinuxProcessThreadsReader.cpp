@@ -31,7 +31,7 @@ namespace
 
 using Posix::FdGuard;
 
-[[nodiscard]] ThreadsReadResult failure(int err)
+[[nodiscard]] ThreadsReadResult threadsFailure(int err)
 {
     switch (err)
     {
@@ -96,7 +96,7 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
 {
     if (target.pid <= 0)
     {
-        return failure(ESRCH);
+        return threadsFailure(ESRCH);
     }
     if (target.startTimeTicks == 0)
     {
@@ -110,17 +110,17 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
-        return failure(errno);
+        return threadsFailure(errno);
     }
     if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH); // gone, or the PID now names another process
+        return threadsFailure(ESRCH); // gone, or the PID now names another process
     }
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX openat() is variadic
     const int taskFd = ::openat(dir.get(), "task", O_RDONLY | O_DIRECTORY | O_CLOEXEC);
     if (taskFd < 0)
     {
-        return failure(errno);
+        return threadsFailure(errno);
     }
     // fdopendir() takes the descriptor over: closedir() closes it.
     const DirGuard task(::fdopendir(taskFd));
@@ -128,7 +128,7 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
     {
         const int err = errno;
         ::close(taskFd);
-        return failure(err);
+        return threadsFailure(err);
     }
 
     ThreadsReadResult result{.status = ThreadsReadStatus::Ok, .threads = {}, .detail = {}};
@@ -172,7 +172,7 @@ ThreadsReadResult LinuxProcessThreadsReader::readThreads(const ProcessTarget& ta
     // its PID changed hands: not shown with what was read.
     if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks || result.threads.empty())
     {
-        return failure(ESRCH);
+        return threadsFailure(ESRCH);
     }
     std::ranges::sort(result.threads, {}, &ProcessThread::tid);
     return result;

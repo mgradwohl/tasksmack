@@ -134,7 +134,7 @@ TEST(CommandOutputTest, AnAllocationFailureLeavesNoChildBehind)
     {
         bool threw = false;
         {
-            const TestSupport::FailAllocationAfter failing(nth);
+            const ::TestSupport::FailAllocationAfter failing(nth);
             try
             {
                 // Output in several reads, so the string grows (allocates) after the child is running.
@@ -144,7 +144,7 @@ TEST(CommandOutputTest, AnAllocationFailureLeavesNoChildBehind)
             {
                 threw = true;
             }
-            if (!threw && TestSupport::allocationFailurePending())
+            if (!threw && ::TestSupport::allocationFailurePending())
             {
                 break; // the run made fewer than nth allocations: every one has been failed in turn
             }

@@ -32,7 +32,7 @@ using ProcessRowFormat::UNAVAILABLE_CELL_TEXT;
 /// Builds a minimal-but-representative snapshot: every field buildRowFormatCache() reads is set
 /// to a distinguishable, non-default value so a wrong field mapping (e.g. resident vs. virtualMem
 /// swapped) would surface as a test failure.
-[[nodiscard]] ProcessSnapshot makeSnapshot()
+[[nodiscard]] ProcessSnapshot makeRowFormatSnapshot()
 {
     ProcessSnapshot snap;
     snap.parentPid = 4;
@@ -153,7 +153,7 @@ TEST(ProcessRowFormatTest, AlignedPowerCellConcatenatesPartsInOrder)
 
 TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
 {
-    const RowFormatCache fmt = buildRowFormatCache(makeSnapshot());
+    const RowFormatCache fmt = buildRowFormatCache(makeRowFormatSnapshot());
 
     EXPECT_EQ(fmt.ppid.text, UI::Format::formatId(4));
     EXPECT_EQ(fmt.startTime.text, UI::Format::formatEpochDateTimeShort(1'700'000'000));
@@ -185,7 +185,7 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheFormatsEveryField)
 // every other row draws the snapshot's own user name, with nothing built for it.
 TEST(ProcessRowFormatTest, TheUserCellIsQualifiedOnlyWhenItsNameIsShared)
 {
-    ProcessSnapshot proc = makeSnapshot();
+    ProcessSnapshot proc = makeRowFormatSnapshot();
     proc.user = "alice";
     proc.userDomain = "CORP";
     EXPECT_TRUE(buildRowFormatCache(proc).qualifiedUser.empty()) << "a name one account has needs no domain";
@@ -234,8 +234,8 @@ TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
     ProcessRowFormat::RowFormatOptions unsupported;
     unsupported.hasPowerUsage = false;
     unsupported.hasSharedMemory = false;
-    const RowFormatCache filled = buildRowFormatCache(makeSnapshot());
-    const RowFormatCache unfilled = buildRowFormatCache(makeSnapshot(), unsupported);
+    const RowFormatCache filled = buildRowFormatCache(makeRowFormatSnapshot());
+    const RowFormatCache unfilled = buildRowFormatCache(makeRowFormatSnapshot(), unsupported);
 
     EXPECT_EQ(filled.power.text, "5.5 W");
     EXPECT_EQ(filled.power.tone, CellTone::Value);
@@ -246,7 +246,7 @@ TEST(ProcessRowFormatTest, FieldsThePlatformDoesNotFillAreUnavailable)
     ProcessRowFormat::RowFormatOptions noPower;
     noPower.hasPowerUsage = false;
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeSnapshot(), 1, 1, noPower);
+    const RowFormatCache& entry = getOrBuildRowFormatCache(cache, makeRowFormatSnapshot(), 1, 1, noPower);
     expectUnavailable(entry.power, ProcessRowFormat::UNSUPPORTED_CELL_REASON);
     EXPECT_EQ(entry.shared.text, "64.0 MiB");
 }
@@ -257,7 +257,7 @@ TEST(ProcessRowFormatTest, WindowsShowsSharedMemoryButNotPower)
     ProcessRowFormat::RowFormatOptions windows;
     windows.hasPowerUsage = false;
     windows.hasSharedMemory = true;
-    const RowFormatCache cells = buildRowFormatCache(makeSnapshot(), windows);
+    const RowFormatCache cells = buildRowFormatCache(makeRowFormatSnapshot(), windows);
     EXPECT_EQ(cells.shared.text, "64.0 MiB");
     EXPECT_EQ(cells.shared.tone, CellTone::Value);
     EXPECT_EQ(cells.shared.unavailableReason, nullptr);
@@ -279,7 +279,7 @@ TEST(ProcessRowFormatTest, EveryCapabilityGatedColumnIsUnavailableWithoutItsCapa
     none.hasCpuAffinity = false;
     none.hasGdiObjects = false;
 
-    const RowFormatCache fmt = buildRowFormatCache(makeSnapshot(), none);
+    const RowFormatCache fmt = buildRowFormatCache(makeRowFormatSnapshot(), none);
 
     for (const AlignedCellText* cell : {&fmt.power,
                                         &fmt.shared,
@@ -307,7 +307,7 @@ TEST(ProcessRowFormatTest, MeasuredZerosKeepTheirNumberAndAreMarkedZero)
 {
     // #1210: a measured zero used to print "-" in the I/O, network and GPU columns, the same as a value
     // that could not be read. It now keeps the column's own format, marked so it is drawn muted.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.cpuPercent = 0.0;
     snap.ioReadBytesPerSec = 0.0;
     snap.ioWriteBytesPerSec = 0.0;
@@ -349,7 +349,7 @@ TEST(ProcessRowFormatTest, MeasuredZerosKeepTheirNumberAndAreMarkedZero)
 
 TEST(ProcessRowFormatTest, NonZeroValuesAreNotMarked)
 {
-    const RowFormatCache fmt = buildRowFormatCache(makeSnapshot());
+    const RowFormatCache fmt = buildRowFormatCache(makeRowFormatSnapshot());
     for (const AlignedCellText* cell : {&fmt.cpuPercent,
                                         &fmt.resident,
                                         &fmt.ioRead,
@@ -376,7 +376,7 @@ TEST(ProcessRowFormatTest, ValuesThatRoundToZeroReadAsZero)
     EXPECT_FALSE(ProcessRowFormat::readsAsZeroAtOneDecimal(12.0));
 
     // A sliver of CPU that prints "0.0%" is shown as the zero it reads as.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.cpuPercent = 0.01;
     snap.powerWatts = 2.0e-6; // 2.0 µW: small, but not zero
     const RowFormatCache fmt = buildRowFormatCache(snap);
@@ -388,7 +388,7 @@ TEST(ProcessRowFormatTest, UnreadableValuesAreUnavailableRatherThanZero)
 {
     // #1110: without root, another user's FD count, I/O and network rates can't be read. They showed
     // "-", the same as a process that really had none; now they show the unavailable dash, with why.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.handleCountAvailable = false;
     snap.ioAvailable = false;
     snap.networkAvailable = false;
@@ -416,7 +416,7 @@ TEST(ProcessRowFormatTest, UnreadableValuesAreUnavailableRatherThanZero)
 TEST(ProcessRowFormatTest, UnsupportedTakesPrecedenceOverUnreadable)
 {
     // A column the system cannot fill says so, whatever one process's flags say.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.ioAvailable = false;
     ProcessRowFormat::RowFormatOptions noIo;
     noIo.hasIoCounters = false;
@@ -427,7 +427,7 @@ TEST(ProcessRowFormatTest, UnsupportedTakesPrecedenceOverUnreadable)
 TEST(ProcessRowFormatTest, GpuCellsAreUnavailableWithoutPerProcessGpuMetrics)
 {
     // #1210: without per-process GPU metrics every process carries 0; that must not read as measured.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.gpuUtilPercent = 0.0;
     snap.gpuMemoryBytes = 0;
     ProcessRowFormat::RowFormatOptions noGpu;
@@ -446,7 +446,7 @@ TEST(ProcessRowFormatTest, AFailedGpuReadIsUnreadableNotUnsupported)
 {
     // #1210: a supported probe whose read failed for this generation: the GPU cells say the read
     // failed, not "not available on this system", and never show the placeholder zeros.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.gpuUtilPercent = 0.0;
     snap.gpuMemoryBytes = 0;
     ProcessRowFormat::RowFormatOptions failed;
@@ -467,7 +467,7 @@ TEST(ProcessRowFormatTest, AFailedGpuReadIsUnreadableNotUnsupported)
 TEST(ProcessRowFormatTest, GpuFieldsNotReadYetAreUnavailableNotMeasuredZeros)
 {
     // #1210: a process that started while GPU merges are throttled has never had its GPU read.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.gpuUtilPercent = 0.0;
     snap.gpuMemoryBytes = 0;
     snap.gpuFieldsRead = false;
@@ -486,7 +486,7 @@ TEST(ProcessRowFormatTest, GpuFieldsNotReadYetAreUnavailableNotMeasuredZeros)
 TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
 {
     // #1210: Linux NVML gives each process's GPU memory but not its utilization; GPU % read 0.0%.
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.gpuUtilPercent = 0.0;
     ProcessRowFormat::RowFormatOptions memoryOnly;
     memoryOnly.hasPerProcessGpuUtilization = false;
@@ -500,7 +500,7 @@ TEST(ProcessRowFormatTest, GpuPercentIsUnavailableWithoutPerProcessUtilization)
 // aligned bytes, NPU Engine the joined engines; never the GPU's figures.
 TEST(ProcessRowFormatTest, NpuCellsFormatTheProcessesNpuFigures)
 {
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.npuUtilPercent = 62.5;
     snap.npuMemoryBytes = 8ULL * 1024 * 1024; // 8 MiB
     snap.npuEngines = {"Compute"};
@@ -529,7 +529,7 @@ TEST(ProcessRowFormatTest, NpuCellsFormatTheProcessesNpuFigures)
 // leaves them unread, since they are read with the GPU fields.
 TEST(ProcessRowFormatTest, NpuCellsAreUnavailableWithoutAnAcceleratorOrAReading)
 {
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     ProcessRowFormat::RowFormatOptions noAccelerator;
     noAccelerator.hasPerProcessNpu = false;
     const RowFormatCache none = buildRowFormatCache(snap, noAccelerator);
@@ -580,7 +580,7 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
 {
     // The per-column cell renderers (#1382) draw Status, Publisher, Container, Type and the GPU text columns
     // from the entry alone, so it carries whether this system can fill them (#1210).
-    const RowFormatCache all = buildRowFormatCache(makeSnapshot());
+    const RowFormatCache all = buildRowFormatCache(makeRowFormatSnapshot());
     EXPECT_TRUE(all.statusSupported);
     EXPECT_TRUE(all.publisherSupported);
     EXPECT_TRUE(all.containerSupported);
@@ -593,7 +593,7 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
     linuxLike.hasProcessType = false;
     linuxLike.hasPerProcessGpu = false;
     linuxLike.hasArchitecture = false; // A probe that reads none (#2394)
-    const RowFormatCache some = buildRowFormatCache(makeSnapshot(), linuxLike);
+    const RowFormatCache some = buildRowFormatCache(makeRowFormatSnapshot(), linuxLike);
     EXPECT_FALSE(some.architectureSupported);
     EXPECT_TRUE(some.statusSupported);
     EXPECT_FALSE(some.publisherSupported);
@@ -604,8 +604,8 @@ TEST(ProcessRowFormatTest, FreeTextColumnSupportTravelsWithTheEntry)
     ProcessRowFormat::RowFormatOptions windowsLike;
     windowsLike.hasContainer = false;
     windowsLike.hasServices = false;
-    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).containerSupported);
-    EXPECT_FALSE(buildRowFormatCache(makeSnapshot(), windowsLike).servicesSupported);
+    EXPECT_FALSE(buildRowFormatCache(makeRowFormatSnapshot(), windowsLike).containerSupported);
+    EXPECT_FALSE(buildRowFormatCache(makeRowFormatSnapshot(), windowsLike).servicesSupported);
     EXPECT_TRUE(all.servicesSupported);
 }
 
@@ -613,7 +613,7 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeas
 {
     // A freshly built entry's widths must all still be UNMEASURED_WIDTH -- the caller (renderProcessRow)
     // relies on this to know a rebuilt entry needs re-measuring, not the stale width from a discarded copy.
-    const RowFormatCache fmt = buildRowFormatCache(makeSnapshot());
+    const RowFormatCache fmt = buildRowFormatCache(makeRowFormatSnapshot());
 
     EXPECT_FLOAT_EQ(fmt.cpuPercent.width, AlignedCellText::UNMEASURED_WIDTH);
     EXPECT_FLOAT_EQ(fmt.resident.width, AlignedCellText::UNMEASURED_WIDTH);
@@ -629,7 +629,7 @@ TEST(ProcessRowFormatTest, BuildRowFormatCacheStampsFreshAlignedCellTextAsUnmeas
 TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccess)
 {
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.uniqueKey = 1;
 
     const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/1, /*fontId=*/0);
@@ -646,7 +646,7 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccessWithZeroGe
     // built" from "already built for exactly these stamps". A get-or-build that only compares
     // stamps would return an empty, unformatted entry here and render a row of blank cells.
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.uniqueKey = 1;
 
     const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snap, /*generation=*/0, /*fontId=*/0);
@@ -659,7 +659,7 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheBuildsOnFirstAccessWithZeroGe
 TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationAndFont)
 {
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    ProcessSnapshot snapA = makeSnapshot();
+    ProcessSnapshot snapA = makeRowFormatSnapshot();
     snapA.uniqueKey = 1;
     getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontId=*/0);
 
@@ -667,7 +667,7 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationA
     // changed (cpuPercent differs), must reuse the existing entry rather than rebuilding: a
     // regression that always rebuilds would defeat the entire point of this cache and would
     // still pass every buildRowFormatCache() test, since those never call this function twice.
-    ProcessSnapshot snapB = makeSnapshot();
+    ProcessSnapshot snapB = makeRowFormatSnapshot();
     snapB.uniqueKey = 1;
     snapB.cpuPercent = 99.0;
     const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/1, /*fontId=*/0);
@@ -678,11 +678,11 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheReusesEntryForSameGenerationA
 TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenGenerationAdvances)
 {
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    ProcessSnapshot snapA = makeSnapshot();
+    ProcessSnapshot snapA = makeRowFormatSnapshot();
     snapA.uniqueKey = 1;
     getOrBuildRowFormatCache(cache, snapA, /*generation=*/1, /*fontId=*/0);
 
-    ProcessSnapshot snapB = makeSnapshot();
+    ProcessSnapshot snapB = makeRowFormatSnapshot();
     snapB.uniqueKey = 1;
     snapB.cpuPercent = 99.0;
     const RowFormatCache& fmt = getOrBuildRowFormatCache(cache, snapB, /*generation=*/2, /*fontId=*/0);
@@ -697,7 +697,7 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheRebuildsWhenFontChangesWithou
     // AlignedCellText's cached width was measured under the old font and would otherwise stay
     // wrong until the next data refresh happens to land.
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    ProcessSnapshot snap = makeSnapshot();
+    ProcessSnapshot snap = makeRowFormatSnapshot();
     snap.uniqueKey = 1;
     // Two distinct font identities. These are plain integer tokens, not addresses of locals:
     // the stamp is a std::uintptr_t precisely so no caller address is stored in the cache
@@ -721,12 +721,12 @@ TEST(ProcessRowFormatTest, GetOrBuildRowFormatCacheNeverSharesCellsBetweenProces
     // row must show its own cells, not the ones the first row built for this generation and font.
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
     constexpr std::uint64_t COLLIDING_KEY = 0xC011;
-    ProcessSnapshot first = makeSnapshot();
+    ProcessSnapshot first = makeRowFormatSnapshot();
     first.uniqueKey = COLLIDING_KEY;
     first.pid = 895;
     first.startTimeTicks = 7;
     first.cpuPercent = 12.0;
-    ProcessSnapshot second = makeSnapshot();
+    ProcessSnapshot second = makeRowFormatSnapshot();
     second.uniqueKey = COLLIDING_KEY;
     second.pid = 896;
     second.startTimeTicks = 7;
@@ -770,7 +770,7 @@ TEST(ProcessRowFormatTest, FreeTextWidthsAreMeasuredAgainForANewGenerationOrFont
     // The cached widths of the name/user/command cells live in the row's entry, so they are dropped
     // exactly when the text can change (a new snapshot generation) or its width can (a new font).
     std::unordered_map<std::uint64_t, RowFormatCache> cache;
-    const ProcessSnapshot proc = makeSnapshot();
+    const ProcessSnapshot proc = makeRowFormatSnapshot();
     int measurements = 0;
     const auto measure = [&measurements]
     {

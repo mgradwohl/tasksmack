@@ -23,7 +23,7 @@ namespace
 {
 
 constexpr std::string_view THREAD_NAME = "ts-test-lookup";
-constexpr std::chrono::milliseconds WAIT{5000};
+constexpr std::chrono::milliseconds LOOKUP_WAIT{5000};
 
 /// What the fake lookup was asked, and where.
 struct Calls
@@ -145,7 +145,7 @@ TEST_F(KeyedLookupTest, AKeyIsLookedUpOnTheWorkersThreadAndTakenByALaterFind)
 {
     KeyedLookup<std::string> lookup({.threadName = THREAD_NAME, .beginDrain = &beginDrain, .endDrain = &endDrain}, &lookUp);
     EXPECT_FALSE(lookup.find("App.1").has_value()) << "queued, not looked up here";
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_EQ(lookup.find("App.1"), std::optional<std::string>("name of App.1"));
     {
         const std::scoped_lock lock(calls().mutex);
@@ -153,7 +153,7 @@ TEST_F(KeyedLookupTest, AKeyIsLookedUpOnTheWorkersThreadAndTakenByALaterFind)
     }
     EXPECT_GE(drainsBegun().load(), 1);
     // Idle comes as the queue empties; the pass's end hook runs just after, on the worker's thread.
-    const auto deadline = std::chrono::steady_clock::now() + WAIT;
+    const auto deadline = std::chrono::steady_clock::now() + LOOKUP_WAIT;
     while (drainsEnded().load() != drainsBegun().load() && std::chrono::steady_clock::now() < deadline)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -170,7 +170,7 @@ TEST_F(KeyedLookupTest, AKeyIsLookedUpOnceHoweverOftenItIsAskedFor)
         EXPECT_FALSE(lookup.find("App.1").has_value());
     }
     setGate(true);
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     for (int i = 0; i < 5; ++i)
     {
         EXPECT_TRUE(lookup.find("App.1").has_value());
@@ -195,7 +195,7 @@ KeyedLookup<std::string>::Options retryOptions(std::size_t maxEntries = 512)
 std::optional<std::string> findSettled(KeyedLookup<std::string>& lookup, const std::string& key)
 {
     (void) lookup.find(key);
-    EXPECT_TRUE(lookup.waitUntilIdle(WAIT));
+    EXPECT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     return lookup.find(key);
 }
 
@@ -218,7 +218,7 @@ TEST_F(KeyedLookupTest, ALookupThatThrowsIsAskedAgainTwiceThenAnswersNone)
     {
         EXPECT_EQ(lookup.find("throws"), std::nullopt);
     }
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_EQ(lookupsOf("throws"), 2) << "asked once more, not once a find()";
 
     advanceClock(FIRST_RETRY);
@@ -250,7 +250,7 @@ TEST_F(KeyedLookupTest, AnEmptyAnswerIsAskedAgainAtMostTwice)
         EXPECT_FALSE(lookup.find("empty").has_value()) << "queued again, once";
     }
     setGate(true);
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_EQ(lookup.find("empty"), std::optional<std::string>(std::string{}));
     EXPECT_EQ(lookupsOf("empty"), 2);
 
@@ -306,11 +306,11 @@ TEST_F(KeyedLookupTest, AFullTableForgetsAnEmptyOrFailedAnswer)
     for (const std::string key : {"empty", "throws"})
     {
         (void) lookup.find(key);
-        ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+        ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     }
     EXPECT_EQ(lookup.size(), 2U);
     EXPECT_FALSE(lookup.find("A").has_value()) << "room made";
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_EQ(lookup.find("A"), std::optional<std::string>("name of A"));
     EXPECT_LE(lookup.size(), 2U);
 }
@@ -322,15 +322,15 @@ TEST_F(KeyedLookupTest, AFullQueueTurnsAKeyAwayAndALaterFindAsksAgain)
     (void) lookup.find("A");
     {
         std::unique_lock lock(calls().mutex); // "A" is taken off the queue into its (held) lookup
-        ASSERT_TRUE(calls().gateChanged.wait_for(lock, WAIT, [] { return calls().entered == 1; }));
+        ASSERT_TRUE(calls().gateChanged.wait_for(lock, LOOKUP_WAIT, [] { return calls().entered == 1; }));
     }
     EXPECT_FALSE(lookup.find("B").has_value()) << "queued: the one place in the queue";
     EXPECT_FALSE(lookup.find("C").has_value()) << "turned away";
     EXPECT_EQ(lookup.size(), 2U) << "A in progress and B waiting; C isn't held";
     setGate(true);
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_FALSE(lookup.find("C").has_value()) << "asked again: queued now";
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_EQ(lookup.find("C"), std::optional<std::string>("name of C"));
     EXPECT_EQ(lookupsOf("C"), 1);
 }
@@ -341,15 +341,15 @@ TEST_F(KeyedLookupTest, AFullTableForgetsWhatWasAnsweredAndAsksAgain)
     for (const std::string key : {"A", "B"})
     {
         (void) lookup.find(key);
-        ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+        ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
         EXPECT_TRUE(lookup.find(key).has_value());
     }
     EXPECT_FALSE(lookup.find("C").has_value()) << "the answers taken are forgotten to make room";
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_TRUE(lookup.find("C").has_value());
     EXPECT_LE(lookup.size(), 2U);
     EXPECT_FALSE(lookup.find("A").has_value()) << "forgotten: asked again";
-    ASSERT_TRUE(lookup.waitUntilIdle(WAIT));
+    ASSERT_TRUE(lookup.waitUntilIdle(LOOKUP_WAIT));
     EXPECT_EQ(lookupsOf("A"), 2);
 }
 

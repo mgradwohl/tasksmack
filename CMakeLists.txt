@@ -838,6 +838,10 @@ endif()
 if(TASKSMACK_ENABLE_UNITY_BUILD)
     set(CMAKE_UNITY_BUILD ON)
     set(CMAKE_UNITY_BUILD_BATCH_SIZE 16)
+    # StbImage.cpp defines stb's implementation macros, which reach every file after it in a batch: a later
+    # <stb_image.h> (IconImageFile.cpp's) then compiled the implementation a second time (#4783). It stays its own
+    # unit, as its header comment says; tests/CMakeLists.txt does the same for the test targets.
+    set_source_files_properties(src/Platform/StbImage.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
 endif()
 
 # The Windows compile definitions and system libraries the platform sources need, in one place for

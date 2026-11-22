@@ -38,11 +38,11 @@ namespace App
 namespace
 {
 
-constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter system information...";
+constexpr const char* SYSTEM_INFO_FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter system information...";
 constexpr const char* SHOW_IDENTIFIERS_LABEL = "Show identifiers";
 constexpr const char* COPY_ALL_LABEL = ICON_FA_COPY "  Copy all";
 constexpr const char* SAVE_REPORT_LABEL = ICON_FA_FLOPPY_DISK "  Save report...";
-constexpr const char* REFRESH_LABEL = ICON_FA_ARROWS_ROTATE "  Refresh";
+constexpr const char* SYSTEM_INFO_REFRESH_LABEL = ICON_FA_ARROWS_ROTATE "  Refresh";
 constexpr const char* READING_TEXT = "Reading...";
 /// The read time's label, dropped when the toolbar is too narrow for it (#1922).
 constexpr std::string_view READ_AT_PREFIX = "Read at ";
@@ -134,14 +134,14 @@ ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::
     const std::string_view readAtFull = reading ? std::string_view{READING_TEXT} : std::string_view{state.readAtText};
     const std::string_view readAtShort = readAtFull.starts_with(READ_AT_PREFIX) ? readAtFull.substr(READ_AT_PREFIX.size()) : readAtFull;
     const float rowWidth = ImGui::GetContentRegionAvail().x;
-    const float hintWidth = textWidth(FILTER_HINT);
+    const float hintWidth = textWidth(SYSTEM_INFO_FILTER_HINT);
     const float checkboxWidth = ImGui::GetFrameHeight() + style.ItemInnerSpacing.x + textWidth(SHOW_IDENTIFIERS_LABEL);
     const SystemInfo::ToolbarLayout layout = SystemInfo::computeToolbarLayout({
         .rowPx = rowWidth,
         .filterWantedPx = ProcessTableLayout::computeFilterWidth(hintWidth, style.FramePadding.x, ImGui::GetFontSize(), rowWidth),
         .filterHintPx = hintWidth + (style.FramePadding.x * 2.0F),
         .controlsPx = (style.ItemSpacing.x * 5.0F) + checkboxWidth + buttonWidth(COPY_ALL_LABEL) + buttonWidth(SAVE_REPORT_LABEL) +
-                      buttonWidth(REFRESH_LABEL),
+                      buttonWidth(SYSTEM_INFO_REFRESH_LABEL),
         .readAtFullPx = textWidth(readAtFull),
         .readAtShortPx = textWidth(readAtShort),
     });
@@ -151,7 +151,7 @@ ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
-        ImGui::InputTextWithHint("##SystemInfoFilter", FILTER_HINT, &state.filter);
+        ImGui::InputTextWithHint("##SystemInfoFilter", SYSTEM_INFO_FILTER_HINT, &state.filter);
     }
     ImGui::PopStyleColor();
     ImGui::SameLine();
@@ -171,7 +171,7 @@ ToolbarClicks renderToolbar(bool reading, SystemInfoViewState& state, const UI::
     ImGui::SetItemTooltip("Save every section to a text or JSON file%s", state.showIdentifiers ? "" : " (identifiers left out)");
     ImGui::SameLine();
     ImGui::BeginDisabled(reading);
-    const bool refresh = ImGui::Button(REFRESH_LABEL);
+    const bool refresh = ImGui::Button(SYSTEM_INFO_REFRESH_LABEL);
     ImGui::EndDisabled();
     if (layout.readAt != SystemInfo::ReadAtForm::NextLine)
     {

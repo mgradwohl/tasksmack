@@ -57,7 +57,7 @@ TEST(DumpFileNameTest, ANameThatIsNotUtf8GivesAUtf8FileName)
 #ifdef _WIN32
 TEST(DumpFileNameTest, ALoneSurrogateImageNameGivesAUtf8FileName)
 {
-    const std::string image = WinString::wideToUtf8(TestSupport::loneSurrogateWideName() + L".exe");
+    const std::string image = WinString::wideToUtf8(::TestSupport::loneSurrogateWideName() + L".exe");
     const std::string name = dumpFileName(image, 1234, TIME);
     EXPECT_TRUE(Domain::isValidUtf8(name)) << name;
     EXPECT_TRUE(name.contains("\xEF\xBF\xBD")) << name;

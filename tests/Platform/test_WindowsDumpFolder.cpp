@@ -208,7 +208,7 @@ TEST(WindowsDumpFolderTest, AJunctionSwappedInAfterThePickIsRefused)
     // Swapped: the folder is now an empty one turned into a junction to another.
     std::filesystem::remove(picked);
     ASSERT_TRUE(std::filesystem::create_directory(picked));
-    const std::optional<std::string> notMade = TestSupport::makeJunction(picked, elsewhere);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(picked, elsewhere);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
 
     const auto refused = openHeldDumpFolder(picked);
@@ -233,7 +233,7 @@ TEST(WindowsDumpFolderTest, AJunctionSwappedInAfterThePickIsRefused)
     EXPECT_EQ(result.error(), refused.error());
     EXPECT_TRUE(isEmptyFolder(elsewhere)) << "nothing written behind the junction";
 
-    ASSERT_TRUE(TestSupport::removeJunction(picked)) << "an empty folder again, so removing it removes nothing behind it";
+    ASSERT_TRUE(::TestSupport::removeJunction(picked)) << "an empty folder again, so removing it removes nothing behind it";
 }
 
 // A junction higher up the path: the folder is plain, but not where its path says, so it is refused too.
@@ -244,7 +244,7 @@ TEST(WindowsDumpFolderTest, AJunctionOnThePathIsRefused)
     const std::filesystem::path link = scratch.path() / L"link";
     ASSERT_TRUE(std::filesystem::create_directories(real / L"dumps"));
     ASSERT_TRUE(std::filesystem::create_directory(link));
-    const std::optional<std::string> notMade = TestSupport::makeJunction(link, real);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(link, real);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
 
     const auto refused = openHeldDumpFolder(link / L"dumps");
@@ -252,7 +252,7 @@ TEST(WindowsDumpFolderTest, AJunctionOnThePathIsRefused)
     EXPECT_TRUE(refused.error().contains("isn't where its path says")) << refused.error();
     EXPECT_TRUE(openHeldDumpFolder(real / L"dumps").has_value()) << "its own path is fine";
 
-    ASSERT_TRUE(TestSupport::removeJunction(link));
+    ASSERT_TRUE(::TestSupport::removeJunction(link));
 }
 
 // The file is made relative to the held folder, and a dump that doesn't finish is deleted through its own handle: a
@@ -726,7 +726,7 @@ TEST(WindowsDumpFolderTest, TheDefaultFolderIsMadeUnderProgramDataWithItsOwnSecu
     ASSERT_TRUE(std::filesystem::create_directory(elsewhere));
     std::filesystem::remove(*made);
     ASSERT_TRUE(std::filesystem::create_directory(*made));
-    const std::optional<std::string> notMade = TestSupport::makeJunction(*made, elsewhere);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(*made, elsewhere);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
     const auto remade = makeAdminDumpFolder(programData, testFolderOptions());
     ASSERT_TRUE(remade.has_value()) << remade.error();
@@ -737,7 +737,7 @@ TEST(WindowsDumpFolderTest, TheDefaultFolderIsMadeUnderProgramDataWithItsOwnSecu
     {
         if (entry.path().filename().native().starts_with(L"Dumps.untrusted-"))
         {
-            EXPECT_TRUE(TestSupport::removeJunction(entry.path())) << "the moved-aside junction";
+            EXPECT_TRUE(::TestSupport::removeJunction(entry.path())) << "the moved-aside junction";
         }
     }
 }
@@ -761,13 +761,13 @@ TEST(WindowsDumpFolderTest, TheDefaultFolderIsRefusedWithoutAPlainProgramData)
     const std::filesystem::path link = scratch.path() / L"link";
     ASSERT_TRUE(std::filesystem::create_directory(real));
     ASSERT_TRUE(std::filesystem::create_directory(link));
-    const std::optional<std::string> notMade = TestSupport::makeJunction(link, real);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(link, real);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
     const auto refused = makeAdminDumpFolder(link, testFolderOptions());
     ASSERT_FALSE(refused.has_value());
     EXPECT_TRUE(refused.error().contains("isn't a plain folder")) << refused.error();
     EXPECT_TRUE(isEmptyFolder(real));
-    ASSERT_TRUE(TestSupport::removeJunction(link));
+    ASSERT_TRUE(::TestSupport::removeJunction(link));
 }
 
 // #4188 review: %ProgramData% is the trust root, so its owner must be SYSTEM, TrustedInstaller or Administrators. A

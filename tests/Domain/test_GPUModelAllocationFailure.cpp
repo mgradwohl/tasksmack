@@ -26,7 +26,7 @@ using TestSupport::FailAllocationAfter;
 namespace
 {
 
-constexpr int WARM_UP_SAMPLES = 30;
+constexpr int GPU_WARM_UP_SAMPLES = 30;
 
 /// Every series of every GPU in the model's publication is as long as its published timestamps.
 void expectAligned(const Domain::GPUModel& model)
@@ -73,7 +73,7 @@ TEST(GPUModelAllocationFailureTest, AFailedAllocationOnARefreshThatAddsAGpuKeeps
         rawProbe->withGPU("GPU0", "GPU Zero").withGPU("GPU1", "GPU One");
         Domain::GPUModel model(std::move(probe));
         int step = 0;
-        for (; step < WARM_UP_SAMPLES; ++step)
+        for (; step < GPU_WARM_UP_SAMPLES; ++step)
         {
             rawProbe->withUtilization("GPU0", static_cast<double>(step)).withUtilization("GPU1", static_cast<double>(step * 2));
             model.refreshAt(start + std::chrono::seconds(step));

@@ -32,17 +32,17 @@ namespace
 {
 
 // The "###" part keeps the popup's ID fixed while its title names the count.
-constexpr const char* POPUP_ID = "###BatchIoPriority";
+constexpr const char* BATCH_IO_PRIORITY_POPUP_ID = "###BatchIoPriority";
 
-constexpr const char* CANCEL_LABEL = "Cancel";
-constexpr const char* RESET_LABEL = "Reset to default";
+constexpr const char* BATCH_IO_PRIORITY_CANCEL_LABEL = "Cancel";
+constexpr const char* BATCH_IO_PRIORITY_RESET_LABEL = "Reset to default";
 
 // Floor on the footer's buttons, in ems, as for the batch priority dialog.
-constexpr float BUTTON_MIN_EM = 11.25F;
+constexpr float BATCH_IO_PRIORITY_BUTTON_MIN_EM = 11.25F;
 
 // The dialog's width, in ems, unless the slider needs more for its stop names (#1984); room for the
 // list's three columns too.
-constexpr float DIALOG_WIDTH_EM = 30.0F;
+constexpr float BATCH_IO_PRIORITY_DIALOG_WIDTH_EM = 30.0F;
 
 /// The slider Process Details draws for the same platform and privilege (ProcessIoPriorityView::render()).
 [[nodiscard]] const Detail::DiscretePrioritySlider& sliderFor(bool realtimeSettable, bool windowsHints) noexcept
@@ -58,7 +58,8 @@ constexpr float DIALOG_WIDTH_EM = 30.0F;
 /// viewport allows.
 [[nodiscard]] float dialogWidth(const Detail::DiscretePrioritySlider& slider)
 {
-    const float contentWidth = std::max(DIALOG_WIDTH_EM * ImGui::GetFontSize(), Detail::discretePrioritySliderMinWidth(slider));
+    const float contentWidth =
+        std::max(BATCH_IO_PRIORITY_DIALOG_WIDTH_EM * ImGui::GetFontSize(), Detail::discretePrioritySliderMinWidth(slider));
     // In whole pixels up: ImGui truncates a window's size, and a fraction short of the slider's minimum
     // width drops its stop names (#1984).
     const float wanted = std::ceil(contentWidth + (ImGui::GetStyle().WindowPadding.x * 2.0F));
@@ -105,10 +106,10 @@ std::optional<Platform::IoPriority> ProcessBatchIoPriorityDialog::render()
 {
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(BATCH_IO_PRIORITY_POPUP_ID);
         m_ShowRequested = false;
     }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    m_Open = ImGui::IsPopupOpen(BATCH_IO_PRIORITY_POPUP_ID);
     if (!m_Open)
     {
         return std::nullopt; // Nothing to draw; skip building the title every frame
@@ -116,8 +117,8 @@ std::optional<Platform::IoPriority> ProcessBatchIoPriorityDialog::render()
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     const Detail::DiscretePrioritySlider& slider = sliderFor(m_RealtimeSettable, m_WindowsHints);
-    const std::string title =
-        std::format("{}  Set I/O priority for {}{}", ICON_FA_HARD_DRIVE, ProcessBatch::processCountText(m_Targets.size()), POPUP_ID);
+    const std::string title = std::format(
+        "{}  Set I/O priority for {}{}", ICON_FA_HARD_DRIVE, ProcessBatch::processCountText(m_Targets.size()), BATCH_IO_PRIORITY_POPUP_ID);
     // Centred over the main window, a fixed width so the slider is laid out at its own width from the
     // first frame, and a height fitted to the contents; both capped at the viewport, as the batch
     // priority dialog is.
@@ -152,7 +153,7 @@ std::optional<Platform::IoPriority> ProcessBatchIoPriorityDialog::render()
     if (!m_WindowsHints && m_Priority.ioClass != Platform::IoPriorityClass::None)
     {
         ImGui::Spacing();
-        if (ImGui::Button(RESET_LABEL))
+        if (ImGui::Button(BATCH_IO_PRIORITY_RESET_LABEL))
         {
             pick(defaultValue(false));
         }
@@ -183,9 +184,11 @@ std::optional<Platform::IoPriority> ProcessBatchIoPriorityDialog::render()
         .pressed = theme.scheme().successButtonActive,
     };
     const UI::Widgets::DialogFooterButton applyButton{.label = m_ApplyLabel.c_str(), .fills = &applyFills, .tooltip = nullptr};
-    const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
+    const UI::Widgets::DialogFooterButton cancelButton{.label = BATCH_IO_PRIORITY_CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
     UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
-        applyButton, cancelButton, UI::Widgets::footerButtonWidth({m_ApplyLabel.c_str(), CANCEL_LABEL}, BUTTON_MIN_EM));
+        applyButton,
+        cancelButton,
+        UI::Widgets::footerButtonWidth({m_ApplyLabel.c_str(), BATCH_IO_PRIORITY_CANCEL_LABEL}, BATCH_IO_PRIORITY_BUTTON_MIN_EM));
     if (escaped)
     {
         pressed = UI::Widgets::DialogFooterAction::Secondary;

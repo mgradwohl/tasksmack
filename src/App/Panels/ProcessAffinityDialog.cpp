@@ -33,18 +33,18 @@ namespace
 {
 
 // The "###" part keeps the popup's ID fixed while its title names the process.
-constexpr const char* POPUP_ID = "###SetAffinity";
-constexpr const char* APPLY_LABEL = "Apply";
-constexpr const char* CANCEL_LABEL = "Cancel";
+constexpr const char* AFFINITY_POPUP_ID = "###SetAffinity";
+constexpr const char* AFFINITY_APPLY_LABEL = "Apply";
+constexpr const char* AFFINITY_CANCEL_LABEL = "Cancel";
 constexpr const char* ALL_LABEL = "All";
 constexpr const char* NONE_LABEL = "None";
 // Shown in place of the boxes, and as Apply's tooltip, until the CPU layout has been read (#3182).
 constexpr const char* READING_LAYOUT_TEXT = "Reading this PC's CPU layout...";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
-constexpr float BUTTON_MIN_EM = 11.25F;
+constexpr float AFFINITY_BUTTON_MIN_EM = 11.25F;
 // The dialog's width in ems: room for eight CPU boxes a row at four-digit CPU numbers.
-constexpr float DIALOG_WIDTH_EM = 34.0F;
+constexpr float AFFINITY_DIALOG_WIDTH_EM = 34.0F;
 // The CPU grid's height cap in rows; more scroll (a 256-CPU server).
 constexpr float GRID_MAX_ROWS = 12.0F;
 
@@ -164,19 +164,19 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
 {
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(AFFINITY_POPUP_ID);
         m_ShowRequested = false;
     }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    m_Open = ImGui::IsPopupOpen(AFFINITY_POPUP_ID);
     if (!m_Open)
     {
         return std::nullopt;
     }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const std::string title = std::format("{}  Set affinity for {} (PID {}){}", ICON_FA_MICROCHIP, m_Name, m_Target.pid, POPUP_ID);
+    const std::string title = std::format("{}  Set affinity for {} (PID {}){}", ICON_FA_MICROCHIP, m_Name, m_Target.pid, AFFINITY_POPUP_ID);
     UI::Widgets::centerNextDialog(m_LastWorkSize);
-    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
+    const float width = std::min((AFFINITY_DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
                                  UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
     UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
@@ -233,14 +233,14 @@ std::optional<Platform::CpuAffinity> ProcessAffinityDialog::render()
         applyTooltip = READING_LAYOUT_TEXT;
     }
     const UI::Widgets::DialogFooterButton applyButton{
-        .label = APPLY_LABEL,
+        .label = AFFINITY_APPLY_LABEL,
         .fills = &applyFills,
         .tooltip = applyTooltip,
         .disabled = !anyChosen,
     };
-    const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
-    UI::Widgets::DialogFooterAction pressed =
-        UI::Widgets::dialogFooter(applyButton, cancelButton, UI::Widgets::footerButtonWidth({APPLY_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));
+    const UI::Widgets::DialogFooterButton cancelButton{.label = AFFINITY_CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
+    UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
+        applyButton, cancelButton, UI::Widgets::footerButtonWidth({AFFINITY_APPLY_LABEL, AFFINITY_CANCEL_LABEL}, AFFINITY_BUTTON_MIN_EM));
     if (escaped)
     {
         pressed = UI::Widgets::DialogFooterAction::Secondary;

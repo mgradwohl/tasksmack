@@ -20,7 +20,6 @@ using App::ScreenshotOverride::DEFAULT_FPS;
 using App::ScreenshotOverride::MAX_AFTER_SECONDS;
 using App::ScreenshotOverride::MAX_FPS;
 using App::ScreenshotOverride::MAX_FRAMES;
-using App::ScreenshotOverride::parse;
 using App::ScreenshotOverride::Request;
 
 /// A request for @p path with the given numbers, the defaults unless said otherwise.
@@ -36,7 +35,7 @@ TEST(ScreenshotOverrideParseTest, UnsetAndBlankGiveNoRequestAndNoWarning)
     for (const char* value : {static_cast<const char*>(nullptr), "", "   ", "\t\r\n"})
     {
         SCOPED_TRACE(value == nullptr ? "(nullptr)" : value);
-        const auto result = parse(value);
+        const auto result = App::ScreenshotOverride::parse(value);
         EXPECT_FALSE(result.request.has_value());
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -57,7 +56,7 @@ TEST(ScreenshotOverrideParseTest, APathAloneTakesTheDefaults)
          })
     {
         SCOPED_TRACE(c.value);
-        const auto result = parse(c.value);
+        const auto result = App::ScreenshotOverride::parse(c.value);
         EXPECT_EQ(result.request, std::optional<Request>{request(c.path)}); // the defaults: after 3 s, 1 frame, 10 fps
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -85,7 +84,7 @@ TEST(ScreenshotOverrideParseTest, OptionsParseInAnyOrderAndCase)
          })
     {
         SCOPED_TRACE(c.value);
-        const auto result = parse(c.value);
+        const auto result = App::ScreenshotOverride::parse(c.value);
         EXPECT_EQ(result.request, std::optional<Request>{c.expected});
         EXPECT_TRUE(result.warning.empty()) << result.warning;
     }
@@ -93,7 +92,7 @@ TEST(ScreenshotOverrideParseTest, OptionsParseInAnyOrderAndCase)
 
 TEST(ScreenshotOverrideParseTest, TheLimitsAreInclusive)
 {
-    const auto result = parse("run.png;after=60;frames=600;fps=60");
+    const auto result = App::ScreenshotOverride::parse("run.png;after=60;frames=600;fps=60");
     EXPECT_EQ(result.request, std::optional<Request>{request("run.png", MAX_AFTER_SECONDS, MAX_FRAMES, MAX_FPS)});
     EXPECT_TRUE(result.warning.empty()) << result.warning;
     EXPECT_EQ(MAX_AFTER_SECONDS, 60);
@@ -129,13 +128,13 @@ TEST(ScreenshotOverrideParseTest, NumbersOutsideTheirRangesAreClampedWithAWarnin
          })
     {
         SCOPED_TRACE(c.value);
-        const auto result = parse(c.value);
+        const auto result = App::ScreenshotOverride::parse(c.value);
         EXPECT_EQ(result.request, std::optional<Request>{c.expected});
         EXPECT_NE(result.warning.find(c.clamped), std::string::npos) << result.warning;
     }
 
     // Every clamped number is named.
-    const auto both = parse("run.png;after=61;fps=0");
+    const auto both = App::ScreenshotOverride::parse("run.png;after=61;fps=0");
     EXPECT_EQ(both.request, std::optional<Request>{request("run.png", MAX_AFTER_SECONDS, 1, 1)});
     EXPECT_NE(both.warning.find("after clamped to 60"), std::string::npos) << both.warning;
     EXPECT_NE(both.warning.find("fps clamped to 1"), std::string::npos) << both.warning;
@@ -160,7 +159,7 @@ TEST(ScreenshotOverrideParseTest, InvalidValuesAreIgnoredWithAWarning)
                               "run.png;fps=10;fps=10"})
     {
         SCOPED_TRACE(value);
-        const auto result = parse(value);
+        const auto result = App::ScreenshotOverride::parse(value);
         EXPECT_FALSE(result.request.has_value());
         EXPECT_NE(result.warning.find("ignored"), std::string::npos) << result.warning;
     }
@@ -170,7 +169,7 @@ TEST(ScreenshotOverrideParseTest, InvalidValuesAreIgnoredWithAWarning)
 // copied from a Windows .env file, with its trailing CR, parses as it does without one.
 TEST(ScreenshotOverrideParseTest, AnyAsciiWhitespaceAroundTheValueIsTrimmed)
 {
-    const auto result = parse("\tshot.png;after=2\r\n");
+    const auto result = App::ScreenshotOverride::parse("\tshot.png;after=2\r\n");
     EXPECT_EQ(result.request, std::optional<Request>{request("shot.png", 2)});
     EXPECT_TRUE(result.warning.empty()) << result.warning;
 }
@@ -178,7 +177,7 @@ TEST(ScreenshotOverrideParseTest, AnyAsciiWhitespaceAroundTheValueIsTrimmed)
 // The value is UTF-8, as every hook's is (#1648): the path is decoded as such, whatever the code page.
 TEST(ScreenshotOverrideParseTest, ThePathIsDecodedAsUtf8)
 {
-    const auto result = parse("снимок экрана.png;after=1");
+    const auto result = App::ScreenshotOverride::parse("снимок экрана.png;after=1");
     EXPECT_EQ(result.request, std::optional<Request>{request("снимок экрана.png", 1)});
     EXPECT_EQ(Core::pathToUtf8(result.request.value_or(Request{}).path), "снимок экрана.png");
 }

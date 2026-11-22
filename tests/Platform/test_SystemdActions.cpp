@@ -197,12 +197,12 @@ TEST(UnsupportedServiceActionsTest, RefusesEveryActionAndOffersNone)
 
 using ::TestSupport::FakeSystemBus;
 
-constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
-constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
-constexpr const char* MANAGER = "org.freedesktop.systemd1.Manager";
+constexpr const char* ACTIONS_SYSTEMD = "org.freedesktop.systemd1";
+constexpr const char* ACTIONS_SYSTEMD_PATH = "/org/freedesktop/systemd1";
+constexpr const char* ACTIONS_MANAGER = "org.freedesktop.systemd1.Manager";
 constexpr const char* UNIT = "org.freedesktop.systemd1.Unit";
 constexpr const char* SERVICE = "org.freedesktop.systemd1.Service";
-constexpr const char* CRON_PATH = "/org/freedesktop/systemd1/unit/cron_2eservice";
+constexpr const char* ACTIONS_CRON_PATH = "/org/freedesktop/systemd1/unit/cron_2eservice";
 constexpr const char* WEB_PATH = "/org/freedesktop/systemd1/unit/web_2eservice";
 constexpr const char* JOB_PATH = "/org/freedesktop/systemd1/job/42";
 constexpr SystemdBus::UnitWait QUICK{.timeout = std::chrono::milliseconds(300), .poll = std::chrono::milliseconds(10)};
@@ -217,8 +217,8 @@ class SystemdActionsFakeTest : public ::testing::Test
             GTEST_SKIP() << "dbus-daemon isn't installed";
         }
         // LoadUnit answers each unit's object.
-        m_Bus.addRawMethod(SYSTEMD_PATH,
-                           MANAGER,
+        m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                           ACTIONS_MANAGER,
                            "LoadUnit",
                            [](sd_bus_message* call) -> int
                            {
@@ -230,7 +230,7 @@ class SystemdActionsFakeTest : public ::testing::Test
                                const std::string unit(name);
                                if (unit == "cron.service")
                                {
-                                   return sd_bus_reply_method_return(call, "o", CRON_PATH);
+                                   return sd_bus_reply_method_return(call, "o", ACTIONS_CRON_PATH);
                                }
                                if (unit == "web.service")
                                {
@@ -247,8 +247,8 @@ class SystemdActionsFakeTest : public ::testing::Test
     /// StartUnit or StopUnit (ss): records the call and moves cron to @p resultingState, answering a job.
     void serveJob(const char* method, const std::string& resultingState)
     {
-        m_Bus.addRawMethod(SYSTEMD_PATH,
-                           MANAGER,
+        m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                           ACTIONS_MANAGER,
                            method,
                            // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                            [this, method, resultingState](sd_bus_message* call) -> int
@@ -260,7 +260,7 @@ class SystemdActionsFakeTest : public ::testing::Test
                                    return sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.InvalidArgs", "bad");
                                }
                                record(std::string(method) + " " + (name != nullptr ? name : "") + " " + (mode != nullptr ? mode : ""));
-                               m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = resultingState;
+                               m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = resultingState;
                                return sd_bus_reply_method_return(call, "o", JOB_PATH);
                            });
     }
@@ -269,21 +269,21 @@ class SystemdActionsFakeTest : public ::testing::Test
     /// is gone. @p ran moves its main process start time on (it ran); @p result is the run's Result.
     void serveOneshotStart(bool ran, const std::string& result)
     {
-        m_Bus.properties()[CRON_PATH][SERVICE]["Type"] = std::string("oneshot");
-        m_Bus.properties()[CRON_PATH][SERVICE]["Result"] = std::string("success"); // from an earlier run
-        m_Bus.properties()[CRON_PATH][SERVICE]["ExecMainStartTimestampMonotonic"] = std::uint64_t{1000};
-        m_Bus.addRawMethod(SYSTEMD_PATH,
-                           MANAGER,
+        m_Bus.properties()[ACTIONS_CRON_PATH][SERVICE]["Type"] = std::string("oneshot");
+        m_Bus.properties()[ACTIONS_CRON_PATH][SERVICE]["Result"] = std::string("success"); // from an earlier run
+        m_Bus.properties()[ACTIONS_CRON_PATH][SERVICE]["ExecMainStartTimestampMonotonic"] = std::uint64_t{1000};
+        m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                           ACTIONS_MANAGER,
                            "StartUnit",
                            // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                            [this, ran, result](sd_bus_message* call) -> int
                            {
                                record("StartUnit");
-                               m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+                               m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
                                if (ran)
                                {
-                                   m_Bus.properties()[CRON_PATH][SERVICE]["ExecMainStartTimestampMonotonic"] = std::uint64_t{2000};
-                                   m_Bus.properties()[CRON_PATH][SERVICE]["Result"] = result;
+                                   m_Bus.properties()[ACTIONS_CRON_PATH][SERVICE]["ExecMainStartTimestampMonotonic"] = std::uint64_t{2000};
+                                   m_Bus.properties()[ACTIONS_CRON_PATH][SERVICE]["Result"] = result;
                                }
                                return sd_bus_reply_method_return(call, "o", JOB_PATH);
                            });
@@ -293,8 +293,8 @@ class SystemdActionsFakeTest : public ::testing::Test
     /// @p carriesInstallInfo is EnableUnitFiles' answer: false for a unit file without an [Install] section.
     void serveUnitFileCall(const char* method, bool carriesInstallInfo = true)
     {
-        m_Bus.addRawMethod(SYSTEMD_PATH,
-                           MANAGER,
+        m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                           ACTIONS_MANAGER,
                            method,
                            // NOLINTNEXTLINE(bugprone-exception-escape) - as above
                            [this, method, carriesInstallInfo](sd_bus_message* call) -> int
@@ -351,9 +351,9 @@ class SystemdActionsFakeTest : public ::testing::Test
 
 TEST_F(SystemdActionsFakeTest, AStartIsSentInReplaceModeAndWaitsUntilRunning)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StartUnit", "active");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.ok) << result.message;
@@ -363,9 +363,9 @@ TEST_F(SystemdActionsFakeTest, AStartIsSentInReplaceModeAndWaitsUntilRunning)
 // #2123: a oneshot service that ran and succeeded is inactive again when its job is gone: that's a start.
 TEST_F(SystemdActionsFakeTest, AOneshotThatRanSuccessfullyStarted)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveOneshotStart(/*ran=*/true, "success");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.ok) << result.message;
@@ -373,9 +373,9 @@ TEST_F(SystemdActionsFakeTest, AOneshotThatRanSuccessfullyStarted)
 
 TEST_F(SystemdActionsFakeTest, AOneshotWhoseRunFailedDidNotStart)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveOneshotStart(/*ran=*/true, "exit-code");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -386,9 +386,9 @@ TEST_F(SystemdActionsFakeTest, AOneshotWhoseRunFailedDidNotStart)
 // for nothing.
 TEST_F(SystemdActionsFakeTest, AOneshotThatNeverRanDidNotStart)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveOneshotStart(/*ran=*/false, "success");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -407,9 +407,9 @@ TEST(SystemdActionsTest, OnlyAOneshotRunThatStartedAndSucceededCounts)
 TEST_F(SystemdActionsFakeTest, AStartWhoseUnitEndsUpNotRunningSaysSo)
 {
     // The job ran (its object is gone) and the unit is still inactive: a condition unmet, or it exited.
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StartUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -420,9 +420,9 @@ TEST_F(SystemdActionsFakeTest, AStartThatNeverGetsThereGivesUpAfterTheWait)
 {
     // Still activating, and its job still there, when the wait runs out.
     m_Bus.properties()[JOB_PATH]["org.freedesktop.systemd1.Job"]["State"] = std::string("running");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StartUnit", "activating");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit(
         "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
@@ -435,9 +435,9 @@ TEST_F(SystemdActionsFakeTest, AStartThatNeverGetsThereGivesUpAfterTheWait)
 TEST_F(SystemdActionsFakeTest, AnUnansweredJobReadKeepsWaitingInsteadOfReportingTheJobOver)
 {
     m_Bus.failProperty(JOB_PATH, "org.freedesktop.systemd1.Job", "State", "org.freedesktop.DBus.Error.NoReply");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StartUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit(
         "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
@@ -448,10 +448,10 @@ TEST_F(SystemdActionsFakeTest, AnUnansweredJobReadKeepsWaitingInsteadOfReporting
 // #4399: a dependents read that isn't answered refuses the stop, rather than sending it with the guard skipped.
 TEST_F(SystemdActionsFakeTest, AnUnansweredDependentsReadRefusesTheStop)
 {
-    m_Bus.failProperty(CRON_PATH, UNIT, "RequiredBy", "org.freedesktop.DBus.Error.NoReply");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.failProperty(ACTIONS_CRON_PATH, UNIT, "RequiredBy", "org.freedesktop.DBus.Error.NoReply");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -464,9 +464,9 @@ TEST_F(SystemdActionsFakeTest, AnUnansweredDependentsReadRefusesTheStop)
 TEST_F(SystemdActionsFakeTest, ADroppedConnectionOnTheJobReadIsNoAnswer)
 {
     m_Bus.failProperty(JOB_PATH, "org.freedesktop.systemd1.Job", "State", "org.freedesktop.DBus.Error.Disconnected");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StartUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit(
         "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
@@ -478,10 +478,10 @@ TEST_F(SystemdActionsFakeTest, ADroppedConnectionOnTheJobReadIsNoAnswer)
 // refused rather than sent with the "never take running dependents down" guard skipped.
 TEST_F(SystemdActionsFakeTest, SystemdWithoutItsBusNameOnADependentsReadRefusesTheStop)
 {
-    m_Bus.failProperty(CRON_PATH, UNIT, "BoundBy", "org.freedesktop.DBus.Error.ServiceUnknown");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.failProperty(ACTIONS_CRON_PATH, UNIT, "BoundBy", "org.freedesktop.DBus.Error.ServiceUnknown");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -491,10 +491,10 @@ TEST_F(SystemdActionsFakeTest, SystemdWithoutItsBusNameOnADependentsReadRefusesT
 // ...while one answered with an error (a property an older systemd doesn't have) is an empty list, as before.
 TEST_F(SystemdActionsFakeTest, ADependentsListThisSystemdLacksDoesNotBlockTheStop)
 {
-    m_Bus.failProperty(CRON_PATH, UNIT, "RequisiteOf", "org.freedesktop.DBus.Error.UnknownProperty");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.failProperty(ACTIONS_CRON_PATH, UNIT, "RequisiteOf", "org.freedesktop.DBus.Error.UnknownProperty");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     EXPECT_TRUE(SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK).ok);
 }
@@ -502,7 +502,7 @@ TEST_F(SystemdActionsFakeTest, ADependentsListThisSystemdLacksDoesNotBlockTheSto
 TEST_F(SystemdActionsFakeTest, AStopRequestedBeforehandSendsNothing)
 {
     serveJob("StartUnit", "active");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     std::stop_source stop;
     stop.request_stop();
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
@@ -513,15 +513,15 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedBeforehandSendsNothing)
 TEST_F(SystemdActionsFakeTest, AnUnprivilegedStartIsRefusedAsRequiringAdministrator)
 {
     // polkit's answer when it would have to prompt and the caller doesn't allow it (#2006).
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "StartUnit",
                        [](sd_bus_message* call) -> int
                        {
                            return sd_bus_reply_method_errorf(
                                call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -532,8 +532,8 @@ TEST_F(SystemdActionsFakeTest, AnUnprivilegedStartIsRefusedAsRequiringAdministra
 // Administrator session, and nothing offers to finish it with a password.
 TEST_F(SystemdActionsFakeTest, NoActionLetsPolkitPrompt)
 {
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "StartUnit",
                        // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                        [this](sd_bus_message* call) -> int
@@ -542,7 +542,7 @@ TEST_F(SystemdActionsFakeTest, NoActionLetsPolkitPrompt)
                            return sd_bus_reply_method_errorf(
                                call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult refused = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(refused.ok);
@@ -556,15 +556,15 @@ TEST_F(SystemdActionsFakeTest, NoActionLetsPolkitPrompt)
 // bound.
 TEST_F(SystemdActionsFakeTest, AStopRequestEndsTheWaitOnSystemd)
 {
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "StartUnit",
                        [](sd_bus_message* call) -> int
                        {
                            std::this_thread::sleep_for(std::chrono::seconds(2)); // systemd slow to answer
                            return sd_bus_reply_method_return(call, "o", JOB_PATH);
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     std::stop_source stop;
     const std::jthread stopper(
         [&stop]
@@ -582,7 +582,7 @@ TEST_F(SystemdActionsFakeTest, AStopRequestEndsTheWaitOnSystemd)
 
 TEST_F(SystemdActionsFakeTest, AnUnknownServiceIsNoSuchService)
 {
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     EXPECT_EQ(SystemdBus::startUnit("nope.service", stop.get_token(), QUICK).message, "No such service");
 }
@@ -590,12 +590,12 @@ TEST_F(SystemdActionsFakeTest, AnUnknownServiceIsNoSuchService)
 TEST_F(SystemdActionsFakeTest, AStopWithARunningDependentIsRefusedNamingIt)
 {
     // web.service Requires= cron and is running: systemd would stop it too, so nothing is sent (#2006).
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
-    m_Bus.properties()[CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
     m_Bus.properties()[WEB_PATH][UNIT]["ActiveState"] = std::string("active");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -607,10 +607,10 @@ TEST_F(SystemdActionsFakeTest, AStopWithARunningDependentIsRefusedNamingIt)
 // is refused rather than sent with the guard skipped for it.
 TEST_F(SystemdActionsFakeTest, ADependentWhoseLoadUnitIsntAnsweredRefusesTheStop)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"busy.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"busy.service"};
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -619,11 +619,11 @@ TEST_F(SystemdActionsFakeTest, ADependentWhoseLoadUnitIsntAnsweredRefusesTheStop
 
 TEST_F(SystemdActionsFakeTest, ADependentWhoseStateIsntAnsweredRefusesTheStop)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
     m_Bus.failProperty(WEB_PATH, UNIT, "ActiveState", "org.freedesktop.DBus.Error.NoReply");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -634,10 +634,10 @@ TEST_F(SystemdActionsFakeTest, ADependentWhoseStateIsntAnsweredRefusesTheStop)
 // ...while a dependent systemd answers "no such unit" for is skipped, as before.
 TEST_F(SystemdActionsFakeTest, ADependentThatNoLongerExistsDoesNotBlockTheStop)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"gone.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"gone.service"};
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.ok) << result.message;
@@ -648,9 +648,9 @@ TEST_F(SystemdActionsFakeTest, ADependentThatNoLongerExistsDoesNotBlockTheStop)
 // instead of reporting "It didn't start (state unknown)" for a start that may have worked.
 TEST_F(SystemdActionsFakeTest, AnUnansweredStateReadAfterTheJobKeepsWaiting)
 {
-    m_Bus.failProperty(CRON_PATH, UNIT, "ActiveState", "org.freedesktop.DBus.Error.NoReply");
+    m_Bus.failProperty(ACTIONS_CRON_PATH, UNIT, "ActiveState", "org.freedesktop.DBus.Error.NoReply");
     serveJob("StartUnit", "active");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit(
         "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
@@ -662,11 +662,11 @@ TEST_F(SystemdActionsFakeTest, AnUnansweredStateReadAfterTheJobKeepsWaiting)
 // Requisite= of it (its RequisiteOf), so a running one of those refuses the stop as well.
 TEST_F(SystemdActionsFakeTest, AStopWithARunningPartOfMemberIsRefusedNamingIt)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["ConsistsOf"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ConsistsOf"] = std::vector<std::string>{"web.service"};
     m_Bus.properties()[WEB_PATH][UNIT]["ActiveState"] = std::string("active");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -676,11 +676,11 @@ TEST_F(SystemdActionsFakeTest, AStopWithARunningPartOfMemberIsRefusedNamingIt)
 
 TEST_F(SystemdActionsFakeTest, AStopWithARunningRequisiteDependentIsRefusedNamingIt)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequisiteOf"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequisiteOf"] = std::vector<std::string>{"web.service"};
     m_Bus.properties()[WEB_PATH][UNIT]["ActiveState"] = std::string("active");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -690,12 +690,12 @@ TEST_F(SystemdActionsFakeTest, AStopWithARunningRequisiteDependentIsRefusedNamin
 
 TEST_F(SystemdActionsFakeTest, AStopWithOnlyStoppedDependentsStopsIt)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
-    m_Bus.properties()[CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{"web.service"};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
     m_Bus.properties()[WEB_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StopUnit", "inactive");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.ok) << result.message;
@@ -708,15 +708,15 @@ TEST_F(SystemdActionsFakeTest, EachStartTypeSendsItsUnitFileCallsThenReloads)
     {
         serveUnitFileCall(method);
     }
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "Reload",
                        [this](sd_bus_message* call) -> int
                        {
                            record("Reload");
                            return sd_bus_reply_method_return(call, "");
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
 
     EXPECT_TRUE(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).ok);
     EXPECT_EQ(calls(), (std::vector<std::string>{"UnmaskUnitFiles cron.service", "EnableUnitFiles cron.service", "Reload"}));
@@ -742,7 +742,7 @@ TEST_F(SystemdActionsFakeTest, EachStartTypeSendsItsUnitFileCallsThenReloads)
 
 TEST_F(SystemdActionsFakeTest, AStopOfAnUnknownServiceIsNoSuchService)
 {
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     EXPECT_EQ(SystemdBus::stopUnit("nope.service", stop.get_token(), QUICK).message, "No such service");
 }
@@ -752,7 +752,7 @@ TEST_F(SystemdActionsFakeTest, AUnitWhoseStateCantBeReadDidntStart)
     // web.service's object answers no ActiveState, and its start job is done: what it ended up as is
     // unknown, so the start isn't reported as a success.
     serveJob("StartUnit", "active"); // moves cron, not web
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::startUnit("web.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -763,7 +763,7 @@ TEST_F(SystemdActionsFakeTest, AUnitWhoseStateCantBeReadDidntStart)
 TEST_F(SystemdActionsFakeTest, AStopWhoseUnitIsStillRunningSaysSo)
 {
     serveJob("StopUnit", "active");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -774,7 +774,7 @@ TEST_F(SystemdActionsFakeTest, AStopWhoseUnitIsStillRunningSaysSo)
 TEST_F(SystemdActionsFakeTest, AUnitWhoseStateCantBeReadDidntStop)
 {
     serveJob("StopUnit", "inactive"); // moves cron, not web
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit("web.service", stop.get_token(), QUICK);
     EXPECT_FALSE(result.ok);
@@ -786,7 +786,7 @@ TEST_F(SystemdActionsFakeTest, AStopThatNeverGetsThereGivesUpAfterTheWait)
 {
     m_Bus.properties()[JOB_PATH]["org.freedesktop.systemd1.Job"]["State"] = std::string("running");
     serveJob("StopUnit", "deactivating");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     const ServiceActionResult result = SystemdBus::stopUnit(
         "cron.service", stop.get_token(), {.timeout = std::chrono::milliseconds(150), .poll = std::chrono::milliseconds(10)});
@@ -799,9 +799,9 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileWaitingEndsTheWait)
     // Still activating, its job still queued: a stop request (TaskSmack closing) ends the wait at the
     // next poll, as a cancellation, without waiting out the timeout.
     m_Bus.properties()[JOB_PATH]["org.freedesktop.systemd1.Job"]["State"] = std::string("running");
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     serveJob("StartUnit", "activating");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     std::stop_source stop;
     std::thread canceller(
         [&stop]
@@ -826,8 +826,8 @@ constexpr auto CANCELLED_WITHIN = std::chrono::microseconds(SystemdBus::CALL_TIM
 TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheCallIsUnansweredCancelsIt)
 {
     std::stop_source stop;
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "StartUnit",
                        // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                        [this, stop](sd_bus_message* /*call*/) mutable -> int
@@ -836,7 +836,7 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheCallIsUnansweredCancelsIt)
                            stop.request_stop();
                            return 1; // handled, no reply
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const auto began = std::chrono::steady_clock::now();
     const ServiceActionResult result = SystemdBus::startUnit("cron.service", stop.get_token(), QUICK);
     EXPECT_TRUE(result.cancelled) << result.message;
@@ -852,8 +852,8 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheReloadIsUnansweredCancelsIt
         serveUnitFileCall(method);
     }
     std::stop_source stop;
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "Reload",
                        // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                        [this, stop](sd_bus_message* /*call*/) mutable -> int
@@ -862,7 +862,7 @@ TEST_F(SystemdActionsFakeTest, AStopRequestedWhileTheReloadIsUnansweredCancelsIt
                            stop.request_stop();
                            return 1; // handled, no reply
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const auto began = std::chrono::steady_clock::now();
     const ServiceActionResult result = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic, stop.get_token());
     EXPECT_TRUE(result.cancelled) << result.message;
@@ -877,15 +877,15 @@ TEST_F(SystemdActionsFakeTest, AUserUnitIsSwitchedThroughTheUserManager)
 {
     serveUnitFileCall("EnableUnitFiles");
     serveUnitFileCall("DisableUnitFiles");
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "Reload",
                        [this](sd_bus_message* call) -> int
                        {
                            record("Reload");
                            return sd_bus_reply_method_return(call, "");
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const char* saved = std::getenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
     const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
     const char* fake = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - set by m_Bus.start()
@@ -909,7 +909,7 @@ TEST_F(SystemdActionsFakeTest, AUserUnitIsSwitchedThroughTheUserManager)
 TEST_F(SystemdActionsFakeTest, AUserUnitWithNoInstallSectionCantBeEnabled)
 {
     serveUnitFileCall("EnableUnitFiles", /*carriesInstallInfo=*/false);
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const char* saved = std::getenv("DBUS_SESSION_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - single-threaded test
     const std::optional<std::string> savedAddress = saved != nullptr ? std::optional<std::string>(saved) : std::nullopt;
     const char* fake = std::getenv("DBUS_SYSTEM_BUS_ADDRESS"); // NOLINT(concurrency-mt-unsafe) - set by m_Bus.start()
@@ -933,23 +933,23 @@ TEST_F(SystemdActionsFakeTest, AUserUnitWithNoInstallSectionCantBeEnabled)
 // flag, a restart as a stop then a start.
 TEST_F(SystemdActionsFakeTest, NoActionAsksForAPrompt)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
     for (const char* method : {"StartUnit", "StopUnit"})
     {
         const std::string state = std::string_view(method) == "StartUnit" ? "active" : "inactive";
-        m_Bus.addRawMethod(SYSTEMD_PATH,
-                           MANAGER,
+        m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                           ACTIONS_MANAGER,
                            method,
                            // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                            [this, method, state](sd_bus_message* call) -> int
                            {
                                record(std::string(method) +
                                       (sd_bus_message_get_allow_interactive_authorization(call) > 0 ? " prompt" : ""));
-                               m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = state;
+                               m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = state;
                                return sd_bus_reply_method_return(call, "o", JOB_PATH);
                            });
     }
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const TestSupport::ScopedTempDir root("ts_service_actions_authorized");
     std::filesystem::create_directories(root.path / "run" / "systemd" / "system");
     LinuxServiceActions actions(root.path, /*built=*/true, QUICK);
@@ -964,21 +964,21 @@ TEST_F(SystemdActionsFakeTest, NoActionAsksForAPrompt)
 // #2472: TaskSmack closing between a restart's stop and its start skips the start.
 TEST_F(SystemdActionsFakeTest, AStopRequestAfterARestartsStopSkipsItsStart)
 {
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
     std::stop_source stop;
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "StopUnit",
                        // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                        [this, &stop](sd_bus_message* call) -> int
                        {
                            record("StopUnit");
-                           m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
+                           m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("inactive");
                            stop.request_stop(); // TaskSmack closing while the stop is answered
                            return sd_bus_reply_method_return(call, "o", JOB_PATH);
                        });
     serveJob("StartUnit", "active");
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const TestSupport::ScopedTempDir root("ts_service_actions_restart_stop");
     std::filesystem::create_directories(root.path / "run" / "systemd" / "system");
     LinuxServiceActions actions(root.path, /*built=*/true, QUICK);
@@ -990,9 +990,11 @@ TEST_F(SystemdActionsFakeTest, AStopRequestAfterARestartsStopSkipsItsStart)
 
 TEST_F(SystemdActionsFakeTest, ALoadUnitAnswerThatIsntAnObjectPathFailsTheAction)
 {
-    m_Bus.addRawMethod(
-        SYSTEMD_PATH, MANAGER, "LoadUnit", [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, "s", "not a path"); });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
+                       "LoadUnit",
+                       [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, "s", "not a path"); });
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
     const std::stop_source stop;
     EXPECT_EQ(SystemdBus::startUnit("cron.service", stop.get_token(), QUICK).message, "systemd's answer couldn't be read");
 }
@@ -1006,11 +1008,11 @@ TEST_F(SystemdActionsFakeTest, EachRefusedUnitFileStepStopsTheChange)
         return sd_bus_reply_method_errorf(
             call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
     };
-    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "UnmaskUnitFiles", refuse);
-    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "MaskUnitFiles", refuse);
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH, ACTIONS_MANAGER, "UnmaskUnitFiles", refuse);
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH, ACTIONS_MANAGER, "MaskUnitFiles", refuse);
     serveUnitFileCall("DisableUnitFiles");
-    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "Reload", refuse);
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH, ACTIONS_MANAGER, "Reload", refuse);
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
 
     EXPECT_EQ(SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic).message,
               "Requires administrator: start TaskSmack (Administrator)");
@@ -1026,15 +1028,15 @@ TEST_F(SystemdActionsFakeTest, AutomaticOnAUnitWithoutAnInstallSectionSaysWhy)
 {
     serveUnitFileCall("UnmaskUnitFiles");
     serveUnitFileCall("EnableUnitFiles", /*carriesInstallInfo=*/false);
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "Reload",
                        [this](sd_bus_message* call) -> int
                        {
                            record("Reload");
                            return sd_bus_reply_method_return(call, "");
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
 
     const ServiceActionResult automatic = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Automatic);
     EXPECT_FALSE(automatic.ok);
@@ -1049,15 +1051,15 @@ TEST_F(SystemdActionsFakeTest, ARefusedReloadAfterTheChangeIsReported)
 {
     serveUnitFileCall("UnmaskUnitFiles");
     serveUnitFileCall("DisableUnitFiles");
-    m_Bus.addRawMethod(SYSTEMD_PATH,
-                       MANAGER,
+    m_Bus.addRawMethod(ACTIONS_SYSTEMD_PATH,
+                       ACTIONS_MANAGER,
                        "Reload",
                        [](sd_bus_message* call) -> int
                        {
                            return sd_bus_reply_method_errorf(
                                call, "org.freedesktop.DBus.Error.InteractiveAuthorizationRequired", "Interactive authentication required.");
                        });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
 
     const ServiceActionResult manual = SystemdBus::setUnitStartType("cron.service", ServiceStartType::Manual);
     EXPECT_FALSE(manual.ok);
@@ -1068,15 +1070,16 @@ TEST_F(SystemdActionsFakeTest, ARefusedReloadAfterTheChangeIsReported)
 TEST_F(SystemdActionsFakeTest, LinuxServiceActionsActThroughSystemdWhereItRuns)
 {
     // With a root where systemd runs, each action goes to systemd; restart is stop, then start.
-    m_Bus.properties()[CRON_PATH][UNIT]["ActiveState"] = std::string("active");
-    m_Bus.properties()[CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{};
-    m_Bus.properties()[CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["ActiveState"] = std::string("active");
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["RequiredBy"] = std::vector<std::string>{};
+    m_Bus.properties()[ACTIONS_CRON_PATH][UNIT]["BoundBy"] = std::vector<std::string>{};
     serveJob("StopUnit", "inactive");
     serveJob("StartUnit", "active");
     serveUnitFileCall("UnmaskUnitFiles");
     serveUnitFileCall("DisableUnitFiles");
-    m_Bus.addRawMethod(SYSTEMD_PATH, MANAGER, "Reload", [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, ""); });
-    ASSERT_TRUE(m_Bus.start(SYSTEMD)) << m_Bus.error();
+    m_Bus.addRawMethod(
+        ACTIONS_SYSTEMD_PATH, ACTIONS_MANAGER, "Reload", [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, ""); });
+    ASSERT_TRUE(m_Bus.start(ACTIONS_SYSTEMD)) << m_Bus.error();
 
     const TestSupport::ScopedTempDir root("ts_service_actions_live");
     std::filesystem::create_directories(root.path / "run" / "systemd" / "system");

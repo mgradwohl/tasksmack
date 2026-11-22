@@ -459,7 +459,7 @@ class OwnedSocket
 
 // A real loopback connection of this process, reset through SetTcpEntry (#3358). In the CiRealSystem group with
 // the other real OS paths: it runs only on a disposable runner.
-class CiRealSystemWindowsCloseConnectionTest : public TestSupport::CiRealSystemTest
+class CiRealSystemWindowsCloseConnectionTest : public ::TestSupport::CiRealSystemTest
 {};
 
 TEST_F(CiRealSystemWindowsCloseConnectionTest, ResetsThisProcesssLoopbackConnection)

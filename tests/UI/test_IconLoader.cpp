@@ -208,7 +208,7 @@ std::vector<unsigned char> makeMinimalRedPng()
 // so tests relying on it must still skip.
 namespace
 {
-bool detectDisplay()
+bool detectRealDisplay()
 {
 #ifdef _WIN32
     return TestSupport::detectWindowsDisplay();
@@ -230,9 +230,9 @@ bool detectDisplay()
 
 // Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
 // missing display into a failure instead of a skip.
-bool hasDisplay()
+bool hasRealDisplay()
 {
-    return TestSupport::enforceDisplayRequirement(detectDisplay());
+    return TestSupport::enforceDisplayRequirement(detectRealDisplay());
 }
 
 bool isOffscreenVideoDriver()
@@ -254,7 +254,7 @@ class IconLoaderGLTest : public ::testing::Test
   protected:
     void SetUp() override
     {
-        if (!hasDisplay())
+        if (!hasRealDisplay())
         {
             GTEST_SKIP() << "No display available (headless environment)";
         }

@@ -27,7 +27,7 @@ namespace App
 namespace
 {
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr Platform::ProcessTarget ENVIRONMENT_RENDER_TARGET{.pid = 4242, .startTimeTicks = 777};
 constexpr float WINDOW_WIDTH = 1200.0F;
 constexpr float WINDOW_HEIGHT = 800.0F;
 
@@ -91,8 +91,8 @@ class ProcessEnvironmentViewRenderTest : public ::testing::Test
     {
         for (int i = 0; i < 3 && !view.hasRead(); ++i)
         {
-            static_cast<void>(view.update(&reader, TARGET, 1.0F / 60.0F));
-            view.finishPendingRead(TARGET); // the read runs on a worker (#2116)
+            static_cast<void>(view.update(&reader, ENVIRONMENT_RENDER_TARGET, 1.0F / 60.0F));
+            view.finishPendingRead(ENVIRONMENT_RENDER_TARGET); // the read runs on a worker (#2116)
             static_cast<void>(renderAndCapture(view, true));
         }
         ASSERT_TRUE(view.hasRead());
@@ -148,7 +148,7 @@ TEST_F(ProcessEnvironmentViewRenderTest, DrawsNothingWithoutEnvironmentSupport)
 
     // And, never drawn open, it is never read.
     TestMocks::MockProcessEnvironmentReader reader;
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F));
+    EXPECT_FALSE(view.update(&reader, ENVIRONMENT_RENDER_TARGET, 10.0F));
     EXPECT_EQ(reader.readCount(), 0);
 }
 
@@ -159,7 +159,7 @@ TEST_F(ProcessEnvironmentViewRenderTest, CollapsedHeaderDrawsAndReadsNothing)
     reader.setResult(sampleEnvironment());
     for (int i = 0; i < 3; ++i)
     {
-        static_cast<void>(view.update(&reader, TARGET, 10.0F));
+        static_cast<void>(view.update(&reader, ENVIRONMENT_RENDER_TARGET, 10.0F));
         const std::string text = renderAndCapture(view, true, false);
         EXPECT_TRUE(text.contains("Environment"));
         EXPECT_FALSE(text.contains("FOO"));
@@ -207,7 +207,7 @@ TEST_F(ProcessEnvironmentViewRenderTest, MaskedValueIsNotDrawnUntilRevealedAndRe
     EXPECT_FALSE(text.contains(Detail::MASKED_ENVIRONMENT_VALUE));
 
     // Re-read at the refresh cadence: still revealed.
-    view.applyResult(reader.readEnvironment(TARGET));
+    view.applyResult(reader.readEnvironment(ENVIRONMENT_RENDER_TARGET));
     EXPECT_TRUE(renderAndCapture(view, true).contains("supersecret"));
 
     // A different selection -- even one whose environment has the same variable -- masks it again.

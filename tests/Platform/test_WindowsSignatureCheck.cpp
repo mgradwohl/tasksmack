@@ -877,15 +877,15 @@ class TempFile
 // reads as none, and nothing is read by its name.
 TEST(WindowsHeldFilePublisherTest, AFilesPublisherIsReadThroughItsHandle)
 {
-    const TestSupport::PeImage image = TestSupport::buildPeImage(u"TaskSmack Test Co");
+    const ::TestSupport::PeImage image = ::TestSupport::buildPeImage(u"TaskSmack Test Co");
     const TempFile pe(L"-pe.exe", image.bytes);
     const UniqueHandle file = openForRead(pe.path().wstring());
     ASSERT_TRUE(file) << GetLastError();
     EXPECT_EQ(heldFilePublisher(file.get()), "TaskSmack Test Co");
 
     // A PE32 file's, and the neutral language's ahead of another.
-    const TestSupport::PeImage pe32Image = TestSupport::buildPeImage(
-        {{0x0407U, TestSupport::versionInfoBlock(u"Deutsch")}, {0x0000U, TestSupport::versionInfoBlock(u"Neutral GmbH")}}, true);
+    const ::TestSupport::PeImage pe32Image = ::TestSupport::buildPeImage(
+        {{0x0407U, ::TestSupport::versionInfoBlock(u"Deutsch")}, {0x0000U, ::TestSupport::versionInfoBlock(u"Neutral GmbH")}}, true);
     const TempFile pe32(L"-pe32.exe", pe32Image.bytes);
     const UniqueHandle pe32File = openForRead(pe32.path().wstring());
     ASSERT_TRUE(pe32File);
@@ -912,7 +912,7 @@ TEST(WindowsHeldFilePublisherTest, AFilesPublisherIsReadThroughItsHandle)
     EXPECT_EQ(heldFilePublisher(cutFile.get()), "") << "the block runs past the end of the file";
 
     // A block that names no company: none.
-    const TestSupport::PeImage noCompany = TestSupport::buildPeImage(u"");
+    const ::TestSupport::PeImage noCompany = ::TestSupport::buildPeImage(u"");
     const TempFile none(L"-none.exe", noCompany.bytes);
     const UniqueHandle noneFile = openForRead(none.path().wstring());
     ASSERT_TRUE(noneFile);
@@ -924,8 +924,8 @@ TEST(WindowsHeldFilePublisherTest, AFilesPublisherIsReadThroughItsHandle)
 // #4373: the Modules section's file version is read the same way, through the held file's handle, never by a name.
 TEST(WindowsHeldFileVersionTest, AFilesVersionIsReadThroughItsHandle)
 {
-    const TestSupport::PeImage image =
-        TestSupport::buildPeImage({{0x0409U, TestSupport::versionInfoBlock(u"Co", (10U << 16U) | 1U, (26100U << 16U) | 4202U)}});
+    const ::TestSupport::PeImage image =
+        ::TestSupport::buildPeImage({{0x0409U, ::TestSupport::versionInfoBlock(u"Co", (10U << 16U) | 1U, (26100U << 16U) | 4202U)}});
     const TempFile pe(L"-version.dll", image.bytes);
     const UniqueHandle file = openForRead(pe.path().wstring());
     ASSERT_TRUE(file) << GetLastError();
@@ -996,9 +996,9 @@ std::size_t versionNodeAt(const std::vector<std::byte>& bytes, std::u16string_vi
     std::vector<std::byte> pattern;
     for (const char16_t c : key)
     {
-        TestSupport::put16(pattern, pattern.size(), c);
+        ::TestSupport::put16(pattern, pattern.size(), c);
     }
-    TestSupport::put16(pattern, pattern.size(), 0);
+    ::TestSupport::put16(pattern, pattern.size(), 0);
     const auto found = std::ranges::search(bytes, pattern);
     return found.empty() ? 0 : static_cast<std::size_t>(found.begin() - bytes.begin()) - 6;
 }
@@ -1007,9 +1007,9 @@ std::size_t versionNodeAt(const std::vector<std::byte>& bytes, std::u16string_vi
 // publisher, and nothing is read past it.
 TEST(WindowsHeldFilePublisherTest, AVersionNodeThatClaimsToRunPastItsBlockReadsAsNoPublisher)
 {
-    TestSupport::PeImage image = TestSupport::buildPeImage(u"TaskSmack Test Co");
-    const std::vector<std::byte> block = TestSupport::versionInfoBlock(u"TaskSmack Test Co");
-    TestSupport::put16(image.bytes, image.blocks[0] + versionNodeAt(block, u"Translation") + 2, 0xFFFF);
+    ::TestSupport::PeImage image = ::TestSupport::buildPeImage(u"TaskSmack Test Co");
+    const std::vector<std::byte> block = ::TestSupport::versionInfoBlock(u"TaskSmack Test Co");
+    ::TestSupport::put16(image.bytes, image.blocks[0] + versionNodeAt(block, u"Translation") + 2, 0xFFFF);
     const TempFile pe(L"-long-translation.exe", image.bytes);
     const UniqueHandle file = openForRead(pe.path().wstring());
     ASSERT_TRUE(file);
@@ -1021,7 +1021,7 @@ TEST(WindowsHeldFilePublisherTest, AVersionNodeThatClaimsToRunPastItsBlockReadsA
 // block takes the same path.
 TEST(WindowsHeldFilePublisherTest, TheCompanyNameReadStaysInsideTheBlock)
 {
-    const std::vector<std::byte> bytes = TestSupport::versionInfoBlock(u"TaskSmack Test Co");
+    const std::vector<std::byte> bytes = ::TestSupport::versionInfoBlock(u"TaskSmack Test Co");
     const std::size_t translation = versionNodeAt(bytes, u"Translation");
     const std::size_t company = versionNodeAt(bytes, u"CompanyName");
     ASSERT_NE(translation, 0U);
@@ -1043,11 +1043,11 @@ TEST(WindowsHeldFilePublisherTest, TheCompanyNameReadStaysInsideTheBlock)
     EXPECT_EQ(read(bytes), "TaskSmack Test Co") << "as built";
 
     std::vector<std::byte> longTranslation = bytes;
-    TestSupport::put16(longTranslation, translation + 2, 0xFFFF); // the reviewed case: 64 KB of translations
+    ::TestSupport::put16(longTranslation, translation + 2, 0xFFFF); // the reviewed case: 64 KB of translations
     EXPECT_EQ(read(longTranslation), "TaskSmack Test Co") << "the translations are read only to the block's end";
 
     std::vector<std::byte> longName = bytes;
-    TestSupport::put16(longName, company + 2, 0xFFFF);
+    ::TestSupport::put16(longName, company + 2, 0xFFFF);
     // VerQueryValueW may refuse this one outright; either way only the block is read.
     const std::string name = read(longName);
     EXPECT_TRUE(name.empty() || name == "TaskSmack Test Co") << name;
@@ -1057,7 +1057,7 @@ TEST(WindowsHeldFilePublisherTest, TheCompanyNameReadStaysInsideTheBlock)
 // the publisher is still the held file's.
 TEST(WindowsHeldFilePublisherTest, TheHeldFilesPublisherIsReadNotTheFileNowAtItsName)
 {
-    const TempFile original(L"-original.exe", TestSupport::buildPeImage(u"Held Co").bytes);
+    const TempFile original(L"-original.exe", ::TestSupport::buildPeImage(u"Held Co").bytes);
     const UniqueHandle file(CreateFileW(original.path().c_str(),
                                         GENERIC_READ,
                                         FILE_SHARE_READ | FILE_SHARE_DELETE,
@@ -1072,7 +1072,7 @@ TEST(WindowsHeldFilePublisherTest, TheHeldFilesPublisherIsReadNotTheFileNowAtIts
     std::filesystem::rename(original.path(), moved, error);
     ASSERT_FALSE(error) << error.message();
     {
-        const std::vector<std::byte> decoy = TestSupport::buildPeImage(u"Decoy Co").bytes;
+        const std::vector<std::byte> decoy = ::TestSupport::buildPeImage(u"Decoy Co").bytes;
         std::ofstream out(original.path(), std::ios::binary);
         out.write(reinterpret_cast<const char*>(decoy.data()), static_cast<std::streamsize>(decoy.size()));
     }
@@ -1174,7 +1174,7 @@ TEST(WindowsSignatureCheckRealTest, AProtectedProcessIsCheckedByItsPathAndIsSign
 // #4021 on a CI runner: a process that renamed its image away and left a Microsoft-signed file at the old name. A
 // copy of this test executable is started suspended (so nothing of it runs), renamed, and notepad.exe copied to its
 // old name. The check binds to the renamed copy, never to the decoy: the copy reads Unsigned, not notepad's signer.
-class CiRealSystemSignatureBindingTest : public TestSupport::CiRealSystemTest
+class CiRealSystemSignatureBindingTest : public ::TestSupport::CiRealSystemTest
 {};
 
 /// The suspended child and its folder, ended, waited for and removed however the test leaves.

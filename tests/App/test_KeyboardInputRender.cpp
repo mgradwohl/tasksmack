@@ -31,8 +31,8 @@ namespace
 using KeyboardShortcuts::ShortcutAction;
 using ProcessTableNavigation::NavCommand;
 
-constexpr const char* CONFIRM_POPUP_ID = "###ConfirmAction"; // ProcessActionConfirm's modal
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr const char* KEYBOARD_CONFIRM_POPUP_ID = "###ConfirmAction"; // ProcessActionConfirm's modal
+constexpr Platform::ProcessTarget KEYBOARD_TARGET{.pid = 4242, .startTimeTicks = 777};
 constexpr Platform::ProcessActionCapabilities CAN_KILL{.canTerminate = true, .canKill = true, .canStop = true, .canContinue = true};
 constexpr Platform::ProcessActionCapabilities CANNOT_KILL{.canTerminate = true, .canKill = false};
 constexpr float WINDOW_SIZE = 800.0F;
@@ -107,7 +107,7 @@ struct ActionsHarness
     TestMocks::MockProcessActions mock;
     ProcessActionsView view;
     Platform::ProcessActionCapabilities capabilities = CAN_KILL;
-    Platform::ProcessTarget target = TARGET;
+    Platform::ProcessTarget target = KEYBOARD_TARGET;
     bool popupOpen = false;
     int f9Requests = 0;
     int f9Accepted = 0;
@@ -128,7 +128,7 @@ struct ActionsHarness
             f9Accepted += view.requestKillShortcut(capabilities, target, "victim") ? 1 : 0;
         }
         view.render(&mock, capabilities, "victim", target);
-        popupOpen = ImGui::IsPopupOpen(CONFIRM_POPUP_ID);
+        popupOpen = ImGui::IsPopupOpen(KEYBOARD_CONFIRM_POPUP_ID);
     }
 };
 
@@ -149,8 +149,8 @@ TEST_F(KeyboardInputRenderTest, F9OpensTheKillConfirmAndKillsNothing)
     EXPECT_TRUE(h.popupOpen);
     EXPECT_TRUE(h.view.confirmRequested());
     EXPECT_EQ(h.view.pendingAction(), Detail::ProcessAction::Kill);
-    EXPECT_EQ(h.view.confirmTarget().target.pid, TARGET.pid);
-    EXPECT_EQ(h.view.confirmTarget().target.startTimeTicks, TARGET.startTimeTicks);
+    EXPECT_EQ(h.view.confirmTarget().target.pid, KEYBOARD_TARGET.pid);
+    EXPECT_EQ(h.view.confirmTarget().target.startTimeTicks, KEYBOARD_TARGET.startTimeTicks);
     EXPECT_EQ(h.mock.killCount(), 0);
     EXPECT_EQ(h.mock.terminateCount(), 0);
 
@@ -178,7 +178,7 @@ TEST_F(KeyboardInputRenderTest, F9NeverReplacesARequestedConfirm)
     EXPECT_EQ(sameFrame.f9Accepted, 0);
     EXPECT_TRUE(sameFrame.popupOpen);
     EXPECT_EQ(sameFrame.view.pendingAction(), Detail::ProcessAction::Stop);
-    EXPECT_EQ(sameFrame.view.confirmTarget().target.pid, TARGET.pid);
+    EXPECT_EQ(sameFrame.view.confirmTarget().target.pid, KEYBOARD_TARGET.pid);
     EXPECT_EQ(sameFrame.mock.killCount(), 0);
 }
 
@@ -192,7 +192,7 @@ TEST_F(KeyboardInputRenderTest, F9OnTheFrameAfterARequestDoesNotReplaceIt)
         nextFrame.frame();
     };
     runFrame(nextBody);
-    nextFrame.view.requestAction(Detail::ProcessAction::Terminate, TARGET, "victim");
+    nextFrame.view.requestAction(Detail::ProcessAction::Terminate, KEYBOARD_TARGET, "victim");
     pressKey(ImGuiKey_F9, nextBody);
     runFrame(nextBody);
     EXPECT_EQ(nextFrame.f9Accepted, 0);
@@ -211,7 +211,7 @@ TEST_F(KeyboardInputRenderTest, F9AfterASelectionChangeOpensItsConfirm)
         h.frame();
     };
     h.view.onSelectionChanged();
-    ASSERT_TRUE(h.view.requestKillShortcut(CAN_KILL, TARGET, "victim"));
+    ASSERT_TRUE(h.view.requestKillShortcut(CAN_KILL, KEYBOARD_TARGET, "victim"));
     runFrame(body);
     runFrame(body);
     EXPECT_TRUE(h.popupOpen);

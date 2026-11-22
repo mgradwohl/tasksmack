@@ -27,7 +27,7 @@ using ProcessTreeFlatten::ProcessTreeRow;
 
 /// Builds a minimal snapshot for tree-flattening tests: only uniqueKey and childrenIndices are
 /// read by buildProcessTreeRows(), so every other ProcessSnapshot field is left default.
-[[nodiscard]] ProcessSnapshot makeSnapshot(std::uint64_t uniqueKey, std::vector<std::size_t> childrenIndices = {})
+[[nodiscard]] ProcessSnapshot makeTreeSnapshot(std::uint64_t uniqueKey, std::vector<std::size_t> childrenIndices = {})
 {
     ProcessSnapshot snap;
     snap.uniqueKey = uniqueKey;
@@ -66,7 +66,7 @@ using RowState = std::tuple<std::size_t, int, bool, bool>;
 
 TEST(ProcessTreeFlattenTest, SingleNodeWithNoChildrenProducesOneRow)
 {
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(1)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(1)};
 
     const auto rows = buildRows(snapshots, {0});
 
@@ -85,10 +85,10 @@ TEST(ProcessTreeFlattenTest, VisitsRootThenFirstChildThenGrandchildThenSecondChi
     // 0, 1, 3, 2 -- not 0, 2, 1, 3 (which the reverse-push stack trick exists to avoid) and not
     // a breadth-first order (0, 1, 2, 3).
     const std::vector<ProcessSnapshot> snapshots = {
-        makeSnapshot(10, {1, 2}), // idx0: root, children idx1 and idx2
-        makeSnapshot(20, {3}),    // idx1: first child, has its own child idx3
-        makeSnapshot(30),         // idx2: second child, leaf
-        makeSnapshot(40),         // idx3: grandchild, leaf
+        makeTreeSnapshot(10, {1, 2}), // idx0: root, children idx1 and idx2
+        makeTreeSnapshot(20, {3}),    // idx1: first child, has its own child idx3
+        makeTreeSnapshot(30),         // idx2: second child, leaf
+        makeTreeSnapshot(40),         // idx3: grandchild, leaf
     };
 
     const auto rows = buildRows(snapshots, {0, 1, 2, 3});
@@ -108,7 +108,7 @@ TEST(ProcessTreeFlattenTest, EveryRootComesOutAndOutRowsIsClearedFirst)
 {
     // Unrelated processes are each a root, all in one list -- a regression that stopped after the
     // first root would silently drop the rest. Rows left from an earlier build are replaced, not kept.
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(1), makeSnapshot(2)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(1), makeTreeSnapshot(2)};
     ProcessTreeFlatten::TreeFlattenScratch scratch;
     std::vector<ProcessTreeRow> rows = {
         ProcessTreeRow{.procIdx = 1, .depth = 3, .hasChildren = true, .isExpanded = false, .isContext = true}};
@@ -126,8 +126,8 @@ TEST(ProcessTreeFlattenTest, EveryRootComesOutAndOutRowsIsClearedFirst)
 TEST(ProcessTreeFlattenTest, CollapsedNodeSuppressesDescendantsButStillAppearsItself)
 {
     const std::vector<ProcessSnapshot> snapshots = {
-        makeSnapshot(10, {1}), // idx0: root, one child
-        makeSnapshot(20),      // idx1: child, leaf
+        makeTreeSnapshot(10, {1}), // idx0: root, one child
+        makeTreeSnapshot(20),      // idx1: child, leaf
     };
     const std::unordered_set<std::uint64_t> collapsedKeys = {10}; // collapse the root by its uniqueKey
 
@@ -144,10 +144,10 @@ TEST(ProcessTreeFlattenTest, CollapsingAMidTreeNodeOnlyHidesItsOwnSubtree)
     // Tree: 0 -> {1, 2}; 1 -> {3}. Collapse node 1 (uniqueKey 20): node 3 must disappear, but
     // sibling node 2 (not a descendant of 1) must still appear.
     const std::vector<ProcessSnapshot> snapshots = {
-        makeSnapshot(10, {1, 2}),
-        makeSnapshot(20, {3}),
-        makeSnapshot(30),
-        makeSnapshot(40),
+        makeTreeSnapshot(10, {1, 2}),
+        makeTreeSnapshot(20, {3}),
+        makeTreeSnapshot(30),
+        makeTreeSnapshot(40),
     };
     const std::unordered_set<std::uint64_t> collapsedKeys = {20};
 
@@ -167,8 +167,8 @@ TEST(ProcessTreeFlattenTest, CollapsingAMidTreeNodeOnlyHidesItsOwnSubtree)
 TEST(ProcessTreeFlattenTest, FilteredOutChildIsExcludedFromRowsAndFromHasChildren)
 {
     const std::vector<ProcessSnapshot> snapshots = {
-        makeSnapshot(10, {1}), // idx0: root, one child -- but that child will be filtered out
-        makeSnapshot(20),      // idx1: child, leaf
+        makeTreeSnapshot(10, {1}), // idx0: root, one child -- but that child will be filtered out
+        makeTreeSnapshot(20),      // idx1: child, leaf
     };
 
     const auto rows = buildRows(snapshots, {0}); // idx1 does not pass the filter
@@ -181,9 +181,9 @@ TEST(ProcessTreeFlattenTest, FilteredOutChildIsExcludedFromRowsAndFromHasChildre
 TEST(ProcessTreeFlattenTest, PartiallyFilteredChildrenKeepsOnlyThePassingOnes)
 {
     const std::vector<ProcessSnapshot> snapshots = {
-        makeSnapshot(10, {1, 2}), // idx0: root, two children; idx2 will be filtered out
-        makeSnapshot(20),         // idx1: passes the filter
-        makeSnapshot(30),         // idx2: filtered out
+        makeTreeSnapshot(10, {1, 2}), // idx0: root, two children; idx2 will be filtered out
+        makeTreeSnapshot(20),         // idx1: passes the filter
+        makeTreeSnapshot(30),         // idx2: filtered out
     };
 
     const auto rows = buildRows(snapshots, {0, 1});
@@ -208,7 +208,7 @@ TEST(ProcessTreeFlattenTest, AChainDeeperThanTheLimitStopsAtMaxDepth)
     std::vector<std::size_t> order(COUNT);
     for (std::size_t i = 0; i < COUNT; ++i)
     {
-        snapshots.push_back(i + 1 < COUNT ? makeSnapshot(1000 + i, {i + 1}) : makeSnapshot(1000 + i));
+        snapshots.push_back(i + 1 < COUNT ? makeTreeSnapshot(1000 + i, {i + 1}) : makeTreeSnapshot(1000 + i));
         order[i] = i;
     }
 
@@ -227,7 +227,7 @@ TEST(ProcessTreeFlattenTest, AParentCycleAmongTheMatchesEndsTheBuild)
 {
     // 0 and 1 list each other as children: a corrupt snapshot. The build ends, and the unrelated
     // process is still drawn.
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {1}), makeSnapshot(11, {0}), makeSnapshot(12)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(10, {1}), makeTreeSnapshot(11, {0}), makeTreeSnapshot(12)};
 
     const auto rows = buildRows(snapshots, {0, 1, 2});
 
@@ -238,7 +238,7 @@ TEST(ProcessTreeFlattenTest, AParentCycleAmongTheMatchesEndsTheBuild)
 
 TEST(ProcessTreeFlattenTest, AProcessListedAsItsOwnChildIsNotDrawnUnderItself)
 {
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {0, 1}), makeSnapshot(11)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(10, {0, 1}), makeTreeSnapshot(11)};
 
     const auto rows = buildRows(snapshots, {0, 1});
 
@@ -254,14 +254,14 @@ TEST(ProcessTreeFlattenTest, AProcessListedAsItsOwnChildIsNotDrawnUnderItself)
 /// Two trees and a lone process: 0 -> {1 -> {3, 4}, 2}, 5 -> {6}, 7.
 [[nodiscard]] std::vector<ProcessSnapshot> forest()
 {
-    return {makeSnapshot(100, {1, 2}),
-            makeSnapshot(101, {3, 4}),
-            makeSnapshot(102),
-            makeSnapshot(103),
-            makeSnapshot(104),
-            makeSnapshot(105, {6}),
-            makeSnapshot(106),
-            makeSnapshot(107)};
+    return {makeTreeSnapshot(100, {1, 2}),
+            makeTreeSnapshot(101, {3, 4}),
+            makeTreeSnapshot(102),
+            makeTreeSnapshot(103),
+            makeTreeSnapshot(104),
+            makeTreeSnapshot(105, {6}),
+            makeTreeSnapshot(106),
+            makeTreeSnapshot(107)};
 }
 
 TEST(ProcessTreeFlattenTest, WholeTreeBuildGivesEveryRowItsDepthChildrenAndExpandedState)
@@ -293,7 +293,7 @@ TEST(ProcessTreeFlattenTest, WholeTreeBuildIgnoresAChildIndexOutOfRange)
 {
     // The hash sets treated an unknown index as filtered out; the bitmaps must too, not read past
     // their end.
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {1, 99}), makeSnapshot(11)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(10, {1, 99}), makeTreeSnapshot(11)};
     ProcessTreeFlatten::TreeFlattenScratch scratch;
     std::vector<ProcessTreeRow> rows;
     ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 1}, {}, scratch, rows);
@@ -367,7 +367,7 @@ TEST(ProcessTreeFlattenTest, MalformedChildListsDrawEveryProcessOnce)
 {
     // 0 lists 2 as its child, and so does 1; 1 lists itself; the order repeats 2. Each process is
     // drawn exactly once: 2 under 0 (the first parent in snapshot order), 1 as a root.
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {2}), makeSnapshot(11, {1, 2}), makeSnapshot(12)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(10, {2}), makeTreeSnapshot(11, {1, 2}), makeTreeSnapshot(12)};
     ProcessTreeFlatten::TreeFlattenScratch scratch;
     std::vector<ProcessTreeRow> rows;
     ProcessTreeFlatten::buildProcessTreeRows(snapshots, {1, 2, 0, 2}, {}, scratch, rows);
@@ -387,7 +387,7 @@ TEST(ProcessTreeFlattenTest, ABigSortedTreeKeepsEveryChildUnderItsParentInOrder)
     std::vector<std::size_t> parentOf(COUNT, ProcessTreeFlatten::NOT_SHOWN);
     for (std::size_t i = 0; i < COUNT; ++i)
     {
-        snapshots.push_back(makeSnapshot(1000 + i));
+        snapshots.push_back(makeTreeSnapshot(1000 + i));
     }
     for (std::size_t i = 1; i < COUNT; ++i)
     {
@@ -539,7 +539,7 @@ TEST(ProcessTreeFlattenTest, AContextAncestorSortsWhereItsFirstMatchDoes)
 TEST(ProcessTreeFlattenTest, AParentCycleEndsTheClimbToAncestors)
 {
     // 0 and 1 list each other as children: a corrupt snapshot. The climb stops, and the build ends.
-    const std::vector<ProcessSnapshot> snapshots = {makeSnapshot(10, {1}), makeSnapshot(11, {0}), makeSnapshot(12)};
+    const std::vector<ProcessSnapshot> snapshots = {makeTreeSnapshot(10, {1}), makeTreeSnapshot(11, {0}), makeTreeSnapshot(12)};
     ProcessTreeFlatten::TreeFlattenScratch scratch;
     std::vector<ProcessTreeRow> rows;
     ProcessTreeFlatten::buildProcessTreeRows(snapshots, {0, 2}, {}, ProcessTreeFlatten::FilterContext::WithAncestors, scratch, rows);

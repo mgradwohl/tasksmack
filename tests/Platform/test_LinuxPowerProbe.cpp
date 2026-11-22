@@ -1346,7 +1346,7 @@ TEST_F(LinuxPowerProbeMultiPackTest, TheSharedBatteryReadCasesReadTheSameOnLinux
     {
         return std::to_string(static_cast<std::int64_t>(std::llround(value * 1'000'000.0)));
     };
-    for (const TestSupport::BatteryRead::Case& c : TestSupport::BatteryRead::CASES)
+    for (const ::TestSupport::BatteryRead::Case& c : ::TestSupport::BatteryRead::CASES)
     {
         SCOPED_TRACE(std::string(c.name));
         std::filesystem::remove_all(m_SysRoot);

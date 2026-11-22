@@ -48,7 +48,7 @@ entry(const char* name, const char* publisher, StartupLocation location, bool en
     return startup;
 }
 
-[[nodiscard]] Domain::StartupPublication makePublication()
+[[nodiscard]] Domain::StartupPublication makeStartupPublication()
 {
     Domain::StartupPublication publication;
     publication.version = 4;
@@ -213,7 +213,7 @@ TEST_F(StartupViewRenderTest, NoSampleYetShowsLoading)
 
 TEST_F(StartupViewRenderTest, TableShowsRowsAndFilters)
 {
-    const auto publication = makePublication();
+    const auto publication = makeStartupPublication();
     StartupViewState state;
     EXPECT_EQ(runFrame([&] { return renderStartupView(&publication, supported(), state); }), StartupViewContent::Table);
     EXPECT_EQ(state.rows.size(), 4U);
@@ -234,7 +234,7 @@ TEST_F(StartupViewRenderTest, TableShowsRowsAndFilters)
 
 TEST(StartupViewTest, RowsSortByColumnAndDirection)
 {
-    const auto publication = makePublication();
+    const auto publication = makeStartupPublication();
     // Enabled first (in name order), then the disabled one.
     EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Enabled, true), (std::vector<std::size_t>{0, 2, 3, 1}));
     EXPECT_EQ(buildStartupRows(publication.entries, "", StartupColumn::Name, false), (std::vector<std::size_t>{3, 2, 1, 0}));
@@ -249,7 +249,7 @@ TEST_F(StartupViewRenderTest, DefaultSortIsEnabledFirstThenName)
 {
     // #1597: with no header clicked, the table is sorted by Enabled -- enabled entries A to Z, then the
     // disabled ones A to Z -- and the table's own default sort spec agrees, so the first frame keeps it.
-    const auto publication = makePublication();
+    const auto publication = makeStartupPublication();
     StartupViewState state;
     EXPECT_EQ(state.sortColumn, StartupColumn::Enabled);
     EXPECT_TRUE(state.ascending);
@@ -334,7 +334,7 @@ TEST(StartupViewTest, EveryLocationHasItsLabelAndCommandSorts)
     EXPECT_EQ(startupLocationLabel(StartupLocation::StartupFolderCommon), "Startup folder (all users)");
     EXPECT_EQ(startupLocationLabel(StartupLocation::PackagedApp), "Packaged app");
 
-    auto publication = makePublication();
+    auto publication = makeStartupPublication();
     publication.entries[0].command = "zz.exe";
     publication.entries[1].command = "AA.exe";
     publication.entries[2].command = "mm.exe";
@@ -411,7 +411,7 @@ TEST_F(StartupViewRenderTest, AnUnresolvedShortcutShowsItsOwnPath)
 
 TEST_F(StartupViewRenderTest, RightClickSelectsTheRowTheBarActsOn)
 {
-    const auto publication = makePublication();
+    const auto publication = makeStartupPublication();
     StartupActionsView actions(std::make_shared<IdleStartupActions>());
     StartupViewState state;
     EXPECT_TRUE(captureFrame(publication, state, &actions).contains("Select a startup app"));
@@ -477,7 +477,7 @@ TEST(StartupViewTest, CountLeavesOutTheHiddenMicrosoftEntries)
 
 TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
 {
-    Domain::StartupPublication publication = makePublication();
+    Domain::StartupPublication publication = makeStartupPublication();
     StartupViewState state;
     EXPECT_FALSE(captureFrame(publication, state).contains("Show Windows tasks")) << "no such entries, no checkbox";
 
@@ -634,7 +634,7 @@ TEST_F(StartupViewRenderTest, SelectionIsByTheRegisteredNameAndPackage)
 /// SecurityHealth Low, Stale Not measured (its program is missing).
 [[nodiscard]] Domain::StartupPublication makeImpactPublication()
 {
-    auto publication = makePublication();
+    auto publication = makeStartupPublication();
     publication.impacts = {
         {.cpuUs = 2'345'678, .diskBytes = 12'000'000, .processCount = 2, .rating = Domain::StartupImpact::High},
         {.rating = Domain::StartupImpact::None},

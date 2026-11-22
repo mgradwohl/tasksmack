@@ -24,10 +24,10 @@
 namespace
 {
 
-constexpr std::uint64_t WARM_UP_SAMPLES = 30;
+constexpr std::uint64_t STORAGE_WARM_UP_SAMPLES = 30;
 
 /// Counters for sample @p step of the named disks, all advancing.
-Platform::SystemDiskCounters countersAt(std::uint64_t step, const std::vector<std::string>& disks)
+Platform::SystemDiskCounters storageCountersAt(std::uint64_t step, const std::vector<std::string>& disks)
 {
     Platform::SystemDiskCounters counters;
     counters.disks.reserve(disks.size());
@@ -87,15 +87,15 @@ TEST(StorageModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADiskK
         auto* rawProbe = probe.get();
         Domain::StorageModel model(std::move(probe));
         std::uint64_t step = 0;
-        for (; step < WARM_UP_SAMPLES; ++step)
+        for (; step < STORAGE_WARM_UP_SAMPLES; ++step)
         {
-            rawProbe->setNextCounters(countersAt(step, before));
+            rawProbe->setNextCounters(storageCountersAt(step, before));
             model.sampleAt(timeAt(step));
         }
         const auto publicationBefore = model.publication();
         const std::uint64_t versionBefore = model.publicationVersion();
         const std::size_t samplesBefore = model.publication()->timestamps.size();
-        rawProbe->setNextCounters(countersAt(step, after));
+        rawProbe->setNextCounters(storageCountersAt(step, after));
 
         bool threw = false;
         {
@@ -123,7 +123,7 @@ TEST(StorageModelAllocationFailureTest, AFailedAllocationOnASampleThatAddsADiskK
         // sample or (a failure in publish(), after the append) moved by exactly one sample in every
         // series together.
         ++step;
-        rawProbe->setNextCounters(countersAt(step, after));
+        rawProbe->setNextCounters(storageCountersAt(step, after));
         model.sampleAt(timeAt(step));
         expectAligned(model);
         EXPECT_GT(model.publicationVersion(), versionBefore);

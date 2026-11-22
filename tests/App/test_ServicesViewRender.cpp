@@ -34,7 +34,7 @@ namespace
 
 using Platform::ServiceState;
 
-[[nodiscard]] Platform::ServiceInfo service(const char* name, const char* displayName, ServiceState state, std::uint32_t pid)
+[[nodiscard]] Platform::ServiceInfo renderedService(const char* name, const char* displayName, ServiceState state, std::uint32_t pid)
 {
     Platform::ServiceInfo info;
     info.name = name;
@@ -62,9 +62,9 @@ using Platform::ServiceState;
     Domain::ServicePublication publication;
     publication.version = 3;
     publication.services = {
-        service("EventLog", "Windows Event Log", ServiceState::Running, 1400),
-        service("Spooler", "Print Spooler", ServiceState::Stopped, 0),
-        service("Winmgmt", "Windows Management Instrumentation", ServiceState::Running, 900),
+        renderedService("EventLog", "Windows Event Log", ServiceState::Running, 1400),
+        renderedService("Spooler", "Print Spooler", ServiceState::Stopped, 0),
+        renderedService("Winmgmt", "Windows Management Instrumentation", ServiceState::Running, 900),
     };
     return publication;
 }
@@ -218,7 +218,7 @@ TEST_F(ServicesViewRenderTest, AServiceAskedForIsScrolledIntoViewOnce)
     publication.version = 1;
     for (int i = 0; i < 300; ++i)
     {
-        publication.services.push_back(service(std::format("unit{:03}.service", i).c_str(), "", ServiceState::Running, 0));
+        publication.services.push_back(renderedService(std::format("unit{:03}.service", i).c_str(), "", ServiceState::Running, 0));
     }
     ServicesViewState state;
     state.sortColumn = ServiceColumn::Name;
@@ -302,16 +302,16 @@ TEST(ServicesViewTest, StateSortCoversEveryStateThenDisplayName)
 {
     // Listed in the opposite of the expected order, with names that would sort differently.
     const std::vector<Platform::ServiceInfo> services = {
-        service("a", "Alpha", ServiceState::Unknown, 0),
-        service("b", "bravo", ServiceState::Stopped, 0),
-        service("c", "Charlie", ServiceState::StopPending, 10),
-        service("d", "delta", ServiceState::Paused, 11),
-        service("e", "Echo", ServiceState::PausePending, 12),
-        service("f", "foxtrot", ServiceState::ContinuePending, 13),
-        service("g", "Golf", ServiceState::StartPending, 14),
-        service("h", "zulu", ServiceState::Running, 15),
-        service("i", "Hotel", ServiceState::Running, 16),
-        service("j", "apple", ServiceState::Stopped, 0),
+        renderedService("a", "Alpha", ServiceState::Unknown, 0),
+        renderedService("b", "bravo", ServiceState::Stopped, 0),
+        renderedService("c", "Charlie", ServiceState::StopPending, 10),
+        renderedService("d", "delta", ServiceState::Paused, 11),
+        renderedService("e", "Echo", ServiceState::PausePending, 12),
+        renderedService("f", "foxtrot", ServiceState::ContinuePending, 13),
+        renderedService("g", "Golf", ServiceState::StartPending, 14),
+        renderedService("h", "zulu", ServiceState::Running, 15),
+        renderedService("i", "Hotel", ServiceState::Running, 16),
+        renderedService("j", "apple", ServiceState::Stopped, 0),
     };
     EXPECT_EQ(buildServiceRows(services, "", ServiceColumn::State, true), (std::vector<std::size_t>{8, 7, 6, 5, 4, 3, 2, 9, 1, 0}));
     // Descending reverses the states only: the names stay A to Z within each.
@@ -321,12 +321,12 @@ TEST(ServicesViewTest, StateSortCoversEveryStateThenDisplayName)
 TEST(ServicesViewTest, StateSortNamesIgnoreCaseAndBreakTiesDeterministically)
 {
     const std::vector<Platform::ServiceInfo> services = {
-        service("svcB", "Shared Name", ServiceState::Running, 1),
-        service("Zed", "", ServiceState::Running, 2), // no display name: listed by its service name
-        service("svcA", "shared name", ServiceState::Running, 3),
-        service("Mid", "MIDDLE", ServiceState::Running, 4),
-        service("low", "aardvark", ServiceState::Stopped, 0),
-        service("svca", "Shared Name", ServiceState::Running, 5),
+        renderedService("svcB", "Shared Name", ServiceState::Running, 1),
+        renderedService("Zed", "", ServiceState::Running, 2), // no display name: listed by its service name
+        renderedService("svcA", "shared name", ServiceState::Running, 3),
+        renderedService("Mid", "MIDDLE", ServiceState::Running, 4),
+        renderedService("low", "aardvark", ServiceState::Stopped, 0),
+        renderedService("svca", "Shared Name", ServiceState::Running, 5),
     };
     // Display names compared without case; equal ones by service name (case ignored, then exact:
     // "svcA" before "svca"), so the order never depends on the order the services arrive in.
@@ -395,7 +395,7 @@ TEST_F(ServicesViewRenderTest, ANotLoadedServicesAccountIsUnknownAndItsTooltipSa
 {
     Domain::ServicePublication publication;
     publication.version = 1;
-    publication.services = {service("apt-news.service", "apt-news.service", ServiceState::Stopped, 0)};
+    publication.services = {renderedService("apt-news.service", "apt-news.service", ServiceState::Stopped, 0)};
     publication.services[0].notLoaded = true;
     ServicesViewState state;
     const ImVec2 row = firstRowCentre(publication, state);
@@ -417,7 +417,7 @@ TEST_F(ServicesViewRenderTest, HoveringARowShowsItsDetails)
 {
     Domain::ServicePublication publication;
     publication.version = 1;
-    publication.services = {service("Spooler", "Print Spooler", ServiceState::Running, 2200)};
+    publication.services = {renderedService("Spooler", "Print Spooler", ServiceState::Running, 2200)};
     publication.services[0].description = "Queues print jobs";
     publication.services[0].binaryPath = R"(C:\Windows\System32\spoolsv.exe)";
     publication.services[0].group = "print";
@@ -457,7 +457,7 @@ TEST_F(ServicesViewRenderTest, ClippedCellsShowTheirWholeTextOnHover)
     const std::string LONG_ACCOUNT = R"(NT AUTHORITY\LocalServiceNetworkRestrictedWithALongerName)";
     Domain::ServicePublication publication;
     publication.version = 1;
-    publication.services = {service(LONG_NAME.c_str(), "Bluetooth User Support Service", ServiceState::Running, 2200)};
+    publication.services = {renderedService(LONG_NAME.c_str(), "Bluetooth User Support Service", ServiceState::Running, 2200)};
     publication.services[0].description = "Supports Bluetooth features for each user session";
     publication.services[0].account = LONG_ACCOUNT;
     ServicesViewState state;
@@ -549,16 +549,16 @@ TEST_F(ServicesViewRenderTest, ActionBarActsOnTheSelectedServiceByName)
     Domain::ServicePublication publication;
     publication.version = 1;
     publication.services = {
-        service("Up\xEF\xBF\xBD"
-                "date",
-                "Updater",
-                ServiceState::Running,
-                100),
-        service("Up\xEF\xBF\xBD"
-                "date",
-                "Updater",
-                ServiceState::Running,
-                200),
+        renderedService("Up\xEF\xBF\xBD"
+                        "date",
+                        "Updater",
+                        ServiceState::Running,
+                        100),
+        renderedService("Up\xEF\xBF\xBD"
+                        "date",
+                        "Updater",
+                        ServiceState::Running,
+                        200),
     };
     publication.services[0].nativeId = static_cast<Platform::NativeId>(7);
     publication.services[1].nativeId = static_cast<Platform::NativeId>(8);

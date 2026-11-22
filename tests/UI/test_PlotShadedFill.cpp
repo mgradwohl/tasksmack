@@ -28,9 +28,9 @@ namespace UI::Widgets
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 400.0F;
-constexpr float DISPLAY_HEIGHT = 300.0F;
-constexpr float PLOT_HEIGHT = 200.0F;
+constexpr float SHADED_DISPLAY_WIDTH = 400.0F;
+constexpr float SHADED_DISPLAY_HEIGHT = 300.0F;
+constexpr float SHADED_PLOT_HEIGHT = 200.0F;
 
 /// A theme fill as the bundled themes write them: arctic-fire-light's cpu_fill, "#1976D24D" (30 %).
 constexpr ImU32 THEME_FILL = IM_COL32(0x19, 0x76, 0xD2, 0x4D);
@@ -62,7 +62,7 @@ class PlotShadedFillTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(SHADED_DISPLAY_WIDTH, SHADED_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -80,9 +80,9 @@ class PlotShadedFillTest : public ::testing::Test
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(SHADED_DISPLAY_WIDTH, SHADED_DISPLAY_HEIGHT));
         ImGui::Begin("Fill", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
-        if (ImPlot::BeginPlot("##FillPlot", ImVec2(-1.0F, PLOT_HEIGHT), ImPlotFlags_NoLegend | ImPlotFlags_NoInputs))
+        if (ImPlot::BeginPlot("##FillPlot", ImVec2(-1.0F, SHADED_PLOT_HEIGHT), ImPlotFlags_NoLegend | ImPlotFlags_NoInputs))
         {
             ImPlot::SetupAxesLimits(0.0, 3.0, 0.0, 1.0, ImPlotCond_Always);
             draw();
