@@ -124,6 +124,27 @@ TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStand
     press(StatusBarView::ADMINISTRATOR_CHIP_LABEL);
     static_cast<void>(frame());
     EXPECT_EQ(m_LastAction, Action::None);
+
+    // #4766: a capabilities session (setcap) looks like Administrator, and offers nothing either.
+    m_Input.access = StatusBarView::AccessChip::Capabilities;
+    const std::string capabilities = frame();
+    EXPECT_TRUE(capabilities.contains(ICON_FA_SHIELD_HALVED " Administrator")) << capabilities;
+    press(StatusBarView::ADMINISTRATOR_CHIP_LABEL);
+    static_cast<void>(frame());
+    EXPECT_EQ(m_LastAction, Action::None);
+}
+
+// #4766: the chip's tooltip says what the session is; a capabilities session's never says "nothing is limited".
+TEST(StatusBarViewTest, TheAccessChipsTooltipSaysWhatTheSessionCanDo)
+{
+    using StatusBarView::AccessChip;
+    EXPECT_TRUE(std::string_view(StatusBarView::accessChipTooltip(AccessChip::Standard)).contains("Click for Administrator"));
+    EXPECT_EQ(std::string_view(StatusBarView::accessChipTooltip(AccessChip::Administrator)),
+              "Administrator: nothing is limited for this session");
+    const std::string_view capabilities = StatusBarView::accessChipTooltip(AccessChip::Capabilities);
+    EXPECT_FALSE(capabilities.contains("nothing is limited")) << capabilities;
+    EXPECT_TRUE(capabilities.contains("file capabilities (setcap)")) << capabilities;
+    EXPECT_TRUE(capabilities.contains("still need root")) << capabilities;
 }
 
 // #4318: a config.toml TaskSmack couldn't use shows a warning, whose click opens Settings (where Edit Config File is).

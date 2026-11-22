@@ -24,6 +24,9 @@ enum class AccessChip : std::uint8_t
 {
     Standard,      ///< A lock and "Standard": clicking it offers Administrator (Action::Access)
     Administrator, ///< A shield and "Administrator": nothing is limited
+    /// Linux, not root but with file capabilities (the FAQ's setcap, #4766): the shield and "Administrator", as every
+    /// process can be seen and acted on, with a tooltip that says services still need root.
+    Capabilities,
 };
 
 /// The chip's labels, glyph and words, each with an ID of its own.
@@ -37,6 +40,10 @@ inline constexpr const char* DISMISS_UPDATE_LABEL = ICON_FA_XMARK "##DismissUpda
 
 /// The warning that config.toml couldn't be used (#4318): a glyph, its reason in the tooltip; a click opens Settings.
 inline constexpr const char* CONFIG_PROBLEM_LABEL = ICON_FA_TRIANGLE_EXCLAMATION "##ConfigProblem";
+
+/// The access chip's tooltip for @p chip (#2728): Standard's way to Administrator; Administrator's "nothing is limited";
+/// a capabilities session's, which says services still need root (#4766).
+[[nodiscard]] const char* accessChipTooltip(AccessChip chip) noexcept;
 
 /// What the bar shows this frame.
 struct Input
