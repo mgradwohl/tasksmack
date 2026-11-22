@@ -45,20 +45,27 @@ class SelectForDeletionTests(unittest.TestCase):
         )
         self.assertEqual(chosen, [], "both newer than 6 h")
 
-    def test_benchmark_and_dashboard_data_are_kept_on_every_branch(self):
+    def test_benchmark_results_are_kept_on_every_branch(self):
         chosen = prune.select_for_deletion(
             [
                 artifact(1, "benchmark-results", 50),
                 artifact(2, "benchmark-results", 30),
                 artifact(3, "benchmark-second-runner-results", 50),
                 artifact(4, "benchmark-second-runner-results", 30),
-                artifact(5, "release-dashboard-data", 50),
-                artifact(6, "release-dashboard-data", 30),
             ],
             NOW,
             6,
         )
-        self.assertEqual(chosen, [], "the benchmark gate reads main's results; the dashboard its own")
+        self.assertEqual(chosen, [], "the benchmark gate reads main's results")
+
+    def test_old_dashboard_data_goes_like_any_other(self):
+        # #4720: the dashboard no longer uploads it on main, and nothing read one after its own run.
+        chosen = prune.select_for_deletion(
+            [artifact(1, "release-dashboard-data", 50), artifact(2, "release-dashboard-data", 30)],
+            NOW,
+            6,
+        )
+        self.assertEqual(ids(chosen), [1])
 
     def test_cifuzz_artifacts_keep_the_newest_of_each_name_whatever_the_branch(self):
         chosen = prune.select_for_deletion(
