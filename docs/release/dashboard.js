@@ -23,6 +23,16 @@
   // it would hold the stale warning back until then (#4726).
   const BUDGET_AHEAD_MINUTES = 75;
   const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
+  // Late, and why (#4734). Figures older than LATE_MINUTES have the page ask GitHub's public API what the
+  // refresh is doing: no token, only while it's late and on screen, and at most every RUNS_EVERY_MS (the limit
+  // without a token is 60 requests an hour for each visitor's address). A run that finished within
+  // RECENT_RUN_MINUTES means GitHub isn't behind, only this page's copy: the data host keeps a file five
+  // minutes, and the page looks every five.
+  const LATE_MINUTES = 10;
+  const RUNS_EVERY_MS = 3 * 60 * 1000;
+  const RECENT_RUN_MINUTES = 7;
+  const API = 'https://api.github.com/repos/';
+  const RUNS_PATH = WORKFLOW_PATH + '/runs?per_page=10&branch=main';
   const HOUR = 3600;
   const DAY = 86400;
 
@@ -76,6 +86,8 @@
   // `behind`: the release file on the page is from the run before the index's (see show()).
   const view = { index: null, release: null, behind: false, charts: [], width: 0, listBy: remembered(LIST_BY_KEY) === 'lane' ? 'lane' : 'kind' };
   // When the data was last asked for, which call is the newest and which release the picker last chose; and
+  // Why the page is late (see LATE_MINUTES): when GitHub was last asked, and what it said.
+  const late = { asked: 0, reason: null };
   // "Refresh now": when it was clicked, and until when the page looks often.
   const polling = { asked: 0, turn: 0, chosen: null, watchFrom: 0, watchUntil: 0 };
 
@@ -286,19 +298,35 @@
     // not a shipped one, nor a planned one. And not while the budget is gone: a run could add nothing.
     const again = live(release) ? refreshLink() : null;
     const refresh = again ? el('span', { class: 'refresh-now' }, ' · ', again) : null;
+    // Late, and why (#4734): past LATE_MINUTES the page asks GitHub what the refresh is doing and says it
+    // here. A known reason takes the stale banner's place, and while a refresh is waiting or running the page
+    // doesn't offer "Refresh now": a manual run would cancel it.
+    const why = el('p', { class: 'banner late', role: 'status', hidden: true });
+    const start = refreshLink();
     view.clock = () => {
       const minutes = (Date.now() / 1000 - ran) / 60;
       const still = release.stage !== 'released' && !window.__RELEASE_DATA__;
       const left = until ? (until - Date.now() / 1000) / 60 : 0;
       const spent = left > 0 && left <= BUDGET_AHEAD_MINUTES;
+      const behind = still && !spent && minutes > LATE_MINUTES;
+      if (behind) {
+        whyLate();
+      } else {
+        late.reason = null;
+        late.asked = 0;
+      }
+      const reason = behind && late.reason && late.reason.kind !== 'published' ? late.reason : null;
       stamp.textContent = 'Updated ' + ago(now, Date.now() / 1000);
       age.textContent = span(minutes / 60);
       budget.hidden = !still || !spent;
-      stale.hidden = !still || spent || minutes <= STALE_MINUTES;
-      if (refresh) refresh.hidden = spent;
+      why.hidden = !reason;
+      why.replaceChildren();
+      if (reason) fill(why, null, [lateWords(reason, start)]);
+      stale.hidden = !still || spent || Boolean(reason) || minutes <= STALE_MINUTES;
+      if (refresh) refresh.hidden = spent || Boolean(reason && reason.kind !== 'none');
       watching.hidden = spent || Date.now() >= polling.watchUntil;
     };
-    const parts = [masthead(release, stamp, watching, refresh), stages(release), budget, stale];
+    const parts = [masthead(release, stamp, watching, refresh), stages(release), budget, why, stale];
     if (release.stage !== 'planned') parts.push(summary(release));
     parts.push(shipList(release, now));
     if (release.stage !== 'planned') parts.push(movement(release, now));
@@ -313,6 +341,55 @@
     view.clock();
     view.width = app.clientWidth;
     for (const draw of view.charts) draw();
+  }
+
+  /**
+   * What the refresh workflow is doing, from its newest runs (newest first, as GitHub lists them) (#4734):
+   *   - `published`: a run finished in the last few minutes, so GitHub isn't behind and only this page's copy is;
+   *   - `waiting`: a run is queued, which is a run waiting for a runner, for its read or for its publish;
+   *   - `running`: a run is under way (or waits behind one that is);
+   *   - `none`: nothing is running and nothing has finished lately: GitHub's scheduler started no run.
+   * Null when the list is empty.
+   */
+  function lateReason(runs, nowSeconds) {
+    const done = runs.find((run) => run.status === 'completed' && run.conclusion === 'success');
+    if (done && nowSeconds - seconds(done.updated_at) < RECENT_RUN_MINUTES * 60) return { kind: 'published' };
+    const waiting = runs.find((run) => ['queued', 'waiting', 'requested'].includes(run.status));
+    if (waiting) return { kind: 'waiting', since: seconds(waiting.updated_at) };
+    if (runs.some((run) => run.status !== 'completed')) return { kind: 'running' };
+    const last = runs.find((run) => run.conclusion !== 'cancelled');
+    return last ? { kind: 'none', since: seconds(last.created_at) } : null;
+  }
+
+  /** Asks GitHub why the page is late, when that's due, and draws the answer. Says nothing when it can't ask. */
+  async function whyLate() {
+    const repo = view.index && view.index.repo;
+    if (!REPO.test(repo || '') || document.visibilityState !== 'visible' || Date.now() - late.asked < RUNS_EVERY_MS) return;
+    late.asked = Date.now();
+    let reason = null;
+    try {
+      const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(LOAD_MS) : undefined;
+      const response = await fetch(API + repo + RUNS_PATH, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal });
+      if (response.ok) reason = lateReason((await response.json()).workflow_runs || [], Date.now() / 1000);
+    } catch (error) {
+      // No network, or the hourly limit without a token: the page then says what it always did, at 25 minutes.
+      reason = null;
+    }
+    late.reason = reason;
+    // GitHub has published since this page last looked: ask for the data again, and say nothing.
+    if (reason && reason.kind === 'published') show(null, true);
+    if (view.clock) view.clock();
+  }
+
+  /** The words for a late page, by lateReason()'s answer; @p start is a "Refresh now" link for when one helps. */
+  function lateWords(reason, start) {
+    if (reason.kind === 'waiting') {
+      return ['A refresh has been waiting for a GitHub runner since ', el('strong', { text: hour(reason.since) }),
+        ". Other workflows are using them all; it will publish when one is free. Starting another run won't help."];
+    }
+    if (reason.kind === 'running') return ['A refresh is running now, and publishes in a few minutes.'];
+    return ['No refresh has started since ', el('strong', { text: hour(reason.since) }), '. One usually starts within ten minutes.',
+      start && [' ', start, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']];
   }
 
   /**

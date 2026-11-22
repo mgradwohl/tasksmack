@@ -300,7 +300,14 @@ How it's made:
   five minutes: the data host can serve the old file that long.
 - `docs/release/` is the page: static, no library, no CDN. It asks for new data every five minutes, and when the
   tab comes back to the front. If the last run was more than 25 minutes ago it says so, unless the budget note
-  above already gives the reason. A planned release's own figures are up to an hour old by design, and a
+  above already gives the reason.
+- A late page says why (#4734). When its figures are over ten minutes old it asks GitHub's public API, without
+  a token, for the workflow's newest runs, and says one of three things: a refresh has been waiting for a
+  runner since a given time (other workflows hold them all, and a manual run would only cancel it, so the page
+  offers none), a refresh is running, or none has started since a given time (then "Refresh now" helps). It
+  says nothing when a run finished in the last few minutes, since only its own copy is old then, or when the
+  API can't be read: that limit is 60 requests an hour for each visitor's address, and the page asks at most
+  every three minutes while it is late and on screen. A planned release's own figures are up to an hour old by design, and a
   shipped release's never change, so neither has "Refresh now".
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
