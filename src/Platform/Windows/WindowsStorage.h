@@ -24,7 +24,6 @@
 //   IOCTL_STORAGE_GET_DEVICE_NUMBER on its volume (\\.\C:), opened query-only too.
 // Every call goes through an injectable table so tests drive the buffers and the failures.
 
-#include "Domain/Utf8Sanitize.h"
 #include "Platform/ISystemInfoProbe.h"
 #include "Platform/PartitionTable.h"
 #include "Platform/Windows/WinString.h"
@@ -111,107 +110,17 @@ inline constexpr std::size_t NVME_LOG_PAGE_BYTES = 512;
                                                                             : std::string_view{};
 }
 
-/// The fields of a STORAGE_DEVICE_DESCRIPTOR the section shows.
-struct DeviceDescriptor
-{
-    std::string model;
-    std::string firmware;
-    std::string serial;
-    int busType = 0;
-};
-
-/// The NUL-terminated string at @p offset in @p buffer, as display text (#4312); empty for offset 0 (none)
-/// or one outside the buffer. A string missing its NUL ends at the buffer's end. The descriptor's strings
-/// are ASCII bytes, but the drive (or a USB-SATA bridge) writes them, so they are checked, not trusted:
-/// the spaces and 0xFF bytes some drives pad with are trimmed from both ends, a control character becomes
-/// U+FFFD, and the rest goes through the shared sanitizer (Domain::sanitizedUtf8, #4301), so a Latin-1 0xDC
-/// becomes one U+FFFD (#4299 D1), well-formed UTF-8 is kept, and the Disk tab, System Information and Copy
-/// never carry invalid UTF-8. Nothing uses these strings as an identity.
-[[nodiscard]] inline std::string descriptorString(std::span<const std::byte> buffer, DWORD offset)
-{
-    if (offset == 0 || offset >= buffer.size())
-    {
-        return {};
-    }
-    std::size_t end = offset;
-    while (end < buffer.size() && buffer[end] != std::byte{0})
-    {
-        ++end;
-    }
-    const auto isPadding = [](std::byte value)
-    {
-        return value == std::byte{0x20} || value == std::byte{0xFF};
-    };
-    std::size_t first = offset;
-    while (first < end && isPadding(buffer[first]))
-    {
-        ++first;
-    }
-    while (end > first && isPadding(buffer[end - 1]))
-    {
-        --end;
-    }
-    std::string raw;
-    raw.reserve(end - first);
-    for (std::size_t i = first; i < end; ++i)
-    {
-        const auto value = std::to_integer<unsigned char>(buffer[i]);
-        if (value < 0x20 || value == 0x7F)
-        {
-            raw += Domain::UTF8_REPLACEMENT_CHARACTER; // a control character: valid UTF-8, but not display text
-        }
-        else
-        {
-            raw.push_back(static_cast<char>(value));
-        }
-    }
-    return Domain::sanitizedUtf8(raw);
-}
-
-/// A STORAGE_DEVICE_DESCRIPTOR buffer's model, firmware, serial and bus. The model is the product ID,
-/// with the vendor ID in front when it says more than the bus ("ATA", "NVMe") and isn't already there.
-/// nullopt when the buffer is too short for the descriptor.
-[[nodiscard]] inline std::optional<DeviceDescriptor> parseDeviceDescriptor(std::span<const std::byte> buffer)
-{
-    STORAGE_DEVICE_DESCRIPTOR header{};
-    if (buffer.size() < offsetof(STORAGE_DEVICE_DESCRIPTOR, RawDeviceProperties))
-    {
-        return std::nullopt;
-    }
-    std::memcpy(&header, buffer.data(), offsetof(STORAGE_DEVICE_DESCRIPTOR, RawDeviceProperties));
-    DeviceDescriptor descriptor;
-    const std::string vendor = descriptorString(buffer, header.VendorIdOffset);
-    descriptor.model = descriptorString(buffer, header.ProductIdOffset);
-    if (!vendor.empty() && vendor != "ATA" && vendor != "NVMe" && !descriptor.model.starts_with(vendor))
-    {
-        descriptor.model = descriptor.model.empty() ? vendor : vendor + " " + descriptor.model;
-    }
-    descriptor.firmware = descriptorString(buffer, header.ProductRevisionOffset);
-    descriptor.serial = descriptorString(buffer, header.SerialNumberOffset);
-    descriptor.busType = static_cast<int>(header.BusType);
-    return descriptor;
-}
-
-/// The NVMe health information log page (NVMe base specification, Get Log Page 02h): critical warning
-/// at byte 0, available spare at 3, percentage used at 5, media errors from 160 (16 bytes, little
-/// endian; the low 8 are kept). nullopt when the page is short.
-[[nodiscard]] inline std::optional<NvmeHealth> parseNvmeHealthLog(std::span<const std::byte> page)
-{
-    constexpr std::size_t MEDIA_ERRORS = 160;
-    if (page.size() < MEDIA_ERRORS + sizeof(std::uint64_t))
-    {
-        return std::nullopt;
-    }
-    NvmeHealth health;
-    health.criticalWarning = static_cast<std::uint8_t>(page[0]);
-    health.availableSparePercent = static_cast<std::uint8_t>(page[3]);
-    health.percentageUsed = static_cast<std::uint8_t>(page[5]);
-    for (std::size_t i = 0; i < sizeof(std::uint64_t); ++i)
-    {
-        health.mediaErrors |= static_cast<std::uint64_t>(page[MEDIA_ERRORS + i]) << (8U * i);
-    }
-    return health;
-}
+// DeviceDescriptor, descriptorString(), parseDeviceDescriptor() and parseNvmeHealthLog() are WindowsStorageSmartMath.h's
+// (#4358), with no Windows header, so the Linux fuzz build reaches them; parseDeviceDescriptor() reads the descriptor's
+// fields at these offsets, which must be the SDK's.
+static_assert(offsetof(STORAGE_DEVICE_DESCRIPTOR, VendorIdOffset) == DESCRIPTOR_VENDOR_ID_OFFSET);
+static_assert(offsetof(STORAGE_DEVICE_DESCRIPTOR, ProductIdOffset) == DESCRIPTOR_PRODUCT_ID_OFFSET);
+static_assert(offsetof(STORAGE_DEVICE_DESCRIPTOR, ProductRevisionOffset) == DESCRIPTOR_PRODUCT_REVISION_OFFSET);
+static_assert(offsetof(STORAGE_DEVICE_DESCRIPTOR, SerialNumberOffset) == DESCRIPTOR_SERIAL_NUMBER_OFFSET);
+static_assert(offsetof(STORAGE_DEVICE_DESCRIPTOR, BusType) == DESCRIPTOR_BUS_TYPE_OFFSET);
+static_assert(sizeof(STORAGE_DEVICE_DESCRIPTOR::VendorIdOffset) == sizeof(std::uint32_t));
+static_assert(sizeof(STORAGE_DEVICE_DESCRIPTOR::BusType) == sizeof(std::uint32_t));
+static_assert(offsetof(STORAGE_DEVICE_DESCRIPTOR, RawDeviceProperties) == DESCRIPTOR_HEADER_BYTES);
 
 /// IOCTL_STORAGE_QUERY_PROPERTY's standard query for @p property into @p bytes of output, trimmed to what
 /// was returned; nullopt when it fails.
