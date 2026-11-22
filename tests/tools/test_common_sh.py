@@ -182,6 +182,7 @@ class RootTestFilterTests(unittest.TestCase):
         "RootEnvironmentRootTest.*",  # the real openAsUser() as root (#4255)
         "UserConfigRootTest.*",  # the run-as-root-for-a-user config save hands the file to the folder's owner (#4549)
         "NetlinkSocketStatsRootTest.*",  # a datagram from another socket is never read as the kernel's (#4387)
+        "LinuxHeldFolderRootTest.*",  # root for a user's held config folder gives what it makes to the owner (#4167)
     )
 
     def test_the_filter_names_every_root_suite(self):

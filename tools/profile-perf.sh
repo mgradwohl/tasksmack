@@ -704,7 +704,8 @@ if [[ "${PERF_EXIT_CODE}" -eq 0 ]]; then
     if ! perf report --stats -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
         die "perf report --stats failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
     fi
-    SAMPLE_COUNT="$(awk '/SAMPLE events:/ { print $NF; exit }' "${PERF_SCRIPT_OUT}")"
+    # The number right after "events:": real perf ends the line with a share, "SAMPLE events:  170  (91.4%)" (#4663).
+    SAMPLE_COUNT="$(awk '/SAMPLE events:/ { print $3; exit }' "${PERF_SCRIPT_OUT}")"
     if [[ ! "${SAMPLE_COUNT}" =~ ^[0-9]+$ ]]; then
         if ! perf script -G -i "${DATA_FILE}" > "${PERF_SCRIPT_OUT}" 2> "${PERF_SCRIPT_ERR}"; then
             die "perf script failed while validating the capture at ${DATA_FILE}: $(cat "${PERF_SCRIPT_ERR}")"
