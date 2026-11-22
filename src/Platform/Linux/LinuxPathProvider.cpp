@@ -84,7 +84,7 @@ std::filesystem::path LinuxPathProvider::getUserConfigDir() const
                                                readEnv("HOME"),
                                                passwdHome,
                                                cwd,
-                                               SessionUser::invokingUserHome(),
+                                               SessionUser::settingsOwnerHome(), // and a capabilities session's (#4802)
                                                ::geteuid() == 0 && SessionUser::thisProcessMayHaveAnotherUsersEnvironment())
         .directory;
 }

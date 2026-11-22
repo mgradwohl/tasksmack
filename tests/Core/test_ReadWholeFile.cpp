@@ -27,6 +27,15 @@
 // clang-format on
 #endif
 
+#ifdef __linux__
+#include "Platform/Linux/UserPermissionsOnly.h"
+
+#include <cerrno>
+
+#include <fcntl.h>
+#include <unistd.h>
+#endif
+
 namespace Core
 {
 namespace
@@ -110,6 +119,61 @@ TEST(ReadWholeFileTest, AFileAnotherProgramHoldsOpenForWritingIsStillRead)
                                                              nullptr));
     ASSERT_TRUE(writer.valid()) << "CreateFileW failed: " << GetLastError();
     EXPECT_EQ(readWholeFile(path), std::optional<std::string>(bytes));
+}
+#endif
+
+#ifdef __linux__
+// #4802: the user's settings and themes are opened with the user's own permissions. Without capabilities (every test
+// run but a setcap'd binary's) the guard changes nothing.
+TEST(ReadWholeFileTest, WithoutCapabilitiesTheUserPermissionsGuardIsANoOp)
+{
+    const Platform::UserPermissionsOnly guard;
+    EXPECT_TRUE(guard.ok());
+    if (::geteuid() != 0 && !guard.lowered())
+    {
+        SUCCEED() << "no CAP_DAC_READ_SEARCH or CAP_DAC_OVERRIDE to lower";
+    }
+}
+
+// The proof, when the test binary holds CAP_DAC_READ_SEARCH and isn't root (setcap
+// cap_dac_read_search+ep on a copy, as the FAQ's setcap gives TaskSmack): a root-only file opens with the capability,
+// not inside the guard, and does again after it. readWholeFile() reads it as the user would: not at all.
+TEST(ReadWholeFileTest, ACapabilitiesSessionReadsOnlyWhatTheUserCould)
+{
+    const char* const rootOnly = "/etc/shadow"; // root:shadow 0640 (or 0600) on every Linux this runs on
+    if (::geteuid() == 0 || ::access(rootOnly, R_OK) == 0)
+    {
+        GTEST_SKIP() << "root, or a user who may read " << rootOnly << " anyway";
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int withCapability = ::open(rootOnly, O_RDONLY | O_CLOEXEC);
+    if (withCapability < 0)
+    {
+        GTEST_SKIP() << "this test binary holds no CAP_DAC_READ_SEARCH (setcap cap_dac_read_search+ep on a copy runs it)";
+    }
+    ::close(withCapability);
+    {
+        const Platform::UserPermissionsOnly guard;
+        ASSERT_TRUE(guard.ok());
+        EXPECT_TRUE(guard.lowered());
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        const int inside = ::open(rootOnly, O_RDONLY | O_CLOEXEC);
+        const int error = errno;
+        EXPECT_LT(inside, 0) << "the capability was still in effect";
+        EXPECT_EQ(error, EACCES);
+        if (inside >= 0)
+        {
+            ::close(inside);
+        }
+    }
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int after = ::open(rootOnly, O_RDONLY | O_CLOEXEC);
+    EXPECT_GE(after, 0) << "the capability came back for the rest of the thread";
+    if (after >= 0)
+    {
+        ::close(after);
+    }
+    EXPECT_FALSE(readWholeFile(rootOnly).has_value()) << "settings are read with the user's permissions";
 }
 #endif
 

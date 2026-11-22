@@ -12,6 +12,10 @@
 // "a file that can't be read is left alone"). So it reads with read(2) on POSIX and fread() with ferror() on Windows,
 // as Sha256::hashFile does since #4422.
 //
+// On Linux the file is opened with the user's own permissions (#4802): a capabilities session's CAP_DAC_READ_SEARCH is
+// lowered for the open (Platform::UserPermissionsOnly), so a settings folder or theme the environment names can't lead
+// it into another user's files. Every caller reads the user's settings or themes, which the user may read anyway.
+//
 // On Windows the file is opened sharing read and write (_SH_DENYNO), as the std::ifstream before #4652 did (#4745):
 // _wfopen_s opens it unshared (_SH_SECURE: read sharing only), so an editor or a sync tool holding config.toml or a
 // theme open for writing made the read fail, and the load fell back to defaults, while the other program's own open
@@ -29,6 +33,10 @@
 
 #include <share.h>
 #else
+#ifdef __linux__
+#include "Platform/Linux/UserPermissionsOnly.h"
+#endif
+
 #include <cerrno>
 
 #include <fcntl.h>
@@ -89,8 +97,19 @@ class ClosesFd
         return std::nullopt;
     }
 #else
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    int fd = -1;
+    {
+#ifdef __linux__
+        // The user's own permissions for the open (#4802); an open descriptor reads on without them.
+        const Platform::UserPermissionsOnly userPermissions;
+        if (!userPermissions.ok())
+        {
+            return std::nullopt;
+        }
+#endif
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+        fd = ::open(path.c_str(), O_RDONLY | O_CLOEXEC);
+    }
     if (fd < 0)
     {
         return std::nullopt;

@@ -102,8 +102,10 @@ struct ConfigDirectoryChoice
     return true;
 }
 
-/// configDirectoryFrom() for a TaskSmack run as root for a user (#3580): @p invokingUserHome is the home directory of the
-/// user sudo or pkexec names (SessionUser::invokingUserHome()), nullopt otherwise. Such a session keeps that user's
+/// configDirectoryFrom() for a TaskSmack run as root for a user (#3580), or in a capabilities session (#4802):
+/// @p invokingUserHome is the home directory of the user sudo or pkexec names, or a capabilities session's own user's
+/// from the passwd entry (SessionUser::settingsOwnerHome()), nullopt otherwise. Both read past the user's file
+/// permissions with the user's environment, so the environment names settings only inside that home. Such a session keeps that user's
 /// settings, not root's. When $HOME is theirs (sudo -E) their XDG_CONFIG_HOME is used only inside their home (#4153):
 /// root writes the config, the lock and the themes there, so a folder anywhere else (/etc) is passed over, with a
 /// warning, for their home's .config/tasksmack. Otherwise (pkexec, and sudo, set HOME to root's) it's their home's
@@ -148,8 +150,8 @@ struct ConfigDirectoryChoice
     {
         ConfigDirectoryChoice choice = configDirectoryFrom(std::nullopt, invokingUserHome, passwdHome, currentPath);
         choice.warning = "Ignoring XDG_CONFIG_HOME " + *xdgConfigHome +
-                         ": TaskSmack runs as root for a user, and keeps "
-                         "their settings only inside their home; using " +
+                         ": TaskSmack runs with more access than its user (as root for them, or with file capabilities), "
+                         "and keeps their settings only inside their home; using " +
                          choice.directory.string();
         return choice;
     }
