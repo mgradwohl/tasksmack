@@ -95,6 +95,35 @@ class SelectForDeletionTests(unittest.TestCase):
         )
         self.assertEqual([a["id"] for a in chosen], [2, 3, 1])
 
+    def test_an_artifact_listed_twice_is_one_copy_not_an_older_one(self):
+        # #4748: a page listing that shifts mid-run repeats an id; the repeat is the newest copy itself, never a second.
+        newest = artifact(7, "cifuzz-corpus-fuzz_proc_text", 30)
+        chosen = prune.select_for_deletion([newest, dict(newest)], NOW, 6)
+        self.assertEqual(chosen, [])
+        older = artifact(3, "cifuzz-corpus-fuzz_proc_text", 50)
+        chosen = prune.select_for_deletion([newest, dict(newest), older, dict(older)], NOW, 6)
+        self.assertEqual([a["id"] for a in chosen], [3], "the older copy goes, once")
+
+
+class ListArtifactsTests(unittest.TestCase):
+    def test_a_page_that_starts_with_the_last_item_of_the_one_before_lists_it_once(self):
+        # #4748: an upload between pages moves every item down one place.
+        def item(aid):
+            return {"id": aid, "name": f"a{aid}", "created_at": "2026-11-21T00:00:00Z", "workflow_run": {"head_branch": "main"}}
+
+        pages = {
+            1: {"artifacts": [item(i) for i in range(200, 100, -1)]},
+            2: {"artifacts": [item(101)] + [item(i) for i in range(100, 50, -1)]},
+        }
+        original = prune.gh
+        try:
+            prune.gh = lambda *args: __import__("json").dumps(pages[int(args[1].rsplit("page=", 1)[1])])
+            listed = prune.list_artifacts("owner/repo")
+        finally:
+            prune.gh = original
+        self.assertEqual(len(listed), 150)
+        self.assertEqual(len({a["id"] for a in listed}), 150)
+
 
 if __name__ == "__main__":
     unittest.main()
