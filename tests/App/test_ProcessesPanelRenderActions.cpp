@@ -101,10 +101,11 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlLeavesTreeViewAndGroupedRowsNavi
     ImGui::ActivateItemByID(ImHashStr("##GroupBy", 0, shell->ID));
     static_cast<void>(renderAndCapture(*panel));
     static_cast<void>(renderAndCapture(*panel));
-    pressPopupItem(*panel, "Unit");
+    const std::string unitLabel(ProcessGrouping::groupByLabel(ProcessGrouping::GroupBy::Unit)); // Service on Windows (#4755)
+    pressPopupItem(*panel, unitLabel);
     std::string text = renderAndCapture(*panel);
     EXPECT_EQ(UserConfig::get().settings().processGroupBy, ProcessGrouping::GroupBy::Unit);
-    EXPECT_TRUE(text.contains("Group: Unit")) << text;
+    EXPECT_TRUE(text.contains("Group: " + unitLabel)) << text;
     EXPECT_TRUE(text.contains("Ungrouped (3)")) << text; // none of the mock processes has a unit
 
     // The keyboard moves through the processes under the headers, and Ctrl+A selects all of them.

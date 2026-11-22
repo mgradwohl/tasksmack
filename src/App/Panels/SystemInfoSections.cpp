@@ -395,6 +395,40 @@ void addAdministratorRow(std::vector<Row>& rows,
 
 } // namespace
 
+std::string firmwareDateText(std::string_view date)
+{
+    // MM/DD/YYYY, or MM/DD/YY before SMBIOS 2.3: each part all digits, the month 1 to 12 and the day 1 to 31.
+    const auto part = [](std::string_view text) -> std::optional<int>
+    {
+        int value = 0;
+        const auto [end, ec] = std::from_chars(text.data(), text.data() + text.size(), value);
+        if (text.empty() || ec != std::errc{} || end != text.data() + text.size())
+        {
+            return std::nullopt;
+        }
+        return value;
+    };
+    const std::size_t first = date.find('/');
+    const std::size_t second = (first == std::string_view::npos) ? std::string_view::npos : date.find('/', first + 1);
+    if (second == std::string_view::npos || first != 2 || second != 5)
+    {
+        return std::string(date);
+    }
+    const std::string_view yearText = date.substr(second + 1);
+    const std::optional<int> month = part(date.substr(0, first));
+    const std::optional<int> day = part(date.substr(first + 1, second - first - 1));
+    std::optional<int> year = part(yearText);
+    if (!month || !day || !year || *month < 1 || *month > 12 || *day < 1 || *day > 31 || (yearText.size() != 4 && yearText.size() != 2))
+    {
+        return std::string(date);
+    }
+    if (yearText.size() == 2)
+    {
+        *year += 1900; // SMBIOS 2.2 and earlier: "mm/dd/yy", always 19yy
+    }
+    return std::format("{:04}-{:02}-{:02}", *year, *month, *day);
+}
+
 Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canRestart)
 {
     Section section{.title = "Firmware & board", .icon = ICON_FA_MICROCHIP, .rows = {}};
@@ -414,7 +448,7 @@ Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canRes
 
     rows.push_back(row("BIOS vendor", firmware.biosVendor));
     rows.push_back(row("BIOS version", firmware.biosVersion));
-    rows.push_back(row("BIOS release date", firmware.biosReleaseDate));
+    rows.push_back(row("BIOS release date", firmwareDateText(firmware.biosReleaseDate))); // ISO, as Installed is (#4755)
     const char* mode = "";
     switch (firmware.firmwareMode) // LCOV_EXCL_LINE - covers every enum value; only an out-of-range cast reaches its fallback (#3221)
     {

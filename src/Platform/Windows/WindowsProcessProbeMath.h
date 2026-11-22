@@ -122,7 +122,7 @@ struct ProcessThreadTally
 /// The state letter for a process, with the meanings Linux gives them (#1156):
 ///  - 'I' Idle: the System Idle Process (PID 0), whose threads run whenever a CPU has nothing to do.
 ///  - 'R' Running: at least one thread is running or ready to run.
-///  - 'T' Stopped: every thread is suspended -- a suspended or frozen (UWP) process, or one stopped
+///  - 'T' Suspended (Linux's Stopped, #4755): every thread is suspended -- a suspended or frozen (UWP) process, or one stopped
 ///    in a debugger.
 ///  - 'S' Sleeping: every thread is waiting, not all of them suspended.
 ///  - '?' Unknown: no thread to judge by. Minimal processes (Secure System, Registry, Memory

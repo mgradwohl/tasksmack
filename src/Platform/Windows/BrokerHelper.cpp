@@ -229,7 +229,7 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
             PSID sid = &allowed->SidStart;
             if ((mask & rights) != 0 && !isAdministrative(sid))
             {
-                return std::unexpected(std::format("{} can change {} (rights 0x{:08X})", sidText(sid), name, mask & rights));
+                return std::unexpected(std::format("{} can change {}: it may {}", sidText(sid), name, changeRightsText(mask & rights)));
             }
             break;
         }
@@ -534,6 +534,36 @@ std::expected<void, std::string> checkUnchangeableNamed(HANDLE token, const std:
     return checkOne(token, file, true, InstallCheckFunctions{});
 }
 
+std::string changeRightsText(DWORD rights)
+{
+    // FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY are FILE_WRITE_DATA and FILE_APPEND_DATA on a folder.
+    constexpr auto WORDS = std::to_array<std::pair<DWORD, std::string_view>>({
+        {FILE_WRITE_DATA | FILE_APPEND_DATA, "write or add to it"},
+        {FILE_DELETE_CHILD, "delete what is in it"},
+        {DELETE, "delete or rename it"},
+        {WRITE_DAC, "change its permissions"},
+        {WRITE_OWNER, "take ownership of it"},
+    });
+    std::vector<std::string_view> granted;
+    for (const auto& [bits, words] : WORDS)
+    {
+        if ((rights & bits) != 0)
+        {
+            granted.push_back(words);
+        }
+    }
+    std::string text;
+    for (std::size_t i = 0; i < granted.size(); ++i)
+    {
+        if (i > 0)
+        {
+            text += (i + 1 == granted.size()) ? " and " : ", ";
+        }
+        text += granted[i];
+    }
+    return text;
+}
+
 std::expected<void, std::string> checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name)
 {
     const auto granted = grantedRights(token, descriptor, name);
@@ -543,7 +573,7 @@ std::expected<void, std::string> checkDescriptor(HANDLE token, PSECURITY_DESCRIP
     }
     if ((*granted & rights) != 0)
     {
-        return std::unexpected(std::format("TaskSmack's user can change {} (rights 0x{:08X})", name, *granted & rights));
+        return std::unexpected(std::format("TaskSmack's user can change {}: it may {}", name, changeRightsText(*granted & rights)));
     }
     return checkOnlyAdministrators(descriptor, rights, name);
 }
