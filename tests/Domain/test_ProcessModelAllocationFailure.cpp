@@ -303,6 +303,187 @@ TEST(ProcessModelAllocationFailureTest, ARefreshThatThrewPartWayNeverInflatesThe
     EXPECT_GT(thrownRefreshes, 0) << "some failing allocation lands in the per-process loop";
 }
 
+constexpr std::uint64_t STEADY_READ_PER_SEC = 1'000'000;
+constexpr std::uint64_t STEADY_FAULTS_PER_SEC = 100;
+constexpr std::uint64_t STEADY_MICROJOULES_PER_SEC = 2'000'000; // 2 W over one second
+constexpr double STEADY_POWER_WATTS = 2.0;
+
+/// The counters of a process that reads, faults and draws at the steady rates above, @p second seconds in. Names and
+/// commands longer than the small-string buffer: copying them into the stored counters allocates.
+Platform::ProcessCounters steadyCountersAt(int second, std::int32_t pid)
+{
+    Platform::ProcessCounters c = TestMocks::makeProcessCounters(
+        pid, "a_process_name_longer_than_any_small_string_buffer_" + std::to_string(pid), 'S', 100, 50, 1000, 1024, 1);
+    c.command = "a_command_line_longer_than_any_small_string_buffer_" + std::to_string(pid);
+    const auto s = static_cast<std::uint64_t>(second);
+    c.readBytes = s * STEADY_READ_PER_SEC;
+    c.pageFaultCount = s * STEADY_FAULTS_PER_SEC;
+    c.energyMicrojoules = s * STEADY_MICROJOULES_PER_SEC;
+    return c;
+}
+
+/// A ProcessModel on a manual clock, sampled once a second: processes 100, 200 and 300 at the steady rates, in that
+/// order, with process 100 carried over (ProcessCounters::heldOver, #3031) when asked.
+class HeldOverDriver
+{
+  public:
+    HeldOverDriver() : m_Model(nullptr, [this] { return m_Now; })
+    {}
+
+    void sample(bool holdOver100)
+    {
+        ++m_Second;
+        m_Now += std::chrono::seconds(1);
+        Platform::ProcessCounters first = steadyCountersAt(m_Second, 100);
+        first.heldOver = holdOver100;
+        m_Model.updateFromCounters({first, steadyCountersAt(m_Second, 200), steadyCountersAt(m_Second, 300)},
+                                   std::uint64_t{1000} * static_cast<std::uint64_t>(m_Second));
+    }
+
+    [[nodiscard]] std::vector<Domain::ProcessSnapshot> rows() const
+    {
+        return m_Model.snapshots();
+    }
+
+  private:
+    Domain::ProcessModel::Clock::time_point m_Now;
+    int m_Second = 0;
+    Domain::ProcessModel m_Model;
+};
+
+/// @p row's I/O, page-fault and power rates are the steady ones exactly.
+void expectSteadyRates(const Domain::ProcessSnapshot& row)
+{
+    SCOPED_TRACE("pid " + std::to_string(row.pid));
+    EXPECT_DOUBLE_EQ(row.ioReadBytesPerSec, static_cast<double>(STEADY_READ_PER_SEC));
+    EXPECT_DOUBLE_EQ(row.pageFaultsPerSec, static_cast<double>(STEADY_FAULTS_PER_SEC));
+    EXPECT_DOUBLE_EQ(row.powerWatts, STEADY_POWER_WATTS);
+}
+
+// #4747: a refresh that carries a process over (#3031) and then throws part way left that process's held-over entry,
+// the baselines of the last refresh that read it, behind. The re-seed refresh that follows (#4405) read the process but
+// skipped the only code that takes the entry away, so the refresh after it measured the process from that stale read:
+// three seconds of time against one second's counter growth, a third of every rate. Process 100 is carried over in the
+// third sample, each allocation of which is failed in turn; the fifth sample, after any re-seed, shows the true rates.
+TEST(ProcessModelAllocationFailureTest, AProcessHeldOverInARefreshThatThrewShowsItsTrueRatesAfterTheReseed)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one refresh's
+    int thrownRefreshes = 0;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        HeldOverDriver driver;
+        driver.sample(false); // seeds
+        driver.sample(false); // a measured interval
+
+        bool threw = false;
+        bool fired = false;
+        {
+            const FailAllocationAfter guard(failAt);
+            try
+            {
+                driver.sample(true); // process 100 carried over
+            }
+            catch (const std::bad_alloc&)
+            {
+                threw = true;
+            }
+            fired = !TestSupport::allocationFailurePending();
+        }
+        if (!fired)
+        {
+            break; // the refresh made fewer than failAt + 1 allocations: every one has been failed
+        }
+        thrownRefreshes += threw ? 1 : 0;
+
+        driver.sample(false); // process 100 read again: a re-seed if the last one threw
+        driver.sample(false); // a measured interval for every process
+        const auto rows = driver.rows();
+        ASSERT_EQ(rows.size(), 3U);
+        for (const auto& row : rows)
+        {
+            expectSteadyRates(row);
+        }
+        if (HasFailure())
+        {
+            return; // one failing allocation point is enough to report
+        }
+    }
+    EXPECT_GT(thrownRefreshes, 0) << "some failing allocation lands in the per-process loop";
+}
+
+// #4747, the other way round: a process carried over in the re-seed refresh itself. The re-seed's baselines are the
+// last whole refresh's, but the refresh that threw may already have stored the process's counters, so noting the
+// held-over read at those baselines measured its next read over three seconds against two seconds' growth: two thirds
+// of every rate. Which it was isn't known, so that next read re-seeds the process (no rate) and the one after it is
+// true. Each allocation of the third sample is failed in turn; process 100 is carried over in the fourth.
+TEST(ProcessModelAllocationFailureTest, AProcessHeldOverInTheReseedShowsNoRateOrTheTrueOneNeverAPart)
+{
+#if defined(TASKSMACK_NO_ALLOCATOR_HOOK)
+    GTEST_SKIP() << TASKSMACK_NO_ALLOCATOR_HOOK;
+#endif
+    constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one refresh's
+    int thrownRefreshes = 0;
+    for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
+    {
+        SCOPED_TRACE("failing allocation " + std::to_string(failAt));
+        HeldOverDriver driver;
+        driver.sample(false); // seeds
+        driver.sample(false); // a measured interval
+
+        bool threw = false;
+        bool fired = false;
+        {
+            const FailAllocationAfter guard(failAt);
+            try
+            {
+                driver.sample(false);
+            }
+            catch (const std::bad_alloc&)
+            {
+                threw = true;
+            }
+            fired = !TestSupport::allocationFailurePending();
+        }
+        if (!fired)
+        {
+            break; // the refresh made fewer than failAt + 1 allocations: every one has been failed
+        }
+        thrownRefreshes += threw ? 1 : 0;
+
+        driver.sample(true); // process 100 carried over: in the re-seed if the last refresh threw
+        driver.sample(false);
+        {
+            const auto rows = driver.rows();
+            ASSERT_EQ(rows.size(), 3U);
+            for (const auto& row : rows)
+            {
+                if (row.pid == 100 && row.ioReadBytesPerSec < 1.0) // no rate: re-seeded
+                {
+                    EXPECT_TRUE(threw) << "only a re-seed leaves process 100 without a rate";
+                    EXPECT_DOUBLE_EQ(row.pageFaultsPerSec, 0.0);
+                    EXPECT_DOUBLE_EQ(row.powerWatts, 0.0);
+                    continue;
+                }
+                expectSteadyRates(row);
+            }
+        }
+        driver.sample(false); // a measured interval for every process
+        for (const auto& row : driver.rows())
+        {
+            expectSteadyRates(row);
+        }
+        if (HasFailure())
+        {
+            return; // one failing allocation point is enough to report
+        }
+    }
+    EXPECT_GT(thrownRefreshes, 0) << "some failing allocation lands in the per-process loop";
+}
+
 // #3334: a refresh that fails after rebuilding the PID -> row table for its reordered rows must not leave the
 // next refresh's held-over lookup reading the still-published rows through it. A and B share a start tick (same
 // clock tick), so only the PID tells them apart. Each allocation of the reordered refresh is failed in turn; after

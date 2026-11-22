@@ -1423,6 +1423,9 @@ runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared b
 | `fuzz_xdg_autostart` | the autostart `.desktop` reader, and switching an entry on or off (`Platform/Linux/XdgAutostart.h`, #4357) | `tests/fuzz/corpus/fuzz_xdg_autostart/` |
 | `fuzz_os_release` | `/etc/os-release` and `/proc/stat`'s btime (`Platform/Linux/LinuxOsInfo.h`, #4357) | `tests/fuzz/corpus/fuzz_os_release/` |
 | `fuzz_proc_text` | `/proc/<pid>/smaps_rollup`, `/proc/<pid>/io` and `/proc/pressure/*` (`Platform/Linux/SmapsRollupParser.h`, `ProcIoParser.h`, `PressureParser.h`, #4357) | `tests/fuzz/corpus/fuzz_proc_text/` |
+| `fuzz_cpu_details` | `/proc/cpuinfo` and the `/sys/devices/system/cpu` values the CPU tab reads (`Platform/Linux/LinuxCpuDetails.h`, #4616) | `tests/fuzz/corpus/fuzz_cpu_details/` |
+| `fuzz_proc_privileges` | a process's CapEff and Tgid, and mountinfo's `/proc` line (`Platform/Linux/ProcPrivileges.h`, #4616) | `tests/fuzz/corpus/fuzz_proc_privileges/` |
+| `fuzz_platform_security` | the SecureBoot efivar, the LSM list, SELinux's enforce file and a partition type's UUID (`Platform/Linux/LinuxPlatformSecurity.h`, #4616) | `tests/fuzz/corpus/fuzz_platform_security/` |
 | `fuzz_version_resource` | the version resource walk the Publisher column and the Modules section read a held file with: PE headers, resource directory, `VS_VERSIONINFO` tree, `VS_FIXEDFILEINFO` (`Platform/Windows/WindowsVersionResourceMath.h`) | `tests/fuzz/corpus/fuzz_version_resource/` |
 | `fuzz_crash_event_xml` | the Application Error and Hang event XML reader and the WDI StartupInfo file reader, UTF-16 decoding included (`Platform/Windows/WindowsCrashEvents.h`, `Platform/Windows/WindowsStartupImpact.h`) | `tests/fuzz/corpus/fuzz_crash_event_xml/` |
 | `fuzz_etw_udp` | the ETW UDP event payload decoder, its per-process sums and the trace session name (`Platform/Windows/WindowsEtwNetMath.h`) | `tests/fuzz/corpus/fuzz_etw_udp/` |
