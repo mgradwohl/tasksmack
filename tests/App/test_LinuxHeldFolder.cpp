@@ -232,6 +232,53 @@ TEST(LinuxHeldFolderRootTest, WhatRootMakesIsTheOwnersAndRootsOwnFilesAreNotRead
     EXPECT_FALSE((*held)->readFile("roots.toml").has_value()) << "not the folder owner's";
 }
 
+// #4805, as root: a third account's file renamed in as the lock is never locked or handed to the folder's owner, by the
+// held folder or the path-based lock; root's own one (an older root run's) still is.
+TEST(LinuxHeldFolderRootTest, ALockFileOfAnotherAccountIsNeverHandedOver)
+{
+    if (::geteuid() != 0)
+    {
+        GTEST_SKIP() << "needs root: CI's root pass runs it";
+    }
+    constexpr uid_t NOBODY = 65534;
+    constexpr gid_t NOGROUP = 65534;
+    constexpr uid_t THIRD = 1; // daemon: neither the folder's owner nor root
+    const Platform::TestSupport::ScopedTempDir dir("ts_linux_held_third");
+    const std::filesystem::path cfg = dir.path / "cfg";
+    std::filesystem::create_directories(cfg);
+    ASSERT_EQ(::chown(cfg.c_str(), NOBODY, NOGROUP), 0);
+    const auto ownerOf = [](const std::filesystem::path& path)
+    {
+        struct stat info = {};
+        return ::lstat(path.c_str(), &info) == 0 ? info.st_uid : static_cast<uid_t>(-1);
+    };
+
+    std::ofstream(cfg / "tasksmack.lock") << "the third account's\n";
+    ASSERT_EQ(::chown((cfg / "tasksmack.lock").c_str(), THIRD, THIRD), 0);
+    auto held = LinuxHeldFolder::hold(cfg, 0);
+    ASSERT_TRUE(held.has_value()) << held.error();
+    {
+        const InstanceLock lock(**held, "tasksmack.lock");
+        EXPECT_NE(lock.status(), InstanceLock::Status::Acquired);
+        EXPECT_TRUE(lock.error().contains("belongs to another account")) << lock.error();
+    }
+    EXPECT_EQ(ownerOf(cfg / "tasksmack.lock"), THIRD) << "not handed to the folder's owner";
+    {
+        const InstanceLock lock(cfg / "tasksmack.lock");
+        EXPECT_NE(lock.status(), InstanceLock::Status::Acquired);
+        EXPECT_TRUE(lock.error().contains("belongs to another account")) << lock.error();
+    }
+    EXPECT_EQ(ownerOf(cfg / "tasksmack.lock"), THIRD) << "nor by the path-based lock";
+
+    // Root's own, as an older root run left it: still reclaimed for the folder's owner (#2437).
+    ASSERT_EQ(::chown((cfg / "tasksmack.lock").c_str(), 0, 0), 0);
+    {
+        const InstanceLock lock(**held, "tasksmack.lock");
+        ASSERT_EQ(lock.status(), InstanceLock::Status::Acquired) << lock.error();
+    }
+    EXPECT_EQ(ownerOf(cfg / "tasksmack.lock"), NOBODY);
+}
+
 } // namespace
 } // namespace App
 

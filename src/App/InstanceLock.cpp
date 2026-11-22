@@ -112,10 +112,19 @@ InstanceLock::InstanceLock(const std::filesystem::path& lockPath, const Testing&
     }
     // Only a plain file with no other name: a hard link to another file (where fs.protected_hardlinks is off) planted as
     // the lock would otherwise be locked, and handed to the user below (the #4166 review).
-    if (struct stat lockInfo = {}; ::fstat(fd, &lockInfo) != 0 || !S_ISREG(lockInfo.st_mode) || lockInfo.st_nlink != 1)
+    struct stat lockInfo = {};
+    if (::fstat(fd, &lockInfo) != 0 || !S_ISREG(lockInfo.st_mode) || lockInfo.st_nlink != 1)
     {
         ::close(fd);
         m_Error = lockPath.string() + " isn't a plain file of its own (another name links to it); not using it as the lock";
+        return;
+    }
+    // Root hands the user only a lock file of root's, as LinuxHeldFolder::openLockFile() does (#4805): another account's
+    // file renamed in here is neither locked nor handed over.
+    if (owner.has_value() && lockInfo.st_uid != 0 && lockInfo.st_uid != owner->uid)
+    {
+        ::close(fd);
+        m_Error = lockPath.string() + " belongs to another account (uid " + std::to_string(lockInfo.st_uid) + "); not using it as the lock";
         return;
     }
     if (!lockFd(fd))
