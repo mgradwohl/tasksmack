@@ -48,8 +48,11 @@ jobs:
         # What devcontainer.json's postCreateCommand does, as the image's user, on a copy of the checkout (the
         # mounted one is owned by the runner's user), then what a contributor does next: build the debug preset and
         # run the unit tests. The display suites need an X server, so they're left out, as the daytime filter does.
+        # --init: an init reaps the children the tests start (bash as PID 1 doesn't). The process-control suites stay out
+        # too: they need what a plain container lacks (cgroup delegation for efficiency mode, a host session for setsid
+        # and process groups, ptrace), and CI's own Linux jobs run them on the runner itself.
         run: |
-          docker run --rm --volume "$PWD:/src:ro" tasksmack-dev:ci bash -c '
+          docker run --rm --init --volume "$PWD:/src:ro" tasksmack-dev:ci bash -c '
             set -euo pipefail
             cp -r /src /tmp/ws && cd /tmp/ws
             python3.14 -m venv .venv
@@ -59,5 +62,5 @@ jobs:
             cmake --preset debug
             cmake --build --preset debug --parallel "$(nproc)" --target TaskSmack TaskSmackTests
             ./build/debug/tests/TaskSmackTests --gtest_brief=1 \
-              --gtest_filter="-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*"
+              --gtest_filter="-*OnDisplay*:UiScenario*:AccessNotice*:Screenshot*:WindowTest.*:ApplicationTest.*:CiRealSystem*:LinuxEfficiencyModeActionTest.*:LinuxProcessActions*:ProcessActionsContractTest.*:DetachedSpawnTest.*:SessionUserProcTest.*:CommandOutputTest.*"
           '
