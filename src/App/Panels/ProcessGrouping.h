@@ -553,7 +553,11 @@ appMembership(const Domain::ProcessSnapshot& proc, const std::string& key, const
     switch (mode)
     {
     case GroupBy::Unit:
+#ifdef _WIN32
+        return "Service"; // Windows groups by the first hosted service; "unit" is systemd's word (#4755)
+#else
         return "Unit";
+#endif
     case GroupBy::Container:
         return "Container";
     case GroupBy::App:

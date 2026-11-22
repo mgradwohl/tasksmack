@@ -260,7 +260,11 @@ TEST(ProcessGroupingTest, EverySummableColumnHasItsTotal)
 TEST(ProcessGroupingTest, LabelsNonAppUnitsAndStaleIndices)
 {
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::None), "None");
+#ifdef _WIN32
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Unit), "Service") << "Windows groups by a hosted service (#4755)";
+#else
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Unit), "Unit");
+#endif
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Container), "Container");
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::App), "App");
     EXPECT_EQ(ProcessGrouping::appFromUnit("app-gnome-firefox-4521.slice"), "");

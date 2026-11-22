@@ -8,6 +8,7 @@
 #include <gtest/gtest.h>
 
 #include <chrono>
+#include <cstdint>
 
 namespace Platform::Windows::ServiceMath
 {
@@ -42,6 +43,27 @@ TEST(WindowsServiceProbeMathTest, DelayedAppliesOnlyToAutomatic)
     EXPECT_EQ(startTypeFromCode(2, true), ServiceStartType::AutomaticDelayed);
     EXPECT_EQ(startTypeFromCode(3, true), ServiceStartType::Manual);
     EXPECT_EQ(startTypeFromCode(4, true), ServiceStartType::Disabled);
+}
+
+// #4755: the well-known accounts read as services.msc words them, whatever casing the installer wrote, and a
+// per-user service, which names no account, runs as the signed-in user. Any other account is kept as written.
+TEST(WindowsServiceProbeMathTest, ServiceAccountsReadAsServicesMscWordsThem)
+{
+    constexpr std::uint32_t SHARED = 0x20;
+    EXPECT_EQ(serviceAccountText("LocalSystem", SHARED), "Local System");
+    EXPECT_EQ(serviceAccountText("localSystem", SHARED), "Local System") << "BDESVC's casing";
+    EXPECT_EQ(serviceAccountText(".\\LocalSystem", SHARED), "Local System");
+    EXPECT_EQ(serviceAccountText("NT AUTHORITY\\LocalService", SHARED), "Local Service");
+    EXPECT_EQ(serviceAccountText("NT Authority\\LocalService", SHARED), "Local Service");
+    EXPECT_EQ(serviceAccountText("NT Authority\\NetworkService", SHARED), "Network Service");
+    EXPECT_EQ(serviceAccountText("nt authority\\networkservice", 0x10), "Network Service");
+
+    EXPECT_EQ(serviceAccountText("", 0xE0), "Signed-in user") << "a per-user instance (CDPUserSvc_c9efb1)";
+    EXPECT_EQ(serviceAccountText("", 0x60), "Signed-in user") << "its template";
+    EXPECT_EQ(serviceAccountText("", SHARED), "") << "not read: no account to name";
+    EXPECT_EQ(serviceAccountText("NT AUTHORITY\\", SHARED), "NT AUTHORITY\\");
+    EXPECT_EQ(serviceAccountText(".\\svc-backup", 0x10), ".\\svc-backup");
+    EXPECT_EQ(serviceAccountText("NT SERVICE\\MSSQLSERVER", 0x10), "NT SERVICE\\MSSQLSERVER");
 }
 
 TEST(WindowsServiceProbeMathTest, ServiceTypeText)

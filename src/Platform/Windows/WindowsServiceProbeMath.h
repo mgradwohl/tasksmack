@@ -103,6 +103,41 @@ namespace Platform::Windows::ServiceMath
     return text;
 }
 
+/// The account a service runs as, as services.msc words it (#4755), from QUERY_SERVICE_CONFIGW's
+/// lpServiceStartName and @p type (dwServiceType). The SCM keeps whatever casing the installer wrote
+/// ("LocalSystem", "localSystem", "NT AUTHORITY\LocalService", "NT Authority\NetworkService"): the three
+/// well-known accounts read "Local System", "Local Service" and "Network Service" whatever the casing. A
+/// per-user service (a user-service template or its instance) runs as the signed-in user and names no
+/// account of its own, so an empty one reads "Signed-in user". Any other account is kept as written.
+[[nodiscard]] inline std::string serviceAccountText(std::string_view account, std::uint32_t type)
+{
+    constexpr std::uint32_t USER_SERVICE = 0x40;
+    constexpr std::uint32_t USER_INSTANCE = 0x80;
+    constexpr std::string_view NT_AUTHORITY = "NT AUTHORITY\\";
+    std::string_view name = account;
+    if (name.size() > NT_AUTHORITY.size() && Platform::equalsIgnoreCase(name.substr(0, NT_AUTHORITY.size()), NT_AUTHORITY))
+    {
+        name.remove_prefix(NT_AUTHORITY.size());
+    }
+    if (Platform::equalsIgnoreCase(name, "LocalSystem") || Platform::equalsIgnoreCase(account, ".\\LocalSystem"))
+    {
+        return "Local System";
+    }
+    if (Platform::equalsIgnoreCase(name, "LocalService"))
+    {
+        return "Local Service";
+    }
+    if (Platform::equalsIgnoreCase(name, "NetworkService"))
+    {
+        return "Network Service";
+    }
+    if (account.empty() && (type & (USER_SERVICE | USER_INSTANCE)) != 0)
+    {
+        return "Signed-in user";
+    }
+    return std::string(account);
+}
+
 /// The program a command line starts, and the rest of the line. The program is the first argument,
 /// quoted ("C:\Program Files\x.exe" -a) or not, separated from the rest by spaces or tabs. An unquoted one may hold spaces (the SCM accepts
 /// C:\Program Files\x.exe -a), so it runs to the first ".exe" that ends a word, or else to the
