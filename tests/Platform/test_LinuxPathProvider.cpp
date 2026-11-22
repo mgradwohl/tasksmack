@@ -9,6 +9,7 @@
 
 #include "Platform/ConfigDirectory.h"
 #include "Platform/Linux/LinuxPathProvider.h"
+#include "Platform/Linux/SessionUser.h"
 
 #include <array>
 #include <cstdlib>
@@ -97,6 +98,13 @@ TEST(LinuxPathProviderTest, GetUserConfigDirEndsWithTasksmack)
 
 TEST(LinuxPathProviderTest, GetUserConfigDirRespectsXDG_CONFIG_HOME)
 {
+    // The environment's rule for a normal session. A capabilities session (a setcap'd test binary) keeps its own
+    // user's settings whatever XDG_CONFIG_HOME and HOME say (#4802): ACapabilitiesSessionsEnvironmentNamesSettingsOnly-
+    // InsideItsOwnHome tests that rule.
+    if (SessionUser::capabilitiesOnlySession())
+    {
+        GTEST_SKIP() << "a capabilities session ignores the environment's folder outside the user's home (#4802)";
+    }
     // NOTE: This test modifies process-wide environment variables which could
     // affect parallel test execution. The test restores original values but
     // there's a brief window of modification. If this causes flakiness in CI,
@@ -268,6 +276,13 @@ TEST(LinuxPathProviderTest, GetUserConfigDirFallsBackToThePasswdHome_WhenBothEnv
 // ignored, as the XDG spec says, for ~/.config/tasksmack.
 TEST(LinuxPathProviderTest, GetUserConfigDirIgnoresARelativeXdgConfigHomeAsUserConfigDoes)
 {
+    // The environment's rule for a normal session. A capabilities session (a setcap'd test binary) keeps its own
+    // user's settings whatever XDG_CONFIG_HOME and HOME say (#4802): ACapabilitiesSessionsEnvironmentNamesSettingsOnly-
+    // InsideItsOwnHome tests that rule.
+    if (SessionUser::capabilitiesOnlySession())
+    {
+        GTEST_SKIP() << "a capabilities session ignores the environment's folder outside the user's home (#4802)";
+    }
     const char* rawXdg = std::getenv("XDG_CONFIG_HOME");
     const char* rawHome = std::getenv("HOME");
     const std::optional<std::string> origXdg = rawXdg != nullptr ? std::optional<std::string>(rawXdg) : std::nullopt;
