@@ -172,7 +172,7 @@ std::string sanitizeOnly(std::string_view stored)
     return ProcessTableSettings::sanitize(stored);
 }
 
-std::string withExplicitOrder(std::string_view stored)
+std::string withExplicitOrderOnly(std::string_view stored)
 {
     return ProcessTableSettings::withExplicitOrder(stored);
 }
@@ -203,7 +203,7 @@ TEST(ProcessTableSettingsRoundTripTest, TheDefaultLayoutComesBackInItsOwnOrderWi
     const std::string stored = captureSession();
     int sortOrder = -1;
     int sortDirection = -1;
-    EXPECT_EQ(restoreSession(stored, &withExplicitOrder, sortOrder, sortDirection), identityOrder());
+    EXPECT_EQ(restoreSession(stored, &withExplicitOrderOnly, sortOrder, sortDirection), identityOrder());
     EXPECT_EQ(sortOrder, 0);
     EXPECT_EQ(sortDirection, static_cast<int>(ImGuiSortDirection_Descending));
 }
@@ -213,7 +213,7 @@ TEST(ProcessTableSettingsRoundTripTest, ASortOnlySectionSavedByAnOlderVersionIsR
 {
     int sortOrder = -1;
     int sortDirection = -1;
-    EXPECT_EQ(restoreSession(sortOnlySection(), &withExplicitOrder, sortOrder, sortDirection), identityOrder());
+    EXPECT_EQ(restoreSession(sortOnlySection(), &withExplicitOrderOnly, sortOrder, sortDirection), identityOrder());
     EXPECT_EQ(sortOrder, 0);
     EXPECT_EQ(sortDirection, static_cast<int>(ImGuiSortDirection_Descending));
 }
@@ -231,7 +231,7 @@ TEST(ProcessTableSettingsRoundTripTest, AUserReorderIsKept)
 
     int sortOrder = -1;
     int sortDirection = -1;
-    EXPECT_EQ(restoreSession(stored, &withExplicitOrder, sortOrder, sortDirection), expected);
+    EXPECT_EQ(restoreSession(stored, &withExplicitOrderOnly, sortOrder, sortDirection), expected);
     EXPECT_EQ(sortOrder, 0);
     EXPECT_EQ(sortDirection, static_cast<int>(ImGuiSortDirection_Descending));
 }

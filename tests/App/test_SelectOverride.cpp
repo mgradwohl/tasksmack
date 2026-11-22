@@ -19,7 +19,6 @@ namespace
 {
 
 using App::SelectOverride::DetailsTab;
-using App::SelectOverride::parse;
 using App::SelectOverride::Pending;
 using App::SelectOverride::Target;
 
@@ -36,26 +35,26 @@ TEST(SelectOverrideTest, UnsetOrBlankSelectsNothingQuietly)
 {
     for (const char* value : {static_cast<const char*>(nullptr), "", "   ", "\t\n"})
     {
-        const auto result = parse(value, value, "gpu");
+        const auto result = App::SelectOverride::parse(value, value, "gpu");
         EXPECT_FALSE(result.target.has_value());
         EXPECT_TRUE(result.warnings.empty());
     }
 }
 
-std::optional<Target> byPid(const std::int32_t pid, const DetailsTab tab = DetailsTab::Overview)
+std::optional<Target> selectByPid(const std::int32_t pid, const DetailsTab tab = DetailsTab::Overview)
 {
     return Target{.pid = pid, .name = {}, .tab = tab};
 }
 
-std::optional<Target> byName(std::string name, const DetailsTab tab = DetailsTab::Overview)
+std::optional<Target> selectByName(std::string name, const DetailsTab tab = DetailsTab::Overview)
 {
     return Target{.pid = std::nullopt, .name = std::move(name), .tab = tab};
 }
 
 TEST(SelectOverrideTest, ParsesPidWithSurroundingSpaces)
 {
-    const auto result = parse(" 1234 ", nullptr, nullptr);
-    EXPECT_EQ(result.target, byPid(1234));
+    const auto result = App::SelectOverride::parse(" 1234 ", nullptr, nullptr);
+    EXPECT_EQ(result.target, selectByPid(1234));
     EXPECT_TRUE(result.warnings.empty());
 }
 
@@ -63,7 +62,7 @@ TEST(SelectOverrideTest, RejectsJunkNegativeZeroAndOverflowingPids)
 {
     for (const char* value : {"abc", "12x", "-5", "+5", "0", "1 2", "2147483648", "99999999999999999999"})
     {
-        const auto result = parse(value, nullptr, nullptr);
+        const auto result = App::SelectOverride::parse(value, nullptr, nullptr);
         EXPECT_FALSE(result.target.has_value()) << value;
         EXPECT_EQ(result.warnings.size(), 1U) << value;
     }
@@ -72,24 +71,24 @@ TEST(SelectOverrideTest, RejectsJunkNegativeZeroAndOverflowingPids)
 
 TEST(SelectOverrideTest, InvalidPidFallsBackToName)
 {
-    const auto result = parse("junk", " explorer.exe ", nullptr);
-    EXPECT_EQ(result.target, byName("explorer.exe"));
+    const auto result = App::SelectOverride::parse("junk", " explorer.exe ", nullptr);
+    EXPECT_EQ(result.target, selectByName("explorer.exe"));
     EXPECT_EQ(result.warnings.size(), 1U);
 }
 
 TEST(SelectOverrideTest, ParsesTabsInAnyCase)
 {
-    EXPECT_EQ(parse("1", nullptr, "overview").target, byPid(1, DetailsTab::Overview));
-    EXPECT_EQ(parse("1", nullptr, " GPU ").target, byPid(1, DetailsTab::Gpu));
-    EXPECT_EQ(parse("1", nullptr, "npu").target, byPid(1, DetailsTab::Npu)); // #1869
-    EXPECT_EQ(parse("1", nullptr, "Network").target, byPid(1, DetailsTab::Network));
-    EXPECT_EQ(parse("1", nullptr, "").target, byPid(1, DetailsTab::Overview));
+    EXPECT_EQ(App::SelectOverride::parse("1", nullptr, "overview").target, selectByPid(1, DetailsTab::Overview));
+    EXPECT_EQ(App::SelectOverride::parse("1", nullptr, " GPU ").target, selectByPid(1, DetailsTab::Gpu));
+    EXPECT_EQ(App::SelectOverride::parse("1", nullptr, "npu").target, selectByPid(1, DetailsTab::Npu)); // #1869
+    EXPECT_EQ(App::SelectOverride::parse("1", nullptr, "Network").target, selectByPid(1, DetailsTab::Network));
+    EXPECT_EQ(App::SelectOverride::parse("1", nullptr, "").target, selectByPid(1, DetailsTab::Overview));
 }
 
 TEST(SelectOverrideTest, UnknownTabWarnsAndUsesOverview)
 {
-    const auto result = parse(nullptr, "explorer.exe", "actions");
-    EXPECT_EQ(result.target, byName("explorer.exe", DetailsTab::Overview));
+    const auto result = App::SelectOverride::parse(nullptr, "explorer.exe", "actions");
+    EXPECT_EQ(result.target, selectByName("explorer.exe", DetailsTab::Overview));
     EXPECT_EQ(result.warnings.size(), 1U);
 }
 
@@ -675,8 +674,8 @@ TEST(SelectOverrideTest, PendingMachineTabIsDroppedOnceAfterTheFrameLimit)
 // #2170: the same ASCII whitespace as every other TASKSMACK_* hook (Platform::trimAscii()).
 TEST(SelectOverrideTest, AnyAsciiWhitespaceAroundThePidIsTrimmed)
 {
-    const auto result = parse("\v1234\r\n", nullptr, nullptr);
-    EXPECT_EQ(result.target, byPid(1234));
+    const auto result = App::SelectOverride::parse("\v1234\r\n", nullptr, nullptr);
+    EXPECT_EQ(result.target, selectByPid(1234));
     EXPECT_TRUE(result.warnings.empty());
 }
 

@@ -47,9 +47,9 @@ namespace Platform
 namespace
 {
 
-using TestSupport::FakeSystemBus;
-using TestSupport::MethodAnswer;
-using TestSupport::ObjectPath;
+using ::TestSupport::FakeSystemBus;
+using ::TestSupport::MethodAnswer;
+using ::TestSupport::ObjectPath;
 
 constexpr const char* NM = "org.freedesktop.NetworkManager";
 constexpr const char* NM_PATH = "/org/freedesktop/NetworkManager";
@@ -101,7 +101,7 @@ class SystemdBusFakeTest : public ::testing::Test
         props[IDLE_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{"/"};
         props[ACCESS_POINT_PATH][ACCESS_POINT]["Ssid"] = std::vector<std::uint8_t>{'C', 'a', 'f', 0xC3, 0xA9, ' ', 0xFF};
         props[ACCESS_POINT_PATH][ACCESS_POINT]["Frequency"] = std::uint32_t{5180};
-        props[DHCP_PATH][DHCP4]["Options"] = std::map<std::string, TestSupport::DictValue>{
+        props[DHCP_PATH][DHCP4]["Options"] = std::map<std::string, ::TestSupport::DictValue>{
             {"dhcp_server_identifier", std::string("192.168.1.1")},
             {"dhcp_lease_time", std::string("86400")},
             {"expiry", std::string("1760000000")},
@@ -209,11 +209,11 @@ TEST_F(SystemdBusFakeTest, ResolvedGivesAnAdaptersOwnServersAndDomains)
                            return {.path = std::nullopt, .errorName = "org.freedesktop.resolve1.NoSuchLink"};
                        });
     auto& props = m_Bus.properties();
-    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["DNS"] = TestSupport::DnsServers{
+    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["DNS"] = ::TestSupport::DnsServers{
         {2, {192, 168, 1, 1}},
         {10, {0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1}},
     };
-    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["Domains"] = TestSupport::DnsDomains{{"lan", false}, {"corp.example", true}};
+    props[RESOLVE_LINK_PATH][RESOLVE_LINK]["Domains"] = ::TestSupport::DnsDomains{{"lan", false}, {"corp.example", true}};
     ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
 
     const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
@@ -356,7 +356,7 @@ class SystemdBusFakeSmartTest : public SystemdBusFakeTest
                              {
                                  return {.path = std::nullopt,
                                          .errorName = {},
-                                         .dict = std::map<std::string, TestSupport::DictValue>{
+                                         .dict = std::map<std::string, ::TestSupport::DictValue>{
                                              {"percent_used", std::uint8_t{3}},
                                              {"avail_spare", std::uint8_t{100}},
                                              {"media_errors", std::uint64_t{0}},
@@ -432,7 +432,7 @@ TEST_F(SystemdBusFakeTest, AHealthLogOfTheWrongShapeIsSaidSo)
                          {
                              return {.path = std::nullopt,
                                      .errorName = {},
-                                     .dict = std::map<std::string, TestSupport::DictValue>{{"percent_used", std::uint64_t{3}}}};
+                                     .dict = std::map<std::string, ::TestSupport::DictValue>{{"percent_used", std::uint64_t{3}}}};
                          });
     ASSERT_TRUE(m_Bus.start(UDISKS)) << m_Bus.error();
 
@@ -706,8 +706,8 @@ TEST_F(SystemdBusFakeTest, AResolvedLinkMissingItsServersOrDomainsIsAnError)
                        [=](std::int32_t ifindex) -> MethodAnswer
                        { return {.path = ObjectPath{ifindex == 5 ? NO_DOMAINS : NO_SERVERS}, .errorName = {}}; });
     auto& props = m_Bus.properties();
-    props[NO_DOMAINS][RESOLVE_LINK]["DNS"] = TestSupport::DnsServers{{2, {192, 168, 1, 1}}};
-    props[NO_SERVERS][RESOLVE_LINK]["Domains"] = TestSupport::DnsDomains{{"lan", false}};
+    props[NO_DOMAINS][RESOLVE_LINK]["DNS"] = ::TestSupport::DnsServers{{2, {192, 168, 1, 1}}};
+    props[NO_SERVERS][RESOLVE_LINK]["Domains"] = ::TestSupport::DnsDomains{{"lan", false}};
     ASSERT_TRUE(m_Bus.start(RESOLVE)) << m_Bus.error();
 
     const LinuxNetworkAdapters::LinkDnsReader read = SystemdBus::makeLinkDnsReader();
@@ -744,7 +744,7 @@ TEST_F(SystemdBusFakeTest, ADeviceMissingItsWifiOrDhcpPropertiesIsAnError)
     props[NO_OPTIONS_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{NO_OPTIONS_CONFIG};
     props[NO_OPTIONS_CONFIG][DHCP4]["Unrelated"] = std::string("x");
     props[EMPTY_OPTIONS_DEVICE][DEVICE]["Dhcp4Config"] = ObjectPath{EMPTY_OPTIONS_CONFIG};
-    props[EMPTY_OPTIONS_CONFIG][DHCP4]["Options"] = std::map<std::string, TestSupport::DictValue>{{"domain_name", std::string("lan")}};
+    props[EMPTY_OPTIONS_CONFIG][DHCP4]["Options"] = std::map<std::string, ::TestSupport::DictValue>{{"domain_name", std::string("lan")}};
     ASSERT_TRUE(m_Bus.start(NM)) << m_Bus.error();
 
     EXPECT_FALSE(SystemdBus::makeWifiLinkReader()("wlan2").error.empty());
@@ -770,10 +770,10 @@ constexpr const char* CRON_PATH = "/org/freedesktop/systemd1/unit/cron_2eservice
 constexpr const char* GETTY_PATH = "/org/freedesktop/systemd1/unit/getty_40tty1_2eservice";
 
 /// One ListUnits row.
-[[nodiscard]] TestSupport::UnitRow
+[[nodiscard]] ::TestSupport::UnitRow
 unit(const char* name, const char* description, const char* activeState, const char* subState, const char* path)
 {
-    TestSupport::UnitRow row;
+    ::TestSupport::UnitRow row;
     row.name = name;
     row.description = description;
     row.activeState = activeState;
@@ -796,7 +796,7 @@ class SystemdBusFakeServicesTest : public SystemdBusFakeTest
                                  const bool restarting = m_CronRestarting.load();
                                  return {.path = std::nullopt,
                                          .errorName = {},
-                                         .units = std::vector<TestSupport::UnitRow>{
+                                         .units = std::vector<::TestSupport::UnitRow>{
                                              unit("cron.service",
                                                   "Regular background program processing daemon",
                                                   restarting ? "activating" : "active",
@@ -943,18 +943,18 @@ class SystemdBusFakeServiceConfigTest : public SystemdBusFakeServicesTest
         props[CRON_PATH][SYSTEMD_SERVICE]["User"] = std::string{};
         props[CRON_PATH][SYSTEMD_SERVICE]["DynamicUser"] = false;
         props[CRON_PATH][SYSTEMD_SERVICE]["Type"] = std::string("forking");
-        props[CRON_PATH][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{
+        props[CRON_PATH][SYSTEMD_SERVICE]["ExecStart"] = ::TestSupport::ExecCommands{
             {.path = "/usr/sbin/cron", .argv = {"/usr/sbin/cron", "-f", "-P", "-L", "15"}, .ignoreErrors = false},
             {.path = "/usr/bin/logger", .argv = {"logger", "cron started"}, .ignoreErrors = true},
         };
         props[GETTY_PATH][SYSTEMD_SERVICE]["User"] = std::string("agetty");
         props[GETTY_PATH][SYSTEMD_SERVICE]["Type"] = std::string("idle");
-        props[GETTY_PATH][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{
+        props[GETTY_PATH][SYSTEMD_SERVICE]["ExecStart"] = ::TestSupport::ExecCommands{
             {.path = "/sbin/agetty", .argv = {"/sbin/agetty", "--noclear", "tty1", "linux"}, .ignoreErrors = false}};
         props[APT_PATH][SYSTEMD_SERVICE]["User"] = std::string{};
         props[APT_PATH][SYSTEMD_SERVICE]["DynamicUser"] = true;
         props[APT_PATH][SYSTEMD_SERVICE]["Type"] = std::string("oneshot");
-        props[APT_PATH][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{
+        props[APT_PATH][SYSTEMD_SERVICE]["ExecStart"] = ::TestSupport::ExecCommands{
             {.path = "/usr/lib/apt/apt.systemd.daily", .argv = {"/usr/lib/apt/apt.systemd.daily", "update"}, .ignoreErrors = false}};
         serveSystemd();
     }
@@ -980,13 +980,13 @@ TEST_F(SystemdBusFakeServicesTest, AServiceThatIsntLoadedHasNoAccountCommandOrTy
         "ListUnits",
         []() -> MethodAnswer
         {
-            TestSupport::UnitRow ghost = unit("connman.service", "connman.service", "inactive", "dead", GHOST_PATH);
+            ::TestSupport::UnitRow ghost = unit("connman.service", "connman.service", "inactive", "dead", GHOST_PATH);
             ghost.loadState = "not-found";
-            TestSupport::UnitRow masked = unit("console-getty.service", "console-getty.service", "inactive", "dead", MASKED_PATH);
+            ::TestSupport::UnitRow masked = unit("console-getty.service", "console-getty.service", "inactive", "dead", MASKED_PATH);
             masked.loadState = "masked";
             return {.path = std::nullopt,
                     .errorName = {},
-                    .units = std::vector<TestSupport::UnitRow>{
+                    .units = std::vector<::TestSupport::UnitRow>{
                         unit("cron.service", "Regular background program processing daemon", "active", "running", CRON_PATH),
                         ghost,
                         masked,
@@ -1004,7 +1004,7 @@ TEST_F(SystemdBusFakeServicesTest, AServiceThatIsntLoadedHasNoAccountCommandOrTy
         props[path][SYSTEMD_SERVICE]["User"] = std::string{};
         props[path][SYSTEMD_SERVICE]["DynamicUser"] = false;
         props[path][SYSTEMD_SERVICE]["Type"] = std::string{};
-        props[path][SYSTEMD_SERVICE]["ExecStart"] = TestSupport::ExecCommands{};
+        props[path][SYSTEMD_SERVICE]["ExecStart"] = ::TestSupport::ExecCommands{};
         props[path][SYSTEMD_SERVICE]["MainPID"] = std::uint32_t{0};
     }
     props[CRON_PATH][SYSTEMD_SERVICE]["Type"] = std::string("forking");
@@ -1253,7 +1253,7 @@ TEST_F(SystemdBusFakeTest, AFailedListUnitFilesFailsTheRead)
                          SYSTEMD_MANAGER,
                          "ListUnits",
                          []() -> MethodAnswer
-                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<TestSupport::UnitRow>{}}; });
+                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<::TestSupport::UnitRow>{}}; });
     m_Bus.addNoArgMethod(SYSTEMD_PATH,
                          SYSTEMD_MANAGER,
                          "ListUnitFiles",
@@ -1282,7 +1282,7 @@ TEST_F(SystemdBusFakeTest, AListUnitFilesReplyThatIsntAFileListFailsTheRead)
                          SYSTEMD_MANAGER,
                          "ListUnits",
                          []() -> MethodAnswer
-                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<TestSupport::UnitRow>{}}; });
+                         { return {.path = std::nullopt, .errorName = {}, .units = std::vector<::TestSupport::UnitRow>{}}; });
     m_Bus.addNoArgMethod(SYSTEMD_PATH,
                          SYSTEMD_MANAGER,
                          "ListUnitFiles",

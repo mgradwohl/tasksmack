@@ -20,7 +20,7 @@ namespace
 {
 
 /// The scene data, built once for every test here.
-const ChartGeometry::SceneData& sceneData()
+const ChartGeometry::SceneData& frameCachesSceneData()
 {
     static const ChartGeometry::SceneData k_Data;
     return k_Data;
@@ -101,7 +101,7 @@ TEST(ChartFrameCachesTest, TheStackedChartGathersItsBandEdgesOncePerGeneration)
     ChartGeometry::SceneState state;
     // Settled first: ImPlot's layout moves the plot's width, and so its point budget, over the first
     // frames, and a new budget is a new choice of points.
-    static_cast<void>(ChartGeometry::renderSettledFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+    static_cast<void>(ChartGeometry::renderSettledFrame(ChartGeometry::Scene::CpuStacked, frameCachesSceneData(), state));
     const std::uint64_t reductions = state.cpuStackReduction.rebuildCount();
     const std::uint64_t gathers = state.cpuStackValues.gatherCount();
     EXPECT_EQ(gathers, reductions); // gathered once for each choice of points, never more
@@ -109,15 +109,15 @@ TEST(ChartFrameCachesTest, TheStackedChartGathersItsBandEdgesOncePerGeneration)
     // The frames between samples: the same points and values; only x is rebuilt.
     for (int frame = 0; frame < 5; ++frame)
     {
-        static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+        static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, frameCachesSceneData(), state));
     }
     EXPECT_EQ(state.cpuStackReduction.rebuildCount(), reductions);
     EXPECT_EQ(state.cpuStackValues.gatherCount(), gathers);
 
     // A new publication: reduced and gathered again, once.
     state.dataGeneration = UI::Widgets::nextChartDataGeneration();
-    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
-    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, frameCachesSceneData(), state));
+    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, frameCachesSceneData(), state));
     EXPECT_EQ(state.cpuStackReduction.rebuildCount(), reductions + 1);
     EXPECT_EQ(state.cpuStackValues.gatherCount(), gathers + 1);
 }
@@ -129,11 +129,11 @@ TEST(ChartFrameCachesTest, AStackedChartWhoseCacheIsResetGathersItsBandEdgesAgai
     // for its new points, each as long as their x or one longer, never shorter (#843 review).
     const ChartGeometry::HeadlessChartContext context;
     ChartGeometry::SceneState state;
-    static_cast<void>(ChartGeometry::renderSettledFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+    static_cast<void>(ChartGeometry::renderSettledFrame(ChartGeometry::Scene::CpuStacked, frameCachesSceneData(), state));
     const std::uint64_t gathers = state.cpuStackValues.gatherCount();
 
     state.cpuStackReduction = UI::Widgets::ReducedPointsCache{};
-    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, sceneData(), state));
+    static_cast<void>(ChartGeometry::renderFrame(ChartGeometry::Scene::CpuStacked, frameCachesSceneData(), state));
     EXPECT_EQ(state.cpuStackValues.gatherCount(), gathers + 1);
     for (const std::vector<double>* edge :
          {&state.cpuStack.base, &state.cpuStack.userTop, &state.cpuStack.systemTop, &state.cpuIowaitTop, &state.cpuBusyTop})

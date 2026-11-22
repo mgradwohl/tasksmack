@@ -17,13 +17,12 @@ namespace Platform
 namespace
 {
 
-using NetworkdLinkJson::parse;
 using NetworkdLinkJson::Value;
 
 TEST(NetworkdLinkJsonTest, ParsesTheValueKinds)
 {
     const std::optional<Value> value =
-        parse(R"( {"a": 1, "b": [true, false, null], "c": "text", "d": {"e": 18446744073709551615}, "f": -2.5e3} )");
+        NetworkdLinkJson::parse(R"( {"a": 1, "b": [true, false, null], "c": "text", "d": {"e": 18446744073709551615}, "f": -2.5e3} )");
     ASSERT_TRUE(value.has_value());
     const Value& root = value.value_or(Value{});
     ASSERT_EQ(root.kind, Value::Kind::Object);
@@ -44,7 +43,7 @@ TEST(NetworkdLinkJsonTest, ParsesTheValueKinds)
 
 TEST(NetworkdLinkJsonTest, DecodesStringEscapes)
 {
-    const std::optional<Value> value = parse(R"("a\"b\\c\/d\n\té😀")");
+    const std::optional<Value> value = NetworkdLinkJson::parse(R"("a\"b\\c\/d\n\té😀")");
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value_or(Value{}).string, "a\"b\\c/d\n\t\xC3\xA9\xF0\x9F\x98\x80"); // é and 😀 as UTF-8
 }
@@ -53,7 +52,7 @@ TEST(NetworkdLinkJsonTest, DecodesStringEscapes)
 // decoder runs in every run: NetworkTextProperties' random escapes only sometimes pick an ASCII one (#3165).
 TEST(NetworkdLinkJsonTest, DecodesUnicodeEscapesOfEveryLength)
 {
-    const std::optional<Value> value = parse(R"("\u0041\u00e9\u20ac\ud83d\ude00")");
+    const std::optional<Value> value = NetworkdLinkJson::parse(R"("\u0041\u00e9\u20ac\ud83d\ude00")");
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value_or(Value{}).string, "A\xC3\xA9\xE2\x82\xAC\xF0\x9F\x98\x80"); // A, é, € and 😀 as UTF-8
 }
@@ -77,20 +76,20 @@ TEST(NetworkdLinkJsonTest, RefusesWhatIsNotOneJsonDocument)
                              "{} trailing",
                              "\"raw\ncontrol\""})
     {
-        EXPECT_FALSE(parse(text).has_value()) << text;
+        EXPECT_FALSE(NetworkdLinkJson::parse(text).has_value()) << text;
     }
     // Nesting is bounded, so a hostile description can't exhaust the stack.
     std::string deep(NetworkdLinkJson::MAX_DEPTH + 2, '[');
     deep += std::string(NetworkdLinkJson::MAX_DEPTH + 2, ']');
-    EXPECT_FALSE(parse(deep).has_value());
+    EXPECT_FALSE(NetworkdLinkJson::parse(deep).has_value());
     std::string fine(NetworkdLinkJson::MAX_DEPTH, '[');
     fine += std::string(NetworkdLinkJson::MAX_DEPTH, ']');
-    EXPECT_TRUE(parse(fine).has_value());
+    EXPECT_TRUE(NetworkdLinkJson::parse(fine).has_value());
 }
 
 TEST(NetworkdLinkJsonTest, DecodesTheShortControlEscapes)
 {
-    const std::optional<Value> value = parse(R"("\b\f\r\t\n")");
+    const std::optional<Value> value = NetworkdLinkJson::parse(R"("\b\f\r\t\n")");
     ASSERT_TRUE(value.has_value());
     EXPECT_EQ(value.value_or(Value{}).string, "\b\f\r\t\n");
 }
@@ -105,7 +104,7 @@ TEST(NetworkdLinkJsonTest, RefusesBrokenEscapesAndSurrogates)
                              R"("\ud800\udbff")", // a high surrogate followed by another high one
                              R"("\ud800\u12")"})  // the low half cut short
     {
-        EXPECT_FALSE(parse(text).has_value()) << text;
+        EXPECT_FALSE(NetworkdLinkJson::parse(text).has_value()) << text;
     }
 }
 
@@ -116,7 +115,7 @@ TEST(NetworkdLinkJsonTest, RefusesBrokenObjects)
                              R"({1: 2})",          // a key that isn't a string
                              R"({"a" "b"})"})      // no colon
     {
-        EXPECT_FALSE(parse(text).has_value()) << text;
+        EXPECT_FALSE(NetworkdLinkJson::parse(text).has_value()) << text;
     }
 }
 
@@ -124,22 +123,22 @@ TEST(NetworkdLinkJsonTest, ReadsExponentsWithASign)
 {
     for (const char* text : {"1e+3", "1E-3", "2.5e10"})
     {
-        const std::optional<Value> value = parse(text);
+        const std::optional<Value> value = NetworkdLinkJson::parse(text);
         ASSERT_TRUE(value.has_value()) << text;
         EXPECT_EQ(value.value_or(Value{}).kind, Value::Kind::Number) << text;
         // Not an integer, so no unsigned value even where it would be whole.
         EXPECT_FALSE(value.value_or(Value{}).unsignedInteger.has_value()) << text;
     }
-    EXPECT_FALSE(parse("1e+").has_value());
+    EXPECT_FALSE(NetworkdLinkJson::parse("1e+").has_value());
     // Too big for 64 bits: still a number, just not an unsigned integer.
-    const std::optional<Value> huge = parse("18446744073709551616");
+    const std::optional<Value> huge = NetworkdLinkJson::parse("18446744073709551616");
     ASSERT_TRUE(huge.has_value());
     EXPECT_FALSE(huge.value_or(Value{}).unsignedInteger.has_value());
 }
 
 TEST(NetworkdLinkJsonTest, FindAnswersNothingOutsideAnObject)
 {
-    const std::optional<Value> array = parse(R"([{"a": 1}])");
+    const std::optional<Value> array = NetworkdLinkJson::parse(R"([{"a": 1}])");
     ASSERT_TRUE(array.has_value());
     EXPECT_EQ(array.value_or(Value{}).find("a"), nullptr);
     EXPECT_EQ(Value{}.find("a"), nullptr);
@@ -150,14 +149,14 @@ TEST(NetworkdLinkJsonTest, RefusesTextOverTheSizeCap)
     std::string text = "\"";
     text.append(NetworkdLinkJson::MAX_TEXT_BYTES, 'a');
     text += '"';
-    EXPECT_FALSE(parse(text).has_value());
+    EXPECT_FALSE(NetworkdLinkJson::parse(text).has_value());
 }
 
 TEST(NetworkdLinkJsonTest, Ipv4NeedsFourByteValues)
 {
     const auto ipv4 = [](const char* json)
     {
-        return NetworkdLinkJson::ipv4FromBytes(parse(json).value_or(Value{}));
+        return NetworkdLinkJson::ipv4FromBytes(NetworkdLinkJson::parse(json).value_or(Value{}));
     };
     EXPECT_EQ(ipv4("[10,0,0,1]"), "10.0.0.1");
     EXPECT_EQ(ipv4("[10,0,0,256]"), "");

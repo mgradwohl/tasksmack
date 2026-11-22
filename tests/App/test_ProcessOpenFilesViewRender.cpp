@@ -31,7 +31,7 @@ using Platform::OpenFileKind;
 using Platform::OpenFilesReadResult;
 using Platform::OpenFilesReadStatus;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr Platform::ProcessTarget OPEN_FILES_RENDER_TARGET{.pid = 4242, .startTimeTicks = 777};
 
 [[nodiscard]] OpenFilesReadResult statusOnly(OpenFilesReadStatus status, std::string detail = {})
 {
@@ -84,24 +84,24 @@ TEST(ProcessOpenFilesViewTest, ScansOnlyWhenAskedAndNeverOnATimer)
     reader.setResult(linuxFiles());
 
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)); // open, but not asked: nothing read
+    EXPECT_FALSE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F)); // open, but not asked: nothing read
     view.requestScan();
     EXPECT_TRUE(view.scanning());
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
     EXPECT_FALSE(view.scanning());
     ASSERT_EQ(view.rows().size(), 3U);
 
     for (int i = 0; i < 5; ++i)
     {
         view.markDrawnOpen();
-        EXPECT_FALSE(view.update(&reader, TARGET, 10.0F)); // no refresh, however long it stays open
+        EXPECT_FALSE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 10.0F)); // no refresh, however long it stays open
     }
     view.requestScan(); // Rescan
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 
     // A new selection clears back to the button.
@@ -178,11 +178,11 @@ TEST(ProcessOpenFilesViewTest, ASelectionChangeOrClosingMidScanDropsTheScan)
         const ReleaseOnExit releaser(reader);
         view.requestScan();
         view.markDrawnOpen();
-        ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+        ASSERT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
         reader.waitUntilEntered(); // mid-scan for certain
         view.onSelectionChanged();
         reader.release();
-        view.finishPendingRead(TARGET); // waits for the worker
+        view.finishPendingRead(OPEN_FILES_RENDER_TARGET); // waits for the worker
         EXPECT_FALSE(view.hasRead());
         EXPECT_FALSE(view.scanning()); // back to the scan button
         EXPECT_TRUE(view.rows().empty());
@@ -194,11 +194,11 @@ TEST(ProcessOpenFilesViewTest, ASelectionChangeOrClosingMidScanDropsTheScan)
         const ReleaseOnExit releaser(reader);
         view.requestScan();
         view.markDrawnOpen();
-        ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+        ASSERT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
         reader.waitUntilEntered();
-        EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)); // not drawn open this frame: closed mid-scan
+        EXPECT_FALSE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F)); // not drawn open this frame: closed mid-scan
         reader.release();
-        view.finishPendingRead(TARGET);
+        view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
         EXPECT_FALSE(view.hasRead());
         EXPECT_FALSE(view.scanning());
         EXPECT_TRUE(view.rows().empty());
@@ -306,7 +306,7 @@ TEST_F(ProcessOpenFilesViewRenderTest, HiddenWithoutSupportAndNothingReadOpenOrC
     for (int i = 0; i < 3; ++i)
     {
         EXPECT_TRUE(renderAndCapture(view, true, i % 2 == 0).contains("Open files"));
-        static_cast<void>(view.update(&reader, TARGET, 10.0F));
+        static_cast<void>(view.update(&reader, OPEN_FILES_RENDER_TARGET, 10.0F));
     }
     EXPECT_EQ(reader.readCount(), 0);
 }
@@ -391,14 +391,14 @@ TEST(ProcessOpenFilesViewTest, ARefusedScanOffersAuthenticateToRead)
     reader.setAuthorizedResult(linuxFiles());
     view.requestScan();
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
-    static_cast<void>(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
+    static_cast<void>(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
     ASSERT_TRUE(view.offersAuthenticateToRead());
 
     view.requestAuthorizedRead();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(view.status(), Platform::OpenFilesReadStatus::Ok);
     EXPECT_EQ(view.rows().size(), 3U);
@@ -417,20 +417,20 @@ TEST(ProcessOpenFilesViewTest, AnAuthorizeRequestStartsOneAuthorizedReadOnly)
     reader.setAuthorizedResult(linuxFiles());
     view.requestScan();
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
     ASSERT_TRUE(view.offersAuthenticateToRead());
 
     view.requestAuthorizedRead();
     view.requestAuthorizedRead(); // pressed twice in a frame: one request
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(OPEN_FILES_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(view.status(), Platform::OpenFilesReadStatus::Ok);
     for (int i = 0; i < 3; ++i)
     {
         view.markDrawnOpen();
-        EXPECT_FALSE(view.update(&reader, TARGET, 0.0F)) << "frame " << i; // taken: nothing more starts
+        EXPECT_FALSE(view.update(&reader, OPEN_FILES_RENDER_TARGET, 0.0F)) << "frame " << i; // taken: nothing more starts
     }
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(reader.readCount(), 1); // the refused scan

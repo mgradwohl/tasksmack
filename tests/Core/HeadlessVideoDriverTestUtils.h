@@ -190,4 +190,23 @@ namespace TestSupport
 #endif
 }
 
+/// A display with a GL 3.3 core context, for a suite that opens the app's real window: on Windows, the desktop
+/// (detectWindowsDisplay()); elsewhere, the display DISPLAY or WAYLAND_DISPLAY names when it can make one, else SDL's
+/// offscreen driver when Mesa EGL can back it. Through enforceDisplayRequirement(), so TASKSMACK_REQUIRE_DISPLAY=1 makes
+/// a missing one a failure. One copy (#4783): five suites kept their own, which collided in a unity build.
+[[maybe_unused]] inline bool hasGLDisplay()
+{
+#ifdef _WIN32
+    const bool available = detectWindowsDisplay();
+#else
+    // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
+    const char* display = std::getenv("DISPLAY");
+    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
+    // NOLINTEND(concurrency-mt-unsafe)
+    const bool named = (display != nullptr && *display != '\0') || (waylandDisplay != nullptr && *waylandDisplay != '\0');
+    const bool available = (named && probeGLCapability()) || (tryEnableOffscreenVideoDriver() && probeGLCapability());
+#endif
+    return enforceDisplayRequirement(available);
+}
+
 } // namespace TestSupport

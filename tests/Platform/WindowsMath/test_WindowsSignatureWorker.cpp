@@ -47,7 +47,7 @@ using namespace std::chrono_literals;
 
 constexpr auto WAIT = 10s; // generous: a loaded CI runner
 
-struct Fakes
+struct WorkerFakes
 {
     std::mutex mutex;
     std::map<std::string, FileStamp> stamps; // guarded; a path missing here can't be read
@@ -67,63 +67,63 @@ struct Fakes
     std::atomic<bool> started{false};
 };
 
-Fakes& fakes()
+WorkerFakes& workerFakes()
 {
-    static Fakes state;
+    static WorkerFakes state;
     return state;
 }
 
 void resetFakes()
 {
-    const std::scoped_lock lock(fakes().mutex);
-    fakes().stamps.clear();
-    fakes().checks.clear();
-    fakes().throwOnCheck = false;
-    fakes().throwNonException = false;
-    fakes().checkThread = {};
-    fakes().gateOpen = true;
-    fakes().metered = false;
-    fakes().permits = 0;
-    fakes().entered = 0;
-    fakes().completed = 0;
-    fakes().started = false;
+    const std::scoped_lock lock(workerFakes().mutex);
+    workerFakes().stamps.clear();
+    workerFakes().checks.clear();
+    workerFakes().throwOnCheck = false;
+    workerFakes().throwNonException = false;
+    workerFakes().checkThread = {};
+    workerFakes().gateOpen = true;
+    workerFakes().metered = false;
+    workerFakes().permits = 0;
+    workerFakes().entered = 0;
+    workerFakes().completed = 0;
+    workerFakes().started = false;
 }
 
-SignatureFunctions fakeFunctions()
+SignatureFunctions workerFakeFunctions()
 {
     return {
         .errorMessage = nullptr,
         .openImage = [](const std::string& path) -> std::optional<OpenedImage>
         {
-            const std::scoped_lock lock(fakes().mutex);
-            const auto found = fakes().stamps.find(path);
-            return found != fakes().stamps.end() ? std::optional<OpenedImage>(OpenedImage{.file = nullptr, .stamp = found->second})
-                                                 : std::nullopt;
+            const std::scoped_lock lock(workerFakes().mutex);
+            const auto found = workerFakes().stamps.find(path);
+            return found != workerFakes().stamps.end() ? std::optional<OpenedImage>(OpenedImage{.file = nullptr, .stamp = found->second})
+                                                       : std::nullopt;
         },
         .closeImage = [](void* /*file*/) {},
         .verifyEmbeddedSignature =
             [](const std::string& path, void* /*file*/)
         {
-            std::unique_lock lock(fakes().mutex);
-            fakes().gateChanged.wait(lock, [] { return fakes().gateOpen; });
-            if (fakes().metered)
+            std::unique_lock lock(workerFakes().mutex);
+            workerFakes().gateChanged.wait(lock, [] { return workerFakes().gateOpen; });
+            if (workerFakes().metered)
             {
-                ++fakes().entered;
-                fakes().gateChanged.notify_all();
-                fakes().gateChanged.wait(lock, [] { return !fakes().metered || fakes().permits != 0; });
-                if (fakes().metered)
+                ++workerFakes().entered;
+                workerFakes().gateChanged.notify_all();
+                workerFakes().gateChanged.wait(lock, [] { return !workerFakes().metered || workerFakes().permits != 0; });
+                if (workerFakes().metered)
                 {
-                    --fakes().permits;
+                    --workerFakes().permits;
                 }
-                ++fakes().completed;
+                ++workerFakes().completed;
             }
-            ++fakes().checks[path];
-            fakes().checkThread = std::this_thread::get_id();
-            if (fakes().throwOnCheck)
+            ++workerFakes().checks[path];
+            workerFakes().checkThread = std::this_thread::get_id();
+            if (workerFakes().throwOnCheck)
             {
                 throw std::runtime_error("the check threw");
             }
-            if (fakes().throwNonException)
+            if (workerFakes().throwNonException)
             {
                 // NOLINTNEXTLINE(bugprone-std-exception-baseclass,hicpp-exception-baseclass) - the point: what a catch (std::exception) misses
                 throw 42;
@@ -136,56 +136,56 @@ SignatureFunctions fakeFunctions()
 
 void setStamp(const std::string& path, std::uint64_t changeTime)
 {
-    const std::scoped_lock lock(fakes().mutex);
-    fakes().stamps[path] = FileStamp{.fileId = FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 100, .usn = 1};
+    const std::scoped_lock lock(workerFakes().mutex);
+    workerFakes().stamps[path] = FileStamp{.fileId = FileId{.volumeSerial = 1, .id = {1}}, .changeTime = changeTime, .size = 100, .usn = 1};
 }
 
 int checksOf(const std::string& path)
 {
-    const std::scoped_lock lock(fakes().mutex);
-    return fakes().checks[path];
+    const std::scoped_lock lock(workerFakes().mutex);
+    return workerFakes().checks[path];
 }
 
 void setGate(bool open)
 {
     {
-        const std::scoped_lock lock(fakes().mutex);
-        fakes().gateOpen = open;
+        const std::scoped_lock lock(workerFakes().mutex);
+        workerFakes().gateOpen = open;
     }
-    fakes().gateChanged.notify_all();
+    workerFakes().gateChanged.notify_all();
 }
 
 /// Turns the slow verifier on or off; off lets every check through at once.
 void setMetered(bool metered)
 {
     {
-        const std::scoped_lock lock(fakes().mutex);
-        fakes().metered = metered;
+        const std::scoped_lock lock(workerFakes().mutex);
+        workerFakes().metered = metered;
     }
-    fakes().gateChanged.notify_all();
+    workerFakes().gateChanged.notify_all();
 }
 
 /// Lets @p count more metered checks finish.
 void allowChecks(std::size_t count)
 {
     {
-        const std::scoped_lock lock(fakes().mutex);
-        fakes().permits += count;
+        const std::scoped_lock lock(workerFakes().mutex);
+        workerFakes().permits += count;
     }
-    fakes().gateChanged.notify_all();
+    workerFakes().gateChanged.notify_all();
 }
 
 /// Waits until @p count metered checks have begun. False if that doesn't happen within WAIT.
 [[nodiscard]] bool waitForChecksEntered(std::size_t count)
 {
-    std::unique_lock lock(fakes().mutex);
-    return fakes().gateChanged.wait_for(lock, WAIT, [count] { return fakes().entered >= count; });
+    std::unique_lock lock(workerFakes().mutex);
+    return workerFakes().gateChanged.wait_for(lock, WAIT, [count] { return workerFakes().entered >= count; });
 }
 
 std::size_t checksCompleted()
 {
-    const std::scoped_lock lock(fakes().mutex);
-    return fakes().completed;
+    const std::scoped_lock lock(workerFakes().mutex);
+    return workerFakes().completed;
 }
 
 /// Meters the checks for as long as it lives, and lets them all through when it goes. Declared after the
@@ -290,18 +290,18 @@ TEST_F(SignatureWorkerTest, ARequestIsAnsweredLaterOnTheWorkersOwnThread)
     WorkerOptions options;
     options.onWorkerStart = []
     {
-        fakes().started = true;
+        workerFakes().started = true;
     };
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     EXPECT_FALSE(worker.find("C:\\app.exe").has_value()) << "an unknown path is requested, not checked here";
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     const std::optional<SignatureCheck> check = worker.find("C:\\APP.EXE");
     ASSERT_TRUE(check.has_value()) << "the same path in another case";
     EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Embedded);
     EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of C:\\app.exe");
-    EXPECT_TRUE(fakes().started.load());
-    const std::scoped_lock lock(fakes().mutex);
-    EXPECT_NE(fakes().checkThread, std::this_thread::get_id());
+    EXPECT_TRUE(workerFakes().started.load());
+    const std::scoped_lock lock(workerFakes().mutex);
+    EXPECT_NE(workerFakes().checkThread, std::this_thread::get_id());
 }
 
 // #3703: the publisher is read with the check, on the worker's thread, and handed over with the answer.
@@ -310,7 +310,7 @@ TEST_F(SignatureWorkerTest, ThePublisherIsReadWithTheCheckOnTheWorkersThread)
     static std::thread::id publisherThread;
     publisherThread = {};
     setStamp("C:\\app.exe", 1);
-    SignatureFunctions functions = fakeFunctions();
+    SignatureFunctions functions = workerFakeFunctions();
     functions.readPublisher = [](const std::string& path, void* /*file*/)
     {
         publisherThread = std::this_thread::get_id();
@@ -330,7 +330,7 @@ TEST_F(SignatureWorkerTest, ThePublisherIsReadWithTheCheckOnTheWorkersThread)
 TEST_F(SignatureWorkerTest, AnUnreadablePublisherIsNoneAndTheCheckStillAnswers)
 {
     setStamp("C:\\app.exe", 1);
-    SignatureFunctions functions = fakeFunctions();
+    SignatureFunctions functions = workerFakeFunctions();
     functions.readPublisher = [](const std::string& /*path*/, void* /*file*/) -> std::string
     {
         throw std::runtime_error("no version info");
@@ -344,7 +344,7 @@ TEST_F(SignatureWorkerTest, AnUnreadablePublisherIsNoneAndTheCheckStillAnswers)
     EXPECT_EQ(check.value_or(SignatureCheck{}).signature, ImageSignature::Embedded);
     EXPECT_TRUE(publisher.empty());
 
-    SignatureWorker without(fakeFunctions(), WorkerOptions{}); // No publisher read at all
+    SignatureWorker without(workerFakeFunctions(), WorkerOptions{}); // No publisher read at all
     (void) without.find("C:\\app.exe");
     ASSERT_TRUE(without.waitUntilIdle(WAIT));
     publisher = "stale";
@@ -356,7 +356,7 @@ TEST_F(SignatureWorkerTest, APathIsQueuedOnceHoweverManyProcessesAskForIt)
 {
     setStamp("svchost.exe", 1);
     setGate(false); // hold the first check
-    SignatureWorker worker(fakeFunctions(), {});
+    SignatureWorker worker(workerFakeFunctions(), {});
     for (int process = 0; process < 30; ++process)
     {
         worker.request("svchost.exe");
@@ -372,7 +372,7 @@ TEST_F(SignatureWorkerTest, APathIsQueuedOnceHoweverManyProcessesAskForIt)
 TEST_F(SignatureWorkerTest, ANewProcessReReadsTheStampAndAChangedFileIsCheckedAgain)
 {
     setStamp("tool.exe", 1);
-    SignatureWorker worker(fakeFunctions(), {});
+    SignatureWorker worker(workerFakeFunctions(), {});
     worker.request("tool.exe");
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     ASSERT_TRUE(worker.find("tool.exe").has_value());
@@ -393,10 +393,10 @@ TEST_F(SignatureWorkerTest, ANewProcessReReadsTheStampAndAChangedFileIsCheckedAg
 TEST_F(SignatureWorkerTest, AFileWithoutAFileIdIsCheckedForEveryNewProcess)
 {
     {
-        const std::scoped_lock lock(fakes().mutex);
-        fakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 100, .usn = 0}; // FAT
+        const std::scoped_lock lock(workerFakes().mutex);
+        workerFakes().stamps["E:\\tool.exe"] = FileStamp{.fileId = std::nullopt, .changeTime = 1, .size = 100, .usn = 0}; // FAT
     }
-    SignatureWorker worker(fakeFunctions(), {});
+    SignatureWorker worker(workerFakeFunctions(), {});
     for (int process = 1; process <= 2; ++process)
     {
         worker.request("E:\\tool.exe");
@@ -409,7 +409,7 @@ TEST_F(SignatureWorkerTest, AFileWithoutAFileIdIsCheckedForEveryNewProcess)
 
 TEST_F(SignatureWorkerTest, AnUnreadableFileIsAnsweredUnknown)
 {
-    SignatureWorker worker(fakeFunctions(), {});
+    SignatureWorker worker(workerFakeFunctions(), {});
     worker.request("gone.exe");
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     const std::optional<SignatureCheck> check = worker.find("gone.exe");
@@ -421,8 +421,8 @@ TEST_F(SignatureWorkerTest, AnUnreadableFileIsAnsweredUnknown)
 TEST_F(SignatureWorkerTest, ACheckThatThrowsIsAnsweredUnknownWithItsMessage)
 {
     setStamp("bad.exe", 1);
-    fakes().throwOnCheck = true;
-    SignatureWorker worker(fakeFunctions(), {});
+    workerFakes().throwOnCheck = true;
+    SignatureWorker worker(workerFakeFunctions(), {});
     worker.request("bad.exe");
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     const std::optional<SignatureCheck> check = worker.find("bad.exe");
@@ -439,7 +439,7 @@ TEST_F(SignatureWorkerTest, AFullPathTableForgetsAnsweredPathsAndFindAsksAgain)
     }
     WorkerOptions options;
     options.maxPaths = 2;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     worker.request("a");
     worker.request("b");
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
@@ -463,7 +463,7 @@ TEST_F(SignatureWorkerTest, ATableFullOfQueuedPathsAdmitsNoMoreUntilTheyAreCheck
     setGate(false); // the worker holds a's check: nothing is answered, so nothing can be forgotten
     WorkerOptions options;
     options.maxPaths = 2;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     worker.request("a");
     worker.request("b");
     for (int sample = 0; sample < 50; ++sample)
@@ -504,7 +504,7 @@ TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAnd
     setGate(false); // the worker holds a's check: a stays queued while it is checked
     WorkerOptions options;
     options.maxPaths = 2;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     const auto expectCounts = [&worker](std::size_t queued, std::size_t paths, const char* step)
     {
         EXPECT_EQ(worker.queuedPathCount(), queued) << step;
@@ -515,7 +515,7 @@ TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAnd
     // in openImage() until the count has been read; it is let go before waiting for the worker.
     const auto holdTheWorker = []
     {
-        return std::unique_lock(fakes().mutex);
+        return std::unique_lock(workerFakes().mutex);
     };
     expectCounts(0, 0, "a new worker");
     worker.request("a");
@@ -544,12 +544,12 @@ TEST_F(SignatureWorkerTest, TheQueuedCountFollowsEveryAdmissionAnswerEvictionAnd
         expectCounts(1, 1, "full of answered paths: the sweep forgets a and b, and c is admitted");
     }
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
-    fakes().throwOnCheck = true;
+    workerFakes().throwOnCheck = true;
     worker.request("d");
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     expectCounts(0, 2, "a check that threw is answered, no longer queued");
     EXPECT_EQ(worker.find("d").value_or(SignatureCheck{}).note, "the check threw");
-    fakes().throwOnCheck = false;
+    workerFakes().throwOnCheck = false;
 
     setGate(false);
     worker.request("e");
@@ -589,7 +589,7 @@ TEST_F(SignatureWorkerTest, ASlowCheckThatKeepsMakingProgressKeepsTheTableWithin
     setMetered(true);
     WorkerOptions options;
     options.maxPaths = MAX_PATHS;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     const struct Unmeter
     {
         Unmeter() = default;
@@ -667,7 +667,7 @@ TEST_F(SignatureWorkerTest, MorePathsThanTheTableHoldsPolledInAFixedOrderAreEach
     }
     WorkerOptions options;
     options.maxPaths = MAX_PATHS;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     for (std::size_t sample = 1; sample <= SAMPLES; ++sample)
     {
         worker.beginSample();
@@ -700,7 +700,7 @@ TEST_F(SignatureWorkerTest, RepeatedImagesPolledInAFixedOrderDoNotStarveTheLater
     }
     WorkerOptions options;
     options.maxPaths = 1;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     constexpr int SAMPLES = 5; // an image a sample, and one more
     for (int sample = 1; sample <= SAMPLES; ++sample)
     {
@@ -730,7 +730,7 @@ TEST_F(SignatureWorkerTest, APathWaitingItsTurnThatNobodyAsksForAgainDoesNotHold
     setGate(false);
     WorkerOptions options;
     options.maxPaths = 1;
-    SignatureWorker worker(fakeFunctions(), options);
+    SignatureWorker worker(workerFakeFunctions(), options);
     worker.beginSample();
     worker.request("a");
     EXPECT_FALSE(worker.find("gone").has_value()) << "turned away: the table is full of a, queued";
@@ -763,7 +763,7 @@ TEST_F(SignatureWorkerTest, TheDestructorStopsTheQueueAndAPauseEndsAtTheStop)
     {
         WorkerOptions options;
         options.pause = std::chrono::hours(1);
-        SignatureWorker worker(fakeFunctions(), options);
+        SignatureWorker worker(workerFakeFunctions(), options);
         worker.request("one");
         worker.request("two");
         worker.request("three");
@@ -779,7 +779,7 @@ TEST_F(SignatureWorkerTest, TheDestructorStopsTheQueueAndAPauseEndsAtTheStop)
 
 TEST_F(SignatureWorkerTest, AnIdleWorkerIsIdleAndStopsWithoutARequest)
 {
-    SignatureWorker worker(fakeFunctions(), {});
+    SignatureWorker worker(workerFakeFunctions(), {});
     EXPECT_TRUE(worker.waitUntilIdle(0ms));
     EXPECT_EQ(worker.pathCount(), 0U);
 }
@@ -794,8 +794,8 @@ TEST_F(SignatureWorkerTest, ACheckThatThrowsSomethingElseFailsTheWorkerWhichAnsw
     {
         setStamp(path, 1);
     }
-    fakes().throwNonException = true;
-    SignatureWorker worker(fakeFunctions(), {});
+    workerFakes().throwNonException = true;
+    SignatureWorker worker(workerFakeFunctions(), {});
     {
         const MeteredChecks metered;
         worker.request("a");
@@ -833,7 +833,7 @@ TEST_F(SignatureWorkerTest, AnAnswerMadeAfterTheWorkerEndedReadsNoPublisherAndEn
     {
         setStamp(path, 1);
     }
-    SignatureFunctions functions = fakeFunctions();
+    SignatureFunctions functions = workerFakeFunctions();
     functions.readPublisher = [](const std::string& path, void* /*file*/)
     {
         return "Publisher of " + path;
@@ -843,7 +843,7 @@ TEST_F(SignatureWorkerTest, AnAnswerMadeAfterTheWorkerEndedReadsNoPublisherAndEn
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_FALSE(worker.ended());
 
-    fakes().throwNonException = true;
+    workerFakes().throwNonException = true;
     worker.request("b"); // its check throws 42: the worker fails
     ASSERT_TRUE(waitUntil([&worker] { return worker.ended(); })) << "the end is seen";
     std::string publisher = "untouched";
@@ -869,9 +869,9 @@ TEST_F(SignatureWorkerTest, APathWhoseEndAnswerCouldNotBeMadeIsAnsweredByTheNext
     {
         setStamp(path, 1);
     }
-    fakes().throwNonException = true;
+    workerFakes().throwNonException = true;
     const InjectedFaults faults;
-    FaultyWorker worker(fakeFunctions(), {}, faults);
+    FaultyWorker worker(workerFakeFunctions(), {}, faults);
     worker.request("a"); // its check throws 42: the worker fails
     ASSERT_TRUE(waitUntil([&worker] { return worker.find("a").has_value(); })) << "the failure is seen";
 
@@ -904,7 +904,7 @@ TEST_F(SignatureWorkerTest, ABurstAskedForWhileACheckIsInProgressIsEachCheckedOn
     {
         setStamp(path, 1);
     }
-    SignatureWorker worker(fakeFunctions(), {});
+    SignatureWorker worker(workerFakeFunctions(), {});
     {
         const MeteredChecks metered;
         worker.request(paths.front());
@@ -932,7 +932,7 @@ TEST_F(SignatureWorkerTest, APathWhoseDrainIsRefusedIsTakenBackAndCheckedWhenAsk
     // leaving them "not checked yet" for good.
     setStamp("a", 1);
     const InjectedFaults faults;
-    FaultyWorker worker(fakeFunctions(), {}, faults);
+    FaultyWorker worker(workerFakeFunctions(), {}, faults);
     faults.armed->refuseNextDrain = true;
     worker.request("a");
     EXPECT_EQ(worker.queuedPathCount(), 0U) << "taken back";
@@ -956,7 +956,7 @@ TEST_F(SignatureWorkerTest, TheTakeBackAfterARefusedDrainAllocatesNoKeyForALongP
     setStamp(second, 1);
     setGate(false); // first's check is held, so second is queued behind it when its drain is refused
     const InjectedFaults faults;
-    FaultyWorker worker(fakeFunctions(), {}, faults);
+    FaultyWorker worker(workerFakeFunctions(), {}, faults);
     worker.request(first);
     faults.armed->refuseNextDrain = true;
     EXPECT_NO_THROW(worker.request(second)) << "the take-back makes no key";
@@ -988,7 +988,7 @@ TEST_F(SignatureWorkerTest, TheDestructorWaitsForTheCheckInProgressAndDropsTheRe
     }
     WorkerOptions options;
     options.pause = std::chrono::hours(1);
-    auto worker = std::make_unique<SignatureWorker>(fakeFunctions(), options);
+    auto worker = std::make_unique<SignatureWorker>(workerFakeFunctions(), options);
     // After the worker, so it goes first: an assertion that ends the test lets the held check go before the
     // worker is destroyed (TearDown would be too late).
     const MeteredChecks metered;
@@ -1058,10 +1058,10 @@ constexpr std::int32_t PROTECTED_PID = 50; ///< A protected process (csrss.exe, 
 
 SignatureFunctions bindingFunctions()
 {
-    SignatureFunctions functions = fakeFunctions();
+    SignatureFunctions functions = workerFakeFunctions();
     functions.openProcessImage = [](const ImageProcess& process) -> std::expected<BoundImage, BindFailure>
     {
-        const std::scoped_lock lock(fakes().mutex);
+        const std::scoped_lock lock(workerFakes().mutex);
         bindings().push_back(process);
         const auto bound = boundFiles().find(process.pid);
         if (bound == boundFiles().end())
@@ -1069,8 +1069,8 @@ SignatureFunctions bindingFunctions()
             // PROTECTED_PID can never be bound, as a protected process's memory map isn't shown.
             return std::unexpected(BindFailure{.why = std::string(UNBOUND), .protectedProcess = process.pid == PROTECTED_PID});
         }
-        const auto stamp = fakes().stamps.find(bound->second);
-        if (stamp == fakes().stamps.end())
+        const auto stamp = workerFakes().stamps.find(bound->second);
+        if (stamp == workerFakes().stamps.end())
         {
             return std::unexpected(BindFailure{.why = "Its executable can't be read", .protectedProcess = false});
         }
@@ -1082,7 +1082,7 @@ SignatureFunctions bindingFunctions()
     };
     functions.processExited = [](const ImageProcess& process)
     {
-        const std::scoped_lock lock(fakes().mutex);
+        const std::scoped_lock lock(workerFakes().mutex);
         exitChecks().push_back(process);
         exitCheckThread() = std::this_thread::get_id();
         return exitedPids().contains(process.pid);
@@ -1093,7 +1093,7 @@ SignatureFunctions bindingFunctions()
 /// Binds @p pid to the file now named @p path.
 void bindTo(std::int32_t pid, const std::string& path)
 {
-    const std::scoped_lock lock(fakes().mutex);
+    const std::scoped_lock lock(workerFakes().mutex);
     boundFiles()[pid] = path;
 }
 
@@ -1103,7 +1103,7 @@ class SignatureBindingTest : public SignatureWorkerTest
     void SetUp() override
     {
         SignatureWorkerTest::SetUp();
-        const std::scoped_lock lock(fakes().mutex);
+        const std::scoped_lock lock(workerFakes().mutex);
         boundFiles().clear();
         bindings().clear();
         exitedPids().clear();
@@ -1130,7 +1130,7 @@ TEST_F(SignatureBindingTest, AProcessIsCheckedAsTheFileItsImageWasMappedFromNotT
     EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of C:\\renamed.exe");
     EXPECT_EQ(publisher, "Publisher of C:\\renamed.exe");
     EXPECT_EQ(checksOf("C:\\app.exe"), 0) << "the decoy is never checked";
-    const std::scoped_lock lock(fakes().mutex);
+    const std::scoped_lock lock(workerFakes().mutex);
     ASSERT_EQ(bindings().size(), 1U);
     EXPECT_EQ(bindings().front(), process) << "bound by the process's identity";
 }
@@ -1284,7 +1284,7 @@ TEST_F(SignatureBindingTest, CheckImageWithoutCallsOrWithoutAProcess)
     const ImageCheck missing = checkImage(bindingFunctions(), nullptr, "C:\\missing.exe", "c:\\missing.exe", std::nullopt);
     EXPECT_EQ(missing.check.signature, ImageSignature::Unknown);
     EXPECT_TRUE(missing.publisher.empty());
-    const std::scoped_lock lock(fakes().mutex);
+    const std::scoped_lock lock(workerFakes().mutex);
     EXPECT_TRUE(bindings().empty());
 }
 
@@ -1338,7 +1338,7 @@ TEST_F(SignatureBindingTest, ExitedProcessesQueuedAheadAreDroppedAndTheLiveOneIs
     setStamp("C:\\app.exe", 2);
     bindTo(LIVE_PID, "C:\\app.exe");
     {
-        const std::scoped_lock lock(fakes().mutex);
+        const std::scoped_lock lock(workerFakes().mutex);
         for (std::int32_t pid = FIRST_EXITED; pid < FIRST_EXITED + EXITED_COUNT; ++pid)
         {
             boundFiles()[pid] = "C:\\cl.exe";
@@ -1364,11 +1364,11 @@ TEST_F(SignatureBindingTest, ExitedProcessesQueuedAheadAreDroppedAndTheLiveOneIs
     EXPECT_EQ(check.value_or(SignatureCheck{}).signer, "Signer of C:\\app.exe");
     EXPECT_EQ(publisher, "Publisher of C:\\app.exe");
     EXPECT_EQ(checksOf("C:\\cl.exe"), 0);
-    const std::scoped_lock lock(fakes().mutex);
+    const std::scoped_lock lock(workerFakes().mutex);
     ASSERT_EQ(bindings().size(), 1U) << "no exited process was bound";
     EXPECT_EQ(bindings().front(), live);
     EXPECT_EQ(exitChecks().size(), static_cast<std::size_t>(EXITED_COUNT) + 1) << "one exit check a process";
-    EXPECT_EQ(exitCheckThread(), fakes().checkThread) << "asked on the worker's thread";
+    EXPECT_EQ(exitCheckThread(), workerFakes().checkThread) << "asked on the worker's thread";
     EXPECT_NE(exitCheckThread(), std::this_thread::get_id()) << "never the caller's";
 }
 
@@ -1402,7 +1402,7 @@ TEST_F(SignatureBindingTest, AQueuedProcessTheProbeNoLongerListsIsDroppedWithout
     EXPECT_EQ(worker.pathCount(), 2U) << "the unlisted one leaves no answer";
     EXPECT_EQ(worker.find("C:\\listed.exe", listed).value_or(SignatureCheck{}).signer, "Signer of C:\\listed.exe");
     EXPECT_EQ(checksOf("C:\\gone.exe"), 0);
-    const std::scoped_lock lock(fakes().mutex);
+    const std::scoped_lock lock(workerFakes().mutex);
     EXPECT_EQ(bindings().size(), 2U) << "the unlisted one wasn't bound";
     EXPECT_TRUE(std::ranges::none_of(bindings(), [&gone](const ImageProcess& asked) { return asked == gone; }));
     EXPECT_TRUE(std::ranges::none_of(exitChecks(), [&gone](const ImageProcess& asked) { return asked == gone; }))
@@ -1416,7 +1416,7 @@ TEST_F(SignatureBindingTest, AnExitedProcessStillAskedForIsRequestedAgainAndDrop
     setStamp("C:\\cl.exe", 1);
     bindTo(5, "C:\\cl.exe");
     {
-        const std::scoped_lock lock(fakes().mutex);
+        const std::scoped_lock lock(workerFakes().mutex);
         exitedPids().insert(5);
     }
     SignatureWorker worker(bindingFunctions(), WorkerOptions{});
@@ -1428,7 +1428,7 @@ TEST_F(SignatureBindingTest, AnExitedProcessStillAskedForIsRequestedAgainAndDrop
     ASSERT_TRUE(worker.waitUntilIdle(WAIT));
     EXPECT_EQ(worker.pathCount(), 0U);
     EXPECT_EQ(worker.queuedPathCount(), 0U);
-    const std::scoped_lock lock(fakes().mutex);
+    const std::scoped_lock lock(workerFakes().mutex);
     EXPECT_TRUE(bindings().empty());
     EXPECT_EQ(exitChecks().size(), 2U);
 }

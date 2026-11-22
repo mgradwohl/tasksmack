@@ -26,7 +26,6 @@ using App::RenderMetricsOverride::csvBesideScreenshot;
 using App::RenderMetricsOverride::csvRowCount;
 using App::RenderMetricsOverride::MetricsRequest;
 using App::RenderMetricsOverride::metricsRequestName;
-using App::RenderMetricsOverride::parse;
 using App::RenderMetricsOverride::parseMetricsRequest;
 using App::RenderMetricsOverride::writeCsv;
 
@@ -44,23 +43,23 @@ TEST(RenderMetricsOverrideParseTest, UnsetAndBlankGiveNoFile)
     for (const char* value : {static_cast<const char*>(nullptr), "", "   ", "\t\r\n"})
     {
         SCOPED_TRACE(value == nullptr ? "(nullptr)" : value);
-        EXPECT_FALSE(parse(value).has_value());
+        EXPECT_FALSE(App::RenderMetricsOverride::parse(value).has_value());
     }
 }
 
 TEST(RenderMetricsOverrideParseTest, ThePathIsKeptWithTheWhitespaceAroundItTrimmed)
 {
-    EXPECT_EQ(parse("perf-data/idle.csv"), std::filesystem::path("perf-data/idle.csv"));
+    EXPECT_EQ(App::RenderMetricsOverride::parse("perf-data/idle.csv"), std::filesystem::path("perf-data/idle.csv"));
     // #2170: every hook trims the same ASCII whitespace, so a Windows .env file's trailing CR is harmless.
-    EXPECT_EQ(parse(" \tperf-data/idle.csv\r\n"), std::filesystem::path("perf-data/idle.csv"));
+    EXPECT_EQ(App::RenderMetricsOverride::parse(" \tperf-data/idle.csv\r\n"), std::filesystem::path("perf-data/idle.csv"));
     // Spaces inside the name are the name's.
-    EXPECT_EQ(parse("my runs/before resize.csv"), std::filesystem::path("my runs/before resize.csv"));
+    EXPECT_EQ(App::RenderMetricsOverride::parse("my runs/before resize.csv"), std::filesystem::path("my runs/before resize.csv"));
 }
 
 // The value is UTF-8, as every hook's is (#1648): decoded as such on Windows, whatever the code page.
 TEST(RenderMetricsOverrideParseTest, ThePathIsDecodedAsUtf8)
 {
-    const std::optional<std::filesystem::path> path = parse("messungen/größe.csv");
+    const std::optional<std::filesystem::path> path = App::RenderMetricsOverride::parse("messungen/größe.csv");
     ASSERT_TRUE(path.has_value());
     EXPECT_EQ(Core::pathToUtf8(path.value_or(std::filesystem::path{})), "messungen/größe.csv");
 }

@@ -29,8 +29,8 @@ namespace App
 namespace
 {
 
-constexpr const char* APPLY_LABEL = ICON_FA_CHECK "  Apply"; // As the nice control's Apply above it (#2005)
-constexpr const char* RESET_LABEL = "Reset to default";
+constexpr const char* IO_PRIORITY_APPLY_LABEL = ICON_FA_CHECK "  Apply"; // As the nice control's Apply above it (#2005)
+constexpr const char* IO_PRIORITY_RESET_LABEL = "Reset to default";
 
 } // namespace
 
@@ -93,11 +93,12 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     // The panel does not scroll horizontally: when the pair is wider than it, Reset takes a row of its
     // own above Apply, and neither is wider than the panel, so Apply is never clipped off its edge.
     const float available = std::max(ImGui::GetContentRegionAvail().x, 1.0F);
-    const float applyWidth =
-        std::min(ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(APPLY_LABEL).x, style.FramePadding.x), available);
+    const float applyWidth = std::min(
+        ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(IO_PRIORITY_APPLY_LABEL).x, style.FramePadding.x), available);
     const float resetWidth =
         showReset
-            ? std::min(ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(RESET_LABEL).x, style.FramePadding.x), available)
+            ? std::min(ProcessDetailsLayout::computeActionButtonWidth(ImGui::CalcTextSize(IO_PRIORITY_RESET_LABEL).x, style.FramePadding.x),
+                       available)
             : 0.0F;
     const float pairWidth = applyWidth + (showReset ? resetWidth + style.ItemSpacing.x : 0.0F);
     const bool stacked = showReset && pairWidth > available;
@@ -106,7 +107,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     if (showReset)
     {
         ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0F, rightEdge - (stacked ? resetWidth : pairWidth)));
-        if (ImGui::Button(RESET_LABEL, ImVec2(resetWidth, 0.0F)))
+        if (ImGui::Button(IO_PRIORITY_RESET_LABEL, ImVec2(resetWidth, 0.0F)))
         {
             editIoPriority({.ioClass = Platform::IoPriorityClass::None, .level = 0}, target);
         }
@@ -133,7 +134,7 @@ void ProcessIoPriorityView::render(Platform::IProcessActions* actions,
     {
         ImGui::BeginDisabled();
     }
-    if (UI::Widgets::filledButton(APPLY_LABEL,
+    if (UI::Widgets::filledButton(IO_PRIORITY_APPLY_LABEL,
                                   ImVec2(applyWidth, 0.0F),
                                   {
                                       .resting = theme.scheme().successButton,

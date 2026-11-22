@@ -27,9 +27,9 @@ namespace Platform
 namespace
 {
 
-using Bytes = std::vector<std::byte>;
+using NlBytes = std::vector<std::byte>;
 
-template<typename T> void put(Bytes& out, T value)
+template<typename T> void put(NlBytes& out, T value)
 {
     const std::size_t at = out.size();
     out.resize(at + sizeof(T));
@@ -37,9 +37,9 @@ template<typename T> void put(Bytes& out, T value)
 }
 
 /// One attribute of @p type holding @p payload, padded to 4 bytes.
-[[nodiscard]] Bytes attribute(std::uint16_t type, const Bytes& payload)
+[[nodiscard]] NlBytes attribute(std::uint16_t type, const NlBytes& payload)
 {
-    Bytes out;
+    NlBytes out;
     put<std::uint16_t>(out, static_cast<std::uint16_t>(NLA_HDRLEN + payload.size()));
     put<std::uint16_t>(out, type);
     out.insert(out.end(), payload.begin(), payload.end());
@@ -47,17 +47,17 @@ template<typename T> void put(Bytes& out, T value)
     return out;
 }
 
-template<typename T> [[nodiscard]] Bytes value(T v)
+template<typename T> [[nodiscard]] NlBytes value(T v)
 {
-    Bytes out;
+    NlBytes out;
     put(out, v);
     return out;
 }
 
-[[nodiscard]] Bytes concat(std::initializer_list<Bytes> parts)
+[[nodiscard]] NlBytes concat(std::initializer_list<NlBytes> parts)
 {
-    Bytes out;
-    for (const Bytes& part : parts)
+    NlBytes out;
+    for (const NlBytes& part : parts)
     {
         out.insert(out.end(), part.begin(), part.end());
     }
@@ -65,9 +65,9 @@ template<typename T> [[nodiscard]] Bytes value(T v)
 }
 
 /// A generic netlink message of @p type and @p command around @p attributes.
-[[nodiscard]] Bytes message(std::uint16_t type, std::uint8_t command, const Bytes& attributes)
+[[nodiscard]] NlBytes message(std::uint16_t type, std::uint8_t command, const NlBytes& attributes)
 {
-    Bytes out;
+    NlBytes out;
     put<std::uint32_t>(out, static_cast<std::uint32_t>(NLMSG_HDRLEN + GENL_HDRLEN + attributes.size()));
     put<std::uint16_t>(out, type);
     put<std::uint16_t>(out, NLM_F_MULTI);
@@ -84,32 +84,32 @@ constexpr std::uint16_t FAMILY = 0x1C;
 
 TEST(Nl80211Test, TheFamilyRequestAndReply)
 {
-    const Bytes request = Nl80211::familyRequest(7);
+    const NlBytes request = Nl80211::familyRequest(7);
     ASSERT_GE(request.size(), std::size_t{NLMSG_HDRLEN + GENL_HDRLEN});
     std::uint32_t length = 0;
     std::memcpy(&length, request.data(), 4);
     EXPECT_EQ(length, request.size());
     EXPECT_EQ(static_cast<std::uint8_t>(request[NLMSG_HDRLEN]), CTRL_CMD_GETFAMILY);
 
-    const Bytes reply = message(GENL_ID_CTRL,
-                                CTRL_CMD_NEWFAMILY,
-                                concat({attribute(CTRL_ATTR_FAMILY_NAME, Bytes{std::byte{'n'}, std::byte{0}}),
-                                        attribute(CTRL_ATTR_FAMILY_ID, value<std::uint16_t>(FAMILY))}));
+    const NlBytes reply = message(GENL_ID_CTRL,
+                                  CTRL_CMD_NEWFAMILY,
+                                  concat({attribute(CTRL_ATTR_FAMILY_NAME, NlBytes{std::byte{'n'}, std::byte{0}}),
+                                          attribute(CTRL_ATTR_FAMILY_ID, value<std::uint16_t>(FAMILY))}));
     EXPECT_EQ(Nl80211::parseFamilyId(reply), std::optional<std::uint16_t>(FAMILY));
     EXPECT_FALSE(Nl80211::parseFamilyId(message(GENL_ID_CTRL, CTRL_CMD_GETFAMILY, {})).has_value()) << "not a reply";
 }
 
 TEST(Nl80211Test, AStationsRatesAndTheirKind)
 {
-    const Bytes tx = concat({attribute(NL80211_RATE_INFO_BITRATE32, value<std::uint32_t>(8667)),
-                             attribute(NL80211_RATE_INFO_HE_MCS, value<std::uint8_t>(11)),
-                             attribute(NL80211_RATE_INFO_HE_NSS, value<std::uint8_t>(2))});
-    const Bytes rx = concat(
+    const NlBytes tx = concat({attribute(NL80211_RATE_INFO_BITRATE32, value<std::uint32_t>(8667)),
+                               attribute(NL80211_RATE_INFO_HE_MCS, value<std::uint8_t>(11)),
+                               attribute(NL80211_RATE_INFO_HE_NSS, value<std::uint8_t>(2))});
+    const NlBytes rx = concat(
         {attribute(NL80211_RATE_INFO_BITRATE, value<std::uint16_t>(7800)), attribute(NL80211_RATE_INFO_VHT_MCS, value<std::uint8_t>(9))});
-    const Bytes info = concat({attribute(NL80211_STA_INFO_SIGNAL, value<std::int8_t>(-52)),
-                               attribute(NLA_F_NESTED | NL80211_STA_INFO_TX_BITRATE, tx),
-                               attribute(NLA_F_NESTED | NL80211_STA_INFO_RX_BITRATE, rx)});
-    const Bytes reply =
+    const NlBytes info = concat({attribute(NL80211_STA_INFO_SIGNAL, value<std::int8_t>(-52)),
+                                 attribute(NLA_F_NESTED | NL80211_STA_INFO_TX_BITRATE, tx),
+                                 attribute(NLA_F_NESTED | NL80211_STA_INFO_RX_BITRATE, rx)});
+    const NlBytes reply =
         message(FAMILY,
                 NL80211_CMD_NEW_STATION,
                 concat({attribute(NL80211_ATTR_IFINDEX, value<std::uint32_t>(3)), attribute(NLA_F_NESTED | NL80211_ATTR_STA_INFO, info)}));
@@ -128,7 +128,7 @@ TEST(Nl80211Test, AStationsRatesAndTheirKind)
     EXPECT_EQ(Nl80211::standardName(station, 5955), "802.11ax (Wi-Fi 6E)");
 
     EXPECT_FALSE(Nl80211::parseStation(reply, FAMILY + 1).has_value()) << "another family's message";
-    Bytes cut = reply;
+    NlBytes cut = reply;
     cut.resize(cut.size() - 6); // a truncated reply: its declared length runs past the bytes
     EXPECT_FALSE(Nl80211::parseStation(cut, FAMILY).has_value());
 }
@@ -137,12 +137,12 @@ TEST(Nl80211Test, AStationsRatesAndTheirKind)
 // past its nest ends the nest there, keeping what came before; a message shorter than its header is none.
 TEST(Nl80211Test, EhtAndHtRatesAndMalformedReplies)
 {
-    const auto stationWith = [](const Bytes& tx)
+    const auto stationWith = [](const NlBytes& tx)
     {
-        const Bytes info = attribute(NLA_F_NESTED | NL80211_STA_INFO_TX_BITRATE, tx);
+        const NlBytes info = attribute(NLA_F_NESTED | NL80211_STA_INFO_TX_BITRATE, tx);
         return message(FAMILY, NL80211_CMD_NEW_STATION, attribute(NLA_F_NESTED | NL80211_ATTR_STA_INFO, info));
     };
-    const auto txOf = [](const Bytes& reply)
+    const auto txOf = [](const NlBytes& reply)
     {
         return Nl80211::parseStation(reply, FAMILY).value_or(Nl80211::Station{}).tx.value_or(Nl80211::Rate{});
     };
@@ -159,14 +159,14 @@ TEST(Nl80211Test, EhtAndHtRatesAndMalformedReplies)
     EXPECT_EQ(ht.kbps, 144'400U);
 
     // The second attribute claims 64 bytes the nest doesn't have: parsing stops at it.
-    Bytes overlong = attribute(NL80211_RATE_INFO_MCS, value<std::uint8_t>(7));
+    NlBytes overlong = attribute(NL80211_RATE_INFO_MCS, value<std::uint8_t>(7));
     put<std::uint16_t>(overlong, 64);
     put<std::uint16_t>(overlong, NL80211_RATE_INFO_BITRATE32);
     const Nl80211::Rate cut = txOf(stationWith(overlong));
     EXPECT_EQ(cut.kind, Nl80211::RateKind::Ht);
     EXPECT_EQ(cut.kbps, 0U);
 
-    EXPECT_FALSE(Nl80211::parseStation(Bytes(NLMSG_HDRLEN, std::byte{0}), FAMILY).has_value()) << "shorter than its header";
+    EXPECT_FALSE(Nl80211::parseStation(NlBytes(NLMSG_HDRLEN, std::byte{0}), FAMILY).has_value()) << "shorter than its header";
 }
 
 TEST(Nl80211Test, EachRateKindNamesItsStandard)
@@ -186,7 +186,7 @@ TEST(Nl80211Test, EachRateKindNamesItsStandard)
 
 TEST(Nl80211Test, TheStationRequestNamesTheAdapter)
 {
-    const Bytes request = Nl80211::stationRequest(FAMILY, 2, 3);
+    const NlBytes request = Nl80211::stationRequest(FAMILY, 2, 3);
     std::uint16_t type = 0;
     std::uint16_t flags = 0;
     std::memcpy(&type, request.data() + 4, 2);
@@ -194,7 +194,7 @@ TEST(Nl80211Test, TheStationRequestNamesTheAdapter)
     EXPECT_EQ(type, FAMILY);
     EXPECT_EQ(flags, NLM_F_REQUEST | NLM_F_DUMP);
     EXPECT_EQ(static_cast<std::uint8_t>(request[NLMSG_HDRLEN]), NL80211_CMD_GET_STATION);
-    const Bytes ifindex = attribute(NL80211_ATTR_IFINDEX, value<std::uint32_t>(3));
+    const NlBytes ifindex = attribute(NL80211_ATTR_IFINDEX, value<std::uint32_t>(3));
     EXPECT_TRUE(std::equal(ifindex.begin(), ifindex.end(), request.end() - static_cast<std::ptrdiff_t>(ifindex.size())));
 }
 
@@ -211,13 +211,13 @@ TEST(Nl80211Test, AnAdapterWithoutWifiHasNoStation)
 
 /// A netlink header of @p type, @p flags and sequence @p seq with @p payload after it, its length as given or the
 /// real one.
-[[nodiscard]] Bytes reply(std::uint16_t type,
-                          std::uint16_t flags,
-                          std::uint32_t seq,
-                          const Bytes& payload = {},
-                          std::optional<std::uint32_t> length = std::nullopt)
+[[nodiscard]] NlBytes reply(std::uint16_t type,
+                            std::uint16_t flags,
+                            std::uint32_t seq,
+                            const NlBytes& payload = {},
+                            std::optional<std::uint32_t> length = std::nullopt)
 {
-    Bytes out;
+    NlBytes out;
     put<std::uint32_t>(out, length.value_or(static_cast<std::uint32_t>(NLMSG_HDRLEN + payload.size())));
     put<std::uint16_t>(out, type);
     put<std::uint16_t>(out, flags);
@@ -247,7 +247,7 @@ class NetlinkExchangeTest : public ::testing::Test
     }
 
     /// Queues @p datagram for exchange() to receive.
-    void answer(const Bytes& datagram) const
+    void answer(const NlBytes& datagram) const
     {
         ASSERT_EQ(::send(m_Fds[1], datagram.data(), datagram.size(), 0), static_cast<ssize_t>(datagram.size()));
     }
@@ -256,7 +256,7 @@ class NetlinkExchangeTest : public ::testing::Test
     [[nodiscard]] bool run(int& messages) const
     {
         messages = 0;
-        return Nl80211::exchange(m_Fds[0], Bytes(NLMSG_HDRLEN), 2, [&messages](std::span<const std::byte> /*message*/) { ++messages; });
+        return Nl80211::exchange(m_Fds[0], NlBytes(NLMSG_HDRLEN), 2, [&messages](std::span<const std::byte> /*message*/) { ++messages; });
     }
 
     /// The peer sends nothing more: exchange()'s next receive sees the end. (Its request still goes: the peer's
@@ -272,8 +272,9 @@ class NetlinkExchangeTest : public ::testing::Test
 
 TEST_F(NetlinkExchangeTest, AMultipartReplyRunsUntilDoneAndPassesOverOtherSequences)
 {
-    answer(concat({reply(0x1C, NLM_F_MULTI, 2, Bytes(4)), reply(0x1C, NLM_F_MULTI, 9, Bytes(4)), reply(0x1C, NLM_F_MULTI, 2, Bytes(4))}));
-    answer(reply(NLMSG_DONE, NLM_F_MULTI, 2, Bytes(4)));
+    answer(concat(
+        {reply(0x1C, NLM_F_MULTI, 2, NlBytes(4)), reply(0x1C, NLM_F_MULTI, 9, NlBytes(4)), reply(0x1C, NLM_F_MULTI, 2, NlBytes(4))}));
+    answer(reply(NLMSG_DONE, NLM_F_MULTI, 2, NlBytes(4)));
     int messages = 0;
     EXPECT_TRUE(run(messages));
     EXPECT_EQ(messages, 2) << "sequence 9's message isn't this exchange's";
@@ -281,7 +282,7 @@ TEST_F(NetlinkExchangeTest, AMultipartReplyRunsUntilDoneAndPassesOverOtherSequen
 
 TEST_F(NetlinkExchangeTest, ASingleReplyEndsTheExchange)
 {
-    answer(concat({reply(0x1C, 0, 2, Bytes(4)), reply(0x1C, 0, 2, Bytes(4))}));
+    answer(concat({reply(0x1C, 0, 2, NlBytes(4)), reply(0x1C, 0, 2, NlBytes(4))}));
     int messages = 0;
     EXPECT_TRUE(run(messages));
     EXPECT_EQ(messages, 1);
@@ -304,10 +305,10 @@ TEST_F(NetlinkExchangeTest, AnAcknowledgementSucceedsAndAnErrorReplyFails)
 TEST_F(NetlinkExchangeTest, AMalformedLengthFails)
 {
     int messages = 0;
-    answer(reply(0x1C, NLM_F_MULTI, 2, Bytes(4), NLMSG_HDRLEN - 1));
+    answer(reply(0x1C, NLM_F_MULTI, 2, NlBytes(4), NLMSG_HDRLEN - 1));
     EXPECT_FALSE(run(messages)) << "shorter than its own header";
 
-    answer(reply(0x1C, NLM_F_MULTI, 2, Bytes(4), 4096));
+    answer(reply(0x1C, NLM_F_MULTI, 2, NlBytes(4), 4096));
     EXPECT_FALSE(run(messages)) << "longer than the datagram";
     EXPECT_EQ(messages, 0);
 }
@@ -317,9 +318,9 @@ TEST_F(NetlinkExchangeTest, AClosedSocketOrAnEndlessReplyFails)
     int messages = 0;
     for (int datagram = 0; datagram < 64; ++datagram)
     {
-        answer(reply(0x1C, NLM_F_MULTI, 2, Bytes(4)));
+        answer(reply(0x1C, NLM_F_MULTI, 2, NlBytes(4)));
     }
-    answer(reply(NLMSG_DONE, NLM_F_MULTI, 2, Bytes(4))); // the 65th: never read
+    answer(reply(NLMSG_DONE, NLM_F_MULTI, 2, NlBytes(4))); // the 65th: never read
     EXPECT_FALSE(run(messages)) << "bounded at 64 datagrams";
     EXPECT_EQ(messages, 64);
 

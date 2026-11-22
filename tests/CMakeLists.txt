@@ -1267,6 +1267,11 @@ foreach(test_file IN LISTS TASKSMACK_TEST_FILES)
     endif()
 endforeach()
 
+# stb's implementation stays its own unit in a unity build, as the top-level CMakeLists.txt keeps it for the app
+# (#4783): its implementation macros would reach the files after it in a batch. A source file's properties belong to
+# the directory that sets them, so this directory sets its own.
+set_source_files_properties(${CMAKE_SOURCE_DIR}/src/Platform/StbImage.cpp PROPERTIES SKIP_UNITY_BUILD_INCLUSION ON)
+
 # Test executable with all test sources
 add_executable(TaskSmackTests
     ${COMMON_TEST_SOURCES}
@@ -1455,7 +1460,8 @@ add_executable(TaskSmackTests
     # calls resolve against glad_gl_core_33 (linked below) - unlike Theme.cpp it doesn't need
     # a live ImGui/GL context to link, only to actually load a texture successfully (#771).
     ${CMAKE_SOURCE_DIR}/src/UI/IconLoader.cpp
-    # stb_image's implementation, which IconLoader.cpp and the Linux process icons call (#1800)
+    # stb_image's implementation, which IconLoader.cpp and the Linux process icons call (#1800); never in a unity
+    # batch (set below)
     ${CMAKE_SOURCE_DIR}/src/Platform/StbImage.cpp
     # Icons held as image files: desktop entries' PNGs, packaged apps' logos (#1800)
     ${CMAKE_SOURCE_DIR}/src/Platform/IconImageFile.cpp

@@ -223,7 +223,7 @@ TEST(WindowsPathProviderTest, GetUserConfigDirKeepsANonAsciiKnownFolder)
 {
     // A user name outside the code page (#1648): the path is UTF-16 end to end. Nothing is created or written.
     const std::filesystem::path roaming =
-        std::filesystem::temp_directory_path() / Core::utf8ToPath(std::format("{}-AppData-Roaming", TestSupport::allNonAsciiNames()));
+        std::filesystem::temp_directory_path() / Core::utf8ToPath(std::format("{}-AppData-Roaming", ::TestSupport::allNonAsciiNames()));
     const ScopedFakeKnownFolder fake(S_OK, true, roaming.wstring());
 
     const WindowsPathProvider provider(&FakeKnownFolder::get);

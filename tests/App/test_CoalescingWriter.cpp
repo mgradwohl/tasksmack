@@ -26,7 +26,7 @@ namespace App
 namespace
 {
 
-constexpr std::string_view THREAD_NAME = "ts-test-write";
+constexpr std::string_view COALESCING_THREAD_NAME = "ts-test-write";
 constexpr auto WAIT_LIMIT = std::chrono::seconds(10); // so a broken writer fails the test, not hangs it
 
 /// What a fake sink wrote, and on which thread.
@@ -97,7 +97,7 @@ TEST(CoalescingWriterTest, TheWriteRunsOnTheWorkerNotTheCaller)
     Written written;
     int failures = 0;
     CoalescingWriter<int> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&written](const int& value)
         {
             written.record(value);
@@ -120,7 +120,7 @@ TEST(CoalescingWriterTest, TwoQuickSavesWhileAWriteIsInFlightProduceOneWriteOfTh
     Gate gate;
     Written written;
     CoalescingWriter<int> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&gate, &written](const int& value)
         {
             gate.enter();
@@ -149,7 +149,7 @@ TEST(CoalescingWriterTest, ARunOfFailedWritesIsReportedOnce)
     int writes = 0;
     int failures = 0;
     CoalescingWriter<int> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&succeed, &writes](const int& /*value*/)
         {
             ++writes;
@@ -179,7 +179,7 @@ TEST(CoalescingWriterTest, ASinkThatThrowsIsAFailureAndTheWriterGoesOn)
     Written written;
     int failures = 0;
     CoalescingWriter<int> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&written](const int& value) -> bool
         {
             if (value == 1)
@@ -205,7 +205,7 @@ TEST(CoalescingWriterTest, FlushWritesThePendingSnapshotBeforeItReturns)
     Gate gate;
     Written written;
     CoalescingWriter<int> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&gate, &written](const int& value)
         {
             gate.enter();
@@ -232,7 +232,7 @@ TEST(CoalescingWriterTest, DestructionWritesThePendingSnapshot)
     bool firstInFlight = false;
     {
         CoalescingWriter<int> writer(
-            THREAD_NAME,
+            COALESCING_THREAD_NAME,
             [&gate, &written](const int& value)
             {
                 gate.enter();
@@ -254,7 +254,7 @@ TEST(CoalescingWriterTest, ASaveAfterTheWorkerEndedStartsAnother)
 {
     Written written;
     CoalescingWriter<int> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&written](const int& value)
         {
             written.record(value);
@@ -297,7 +297,7 @@ template<typename Failure> void expectAFailedStartLeavesTheNextSubmitFree()
     Starter::failures = 1;
     Written written;
     CoalescingWriter<int, Starter> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&written](const int& value)
         {
             written.record(value);
@@ -337,7 +337,7 @@ TEST(CoalescingWriterTest, AFlushWritesWhatAFailedStartLeftPending)
     Starter::failures = 1;
     Written written;
     CoalescingWriter<int, Starter> writer(
-        THREAD_NAME,
+        COALESCING_THREAD_NAME,
         [&written](const int& value)
         {
             written.record(value);

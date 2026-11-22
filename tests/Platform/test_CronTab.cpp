@@ -16,18 +16,16 @@ namespace Platform
 namespace
 {
 
-using CronTab::parse;
-
 TEST(CronTabTest, AUsersCrontabsJobsWithTheirScheduleCommandAndLine)
 {
-    const std::vector<CronTab::Entry> jobs = parse("# m h dom mon dow command\n"
-                                                   "MAILTO=me@example.com\n"
-                                                   "PATH = /usr/bin:/bin\n"
-                                                   "\n"
-                                                   "@reboot /home/me/bin/start-sync --quiet\n"
-                                                   "*/15 * * * *  /usr/bin/backup.sh > /dev/null 2>&1\n"
-                                                   "\t30 2 * * 1-5 cd /srv && make nightly\r\n",
-                                                   /*withUser=*/false);
+    const std::vector<CronTab::Entry> jobs = CronTab::parse("# m h dom mon dow command\n"
+                                                            "MAILTO=me@example.com\n"
+                                                            "PATH = /usr/bin:/bin\n"
+                                                            "\n"
+                                                            "@reboot /home/me/bin/start-sync --quiet\n"
+                                                            "*/15 * * * *  /usr/bin/backup.sh > /dev/null 2>&1\n"
+                                                            "\t30 2 * * 1-5 cd /srv && make nightly\r\n",
+                                                            /*withUser=*/false);
     ASSERT_EQ(jobs.size(), 3U);
     EXPECT_EQ(jobs[0].schedule, "@reboot");
     EXPECT_EQ(jobs[0].command, "/home/me/bin/start-sync --quiet");
@@ -42,12 +40,12 @@ TEST(CronTabTest, AUsersCrontabsJobsWithTheirScheduleCommandAndLine)
 
 TEST(CronTabTest, TheSystemTablesNameTheUser)
 {
-    const std::vector<CronTab::Entry> jobs = parse("SHELL=/bin/sh\n"
-                                                   "17 *\t* * *\troot\tcd / && run-parts --report /etc/cron.hourly\n"
-                                                   "@reboot root /usr/local/sbin/firstboot\n"
-                                                   "@daily\n"          // no user, no command
-                                                   "5 4 * * * root\n", // a user but no command
-                                                   /*withUser=*/true);
+    const std::vector<CronTab::Entry> jobs = CronTab::parse("SHELL=/bin/sh\n"
+                                                            "17 *\t* * *\troot\tcd / && run-parts --report /etc/cron.hourly\n"
+                                                            "@reboot root /usr/local/sbin/firstboot\n"
+                                                            "@daily\n"          // no user, no command
+                                                            "5 4 * * * root\n", // a user but no command
+                                                            /*withUser=*/true);
     ASSERT_EQ(jobs.size(), 2U);
     EXPECT_EQ(jobs[0].schedule, "17 * * * *");
     EXPECT_EQ(jobs[0].user, "root");
@@ -58,12 +56,12 @@ TEST(CronTabTest, TheSystemTablesNameTheUser)
 
 TEST(CronTabTest, LinesThatArentJobsAreSkipped)
 {
-    EXPECT_TRUE(parse("", false).empty());
-    EXPECT_TRUE(parse("# only a comment\n   \n", false).empty());
-    EXPECT_TRUE(parse("@everyminute /bin/true\n", false).empty()); // not a cron schedule name
-    EXPECT_TRUE(parse("1 2 3\n", false).empty());                  // too short for five fields
-    EXPECT_TRUE(parse("1 2 3 4 5\n", false).empty());              // a schedule with no command
-    EXPECT_EQ(parse("@hourly /bin/true", false).size(), 1U);       // no trailing newline
+    EXPECT_TRUE(CronTab::parse("", false).empty());
+    EXPECT_TRUE(CronTab::parse("# only a comment\n   \n", false).empty());
+    EXPECT_TRUE(CronTab::parse("@everyminute /bin/true\n", false).empty()); // not a cron schedule name
+    EXPECT_TRUE(CronTab::parse("1 2 3\n", false).empty());                  // too short for five fields
+    EXPECT_TRUE(CronTab::parse("1 2 3 4 5\n", false).empty());              // a schedule with no command
+    EXPECT_EQ(CronTab::parse("@hourly /bin/true", false).size(), 1U);       // no trailing newline
 }
 
 TEST(CronTabTest, TheScheduleIsWordedForTheStartupTab)
@@ -77,13 +75,13 @@ TEST(CronTabTest, TheScheduleIsWordedForTheStartupTab)
 // around the value are dropped as cron drops them.
 TEST(CronTabTest, EachJobKeepsThePathAndShellSetAboveIt)
 {
-    const std::vector<CronTab::Entry> jobs = parse("@daily first\n"
-                                                   "PATH=/opt/backup/bin:/usr/bin\n"
-                                                   "@daily second\n"
-                                                   "SHELL = /bin/bash\n"
-                                                   "PATH = \"/opt/other\" \n"
-                                                   "@daily third\n",
-                                                   /*withUser=*/false);
+    const std::vector<CronTab::Entry> jobs = CronTab::parse("@daily first\n"
+                                                            "PATH=/opt/backup/bin:/usr/bin\n"
+                                                            "@daily second\n"
+                                                            "SHELL = /bin/bash\n"
+                                                            "PATH = \"/opt/other\" \n"
+                                                            "@daily third\n",
+                                                            /*withUser=*/false);
     ASSERT_EQ(jobs.size(), 3U);
     EXPECT_EQ(jobs[0].path, "/usr/bin:/bin") << "cron's default, crontab(5)";
     EXPECT_EQ(jobs[0].shell, "/bin/sh");

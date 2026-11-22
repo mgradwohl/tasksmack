@@ -24,7 +24,7 @@ namespace
 
 using Platform::SchedPolicy;
 
-constexpr const char* POPUP_ID = "###SetSchedPolicy";
+constexpr const char* SCHED_POLICY_TEST_POPUP_ID = "###SetSchedPolicy";
 
 TEST(ProcessSchedPolicyDialogTest, ChoosesTheCurrentPolicyWhenItOffersIt)
 {
@@ -252,7 +252,7 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, ApplyHandsOnTheChosenPolicyOnceAndClo
     std::string text;
     EXPECT_FALSE(frame(dialog).has_value());
     EXPECT_FALSE(frame(dialog, &text).has_value());
-    ASSERT_TRUE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+    ASSERT_TRUE(ImGui::IsPopupOpen(SCHED_POLICY_TEST_POPUP_ID, ImGuiPopupFlags_AnyPopupId));
     for (const SchedPolicyChoice& choice : SCHED_POLICY_CHOICES)
     {
         EXPECT_TRUE(text.contains(choice.description)) << text;
@@ -442,14 +442,14 @@ TEST_F(ProcessSchedPolicyDialogRenderTest, CancelEscapeAndADismissalHandOnNothin
         EXPECT_FALSE(frame(dialog).has_value());
     }
     EXPECT_FALSE(dialog.isPending());
-    EXPECT_FALSE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+    EXPECT_FALSE(ImGui::IsPopupOpen(SCHED_POLICY_TEST_POPUP_ID, ImGuiPopupFlags_AnyPopupId));
 
     // A request dismissed before it opened is dropped.
     dialog.open({.pid = 42, .startTimeTicks = 7}, "server", SchedPolicy::Normal);
     dialog.dismiss();
     EXPECT_FALSE(dialog.isPending());
     EXPECT_FALSE(frame(dialog).has_value());
-    EXPECT_FALSE(ImGui::IsPopupOpen(POPUP_ID, ImGuiPopupFlags_AnyPopupId));
+    EXPECT_FALSE(ImGui::IsPopupOpen(SCHED_POLICY_TEST_POPUP_ID, ImGuiPopupFlags_AnyPopupId));
 }
 
 // #3886: Apply is put together once for the row menu and Process Details' card: the line meanwhile, one

@@ -804,9 +804,9 @@ TEST_F(ProcessesPanelRenderTest, AClippedActionResultShowsInFullOnHover)
     for (int row = 1; row <= 4 && !shown; ++row)
     {
         const float y = lineHeight * 0.5F * static_cast<float>(row);
-        for (int step = 0; static_cast<float>(step) * 8.0F < DISPLAY_WIDTH && !shown; ++step)
+        for (int step = 0; static_cast<float>(step) * 8.0F < PANEL_RENDER_DISPLAY_WIDTH && !shown; ++step)
         {
-            ImGui::GetIO().AddMousePosEvent(DISPLAY_WIDTH - 2.0F - (static_cast<float>(step) * 8.0F), y);
+            ImGui::GetIO().AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH - 2.0F - (static_cast<float>(step) * 8.0F), y);
             static_cast<void>(renderAndCapture(*panel));
             shown = copies() >= 2;
         }

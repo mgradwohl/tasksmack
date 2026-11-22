@@ -32,7 +32,7 @@ using Platform::MemoryMappingKind;
 using Platform::MemoryMapReadResult;
 using Platform::MemoryMapReadStatus;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr Platform::ProcessTarget MEMORY_MAP_RENDER_TARGET{.pid = 4242, .startTimeTicks = 777};
 
 /// Regions as the Windows reader reports them: no smaps sizes, a reserved one, copy-on-write image data.
 [[nodiscard]] MemoryMapReadResult windowsMap()
@@ -134,18 +134,18 @@ TEST(ProcessMemoryMapViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     TestMocks::MockProcessMemoryMapReader reader;
     reader.setResult(windowsMap());
 
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F)); // never drawn open: never read
+    EXPECT_FALSE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 10.0F)); // never drawn open: never read
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_TRUE(view.hasRead());
     EXPECT_EQ(view.rows().size(), 6U);
 
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F)); // not yet due
+    EXPECT_FALSE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 1.0F)); // not yet due
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 4.5F)); // PROCESS_MEMORY_MAP_REFRESH_MS since the last read
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 4.5F)); // PROCESS_MEMORY_MAP_REFRESH_MS since the last read
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 
     // A new selection drops the rows and the totals and reads again as soon as it is shown.
@@ -154,8 +154,8 @@ TEST(ProcessMemoryMapViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     EXPECT_TRUE(view.rows().empty());
     EXPECT_TRUE(view.totals().empty());
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 3);
 }
 
@@ -188,9 +188,9 @@ TEST(ProcessMemoryMapViewTest, AReadIsPreparedOnItsWorkerInTheOrderAtItsStart)
     TestMocks::MockProcessMemoryMapReader reader;
     reader.setResult(windowsMap());
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
     view.setSort(Detail::MemoryMapColumn::Size, true);
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     ASSERT_EQ(view.rows().size(), 6U);
     for (std::size_t i = 1; i < view.rows().size(); ++i)
     {
@@ -204,9 +204,9 @@ TEST(ProcessMemoryMapViewTest, DropsAReadForAPreviousSelection)
     TestMocks::MockProcessMemoryMapReader reader;
     reader.setResult(windowsMap());
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
     view.onSelectionChanged();
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_FALSE(view.hasRead());
 }
 
@@ -317,21 +317,21 @@ TEST(ProcessMemoryMapViewTest, ARefusedReadOffersAuthenticateToReadAndThePressRe
     reader.setResult({.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false});
 
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_EQ(view.status(), MemoryMapReadStatus::PermissionDenied);
     EXPECT_TRUE(view.readRefusedForPermission()) << "where no helper can read it, the restart is offered instead";
     EXPECT_FALSE(view.offersAuthenticateToRead()) << "this reader can't read as an administrator";
 
     reader.setAuthorizedResult(windowsMap());
-    static_cast<void>(view.update(&reader, TARGET,
+    static_cast<void>(view.update(&reader, MEMORY_MAP_RENDER_TARGET,
                                   0.0F)); // takes in what the reader can do now
     ASSERT_TRUE(view.offersAuthenticateToRead());
     EXPECT_EQ(reader.authorizedReadCount(), 0) << "nothing is read as an administrator until the press";
 
     view.requestAuthorizedRead();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     EXPECT_EQ(view.status(), MemoryMapReadStatus::Ok);
     EXPECT_EQ(view.rows().size(), 6U);
@@ -389,7 +389,7 @@ TEST_F(ProcessMemoryMapViewRenderTest, DrawsNothingWithoutSupportAndNothingReadW
     TestMocks::MockProcessMemoryMapReader reader;
     for (int i = 0; i < 3; ++i)
     {
-        static_cast<void>(view.update(&reader, TARGET, 10.0F));
+        static_cast<void>(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 10.0F));
         EXPECT_TRUE(renderAndCapture(view, true, false).contains("Memory map"));
     }
     EXPECT_EQ(reader.readCount(), 0);
@@ -435,12 +435,12 @@ TEST_F(ProcessMemoryMapViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonAnd
     TestMocks::MockProcessMemoryMapReader reader;
     reader.setResult({.status = MemoryMapReadStatus::PermissionDenied, .mappings = {}, .detail = {}, .truncated = false});
     static_cast<void>(renderAndCapture(view, true)); // drawn open, so the first update reads
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_FALSE(renderAndCapture(view, true).contains(AuthorizeWording::READ_TEXT)) << "the reader can't read as an administrator";
 
     reader.setAuthorizedResult(windowsMap());
-    static_cast<void>(view.update(&reader, TARGET,
+    static_cast<void>(view.update(&reader, MEMORY_MAP_RENDER_TARGET,
                                   0.0F)); // takes in what the reader can do now
     ASSERT_TRUE(view.offersAuthenticateToRead());
     std::string text = renderAndCapture(view, true);
@@ -453,8 +453,8 @@ TEST_F(ProcessMemoryMapViewRenderTest, ARefusedReadDrawsTheAuthenticateButtonAnd
     // The button is in its section's ID scope (#4268).
     ImGui::ActivateItemByID(ImHashStr(AuthorizeWording::READ_LABEL, 0, ImHashStr("memory_map", 0, details->ID)));
     static_cast<void>(renderAndCapture(view, true)); // the frame the press lands in
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, MEMORY_MAP_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
     EXPECT_EQ(reader.authorizedReadCount(), 1);
     text = renderAndCapture(view, true);
     EXPECT_FALSE(text.contains(AuthorizeWording::READ_TEXT));
@@ -496,13 +496,13 @@ TEST_F(ProcessMemoryMapViewRenderTest, TwoRefusedSectionsEachTakeTheirOwnPress)
     };
     const auto update = [&]
     {
-        if (modules.update(&modulesReader, TARGET, 0.0F))
+        if (modules.update(&modulesReader, MEMORY_MAP_RENDER_TARGET, 0.0F))
         {
-            modules.finishPendingRead(TARGET);
+            modules.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
         }
-        if (memoryMap.update(&mapReader, TARGET, 0.0F))
+        if (memoryMap.update(&mapReader, MEMORY_MAP_RENDER_TARGET, 0.0F))
         {
-            memoryMap.finishPendingRead(TARGET);
+            memoryMap.finishPendingRead(MEMORY_MAP_RENDER_TARGET);
         }
     };
 

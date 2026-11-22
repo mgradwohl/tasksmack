@@ -24,7 +24,7 @@ namespace
 
 using ProcessGrouping::GroupBy;
 
-[[nodiscard]] Domain::ProcessSnapshot proc(const char* name, const char* unit, const char* container, double cpu, std::uint64_t rss)
+[[nodiscard]] Domain::ProcessSnapshot groupingProc(const char* name, const char* unit, const char* container, double cpu, std::uint64_t rss)
 {
     Domain::ProcessSnapshot s;
     s.name = name;
@@ -93,11 +93,11 @@ TEST(ProcessGroupingTest, ASavedModeNotOfferedFallsBackToNone)
 
 TEST(ProcessGroupingTest, KeysByMode)
 {
-    const Domain::ProcessSnapshot p = proc("firefox", "app-gnome-firefox-4521.scope", "", 1.0, 10);
+    const Domain::ProcessSnapshot p = groupingProc("firefox", "app-gnome-firefox-4521.scope", "", 1.0, 10);
     EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::Unit), "app-gnome-firefox-4521.scope");
     EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "firefox");
     EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::Container), "");
-    EXPECT_EQ(ProcessGrouping::groupKey(proc("nginx", "", "docker:1a2b3c4d5e6f", 0, 0), GroupBy::Container), "docker:1a2b3c4d5e6f");
+    EXPECT_EQ(ProcessGrouping::groupKey(groupingProc("nginx", "", "docker:1a2b3c4d5e6f", 0, 0), GroupBy::Container), "docker:1a2b3c4d5e6f");
     EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::None), "");
 }
 
@@ -106,10 +106,10 @@ TEST(ProcessGroupingTest, KeysByMode)
 TEST(ProcessGroupingTest, ByUserTotalsEachUsersProcesses)
 {
     std::vector<Domain::ProcessSnapshot> snapshots{
-        proc("firefox", "", "", 20.0, 300),
-        proc("sshd", "", "", 1.0, 10),
-        proc("bash", "", "", 2.0, 20),
-        proc("ghost", "", "", 0.5, 5),
+        groupingProc("firefox", "", "", 20.0, 300),
+        groupingProc("sshd", "", "", 1.0, 10),
+        groupingProc("bash", "", "", 2.0, 20),
+        groupingProc("ghost", "", "", 0.5, 5),
     };
     snapshots[0].user = "alice";
     snapshots[1].user = "root";
@@ -130,12 +130,12 @@ TEST(ProcessGroupingTest, ByUserTotalsEachUsersProcesses)
 TEST(ProcessGroupingTest, GroupsTotalTheirRunningMembersAndSortByTotalsWithUngroupedLast)
 {
     const std::vector<Domain::ProcessSnapshot> snapshots{
-        proc("dockerd", "docker.service", "", 3.0, 200),    // 0
-        proc("kthreadd", "", "", 0.0, 0),                   // 1: Ungrouped
-        proc("firefox", "firefox.scope", "", 8.0, 1000),    // 2
-        proc("containerd", "docker.service", "", 1.0, 100), // 3
-        proc("Web Content", "firefox.scope", "", 4.0, 500), // 4
-        proc("gone", "docker.service", "", 50.0, 9999),     // 5: an exited row, not counted
+        groupingProc("dockerd", "docker.service", "", 3.0, 200),    // 0
+        groupingProc("kthreadd", "", "", 0.0, 0),                   // 1: Ungrouped
+        groupingProc("firefox", "firefox.scope", "", 8.0, 1000),    // 2
+        groupingProc("containerd", "docker.service", "", 1.0, 100), // 3
+        groupingProc("Web Content", "firefox.scope", "", 4.0, 500), // 4
+        groupingProc("gone", "docker.service", "", 50.0, 9999),     // 5: an exited row, not counted
     };
     const std::vector<std::size_t> order{0, 1, 2, 3, 4, 5};
 
@@ -165,7 +165,8 @@ TEST(ProcessGroupingTest, GroupsTotalTheirRunningMembersAndSortByTotalsWithUngro
 
 TEST(ProcessGroupingTest, EqualTotalsSortByNameAToZEvenWhenDescending)
 {
-    const std::vector<Domain::ProcessSnapshot> snapshots{proc("b", "bravo.service", "", 0.0, 0), proc("a", "alpha.service", "", 0.0, 0)};
+    const std::vector<Domain::ProcessSnapshot> snapshots{groupingProc("b", "bravo.service", "", 0.0, 0),
+                                                         groupingProc("a", "alpha.service", "", 0.0, 0)};
     const auto groups = ProcessGrouping::buildGroups(snapshots, {0, 1}, GroupBy::Unit, 2, ProcessColumn::CpuPercent, false);
     ASSERT_EQ(groups.size(), 2U);
     EXPECT_EQ(groups[0].key, "alpha.service");
@@ -270,7 +271,7 @@ TEST(ProcessGroupingTest, LabelsNonAppUnitsAndStaleIndices)
     EXPECT_EQ(ProcessGrouping::appFromUnit("app-gnome-firefox-4521.slice"), "");
     EXPECT_EQ(ProcessGrouping::appFromUnit("sshd.service"), "");
 
-    const std::vector<Domain::ProcessSnapshot> snapshots{proc("nginx", "", "docker:1", 1.0, 10)};
+    const std::vector<Domain::ProcessSnapshot> snapshots{groupingProc("nginx", "", "docker:1", 1.0, 10)};
     const std::vector<ProcessGrouping::Group> groups =
         ProcessGrouping::buildGroups(snapshots, {0, 7}, GroupBy::Container, snapshots.size(), ProcessColumn::CpuPercent, false);
     ASSERT_EQ(groups.size(), 1U);
@@ -316,7 +317,7 @@ TEST(ProcessGroupingTest, SessionsDemandFollowsUserGrouping)
 [[nodiscard]] Domain::ProcessSnapshot
 windowsProc(std::int32_t pid, std::int32_t parentPid, const char* name, const char* family, const char* aumid)
 {
-    Domain::ProcessSnapshot s = proc(name, "", "", 0.0, 0);
+    Domain::ProcessSnapshot s = groupingProc(name, "", "", 0.0, 0);
     s.pid = pid;
     s.parentPid = parentPid;
     s.startTimeTicks = 1000 + static_cast<std::uint64_t>(pid);
@@ -329,7 +330,7 @@ windowsProc(std::int32_t pid, std::int32_t parentPid, const char* name, const ch
 // then the app Linux reads from the systemd unit; none of them is Ungrouped.
 TEST(ProcessGroupingAppTest, TheKeyIsThePackageThenTheAppUserModelIdThenTheUnit)
 {
-    Domain::ProcessSnapshot p = proc("WindowsTerminal.exe", "app-gnome-firefox-4521.scope", "", 0.0, 0);
+    Domain::ProcessSnapshot p = groupingProc("WindowsTerminal.exe", "app-gnome-firefox-4521.scope", "", 0.0, 0);
     p.packageFamily = "Microsoft.WindowsTerminal_8wekyb3d8bbwe";
     p.appUserModelId = "Contoso.Other";
     EXPECT_EQ(ProcessGrouping::groupKey(p, GroupBy::App), "Microsoft.WindowsTerminal_8wekyb3d8bbwe");
@@ -391,7 +392,7 @@ TEST(ProcessGroupingAppTest, TheDetailsRowFollowsTheTablesGroup)
         windowsProc(20, 0, "WindowsTerminal.exe", "Microsoft.WindowsTerminal_8wekyb3d8bbwe", ""),
         windowsProc(21, 20, "pwsh.exe", "", ""),
         windowsProc(30, 0, "notepad.exe", "", ""),
-        proc("firefox", "app-gnome-firefox-4521.scope", "", 0.0, 0),
+        groupingProc("firefox", "app-gnome-firefox-4521.scope", "", 0.0, 0),
     };
     s[0].appName = "Windows Terminal";
     s[3].pid = 40;
@@ -570,7 +571,7 @@ TEST(ProcessGroupingTest, OneProcessesAppMembershipIsWhatTheWholeGenerationSays)
     s[5].appName = "Windows Terminal"; // the second of its app's processes has the Start menu's name
     for (const auto& [name, unit] : {std::pair{"firefox", "app-gnome-firefox-4521.scope"}, std::pair{"firefox", ""}})
     {
-        Domain::ProcessSnapshot unitProc = proc(name, unit, "", 0.0, 0);
+        Domain::ProcessSnapshot unitProc = groupingProc(name, unit, "", 0.0, 0);
         unitProc.pid = static_cast<std::int32_t>(100 + s.size());
         unitProc.parentPid = (unit[0] == '\0') ? static_cast<std::int32_t>(100 + s.size() - 1) : 1;
         unitProc.startTimeTicks = 5000 + s.size();

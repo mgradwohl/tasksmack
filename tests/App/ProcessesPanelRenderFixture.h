@@ -98,8 +98,8 @@ using FakeLookupClient = TestMocks::FakeHttpsClient;
 namespace App
 {
 
-constexpr float DISPLAY_WIDTH = 1600.0F;
-constexpr float DISPLAY_HEIGHT = 1200.0F;
+constexpr float PANEL_RENDER_DISPLAY_WIDTH = 1600.0F;
+constexpr float PANEL_RENDER_DISPLAY_HEIGHT = 1200.0F;
 
 /// onAttach(), then the seed the sampler thread takes (#2731), adopted as the first frame after it
 /// would: the tests below read the rows, actions and capabilities as they stand after it.
@@ -120,7 +120,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(PANEL_RENDER_DISPLAY_WIDTH, PANEL_RENDER_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -314,7 +314,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
     static void selectAll(ProcessesPanel& panel)
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: navigation is armed
+        io.AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH * 0.5F, PANEL_RENDER_DISPLAY_HEIGHT * 0.5F); // hovered: navigation is armed
         io.AddKeyEvent(ImGuiMod_Ctrl, true);
         io.AddKeyEvent(ImGuiKey_A, true);
         static_cast<void>(renderAndCapture(panel));
@@ -351,7 +351,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
         std::string captured;
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(PANEL_RENDER_DISPLAY_WIDTH, PANEL_RENDER_DISPLAY_HEIGHT));
         ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
         panel.renderContent();
@@ -411,7 +411,7 @@ class ProcessesPanelRenderTest : public ::testing::Test
     static void pressKey(ProcessesPanel& panel, ImGuiKey key)
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: navigation is armed
+        io.AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH * 0.5F, PANEL_RENDER_DISPLAY_HEIGHT * 0.5F); // hovered: navigation is armed
         io.AddKeyEvent(key, true);
         static_cast<void>(renderAndCapture(panel));
         io.AddKeyEvent(key, false);

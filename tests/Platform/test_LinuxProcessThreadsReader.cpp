@@ -27,7 +27,7 @@ namespace Platform
 namespace
 {
 
-constexpr ProcessTarget TARGET{.pid = 100, .startTimeTicks = 4242};
+constexpr ProcessTarget THREADS_READER_TARGET{.pid = 100, .startTimeTicks = 4242};
 
 class LinuxProcessThreadsReaderTest : public ::testing::Test
 {
@@ -55,7 +55,7 @@ TEST_F(LinuxProcessThreadsReaderTest, ReadsEachThreadsStat)
 {
     LinuxProcessThreadsReader reader(m_Proc.path.string());
     EXPECT_TRUE(reader.hasThreads());
-    const ThreadsReadResult result = reader.readThreads(TARGET);
+    const ThreadsReadResult result = reader.readThreads(THREADS_READER_TARGET);
     ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
     EXPECT_GT(result.ticksPerSecond, 0);
     ASSERT_EQ(result.threads.size(), 2U);
@@ -78,7 +78,7 @@ TEST_F(LinuxProcessThreadsReaderTest, AThreadNameIsWellFormedOnOneLine)
     write("100/task/105/stat", "105 (Sicherung-Gr\xC3\xB6\xC3) R 1 100 100 0 -1 4194560 10 0 0 0 300 40 0 0 25 5 2 0 5000 1000 50\n");
     write("100/task/100/stat", "100 (a\nb) S 1 100 100 0 -1 4194560 10 0 0 0 5 6 0 0 20 0 2 0 4242 1000 50\n");
     LinuxProcessThreadsReader reader(m_Proc.path.string());
-    const ThreadsReadResult result = reader.readThreads(TARGET);
+    const ThreadsReadResult result = reader.readThreads(THREADS_READER_TARGET);
     ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
     ASSERT_EQ(result.threads.size(), 2U);
     EXPECT_EQ(result.threads[0].name, "a b");
@@ -90,7 +90,7 @@ TEST_F(LinuxProcessThreadsReaderTest, AThreadWhoseStatCantBeReadIsLeftOut)
     std::filesystem::create_directories(m_Proc.path / "100" / "task" / "106"); // exited: no stat
     write("100/task/not-a-tid", "");
     LinuxProcessThreadsReader reader(m_Proc.path.string());
-    const ThreadsReadResult result = reader.readThreads(TARGET);
+    const ThreadsReadResult result = reader.readThreads(THREADS_READER_TARGET);
     ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
     EXPECT_EQ(result.threads.size(), 2U);
 }
@@ -109,7 +109,7 @@ TEST_F(LinuxProcessThreadsReaderTest, AnEmptyTaskDirectoryIsAnExitedProcess)
     std::filesystem::remove_all(m_Proc.path / "100" / "task");
     std::filesystem::create_directories(m_Proc.path / "100" / "task");
     LinuxProcessThreadsReader reader(m_Proc.path.string());
-    EXPECT_EQ(reader.readThreads(TARGET).status, ThreadsReadStatus::ProcessExited);
+    EXPECT_EQ(reader.readThreads(THREADS_READER_TARGET).status, ThreadsReadStatus::ProcessExited);
 }
 
 // #3221: a task entry that isn't a directory is a failure that says why; one this user can't open is a
@@ -119,7 +119,7 @@ TEST_F(LinuxProcessThreadsReaderTest, ATaskDirectoryItCantOpenSaysWhy)
     std::filesystem::remove_all(m_Proc.path / "100" / "task");
     write("100/task", "");
     LinuxProcessThreadsReader reader(m_Proc.path.string());
-    const ThreadsReadResult notADirectory = reader.readThreads(TARGET);
+    const ThreadsReadResult notADirectory = reader.readThreads(THREADS_READER_TARGET);
     EXPECT_EQ(notADirectory.status, ThreadsReadStatus::Failed);
     EXPECT_FALSE(notADirectory.detail.empty());
 
@@ -130,7 +130,7 @@ TEST_F(LinuxProcessThreadsReaderTest, ATaskDirectoryItCantOpenSaysWhy)
     std::filesystem::remove(m_Proc.path / "100" / "task");
     std::filesystem::create_directories(m_Proc.path / "100" / "task");
     std::filesystem::permissions(m_Proc.path / "100" / "task", std::filesystem::perms::none);
-    const ThreadsReadResult denied = reader.readThreads(TARGET);
+    const ThreadsReadResult denied = reader.readThreads(THREADS_READER_TARGET);
     std::filesystem::permissions(m_Proc.path / "100" / "task", std::filesystem::perms::owner_all);
     EXPECT_EQ(denied.status, ThreadsReadStatus::PermissionDenied);
 }
@@ -145,7 +145,7 @@ TEST_F(LinuxProcessThreadsReaderTest, AProcessWithMoreThreadsThanTheCapIsTruncat
         write("100/task/" + tid + "/stat", tid + " (w) S 1 100 100 0 -1 0 0 0 0 0 0 0 0 0 20 0 1 0 5000 0 0\n");
     }
     LinuxProcessThreadsReader reader(m_Proc.path.string());
-    const ThreadsReadResult result = reader.readThreads(TARGET);
+    const ThreadsReadResult result = reader.readThreads(THREADS_READER_TARGET);
     ASSERT_EQ(result.status, ThreadsReadStatus::Ok);
     EXPECT_TRUE(result.truncated);
     EXPECT_EQ(result.threads.size(), LinuxProcessThreadsReader::MAX_THREADS);

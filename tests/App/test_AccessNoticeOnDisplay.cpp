@@ -37,23 +37,6 @@
 namespace
 {
 
-/// A display with a GL 3.3 core context, as UiLayersOnDisplayTest finds one.
-bool hasDisplay()
-{
-#ifdef _WIN32
-    const bool available = TestSupport::detectWindowsDisplay();
-#else
-    // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
-    const char* display = std::getenv("DISPLAY");
-    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
-    // NOLINTEND(concurrency-mt-unsafe)
-    const bool named = (display != nullptr && *display != '\0') || (waylandDisplay != nullptr && *waylandDisplay != '\0');
-    const bool available =
-        (named && TestSupport::probeGLCapability()) || (TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability());
-#endif
-    return TestSupport::enforceDisplayRequirement(available);
-}
-
 constexpr bool LINUX = App::AccessChoice::HOST == App::AccessChoice::AccessPlatform::Linux;
 
 /// What the driver saw.
@@ -171,7 +154,7 @@ NoticeObserved runNotice(const char* label)
 
 TEST(AccessNoticeOnDisplayTest, OkClosesIt)
 {
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }

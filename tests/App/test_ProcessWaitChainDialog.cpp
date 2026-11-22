@@ -32,7 +32,7 @@ namespace
 
 using WaitChainDetail::ThreadRows;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 7, .startTimeTicks = 700};
+constexpr Platform::ProcessTarget WAIT_CHAIN_TARGET{.pid = 7, .startTimeTicks = 700};
 constexpr std::int32_t OWN_PID = 1;
 constexpr std::int32_t SERVER_PID = 77;
 constexpr std::uint64_t SERVER_START = 7700;
@@ -77,17 +77,17 @@ constexpr std::uint64_t SERVER_START = 7700;
     Platform::WaitChainReadResult result;
     result.status = Platform::WaitChainReadStatus::Ok;
     result.threadCount = 4;
-    result.threads.push_back(chain(10, {thread(TARGET.pid, 10, Platform::WaitNodeStatus::Running)}));
+    result.threads.push_back(chain(10, {thread(WAIT_CHAIN_TARGET.pid, 10, Platform::WaitNodeStatus::Running)}));
     result.threads.push_back(chain(11,
-                                   {thread(TARGET.pid, 11, Platform::WaitNodeStatus::Blocked),
+                                   {thread(WAIT_CHAIN_TARGET.pid, 11, Platform::WaitNodeStatus::Blocked),
                                     object(Platform::WaitObjectType::Mutex, Platform::WaitNodeStatus::Owned, "Lock"),
                                     thread(SERVER_PID, 30, Platform::WaitNodeStatus::Blocked, "server.exe")}));
     result.threads.push_back(chain(12,
-                                   {thread(TARGET.pid, 12, Platform::WaitNodeStatus::Blocked),
+                                   {thread(WAIT_CHAIN_TARGET.pid, 12, Platform::WaitNodeStatus::Blocked),
                                     object(Platform::WaitObjectType::CriticalSection, Platform::WaitNodeStatus::Owned),
-                                    thread(TARGET.pid, 13, Platform::WaitNodeStatus::Blocked),
+                                    thread(WAIT_CHAIN_TARGET.pid, 13, Platform::WaitNodeStatus::Blocked),
                                     object(Platform::WaitObjectType::CriticalSection, Platform::WaitNodeStatus::Owned),
-                                    thread(TARGET.pid, 12, Platform::WaitNodeStatus::Blocked)},
+                                    thread(WAIT_CHAIN_TARGET.pid, 12, Platform::WaitNodeStatus::Blocked)},
                                    true));
     return result;
 }
@@ -121,7 +121,7 @@ TEST(ProcessWaitChainDialogTest, TheDefaultInterfaceSaysItCantReadOne)
         }
     };
     Plain plain;
-    const Platform::WaitChainReadResult result = plain.readWaitChains(TARGET, std::stop_token{});
+    const Platform::WaitChainReadResult result = plain.readWaitChains(WAIT_CHAIN_TARGET, std::stop_token{});
     EXPECT_EQ(result.status, Platform::WaitChainReadStatus::Unsupported);
     EXPECT_FALSE(plain.actionCapabilities().canAnalyzeWaitChain);
 }
@@ -131,18 +131,19 @@ TEST(ProcessWaitChainDialogTest, TheDefaultInterfaceSaysItCantReadOne)
 TEST(ProcessWaitChainDialogTest, EachNodeSaysWhatItIsAndWhoseItIs)
 {
     using WaitChainDetail::nodeText;
-    EXPECT_EQ(nodeText(thread(TARGET.pid, 13, Platform::WaitNodeStatus::Blocked), TARGET.pid), "Thread 13 (Blocked)");
-    EXPECT_EQ(nodeText(thread(SERVER_PID, 30, Platform::WaitNodeStatus::Running, "server.exe"), TARGET.pid),
+    EXPECT_EQ(nodeText(thread(WAIT_CHAIN_TARGET.pid, 13, Platform::WaitNodeStatus::Blocked), WAIT_CHAIN_TARGET.pid), "Thread 13 (Blocked)");
+    EXPECT_EQ(nodeText(thread(SERVER_PID, 30, Platform::WaitNodeStatus::Running, "server.exe"), WAIT_CHAIN_TARGET.pid),
               "Thread 30 of server.exe (PID 77) (Running)");
-    EXPECT_EQ(nodeText(thread(SERVER_PID, 30, Platform::WaitNodeStatus::NoAccess), TARGET.pid), "Thread 30 of PID 77 (Access denied)");
-    EXPECT_EQ(nodeText(thread(SERVER_PID, 0, Platform::WaitNodeStatus::PidOnly, "server.exe"), TARGET.pid),
+    EXPECT_EQ(nodeText(thread(SERVER_PID, 30, Platform::WaitNodeStatus::NoAccess), WAIT_CHAIN_TARGET.pid),
+              "Thread 30 of PID 77 (Access denied)");
+    EXPECT_EQ(nodeText(thread(SERVER_PID, 0, Platform::WaitNodeStatus::PidOnly, "server.exe"), WAIT_CHAIN_TARGET.pid),
               "Process server.exe (PID 77) (Thread not known)");
-    EXPECT_EQ(nodeText(object(Platform::WaitObjectType::Mutex, Platform::WaitNodeStatus::Abandoned, "Lock"), TARGET.pid),
+    EXPECT_EQ(nodeText(object(Platform::WaitObjectType::Mutex, Platform::WaitNodeStatus::Abandoned, "Lock"), WAIT_CHAIN_TARGET.pid),
               "Mutex \"Lock\" (Abandoned)");
-    EXPECT_EQ(nodeText(object(Platform::WaitObjectType::Alpc, Platform::WaitNodeStatus::Unknown), TARGET.pid), "ALPC call");
+    EXPECT_EQ(nodeText(object(Platform::WaitObjectType::Alpc, Platform::WaitNodeStatus::Unknown), WAIT_CHAIN_TARGET.pid), "ALPC call");
     Platform::WaitChainNode future = object(Platform::WaitObjectType::Unknown, Platform::WaitNodeStatus::Unknown);
     future.rawType = 13;
-    EXPECT_EQ(nodeText(future, TARGET.pid), "Unknown (13)");
+    EXPECT_EQ(nodeText(future, WAIT_CHAIN_TARGET.pid), "Unknown (13)");
 }
 
 TEST(ProcessWaitChainDialogTest, EveryTypeStatusAndReadStatusHasItsWords)
@@ -192,7 +193,7 @@ TEST(ProcessWaitChainDialogTest, EveryTypeStatusAndReadStatusHasItsWords)
 
 TEST(ProcessWaitChainDialogTest, DeadlocksComeFirstThenWaitingThreadsThenTheRest)
 {
-    const std::vector<ThreadRows> rows = WaitChainDetail::buildThreadRows(hungRead(), TARGET, OWN_PID, true);
+    const std::vector<ThreadRows> rows = WaitChainDetail::buildThreadRows(hungRead(), WAIT_CHAIN_TARGET, OWN_PID, true);
     ASSERT_EQ(rows.size(), 3U);
     EXPECT_TRUE(rows[0].deadlocked);
     EXPECT_EQ(rows[0].header, ICON_FA_TRIANGLE_EXCLAMATION " Thread 12: deadlocked");
@@ -206,7 +207,7 @@ TEST(ProcessWaitChainDialogTest, DeadlocksComeFirstThenWaitingThreadsThenTheRest
 
 TEST(ProcessWaitChainDialogTest, EndProcessIsOfferedOnlyForAnotherProcessItCanNameExactly)
 {
-    const std::vector<ThreadRows> rows = WaitChainDetail::buildThreadRows(hungRead(), TARGET, OWN_PID, true);
+    const std::vector<ThreadRows> rows = WaitChainDetail::buildThreadRows(hungRead(), WAIT_CHAIN_TARGET, OWN_PID, true);
     ASSERT_EQ(rows[1].nodes.size(), 2U);
     EXPECT_EQ(rows[1].nodes[0].endTarget.pid, -1) << "an object";
     const WaitChainDetail::NodeRow& owner = rows[1].nodes[1];
@@ -218,12 +219,12 @@ TEST(ProcessWaitChainDialogTest, EndProcessIsOfferedOnlyForAnotherProcessItCanNa
     }
 
     // Not where the platform can't end one, not TaskSmack itself, not a process whose start time is unknown.
-    EXPECT_EQ(WaitChainDetail::buildThreadRows(hungRead(), TARGET, OWN_PID, false)[1].nodes[1].endTarget.pid, -1);
-    EXPECT_EQ(WaitChainDetail::buildThreadRows(hungRead(), TARGET, SERVER_PID, true)[1].nodes[1].endTarget.pid, -1);
+    EXPECT_EQ(WaitChainDetail::buildThreadRows(hungRead(), WAIT_CHAIN_TARGET, OWN_PID, false)[1].nodes[1].endTarget.pid, -1);
+    EXPECT_EQ(WaitChainDetail::buildThreadRows(hungRead(), WAIT_CHAIN_TARGET, SERVER_PID, true)[1].nodes[1].endTarget.pid, -1);
     Platform::WaitChainReadResult unknownStart = hungRead();
     unknownStart.threads[1].nodes[2].processStartTimeTicks = 0;
     unknownStart.threads[1].nodes[2].processName.clear();
-    const auto rowsUnknown = WaitChainDetail::buildThreadRows(unknownStart, TARGET, OWN_PID, true);
+    const auto rowsUnknown = WaitChainDetail::buildThreadRows(unknownStart, WAIT_CHAIN_TARGET, OWN_PID, true);
     EXPECT_EQ(rowsUnknown[1].nodes[1].endTarget.pid, -1);
 }
 
@@ -231,7 +232,7 @@ TEST(ProcessWaitChainDialogTest, AnOwnerWithoutANameIsEndedByItsPid)
 {
     Platform::WaitChainReadResult read = hungRead();
     read.threads[1].nodes[2].processName.clear();
-    const auto rows = WaitChainDetail::buildThreadRows(read, TARGET, OWN_PID, true);
+    const auto rows = WaitChainDetail::buildThreadRows(read, WAIT_CHAIN_TARGET, OWN_PID, true);
     EXPECT_EQ(rows[1].nodes[1].endName, "PID 77");
 }
 
@@ -244,12 +245,12 @@ TEST(ProcessWaitChainDialogTest, AChainThatFailedOrWasCutSaysWhy)
     failed.error = "Access denied";
     read.threads.push_back(failed);
     Platform::ThreadWaitChain cut = chain(6,
-                                          {thread(TARGET.pid, 6, Platform::WaitNodeStatus::Blocked),
+                                          {thread(WAIT_CHAIN_TARGET.pid, 6, Platform::WaitNodeStatus::Blocked),
                                            object(Platform::WaitObjectType::ThreadWait, Platform::WaitNodeStatus::Blocked)});
     cut.truncated = true;
     read.threads.push_back(cut);
     read.threads.push_back(Platform::ThreadWaitChain{.nodes = {}, .error = {}, .tid = 9, .isCycle = false, .truncated = false});
-    const auto rows = WaitChainDetail::buildThreadRows(read, TARGET, OWN_PID, true);
+    const auto rows = WaitChainDetail::buildThreadRows(read, WAIT_CHAIN_TARGET, OWN_PID, true);
     ASSERT_EQ(rows.size(), 3U);
     EXPECT_EQ(rows[0].header, "Thread 6: waiting on Wait for a thread"); // waiting sorts first
     EXPECT_EQ(rows[0].note, "The chain goes on past the 16 nodes Windows follows.");
@@ -262,7 +263,7 @@ TEST(ProcessWaitChainDialogTest, AChainThatFailedOrWasCutSaysWhy)
 TEST(ProcessWaitChainDialogTest, TheSummaryCountsWaitingAndDeadlockedThreadsAndTheOnesLeftOut)
 {
     Platform::WaitChainReadResult read = hungRead();
-    auto rows = WaitChainDetail::buildThreadRows(read, TARGET, OWN_PID, true);
+    auto rows = WaitChainDetail::buildThreadRows(read, WAIT_CHAIN_TARGET, OWN_PID, true);
     EXPECT_EQ(WaitChainDetail::summaryText(read, rows), "3 threads: 1 waiting on another thread or object, 1 deadlocked");
 
     read.threadCount = 40;
@@ -273,8 +274,8 @@ TEST(ProcessWaitChainDialogTest, TheSummaryCountsWaitingAndDeadlockedThreadsAndT
 
     Platform::WaitChainReadResult idle;
     idle.status = Platform::WaitChainReadStatus::Ok;
-    idle.threads.push_back(chain(10, {thread(TARGET.pid, 10, Platform::WaitNodeStatus::Running)}));
-    rows = WaitChainDetail::buildThreadRows(idle, TARGET, OWN_PID, true);
+    idle.threads.push_back(chain(10, {thread(WAIT_CHAIN_TARGET.pid, 10, Platform::WaitNodeStatus::Running)}));
+    rows = WaitChainDetail::buildThreadRows(idle, WAIT_CHAIN_TARGET, OWN_PID, true);
     EXPECT_EQ(WaitChainDetail::summaryText(idle, rows), "1 thread, none waiting on another thread or object");
 }
 
@@ -287,11 +288,11 @@ TEST(ProcessWaitChainDialogTest, OpeningReadsOnTheWorkerAndTakesTheChainsIn)
     actions.setWaitChainResult(hungRead());
     actions.holdWaitChains();
     ProcessWaitChainDialog dialog;
-    dialog.open(&actions, TARGET, "app.exe", OWN_PID);
+    dialog.open(&actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     EXPECT_TRUE(dialog.isOpen());
     EXPECT_TRUE(dialog.reading());
     EXPECT_FALSE(dialog.result().has_value());
-    EXPECT_EQ(dialog.target(), TARGET);
+    EXPECT_EQ(dialog.target(), WAIT_CHAIN_TARGET);
     EXPECT_EQ(dialog.endAction(), Detail::ProcessAction::Kill);
 
     actions.releaseWaitChains();
@@ -302,7 +303,7 @@ TEST(ProcessWaitChainDialogTest, OpeningReadsOnTheWorkerAndTakesTheChainsIn)
     EXPECT_EQ(dialog.threads().size(), 3U);
     EXPECT_EQ(dialog.summary(), "3 threads: 1 waiting on another thread or object, 1 deadlocked");
     EXPECT_EQ(actions.waitChainCount(), 1);
-    EXPECT_EQ(actions.lastTarget(), TARGET);
+    EXPECT_EQ(actions.lastTarget(), WAIT_CHAIN_TARGET);
 
     dialog.refresh();
     dialog.update(true);
@@ -314,7 +315,7 @@ TEST(ProcessWaitChainDialogTest, OpeningReadsOnTheWorkerAndTakesTheChainsIn)
 TEST(ProcessWaitChainDialogTest, WithoutActionsItSaysItCant)
 {
     ProcessWaitChainDialog dialog;
-    dialog.open(nullptr, TARGET, "app.exe", OWN_PID);
+    dialog.open(nullptr, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     EXPECT_FALSE(dialog.reading());
     ASSERT_TRUE(dialog.result().has_value());
     EXPECT_EQ(dialog.result()->status, Platform::WaitChainReadStatus::Failed);
@@ -329,7 +330,7 @@ TEST(ProcessWaitChainDialogTest, ClosingDropsTheReadInFlight)
     actions.setWaitChainResult(hungRead());
     actions.holdWaitChains();
     ProcessWaitChainDialog dialog;
-    dialog.open(&actions, TARGET, "app.exe", OWN_PID);
+    dialog.open(&actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     dialog.close();
     EXPECT_FALSE(dialog.isOpen());
     dialog.update(true); // the held read was asked to stop: it ends Cancelled, and is dropped
@@ -347,7 +348,7 @@ TEST(ProcessWaitChainDialogTest, OpeningForAnotherProcessReplacesTheReadInFlight
     actions.setWaitChainResult(hungRead());
     actions.holdWaitChains();
     ProcessWaitChainDialog dialog;
-    dialog.open(&actions, TARGET, "app.exe", OWN_PID);
+    dialog.open(&actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     constexpr Platform::ProcessTarget OTHER{.pid = 8, .startTimeTicks = 800};
     dialog.open(&actions, OTHER, "other.exe", OWN_PID);
     EXPECT_TRUE(dialog.reading());
@@ -369,12 +370,12 @@ TEST(ProcessWaitChainDialogTest, EndProcessIsConfirmedThenKillsAndReadsAgain)
     actions.setCapabilities(waitChainCapable());
     actions.setWaitChainResult(hungRead());
     ProcessWaitChainDialog dialog;
-    dialog.open(&actions, TARGET, "app.exe", OWN_PID);
+    dialog.open(&actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     dialog.update(true);
 
-    constexpr Platform::ProcessTarget SERVER{.pid = SERVER_PID, .startTimeTicks = SERVER_START};
-    dialog.requestEnd(SERVER, "server.exe");
-    EXPECT_EQ(dialog.endTarget(), SERVER);
+    constexpr Platform::ProcessTarget WAIT_CHAIN_SERVER{.pid = SERVER_PID, .startTimeTicks = SERVER_START};
+    dialog.requestEnd(WAIT_CHAIN_SERVER, "server.exe");
+    EXPECT_EQ(dialog.endTarget(), WAIT_CHAIN_SERVER);
     EXPECT_EQ(actions.killCount(), 0) << "asked, not done";
 
     dialog.confirmEnd();
@@ -389,7 +390,7 @@ TEST(ProcessWaitChainDialogTest, EndProcessIsConfirmedThenKillsAndReadsAgain)
 
     // A refusal says so, and reads nothing again.
     actions.setKillResult(Platform::ProcessActionResult::error("Access denied"));
-    dialog.requestEnd(SERVER, "server.exe");
+    dialog.requestEnd(WAIT_CHAIN_SERVER, "server.exe");
     dialog.confirmEnd();
     dialog.update(true);
     EXPECT_FALSE(dialog.endResult().ok);
@@ -406,7 +407,7 @@ TEST(ProcessWaitChainDialogTest, EndProcessIsntOfferedWhereThePlatformCantEndOne
     actions.setCapabilities(caps);
     actions.setWaitChainResult(hungRead());
     ProcessWaitChainDialog dialog;
-    dialog.open(&actions, TARGET, "app.exe", OWN_PID);
+    dialog.open(&actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     dialog.update(true);
     EXPECT_EQ(dialog.endAction(), Detail::ProcessAction::None);
     EXPECT_EQ(dialog.threads()[1].nodes[1].endTarget.pid, -1);
@@ -507,7 +508,7 @@ class ProcessWaitChainDialogRenderTest : public ::testing::Test
 TEST_F(ProcessWaitChainDialogRenderTest, SaysItIsReadingThenShowsTheChainsWithTheDeadlockFirst)
 {
     m_Actions.holdWaitChains();
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     const std::string pending = frames(2);
     EXPECT_TRUE(pending.contains(WaitChainDetail::READING_TEXT)) << pending;
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
@@ -531,7 +532,7 @@ TEST_F(ProcessWaitChainDialogRenderTest, SaysItIsReadingThenShowsTheChainsWithTh
 
 TEST_F(ProcessWaitChainDialogRenderTest, EndProcessAsksTheSharedConfirmationThenKillsTheOwner)
 {
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     static_cast<void>(frames(2));
 
@@ -555,7 +556,7 @@ TEST_F(ProcessWaitChainDialogRenderTest, EndProcessAsksTheSharedConfirmationThen
 
 TEST_F(ProcessWaitChainDialogRenderTest, CancellingTheConfirmationEndsNothing)
 {
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     static_cast<void>(frames(2));
     pressEndProcess(1, 2);
@@ -573,7 +574,7 @@ TEST_F(ProcessWaitChainDialogRenderTest, AFailedReadSaysWhyAndCloseCloses)
     denied.status = Platform::WaitChainReadStatus::Failed;
     denied.detail = "Couldn't open a wait chain session: Not enough memory";
     m_Actions.setWaitChainResult(denied);
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     const std::string shown = frames(2);
     EXPECT_TRUE(shown.contains(WaitChainDetail::readStatusText(Platform::WaitChainReadStatus::Failed))) << shown;
@@ -587,7 +588,7 @@ TEST_F(ProcessWaitChainDialogRenderTest, AFailedReadSaysWhyAndCloseCloses)
 
 TEST_F(ProcessWaitChainDialogRenderTest, RefreshReadsAgainAndCloseFromOutsideClosesIt)
 {
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     static_cast<void>(frames(2));
     pressModal(ICON_FA_ARROWS_ROTATE " Refresh", false);
@@ -609,12 +610,12 @@ TEST_F(ProcessWaitChainDialogRenderTest, AChainThatCouldntBeReadOrWasCutSaysWhyA
     failed.error = "The thread has exited";
     read.threads.push_back(failed);
     Platform::ThreadWaitChain cut = chain(6,
-                                          {thread(TARGET.pid, 6, Platform::WaitNodeStatus::Blocked),
+                                          {thread(WAIT_CHAIN_TARGET.pid, 6, Platform::WaitNodeStatus::Blocked),
                                            object(Platform::WaitObjectType::SocketIo, Platform::WaitNodeStatus::Blocked)});
     cut.truncated = true;
     read.threads.push_back(cut);
     m_Actions.setWaitChainResult(read);
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     const std::string shown = frames(2);
     EXPECT_TRUE(shown.contains("Thread 5: not read")) << shown;
@@ -652,7 +653,7 @@ TEST_F(ProcessWaitChainDialogRenderTest, WhileEndProcessRunsTheDialogSaysSo)
     HeldKillActions actions;
     actions.setCapabilities(waitChainCapable());
     actions.setWaitChainResult(hungRead());
-    m_Dialog.open(&actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     m_Dialog.requestEnd({.pid = SERVER_PID, .startTimeTicks = SERVER_START}, "server.exe");
     m_Dialog.confirmEnd();
@@ -671,7 +672,7 @@ TEST_F(ProcessWaitChainDialogRenderTest, AnEmptyReadSaysSo)
     Platform::WaitChainReadResult empty;
     empty.status = Platform::WaitChainReadStatus::Ok;
     m_Actions.setWaitChainResult(empty);
-    m_Dialog.open(&m_Actions, TARGET, "app.exe", OWN_PID);
+    m_Dialog.open(&m_Actions, WAIT_CHAIN_TARGET, "app.exe", OWN_PID);
     m_Dialog.update(true);
     EXPECT_TRUE(frames(2).contains("No threads were read.")) << "a process with no thread listed";
 }

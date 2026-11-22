@@ -61,7 +61,7 @@ class ScopedEnv
     std::optional<std::string> m_Before;
 };
 
-[[nodiscard]] HttpsRequest validRequest()
+[[nodiscard]] HttpsRequest linuxValidRequest()
 {
     return {.host = "api.github.com",
             .path = "/repos/mgradwohl/tasksmack/releases/latest",
@@ -74,26 +74,26 @@ class ScopedEnv
 
 TEST(LinuxHttpsClientTest, ARequestThatCouldChangeTheUrlOrMissesAFieldIsRefused)
 {
-    EXPECT_EQ(LinuxHttpsDetail::refusal(validRequest()), std::nullopt);
+    EXPECT_EQ(LinuxHttpsDetail::refusal(linuxValidRequest()), std::nullopt);
     for (std::string HttpsRequest::* const field : {&HttpsRequest::host, &HttpsRequest::path, &HttpsRequest::userAgent})
     {
-        HttpsRequest request = validRequest();
+        HttpsRequest request = linuxValidRequest();
         (request.*field).clear();
         ASSERT_TRUE(LinuxHttpsDetail::refusal(request).has_value());
         EXPECT_TRUE(LinuxHttpsDetail::refusal(request)->contains("empty"));
     }
-    HttpsRequest relative = validRequest();
+    HttpsRequest relative = linuxValidRequest();
     relative.path = "repos/x";
     EXPECT_TRUE(LinuxHttpsDetail::refusal(relative).has_value());
     for (const char* host : {"evil.com/x", "a@b.com", "a:444", "a b", "h\nx"})
     {
-        HttpsRequest request = validRequest();
+        HttpsRequest request = linuxValidRequest();
         request.host = host;
         EXPECT_TRUE(LinuxHttpsDetail::refusal(request).has_value()) << host;
     }
     for (const char* path : {"/a#b", "/a b", "/a\r\nX: y"})
     {
-        HttpsRequest request = validRequest();
+        HttpsRequest request = linuxValidRequest();
         request.path = path;
         EXPECT_TRUE(LinuxHttpsDetail::refusal(request).has_value()) << path;
     }
@@ -114,17 +114,17 @@ TEST(LinuxHttpsClientTest, TheBodyStopsAtItsCap)
 // #3094: an extra header goes out only with a token name and a value that can't end the line.
 TEST(LinuxHttpsClientTest, AnExtraHeaderThatCouldBreakTheRequestIsRefused)
 {
-    HttpsRequest keyed = validRequest();
+    HttpsRequest keyed = linuxValidRequest();
     keyed.headers = {{"x-apikey", std::string(64, 'a')}};
     EXPECT_EQ(LinuxHttpsDetail::refusal(keyed), std::nullopt);
     for (const auto& [name, value] : std::initializer_list<std::pair<const char*, const char*>>{
              {"", "v"}, {"x apikey", "v"}, {"x:apikey", "v"}, {"x\napikey", "v"}, {"x-apikey", "a\r\nHost: evil"}, {"x-apikey", "a\nb"}})
     {
-        HttpsRequest request = validRequest();
+        HttpsRequest request = linuxValidRequest();
         request.headers = {{name, value}};
         EXPECT_TRUE(LinuxHttpsDetail::refusal(request).has_value()) << name << " / " << value;
     }
-    HttpsRequest nul = validRequest();
+    HttpsRequest nul = linuxValidRequest();
     nul.headers = {{"x-apikey", std::string("a\0b", 3)}};
     EXPECT_TRUE(LinuxHttpsDetail::refusal(nul).has_value());
 }
@@ -134,12 +134,12 @@ TEST(LinuxHttpsClientTest, AStopAlreadyRequestedOrARefusedRequestSendsNothing)
     LinuxHttpsClient client;
     std::stop_source stop;
     static_cast<void>(stop.request_stop());
-    const auto stopped = client.get(validRequest(), stop.get_token());
+    const auto stopped = client.get(linuxValidRequest(), stop.get_token());
     ASSERT_FALSE(stopped.has_value());
     if (LinuxHttpsClient::built())
     {
         EXPECT_EQ(stopped.error(), "Stopped before the request was sent");
-        HttpsRequest bad = validRequest();
+        HttpsRequest bad = linuxValidRequest();
         bad.host = "a/b";
         const auto refused = client.get(bad, std::stop_source{}.get_token());
         ASSERT_FALSE(refused.has_value());
@@ -189,7 +189,7 @@ TEST(LinuxHttpsClientTest, ARequestThatCantConnectSaysWhyAndTheFactoryFollowsThe
     // Straight to the local port, whatever proxy the machine has set (a proxy would answer instead).
     const ScopedEnv noProxy("NO_PROXY", "*");
     const ScopedEnv noProxyLower("no_proxy", "*");
-    HttpsRequest request = validRequest();
+    HttpsRequest request = linuxValidRequest();
     request.host = "127.0.0.1"; // port 443, where a test machine runs no server
     request.accept.clear();
     const auto response = made->get(request, std::stop_source{}.get_token());
@@ -199,17 +199,18 @@ TEST(LinuxHttpsClientTest, ARequestThatCantConnectSaysWhyAndTheFactoryFollowsThe
 
 // --- followRedirects(): get()'s redirect chain, through a fake transfer (#3374) ---
 
-using Step = LinuxHttpsDetail::TransferStep;
+using LinuxTransferStep = LinuxHttpsDetail::TransferStep;
 
-[[nodiscard]] Step replyStep(int status, std::optional<std::string> location = std::nullopt, std::string body = {})
+[[nodiscard]] LinuxTransferStep replyStep(int status, std::optional<std::string> location = std::nullopt, std::string body = {})
 {
-    return Step{.end = Step::End::Reply, .failure = {}, .status = status, .location = std::move(location), .body = std::move(body)};
+    return LinuxTransferStep{
+        .end = LinuxTransferStep::End::Reply, .failure = {}, .status = status, .location = std::move(location), .body = std::move(body)};
 }
 
 /// A transfer that answers from @p script in turn, recording each URL it was asked for.
 struct ScriptedTransfer
 {
-    std::vector<Step> script;
+    std::vector<LinuxTransferStep> script;
     std::vector<std::string> urls;
     std::vector<std::chrono::milliseconds> lefts;
 
@@ -310,14 +311,16 @@ TEST(LinuxHttpsClientTest, ARequestCarryingExtraHeadersFollowsNoRedirect)
 
 TEST(LinuxHttpsClientTest, ATooLongBodyAStopOrAFailedTransferEndsTheRequestWithWhy)
 {
-    ScriptedTransfer tooLong{.script = {Step{.end = Step::End::TooLong, .failure = {}, .status = 0, .location = std::nullopt, .body = {}}},
+    ScriptedTransfer tooLong{.script = {LinuxTransferStep{
+                                 .end = LinuxTransferStep::End::TooLong, .failure = {}, .status = 0, .location = std::nullopt, .body = {}}},
                              .urls = {},
                              .lefts = {}};
     const auto big = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, false, tooLong.function());
     ASSERT_FALSE(big.has_value());
     EXPECT_EQ(big.error(), "The reply was longer than 4096 bytes");
 
-    ScriptedTransfer stopped{.script = {Step{.end = Step::End::Stopped, .failure = {}, .status = 0, .location = std::nullopt, .body = {}}},
+    ScriptedTransfer stopped{.script = {LinuxTransferStep{
+                                 .end = LinuxTransferStep::End::Stopped, .failure = {}, .status = 0, .location = std::nullopt, .body = {}}},
                              .urls = {},
                              .lefts = {}};
     const auto halted = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, false, stopped.function());
@@ -325,11 +328,11 @@ TEST(LinuxHttpsClientTest, ATooLongBodyAStopOrAFailedTransferEndsTheRequestWithW
     EXPECT_EQ(halted.error(), "Stopped");
 
     ScriptedTransfer failed{.script = {replyStep(302, "https://api.example.com/next"),
-                                       Step{.end = Step::End::Failed,
-                                            .failure = "libcurl: Couldn't resolve host name",
-                                            .status = 0,
-                                            .location = std::nullopt,
-                                            .body = {}}},
+                                       LinuxTransferStep{.end = LinuxTransferStep::End::Failed,
+                                                         .failure = "libcurl: Couldn't resolve host name",
+                                                         .status = 0,
+                                                         .location = std::nullopt,
+                                                         .body = {}}},
                             .urls = {},
                             .lefts = {}};
     const auto broken = LinuxHttpsDetail::followRedirects("https://api.example.com/", inAMinute(), 4096, false, failed.function());

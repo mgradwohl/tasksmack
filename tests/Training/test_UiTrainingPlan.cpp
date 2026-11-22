@@ -29,7 +29,7 @@ using Training::parseArguments;
 using Training::Probes;
 using Training::Segment;
 using Training::Tab;
-using Training::Workload;
+using TrainingWorkload = Training::Workload; // its own name: a unity batch can bring in another Workload (#4783)
 using Training::WORKLOADS;
 
 [[nodiscard]] int totalFrames(const std::vector<Segment>& segments)
@@ -72,7 +72,7 @@ using Training::WORKLOADS;
 TEST(UiTrainingPlanTest, WeightsArePercentages)
 {
     int sum = 0;
-    for (const Workload& workload : WORKLOADS)
+    for (const TrainingWorkload& workload : WORKLOADS)
     {
         EXPECT_GT(workload.weight, 0) << workload.name;
         sum += workload.weight;
@@ -85,7 +85,7 @@ TEST(UiTrainingPlanTest, EveryMainTabIsTrained)
     constexpr std::array ALL_TABS{Tab::SystemOverview, Tab::Processes, Tab::ProcessDetails, Tab::Services, Tab::Startup, Tab::SystemInfo};
     for (const Tab tab : ALL_TABS)
     {
-        EXPECT_TRUE(std::ranges::any_of(WORKLOADS, [tab](const Workload& w) { return w.tab == tab; })) << Training::tabId(tab);
+        EXPECT_TRUE(std::ranges::any_of(WORKLOADS, [tab](const TrainingWorkload& w) { return w.tab == tab; })) << Training::tabId(tab);
     }
 }
 
@@ -112,7 +112,7 @@ TEST(UiTrainingPlanTest, ByWeightWhenTheTotalDividesEvenly)
 
 TEST(UiTrainingPlanTest, LeftoverFramesGoToTheLargestRemainders)
 {
-    const std::array<Workload, 3> workloads{
+    const std::array<TrainingWorkload, 3> workloads{
         {
             {.name = "a", .tab = Tab::SystemOverview, .weight = 1},
             {.name = "b", .tab = Tab::Processes, .weight = 1},
@@ -126,7 +126,7 @@ TEST(UiTrainingPlanTest, LeftoverFramesGoToTheLargestRemainders)
     EXPECT_EQ(segments[1].frames, 3);
     EXPECT_EQ(segments[2].frames, 3);
 
-    const std::array<Workload, 2> uneven{
+    const std::array<TrainingWorkload, 2> uneven{
         {
             {.name = "small", .tab = Tab::SystemOverview, .weight = 1},
             {.name = "large", .tab = Tab::Processes, .weight = 2},
@@ -158,8 +158,8 @@ TEST(UiTrainingPlanTest, NothingToAllocate)
 {
     EXPECT_TRUE(allocateFrames(0, WORKLOADS).empty());
     EXPECT_TRUE(allocateFrames(-5, WORKLOADS).empty());
-    EXPECT_TRUE(allocateFrames(100, std::span<const Workload>{}).empty());
-    const std::array<Workload, 1> unweighted{{{.name = "zero", .tab = Tab::Startup, .weight = 0}}};
+    EXPECT_TRUE(allocateFrames(100, std::span<const TrainingWorkload>{}).empty());
+    const std::array<TrainingWorkload, 1> unweighted{{{.name = "zero", .tab = Tab::Startup, .weight = 0}}};
     EXPECT_TRUE(allocateFrames(100, unweighted).empty());
 }
 

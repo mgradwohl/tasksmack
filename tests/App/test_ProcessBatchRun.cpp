@@ -33,7 +33,7 @@ namespace
 
 using Detail::ProcessAction;
 
-constexpr std::int32_t OWN_PID = 4000;
+constexpr std::int32_t RUN_OWN_PID = 4000;
 
 /// The synthetic scale of #2142's report: Ctrl+A over 5,000 processes.
 constexpr std::size_t LARGE_SELECTION = 5000;
@@ -120,7 +120,7 @@ class GatedProcessActions : public TestMocks::MockProcessActions
     std::atomic<std::int32_t> m_LastPid{0};
 };
 
-std::vector<BatchTarget> numberedTargets(std::size_t count)
+std::vector<BatchTarget> numberedRunTargets(std::size_t count)
 {
     std::vector<BatchTarget> targets;
     targets.reserve(count);
@@ -143,7 +143,7 @@ TEST(ProcessBatchRunTest, AConfirmedBatchPriorityReturnsAtOnceWithItsWorkStillPe
     EXPECT_FALSE(run.busy());
 
     // The frame that confirmed it: start returns while the worker is still on its first process.
-    EXPECT_FALSE(run.startPriority(actions, numberedTargets(LARGE_SELECTION), 10, OWN_PID).has_value());
+    EXPECT_FALSE(run.startPriority(actions, numberedRunTargets(LARGE_SELECTION), 10, RUN_OWN_PID).has_value());
     ASSERT_TRUE(actions.waitUntilEntered());
     EXPECT_TRUE(run.busy());
     EXPECT_FALSE(run.poll().has_value()); // a later frame: still running, nothing to take in yet
@@ -165,15 +165,15 @@ TEST(ProcessBatchRunTest, AConfirmedBatchActionRunsOnTheWorkerWithTaskSmackItsel
 {
     GatedProcessActions actions(false);
     BatchRun run;
-    std::vector<BatchTarget> targets = numberedTargets(3);
-    targets.insert(targets.begin(), {.target = {.pid = OWN_PID, .startTimeTicks = 1}, .name = "tasksmack", .priority = {}});
+    std::vector<BatchTarget> targets = numberedRunTargets(3);
+    targets.insert(targets.begin(), {.target = {.pid = RUN_OWN_PID, .startTimeTicks = 1}, .name = "tasksmack", .priority = {}});
 
-    EXPECT_FALSE(run.startAction(actions, ProcessAction::Kill, std::move(targets), OWN_PID).has_value());
+    EXPECT_FALSE(run.startAction(actions, ProcessAction::Kill, std::move(targets), RUN_OWN_PID).has_value());
     const std::optional<BatchRunOutcome> outcome = run.poll(true);
     ASSERT_TRUE(outcome.has_value());
     const BatchRunOutcome got = outcome.value_or(BatchRunOutcome{});
     EXPECT_EQ(actions.calls(), 4U);
-    EXPECT_EQ(actions.lastPid(), OWN_PID);
+    EXPECT_EQ(actions.lastPid(), RUN_OWN_PID);
     EXPECT_EQ(got.message.text, "Kill sent to 4 processes");
     EXPECT_TRUE(got.anySucceeded);
     EXPECT_EQ(run.statusText(), "Kill: 4 of 4 processes...");
@@ -184,10 +184,10 @@ TEST(ProcessBatchRunTest, NoSecondBatchStartsWhileOneRuns)
     GatedProcessActions actions;
     GatedProcessActions other(false);
     BatchRun run;
-    EXPECT_FALSE(run.startAction(actions, ProcessAction::Kill, numberedTargets(2), OWN_PID).has_value());
+    EXPECT_FALSE(run.startAction(actions, ProcessAction::Kill, numberedRunTargets(2), RUN_OWN_PID).has_value());
     ASSERT_TRUE(actions.waitUntilEntered());
 
-    EXPECT_FALSE(run.startPriority(other, numberedTargets(2), 0, OWN_PID).has_value());
+    EXPECT_FALSE(run.startPriority(other, numberedRunTargets(2), 0, RUN_OWN_PID).has_value());
     EXPECT_EQ(run.statusText(), "Kill: 0 of 2 processes..."); // still the first batch's
     actions.open();
     const std::optional<BatchRunOutcome> outcome = run.poll(true);
@@ -201,7 +201,7 @@ TEST(ProcessBatchRunTest, ShutdownActsOnNoFurtherProcess)
 {
     GatedProcessActions actions;
     BatchRun run;
-    EXPECT_FALSE(run.startPriority(actions, numberedTargets(LARGE_SELECTION), 5, OWN_PID).has_value());
+    EXPECT_FALSE(run.startPriority(actions, numberedRunTargets(LARGE_SELECTION), 5, RUN_OWN_PID).has_value());
     ASSERT_TRUE(actions.waitUntilEntered());
 
     // The stop is requested at once; the held process is let go only well after, so the run sees the
@@ -222,7 +222,7 @@ TEST(ProcessBatchRunTest, WorkThatThrowsComesBackAsTheFailedOutcome)
     GatedProcessActions actions(false);
     actions.throwOnCall = true;
     BatchRun run;
-    EXPECT_FALSE(run.startAction(actions, ProcessAction::Kill, numberedTargets(2), OWN_PID).has_value());
+    EXPECT_FALSE(run.startAction(actions, ProcessAction::Kill, numberedRunTargets(2), RUN_OWN_PID).has_value());
     const std::optional<BatchRunOutcome> outcome = run.poll(true);
     ASSERT_TRUE(outcome.has_value());
     const BatchRunOutcome got = outcome.value_or(BatchRunOutcome{});
@@ -245,12 +245,12 @@ TEST(ProcessBatchRunTest, RunBatchStopsBeforeItsNextTargetOnceAStopIsRequested)
 {
     std::stop_source stop;
     std::atomic<std::size_t> done{0};
-    std::vector<BatchTarget> targets = numberedTargets(4);
-    targets.push_back({.target = {.pid = OWN_PID, .startTimeTicks = 1}, .name = "tasksmack", .priority = {}});
+    std::vector<BatchTarget> targets = numberedRunTargets(4);
+    targets.push_back({.target = {.pid = RUN_OWN_PID, .startTimeTicks = 1}, .name = "tasksmack", .priority = {}});
     std::vector<std::int32_t> acted;
     const BatchResult result = runBatch(
         targets,
-        OWN_PID,
+        RUN_OWN_PID,
         [&](const Platform::ProcessTarget& target)
         {
             acted.push_back(target.pid);
@@ -272,8 +272,8 @@ TEST(ProcessBatchRunTest, RunBatchCountsEveryTargetItFinishes)
 {
     std::atomic<std::size_t> done{0};
     const BatchResult result = runBatch(
-        numberedTargets(3),
-        OWN_PID,
+        numberedRunTargets(3),
+        RUN_OWN_PID,
         [](const Platform::ProcessTarget& target)
         { return target.pid == 101 ? Platform::ProcessActionResult::error("denied") : Platform::ProcessActionResult::ok(); },
         {},

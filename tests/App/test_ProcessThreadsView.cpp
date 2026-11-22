@@ -34,7 +34,7 @@ using Platform::ProcessThread;
 using Platform::ThreadsReadResult;
 using Platform::ThreadsReadStatus;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 100, .startTimeTicks = 4242};
+constexpr Platform::ProcessTarget THREADS_VIEW_TARGET{.pid = 100, .startTimeTicks = 4242};
 
 class MockThreadsReader final : public Platform::IProcessThreadsReader
 {
@@ -130,10 +130,10 @@ void readAt(
     clock.now = acquiredAt;
     const int readsBefore = clock.reads.load();
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
+    ASSERT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 1.0F, 1000));
     clock.reads.wait(readsBefore); // the worker has stamped the read
     clock.now = adoptedAt;
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(THREADS_VIEW_TARGET);
 }
 
 void readAt(ProcessThreadsView& view, TickingThreadsReader& reader, FakeClock& clock, std::uint64_t ticks, double acquiredAt)
@@ -223,13 +223,13 @@ TEST(ProcessThreadsViewTest, AReadersOwnAcquisitionTimeIsKept)
     clock.now = 50.0;
     ProcessThreadsView view(1, clock.clock());
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 1.0F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     reader.result = threads({thread(100, "main", 150)});
     reader.result.acquiredAtSeconds = 8.0; // 50 ticks over 1 s (by the reader's times; the clock says 0 s)
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 1.0F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     ASSERT_EQ(view.rows().size(), 1U);
     EXPECT_DOUBLE_EQ(view.rows()[0].cpuPercent.value_or(-1.0), 50.0);
 }
@@ -275,8 +275,8 @@ TEST(ProcessThreadsViewTest, ASlowDetailReadAfterTheReadersStampDoesNotSkewCpuPe
         reader.extraDelay = extraDelay;
         clock.now = stampedAt;
         view.markDrawnOpen();
-        ASSERT_TRUE(view.update(&reader, TARGET, 1.0F, 1000));
-        view.finishPendingRead(TARGET);
+        ASSERT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 1.0F, 1000));
+        view.finishPendingRead(THREADS_VIEW_TARGET);
     };
 
     readStamped(1000, 0.0, 0.9); // returns at 0.9 s
@@ -329,19 +329,19 @@ TEST(ProcessThreadsViewTest, ARefusedReadOffersAuthenticateToReadAndThePressRead
     reader.authorizedResult = threads({thread(100, "main", 1)});
 
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 0.0F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     EXPECT_FALSE(view.offersAuthenticateToRead()) << "this reader can't read as an administrator";
 
     reader.canAuthorize = true;
     view.markDrawnOpen();
-    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000)); // records that it can
-    view.finishPendingRead(TARGET);
+    static_cast<void>(view.update(&reader, THREADS_VIEW_TARGET, 0.0F, 1000)); // records that it can
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     ASSERT_TRUE(view.offersAuthenticateToRead());
 
     view.requestAuthorizedRead();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 0.0F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     EXPECT_EQ(reader.authorizedReads.load(), 1);
     EXPECT_EQ(view.status(), ThreadsReadStatus::Ok);
     ASSERT_EQ(view.rows().size(), 1U);
@@ -354,22 +354,22 @@ TEST(ProcessThreadsViewTest, ReadsOnlyWhileOpenAtTheSettingsInterval)
     MockThreadsReader reader;
     reader.result = threads({thread(100, "main", 1)});
 
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F, 1000)); // never drawn open: never read
+    EXPECT_FALSE(view.update(&reader, THREADS_VIEW_TARGET, 10.0F, 1000)); // never drawn open: never read
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 0.0F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     EXPECT_TRUE(view.hasRead());
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 0.5F, 1000)); // not yet due at a 1 s interval
+    EXPECT_FALSE(view.update(&reader, THREADS_VIEW_TARGET, 0.5F, 1000)); // not yet due at a 1 s interval
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.6F, 1000));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 0.6F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     // A 5 s interval chosen in Settings: the next read waits for it.
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 2.0F, 5000));
+    EXPECT_FALSE(view.update(&reader, THREADS_VIEW_TARGET, 2.0F, 5000));
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 3.0F, 5000));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 3.0F, 5000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     EXPECT_EQ(reader.reads.load(), 3);
 
     view.onSelectionChanged();
@@ -521,7 +521,7 @@ TEST(ProcessThreadsViewTest, TheStateCellSaysTheSuspendCountOrTheWaitReason)
 TEST(ThreadActionControlTest, EachConfirmNamesTheThreadAndEndWarnsOfCorruption)
 {
     PendingThreadAction request{
-        .target = TARGET, .tid = 105, .threadName = "worker", .processName = "server", .action = Platform::ThreadAction::End};
+        .target = THREADS_VIEW_TARGET, .tid = 105, .threadName = "worker", .processName = "server", .action = Platform::ThreadAction::End};
     const std::string end = threadActionQuestion(request);
     EXPECT_TRUE(end.starts_with("End thread 105 (worker) of server (PID 100)?")) << end;
     EXPECT_TRUE(end.contains("can corrupt the process")) << end;
@@ -562,30 +562,30 @@ TEST(ThreadActionControlTest, AConfirmedActionRunsOnTheWorkerAndSaysWhatItDid)
     worker.createTime = 0x01DC'0000'0000'1234ULL;
     reader.result = threads({worker});
     view.markDrawnOpen();
-    static_cast<void>(view.update(&reader, TARGET, 0.0F, 1000));
-    view.finishPendingRead(TARGET);
+    static_cast<void>(view.update(&reader, THREADS_VIEW_TARGET, 0.0F, 1000));
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     view.setThreadActions(true, "server");
 
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
     ThreadActionControl& control = view.actionControl();
     ASSERT_TRUE(control.pending().has_value());
     EXPECT_TRUE(control.showConfirm());
-    EXPECT_EQ(control.pending()->target, TARGET);
+    EXPECT_EQ(control.pending()->target, THREADS_VIEW_TARGET);
     control.confirm(&actions);
     control.update(0.0F, /*wait=*/true);
     EXPECT_EQ(actions.threadActionCount(), 1);
     EXPECT_EQ(actions.lastThreadId(), 105);
     EXPECT_EQ(actions.lastThreadAction(), Platform::ThreadAction::Suspend);
     EXPECT_EQ(actions.lastThreadCreateTime(), worker.createTime) << "the thread confirmed, so a reused TID is refused";
-    EXPECT_EQ(actions.lastTarget(), TARGET);
+    EXPECT_EQ(actions.lastTarget(), THREADS_VIEW_TARGET);
     EXPECT_TRUE(control.result().ok);
     EXPECT_EQ(control.result().text, "Suspended thread 105 (worker) of server (its suspend count is now 2)");
     EXPECT_FALSE(control.pending().has_value());
 
     // The next update reads the threads again at once, for the new state.
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F, 1000)) << "re-read without waiting for the interval";
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, THREADS_VIEW_TARGET, 0.0F, 1000)) << "re-read without waiting for the interval";
+    view.finishPendingRead(THREADS_VIEW_TARGET);
     EXPECT_EQ(reader.reads.load(), 2);
 }
 
@@ -595,7 +595,7 @@ TEST(ThreadActionControlTest, ARefusalOffersAuthenticateAndRetryWhichAsksTheHelp
     actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/true));
     actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied: can't end thread 7 of process 100"));
     ThreadActionControl control;
-    control.request({.target = TARGET,
+    control.request({.target = THREADS_VIEW_TARGET,
                      .tid = 7,
                      .threadCreateTime = 70,
                      .threadName = {},
@@ -612,7 +612,7 @@ TEST(ThreadActionControlTest, ARefusalOffersAuthenticateAndRetryWhichAsksTheHelp
     EXPECT_EQ(actions.runAuthorizedCount(), 1);
     const Platform::AuthorizedAction& sent = actions.lastAuthorizedAction();
     EXPECT_EQ(sent.kind, Platform::AuthorizedAction::Kind::ThreadAction);
-    EXPECT_EQ(sent.target, TARGET);
+    EXPECT_EQ(sent.target, THREADS_VIEW_TARGET);
     EXPECT_EQ(sent.tid, 7);
     EXPECT_EQ(sent.threadCreateTime, 70U);
     EXPECT_EQ(sent.threadAction, Platform::ThreadAction::End);
@@ -626,18 +626,21 @@ TEST(ThreadActionControlTest, ARefusalOffersAuthenticateAndRetryWhichAsksTheHelp
 TEST(ThreadActionControlTest, NoActionsOrNoCapabilityRefusesAndACancelDoesNothing)
 {
     ThreadActionControl control;
-    control.request({.target = TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Suspend});
+    control.request(
+        {.target = THREADS_VIEW_TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Suspend});
     control.confirm(nullptr);
     EXPECT_FALSE(control.result().ok);
     EXPECT_EQ(control.result().text, "Couldn't suspend thread 7: Acting on one thread isn't available");
 
     TestMocks::MockProcessActions noThreadActions; // canActOnThreads false, as on Linux
-    control.request({.target = TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Resume});
+    control.request(
+        {.target = THREADS_VIEW_TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Resume});
     control.cancel();
     EXPECT_FALSE(control.pending().has_value());
     control.confirm(&noThreadActions);
     EXPECT_EQ(noThreadActions.threadActionCount(), 0) << "nothing pending";
-    control.request({.target = TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Resume});
+    control.request(
+        {.target = THREADS_VIEW_TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Resume});
     control.confirm(&noThreadActions);
     EXPECT_EQ(noThreadActions.threadActionCount(), 0);
     EXPECT_FALSE(control.result().ok);
@@ -645,7 +648,8 @@ TEST(ThreadActionControlTest, NoActionsOrNoCapabilityRefusesAndACancelDoesNothin
     // The result line goes after a while, and a new selection drops it at once.
     control.update(ThreadActionControl::RESULT_SECONDS + 1.0F);
     EXPECT_TRUE(control.result().empty());
-    control.request({.target = TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Resume});
+    control.request(
+        {.target = THREADS_VIEW_TARGET, .tid = 7, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::Resume});
     control.onSelectionChanged();
     EXPECT_TRUE(control.pending().has_value()) << "left for the confirm to close: its process is no longer shown";
     EXPECT_TRUE(control.result().empty());
@@ -764,12 +768,12 @@ TEST_F(ProcessThreadsViewRenderTest, TheConfirmAsksItsQuestionAndClosesWhenThePr
     ProcessThreadsView view(1);
     apply(view, threads({thread(105, "worker", 1)}), 0.0);
     view.setThreadActions(true, "server");
-    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000)); // the process shown
+    static_cast<void>(view.update(nullptr, THREADS_VIEW_TARGET, 0.0F, 1000)); // the process shown
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::End);
 
-    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
-    static_cast<void>(drawConfirmOnce(view, &actions, TARGET)); // sized, then drawn
-    const std::string captured = drawConfirmOnce(view, &actions, TARGET);
+    static_cast<void>(drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET)); // sized, then drawn
+    const std::string captured = drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET);
     EXPECT_TRUE(captured.contains("End thread 105 (worker) of server (PID 100)?")) << captured;
     EXPECT_TRUE(captured.contains("can corrupt the process")) << captured;
     EXPECT_TRUE(view.actionControl().pending().has_value());
@@ -789,7 +793,7 @@ TEST_F(ProcessThreadsViewRenderTest, TheThreadConfirmAndTheProcessConfirmDontSha
     ProcessThreadsView view(1);
     apply(view, threads({thread(105, "worker", 1)}), 0.0);
     view.setThreadActions(true, "server");
-    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000));
+    static_cast<void>(view.update(nullptr, THREADS_VIEW_TARGET, 0.0F, 1000));
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
     bool processConfirm = true;
 
@@ -804,7 +808,7 @@ TEST_F(ProcessThreadsViewRenderTest, TheThreadConfirmAndTheProcessConfirmDontSha
         ImGui::LogToBuffer();
         // The Actions block's, as ProcessActionsView submits it, then the Threads section's.
         static_cast<void>(ProcessActionConfirm::renderLabelled(processConfirm, "Kill", true, "Kill", "Kill server (PID 100)?"));
-        view.renderConfirmation(&actions, TARGET);
+        view.renderConfirmation(&actions, THREADS_VIEW_TARGET);
         captured = GImGui->LogBuffer.c_str();
         ImGui::LogFinish();
         ImGui::End();
@@ -824,7 +828,7 @@ TEST(ThreadActionControlTest, AnActionFromAnEarlierSelectionOffersNoRetry)
     actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/true));
     actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied"));
     ThreadActionControl control;
-    control.request({.target = TARGET,
+    control.request({.target = THREADS_VIEW_TARGET,
                      .tid = 7,
                      .threadCreateTime = 70,
                      .threadName = {},
@@ -836,7 +840,7 @@ TEST(ThreadActionControlTest, AnActionFromAnEarlierSelectionOffersNoRetry)
     EXPECT_EQ(actions.threadActionCount(), 1) << "the confirmed action still ran";
     EXPECT_FALSE(control.offersAuthenticateAndRetry());
 
-    control.request({.target = TARGET,
+    control.request({.target = THREADS_VIEW_TARGET,
                      .tid = 7,
                      .threadCreateTime = 70,
                      .threadName = {},
@@ -912,7 +916,7 @@ TEST_F(ProcessThreadsViewRenderTest, TheRowMenuRequestsTheActionAndItsConfirmRun
     read.windowsPriorities = true;
     apply(view, read, 0.0);
     view.setThreadActions(true, "server");
-    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000)); // the process shown
+    static_cast<void>(view.update(nullptr, THREADS_VIEW_TARGET, 0.0F, 1000)); // the process shown
 
     view.openRowMenu(105);
     static_cast<void>(drawOnce(view)); // the popup's first frame sizes it
@@ -931,13 +935,13 @@ TEST_F(ProcessThreadsViewRenderTest, TheRowMenuRequestsTheActionAndItsConfirmRun
     EXPECT_EQ(view.actionControl().pending()->action, Platform::ThreadAction::Suspend);
 
     // The confirm's own button (Suspend isn't destructive: the plain one) runs it.
-    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
-    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET));
     const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
     ASSERT_NE(modal, nullptr);
     ImGui::ActivateItemByID(ImHashStr("Suspend Thread", 0, modal->ID));
-    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
-    static_cast<void>(drawConfirmOnce(view, &actions, TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET));
+    static_cast<void>(drawConfirmOnce(view, &actions, THREADS_VIEW_TARGET));
     EXPECT_TRUE(view.actionControl().busy());
     captured = drawOnce(view);
     EXPECT_TRUE(captured.contains(view.actionControl().pendingText())) << "running, until its result is taken in:\n" << captured;
@@ -959,7 +963,7 @@ TEST_F(ProcessThreadsViewRenderTest, AConfirmForAProcessNoLongerShownIsDroppedBe
     ProcessThreadsView view(1);
     apply(view, threads({thread(105, "worker", 1)}), 0.0);
     view.setThreadActions(true, "server");
-    static_cast<void>(view.update(nullptr, TARGET, 0.0F, 1000));
+    static_cast<void>(view.update(nullptr, THREADS_VIEW_TARGET, 0.0F, 1000));
     view.requestThreadAction(view.rows()[0].thread, Platform::ThreadAction::Suspend);
     ASSERT_TRUE(view.actionControl().pending().has_value());
 
@@ -977,8 +981,12 @@ TEST(ThreadActionControlTest, WithNoHelperARefusalOffersRestartAsAdministrator)
     actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/false));
     actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied: can't end thread 7 of process 100"));
     ThreadActionControl control;
-    const PendingThreadAction end{
-        .target = TARGET, .tid = 7, .threadCreateTime = 70, .threadName = {}, .processName = "svc", .action = Platform::ThreadAction::End};
+    const PendingThreadAction end{.target = THREADS_VIEW_TARGET,
+                                  .tid = 7,
+                                  .threadCreateTime = 70,
+                                  .threadName = {},
+                                  .processName = "svc",
+                                  .action = Platform::ThreadAction::End};
     control.request(end);
     control.confirm(&actions);
     control.update(0.0F, true);
@@ -1018,7 +1026,7 @@ TEST(ThreadActionControlTest, RestartAsAdministratorIsntOfferedWhereTaskSmackCan
     actions.setCapabilities(threadActionCapabilities(/*canAuthorize=*/false));
     actions.setThreadActionResult(Platform::ProcessActionResult::denied("Access denied"));
     ThreadActionControl control;
-    control.request({.target = TARGET,
+    control.request({.target = THREADS_VIEW_TARGET,
                      .tid = 7,
                      .threadCreateTime = 70,
                      .threadName = {},

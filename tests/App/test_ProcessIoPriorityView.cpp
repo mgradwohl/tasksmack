@@ -34,11 +34,11 @@ using Platform::IoPriority;
 using Platform::IoPriorityClass;
 
 // Two different processes, and a later process given A's PID.
-constexpr Platform::ProcessTarget TARGET_A{.pid = 1001, .startTimeTicks = 5000};
-constexpr Platform::ProcessTarget TARGET_B{.pid = 2002, .startTimeTicks = 6000};
-constexpr Platform::ProcessTarget TARGET_A_REUSED{.pid = 1001, .startTimeTicks = 9000};
+constexpr Platform::ProcessTarget IO_VIEW_TARGET_A{.pid = 1001, .startTimeTicks = 5000};
+constexpr Platform::ProcessTarget IO_VIEW_TARGET_B{.pid = 2002, .startTimeTicks = 6000};
+constexpr Platform::ProcessTarget IO_VIEW_TARGET_A_REUSED{.pid = 1001, .startTimeTicks = 9000};
 // A before its first snapshot: the PID alone, start time not yet known.
-constexpr Platform::ProcessTarget TARGET_A_UNCONFIRMED{.pid = 1001, .startTimeTicks = 0};
+constexpr Platform::ProcessTarget IO_VIEW_TARGET_A_UNCONFIRMED{.pid = 1001, .startTimeTicks = 0};
 
 constexpr IoPriority BEST_EFFORT_4{.ioClass = IoPriorityClass::BestEffort, .level = 4};
 constexpr IoPriority IDLE{.ioClass = IoPriorityClass::Idle, .level = 0};
@@ -81,7 +81,7 @@ TEST(ProcessIoPriorityViewTest, CurrentTextMatchesThePriorityCardsCasing)
     ProcessIoPriorityView view;
     EXPECT_EQ(view.currentText(std::nullopt, Platform::SchedPolicy::Normal), "Current I/O priority: unknown");
     TestMocks::MockProcessActions mock;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
     EXPECT_TRUE(view.currentText(std::nullopt, Platform::SchedPolicy::Normal).starts_with("Current I/O priority: "));
 }
 
@@ -151,14 +151,14 @@ TEST(ProcessIoPriorityViewTest, AWindowsHintIsAppliedAsItsClassAndLevel)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, windowsHint(Platform::IoPriorityHint::Normal));
-    view.editIoPriority(windowsHint(Platform::IoPriorityHint::VeryLow), TARGET_A);
-    ASSERT_TRUE(view.canApply(TARGET_A));
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, windowsHint(Platform::IoPriorityHint::Normal));
+    view.editIoPriority(windowsHint(Platform::IoPriorityHint::VeryLow), IO_VIEW_TARGET_A);
+    ASSERT_TRUE(view.canApply(IO_VIEW_TARGET_A));
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     ASSERT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(mock.lastSetIoPriority(), windowsHint(Platform::IoPriorityHint::VeryLow));
-    EXPECT_EQ(mock.lastTarget(), TARGET_A);
+    EXPECT_EQ(mock.lastTarget(), IO_VIEW_TARGET_A);
 }
 
 TEST(ProcessIoPriorityViewTest, AReadRefusedForAccessStillLetsApplyGoThroughTheHelper)
@@ -167,22 +167,22 @@ TEST(ProcessIoPriorityViewTest, AReadRefusedForAccessStillLetsApplyGoThroughTheH
     // administrator, so with allowApplyWhenReadDenied() Apply goes ahead with the current value unknown.
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
-    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(IO_VIEW_TARGET_A.pid)));
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 0.0F);
     ASSERT_FALSE(view.currentIoPriority().has_value());
     EXPECT_TRUE(Platform::isIoPriorityReadDenied(view.readError())) << view.readError();
-    view.editIoPriority(windowsHint(Platform::IoPriorityHint::Low), TARGET_A);
+    view.editIoPriority(windowsHint(Platform::IoPriorityHint::Low), IO_VIEW_TARGET_A);
 
-    EXPECT_FALSE(view.canApply(TARGET_A)) << "not without the helper";
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A)) << "not without the helper";
     view.allowApplyWhenReadDenied(true);
-    EXPECT_TRUE(view.canApply(TARGET_A));
-    EXPECT_FALSE(view.canApply(TARGET_A_REUSED)) << "still only the process the edit was made for";
+    EXPECT_TRUE(view.canApply(IO_VIEW_TARGET_A));
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A_REUSED)) << "still only the process the edit was made for";
 
-    view.apply(&mock, TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     ASSERT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(mock.lastSetIoPriority(), windowsHint(Platform::IoPriorityHint::Low));
-    EXPECT_EQ(mock.lastTarget(), TARGET_A) << "the identity-checked set, with the start time";
+    EXPECT_EQ(mock.lastTarget(), IO_VIEW_TARGET_A) << "the identity-checked set, with the start time";
 }
 
 TEST(ProcessIoPriorityViewTest, AReadThatFailedForAnotherReasonKeepsApplyDisabled)
@@ -191,9 +191,9 @@ TEST(ProcessIoPriorityViewTest, AReadThatFailedForAnotherReasonKeepsApplyDisable
     ProcessIoPriorityView view;
     view.allowApplyWhenReadDenied(true);
     mock.setIoPriorityReadResult(std::unexpected(std::string("Process not found - may have already exited")));
-    (void) readFrame(view, &mock, TARGET_A, 0.0F);
-    view.editIoPriority(windowsHint(Platform::IoPriorityHint::Low), TARGET_A);
-    EXPECT_FALSE(view.canApply(TARGET_A));
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 0.0F);
+    view.editIoPriority(windowsHint(Platform::IoPriorityHint::Low), IO_VIEW_TARGET_A);
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A));
 }
 
 TEST(ProcessIoPriorityViewTest, NormalizeHoldsTheLevel)
@@ -317,17 +317,17 @@ TEST(ProcessIoPriorityViewTest, ReadsTheShownProcessOnceUntilDue)
     mock.setIoPriorityReadResult(IDLE);
     ProcessIoPriorityView view;
 
-    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, 10.0F));
+    EXPECT_TRUE(readFrame(view, &mock, IO_VIEW_TARGET_A, 10.0F));
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
-    EXPECT_EQ(mock.lastIoPriorityReadTarget().pid, TARGET_A.pid);
-    EXPECT_EQ(mock.lastIoPriorityReadTarget().startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_EQ(mock.lastIoPriorityReadTarget().pid, IO_VIEW_TARGET_A.pid);
+    EXPECT_EQ(mock.lastIoPriorityReadTarget().startTimeTicks, IO_VIEW_TARGET_A.startTimeTicks);
     EXPECT_EQ(view.currentIoPriority(), std::optional<IoPriority>{IDLE});
 
     // Every frame in between reuses it; once the refresh interval has passed it is read again.
     constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS) / 1000.0F;
-    EXPECT_FALSE(readFrame(view, &mock, TARGET_A, 0.5F));
+    EXPECT_FALSE(readFrame(view, &mock, IO_VIEW_TARGET_A, 0.5F));
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
-    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, REFRESH_SECONDS - 0.5F));
+    EXPECT_TRUE(readFrame(view, &mock, IO_VIEW_TARGET_A, REFRESH_SECONDS - 0.5F));
     EXPECT_EQ(mock.getIoPriorityCount(), 2);
 }
 
@@ -335,17 +335,17 @@ TEST(ProcessIoPriorityViewTest, AnotherTargetIsReadAtOnce)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    (void) readFrame(view, &mock, TARGET_A, 0.0F);
-    EXPECT_TRUE(readFrame(view, &mock, TARGET_A_REUSED, 0.1F));
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 0.0F);
+    EXPECT_TRUE(readFrame(view, &mock, IO_VIEW_TARGET_A_REUSED, 0.1F));
     EXPECT_EQ(mock.getIoPriorityCount(), 2);
-    EXPECT_EQ(mock.lastIoPriorityReadTarget().startTimeTicks, TARGET_A_REUSED.startTimeTicks);
+    EXPECT_EQ(mock.lastIoPriorityReadTarget().startTimeTicks, IO_VIEW_TARGET_A_REUSED.startTimeTicks);
 }
 
 TEST(ProcessIoPriorityViewTest, AnUnknownStartTimeIsNotRead)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    (void) readFrame(view, &mock, TARGET_A_UNCONFIRMED, 0.0F);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A_UNCONFIRMED, 0.0F);
     EXPECT_EQ(mock.getIoPriorityCount(), 0);
     EXPECT_FALSE(view.currentIoPriority().has_value());
 }
@@ -355,7 +355,7 @@ TEST(ProcessIoPriorityViewTest, AFailedReadKeepsItsMessageAndNoValue)
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(std::unexpected(std::string("Process not found - may have already exited")));
     ProcessIoPriorityView view;
-    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 0.0F);
     EXPECT_FALSE(view.currentIoPriority().has_value());
     EXPECT_EQ(view.readError(), "Process not found - may have already exited");
 }
@@ -364,13 +364,13 @@ TEST(ProcessIoPriorityViewTest, TheControlFollowsTheProcessUntilEdited)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, IDLE);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, IDLE);
     EXPECT_EQ(view.shownIoPriority(), IDLE);
     EXPECT_FALSE(view.hasPendingEdit());
 
-    view.editIoPriority(BEST_EFFORT_4, TARGET_A);
+    view.editIoPriority(BEST_EFFORT_4, IO_VIEW_TARGET_A);
     mock.setIoPriorityReadResult(IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 1});
-    (void) readFrame(view, &mock, TARGET_A, 100.0F);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 100.0F);
     view.syncToProcess();
     EXPECT_EQ(view.shownIoPriority(), BEST_EFFORT_4); // The edit stays
 }
@@ -381,12 +381,12 @@ TEST(ProcessIoPriorityViewTest, AnotherProcessWhoseReadFailsShowsNoLeftoverValue
     // stay on screen under "current: unknown".
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
 
     mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
-    EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_B)); // As render() does: drop, read, sync
-    (void) readFrame(view, &mock, TARGET_B, 0.1F);
+    EXPECT_TRUE(view.dropEditIfTargetMoved(IO_VIEW_TARGET_B)); // As render() does: drop, read, sync
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_B, 0.1F);
     view.syncToProcess();
     EXPECT_FALSE(view.hasPendingEdit());
     EXPECT_FALSE(view.currentIoPriority().has_value());
@@ -394,9 +394,9 @@ TEST(ProcessIoPriorityViewTest, AnotherProcessWhoseReadFailsShowsNoLeftoverValue
 
     // Without an edit too: A's read value is not carried over to B.
     ProcessIoPriorityView unedited;
-    readCurrent(unedited, mock, TARGET_A, IDLE);
+    readCurrent(unedited, mock, IO_VIEW_TARGET_A, IDLE);
     mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
-    (void) readFrame(unedited, &mock, TARGET_B, 0.1F);
+    (void) readFrame(unedited, &mock, IO_VIEW_TARGET_B, 0.1F);
     unedited.syncToProcess();
     EXPECT_EQ(unedited.shownIoPriority(), IoPriority{});
 }
@@ -445,7 +445,7 @@ TEST(ProcessIoPriorityViewTest, ABlockedReadNeverHoldsUpAFrame)
     ProcessIoPriorityView view;
     const OpenOnExit opener{mock};
     view.markDrawn();
-    ASSERT_TRUE(view.updateRead(&mock, TARGET_A, 0.0F)); // the target's first drawn frame starts the read; it blocks
+    ASSERT_TRUE(view.updateRead(&mock, IO_VIEW_TARGET_A, 0.0F)); // the target's first drawn frame starts the read; it blocks
     EXPECT_TRUE(view.reading());
 
     // Many frames pass while the read is blocked: each returns at once, none starts another read, and
@@ -453,13 +453,13 @@ TEST(ProcessIoPriorityViewTest, ABlockedReadNeverHoldsUpAFrame)
     for (int frame = 0; frame < 120; ++frame)
     {
         view.markDrawn();
-        EXPECT_FALSE(view.updateRead(&mock, TARGET_A, 1.0F / 60.0F));
+        EXPECT_FALSE(view.updateRead(&mock, IO_VIEW_TARGET_A, 1.0F / 60.0F));
     }
     EXPECT_TRUE(view.reading());
     EXPECT_FALSE(view.currentIoPriority().has_value());
 
     mock.open();
-    (void) view.updateRead(&mock, TARGET_A, 0.0F, /*wait=*/true);
+    (void) view.updateRead(&mock, IO_VIEW_TARGET_A, 0.0F, /*wait=*/true);
     EXPECT_EQ(view.currentIoPriority(), std::optional<IoPriority>{IDLE});
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
 }
@@ -470,16 +470,16 @@ TEST(ProcessIoPriorityViewTest, TheRereadIsTimedByTheClockNotByFrames)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, IDLE);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, IDLE);
     ASSERT_EQ(mock.getIoPriorityCount(), 1);
 
     constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_IO_PRIORITY_REFRESH_MS) / 1000.0F;
     for (int frame = 0; frame < 1000; ++frame) // 1000 frames, 1 s of clock in all
     {
-        EXPECT_FALSE(readFrame(view, &mock, TARGET_A, 0.001F));
+        EXPECT_FALSE(readFrame(view, &mock, IO_VIEW_TARGET_A, 0.001F));
     }
     EXPECT_EQ(mock.getIoPriorityCount(), 1);
-    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, REFRESH_SECONDS));
+    EXPECT_TRUE(readFrame(view, &mock, IO_VIEW_TARGET_A, REFRESH_SECONDS));
     EXPECT_EQ(mock.getIoPriorityCount(), 2);
 }
 
@@ -491,7 +491,7 @@ TEST(ProcessIoPriorityViewTest, NothingIsReadWhileTheControlIsNotDrawn)
     ProcessIoPriorityView view;
     for (int frame = 0; frame < 10; ++frame)
     {
-        EXPECT_FALSE(view.updateRead(&mock, TARGET_A, 1.0F));
+        EXPECT_FALSE(view.updateRead(&mock, IO_VIEW_TARGET_A, 1.0F));
     }
     EXPECT_EQ(mock.getIoPriorityCount(), 0);
 }
@@ -502,8 +502,8 @@ TEST(ProcessIoPriorityViewTest, PickingTheShownValueIsNoEdit)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(BEST_EFFORT_4, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(BEST_EFFORT_4, IO_VIEW_TARGET_A);
     EXPECT_FALSE(view.hasPendingEdit());
 }
 
@@ -511,18 +511,18 @@ TEST(ProcessIoPriorityViewTest, AClassWithLevelsStartsAtTheNiceDerivedLevel)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, {}); // Never set: follows nice
+    readCurrent(view, mock, IO_VIEW_TARGET_A, {}); // Never set: follows nice
 
-    view.editClass(IoPriorityClass::BestEffort, 10, TARGET_A);
+    view.editClass(IoPriorityClass::BestEffort, 10, IO_VIEW_TARGET_A);
     EXPECT_EQ(view.shownIoPriority(), (IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 6}));
 
     // Best-effort to Realtime keeps the level; to Idle drops it.
-    view.editClass(IoPriorityClass::Realtime, 10, TARGET_A);
+    view.editClass(IoPriorityClass::Realtime, 10, IO_VIEW_TARGET_A);
     EXPECT_EQ(view.shownIoPriority(), (IoPriority{.ioClass = IoPriorityClass::Realtime, .level = 6}));
-    view.editClass(IoPriorityClass::Idle, 10, TARGET_A);
+    view.editClass(IoPriorityClass::Idle, 10, IO_VIEW_TARGET_A);
     EXPECT_EQ(view.shownIoPriority(), IDLE);
     EXPECT_TRUE(view.hasPendingEdit());
-    EXPECT_EQ(view.editTarget().pid, TARGET_A.pid);
+    EXPECT_EQ(view.editTarget().pid, IO_VIEW_TARGET_A.pid);
 }
 
 // --- Apply's enablement --------------------------------------------------------------------------
@@ -531,10 +531,10 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledUntilAnEdit)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    EXPECT_FALSE(view.canApply(TARGET_A));
-    view.editIoPriority(IDLE, TARGET_A);
-    EXPECT_TRUE(view.canApply(TARGET_A));
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A));
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    EXPECT_TRUE(view.canApply(IO_VIEW_TARGET_A));
 }
 
 TEST(ProcessIoPriorityViewTest, ApplyIsDisabledUntilTheCurrentValueIsRead)
@@ -542,12 +542,12 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledUntilTheCurrentValueIsRead)
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityReadResult(std::unexpected(std::string("unreadable")));
     ProcessIoPriorityView view;
-    (void) readFrame(view, &mock, TARGET_A, 0.0F);
-    view.editIoPriority(IDLE, TARGET_A);
-    EXPECT_FALSE(view.canApply(TARGET_A));
-    EXPECT_TRUE(view.waitingForProcessDetails(TARGET_A));
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 0.0F);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A));
+    EXPECT_TRUE(view.waitingForProcessDetails(IO_VIEW_TARGET_A));
 
-    view.apply(&mock, TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
 }
@@ -556,16 +556,16 @@ TEST(ProcessIoPriorityViewTest, ApplyIsDisabledAndSendsNothingWhileTheStartTimeI
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    (void) readFrame(view, &mock, TARGET_A_UNCONFIRMED, 0.0F);
-    view.editIoPriority(IDLE, TARGET_A_UNCONFIRMED);
-    EXPECT_FALSE(view.canApply(TARGET_A_UNCONFIRMED));
-    view.apply(&mock, TARGET_A_UNCONFIRMED);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A_UNCONFIRMED, 0.0F);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A_UNCONFIRMED);
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A_UNCONFIRMED));
+    view.apply(&mock, IO_VIEW_TARGET_A_UNCONFIRMED);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_TRUE(view.hasPendingEdit()); // Kept, but not applicable
 
     // Once the start time is known, the edit made without it is dropped rather than carried over.
-    EXPECT_TRUE(view.dropEditIfTargetMoved(TARGET_A));
+    EXPECT_TRUE(view.dropEditIfTargetMoved(IO_VIEW_TARGET_A));
     EXPECT_FALSE(view.hasPendingEdit());
 }
 
@@ -575,12 +575,12 @@ TEST(ProcessIoPriorityViewTest, AStartTimeMismatchIsRefused)
     // apply() drops the edit and sends nothing.
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    (void) readFrame(view, &mock, TARGET_A_REUSED, 0.1F);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A_REUSED, 0.1F);
 
-    EXPECT_FALSE(view.canApply(TARGET_A_REUSED));
-    view.apply(&mock, TARGET_A_REUSED);
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_A_REUSED));
+    view.apply(&mock, IO_VIEW_TARGET_A_REUSED);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
     EXPECT_FALSE(view.hasPendingEdit());
@@ -590,12 +590,12 @@ TEST(ProcessIoPriorityViewTest, AnEditIsNotAppliedToAnotherProcess)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    (void) readFrame(view, &mock, TARGET_B, 0.1F);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_B, 0.1F);
 
-    EXPECT_FALSE(view.canApply(TARGET_B));
-    view.apply(&mock, TARGET_B);
+    EXPECT_FALSE(view.canApply(IO_VIEW_TARGET_B));
+    view.apply(&mock, IO_VIEW_TARGET_B);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 0);
 }
@@ -606,14 +606,14 @@ TEST(ProcessIoPriorityViewTest, ApplySetsTheEditOnTheTargetWithItsStartTime)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, {});
-    view.editIoPriority({.ioClass = IoPriorityClass::BestEffort, .level = 6}, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, {});
+    view.editIoPriority({.ioClass = IoPriorityClass::BestEffort, .level = 6}, IO_VIEW_TARGET_A);
 
-    view.apply(&mock, TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     ASSERT_EQ(mock.setIoPriorityCount(), 1);
-    EXPECT_EQ(mock.lastTarget().pid, TARGET_A.pid);
-    EXPECT_EQ(mock.lastTarget().startTimeTicks, TARGET_A.startTimeTicks);
+    EXPECT_EQ(mock.lastTarget().pid, IO_VIEW_TARGET_A.pid);
+    EXPECT_EQ(mock.lastTarget().startTimeTicks, IO_VIEW_TARGET_A.startTimeTicks);
     EXPECT_EQ(mock.lastSetIoPriority(), (IoPriority{.ioClass = IoPriorityClass::BestEffort, .level = 6}));
     EXPECT_FALSE(view.hasPendingEdit());
     EXPECT_TRUE(view.error().empty());
@@ -623,11 +623,11 @@ TEST(ProcessIoPriorityViewTest, ASecondApplyIsNotAReplay)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
-    view.apply(&mock, TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
 }
@@ -636,14 +636,14 @@ TEST(ProcessIoPriorityViewTest, ApplyAsksForAFreshRead)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
 
     // Well inside the refresh interval, the next frame still reads what the process has now.
     mock.setIoPriorityReadResult(IDLE);
-    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, 0.01F));
+    EXPECT_TRUE(readFrame(view, &mock, IO_VIEW_TARGET_A, 0.01F));
     view.syncToProcess();
     EXPECT_EQ(view.shownIoPriority(), IDLE);
 }
@@ -654,17 +654,17 @@ TEST(ProcessIoPriorityViewTest, FailureShowsThePlatformMessageAndRevertsTheContr
     mock.setIoPriorityResult(
         Platform::ProcessActionResult::error("Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root)."));
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority({.ioClass = IoPriorityClass::Realtime, .level = 0}, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority({.ioClass = IoPriorityClass::Realtime, .level = 0}, IO_VIEW_TARGET_A);
 
-    view.apply(&mock, TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
     EXPECT_EQ(view.error(), "Permission denied: the Realtime I/O class needs CAP_SYS_NICE (or root).");
     EXPECT_EQ(view.shownIoPriority(), BEST_EFFORT_4);
 
     // Another edit clears the error.
-    view.editIoPriority(IDLE, TARGET_A);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
     EXPECT_TRUE(view.error().empty());
 }
 
@@ -672,9 +672,9 @@ TEST(ProcessIoPriorityViewTest, NullActionsGiveAnUnavailableError)
 {
     TestMocks::MockProcessActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(nullptr, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(nullptr, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_EQ(view.error(), "Process actions unavailable");
 }
@@ -686,11 +686,11 @@ TEST(ProcessIoPriorityViewTest, ASelectionChangeResetsTheEditTheErrorAndTheRead)
     TestMocks::MockProcessActions mock;
     mock.setIoPriorityResult(Platform::ProcessActionResult::error("nope"));
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
-    view.editIoPriority(IDLE, TARGET_A);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
     ASSERT_TRUE(view.hasPendingEdit());
 
     view.onSelectionChanged();
@@ -700,8 +700,8 @@ TEST(ProcessIoPriorityViewTest, ASelectionChangeResetsTheEditTheErrorAndTheRead)
     EXPECT_EQ(view.editTarget().pid, -1);
 
     // Even back on A, the edit is gone: nothing to apply.
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
 }
@@ -710,8 +710,8 @@ TEST(ProcessIoPriorityViewTest, ThePriorityViewResetsItsIoControlOnASelectionCha
 {
     TestMocks::MockProcessActions mock;
     ProcessPriorityView priorityView;
-    readCurrent(priorityView.ioPriorityView(), mock, TARGET_A, BEST_EFFORT_4);
-    priorityView.ioPriorityView().editIoPriority(IDLE, TARGET_A);
+    readCurrent(priorityView.ioPriorityView(), mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    priorityView.ioPriorityView().editIoPriority(IDLE, IO_VIEW_TARGET_A);
     priorityView.onSelectionChanged();
     EXPECT_FALSE(priorityView.ioPriorityView().hasPendingEdit());
 }
@@ -743,17 +743,17 @@ TEST(ProcessIoPriorityViewTest, TheCurrentValueIsReadAgainOnlyAfterTheApplysResu
 {
     GatedIoPriorityActions mock;
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     EXPECT_TRUE(view.applying());
     EXPECT_EQ(view.applyingText(), "Setting the I/O priority of PID 1001...");
-    EXPECT_FALSE(readFrame(view, &mock, TARGET_A, 0.1F)); // nothing asked for a read yet
+    EXPECT_FALSE(readFrame(view, &mock, IO_VIEW_TARGET_A, 0.1F)); // nothing asked for a read yet
 
     mock.open();
     view.update(/*wait=*/true);
     EXPECT_EQ(mock.setIoPriorityCount(), 1);
-    EXPECT_TRUE(readFrame(view, &mock, TARGET_A, 0.2F)); // now it is
+    EXPECT_TRUE(readFrame(view, &mock, IO_VIEW_TARGET_A, 0.2F)); // now it is
 }
 
 TEST(ProcessIoPriorityViewTest, AnApplysResultIsDroppedAfterASelectionChange)
@@ -761,9 +761,9 @@ TEST(ProcessIoPriorityViewTest, AnApplysResultIsDroppedAfterASelectionChange)
     GatedIoPriorityActions mock;
     mock.setIoPriorityResult(Platform::ProcessActionResult::error("Permission denied"));
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.onSelectionChanged();
     mock.open();
     view.update(/*wait=*/true);
@@ -778,9 +778,9 @@ TEST(ProcessIoPriorityViewTest, APermissionRefusalOffersAuthenticateAndRetry)
     mock.setCapabilities({.canSetIoPriority = true, .canAuthorizeInteractively = true});
     mock.setIoPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     ASSERT_TRUE(view.offersAuthenticateAndRetry());
 
@@ -792,8 +792,8 @@ TEST(ProcessIoPriorityViewTest, APermissionRefusalOffersAuthenticateAndRetry)
     EXPECT_TRUE(view.error().empty());
     EXPECT_FALSE(view.offersAuthenticateAndRetry());
 
-    view.editIoPriority(IDLE, TARGET_A); // the refusal put the control back at Best-effort 4
-    view.apply(&mock, TARGET_A);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A); // the refusal put the control back at Best-effort 4
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     ASSERT_TRUE(view.offersAuthenticateAndRetry());
     view.onSelectionChanged();
@@ -808,9 +808,9 @@ TEST(ProcessIoPriorityViewTest, WithNoHelperAPermissionRefusalOffersRestartAsAdm
     mock.setCapabilities({.canSetIoPriority = true}); // no helper
     mock.setIoPriorityResult(Platform::ProcessActionResult::denied("Permission denied"));
     ProcessIoPriorityView view;
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_FALSE(view.offersAuthenticateAndRetry());
     ASSERT_TRUE(view.offersRestartAsAdministrator());
@@ -818,9 +818,9 @@ TEST(ProcessIoPriorityViewTest, WithNoHelperAPermissionRefusalOffersRestartAsAdm
     EXPECT_FALSE(view.offersRestartAsAdministrator());
 
     mock.setCapabilities({.canSetIoPriority = true, .canAuthorizeInteractively = true});
-    readCurrent(view, mock, TARGET_A, BEST_EFFORT_4);
-    view.editIoPriority(IDLE, TARGET_A);
-    view.apply(&mock, TARGET_A);
+    readCurrent(view, mock, IO_VIEW_TARGET_A, BEST_EFFORT_4);
+    view.editIoPriority(IDLE, IO_VIEW_TARGET_A);
+    view.apply(&mock, IO_VIEW_TARGET_A);
     view.update(/*wait=*/true);
     EXPECT_TRUE(view.offersAuthenticateAndRetry());
     EXPECT_FALSE(view.offersRestartAsAdministrator()) << "the helper's Retry as administrator instead";
@@ -833,9 +833,9 @@ TEST(ProcessIoPriorityViewTest, ARefusedReadWithNoHelperOffersRestartAsAdministr
 {
     TestMocks::MockProcessActions mock;
     mock.setCapabilities({.canSetIoPriority = true});
-    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(TARGET_A.pid)));
+    mock.setIoPriorityReadResult(std::unexpected(Platform::ioPriorityReadDeniedMessage(IO_VIEW_TARGET_A.pid)));
     ProcessIoPriorityView view;
-    (void) readFrame(view, &mock, TARGET_A, 0.0F);
+    (void) readFrame(view, &mock, IO_VIEW_TARGET_A, 0.0F);
     EXPECT_FALSE(view.readRefusalOffersRestart(/*helperCanRedo=*/false)) << "not offered where TaskSmack can't restart";
 
     const TestSupport::RestartOffered offered;
@@ -844,7 +844,7 @@ TEST(ProcessIoPriorityViewTest, ARefusedReadWithNoHelperOffersRestartAsAdministr
 
     mock.setIoPriorityReadResult(std::unexpected(std::string("Process not found - may have already exited")));
     ProcessIoPriorityView gone;
-    (void) readFrame(gone, &mock, TARGET_A, 0.0F);
+    (void) readFrame(gone, &mock, IO_VIEW_TARGET_A, 0.0F);
     EXPECT_FALSE(gone.readRefusalOffersRestart(false)) << "an administrator couldn't read it either";
 }
 

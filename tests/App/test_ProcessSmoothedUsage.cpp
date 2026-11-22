@@ -25,7 +25,7 @@ namespace
 constexpr std::chrono::milliseconds REFRESH{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
 constexpr float FRAME_SECONDS = 0.05F; // One 20 FPS frame: well under the smoothing time constant
 constexpr float LONG_GAP_SECONDS = 60.0F;
-constexpr double NOT_A_NUMBER = std::numeric_limits<double>::quiet_NaN();
+constexpr double SMOOTHED_NAN = std::numeric_limits<double>::quiet_NaN();
 
 /// Every reading available, as from a probe that supports them all.
 constexpr SampleRateReadings ALL_READINGS{.io = true,
@@ -277,13 +277,13 @@ TEST(ProcessSmoothedUsageTest, TheNpuBarsAreReadUnderTheNpusOwnSupport)
 
 [[nodiscard]] Domain::ProcessSnapshot sampleWithNaNs()
 {
-    auto sample = sampleAt(NOT_A_NUMBER, 1000);
-    sample.cpuSystemPercent = NOT_A_NUMBER;
-    sample.pageFaultsPerSec = NOT_A_NUMBER;
-    sample.powerWatts = NOT_A_NUMBER;
-    sample.gpuUtilPercent = NOT_A_NUMBER;
-    sample.ioReadBytesPerSec = NOT_A_NUMBER;
-    sample.netSentBytesPerSec = NOT_A_NUMBER;
+    auto sample = sampleAt(SMOOTHED_NAN, 1000);
+    sample.cpuSystemPercent = SMOOTHED_NAN;
+    sample.pageFaultsPerSec = SMOOTHED_NAN;
+    sample.powerWatts = SMOOTHED_NAN;
+    sample.gpuUtilPercent = SMOOTHED_NAN;
+    sample.ioReadBytesPerSec = SMOOTHED_NAN;
+    sample.netSentBytesPerSec = SMOOTHED_NAN;
     return sample;
 }
 

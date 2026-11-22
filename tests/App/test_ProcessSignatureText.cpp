@@ -18,7 +18,7 @@ namespace
 using Platform::ImageSignature;
 
 /// A scheme whose signature colours are all distinct, so a test can tell which one was chosen.
-UI::ColorScheme distinctScheme()
+UI::ColorScheme signatureDistinctScheme()
 {
     UI::ColorScheme scheme{};
     scheme.textPrimary = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
@@ -28,7 +28,7 @@ UI::ColorScheme distinctScheme()
     return scheme;
 }
 
-void expectSameColor(const ImVec4& actual, const ImVec4& expected)
+void expectSameSignatureColor(const ImVec4& actual, const ImVec4& expected)
 {
     EXPECT_FLOAT_EQ(actual.x, expected.x);
     EXPECT_FLOAT_EQ(actual.y, expected.y);
@@ -38,13 +38,13 @@ void expectSameColor(const ImVec4& actual, const ImVec4& expected)
 
 TEST(ProcessSignatureTextTest, EachResultHasItsColour)
 {
-    const UI::ColorScheme scheme = distinctScheme();
-    expectSameColor(App::ProcessSignatureText::textColor(ImageSignature::Embedded, scheme), scheme.textPrimary);
-    expectSameColor(App::ProcessSignatureText::textColor(ImageSignature::Catalog, scheme), scheme.textPrimary);
-    expectSameColor(App::ProcessSignatureText::textColor(ImageSignature::Unsigned, scheme), scheme.textWarning);
-    expectSameColor(App::ProcessSignatureText::textColor(ImageSignature::Untrusted, scheme), scheme.textError);
-    expectSameColor(App::ProcessSignatureText::textColor(ImageSignature::Unknown, scheme), scheme.textMuted);
-    expectSameColor(App::ProcessSignatureText::textColor(ImageSignature::NotChecked, scheme), scheme.textMuted);
+    const UI::ColorScheme scheme = signatureDistinctScheme();
+    expectSameSignatureColor(App::ProcessSignatureText::textColor(ImageSignature::Embedded, scheme), scheme.textPrimary);
+    expectSameSignatureColor(App::ProcessSignatureText::textColor(ImageSignature::Catalog, scheme), scheme.textPrimary);
+    expectSameSignatureColor(App::ProcessSignatureText::textColor(ImageSignature::Unsigned, scheme), scheme.textWarning);
+    expectSameSignatureColor(App::ProcessSignatureText::textColor(ImageSignature::Untrusted, scheme), scheme.textError);
+    expectSameSignatureColor(App::ProcessSignatureText::textColor(ImageSignature::Unknown, scheme), scheme.textMuted);
+    expectSameSignatureColor(App::ProcessSignatureText::textColor(ImageSignature::NotChecked, scheme), scheme.textMuted);
 }
 
 TEST(ProcessSignatureTextTest, TheRowMarksAVerifiedSignerAndSaysWhenNotCheckedYet)

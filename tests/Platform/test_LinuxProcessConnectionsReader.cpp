@@ -50,7 +50,7 @@ namespace
 {
 
 /// The start time of @p pid as the probe reports it, or 0 if it cannot be read.
-[[nodiscard]] std::uint64_t startTicksOf(pid_t pid)
+[[nodiscard]] std::uint64_t connectionsStartTicksOf(pid_t pid)
 {
     std::ifstream stat("/proc/" + std::to_string(pid) + "/stat");
     const std::string line((std::istreambuf_iterator<char>(stat)), std::istreambuf_iterator<char>());
@@ -59,7 +59,7 @@ namespace
 
 [[nodiscard]] ProcessTarget self()
 {
-    return {.pid = static_cast<std::int32_t>(::getpid()), .startTimeTicks = startTicksOf(::getpid())};
+    return {.pid = static_cast<std::int32_t>(::getpid()), .startTimeTicks = connectionsStartTicksOf(::getpid())};
 }
 
 /// A socket descriptor closed on scope exit.
@@ -389,7 +389,7 @@ TEST(LinuxProcessConnectionsReaderTest, AnotherUsersProcessIsNotPermitted)
 {
     // PID 1 (init) belongs to root: unless this test runs with ptrace rights over it, its fd links
     // are off limits.
-    const std::uint64_t initStart = startTicksOf(1);
+    const std::uint64_t initStart = connectionsStartTicksOf(1);
     if (initStart == 0)
     {
         GTEST_SKIP() << "/proc/1/stat is not readable here (hidepid)";

@@ -2824,7 +2824,7 @@ TEST(GPUModelTest, OrderSnapshotsByEnumerationEmitsADuplicatedIdOnce)
 
 /// Every GPU's series in one generation is aligned to its timestamps: a truncated or torn copy of any
 /// one of them fails. Once there is history, every GPU of `gpuCount` has its history and snapshot.
-[[nodiscard]] bool isAligned(const Domain::GPUPublication& publication, std::size_t gpuCount)
+[[nodiscard]] bool gpuIsAligned(const Domain::GPUPublication& publication, std::size_t gpuCount)
 {
     const auto historyAligned = [](const auto& entry)
     {
@@ -2862,7 +2862,7 @@ TEST(GPUModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
         [&](std::size_t) { model.refreshAt(now += STEP); },
         [&] { return model.publication(); },
         [&] { return model.publicationVersion(); },
-        [](const Domain::GPUPublication& publication) { return isAligned(publication, GPUS); });
+        [](const Domain::GPUPublication& publication) { return gpuIsAligned(publication, GPUS); });
 
     EXPECT_EQ(result.versionRegressions, 0U);
     EXPECT_EQ(result.versionAheadOfPointer, 0U);
@@ -2932,7 +2932,7 @@ TEST(GPUModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
                 const auto publication = model.publication();
                 EXPECT_GE(publication->version, lastSeen);
                 EXPECT_GE(publication->version, announced);
-                EXPECT_TRUE(isAligned(*publication, GPUS));
+                EXPECT_TRUE(gpuIsAligned(*publication, GPUS));
                 lastSeen = publication->version;
                 if (writersRunning.load() > 0)
                 {

@@ -25,7 +25,7 @@ using TestMocks::makeMemoryCounters;
 using TestMocks::makeSystemCounters;
 using TestMocks::MockSystemProbe;
 
-void setCoreSample(MockSystemProbe& probe, std::uint64_t sample, const std::vector<std::size_t>& onlineIds)
+void gridSetCoreSample(MockSystemProbe& probe, std::uint64_t sample, const std::vector<std::size_t>& onlineIds)
 {
     auto counters = makeSystemCounters(makeCpuCounters(0, 0, 0, 1000 * sample), makeMemoryCounters(1024, 512));
     for (const std::size_t id : onlineIds)
@@ -54,10 +54,10 @@ TEST(CpuCoreGridIdsTest, NeverReportedIdsGetNoChart)
     auto probe = std::make_unique<MockSystemProbe>();
     auto* rawProbe = probe.get();
     const std::vector<std::size_t> reported{0, 1, 2, 3, 6, 7, 8};
-    setCoreSample(*rawProbe, 0, reported);
+    gridSetCoreSample(*rawProbe, 0, reported);
     Domain::SystemModel model(std::move(probe));
     model.refresh();
-    setCoreSample(*rawProbe, 1, reported);
+    gridSetCoreSample(*rawProbe, 1, reported);
     model.refresh();
 
     const auto ids = gridIdsFor(model);
@@ -69,14 +69,14 @@ TEST(CpuCoreGridIdsTest, ACoreSeenThenOfflineKeepsItsChart)
 {
     auto probe = std::make_unique<MockSystemProbe>();
     auto* rawProbe = probe.get();
-    setCoreSample(*rawProbe, 0, {0, 1, 2, 3});
+    gridSetCoreSample(*rawProbe, 0, {0, 1, 2, 3});
     Domain::SystemModel model(std::move(probe));
     model.refresh();
-    setCoreSample(*rawProbe, 1, {0, 1, 2, 3});
+    gridSetCoreSample(*rawProbe, 1, {0, 1, 2, 3});
     model.refresh();
-    setCoreSample(*rawProbe, 2, {0, 1}); // cpu2 and cpu3 offline
+    gridSetCoreSample(*rawProbe, 2, {0, 1}); // cpu2 and cpu3 offline
     model.refresh();
-    setCoreSample(*rawProbe, 3, {0, 1});
+    gridSetCoreSample(*rawProbe, 3, {0, 1});
     model.refresh();
 
     EXPECT_EQ(gridIdsFor(model), (std::vector<std::size_t>{0, 1, 2, 3}));
@@ -86,14 +86,14 @@ TEST(CpuCoreGridIdsTest, TwoCpusDroppingToOneKeepTheTabAndTheOfflineChart)
 {
     auto probe = std::make_unique<MockSystemProbe>();
     auto* rawProbe = probe.get();
-    setCoreSample(*rawProbe, 0, {0, 1});
+    gridSetCoreSample(*rawProbe, 0, {0, 1});
     Domain::SystemModel model(std::move(probe));
     model.refresh();
-    setCoreSample(*rawProbe, 1, {0, 1});
+    gridSetCoreSample(*rawProbe, 1, {0, 1});
     model.refresh();
-    setCoreSample(*rawProbe, 2, {0}); // cpu1 offline: one CPU online
+    gridSetCoreSample(*rawProbe, 2, {0}); // cpu1 offline: one CPU online
     model.refresh();
-    setCoreSample(*rawProbe, 3, {0});
+    gridSetCoreSample(*rawProbe, 3, {0});
     model.refresh();
 
     const auto publication = model.publication();

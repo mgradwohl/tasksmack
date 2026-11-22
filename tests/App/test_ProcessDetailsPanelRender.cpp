@@ -69,8 +69,8 @@ namespace App
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 1600.0F;
-constexpr float DISPLAY_HEIGHT = 1200.0F;
+constexpr float DETAILS_DISPLAY_WIDTH = 1600.0F;
+constexpr float DETAILS_DISPLAY_HEIGHT = 1200.0F;
 constexpr std::int32_t PID = 4242;
 constexpr std::uint64_t START_TICKS = 777;
 
@@ -122,7 +122,7 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(DETAILS_DISPLAY_WIDTH, DETAILS_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -160,7 +160,7 @@ class ProcessDetailsPanelRenderTest : public ::testing::Test
         std::string captured;
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(DETAILS_DISPLAY_WIDTH, DETAILS_DISPLAY_HEIGHT));
         ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
         panel.renderContent();
@@ -1280,7 +1280,7 @@ TEST_F(ProcessDetailsPanelRenderTest, TheIoSliderOffersRealtimeWhereTheActionsCa
     // Focused as the slider's own tests do it, at the start of a frame that draws it.
     ImGui::NewFrame();
     ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-    ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+    ImGui::SetNextWindowSize(ImVec2(DETAILS_DISPLAY_WIDTH, DETAILS_DISPLAY_HEIGHT));
     ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
     ImGui::SetFocusID(sliderId, cardForFocus);
     panel.renderContent();

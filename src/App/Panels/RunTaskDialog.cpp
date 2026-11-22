@@ -35,12 +35,12 @@ namespace App
 namespace
 {
 
-constexpr const char* POPUP_ID = "###RunNewTask";
+constexpr const char* RUN_TASK_POPUP_ID = "###RunNewTask";
 constexpr const char* RUN_LABEL = "Run";
-constexpr const char* CANCEL_LABEL = "Cancel";
+constexpr const char* RUN_TASK_CANCEL_LABEL = "Cancel";
 constexpr const char* RECENT_POPUP_ID = "##RunTaskRecent";
-constexpr float BUTTON_MIN_EM = 7.5F;
-constexpr float DIALOG_WIDTH_EM = 34.0F;
+constexpr float RUN_TASK_BUTTON_MIN_EM = 7.5F;
+constexpr float RUN_TASK_DIALOG_WIDTH_EM = 34.0F;
 
 // What the dialog says about the command, per platform: Linux splits it as a shell would, without one;
 // Windows opens it as the Run box does (#3427).
@@ -236,10 +236,10 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
 {
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(RUN_TASK_POPUP_ID);
         m_ShowRequested = false;
     }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    m_Open = ImGui::IsPopupOpen(RUN_TASK_POPUP_ID);
     if (!m_Open)
     {
         return std::nullopt;
@@ -247,9 +247,9 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
     takeBrowseResult();
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const std::string title = std::string(ICON_FA_ROCKET "  Run new task") + POPUP_ID;
+    const std::string title = std::string(ICON_FA_ROCKET "  Run new task") + RUN_TASK_POPUP_ID;
     UI::Widgets::centerNextDialog(m_LastWorkSize);
-    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
+    const float width = std::min((RUN_TASK_DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
                                  UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
     std::optional<Platform::RunProgramRequest> run;
@@ -287,9 +287,9 @@ std::optional<Platform::RunProgramRequest> RunTaskDialog::render()
         .tooltip = typed ? nullptr : "Type the program to run",
         .disabled = !typed,
     };
-    const UI::Widgets::DialogFooterButton cancelButton{.label = CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
-    UI::Widgets::DialogFooterAction pressed =
-        UI::Widgets::dialogFooter(runButton, cancelButton, UI::Widgets::footerButtonWidth({RUN_LABEL, CANCEL_LABEL}, BUTTON_MIN_EM));
+    const UI::Widgets::DialogFooterButton cancelButton{.label = RUN_TASK_CANCEL_LABEL, .fills = nullptr, .tooltip = nullptr};
+    UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
+        runButton, cancelButton, UI::Widgets::footerButtonWidth({RUN_LABEL, RUN_TASK_CANCEL_LABEL}, RUN_TASK_BUTTON_MIN_EM));
     if (entered && typed)
     {
         pressed = UI::Widgets::DialogFooterAction::Primary;

@@ -155,19 +155,19 @@ TEST(ProcessModelAllocationFailureTest, AFailedSystemHistoryAppendKeepsTheFiveSe
 #endif
     // The seed plus enough history samples to fill a series' first shared block (64 samples), so the
     // refresh under test compacts every series into a new one.
-    constexpr int WARM_UP_SAMPLES = 1 + 64;
+    constexpr int PROCESS_WARM_UP_SAMPLES = 1 + 64;
     constexpr std::int64_t MAX_ALLOCATIONS = 100'000; // a bound on the loop, far above one refresh's
     int containedFailures = 0;
     for (std::int64_t failAt = 0; failAt < MAX_ALLOCATIONS; ++failAt)
     {
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
         HistoryDriver driver;
-        for (int i = 0; i < WARM_UP_SAMPLES; ++i)
+        for (int i = 0; i < PROCESS_WARM_UP_SAMPLES; ++i)
         {
             driver.sample();
         }
         const std::size_t before = alignedHistoryLength(driver.model());
-        ASSERT_EQ(before, static_cast<std::size_t>(WARM_UP_SAMPLES - 1));
+        ASSERT_EQ(before, static_cast<std::size_t>(PROCESS_WARM_UP_SAMPLES - 1));
 
         bool threw = false;
         bool fired = false;

@@ -23,7 +23,7 @@ namespace Domain
 namespace
 {
 
-constexpr auto WAIT = std::chrono::seconds(5);
+constexpr auto DRAIN_WAIT = std::chrono::seconds(5);
 
 /// An owner as the rule describes: a queue under its own lock, an item queued and then wake(), and a drain that
 /// pops one item at a time.
@@ -81,7 +81,7 @@ struct Owner
     bool waitFor(std::size_t count)
     {
         std::unique_lock lock(mutex);
-        return changed.wait_for(lock, WAIT, [&] { return done.size() >= count && !inDrain; });
+        return changed.wait_for(lock, DRAIN_WAIT, [&] { return done.size() >= count && !inDrain; });
     }
 };
 
@@ -115,7 +115,7 @@ TEST(DrainTriggerTest, AWakeWhileADrainWaitsMergesIntoIt)
     EXPECT_EQ(owner.add(trigger, 1), SubmitResult::Queued);
     {
         std::unique_lock lock(owner.mutex);
-        ASSERT_TRUE(owner.changed.wait_for(lock, WAIT, [&] { return owner.inDrain; }));
+        ASSERT_TRUE(owner.changed.wait_for(lock, DRAIN_WAIT, [&] { return owner.inDrain; }));
     }
     EXPECT_EQ(owner.add(trigger, 2), SubmitResult::Queued);
     EXPECT_EQ(owner.add(trigger, 3), SubmitResult::Merged);
@@ -158,7 +158,7 @@ TEST(DrainTriggerTest, ADrainThatThrowsFailsTheWorkerAndLaterWakesAreClosed)
                              throw std::runtime_error("drain broke");
                          });
     EXPECT_EQ(trigger.wake(), SubmitResult::Queued);
-    const auto giveUp = std::chrono::steady_clock::now() + WAIT;
+    const auto giveUp = std::chrono::steady_clock::now() + DRAIN_WAIT;
     while (!trigger.failed() && std::chrono::steady_clock::now() < giveUp)
     {
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
@@ -190,7 +190,7 @@ TEST(DrainTriggerTest, TheDestructorStopsADrainAtItsNextCheck)
                              });
         EXPECT_EQ(trigger.wake(), SubmitResult::Queued);
         std::unique_lock lock(owner.mutex);
-        ASSERT_TRUE(owner.changed.wait_for(lock, WAIT, [&] { return owner.inDrain; }));
+        ASSERT_TRUE(owner.changed.wait_for(lock, DRAIN_WAIT, [&] { return owner.inDrain; }));
     }
     EXPECT_TRUE(stopped.load()) << "joined after the drain saw its stop";
 }

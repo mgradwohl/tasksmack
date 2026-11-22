@@ -30,7 +30,7 @@ namespace
 
 using Platform::SecurityReadStatus;
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr Platform::ProcessTarget SECURITY_RENDER_TARGET{.pid = 4242, .startTimeTicks = 777};
 
 [[nodiscard]] Platform::SecurityReadResult sampleSecurity()
 {
@@ -116,18 +116,18 @@ TEST(ProcessSecurityViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     TestMocks::MockProcessSecurityReader reader;
     reader.setResult(sampleSecurity());
 
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F)); // never drawn open: never read
+    EXPECT_FALSE(view.update(&reader, SECURITY_RENDER_TARGET, 10.0F)); // never drawn open: never read
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(SECURITY_RENDER_TARGET);
     EXPECT_TRUE(view.hasRead());
     EXPECT_EQ(view.rows().size(), 11U);
 
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F)); // not yet due
+    EXPECT_FALSE(view.update(&reader, SECURITY_RENDER_TARGET, 1.0F)); // not yet due
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 2.5F)); // PROCESS_SECURITY_REFRESH_MS since the last read
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 2.5F)); // PROCESS_SECURITY_REFRESH_MS since the last read
+    view.finishPendingRead(SECURITY_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 
     // A new selection drops the rows and reads again as soon as it is shown.
@@ -135,11 +135,11 @@ TEST(ProcessSecurityViewTest, ReadsOnlyWhileOpenAndAtTheRefreshCadence)
     EXPECT_FALSE(view.hasRead());
     EXPECT_TRUE(view.rows().empty());
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(SECURITY_RENDER_TARGET);
     EXPECT_EQ(reader.readCount(), 3);
 
-    EXPECT_FALSE(view.update(nullptr, TARGET, 10.0F)); // no reader: nothing read
+    EXPECT_FALSE(view.update(nullptr, SECURITY_RENDER_TARGET, 10.0F)); // no reader: nothing read
 }
 
 /// A reader whose reads wait at a gate the test opens, or throw: a slow (an unreachable domain
@@ -183,17 +183,17 @@ TEST(ProcessSecurityViewTest, ASlowReadNeverBlocksUpdateAndNoSecondReadStartsWhi
     GatedSecurityReader reader(gate.get_future().share());
     ProcessSecurityView view;
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F)); // returns with the read still waiting at the gate
+    ASSERT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F)); // returns with the read still waiting at the gate
     EXPECT_TRUE(view.readInFlight());
     EXPECT_FALSE(view.hasRead()); // the section shows "Reading..."
 
     // Frames go on, past the refresh interval, without waiting or starting another read.
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 10.0F));
+    EXPECT_FALSE(view.update(&reader, SECURITY_RENDER_TARGET, 10.0F));
     EXPECT_FALSE(view.hasRead());
 
     gate.set_value();
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(SECURITY_RENDER_TARGET);
     EXPECT_TRUE(view.hasRead());
     EXPECT_EQ(view.status(), SecurityReadStatus::Ok);
     EXPECT_EQ(view.rows().size(), 11U);
@@ -207,18 +207,18 @@ TEST(ProcessSecurityViewTest, AReadForAnEarlierSelectionIsDropped)
     GatedSecurityReader reader(gate.get_future().share());
     ProcessSecurityView view;
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
+    ASSERT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F));
 
-    view.onSelectionChanged(); // OTHER is selected while TARGET's read is still running
+    view.onSelectionChanged(); // OTHER is selected while SECURITY_RENDER_TARGET's read is still running
     gate.set_value();
     view.finishPendingRead(OTHER);
-    EXPECT_FALSE(view.hasRead()); // TARGET's rows never show under OTHER
+    EXPECT_FALSE(view.hasRead()); // SECURITY_RENDER_TARGET's rows never show under OTHER
     EXPECT_TRUE(view.rows().empty());
 
     // The same PID with another start time is another process: its read is dropped too.
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead({.pid = TARGET.pid, .startTimeTicks = TARGET.startTimeTicks + 1});
+    ASSERT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F));
+    view.finishPendingRead({.pid = SECURITY_RENDER_TARGET.pid, .startTimeTicks = SECURITY_RENDER_TARGET.startTimeTicks + 1});
     EXPECT_FALSE(view.hasRead());
 
     view.markDrawnOpen();
@@ -235,8 +235,8 @@ TEST(ProcessSecurityViewTest, AReadThatThrowsBecomesAFailedStatus)
     GatedSecurityReader reader(gate.get_future().share(), true);
     ProcessSecurityView view;
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(SECURITY_RENDER_TARGET);
     EXPECT_TRUE(view.hasRead());
     EXPECT_EQ(view.status(), SecurityReadStatus::Failed);
     EXPECT_EQ(view.detail(), "lookup failed");
@@ -293,7 +293,7 @@ TEST_F(ProcessSecurityViewRenderTest, DrawsNothingWithoutSupportAndNothingReadWh
     TestMocks::MockProcessSecurityReader reader;
     for (int i = 0; i < 3; ++i)
     {
-        static_cast<void>(view.update(&reader, TARGET, 10.0F));
+        static_cast<void>(view.update(&reader, SECURITY_RENDER_TARGET, 10.0F));
         EXPECT_TRUE(renderAndCapture(view, true, false).contains("Security"));
     }
     EXPECT_EQ(reader.readCount(), 0);
@@ -305,8 +305,8 @@ TEST_F(ProcessSecurityViewRenderTest, OpenReadsAndShowsTheRows)
     TestMocks::MockProcessSecurityReader reader;
     reader.setResult(sampleSecurity());
     EXPECT_TRUE(renderAndCapture(view, true).contains("Reading..."));
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-    view.finishPendingRead(TARGET);
+    ASSERT_TRUE(view.update(&reader, SECURITY_RENDER_TARGET, 0.0F));
+    view.finishPendingRead(SECURITY_RENDER_TARGET);
     const std::string text = renderAndCapture(view, true);
     EXPECT_TRUE(text.contains("User")) << text;
     EXPECT_TRUE(text.contains("1000 (matt)")) << text;

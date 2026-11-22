@@ -27,7 +27,7 @@ namespace
 
 using Posix::FdGuard;
 
-[[nodiscard]] MemoryMapReadResult failure(int err)
+[[nodiscard]] MemoryMapReadResult memoryMapFailure(int err)
 {
     switch (err)
     {
@@ -65,7 +65,7 @@ MemoryMapReadResult LinuxProcessMemoryMapReader::readMemoryMap(const ProcessTarg
     }
     if (target.pid <= 0)
     {
-        return failure(ESRCH);
+        return memoryMapFailure(ESRCH);
     }
     if (target.startTimeTicks == 0)
     {
@@ -81,24 +81,24 @@ MemoryMapReadResult LinuxProcessMemoryMapReader::readMemoryMap(const ProcessTarg
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
-        return failure(errno);
+        return memoryMapFailure(errno);
     }
     if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH); // gone, or the PID now names another process
+        return memoryMapFailure(ESRCH); // gone, or the PID now names another process
     }
     // One byte past the cap, so an smaps exactly the cap long reads whole and isn't called cut short.
     const std::size_t readLimit = m_MaxSmapsBytes == std::numeric_limits<std::size_t>::max() ? m_MaxSmapsBytes : m_MaxSmapsBytes + 1;
     const std::expected<std::string, int> smaps = ProcParsing::readWholeFileAt(dir.get(), "smaps", readLimit);
     if (!smaps.has_value())
     {
-        return failure(smaps.error());
+        return memoryMapFailure(smaps.error());
     }
     // An exiting process's smaps reads empty (as a kernel thread's always does): confirmed before that is
     // reported as an empty map.
     if (smaps->empty() && ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH);
+        return memoryMapFailure(ESRCH);
     }
     std::string_view text = *smaps;
     const bool truncated = text.size() > m_MaxSmapsBytes;

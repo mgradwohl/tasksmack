@@ -25,7 +25,7 @@ namespace App
 namespace
 {
 
-constexpr Platform::ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 777};
+constexpr Platform::ProcessTarget ENVIRONMENT_VIEW_TARGET{.pid = 4242, .startTimeTicks = 777};
 constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_ENVIRONMENT_REFRESH_MS) / 1000.0F;
 
 [[nodiscard]] Platform::EnvironmentReadResult okResult(std::vector<Platform::EnvironmentVariable> variables)
@@ -38,8 +38,8 @@ constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_E
 /// read runs on a worker).
 bool frame(ProcessEnvironmentView& view, TestMocks::MockProcessEnvironmentReader& reader, float deltaSeconds, bool drawnOpen)
 {
-    const bool read = view.update(&reader, TARGET, deltaSeconds);
-    view.finishPendingRead(TARGET);
+    const bool read = view.update(&reader, ENVIRONMENT_VIEW_TARGET, deltaSeconds);
+    view.finishPendingRead(ENVIRONMENT_VIEW_TARGET);
     if (drawnOpen)
     {
         view.markDrawnOpen();
@@ -71,8 +71,8 @@ TEST(ProcessEnvironmentViewTest, ReadsOnOpeningThenAtTheRefreshCadence)
     EXPECT_FALSE(frame(view, reader, 0.016F, true));
     EXPECT_TRUE(frame(view, reader, 0.016F, true));
     EXPECT_EQ(reader.readCount(), 1);
-    EXPECT_EQ(reader.lastTarget().pid, TARGET.pid);
-    EXPECT_EQ(reader.lastTarget().startTimeTicks, TARGET.startTimeTicks);
+    EXPECT_EQ(reader.lastTarget().pid, ENVIRONMENT_VIEW_TARGET.pid);
+    EXPECT_EQ(reader.lastTarget().startTimeTicks, ENVIRONMENT_VIEW_TARGET.startTimeTicks);
     EXPECT_TRUE(view.hasRead());
 
     // Many frames within the interval: no further read.
@@ -123,8 +123,8 @@ TEST(ProcessEnvironmentViewTest, SelectionChangeReadsAfreshWithoutWaitingForTheI
     view.onSelectionChanged();
     EXPECT_FALSE(view.hasRead());
     view.markDrawnOpen();
-    EXPECT_TRUE(view.update(&reader, TARGET, 0.016F));
-    view.finishPendingRead(TARGET);
+    EXPECT_TRUE(view.update(&reader, ENVIRONMENT_VIEW_TARGET, 0.016F));
+    view.finishPendingRead(ENVIRONMENT_VIEW_TARGET);
     EXPECT_EQ(reader.readCount(), 2);
 }
 
@@ -138,7 +138,7 @@ TEST(ProcessEnvironmentViewTest, SelectionChangeForgetsThePreviousProcesssOpenFr
     // The selection changes before update() consumes that frame: the new process's section has not
     // been drawn open yet, so nothing may be read for it.
     view.onSelectionChanged();
-    EXPECT_FALSE(view.update(&reader, TARGET, 0.016F));
+    EXPECT_FALSE(view.update(&reader, ENVIRONMENT_VIEW_TARGET, 0.016F));
     EXPECT_EQ(reader.readCount(), 0);
 }
 
@@ -146,12 +146,12 @@ TEST(ProcessEnvironmentViewTest, NoReaderOrNoSupportMeansNoRead)
 {
     ProcessEnvironmentView view;
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(nullptr, TARGET, 1.0F));
+    EXPECT_FALSE(view.update(nullptr, ENVIRONMENT_VIEW_TARGET, 1.0F));
 
     TestMocks::MockProcessEnvironmentReader reader;
     reader.setHasEnvironment(false);
     view.markDrawnOpen();
-    EXPECT_FALSE(view.update(&reader, TARGET, 1.0F));
+    EXPECT_FALSE(view.update(&reader, ENVIRONMENT_VIEW_TARGET, 1.0F));
     EXPECT_EQ(reader.readCount(), 0);
 }
 
@@ -199,8 +199,8 @@ TEST(ProcessEnvironmentViewTest, KeepsEachReadStatusForItsStatusLine)
         TestMocks::MockProcessEnvironmentReader reader;
         reader.setResult({.status = c.status, .variables = {}});
         view.markDrawnOpen();
-        ASSERT_TRUE(view.update(&reader, TARGET, 0.0F));
-        view.finishPendingRead(TARGET);
+        ASSERT_TRUE(view.update(&reader, ENVIRONMENT_VIEW_TARGET, 0.0F));
+        view.finishPendingRead(ENVIRONMENT_VIEW_TARGET);
         EXPECT_TRUE(view.hasRead());
         EXPECT_EQ(view.status(), c.status);
         EXPECT_TRUE(view.rows().empty());
@@ -220,11 +220,11 @@ TEST(ProcessEnvironmentViewTest, AReadThatBlocksDoesNotBlockUpdate)
     reader.setBeforeRead([gate = release.get_future().share()] { gate.wait(); });
     reader.setResult(okResult({{.name = "HOME", .value = "/home/a"}}));
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.016F)); // returned while the read is still blocked
+    ASSERT_TRUE(view.update(&reader, ENVIRONMENT_VIEW_TARGET, 0.016F)); // returned while the read is still blocked
     EXPECT_TRUE(view.readInFlight());
     EXPECT_FALSE(view.hasRead());
     release.set_value();
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(ENVIRONMENT_VIEW_TARGET);
     ASSERT_TRUE(view.hasRead());
     ASSERT_EQ(view.rows().size(), 1U);
     EXPECT_EQ(view.rows()[0].name, "HOME");
@@ -239,10 +239,10 @@ TEST(ProcessEnvironmentViewTest, AReadForThePreviousSelectionIsDropped)
     reader.setBeforeRead([gate = release.get_future().share()] { gate.wait(); });
     reader.setResult(okResult({{.name = "SECRET_TOKEN", .value = "old"}}));
     view.markDrawnOpen();
-    ASSERT_TRUE(view.update(&reader, TARGET, 0.016F));
+    ASSERT_TRUE(view.update(&reader, ENVIRONMENT_VIEW_TARGET, 0.016F));
     view.onSelectionChanged();
     release.set_value();
-    view.finishPendingRead(TARGET);
+    view.finishPendingRead(ENVIRONMENT_VIEW_TARGET);
     EXPECT_FALSE(view.hasRead());
     EXPECT_TRUE(view.rows().empty());
 }
@@ -412,7 +412,7 @@ TEST(ProcessEnvironmentViewTest, ARefusedReadOffersAuthenticateToReadWhichReadsA
     view.requestAuthorizedRead();
     EXPECT_TRUE(frame(view, reader, 0.016F, true));
     EXPECT_EQ(reader.authorizedReadCount(), 1);
-    EXPECT_EQ(reader.lastTarget().pid, TARGET.pid);
+    EXPECT_EQ(reader.lastTarget().pid, ENVIRONMENT_VIEW_TARGET.pid);
     EXPECT_EQ(view.status(), Platform::EnvironmentReadStatus::Ok);
     EXPECT_FALSE(view.offersAuthenticateToRead());
 }

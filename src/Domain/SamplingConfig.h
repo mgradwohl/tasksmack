@@ -40,6 +40,11 @@ inline constexpr int REFRESH_INTERVAL_DEFAULT_MS = 1000;
 inline constexpr int REFRESH_INTERVAL_MIN_MS = 100;
 inline constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
 
+/// The shortest interval, in seconds, a delta is turned into a rate over: half the fastest refresh interval. A shorter
+/// one (an immediate first background poll, say) is treated as "no previous data", so a near-zero denominator can't
+/// make a startup spike. ProcessModel and SystemModel both use it (#4783: each had its own copy).
+inline constexpr double MIN_ELAPSED_FOR_RATES_SECONDS = static_cast<double>(REFRESH_INTERVAL_MIN_MS) / 2000.0;
+
 // -----------------------------------------------------------------------------
 // History Window Configuration
 // -----------------------------------------------------------------------------

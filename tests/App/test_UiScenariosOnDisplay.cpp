@@ -63,23 +63,6 @@
 namespace
 {
 
-/// A display with a GL 3.3 core context, as UiLayersOnDisplayTest finds one.
-bool hasDisplay()
-{
-#ifdef _WIN32
-    const bool available = TestSupport::detectWindowsDisplay();
-#else
-    // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
-    const char* display = std::getenv("DISPLAY");
-    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
-    // NOLINTEND(concurrency-mt-unsafe)
-    const bool named = (display != nullptr && *display != '\0') || (waylandDisplay != nullptr && *waylandDisplay != '\0');
-    const bool available =
-        (named && TestSupport::probeGLCapability()) || (TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability());
-#endif
-    return TestSupport::enforceDisplayRequirement(available);
-}
-
 /// Where each step's frame is saved: TASKSMACK_UI_CAPTURE_DIR, created if need be; nullopt when unset.
 std::optional<std::filesystem::path> captureDir()
 {
@@ -912,7 +895,7 @@ class UiScenarioTest : public TestSupport::ScratchConfigDirTest
 
 TEST_F(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
 {
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }

@@ -23,7 +23,8 @@ namespace App
 namespace
 {
 
-using Domain::StartAtLogin::State;
+// Named apart from Platform::TaskManagerReplacement::State, which a unity batch can bring into this scope (#4783).
+using StartAtLoginState = Domain::StartAtLogin::State;
 using TestSupport::FakeStartAtLogin;
 
 constexpr const char* THIS_COPY = R"(C:\Program Files\TaskSmack\TaskSmack.exe)";
@@ -54,13 +55,13 @@ TEST(StartAtLoginSettingNoEntryTest, WithoutAnEntryNothingIsOfferedOrDone)
     setting.setEnabled(true);
     EXPECT_FALSE(setting.busy());
     EXPECT_FALSE(setting.poll());
-    EXPECT_EQ(setting.status().state, State::Unknown);
+    EXPECT_EQ(setting.status().state, StartAtLoginState::Unknown);
 }
 
 TEST_F(StartAtLoginSettingTest, NothingIsReadUntilAsked)
 {
     EXPECT_TRUE(m_Setting.offered());
-    EXPECT_EQ(m_Setting.status().state, State::Unknown);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Unknown);
     EXPECT_FALSE(m_Setting.poll());
     EXPECT_EQ(m_Entry->with([](const FakeStartAtLogin::Data& data) { return data.reads; }), 0);
 }
@@ -69,7 +70,7 @@ TEST_F(StartAtLoginSettingTest, NoEntryReadsAsOff)
 {
     m_Setting.refresh();
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Off);
     EXPECT_FALSE(m_Setting.busy());
 }
 
@@ -78,7 +79,7 @@ TEST_F(StartAtLoginSettingTest, TurningItOnWritesThisCopyMinimized)
     m_Setting.setEnabled(true);
     m_Setting.waitForTesting();
     EXPECT_EQ(command(), std::optional<std::string>(THIS_COPY_COMMAND));
-    EXPECT_EQ(m_Setting.status().state, State::On) << "read back after the write";
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::On) << "read back after the write";
     EXPECT_TRUE(m_Setting.status().installed);
 }
 
@@ -87,7 +88,7 @@ TEST_F(StartAtLoginSettingTest, AnExistingEntryForThisCopyReadsAsOn)
     setCommand(Domain::StartAtLogin::runCommand(THIS_COPY));
     m_Setting.refresh();
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::On);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::On);
 }
 
 TEST_F(StartAtLoginSettingTest, TurningItOffDeletesTheEntry)
@@ -96,7 +97,7 @@ TEST_F(StartAtLoginSettingTest, TurningItOffDeletesTheEntry)
     m_Setting.setEnabled(false);
     m_Setting.waitForTesting();
     EXPECT_EQ(command(), std::nullopt);
-    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Off);
     EXPECT_EQ(m_Entry->with([](const FakeStartAtLogin::Data& data) { return data.writes; }), 0);
 }
 
@@ -105,13 +106,13 @@ TEST_F(StartAtLoginSettingTest, AnotherCopysEntryIsRepairedToThisOne)
     setCommand(R"("E:\Moved\TaskSmack.exe" --minimized)");
     m_Setting.refresh();
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::OtherCopy);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::OtherCopy);
     EXPECT_EQ(m_Setting.status().otherProgram, R"(E:\Moved\TaskSmack.exe)");
 
     m_Setting.setEnabled(true); // Repair
     m_Setting.waitForTesting();
     EXPECT_EQ(command(), std::optional<std::string>(THIS_COPY_COMMAND));
-    EXPECT_EQ(m_Setting.status().state, State::On);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::On);
 }
 
 TEST_F(StartAtLoginSettingTest, AFailedReadSaysWhy)
@@ -119,13 +120,13 @@ TEST_F(StartAtLoginSettingTest, AFailedReadSaysWhy)
     m_Entry->with([](FakeStartAtLogin::Data& data) { data.readError = "couldn't open the Run key: Access is denied."; });
     m_Setting.refresh();
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_EQ(m_Setting.status().error, "couldn't open the Run key: Access is denied.");
 
     // Turning it on can't name this copy without the read either: nothing is written.
     m_Setting.setEnabled(true);
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_EQ(m_Entry->with([](const FakeStartAtLogin::Data& data) { return data.writes; }), 0);
 }
 
@@ -134,7 +135,7 @@ TEST_F(StartAtLoginSettingTest, AFailedWriteOrDeleteSaysWhy)
     m_Entry->with([](FakeStartAtLogin::Data& data) { data.writeError = "couldn't write the Run value: Access is denied."; });
     m_Setting.setEnabled(true);
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_EQ(m_Setting.status().error, "couldn't write the Run value: Access is denied.");
     EXPECT_EQ(command(), std::nullopt);
 
@@ -146,7 +147,7 @@ TEST_F(StartAtLoginSettingTest, AFailedWriteOrDeleteSaysWhy)
         });
     m_Setting.setEnabled(false);
     m_Setting.waitForTesting();
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_EQ(m_Setting.status().error, "couldn't delete the Run value: Access is denied.");
     EXPECT_EQ(command(), std::optional<std::string>(THIS_COPY_COMMAND));
 }
@@ -170,7 +171,7 @@ TEST_F(StartAtLoginSettingTest, WorkRunsOnTheWorkerAndAChangeWaitsItsTurn)
     m_Setting.waitForTesting();
     EXPECT_FALSE(m_Setting.busy());
     EXPECT_EQ(command(), std::optional<std::string>(THIS_COPY_COMMAND));
-    EXPECT_EQ(m_Setting.status().state, State::On);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::On);
     EXPECT_EQ(m_Entry->with([](const FakeStartAtLogin::Data& data) { return data.removes; }), 0) << "only the last change ran";
 }
 
@@ -187,7 +188,7 @@ TEST_F(StartAtLoginSettingTest, PollSaysWhenTheStatusChanged)
     };
     m_Setting.refresh();
     EXPECT_TRUE(pollUntilIdle()) << "Unknown to Off";
-    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Off);
     m_Setting.refresh();
     EXPECT_FALSE(pollUntilIdle()) << "the same status again";
     setCommand(THIS_COPY_COMMAND);
@@ -223,7 +224,7 @@ TEST_F(StartAtLoginStartupCheckTest, AnEntryAnInstallRemovedIsWrittenBackForThis
     check(true, OLD_BUILD);
     EXPECT_EQ(data().command, std::optional<std::string>(THIS_COPY_COMMAND));
     EXPECT_EQ(data().writes, 1);
-    EXPECT_EQ(m_Setting.status().state, State::On) << "read back after the write";
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::On) << "read back after the write";
 }
 
 // #3276: a real uninstall's mark. The entry went with TaskSmack: nothing is written back, the status says
@@ -234,7 +235,7 @@ TEST_F(StartAtLoginStartupCheckTest, AfterAnUninstallNothingIsWrittenBack)
     check(true, OLD_BUILD);
     EXPECT_EQ(data().writes, 0);
     EXPECT_EQ(data().command, std::nullopt);
-    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Off);
     EXPECT_TRUE(m_Setting.status().uninstalled);
     EXPECT_FALSE(data().uninstallMark) << "taken";
 
@@ -248,7 +249,7 @@ TEST_F(StartAtLoginStartupCheckTest, AMarkThatCantBeReadWritesNothingBack)
     m_Entry->with([](FakeStartAtLogin::Data& d) { d.markError = "couldn't open the uninstall mark's key: Access is denied."; });
     check(true, OLD_BUILD);
     EXPECT_EQ(data().writes, 0) << "an uninstall can't be ruled out";
-    EXPECT_EQ(m_Setting.status().state, State::Off);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Off);
     EXPECT_FALSE(m_Setting.status().uninstalled);
 }
 
@@ -261,7 +262,7 @@ TEST_F(StartAtLoginStartupCheckTest, TheMarkIsReportedEvenWhenTheReadFails)
             d.readError = "couldn't open the Run key: Access is denied.";
         });
     check(false, "");
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_TRUE(m_Setting.status().uninstalled) << "taken, so it must be acted on now";
 }
 
@@ -274,17 +275,22 @@ TEST_F(StartAtLoginStartupCheckTest, OnlyReadsWhenThereIsNothingToWriteBack)
         bool intended;
         const char* seenBy;
         bool installed;
-        State state;
+        StartAtLoginState state;
     };
     const std::vector<Case> cases = {
-        {.name = "never turned on", .command = std::nullopt, .intended = false, .seenBy = "", .installed = true, .state = State::Off},
+        {.name = "never turned on",
+         .command = std::nullopt,
+         .intended = false,
+         .seenBy = "",
+         .installed = true,
+         .state = StartAtLoginState::Off},
         {
             .name = "removed while this build ran",
             .command = std::nullopt,
             .intended = true,
             .seenBy = THIS_BUILD,
             .installed = true,
-            .state = State::Off,
+            .state = StartAtLoginState::Off,
         },
         {
             .name = "a portable copy",
@@ -292,16 +298,21 @@ TEST_F(StartAtLoginStartupCheckTest, OnlyReadsWhenThereIsNothingToWriteBack)
             .intended = true,
             .seenBy = OLD_BUILD,
             .installed = false,
-            .state = State::Off,
+            .state = StartAtLoginState::Off,
         },
-        {.name = "there", .command = THIS_COPY_COMMAND, .intended = true, .seenBy = OLD_BUILD, .installed = true, .state = State::On},
+        {.name = "there",
+         .command = THIS_COPY_COMMAND,
+         .intended = true,
+         .seenBy = OLD_BUILD,
+         .installed = true,
+         .state = StartAtLoginState::On},
         {
             .name = "another copy's",
             .command = R"("E:\Moved\TaskSmack.exe")",
             .intended = true,
             .seenBy = OLD_BUILD,
             .installed = true,
-            .state = State::OtherCopy,
+            .state = StartAtLoginState::OtherCopy,
         },
     };
     for (const Case& c : cases)
@@ -329,14 +340,14 @@ TEST_F(StartAtLoginStartupCheckTest, APlatformThatDoesntRestoreNeverWrites)
     setting.startupCheck(true, OLD_BUILD, THIS_BUILD);
     setting.waitForTesting();
     EXPECT_EQ(linuxLike->with([](const FakeStartAtLogin::Data& d) { return d.writes; }), 0);
-    EXPECT_EQ(setting.status().state, State::Off);
+    EXPECT_EQ(setting.status().state, StartAtLoginState::Off);
 }
 
 TEST_F(StartAtLoginStartupCheckTest, AFailedReadOrWriteSaysWhy)
 {
     m_Entry->with([](FakeStartAtLogin::Data& d) { d.writeError = "couldn't write the Run value: Access is denied."; });
     check(true, OLD_BUILD);
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_EQ(m_Setting.status().error, "couldn't write the Run value: Access is denied.");
 
     m_Entry->with(
@@ -346,7 +357,7 @@ TEST_F(StartAtLoginStartupCheckTest, AFailedReadOrWriteSaysWhy)
             d.readError = "couldn't open the Run key: Access is denied.";
         });
     check(true, OLD_BUILD);
-    EXPECT_EQ(m_Setting.status().state, State::Failed);
+    EXPECT_EQ(m_Setting.status().state, StartAtLoginState::Failed);
     EXPECT_EQ(m_Setting.status().error, "couldn't open the Run key: Access is denied.");
 }
 
@@ -378,7 +389,7 @@ TEST(StartAtLoginOtherAccountTest, AnotherAccountsEntryIsNeverReadOrWritten)
 
     setting.startupCheck(true, "0.0.1+older", buildIdentity());
     setting.waitForTesting();
-    EXPECT_EQ(setting.status().state, State::OtherAccount);
+    EXPECT_EQ(setting.status().state, StartAtLoginState::OtherAccount);
     EXPECT_EQ(setting.status().account, "admin");
     EXPECT_FALSE(setting.status().known()) << "the checkbox is disabled";
     EXPECT_FALSE(setting.status().uninstalled);
@@ -389,7 +400,7 @@ TEST(StartAtLoginOtherAccountTest, AnotherAccountsEntryIsNeverReadOrWritten)
     setting.waitForTesting();
     setting.setEnabled(false);
     setting.waitForTesting();
-    EXPECT_EQ(setting.status().state, State::OtherAccount);
+    EXPECT_EQ(setting.status().state, StartAtLoginState::OtherAccount);
     const FakeStartAtLogin::Data data = entry->with([](const FakeStartAtLogin::Data& d) { return d; });
     EXPECT_EQ(data.reads, 0);
     EXPECT_EQ(data.writes, 0);
@@ -405,7 +416,7 @@ TEST(StartAtLoginOtherAccountTest, TheSignedInUsersTaskSmackChangesItAsBefore)
     StartAtLoginSetting setting(entry, SessionAccountCheck::known({}));
     setting.setEnabled(true);
     setting.waitForTesting();
-    EXPECT_EQ(setting.status().state, State::On);
+    EXPECT_EQ(setting.status().state, StartAtLoginState::On);
     EXPECT_EQ(entry->with([](const FakeStartAtLogin::Data& d) { return d.command; }), std::optional<std::string>(THIS_COPY_COMMAND));
 }
 

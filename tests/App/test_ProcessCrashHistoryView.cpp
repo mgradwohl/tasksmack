@@ -30,7 +30,7 @@ using Platform::CrashesInfo;
 using Platform::CrashEvent;
 using Platform::OsFamily;
 
-constexpr float REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_CRASH_HISTORY_REFRESH_MS) / 1000.0F;
+constexpr float CRASH_HISTORY_REFRESH_SECONDS = static_cast<float>(Domain::Sampling::PROCESS_CRASH_HISTORY_REFRESH_MS) / 1000.0F;
 
 [[nodiscard]] CrashEvent crash(std::string application, std::uint64_t unixSeconds, bool hang = false)
 {
@@ -83,16 +83,16 @@ TEST(ProcessCrashHistoryViewTest, ReadsWhenFirstDrawnThenOnlyWhenStale)
     for (int frame = 0; frame < 10; ++frame)
     {
         view.markDrawn();
-        EXPECT_FALSE(view.update(REFRESH_SECONDS / 20.0F));
+        EXPECT_FALSE(view.update(CRASH_HISTORY_REFRESH_SECONDS / 20.0F));
     }
     view.markDrawn();
-    EXPECT_TRUE(view.update(REFRESH_SECONDS));
+    EXPECT_TRUE(view.update(CRASH_HISTORY_REFRESH_SECONDS));
     view.finishPendingRead();
     EXPECT_EQ(reads.load(), 2);
 
     // Stale but not drawn (another tab): no read until it is drawn again.
     EXPECT_FALSE(view.update(0.0F)); // takes in the read just published: fresh from here
-    EXPECT_FALSE(view.update(REFRESH_SECONDS * 2.0F));
+    EXPECT_FALSE(view.update(CRASH_HISTORY_REFRESH_SECONDS * 2.0F));
     view.markDrawn();
     EXPECT_TRUE(view.update(0.0F));
     view.finishPendingRead();
@@ -114,10 +114,10 @@ TEST(ProcessCrashHistoryViewTest, ASystemTabReadCountsAsFresh)
     view.markDrawn();
     EXPECT_FALSE(view.update(0.0F));
     view.markDrawn();
-    EXPECT_FALSE(view.update(REFRESH_SECONDS * 0.9F));
+    EXPECT_FALSE(view.update(CRASH_HISTORY_REFRESH_SECONDS * 0.9F));
     history->publish(listed(OsFamily::Windows, {}), 1'790'000'050); // a Refresh there restarts the clock
     view.markDrawn();
-    EXPECT_FALSE(view.update(REFRESH_SECONDS * 0.5F));
+    EXPECT_FALSE(view.update(CRASH_HISTORY_REFRESH_SECONDS * 0.5F));
     EXPECT_EQ(reads.load(), 0);
 }
 
@@ -125,7 +125,7 @@ TEST(ProcessCrashHistoryViewTest, NoHistoryNeverReadsOrDraws)
 {
     ProcessCrashHistoryView view;
     view.markDrawn();
-    EXPECT_FALSE(view.update(REFRESH_SECONDS * 2.0F));
+    EXPECT_FALSE(view.update(CRASH_HISTORY_REFRESH_SECONDS * 2.0F));
     EXPECT_FALSE(view.line("app.exe").visible);
 }
 
@@ -320,7 +320,7 @@ TEST_F(ProcessCrashHistoryViewRenderTest, DrawsNothingWithoutAHistoryOrOnAnUnsup
     ProcessCrashHistoryView unsupported;
     unsupported.setHistory(history);
     EXPECT_TRUE(renderAndCapture(unsupported, "app.exe").empty());
-    EXPECT_FALSE(unsupported.update(REFRESH_SECONDS * 2.0F)); // not drawn: never re-read
+    EXPECT_FALSE(unsupported.update(CRASH_HISTORY_REFRESH_SECONDS * 2.0F)); // not drawn: never re-read
 }
 
 } // namespace

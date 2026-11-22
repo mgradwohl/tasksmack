@@ -402,7 +402,7 @@ TEST(HandleRelativeFileTest, AFolderByPathOpensAJunctionItselfNeverWhatItNames)
     const std::filesystem::path link = scratch.path() / L"link";
     std::filesystem::create_directory(target);
     std::filesystem::create_directory(link);
-    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(link, target);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
     {
         auto junction = openFolderByPath(link);
@@ -410,7 +410,7 @@ TEST(HandleRelativeFileTest, AFolderByPathOpensAJunctionItselfNeverWhatItNames)
         EXPECT_EQ(isPlainFolder(junction->get()), std::optional(false)) << "the junction itself, a reparse point";
         EXPECT_EQ(finalPathOf(junction->get()), std::optional(link.native())) << "not the folder it names";
     }
-    ASSERT_TRUE(TestSupport::removeJunction(link)) << "an empty folder again, so removing it removes nothing behind it";
+    ASSERT_TRUE(::TestSupport::removeJunction(link)) << "an empty folder again, so removing it removes nothing behind it";
 
     std::ofstream(scratch.path() / L"file.txt", std::ios::binary) << "x\n";
     auto file = openFolderByPath(scratch.path() / L"file.txt");

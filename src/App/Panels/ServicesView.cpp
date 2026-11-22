@@ -35,7 +35,7 @@ namespace App
 namespace
 {
 
-constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
+constexpr const char* SERVICES_FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter services...";
 
 using Platform::compareFolded;
 using Platform::containsFoldedCase;
@@ -346,12 +346,14 @@ ServicesViewContent renderServicesView(const Domain::ServicePublication* publica
     }
 
     const auto& scheme = UI::Theme::get().scheme();
-    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
-        ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
+    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(ImGui::CalcTextSize(SERVICES_FILTER_HINT).x,
+                                                                   ImGui::GetStyle().FramePadding.x,
+                                                                   ImGui::GetFontSize(),
+                                                                   ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
-        ImGui::InputTextWithHint("##ServiceFilter", FILTER_HINT, &state.filter);
+        ImGui::InputTextWithHint("##ServiceFilter", SERVICES_FILTER_HINT, &state.filter);
     }
     ImGui::PopStyleColor();
     rebuildRowsIfStale(*publication, state);

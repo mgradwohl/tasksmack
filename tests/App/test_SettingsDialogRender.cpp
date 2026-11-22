@@ -26,7 +26,7 @@ namespace App
 namespace
 {
 
-using SettingsDialog::Action;
+using SettingsAction = SettingsDialog::Action; // its own name: a unity batch can bring in another Action (#4783)
 
 std::vector<UI::DiscoveredTheme> themes()
 {
@@ -105,7 +105,7 @@ TEST(SettingsDialogStateTest, ResetLeavesTheThemeWhenTheDefaultThemeIsMissing)
 struct Measured
 {
     bool open = false;
-    Action action = Action::None;
+    SettingsAction action = SettingsAction::None;
     ImVec2 pos;
     ImVec2 size;
 };
@@ -363,7 +363,7 @@ TEST_F(SettingsDialogRenderTest, StaysClosedUntilRequested)
 {
     const Measured measured = settle();
     EXPECT_FALSE(measured.open);
-    EXPECT_EQ(measured.action, Action::None);
+    EXPECT_EQ(measured.action, SettingsAction::None);
 }
 
 TEST_F(SettingsDialogRenderTest, OpensCentredInsideTheWindow)
@@ -414,7 +414,7 @@ TEST_F(SettingsDialogRenderTest, CancelClosesWithoutSaving)
 {
     ASSERT_TRUE(openAndSettle().open);
     pressFooter(SettingsDialog::CANCEL_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None);
+    EXPECT_EQ(runFrame().action, SettingsAction::None);
     EXPECT_FALSE(settle().open);
 }
 
@@ -422,7 +422,7 @@ TEST_F(SettingsDialogRenderTest, EscapeClosesWithoutSaving)
 {
     ASSERT_TRUE(openAndSettle().open);
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, true);
-    EXPECT_EQ(runFrame().action, Action::None);
+    EXPECT_EQ(runFrame().action, SettingsAction::None);
     ImGui::GetIO().AddKeyEvent(ImGuiKey_Escape, false);
     EXPECT_FALSE(settle().open);
 }
@@ -433,7 +433,7 @@ TEST_F(SettingsDialogRenderTest, ACloseRequestClosesWithoutSaving)
 {
     ASSERT_TRUE(openAndSettle().open);
     m_State.closeRequested = true;
-    EXPECT_EQ(runFrame().action, Action::None);
+    EXPECT_EQ(runFrame().action, SettingsAction::None);
     EXPECT_FALSE(settle().open);
     EXPECT_FALSE(m_State.closeRequested);
 }
@@ -450,7 +450,7 @@ TEST_F(SettingsDialogRenderTest, SaveIsReportedAndCloses)
 {
     ASSERT_TRUE(openAndSettle().open);
     pressFilledFooter(SettingsDialog::SAVE_LABEL);
-    EXPECT_EQ(runFrame().action, Action::Save);
+    EXPECT_EQ(runFrame().action, SettingsAction::Save);
     EXPECT_FALSE(settle().open);
 }
 
@@ -461,7 +461,7 @@ TEST_F(SettingsDialogRenderTest, ResetToDefaultsChangesTheControlsAndStaysOpen)
     SettingsDialog::load(m_State, settings, themes());
     ASSERT_TRUE(openAndSettle().open);
     pressFooter(SettingsDialog::RESET_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None);
+    EXPECT_EQ(runFrame().action, SettingsAction::None);
     EXPECT_EQ(m_State.themeChoice.index, std::optional<std::size_t>(0));
     EXPECT_TRUE(m_State.themeChoice.touched);
     EXPECT_TRUE(settle().open);
@@ -471,9 +471,9 @@ TEST_F(SettingsDialogRenderTest, TheFolderButtonsAreReportedAndKeepItOpen)
 {
     ASSERT_TRUE(openAndSettle().open);
     pressInBody(SettingsDialog::EDIT_CONFIG_LABEL);
-    EXPECT_EQ(runFrame().action, Action::EditConfig);
+    EXPECT_EQ(runFrame().action, SettingsAction::EditConfig);
     pressInBody(SettingsDialog::OPEN_THEMES_LABEL);
-    EXPECT_EQ(runFrame().action, Action::OpenThemesFolder);
+    EXPECT_EQ(runFrame().action, SettingsAction::OpenThemesFolder);
     EXPECT_TRUE(settle().open);
 }
 
@@ -481,7 +481,7 @@ TEST_F(SettingsDialogRenderTest, AboutIsReportedAndClosesSettings)
 {
     ASSERT_TRUE(openAndSettle().open);
     pressInBody(SettingsDialog::ABOUT_LABEL);
-    EXPECT_EQ(runFrame().action, Action::OpenAbout);
+    EXPECT_EQ(runFrame().action, SettingsAction::OpenAbout);
     EXPECT_FALSE(settle().open);
 }
 
@@ -582,19 +582,19 @@ TEST_F(SettingsDialogRenderTest, CheckNowIsReportedOnlyWhileTickedAndIdle)
     m_State.updateCheckOffered = true;
     ASSERT_TRUE(openAndSettle().open);
     pressInBody(SettingsDialog::CHECK_NOW_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None); // unticked: disabled
+    EXPECT_EQ(runFrame().action, SettingsAction::None); // unticked: disabled
 
     m_State.checkForUpdates = true;
     static_cast<void>(settle());
     pressInBody(SettingsDialog::CHECK_NOW_LABEL);
-    EXPECT_EQ(runFrame().action, Action::CheckForUpdates);
+    EXPECT_EQ(runFrame().action, SettingsAction::CheckForUpdates);
     EXPECT_TRUE(settle().open);
 
     m_State.updateChecking = true;
     m_State.updateSummary = "Checking for updates\xE2\x80\xA6";
     static_cast<void>(settle());
     pressInBody(SettingsDialog::CHECK_NOW_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None); // one at a time
+    EXPECT_EQ(runFrame().action, SettingsAction::None); // one at a time
     EXPECT_TRUE(settle().open);
 }
 
@@ -638,7 +638,7 @@ TEST_F(SettingsDialogStartAtLoginTest, TheRowShowsOnlyWhereItIsOffered)
     show(std::nullopt);
     static_cast<void>(settle());
     pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None) << "Save carries it out";
+    EXPECT_EQ(runFrame().action, SettingsAction::None) << "Save carries it out";
     EXPECT_TRUE(m_State.startAtLogin);
     pressInBody(SettingsDialog::START_AT_LOGIN_LABEL);
     static_cast<void>(runFrame());
@@ -678,19 +678,19 @@ TEST_F(SettingsDialogStartAtLoginTest, AnotherCopysEntryOffersRepair)
     show(std::nullopt);
     ASSERT_TRUE(openAndSettle().open);
     pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None) << "no Repair while it is off";
+    EXPECT_EQ(runFrame().action, SettingsAction::None) << "no Repair while it is off";
 
     show(Domain::StartAtLogin::runCommand(R"(E:\Moved\TaskSmack.exe)"));
     EXPECT_TRUE(m_State.startAtLogin);
     static_cast<void>(settle());
     pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
-    EXPECT_EQ(runFrame().action, Action::RepairStartAtLogin);
+    EXPECT_EQ(runFrame().action, SettingsAction::RepairStartAtLogin);
     EXPECT_TRUE(settle().open);
 
     m_State.startAtLoginBusy = true;
     static_cast<void>(settle());
     pressInBody(SettingsDialog::REPAIR_START_AT_LOGIN_LABEL);
-    EXPECT_EQ(runFrame().action, Action::None) << "one change at a time";
+    EXPECT_EQ(runFrame().action, SettingsAction::None) << "one change at a time";
 }
 
 // #3093 part 2: a long path in the status line wraps rather than widening the dialog past the window, and

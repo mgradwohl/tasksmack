@@ -44,8 +44,8 @@ namespace App
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 1280.0F;
-constexpr float DISPLAY_HEIGHT = 800.0F;
+constexpr float SHELL_DISPLAY_WIDTH = 1280.0F;
+constexpr float SHELL_DISPLAY_HEIGHT = 800.0F;
 constexpr float TITLE_BAR_HEIGHT = 32.0F;
 
 /// What the shell asked of its host, for the test to read.
@@ -132,7 +132,7 @@ class ShellLayerRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(SHELL_DISPLAY_WIDTH, SHELL_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard; // as UILayer runs it
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
@@ -202,7 +202,7 @@ TEST_F(ShellLayerRenderTest, DrawsTheMainWindowTheTabBarAndTheStatusBar)
     // The main window and the status bar share the display between them, without overlapping.
     EXPECT_FLOAT_EQ(main->Pos.y, 0.0F);
     EXPECT_LE(main->Pos.y + main->Size.y, status->Pos.y + 0.5F);
-    EXPECT_GT(main->Size.y, DISPLAY_HEIGHT / 2.0F);
+    EXPECT_GT(main->Size.y, SHELL_DISPLAY_HEIGHT / 2.0F);
 }
 
 TEST_F(ShellLayerRenderTest, TheMainWindowStartsBelowTheCustomTitleBar)

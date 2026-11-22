@@ -30,7 +30,7 @@ namespace
 {
 
 /// The row menu's popup ID (#3069), got outside the table so the rows open the popup drawn after it.
-constexpr const char* ROW_MENU_ID = "##ThreadRowMenu";
+constexpr const char* THREADS_ROW_MENU_ID = "##ThreadRowMenu";
 
 } // namespace
 
@@ -103,7 +103,7 @@ void ProcessThreadsView::renderTable()
     constexpr ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_Sortable | ImGuiTableFlags_ScrollY | ImGuiTableFlags_RowBg |
                                             ImGuiTableFlags_BordersInnerV | ImGuiTableFlags_Resizable | ImGuiTableFlags_SizingStretchProp;
     // Got here, outside the table, so the popup the rows open is the one renderRowMenu() draws after it.
-    const ImGuiID menuId = ImGui::GetID(ROW_MENU_ID);
+    const ImGuiID menuId = ImGui::GetID(THREADS_ROW_MENU_ID);
     if (!ImGui::BeginTable("##ThreadsTable", 7, TABLE_FLAGS, ImVec2(0.0F, tableHeight)))
     {
         return;
@@ -187,7 +187,7 @@ void ProcessThreadsView::renderTable()
 
 void ProcessThreadsView::renderRowMenu()
 {
-    if (!ImGui::BeginPopup(ROW_MENU_ID))
+    if (!ImGui::BeginPopup(THREADS_ROW_MENU_ID))
     {
         return;
     }

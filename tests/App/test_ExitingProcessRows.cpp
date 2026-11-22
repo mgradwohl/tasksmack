@@ -13,7 +13,7 @@ namespace
 {
 
 using ExitingProcessRows::followsOnFrom;
-using ExitingProcessRows::Tracker;
+using ExitingRowsTracker = ExitingProcessRows::Tracker; // its own name: a unity batch can bring in another Tracker (#4783)
 
 [[nodiscard]] Domain::ProcessSnapshot proc(std::int32_t pid, std::int32_t parentPid, std::uint64_t startTicks = 100)
 {
@@ -27,7 +27,7 @@ using ExitingProcessRows::Tracker;
 
 TEST(ExitingProcessRowsTest, AProcessMissingFromTheNewGenerationIsKeptUntilItsTimeIsUp)
 {
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     const std::vector<Domain::ProcessSnapshot> before{proc(1, 0), proc(20, 1), proc(30, 1)};
     const std::vector<Domain::ProcessSnapshot> after{proc(1, 0), proc(30, 1)};
 
@@ -44,7 +44,7 @@ TEST(ExitingProcessRowsTest, GenerationsAdoptedWithoutExpireStayBounded)
 {
     // Another tab is showing (#3283): generations keep coming, each with an exit, but the table never
     // draws, so expire() is never called. Only the exits of the last DURATION_SECONDS are kept.
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     constexpr double INTERVAL_SECONDS = 0.5;
     constexpr int GENERATIONS = 1000;
     std::vector<Domain::ProcessSnapshot> previous{proc(1, 0)};
@@ -63,7 +63,7 @@ TEST(ExitingProcessRowsTest, GenerationsAdoptedWithoutExpireStayBounded)
 
 TEST(ExitingProcessRowsTest, APidReusedByANewProcessStillCountsAsAnExit)
 {
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     // Same PID, another start time: another process, so the first exited.
     EXPECT_TRUE(tracker.onGeneration({proc(20, 1, 100)}, {proc(20, 1, 200)}, 0.0));
     ASSERT_EQ(tracker.exited().size(), 1U);
@@ -72,7 +72,7 @@ TEST(ExitingProcessRowsTest, APidReusedByANewProcessStillCountsAsAnExit)
 
 TEST(ExitingProcessRowsTest, NothingExitedAddsNothingAndClearDropsAll)
 {
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     const std::vector<Domain::ProcessSnapshot> same{proc(1, 0), proc(2, 1)};
     EXPECT_FALSE(tracker.onGeneration(same, same, 0.0));
     EXPECT_FALSE(tracker.clear());
@@ -85,7 +85,7 @@ TEST(ExitingProcessRowsTest, ExitedRowsFollowTheRunningOnesWithIndicesUnchanged)
 {
     std::vector<Domain::ProcessSnapshot> current{proc(1, 0), proc(30, 1)};
     current[0].childrenIndices = {1};
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     Domain::ProcessSnapshot gone = proc(20, 1);
     gone.childrenIndices = {7}; // into its own, older generation
     ASSERT_TRUE(tracker.onGeneration({proc(1, 0), gone, proc(30, 1)}, current, 0.0));
@@ -106,7 +106,7 @@ TEST(ExitingProcessRowsTest, AnExitedProcessIsARootUnlessItsParentStartedBeforeI
 {
     // PID 5 now names a process that started after the exited one: not its parent.
     const std::vector<Domain::ProcessSnapshot> current{proc(5, 0, 900)};
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     ASSERT_TRUE(tracker.onGeneration({proc(6, 5, 300)}, current, 0.0));
 
     const std::vector<Domain::ProcessSnapshot> rows = ExitingProcessRows::displayRows(current, tracker.exited());
@@ -118,7 +118,7 @@ TEST(ExitingProcessRowsTest, AnExitedProcessIsARootUnlessItsParentStartedBeforeI
 TEST(ExitingProcessRowsTest, AChildThatExitedWithItsParentStaysUnderIt)
 {
     const std::vector<Domain::ProcessSnapshot> current{proc(1, 0)};
-    Tracker tracker;
+    ExitingRowsTracker tracker;
     ASSERT_TRUE(tracker.onGeneration({proc(1, 0), proc(40, 1, 100), proc(41, 40, 150)}, current, 0.0));
 
     const std::vector<Domain::ProcessSnapshot> rows = ExitingProcessRows::displayRows(current, tracker.exited());

@@ -1458,7 +1458,7 @@ TEST(StorageModelTest, TotalRatesAggregatedAcrossMultipleDisks)
 }
 
 /// Every series in one generation is aligned to its timestamps.
-[[nodiscard]] bool isAligned(const StoragePublication& publication)
+[[nodiscard]] bool storageIsAligned(const StoragePublication& publication)
 {
     const std::size_t n = publication.timestamps.size();
     return publication.totalReadHistory.size() == n && publication.totalWriteHistory.size() == n &&
@@ -1498,7 +1498,7 @@ TEST(StorageModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
         },
         [&] { return model.publication(); },
         [&] { return model.publicationVersion(); },
-        isAligned);
+        storageIsAligned);
 
     EXPECT_EQ(result.versionRegressions, 0U);
     EXPECT_EQ(result.versionAheadOfPointer, 0U);
@@ -1570,7 +1570,7 @@ TEST(StorageModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
                 const auto publication = model.publication();
                 EXPECT_GE(publication->version, lastSeen);
                 EXPECT_GE(publication->version, announced);
-                EXPECT_TRUE(isAligned(*publication));
+                EXPECT_TRUE(storageIsAligned(*publication));
                 lastSeen = publication->version;
                 if (writersRunning.load() > 0)
                 {
@@ -1683,7 +1683,7 @@ TEST(StorageModelTest, OlderPublicationIsUnchangedByLaterSamplesAndTrims)
     const PublishedValues expected(*old);
     ASSERT_GT(old->timestamps.size(), 50U);
     ASSERT_EQ(old->perDiskHistory.size(), 3U);
-    ASSERT_TRUE(isAligned(*old));
+    ASSERT_TRUE(storageIsAligned(*old));
 
     for (; step < 1000; ++step)
     {
@@ -1697,7 +1697,7 @@ TEST(StorageModelTest, OlderPublicationIsUnchangedByLaterSamplesAndTrims)
     EXPECT_EQ(PublishedValues(*old), expected);
     // The window, plus the sample kept just before its left edge (#1016).
     EXPECT_EQ(model.publication()->timestamps.size(), static_cast<std::size_t>(Sampling::HISTORY_SECONDS_MIN) + 2U);
-    EXPECT_TRUE(isAligned(*model.publication()));
+    EXPECT_TRUE(storageIsAligned(*model.publication()));
 }
 
 // Consecutive publications share their history (an O(series) publish, not O(history x series)), and
@@ -1723,7 +1723,7 @@ TEST(StorageModelTest, ConsecutivePublicationsShareTheirHistory)
         rawProbe->setNextCounters(churningDisks(step));
         model.sampleAt(sampleTime(step));
         const auto next = model.publication();
-        ASSERT_TRUE(isAligned(*next));
+        ASSERT_TRUE(storageIsAligned(*next));
         ASSERT_EQ(next->perDiskHistory.size(), 3U);
         const auto sharesWithPrevious = [&](const auto member)
         {
@@ -1779,7 +1779,7 @@ TEST(StorageModelTest, ARepeatedDeviceNameIsAppendedOnceFromItsFirstEntry)
     model.sampleAt(sampleTime(2));
 
     const auto publication = model.publication();
-    ASSERT_TRUE(isAligned(*publication));
+    ASSERT_TRUE(storageIsAligned(*publication));
     ASSERT_EQ(publication->timestamps.size(), 3U);
     ASSERT_EQ(publication->perDiskHistory.size(), 1U);
     const auto& sda = publication->perDiskHistory.front();
@@ -1875,7 +1875,7 @@ TEST(StorageModelTest, SharedSeriesStayAlignedAsDisksAppearAndArePruned)
         model.sampleAt(sampleTime(step));
 
         const auto publication = model.publication();
-        ASSERT_TRUE(isAligned(*publication)) << "step " << step;
+        ASSERT_TRUE(storageIsAligned(*publication)) << "step " << step;
         const bool hasUsb =
             std::ranges::any_of(publication->perDiskHistory, [](const PerDiskHistory& disk) { return disk.deviceName == "usb0"; });
         EXPECT_EQ(hasUsb, step >= 50 && step < 120 + static_cast<std::uint64_t>(Sampling::HISTORY_SECONDS_MIN)) << "step " << step;

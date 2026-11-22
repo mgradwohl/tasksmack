@@ -46,8 +46,8 @@ using TestMocks::MockServiceProbe;
 using TestMocks::MockStartupActions;
 using TestMocks::MockStartupProbe;
 
-constexpr float DISPLAY_WIDTH = 1400.0F;
-constexpr float DISPLAY_HEIGHT = 900.0F;
+constexpr float SERVICES_STARTUP_DISPLAY_WIDTH = 1400.0F;
+constexpr float SERVICES_STARTUP_DISPLAY_HEIGHT = 900.0F;
 
 constexpr Platform::ServiceActionCapabilities SERVICE_ACTIONS{
     .canStart = true,
@@ -119,7 +119,7 @@ class ServicesStartupPanelsRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(SERVICES_STARTUP_DISPLAY_WIDTH, SERVICES_STARTUP_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.Fonts->AddFontDefault();
@@ -182,7 +182,7 @@ class ServicesStartupPanelsRenderTest : public ::testing::Test
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(SERVICES_STARTUP_DISPLAY_WIDTH, SERVICES_STARTUP_DISPLAY_HEIGHT));
         ImGui::Begin("Shell", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
         panel.renderContent();

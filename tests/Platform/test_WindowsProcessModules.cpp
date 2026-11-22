@@ -724,13 +724,13 @@ TEST(WindowsProcessModulesRealTest, ANameThroughAJunctionIsNotFollowed)
     const std::filesystem::path link = scratch.path() / L"link";
     std::filesystem::create_directory(target);
     std::filesystem::create_directory(link);
-    const TestSupport::PeImage image =
-        TestSupport::buildPeImage({{0x0409U, TestSupport::versionInfoBlock(u"Co", (7U << 16U) | 8U, (9U << 16U) | 10U)}});
+    const ::TestSupport::PeImage image =
+        ::TestSupport::buildPeImage({{0x0409U, ::TestSupport::versionInfoBlock(u"Co", (7U << 16U) | 8U, (9U << 16U) | 10U)}});
     {
         std::ofstream out(target / L"v.dll", std::ios::binary);
         out.write(reinterpret_cast<const char*>(image.bytes.data()), static_cast<std::streamsize>(image.bytes.size()));
     }
-    const std::optional<std::string> notMade = TestSupport::makeJunction(link, target);
+    const std::optional<std::string> notMade = ::TestSupport::makeJunction(link, target);
     ASSERT_FALSE(notMade.has_value()) << notMade.value_or(std::string{});
 
     const std::wstring folder = ntNameOf(scratch.path());
@@ -740,7 +740,7 @@ TEST(WindowsProcessModulesRealTest, ANameThroughAJunctionIsNotFollowed)
     EXPECT_FALSE(readLocalFileVersion(folder + L"\\link\\v.dll").has_value()) << "the junction on the way is never followed";
     EXPECT_TRUE(std::filesystem::exists(link / L"v.dll")) << "a path through it that a by-name open would have followed";
 
-    ASSERT_TRUE(TestSupport::removeJunction(link)) << "an empty folder again, so removing the scratch folder removes nothing behind it";
+    ASSERT_TRUE(::TestSupport::removeJunction(link)) << "an empty folder again, so removing the scratch folder removes nothing behind it";
 }
 
 } // namespace

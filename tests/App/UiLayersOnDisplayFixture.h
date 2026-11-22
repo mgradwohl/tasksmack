@@ -96,19 +96,7 @@ namespace UiLayersOnDisplayTesting
 /// usable, else SDL's offscreen driver if Mesa EGL can back it.
 inline bool hasDisplay()
 {
-#ifdef _WIN32
-    // A GL 3.3 core context on the desktop, CI included (#2134).
-    const bool available = TestSupport::detectWindowsDisplay();
-#else
-    // NOLINTBEGIN(concurrency-mt-unsafe) - read-only environment access during single-threaded test setup
-    const char* display = std::getenv("DISPLAY");
-    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
-    // NOLINTEND(concurrency-mt-unsafe)
-    const bool named = (display != nullptr && *display != '\0') || (waylandDisplay != nullptr && *waylandDisplay != '\0');
-    const bool available =
-        (named && TestSupport::probeGLCapability()) || (TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability());
-#endif
-    return TestSupport::enforceDisplayRequirement(available);
+    return TestSupport::hasGLDisplay(); // one copy for every display suite (#4783)
 }
 
 /// Whether SDL runs these tests on native Wayland, as it chooses a driver: SDL_VIDEODRIVER when set, else

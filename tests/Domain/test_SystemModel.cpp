@@ -3225,7 +3225,7 @@ constexpr std::size_t PUBLICATION_TEST_CORES = 4;
 
 /// Every series in one generation is aligned to its timestamps: a truncated or torn copy of any one
 /// of them fails. Once there is history, every seeded core has its series.
-[[nodiscard]] bool isAligned(const Domain::SystemPublication& publication)
+[[nodiscard]] bool systemIsAligned(const Domain::SystemPublication& publication)
 {
     const std::size_t n = publication.timestamps.size();
     const auto sized = [n](const auto& series)
@@ -3274,7 +3274,7 @@ TEST(SystemModelTest, PublicationDoesNotWaitForTheWriterToCopyHistory)
         [&](std::size_t) { model.updateFromCounters(makeManyInterfaces(INTERFACES, ++step), now += STEP_SECONDS); },
         [&] { return model.publication(); },
         [&] { return model.publicationVersion(); },
-        isAligned);
+        systemIsAligned);
 
     EXPECT_EQ(result.versionRegressions, 0U);
     EXPECT_EQ(result.versionAheadOfPointer, 0U);
@@ -3343,7 +3343,7 @@ TEST(SystemModelTest, ConcurrentWritersPublishEveryGenerationInOrder)
                 const auto publication = model.publication();
                 EXPECT_GE(publication->version, lastSeen);
                 EXPECT_GE(publication->version, announced);
-                EXPECT_TRUE(isAligned(*publication));
+                EXPECT_TRUE(systemIsAligned(*publication));
                 lastSeen = publication->version;
                 if (writersRunning.load() > 0)
                 {

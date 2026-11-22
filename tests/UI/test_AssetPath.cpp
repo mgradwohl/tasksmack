@@ -19,40 +19,6 @@ namespace UI
 namespace
 {
 
-// Mirrors the hasDisplay() helper in test_Application.cpp/test_Window.cpp (each test file
-// keeps its own copy rather than sharing one, per this repo's existing convention).
-bool detectDisplay()
-{
-#ifdef _WIN32
-    // A GL 3.3 core context on the desktop, CI included (#2134): construction failures are fatal
-    // once a display is detected (#1132).
-    return TestSupport::detectWindowsDisplay();
-#else
-    // NOLINTBEGIN(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    const char* display = std::getenv("DISPLAY");
-    const char* waylandDisplay = std::getenv("WAYLAND_DISPLAY");
-    // NOLINTEND(concurrency-mt-unsafe, cppcoreguidelines-pro-bounds-array-to-pointer-decay)
-    if ((display != nullptr && display[0] != '\0') || (waylandDisplay != nullptr && waylandDisplay[0] != '\0'))
-    {
-        if (TestSupport::probeGLCapability())
-        {
-            return true;
-        }
-    }
-    // The offscreen driver only counts if it can also create a GL 3.3 core context (it needs
-    // Mesa EGL for that), so a "yes" here means Application construction can succeed and a
-    // construction exception is a real failure, not an environment gap.
-    return TestSupport::tryEnableOffscreenVideoDriver() && TestSupport::probeGLCapability();
-#endif
-}
-
-// Every display check goes through here so TASKSMACK_REQUIRE_DISPLAY=1 (set by Linux CI) turns a
-// missing display into a failure instead of a skip.
-bool hasDisplay()
-{
-    return TestSupport::enforceDisplayRequirement(detectDisplay());
-}
-
 // ========== Candidate priority ==========
 
 TEST(AssetPathTest, ReturnsBinAssetsWhenAllCandidatesExist)
@@ -140,7 +106,7 @@ TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
     // process), so this is the only way to cover its body and executableDir()'s wrapper
     // around Core::Application::get() -- both need a live Application instance, which
     // selectAssetsDir()'s injectable-predicate tests above deliberately avoid depending on.
-    if (!hasDisplay())
+    if (!TestSupport::hasGLDisplay())
     {
         GTEST_SKIP() << "No display available (headless environment)";
     }
@@ -148,7 +114,7 @@ TEST(AssetPathTest, FindAssetsDirIsStableAcrossCalls)
     Core::ApplicationSpecification spec;
     spec.Name = "FindAssetsDirTest";
 
-    // Isolate construction in its own try/catch so its failure is reported as such. hasDisplay()
+    // Isolate construction in its own try/catch so its failure is reported as such. TestSupport::hasGLDisplay()
     // above already confirmed a GL-capable display, so a construction exception is a regression
     // (#1132), just like an exception from findAssetsDir() itself.
     std::optional<Core::Application> app;

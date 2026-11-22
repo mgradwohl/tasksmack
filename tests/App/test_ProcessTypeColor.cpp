@@ -14,7 +14,7 @@ namespace
 {
 
 /// A scheme whose type colours are all distinct, so a test can tell which one was chosen.
-UI::ColorScheme distinctScheme()
+UI::ColorScheme typeDistinctScheme()
 {
     UI::ColorScheme scheme{};
     scheme.statusRunning = ImVec4(1.0F, 0.0F, 0.0F, 1.0F);
@@ -23,7 +23,7 @@ UI::ColorScheme distinctScheme()
     return scheme;
 }
 
-void expectSameColor(const ImVec4& actual, const ImVec4& expected)
+void expectSameTypeColor(const ImVec4& actual, const ImVec4& expected)
 {
     EXPECT_FLOAT_EQ(actual.x, expected.x);
     EXPECT_FLOAT_EQ(actual.y, expected.y);
@@ -33,7 +33,7 @@ void expectSameColor(const ImVec4& actual, const ImVec4& expected)
 
 TEST(ProcessTypeColorTest, EveryKnownTypeGetsItsColour)
 {
-    const UI::ColorScheme scheme = distinctScheme();
+    const UI::ColorScheme scheme = typeDistinctScheme();
     struct Case
     {
         std::string_view type;
@@ -48,17 +48,17 @@ TEST(ProcessTypeColorTest, EveryKnownTypeGetsItsColour)
     for (const auto& c : cases)
     {
         SCOPED_TRACE(c.type);
-        expectSameColor(App::processTypeColor(c.type, scheme), c.expected);
+        expectSameTypeColor(App::processTypeColor(c.type, scheme), c.expected);
     }
 }
 
 TEST(ProcessTypeColorTest, UnknownTypesAreMuted)
 {
-    const UI::ColorScheme scheme = distinctScheme();
+    const UI::ColorScheme scheme = typeDistinctScheme();
     for (const std::string_view type : {"", "app", "APP", "App ", "Service", "Windows process"})
     {
         SCOPED_TRACE(type);
-        expectSameColor(App::processTypeColor(type, scheme), scheme.textMuted);
+        expectSameTypeColor(App::processTypeColor(type, scheme), scheme.textMuted);
     }
 }
 

@@ -1119,7 +1119,7 @@ TEST_F(ProcessesPanelRenderTest, AFindHandlesReaderThatThrowsEndsTheSearchAndSay
     renderUntilLoaded(*panel);
 
     ImGuiIO& io = ImGui::GetIO();
-    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F);
+    io.AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH * 0.5F, PANEL_RENDER_DISPLAY_HEIGHT * 0.5F);
     io.AddKeyEvent(ImGuiMod_Ctrl, true);
     io.AddKeyEvent(ImGuiMod_Shift, true);
     io.AddKeyEvent(ImGuiKey_F, true);
@@ -1187,7 +1187,7 @@ TEST_F(ProcessesPanelRenderTest, FindHandlesListsTheProcessesHoldingAFile)
     ASSERT_NE(shell, nullptr);
     // Ctrl+Shift+F over the table opens it, as the toolbar's magnifier button does.
     ImGuiIO& io = ImGui::GetIO();
-    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
+    io.AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH * 0.5F, PANEL_RENDER_DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
     io.AddKeyEvent(ImGuiMod_Ctrl, true);
     io.AddKeyEvent(ImGuiMod_Shift, true);
     io.AddKeyEvent(ImGuiKey_F, true);

@@ -68,28 +68,28 @@ class RequiredOnlyActions : public IProcessActions
     }
 };
 
-constexpr ProcessTarget TARGET{.pid = 4242, .startTimeTicks = 99};
+constexpr ProcessTarget DEFAULTS_TARGET{.pid = 4242, .startTimeTicks = 99};
 
 TEST(PlatformInterfaceDefaultsTest, TheOptionalActionsAreRefusedWithTheirOwnReason)
 {
     RequiredOnlyActions actions;
 
-    const ProcessActionResult signal = actions.sendSignal(TARGET, ProcessSignal::Hangup);
+    const ProcessActionResult signal = actions.sendSignal(DEFAULTS_TARGET, ProcessSignal::Hangup);
     EXPECT_FALSE(signal.success);
     EXPECT_EQ(signal.errorMessage, "Sending this signal isn't available on this system");
     EXPECT_FALSE(signal.permissionDenied);
 
-    const ProcessActionResult efficiency = actions.setEfficiencyMode(TARGET, true);
+    const ProcessActionResult efficiency = actions.setEfficiencyMode(DEFAULTS_TARGET, true);
     EXPECT_FALSE(efficiency.success);
     EXPECT_EQ(efficiency.errorMessage, "Efficiency mode isn't available on this system");
     EXPECT_FALSE(efficiency.permissionDenied);
 
-    const ProcessActionResult close = actions.closeConnection(TARGET, 12345);
+    const ProcessActionResult close = actions.closeConnection(DEFAULTS_TARGET, 12345);
     EXPECT_FALSE(close.success);
     EXPECT_EQ(close.errorMessage, "Closing a connection isn't available on this system");
     EXPECT_FALSE(close.permissionDenied);
 
-    const ProcessActionResult trace = actions.launchSyscallTrace(TARGET);
+    const ProcessActionResult trace = actions.launchSyscallTrace(DEFAULTS_TARGET);
     EXPECT_FALSE(trace.success);
     EXPECT_EQ(trace.errorMessage, syscallTraceUnavailableReason(SyscallTraceAvailability::Unsupported));
 }
@@ -97,19 +97,19 @@ TEST(PlatformInterfaceDefaultsTest, TheOptionalActionsAreRefusedWithTheirOwnReas
 TEST(PlatformInterfaceDefaultsTest, EfficiencyModeStateIsNeverRemembered)
 {
     RequiredOnlyActions actions;
-    EXPECT_FALSE(actions.efficiencyNiceToRestore(TARGET).has_value());
-    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(TARGET).has_value());
+    EXPECT_FALSE(actions.efficiencyNiceToRestore(DEFAULTS_TARGET).has_value());
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(DEFAULTS_TARGET).has_value());
 
     // NORMAL_PRIORITY_CLASS (0x20): a real class, which an implementation that remembers would keep.
     constexpr std::uint32_t NORMAL_CLASS = 0x20;
-    actions.rememberEfficiencyPriorityClass(TARGET, NORMAL_CLASS);
-    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(TARGET).has_value());
+    actions.rememberEfficiencyPriorityClass(DEFAULTS_TARGET, NORMAL_CLASS);
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(DEFAULTS_TARGET).has_value());
 
-    actions.setEfficiencyPriorityClassToRestore(TARGET, NORMAL_CLASS);
-    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(TARGET).has_value());
+    actions.setEfficiencyPriorityClassToRestore(DEFAULTS_TARGET, NORMAL_CLASS);
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(DEFAULTS_TARGET).has_value());
 
-    actions.forgetEfficiencyPriorityClass(TARGET);
-    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(TARGET).has_value());
+    actions.forgetEfficiencyPriorityClass(DEFAULTS_TARGET);
+    EXPECT_FALSE(actions.efficiencyPriorityClassToRestore(DEFAULTS_TARGET).has_value());
 }
 
 TEST(PlatformInterfaceDefaultsTest, OnlyAnAvailableTraceHasNoReason)
@@ -130,8 +130,8 @@ TEST(PlatformInterfaceDefaultsTest, AnImplementationCanBeCopiedAndMoved)
     RequiredOnlyActions assigned;
     assigned = original;
     assigned = std::move(moved);
-    EXPECT_TRUE(assigned.terminate(TARGET).success);
-    EXPECT_FALSE(assigned.sendSignal(TARGET, ProcessSignal::Hangup).success);
+    EXPECT_TRUE(assigned.terminate(DEFAULTS_TARGET).success);
+    EXPECT_FALSE(assigned.sendSignal(DEFAULTS_TARGET, ProcessSignal::Hangup).success);
 }
 
 /// Only the required readers: hasMemoryMap() and readMemoryMap(), which returns a status to recognise.
@@ -154,14 +154,14 @@ TEST(PlatformInterfaceDefaultsTest, AMemoryMapReaderWithoutAHelperReadsAsThePlai
 {
     RequiredOnlyMemoryMapReader reader;
     EXPECT_FALSE(reader.canReadAuthorized());
-    const MemoryMapReadResult result = reader.readAuthorized(TARGET, std::stop_token{});
+    const MemoryMapReadResult result = reader.readAuthorized(DEFAULTS_TARGET, std::stop_token{});
     EXPECT_EQ(reader.reads, 1);
     EXPECT_EQ(result.status, MemoryMapReadStatus::PermissionDenied);
     EXPECT_EQ(result.detail, "plain read");
 
     UnsupportedProcessMemoryMapReader unsupported;
     EXPECT_FALSE(unsupported.hasMemoryMap());
-    EXPECT_EQ(unsupported.readMemoryMap(TARGET).status, MemoryMapReadStatus::Unsupported);
+    EXPECT_EQ(unsupported.readMemoryMap(DEFAULTS_TARGET).status, MemoryMapReadStatus::Unsupported);
 }
 
 class RequiredOnlyThreadsReader : public IProcessThreadsReader
@@ -183,14 +183,14 @@ TEST(PlatformInterfaceDefaultsTest, AThreadsReaderWithoutAHelperReadsAsThePlainR
 {
     RequiredOnlyThreadsReader reader;
     EXPECT_FALSE(reader.canReadAuthorized());
-    const ThreadsReadResult result = reader.readAuthorized(TARGET, std::stop_token{});
+    const ThreadsReadResult result = reader.readAuthorized(DEFAULTS_TARGET, std::stop_token{});
     EXPECT_EQ(reader.reads, 1);
     EXPECT_EQ(result.status, ThreadsReadStatus::PermissionDenied);
     EXPECT_EQ(result.detail, "plain read");
 
     UnsupportedProcessThreadsReader unsupported;
     EXPECT_FALSE(unsupported.hasThreads());
-    EXPECT_EQ(unsupported.readThreads(TARGET).status, ThreadsReadStatus::Unsupported);
+    EXPECT_EQ(unsupported.readThreads(DEFAULTS_TARGET).status, ThreadsReadStatus::Unsupported);
 }
 
 TEST(PlatformInterfaceDefaultsTest, OnlyAnEntryWithAStatePolicyDoesntSetAndNoReasonIsSwitchable)

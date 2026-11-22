@@ -35,7 +35,7 @@ namespace Platform
 namespace
 {
 
-constexpr ProcessTarget TARGET{.pid = 100, .startTimeTicks = 4242};
+constexpr ProcessTarget OPEN_FILES_READER_TARGET{.pid = 100, .startTimeTicks = 4242};
 
 class LinuxProcessOpenFilesReaderTest : public ::testing::Test
 {
@@ -64,7 +64,7 @@ TEST_F(LinuxProcessOpenFilesReaderTest, ReadsTypesFlagsAndSortsByDescriptor)
 {
     LinuxProcessOpenFilesReader reader(m_Proc.path.string());
     EXPECT_TRUE(reader.hasOpenFiles());
-    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    const OpenFilesReadResult result = reader.readOpenFiles(OPEN_FILES_READER_TARGET);
     ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
     ASSERT_EQ(result.files.size(), 3U);
     EXPECT_FALSE(result.hexDescriptors);
@@ -94,7 +94,7 @@ TEST_F(LinuxProcessOpenFilesReaderTest, UnreadableFdDirectoryIsPermissionDenied)
     }
     std::filesystem::permissions(m_Proc.path / "100" / "fd", std::filesystem::perms::none);
     LinuxProcessOpenFilesReader reader(m_Proc.path.string());
-    EXPECT_EQ(reader.readOpenFiles(TARGET).status, OpenFilesReadStatus::PermissionDenied);
+    EXPECT_EQ(reader.readOpenFiles(OPEN_FILES_READER_TARGET).status, OpenFilesReadStatus::PermissionDenied);
     std::filesystem::permissions(m_Proc.path / "100" / "fd", std::filesystem::perms::owner_all);
 }
 
@@ -118,7 +118,7 @@ TEST_F(LinuxProcessOpenFilesReaderTest, NoFdinfoMeansNoFlagsAndAnUnreadableEntry
     std::filesystem::remove_all(m_Proc.path / "100" / "fdinfo");
     std::ofstream(m_Proc.path / "100" / "fd" / "7") << "a regular file, not a link";
     LinuxProcessOpenFilesReader reader(m_Proc.path.string());
-    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    const OpenFilesReadResult result = reader.readOpenFiles(OPEN_FILES_READER_TARGET);
     ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
     ASSERT_EQ(result.files.size(), 3U); // 2, 3 and 10; not 7
     for (const OpenFile& file : result.files)
@@ -134,7 +134,7 @@ TEST_F(LinuxProcessOpenFilesReaderTest, NothingOpenIsAnEmptyReading)
     std::filesystem::remove_all(m_Proc.path / "100" / "fd");
     std::filesystem::create_directories(m_Proc.path / "100" / "fd");
     LinuxProcessOpenFilesReader reader(m_Proc.path.string());
-    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    const OpenFilesReadResult result = reader.readOpenFiles(OPEN_FILES_READER_TARGET);
     EXPECT_EQ(result.status, OpenFilesReadStatus::Ok);
     EXPECT_TRUE(result.files.empty());
     EXPECT_FALSE(result.truncated);
@@ -148,7 +148,7 @@ TEST_F(LinuxProcessOpenFilesReaderTest, MoreThanTheCapIsTruncated)
         std::filesystem::create_symlink("/dev/null", m_Proc.path / "100" / "fd" / std::to_string(fd));
     }
     LinuxProcessOpenFilesReader reader(m_Proc.path.string());
-    const OpenFilesReadResult result = reader.readOpenFiles(TARGET);
+    const OpenFilesReadResult result = reader.readOpenFiles(OPEN_FILES_READER_TARGET);
     ASSERT_EQ(result.status, OpenFilesReadStatus::Ok);
     EXPECT_TRUE(result.truncated);
     EXPECT_EQ(result.files.size(), MAX_OPEN_FILES);

@@ -34,11 +34,11 @@ namespace Platform
 namespace
 {
 
-using TestSupport::FakeSystemBus;
+using ::TestSupport::FakeSystemBus;
 
 constexpr const char* LOGIN1 = "org.freedesktop.login1";
 constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
-constexpr const char* MANAGER = "org.freedesktop.login1.Manager";
+constexpr const char* LOGIND_MANAGER = "org.freedesktop.login1.Manager";
 constexpr const char* SESSION = "org.freedesktop.login1.Session";
 constexpr const char* DESKTOP_PATH = "/org/freedesktop/login1/session/_32";
 constexpr const char* SSH_PATH = "/org/freedesktop/login1/session/_35";
@@ -58,7 +58,7 @@ class LogindSessionsTest : public ::testing::Test
     void serveLogind()
     {
         m_Bus.addRawMethod(LOGIN1_PATH,
-                           MANAGER,
+                           LOGIND_MANAGER,
                            "ListSessions",
                            [](sd_bus_message* call) -> int
                            {
@@ -102,7 +102,7 @@ class LogindSessionsTest : public ::testing::Test
         {
             m_Bus.addRawMethod(
                 LOGIN1_PATH,
-                MANAGER,
+                LOGIND_MANAGER,
                 method,
                 // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                 [this, method](sd_bus_message* call) -> int
@@ -210,7 +210,7 @@ TEST_F(LogindSessionsTest, AStopRequestedWhileLogindHasntAnsweredCancelsTheActio
 {
     std::stop_source stop;
     m_Bus.addRawMethod(LOGIN1_PATH,
-                       MANAGER,
+                       LOGIND_MANAGER,
                        "LockSession",
                        // NOLINTNEXTLINE(bugprone-exception-escape) - a test fake: an allocation failure here fails the test
                        [this, stop](sd_bus_message* /*call*/) mutable -> int
@@ -264,7 +264,7 @@ TEST_F(LogindSessionsTest, ABusWithoutLogindIsAFailedReadThatSaysSo)
 TEST_F(LogindSessionsTest, ASessionListOfTheWrongShapeIsAFailedRead)
 {
     m_Bus.addRawMethod(LOGIN1_PATH,
-                       MANAGER,
+                       LOGIND_MANAGER,
                        "ListSessions",
                        [](sd_bus_message* call) -> int { return sd_bus_reply_method_return(call, "as", 2, "2", "5"); });
     ASSERT_TRUE(m_Bus.start(LOGIN1)) << m_Bus.error();
@@ -280,7 +280,7 @@ TEST_F(LogindSessionsTest, ASessionWhosePropertiesCantBeReadKeepsTheListsFields)
 {
     m_Bus.addRawMethod(
         LOGIN1_PATH,
-        MANAGER,
+        LOGIND_MANAGER,
         "ListSessions",
         [](sd_bus_message* call) -> int
         { return sd_bus_reply_method_return(call, "a(susso)", 1, "7", 1002U, "carol", "seat1", "/org/freedesktop/login1/session/_37"); });
@@ -306,7 +306,7 @@ TEST_F(LogindSessionsTest, ASessionWhosePropertiesCantBeReadKeepsTheListsFields)
 TEST_F(LogindSessionsTest, AnUnexpectedErrorFromLogindIsPassedOn)
 {
     m_Bus.addRawMethod(LOGIN1_PATH,
-                       MANAGER,
+                       LOGIND_MANAGER,
                        "ListSessions",
                        [](sd_bus_message* call) -> int
                        { return sd_bus_reply_method_errorf(call, "org.freedesktop.DBus.Error.AccessDenied", "Not allowed"); });

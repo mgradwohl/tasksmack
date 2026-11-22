@@ -36,13 +36,13 @@ namespace App
 namespace
 {
 
-constexpr const char* DIALOG_POPUP_ID = "###BatchPriority";  // ProcessBatchPriorityDialog's modal
-constexpr const char* CONFIRM_POPUP_ID = "###ConfirmAction"; // ProcessActionConfirm's modal
-constexpr const char* ROW_MENU_ID = "RowMenu";
-constexpr std::int32_t OWN_PID = 4000;
+constexpr const char* DIALOG_POPUP_ID = "###BatchPriority";                 // ProcessBatchPriorityDialog's modal
+constexpr const char* BATCH_PRIORITY_CONFIRM_POPUP_ID = "###ConfirmAction"; // ProcessActionConfirm's modal
+constexpr const char* BATCH_PRIORITY_ROW_MENU_ID = "RowMenu";
+constexpr std::int32_t BATCH_PRIORITY_OWN_PID = 4000;
 
 constexpr Platform::ProcessActionCapabilities CAN_SET_PRIORITY{.canSetPriority = true};
-constexpr Platform::ProcessActionCapabilities NO_PRIORITY{.canTerminate = true, .canKill = true, .canSetPriority = false};
+constexpr Platform::ProcessActionCapabilities BATCH_PRIORITY_NO_PRIORITY{.canTerminate = true, .canKill = true, .canSetPriority = false};
 
 class ProcessBatchPriorityDialogRenderTest : public ::testing::Test
 {
@@ -105,7 +105,7 @@ struct FlowHarness
     Platform::ProcessActionCapabilities capabilities = CAN_SET_PRIORITY;
     std::vector<ProcessBatch::BatchTarget> targets{
         {.target = {.pid = 10, .startTimeTicks = 100}, .name = "a", .priority = "Normal"},
-        {.target = {.pid = OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "Normal"},
+        {.target = {.pid = BATCH_PRIORITY_OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "Normal"},
         {.target = {.pid = 12, .startTimeTicks = 120}, .name = "c", .priority = "Below Normal"},
     };
     ProcessBatchPriorityDialog dialog;
@@ -123,13 +123,13 @@ struct FlowHarness
     {
         if (openMenu)
         {
-            ImGui::OpenPopup(ROW_MENU_ID);
+            ImGui::OpenPopup(BATCH_PRIORITY_ROW_MENU_ID);
             openMenu = false;
         }
         // ProcessesPanel::renderBatchPriorityDialog(): Apply sets the value on the listed targets at once.
         if (const std::optional<std::int32_t> nice = dialog.render(); nice.has_value())
         {
-            const ProcessBatch::BatchResult r = ProcessBatch::runBatchPriority(mock, dialog.targets(), *nice, OWN_PID);
+            const ProcessBatch::BatchResult r = ProcessBatch::runBatchPriority(mock, dialog.targets(), *nice, BATCH_PRIORITY_OWN_PID);
             result = ProcessBatch::formatBatchPriorityResultMessage(*nice, r);
         }
         if (const ImGuiWindow* modal = ImGui::GetTopMostPopupModal();
@@ -141,21 +141,21 @@ struct FlowHarness
         }
         // ProcessesPanel::renderRowContextMenu(), for a row of a selection
         menuItemDrawn = false;
-        if (ImGui::BeginPopup(ROW_MENU_ID))
+        if (ImGui::BeginPopup(BATCH_PRIORITY_ROW_MENU_ID))
         {
             if (ProcessBatch::offersBatchPriority(capabilities, targets.size()))
             {
                 menuItemDrawn = true;
                 if (ImGui::MenuItem("Set priority for N processes...###SetPriority"))
                 {
-                    dialog.open(targets, OWN_PID); // requestSelectionPriority(): the resolved selection
+                    dialog.open(targets, BATCH_PRIORITY_OWN_PID); // requestSelectionPriority(): the resolved selection
                 }
                 menuItemId = ImGui::GetItemID();
             }
             ImGui::EndPopup();
         }
         dialogOpen = ImGui::IsPopupOpen(DIALOG_POPUP_ID);
-        confirmEverOpened = confirmEverOpened || ImGui::IsPopupOpen(CONFIRM_POPUP_ID);
+        confirmEverOpened = confirmEverOpened || ImGui::IsPopupOpen(BATCH_PRIORITY_CONFIRM_POPUP_ID);
     }
 
     /// Opens the row menu and picks its batch priority item.
@@ -182,7 +182,7 @@ struct FlowHarness
 TEST_F(ProcessBatchPriorityDialogRenderTest, RowMenuItemOnlyWithTheCapability)
 {
     FlowHarness flow;
-    flow.capabilities = NO_PRIORITY;
+    flow.capabilities = BATCH_PRIORITY_NO_PRIORITY;
     flow.openMenu = true;
     runFrame([&] { flow.frame(); });
     EXPECT_FALSE(flow.menuItemDrawn);
@@ -263,8 +263,8 @@ TEST(ProcessBatchPriorityDialogMoveTest, AMovedDialogListsFromItsOwnTargets)
 
     ProcessBatchPriorityDialog source;
     source.open({{.target = {.pid = 10, .startTimeTicks = 100}, .name = "a", .priority = "Normal"},
-                 {.target = {.pid = OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "Normal"}},
-                OWN_PID);
+                 {.target = {.pid = BATCH_PRIORITY_OWN_PID, .startTimeTicks = 400}, .name = "TaskSmack", .priority = "Normal"}},
+                BATCH_PRIORITY_OWN_PID);
     ASSERT_NE(source.listed().notable.self, nullptr);
 
     ProcessBatchPriorityDialog moved(std::move(source));
@@ -349,7 +349,7 @@ TEST_F(ProcessBatchPriorityDialogRenderTest, ApplySetsThePickedValueOnceOnEveryT
     EXPECT_FALSE(flow.confirmEverOpened); // One modal, not two
     EXPECT_EQ(flow.mock.setPriorityCount(), 3);
     EXPECT_EQ(flow.mock.lastSetPriorityNice(), 10);
-    EXPECT_EQ(flow.mock.lastSetPriorityPid(), OWN_PID);
+    EXPECT_EQ(flow.mock.lastSetPriorityPid(), BATCH_PRIORITY_OWN_PID);
     EXPECT_EQ(flow.mock.lastTarget().startTimeTicks, 400U);
     const Detail::ActionResultMessage result = flow.result.value_or(Detail::ActionResultMessage{.ok = false, .text = "none"});
     EXPECT_TRUE(result.ok);

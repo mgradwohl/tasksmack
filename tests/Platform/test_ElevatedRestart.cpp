@@ -980,10 +980,10 @@ TEST(ElevatedRestartOwnConfigDirTest, AnOwnFolderThatIsAJunctionIsRefused)
     std::filesystem::create_directory(target);
     const std::filesystem::path own = scratch.configDir() / L"Own";
     std::filesystem::create_directory(own);
-    const auto made = TestSupport::makeJunction(own, target);
+    const auto made = ::TestSupport::makeJunction(own, target);
     ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
     const auto held = checkOwnConfigDir(own, profile, scratch.root(), {}, &ownerAccepted);
-    EXPECT_TRUE(TestSupport::removeJunction(own)) << GetLastError();
+    EXPECT_TRUE(::TestSupport::removeJunction(own)) << GetLastError();
     ASSERT_FALSE(held.has_value());
     EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
     EXPECT_TRUE(std::filesystem::is_empty(target));
@@ -998,10 +998,10 @@ TEST(ElevatedRestartOwnConfigDirTest, AMissingOwnFolderUnderAJunctionIsNotMade)
     std::filesystem::create_directory(target);
     const std::filesystem::path parent = scratch.configDir() / L"Roaming";
     std::filesystem::create_directory(parent);
-    const auto made = TestSupport::makeJunction(parent, target);
+    const auto made = ::TestSupport::makeJunction(parent, target);
     ASSERT_FALSE(made.has_value()) << made.value_or(std::string());
     const auto held = checkOwnConfigDir(parent / L"TaskSmack", profile, scratch.root(), {}, &ownerAccepted);
-    EXPECT_TRUE(TestSupport::removeJunction(parent)) << GetLastError();
+    EXPECT_TRUE(::TestSupport::removeJunction(parent)) << GetLastError();
     ASSERT_FALSE(held.has_value());
     EXPECT_TRUE(held.error().contains("its parent can't be held")) << held.error();
     EXPECT_TRUE(held.error().contains("is a junction or link")) << held.error();
@@ -1028,7 +1028,7 @@ TEST(ElevatedRestartOwnConfigDirTest, TheCurrentUserProfileDirectoryIsAnAbsolute
 }
 
 // holdOwnConfigDir() (#4371) makes %APPDATA%\TaskSmack when it isn't there, so it runs on a disposable CI runner only.
-class CiRealSystemOwnConfigDirTest : public TestSupport::CiRealSystemTest
+class CiRealSystemOwnConfigDirTest : public ::TestSupport::CiRealSystemTest
 {};
 
 TEST_F(CiRealSystemOwnConfigDirTest, HoldOwnConfigDirHoldsRoamingAppDataTaskSmackInsideTheProfile)

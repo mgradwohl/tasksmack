@@ -20,9 +20,9 @@ namespace UI::Widgets
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 800.0F;
-constexpr float DISPLAY_HEIGHT = 600.0F;
-constexpr float PLOT_HEIGHT = 200.0F;
+constexpr float CSV_DISPLAY_WIDTH = 800.0F;
+constexpr float CSV_DISPLAY_HEIGHT = 600.0F;
+constexpr float CSV_PLOT_HEIGHT = 200.0F;
 
 class HistoryChartCsvRenderTest : public ::testing::Test
 {
@@ -35,7 +35,7 @@ class HistoryChartCsvRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(CSV_DISPLAY_WIDTH, CSV_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -62,10 +62,10 @@ class HistoryChartCsvRenderTest : public ::testing::Test
 
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(CSV_DISPLAY_WIDTH, CSV_DISPLAY_HEIGHT));
         ImGui::Begin("Charts", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         {
-            const HistoryChart chart(withHeight(percentHistoryConfig("##CsvChart", -10.0, 0.0), PLOT_HEIGHT));
+            const HistoryChart chart(withHeight(percentHistoryConfig("##CsvChart", -10.0, 0.0), CSV_PLOT_HEIGHT));
             if (chart.active())
             {
                 plotLineWithFill("Load##load", X.data(), LOAD.data(), 3, ImVec4(1, 1, 1, 1));
@@ -87,7 +87,7 @@ class HistoryChartCsvRenderTest : public ::testing::Test
     static void openMenu()
     {
         ImGuiIO& io = ImGui::GetIO();
-        io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, PLOT_HEIGHT * 0.5F);
+        io.AddMousePosEvent(CSV_DISPLAY_WIDTH * 0.5F, CSV_PLOT_HEIGHT * 0.5F);
         frame();
         io.AddMouseButtonEvent(ImGuiMouseButton_Right, true);
         frame();

@@ -38,37 +38,37 @@ namespace App
 namespace
 {
 
-constexpr float DISPLAY_WIDTH = 1600.0F;
-constexpr float DISPLAY_HEIGHT = 1200.0F;
-constexpr std::size_t HISTORY_POINTS = 30;
-constexpr std::chrono::milliseconds REFRESH{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
+constexpr float GPU_DISPLAY_WIDTH = 1600.0F;
+constexpr float GPU_DISPLAY_HEIGHT = 1200.0F;
+constexpr std::size_t GPU_HISTORY_POINTS = 30;
+constexpr std::chrono::milliseconds GPU_REFRESH{Domain::Sampling::REFRESH_INTERVAL_DEFAULT_MS};
 
 using SeriesLabels = std::set<std::string>;
 
 /// A published-history view that owns @p values, like SharedHistoryBuffer::view() hands out.
-template<typename T> [[nodiscard]] Domain::HistoryView<T> viewOf(std::vector<T> values)
+template<typename T> [[nodiscard]] Domain::HistoryView<T> gpuViewOf(std::vector<T> values)
 {
     auto owner = std::make_shared<const std::vector<T>>(std::move(values));
     const std::span<const T> span(*owner);
     return Domain::HistoryView<T>(std::move(owner), span);
 }
 
-/// HISTORY_POINTS timestamps one second apart, the newest at now (historyFrameNowSeconds()'s clock).
-[[nodiscard]] std::vector<double> timestampsToNow()
+/// GPU_HISTORY_POINTS timestamps one second apart, the newest at now (historyFrameNowSeconds()'s clock).
+[[nodiscard]] std::vector<double> gpuTimestampsToNow()
 {
     const double now = std::chrono::duration<double>(std::chrono::steady_clock::now().time_since_epoch()).count();
     std::vector<double> times;
-    times.reserve(HISTORY_POINTS);
-    for (std::size_t i = 0; i < HISTORY_POINTS; ++i)
+    times.reserve(GPU_HISTORY_POINTS);
+    for (std::size_t i = 0; i < GPU_HISTORY_POINTS; ++i)
     {
-        times.push_back(now - static_cast<double>(HISTORY_POINTS - 1 - i));
+        times.push_back(now - static_cast<double>(GPU_HISTORY_POINTS - 1 - i));
     }
     return times;
 }
 
-template<typename T> [[nodiscard]] std::vector<T> constant(T value)
+template<typename T> [[nodiscard]] std::vector<T> gpuConstant(T value)
 {
-    return std::vector<T>(HISTORY_POINTS, value);
+    return std::vector<T>(GPU_HISTORY_POINTS, value);
 }
 
 /// Every sensor a GPU can report, on.
@@ -111,17 +111,17 @@ void addGpu(Domain::GPUPublication& publication, const std::string& id, const st
     publication.snapshots.push_back(snap);
 
     Domain::GPUPublishedHistory history;
-    history.timestamps = viewOf(timestampsToNow());
-    history.memoryUsedBytes = viewOf(constant<std::uint64_t>(std::uint64_t{2} << 30U));
-    history.memoryTotalBytes = viewOf(constant<std::uint64_t>(std::uint64_t{8} << 30U));
-    history.utilization = viewOf(constant(42.0F));
-    history.memoryPercent = viewOf(constant(25.0F));
-    history.gpuClock = viewOf(constant(1800.0F));
-    history.encoder = viewOf(constant(10.0F));
-    history.decoder = viewOf(constant(5.0F));
-    history.temperature = viewOf(constant(61.0F));
-    history.power = viewOf(constant(120.0F));
-    history.fanSpeed = viewOf(constant(40.0F));
+    history.timestamps = gpuViewOf(gpuTimestampsToNow());
+    history.memoryUsedBytes = gpuViewOf(gpuConstant<std::uint64_t>(std::uint64_t{2} << 30U));
+    history.memoryTotalBytes = gpuViewOf(gpuConstant<std::uint64_t>(std::uint64_t{8} << 30U));
+    history.utilization = gpuViewOf(gpuConstant(42.0F));
+    history.memoryPercent = gpuViewOf(gpuConstant(25.0F));
+    history.gpuClock = gpuViewOf(gpuConstant(1800.0F));
+    history.encoder = gpuViewOf(gpuConstant(10.0F));
+    history.decoder = gpuViewOf(gpuConstant(5.0F));
+    history.temperature = gpuViewOf(gpuConstant(61.0F));
+    history.power = gpuViewOf(gpuConstant(120.0F));
+    history.fanSpeed = gpuViewOf(gpuConstant(40.0F));
     publication.histories.emplace(id, std::move(history));
 }
 
@@ -141,7 +141,7 @@ class GpuSectionRenderTest : public ::testing::Test
         ImGuiIO& io = ImGui::GetIO();
         io.IniFilename = nullptr;
         io.LogFilename = nullptr;
-        io.DisplaySize = ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT);
+        io.DisplaySize = ImVec2(GPU_DISPLAY_WIDTH, GPU_DISPLAY_HEIGHT);
         io.DeltaTime = 1.0F / 60.0F;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
         io.BackendFlags |= ImGuiBackendFlags_RendererHasVtxOffset;
@@ -162,7 +162,7 @@ class GpuSectionRenderTest : public ::testing::Test
             .chartDataGeneration = 1,
             .maxHistorySeconds = 300.0,
             .lastDeltaSeconds = 1.0F,
-            .refreshInterval = REFRESH,
+            .refreshInterval = GPU_REFRESH,
             .smoothedGPUs = &m_Smoothed,
             .fill = nullptr,
             .cache = &m_Cache,
@@ -176,7 +176,7 @@ class GpuSectionRenderTest : public ::testing::Test
         std::string captured;
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(GPU_DISPLAY_WIDTH, GPU_DISPLAY_HEIGHT));
         ImGui::Begin("System", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
         GpuSection::renderGpuSection(ctx);
@@ -542,11 +542,11 @@ void addAccelerator(Domain::GPUPublication& publication,
     publication.acceleratorSnapshots.push_back(snap);
 
     Domain::GPUPublishedHistory history;
-    history.timestamps = viewOf(timestampsToNow());
-    history.memoryUsedBytes = viewOf(constant<std::uint64_t>(std::uint64_t{64} << 20U));
-    history.memoryTotalBytes = viewOf(constant<std::uint64_t>(std::uint64_t{16} << 30U));
-    history.utilization = viewOf(constant(35.0F));
-    history.memoryPercent = viewOf(constant(0.4F));
+    history.timestamps = gpuViewOf(gpuTimestampsToNow());
+    history.memoryUsedBytes = gpuViewOf(gpuConstant<std::uint64_t>(std::uint64_t{64} << 20U));
+    history.memoryTotalBytes = gpuViewOf(gpuConstant<std::uint64_t>(std::uint64_t{16} << 30U));
+    history.utilization = gpuViewOf(gpuConstant(35.0F));
+    history.memoryPercent = gpuViewOf(gpuConstant(0.4F));
     publication.histories.emplace(id, std::move(history));
 }
 
@@ -640,7 +640,7 @@ TEST_F(GpuSectionRenderTest, UnreadValuesShowAsNotAvailable)
 /// The vertices drawn in the theme's N/A NowBar hatch (UI::ColorScheme::unavailableHatch, #1935) in
 /// the last frame. The stub scheme gives the hatch a colour nothing else uses, so any are an
 /// unavailable bar's; a measured 0 draws its zero bar in the series' colour instead.
-[[nodiscard]] int hatchVertices()
+[[nodiscard]] int gpuHatchVertices()
 {
     const ImU32 hatch = ImGui::ColorConvertFloat4ToU32(UI::Theme::get().scheme().unavailableHatch);
     int count = 0;
@@ -681,7 +681,7 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
         GpuSection::RenderContext ctx = context(&publication);
         static_cast<void>(renderAndCapture(ctx));
         static_cast<void>(renderAndCapture(ctx));
-        return hatchVertices();
+        return gpuHatchVertices();
     };
 
     EXPECT_EQ(hatchFor([](Domain::GPUSnapshot&) {}), 0) << "measured zeros are not N/A";
@@ -725,7 +725,7 @@ TEST_F(GpuSectionRenderTest, AnUnreadGpuReadingHasAnUnavailableBar)
     {
         ImGui::NewFrame();
         ImGui::SetNextWindowPos(ImVec2(0.0F, 0.0F));
-        ImGui::SetNextWindowSize(ImVec2(DISPLAY_WIDTH, DISPLAY_HEIGHT));
+        ImGui::SetNextWindowSize(ImVec2(GPU_DISPLAY_WIDTH, GPU_DISPLAY_HEIGHT));
         ImGui::Begin("System", nullptr, ImGuiWindowFlags_NoDecoration | ImGuiWindowFlags_NoSavedSettings);
         ImGui::LogToBuffer();
         GpuSection::renderGpuSection(ctx);
@@ -912,12 +912,12 @@ TEST_F(GpuSectionRenderTest, AHoverBeforeAShorterSeriesStartsHasNoRowForIt)
     Domain::GPUPublishedHistory& history = publication.histories.at("gpu0");
     constexpr std::size_t SHORT_POINTS = 5;
     const std::vector<float> shortSeries(SHORT_POINTS, 30.0F);
-    history.gpuClock = viewOf(std::vector<float>(SHORT_POINTS, 1500.0F));
-    history.encoder = viewOf(shortSeries);
-    history.decoder = viewOf(shortSeries);
-    history.temperature = viewOf(std::vector<float>(SHORT_POINTS, 55.0F));
-    history.power = viewOf(std::vector<float>(SHORT_POINTS, 90.0F));
-    history.fanSpeed = viewOf(shortSeries);
+    history.gpuClock = gpuViewOf(std::vector<float>(SHORT_POINTS, 1500.0F));
+    history.encoder = gpuViewOf(shortSeries);
+    history.decoder = gpuViewOf(shortSeries);
+    history.temperature = gpuViewOf(std::vector<float>(SHORT_POINTS, 55.0F));
+    history.power = gpuViewOf(std::vector<float>(SHORT_POINTS, 90.0F));
+    history.fanSpeed = gpuViewOf(shortSeries);
     history.memoryUsedBytes = {};
     history.memoryTotalBytes = {};
     GpuSection::RenderContext ctx = context(&publication);
@@ -975,8 +975,8 @@ TEST_F(GpuSectionRenderTest, AnUnreadFanAndAZeroMemoryTotalReadAsTheyAre)
     publication.capabilities = allSensors();
     addGpu(publication, "gpu0", "Fanless reading");
     Domain::GPUPublishedHistory& history = publication.histories.at("gpu0");
-    history.fanSpeed = viewOf(constant(std::numeric_limits<float>::quiet_NaN()));
-    history.memoryTotalBytes = viewOf(constant<std::uint64_t>(0));
+    history.fanSpeed = gpuViewOf(gpuConstant(std::numeric_limits<float>::quiet_NaN()));
+    history.memoryTotalBytes = gpuViewOf(gpuConstant<std::uint64_t>(0));
     GpuSection::RenderContext ctx = context(&publication);
     static_cast<void>(renderAndCapture(ctx));
     static_cast<void>(renderAndCapture(ctx));

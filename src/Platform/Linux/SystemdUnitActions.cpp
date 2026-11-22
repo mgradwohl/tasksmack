@@ -50,17 +50,6 @@ using Detail::timedOut;
 namespace
 {
 
-// As SystemdUnits.cpp names them.
-constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
-constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
-constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
-constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
-constexpr const char* SYSTEMD_UNIT = "org.freedesktop.systemd1.Unit";
-constexpr const char* SYSTEMD_JOB = "org.freedesktop.systemd1.Job";
-constexpr const char* LOGIN1 = "org.freedesktop.login1";
-constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
-constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
-
 /// A failed call as a ServiceActionResult, in the user's terms (SystemdActions::errorText()). No call lets polkit
 /// prompt (#3580, #3767), so a refusal is never one a password could finish.
 [[nodiscard]] ServiceActionResult actionFailure(const BusError& error, int result)

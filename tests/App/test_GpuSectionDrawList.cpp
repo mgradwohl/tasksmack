@@ -177,15 +177,15 @@ TEST(GpuSectionDrawListTest, ADuplicatedIdIsDrawnOnce)
 // an NPU apart from the GPUs, so neither shows nor counts it before the NPU tab exists.
 TEST(GpuSectionDrawListTest, AnNpuIsNeitherDrawnNorCountedAsAGpu)
 {
-    constexpr std::uint64_t GIB = 1ULL << 30U;
+    constexpr std::uint64_t DRAW_LIST_GIB = 1ULL << 30U;
     auto probe = std::make_unique<TestMocks::MockGPUProbe>();
     probe->withGPU("dGPU", "Discrete GPU", "NVIDIA", false)
-        .withMemory("dGPU", GIB, 8 * GIB)
+        .withMemory("dGPU", DRAW_LIST_GIB, 8 * DRAW_LIST_GIB)
         .withAccelerator("NPU", "Intel(R) AI Boost", "GPU_0x00000000_0x00018103")
         .withGPUCounters("NPU",
                          []
                          {
-                             auto counters = TestMocks::makeGPUCounters("NPU", 10.0, GIB, 16 * GIB);
+                             auto counters = TestMocks::makeGPUCounters("NPU", 10.0, DRAW_LIST_GIB, 16 * DRAW_LIST_GIB);
                              counters.kind = Platform::DeviceKind::Npu;
                              return counters;
                          }());
@@ -195,7 +195,7 @@ TEST(GpuSectionDrawListTest, AnNpuIsNeitherDrawnNorCountedAsAGpu)
     ASSERT_NE(publication, nullptr);
 
     EXPECT_EQ(idsOf(gpuDrawList(*publication)), (std::vector<std::string>{"dGPU"}));
-    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(publication->snapshots), 8 * GIB) << "Without the NPU's 16 GiB";
+    EXPECT_EQ(GpuSection::totalDedicatedVramBytes(publication->snapshots), 8 * DRAW_LIST_GIB) << "Without the NPU's 16 GiB";
     ASSERT_EQ(publication->acceleratorSnapshots.size(), 1U);
     EXPECT_EQ(publication->acceleratorSnapshots[0].gpuId, "NPU");
 }

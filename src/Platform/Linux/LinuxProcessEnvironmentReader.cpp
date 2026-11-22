@@ -23,7 +23,7 @@ namespace
 
 using Posix::FdGuard;
 
-[[nodiscard]] EnvironmentReadResult failure(int err)
+[[nodiscard]] EnvironmentReadResult environmentFailure(int err)
 {
     return {.status = Environment::statusFromErrno(err), .variables = {}};
 }
@@ -39,7 +39,7 @@ EnvironmentReadResult LinuxProcessEnvironmentReader::readEnvironment(const Proce
 {
     if (target.pid <= 0)
     {
-        return failure(ESRCH);
+        return environmentFailure(ESRCH);
     }
     if (target.startTimeTicks == 0)
     {
@@ -56,29 +56,29 @@ EnvironmentReadResult LinuxProcessEnvironmentReader::readEnvironment(const Proce
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
-        return failure(errno);
+        return environmentFailure(errno);
     }
 
     const std::expected<std::string, int> stat = ProcParsing::readWholeFileAt(dir.get(), "stat");
     if (!stat.has_value())
     {
-        return failure(stat.error());
+        return environmentFailure(stat.error());
     }
     const std::optional<std::uint64_t> startTicks = ProcParsing::parseStatStartTime(*stat);
     if (!startTicks.has_value())
     {
-        return failure(EIO);
+        return environmentFailure(EIO);
     }
     if (*startTicks != target.startTimeTicks)
     {
-        return failure(ESRCH); // the PID now belongs to a different process
+        return environmentFailure(ESRCH); // the PID now belongs to a different process
     }
 
     // Capped as the Windows reader is (#4386): the process sizes its own environ, and the kernel caps nothing.
     std::expected<std::string, int> block = ProcParsing::readWholeFileAt(dir.get(), "environ", ENVIRON_READ_CAP_BYTES + 1);
     if (!block.has_value())
     {
-        return failure(block.error());
+        return environmentFailure(block.error());
     }
     bool truncated = block->size() > ENVIRON_READ_CAP_BYTES;
     if (truncated)

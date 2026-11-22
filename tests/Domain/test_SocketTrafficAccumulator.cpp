@@ -23,7 +23,7 @@ using Platform::ProcessCounters;
 using Platform::SocketTrafficReading;
 using Platform::SocketTrafficSample;
 
-[[nodiscard]] ProcessCounters process(std::int32_t pid, std::uint64_t startTimeTicks = 1000)
+[[nodiscard]] ProcessCounters trafficProcess(std::int32_t pid, std::uint64_t startTimeTicks = 1000)
 {
     ProcessCounters counters;
     counters.pid = pid;
@@ -44,7 +44,7 @@ TEST(SocketTrafficAccumulatorTest, AProcessNoneOfWhoseConnectionsCouldBeReadHasN
     // for that interval and the bytes landed as a burst in the next. Its counters are now unavailable
     // for that reading; one readable connection is enough for a reading.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10), process(20)};
+    std::vector processes{trafficProcess(10), trafficProcess(20)};
     const auto apply = [&](std::uint64_t sampleTimeNs, std::vector<SocketTrafficSample> sockets)
     {
         for (auto& proc : processes)
@@ -83,7 +83,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnreadableVerdictIsNotInheritedByAProcessTh
     // republishes the last one, came up unavailable too. It is kept by PID and start time, as the
     // byte totals are; an unknown start time matches by PID.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10, 1000)};
+    std::vector processes{trafficProcess(10, 1000)};
     const auto apply = [&](std::uint64_t sampleTimeNs, std::vector<SocketTrafficSample> sockets)
     {
         for (auto& proc : processes)
@@ -101,13 +101,13 @@ TEST(SocketTrafficAccumulatorTest, AnUnreadableVerdictIsNotInheritedByAProcessTh
     apply(0, {}); // failed reading: republishes the last one
     EXPECT_FALSE(processes[0].networkCountersAvailable) << "the same process keeps its verdict";
 
-    processes = {process(10, 2000)}; // PID 10 exited and was reused
+    processes = {trafficProcess(10, 2000)}; // PID 10 exited and was reused
     apply(0, {});
     EXPECT_TRUE(processes[0].networkCountersAvailable) << "failed reading: the replacement has no verdict of its own";
     apply(2'000, unreadable);
     EXPECT_TRUE(processes[0].networkCountersAvailable) << "repeated reading: the replacement has no verdict of its own";
 
-    processes = {process(10, 0)}; // start time unknown: matched by PID
+    processes = {trafficProcess(10, 0)}; // start time unknown: matched by PID
     apply(0, {});
     EXPECT_FALSE(processes[0].networkCountersAvailable);
 }
@@ -121,7 +121,7 @@ TEST(SocketTrafficAccumulatorTest, AStaggeredRecoveryFromUnreadableDoesNotBurst)
     // across its unreadable samples: t=3..t=4 has only the first connection's 1,000 B, and both count
     // again from t=4..t=5.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     constexpr std::uint64_t SECOND_NS = 1'000'000'000ULL;
     const auto apply = [&](std::uint64_t second, std::vector<SocketTrafficSample> sockets)
     {
@@ -157,7 +157,7 @@ TEST(SocketTrafficAccumulatorTest, AStaggeredRecoveryFromUnreadableDoesNotBurst)
 TEST(SocketTrafficAccumulatorTest, FirstReadingIsTheBaseline)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 5'000, .bytesSent = 700}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U);
     EXPECT_EQ(processes[0].netSentBytes, 0U);
@@ -168,7 +168,7 @@ TEST(SocketTrafficAccumulatorTest, AClosingSocketDoesNotEraseTheSurvivorsTraffic
     // The process counter was the sum over its live sockets: socket 2 closing dropped the sum from
     // 6000 to 3000, and the whole process read 0 for an interval in which socket 1 moved 2000 bytes.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000}, {.key = 2, .pid = 10, .bytesReceived = 5'000}}, processes);
     const std::uint64_t first = processes[0].netReceivedBytes;
 
@@ -185,7 +185,7 @@ TEST(SocketTrafficAccumulatorTest, ASocketAttributedLateDoesNotSpike)
     // The inode-to-PID map is rebuilt every few seconds, so a socket can be in a reading before it
     // has an owner. Once attributed it used to deliver its lifetime bytes in one interval.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 0, .bytesReceived = 290'000'000}}, processes);
     const std::uint64_t before = processes[0].netReceivedBytes;
@@ -199,7 +199,7 @@ TEST(SocketTrafficAccumulatorTest, AnOwnershipFlipMovesNoLifetimeBytes)
     // A socket shared across fork() can be attributed to either process; a flip used to move its
     // whole byte count from one process's sum to the other's.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10), process(20)};
+    std::vector processes{trafficProcess(10), trafficProcess(20)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesSent = 1'000'000}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesSent = 1'000'500}}, processes);
     EXPECT_EQ(processes[0].netSentBytes, 500U);
@@ -214,7 +214,7 @@ TEST(SocketTrafficAccumulatorTest, ASocketOpenedWithinTheIntervalCountsAllItsByt
     // Not in the previous reading, so all its bytes were moved since then -- a short connection
     // that opens and transfers between two readings still counts.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {}, processes);
     read(accumulator, {{.key = 7, .pid = 10, .bytesReceived = 4'096, .bytesSent = 512}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 4'096U);
@@ -228,7 +228,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnreadableSocketIsReBaselinedWhenReadAgain)
     // sample only re-baselines it -- its growth spans the unreadable samples and would land in one
     // interval as a burst (#1346 review). From then on it credits its growth again.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000, .bytesSent = 100}}, processes); // baseline
     read(accumulator, {{.key = 1, .pid = 10, .readable = false}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U);
@@ -250,7 +250,7 @@ TEST(SocketTrafficAccumulatorTest, ASocketFirstSeenUnreadableDoesNotCreditItsLif
     // A socket first seen unreadable may have been open for hours: its first readable sample only
     // sets the baseline rather than crediting its lifetime bytes as new (#1256).
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}}, processes); // baseline
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .readable = false}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 10, .readable = false}}, processes);
@@ -266,7 +266,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnreadableSocketThatClosesIsForgotten)
     // Unreadable keeps a socket open only while it's in the readings: once gone it's closed, and
     // a socket back under the same key afterwards is new (#1256).
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .readable = false}}, processes);
     read(accumulator, {}, processes);
@@ -277,7 +277,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnreadableSocketThatClosesIsForgotten)
 TEST(SocketTrafficAccumulatorTest, CountersNeverDecrease)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     const std::vector<std::vector<SocketTrafficSample>> readings{
         {{.key = 1, .pid = 10, .bytesReceived = 10}, {.key = 2, .pid = 10, .bytesReceived = 10}},
         {{.key = 2, .pid = 10, .bytesReceived = 50}},
@@ -302,7 +302,7 @@ TEST(SocketTrafficAccumulatorTest, ARollbackInOneDirectionRebaselinesBoth)
     // sent counter isn't comparable with the old connection's either. 1000/100 -> 10/5000 must
     // credit nothing (not 4900 sent bytes), and the next reading counts growth from 10/5000.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 1'000, .bytesSent = 100}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 10, .bytesSent = 5'000}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U);
@@ -319,12 +319,12 @@ TEST(SocketTrafficAccumulatorTest, PublishTotalsFromAnOlderProcessListForgetsNot
     // publishes a process list without it. publishTotals() must not drop that process's totals, or
     // its next increment would publish 10 instead of 110.
     SocketTrafficAccumulator accumulator;
-    std::vector newer{process(10), process(20)};
+    std::vector newer{trafficProcess(10), trafficProcess(20)};
     read(accumulator, {{.key = 1, .pid = 20, .bytesReceived = 0}}, newer);
     read(accumulator, {{.key = 1, .pid = 20, .bytesReceived = 100}}, newer);
     ASSERT_EQ(newer[1].netReceivedBytes, 100U);
 
-    std::vector older{process(10)}; // scanned before process 20 existed
+    std::vector older{trafficProcess(10)}; // scanned before process 20 existed
     accumulator.publishTotals(older);
     EXPECT_EQ(older[0].netReceivedBytes, 0U);
 
@@ -335,11 +335,11 @@ TEST(SocketTrafficAccumulatorTest, PublishTotalsFromAnOlderProcessListForgetsNot
 TEST(SocketTrafficAccumulatorTest, PublishWithoutANewReadingRepeatsTheTotals)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 0}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 800}}, processes);
 
-    std::vector again{process(10)};
+    std::vector again{trafficProcess(10)};
     accumulator.publish(again);
     EXPECT_EQ(again[0].netReceivedBytes, 800U);
 }
@@ -347,12 +347,12 @@ TEST(SocketTrafficAccumulatorTest, PublishWithoutANewReadingRepeatsTheTotals)
 TEST(SocketTrafficAccumulatorTest, AReusedPidStartsFromZero)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector oldProcess{process(10, 1000)};
+    std::vector oldProcess{trafficProcess(10, 1000)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 0}}, oldProcess);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 800}}, oldProcess);
     ASSERT_EQ(oldProcess[0].netReceivedBytes, 800U);
 
-    std::vector newProcess{process(10, 2000)}; // same PID, later start: a different process
+    std::vector newProcess{trafficProcess(10, 2000)}; // same PID, later start: a different process
     read(accumulator, {{.key = 2, .pid = 10, .bytesReceived = 30}}, newProcess);
     EXPECT_EQ(newProcess[0].netReceivedBytes, 30U);
 }
@@ -366,7 +366,7 @@ TEST(SocketTrafficAccumulatorTest, ANewProcessThatReusedAListedPidIsNotCreditedT
     // (start 2000) and opened a connection before the socket read.
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10, 1000)};
+    std::vector processes{trafficProcess(10, 1000)};
     accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
     accumulator.apply(
         {
@@ -377,7 +377,7 @@ TEST(SocketTrafficAccumulatorTest, ANewProcessThatReusedAListedPidIsNotCreditedT
     EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "the exited process gets none of the new one's traffic";
     EXPECT_EQ(processes[0].netSentBytes, 0U);
 
-    processes = {process(10, 2000)}; // the next refresh lists the new process
+    processes = {trafficProcess(10, 2000)}; // the next refresh lists the new process
     accumulator.apply(
         {
             .sockets = {{.key = 2, .pid = 10, .ownerStartTimeTicks = 2000, .bytesReceived = 600, .bytesSent = 5}},
@@ -394,7 +394,7 @@ TEST(SocketTrafficAccumulatorTest, AnExitedOwnerIsNotCreditedToTheProcessThatReu
     // 1000), which the inode-to-PID map still names.
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10, 2000)};
+    std::vector processes{trafficProcess(10, 2000)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 100}}, .sampleTimeNs = 10 * SECOND},
                       processes);
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND},
@@ -409,7 +409,7 @@ TEST(SocketTrafficAccumulatorTest, AnExitedOwnerIsNotCreditedToTheProcessThatReu
 
     // Without a process list (addReading() + publish()), the reported owner is matched exactly too.
     SocketTrafficAccumulator direct;
-    std::vector reused{process(10, 2000)};
+    std::vector reused{trafficProcess(10, 2000)};
     read(direct, {}, reused);
     read(direct, {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 700}}, reused);
     EXPECT_EQ(reused[0].netReceivedBytes, 0U);
@@ -419,7 +419,7 @@ TEST(SocketTrafficAccumulatorTest, AnOwnerWithTheSameStartTimeIsCredited)
 {
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10, 1000)};
+    std::vector processes{trafficProcess(10, 1000)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 100}}, .sampleTimeNs = 10 * SECOND},
                       processes);
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND},
@@ -433,7 +433,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnknownOwnerStartTimeMatchesByPid)
     // as before #1336.
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10, 2000)};
+    std::vector processes{trafficProcess(10, 2000)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}}, .sampleTimeNs = 10 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 900}}, .sampleTimeNs = 11 * SECOND}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 800U);
@@ -442,7 +442,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnknownOwnerStartTimeMatchesByPid)
 TEST(SocketTrafficAccumulatorTest, UnattributedTrafficIsNotCredited)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 0}}, processes);
     read(accumulator, {{.key = 1, .pid = 0, .bytesReceived = 1'000}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U);
@@ -454,7 +454,7 @@ TEST(SocketTrafficAccumulatorTest, GrowthBeforeAttributionIsCreditedToTheLaterOw
     // readings before it has an owner. The bytes it moved in them used to be lost; they are held and
     // credited once it is attributed. Its bytes at its first sighting are not (they may predate it).
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {}, processes);
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 1'000, .bytesSent = 10}}, processes); // first sighting
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 5'000, .bytesSent = 40}}, processes);
@@ -473,7 +473,7 @@ TEST(SocketTrafficAccumulatorTest, AnUnreadableSampleKeepsTheHeldGrowth)
     // The growth held while unowned survives an unreadable sample; the growth across it is not
     // credited (#1346 review), so the owner gets the 500 held bytes only.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 100}}, processes);
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 600}}, processes);
     read(accumulator, {{.key = 2, .pid = 0, .readable = false}}, processes);
@@ -486,7 +486,7 @@ TEST(SocketTrafficAccumulatorTest, AReusedKeyDropsTheHeldGrowth)
     // A counter going backwards means another connection took the key: the old one's held bytes
     // are not the new one's.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 100}}, processes);
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 9'000}}, processes);
     read(accumulator, {{.key = 2, .pid = 0, .bytesReceived = 50}}, processes); // reused
@@ -501,7 +501,7 @@ TEST(SocketTrafficAccumulatorTest, HeldGrowthExpiresForAConnectionThatStaysUnown
     constexpr std::uint64_t MS = 1'000'000ULL;
     constexpr std::uint64_t HOLD_NS = static_cast<std::uint64_t>(Sampling::UNATTRIBUTED_SOCKET_HOLD_MS) * MS;
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     const auto at = [&](std::uint64_t timeNs, const std::vector<SocketTrafficSample>& sockets)
     {
         accumulator.addReading(sockets, timeNs);
@@ -531,7 +531,7 @@ TEST(SocketTrafficAccumulatorTest, AHoldWhoseDeadlinePassedBeforeAttributionIsDr
     constexpr std::uint64_t MS = 1'000'000ULL;
     constexpr std::uint64_t HOLD_NS = static_cast<std::uint64_t>(Sampling::UNATTRIBUTED_SOCKET_HOLD_MS) * MS;
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     const auto at = [&](std::uint64_t timeNs, const std::vector<SocketTrafficSample>& sockets)
     {
         accumulator.addReading(sockets, timeNs);
@@ -559,7 +559,7 @@ TEST(SocketTrafficAccumulatorTest, ApplyHoldsGrowthOnTheReadingClock)
     // apply() passes each reading's time, so a connection attributed within the hold is credited
     // what it moved since its first sighting.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100}}, .sampleTimeNs = 11 * SECOND}, processes);
@@ -575,7 +575,7 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingThatAttributesAConnectionCred
     // used to be skipped as a repeat: the held growth waited for the next fresh one, and was lost if
     // the connection closed first. Now its new ownership is applied -- and its counters are not.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100, .bytesSent = 1}}, .sampleTimeNs = 11 * SECOND}, processes);
@@ -602,7 +602,7 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingThatAttributesAConnectionCred
 TEST(SocketTrafficAccumulatorTest, HeldGrowthHandedOverOnARepeatedReadingSurvivesTheConnectionClosing)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     constexpr std::uint64_t SECOND = 1'000'000'000ULL;
     accumulator.apply({.sockets = {}, .sampleTimeNs = 10 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 100}}, .sampleTimeNs = 11 * SECOND}, processes);
@@ -628,16 +628,16 @@ TEST(SocketTrafficAccumulatorTest, HeldGrowthHandedOverOnARepeatedReadingIsBound
     };
 
     SocketTrafficAccumulator reused;
-    std::vector processes{process(10, 1000)};
+    std::vector processes{trafficProcess(10, 1000)};
     holdThenAttribute(reused, processes);
-    processes = {process(10, 2000)}; // the owner exited and its PID was reused
+    processes = {trafficProcess(10, 2000)}; // the owner exited and its PID was reused
     reused.apply({.sockets = {}, .sampleTimeNs = 13 * SECOND}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U) << "the replacement process gets nothing";
     reused.apply({.sockets = {}, .sampleTimeNs = 14 * SECOND}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 0U);
 
     SocketTrafficAccumulator same;
-    processes = {process(10, 1000)};
+    processes = {trafficProcess(10, 1000)};
     holdThenAttribute(same, processes);
     same.apply({.sockets = {}, .sampleTimeNs = 13 * SECOND}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 300U) << "the same process gets the held bytes";
@@ -657,7 +657,7 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingLeavesAConnectionWhoseOwnerIs
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
 
-    processes = {process(10)};
+    processes = {trafficProcess(10)};
     accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 450}}, .sampleTimeNs = 13 * SECOND}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 350U) << "the held 300 plus this interval's 50";
 }
@@ -676,7 +676,7 @@ TEST(SocketTrafficAccumulatorTest, AFreshAttributionToAnUnlistedOwnerKeepsHoldin
     accumulator.apply({.sockets = {{.key = 2, .pid = 0, .bytesReceived = 400}}, .sampleTimeNs = 12 * SECOND}, processes);
     accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 600}}, .sampleTimeNs = 13 * SECOND}, processes);
 
-    processes = {process(10)};
+    processes = {trafficProcess(10)};
     accumulator.apply({.sockets = {{.key = 2, .pid = 10, .bytesReceived = 650}}, .sampleTimeNs = 14 * SECOND}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 550U) << "held 300, the unlisted interval's 200, and this interval's 50";
 
@@ -689,7 +689,7 @@ TEST(SocketTrafficAccumulatorTest, ARepeatedReadingDoesNotRecountItsCounters)
     // Only ownership is taken from a repeat: an owned connection's counters, a new connection, and an
     // unowned connection's growth in it are not credited (they would be counted again, or as new).
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10), process(20)};
+    std::vector processes{trafficProcess(10), trafficProcess(20)};
     accumulator.apply(
         {.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}, {.key = 2, .pid = 0, .bytesReceived = 50}}, .sampleTimeNs = 1'000},
         processes);
@@ -715,7 +715,7 @@ TEST(SocketTrafficAccumulatorTest, TotalsSaturateInsteadOfWrapping)
 {
     constexpr auto MAX_BYTES = std::numeric_limits<std::uint64_t>::max();
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = MAX_BYTES - 1}, {.key = 2, .pid = 10, .bytesReceived = 10}}, processes);
     EXPECT_EQ(processes[0].netReceivedBytes, MAX_BYTES);
@@ -724,7 +724,7 @@ TEST(SocketTrafficAccumulatorTest, TotalsSaturateInsteadOfWrapping)
 TEST(SocketTrafficAccumulatorTest, ResetForgetsEverything)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10}}, processes);
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 100}}, processes);
     accumulator.reset();
@@ -737,7 +737,7 @@ TEST(SocketTrafficAccumulatorTest, ResetForgetsEverything)
 TEST(SocketTrafficAccumulatorTest, ApplyStampsEveryProcessWithTheReadingTime)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10), process(20)};
+    std::vector processes{trafficProcess(10), trafficProcess(20)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10}}, .sampleTimeNs = 5'000}, processes);
     EXPECT_EQ(processes[0].netSampleTimeNs, 5'000U);
     EXPECT_EQ(processes[1].netSampleTimeNs, 5'000U) << "processes without sockets too";
@@ -747,7 +747,7 @@ TEST(SocketTrafficAccumulatorTest, ApplyLeavesProcessesUntouchedUntilAReading)
 {
     // A probe that never returns readings (Windows today, mocks) keeps its own counters.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     processes[0].netReceivedBytes = 1'234;
     processes[0].netSampleTimeNs = 77;
     accumulator.apply({}, processes);
@@ -759,7 +759,7 @@ TEST(SocketTrafficAccumulatorTest, ApplyFoldsARepeatedReadingOnce)
 {
     // The probe caches its query: the same reading (same time) comes back for several refreshes.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 0}}, .sampleTimeNs = 1'000}, processes);
     const SocketTrafficReading second{.sockets = {{.key = 1, .pid = 10, .bytesReceived = 500}}, .sampleTimeNs = 2'000};
     accumulator.apply(second, processes);
@@ -776,7 +776,7 @@ TEST(SocketTrafficAccumulatorTest, AListedProcessWithAnUnknownStartTimeTakesItsP
     SocketTrafficAccumulator accumulator;
     accumulator.addReading(std::vector<SocketTrafficSample>{{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 100}});
     accumulator.addReading(std::vector<SocketTrafficSample>{{.key = 1, .pid = 10, .ownerStartTimeTicks = 1000, .bytesReceived = 400}});
-    std::vector processes{process(10, 0)};
+    std::vector processes{trafficProcess(10, 0)};
     accumulator.publish(processes);
     EXPECT_EQ(processes[0].netReceivedBytes, 300U);
 
@@ -790,7 +790,7 @@ TEST(SocketTrafficAccumulatorTest, ApplyDoesNotFoldAnOlderReading)
     // Folding a reading older than the last one would rewind the baselines: socket 1 back at 100
     // and then at 1100 again would count those 1000 bytes twice.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 100}}, .sampleTimeNs = 1'000}, processes);
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 1'100}}, .sampleTimeNs = 3'000}, processes);
     ASSERT_EQ(processes[0].netReceivedBytes, 1'000U);
@@ -809,11 +809,11 @@ TEST(SocketTrafficAccumulatorTest, ApplyRepublishesTheLastTotalsForAFailedReadin
     // credit their lifetime bytes -- nor a reason to drop the totals: the last ones and their time
     // are republished, so ProcessModel holds the last rate.
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 0}}, .sampleTimeNs = 1'000}, processes);
     accumulator.apply({.sockets = {{.key = 1, .pid = 10, .bytesReceived = 400}}, .sampleTimeNs = 2'000}, processes);
 
-    std::vector again{process(10)};
+    std::vector again{trafficProcess(10)};
     accumulator.apply({}, again);
     EXPECT_EQ(again[0].netReceivedBytes, 400U);
     EXPECT_EQ(again[0].netSampleTimeNs, 2'000U);
@@ -827,12 +827,12 @@ TEST(SocketTrafficAccumulatorTest, OnlyAFoldingApplyPrunesExitedProcesses)
     // A refresh that doesn't fold a reading only reads the totals; a process missing from its list
     // keeps its totals for the next refresh that does.
     SocketTrafficAccumulator accumulator;
-    std::vector both{process(10), process(20)};
+    std::vector both{trafficProcess(10), trafficProcess(20)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 0}}, .sampleTimeNs = 1'000}, both);
     accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 100}}, .sampleTimeNs = 2'000}, both);
     ASSERT_EQ(both[1].netReceivedBytes, 100U);
 
-    std::vector withoutTwenty{process(10)};
+    std::vector withoutTwenty{trafficProcess(10)};
     accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 100}}, .sampleTimeNs = 2'000}, withoutTwenty);
 
     accumulator.apply({.sockets = {{.key = 1, .pid = 20, .bytesReceived = 110}}, .sampleTimeNs = 3'000}, both);
@@ -845,7 +845,7 @@ TEST(SocketTrafficAccumulatorTest, OnlyAFoldingApplyPrunesExitedProcesses)
 TEST(SocketTrafficAccumulatorTest, ABaselineOnlySampleSetsTheBaselineAndTheNextReadingCreditsGrowthFromIt)
 {
     SocketTrafficAccumulator accumulator;
-    std::vector processes{process(10)};
+    std::vector processes{trafficProcess(10)};
     read(accumulator, {{.key = 1, .pid = 10, .bytesReceived = 50, .bytesSent = 50}}, processes); // the first reading
     EXPECT_EQ(processes[0].netSentBytes, 0U);
 
@@ -891,7 +891,7 @@ TEST(SocketTrafficAccumulatorTest, AReadingThatThrowsPartWayCreditsItsGrowthOnce
     {
         SCOPED_TRACE("failing allocation " + std::to_string(failAt));
         SocketTrafficAccumulator accumulator;
-        std::vector processes{process(10), process(11), process(12), process(13)};
+        std::vector processes{trafficProcess(10), trafficProcess(11), trafficProcess(12), trafficProcess(13)};
         read(accumulator, reading(100), processes); // the baselines
 
         bool threw = false;

@@ -26,7 +26,7 @@ namespace Platform
 namespace
 {
 
-constexpr ProcessTarget TARGET{.pid = 100, .startTimeTicks = 4242};
+constexpr ProcessTarget MEMORY_MAP_READER_TARGET{.pid = 100, .startTimeTicks = 4242};
 
 constexpr std::string_view SERVER = "55d0c1a00000-55d0c1a02000 r-xp 00000000 08:01 1311 /usr/bin/server\n"
                                     "Rss:                   8 kB\n"
@@ -59,7 +59,7 @@ TEST_F(LinuxProcessMemoryMapReaderTest, ReadsTheProcessesMappings)
 {
     LinuxProcessMemoryMapReader reader(m_Proc.path.string());
     EXPECT_TRUE(reader.hasMemoryMap());
-    const MemoryMapReadResult result = reader.readMemoryMap(TARGET);
+    const MemoryMapReadResult result = reader.readMemoryMap(MEMORY_MAP_READER_TARGET);
     ASSERT_EQ(result.status, MemoryMapReadStatus::Ok);
     ASSERT_EQ(result.mappings.size(), 2U);
     EXPECT_EQ(result.mappings[0].path, "/usr/bin/server");
@@ -75,7 +75,7 @@ TEST_F(LinuxProcessMemoryMapReaderTest, AnSmapsPastTheCapIsReadThatFarAndMarkedT
 {
     // The cap falls inside the heap's entry: only the server's is whole.
     LinuxProcessMemoryMapReader reader(m_Proc.path.string(), SERVER.size() + 70);
-    const MemoryMapReadResult result = reader.readMemoryMap(TARGET);
+    const MemoryMapReadResult result = reader.readMemoryMap(MEMORY_MAP_READER_TARGET);
     ASSERT_EQ(result.status, MemoryMapReadStatus::Ok);
     ASSERT_EQ(result.mappings.size(), 1U);
     EXPECT_EQ(result.mappings[0].path, "/usr/bin/server");
@@ -84,7 +84,7 @@ TEST_F(LinuxProcessMemoryMapReaderTest, AnSmapsPastTheCapIsReadThatFarAndMarkedT
 
     // A cap inside the first line leaves nothing whole: no mappings, still truncated.
     LinuxProcessMemoryMapReader tiny(m_Proc.path.string(), 10);
-    const MemoryMapReadResult none = tiny.readMemoryMap(TARGET);
+    const MemoryMapReadResult none = tiny.readMemoryMap(MEMORY_MAP_READER_TARGET);
     ASSERT_EQ(none.status, MemoryMapReadStatus::Ok);
     EXPECT_TRUE(none.mappings.empty());
     EXPECT_TRUE(none.truncated);
@@ -93,7 +93,7 @@ TEST_F(LinuxProcessMemoryMapReaderTest, AnSmapsPastTheCapIsReadThatFarAndMarkedT
 TEST_F(LinuxProcessMemoryMapReaderTest, AnSmapsExactlyTheCapLongIsWholeNotTruncated)
 {
     LinuxProcessMemoryMapReader reader(m_Proc.path.string(), SERVER.size() + HEAP.size());
-    const MemoryMapReadResult result = reader.readMemoryMap(TARGET);
+    const MemoryMapReadResult result = reader.readMemoryMap(MEMORY_MAP_READER_TARGET);
     ASSERT_EQ(result.status, MemoryMapReadStatus::Ok);
     EXPECT_EQ(result.mappings.size(), 2U);
     EXPECT_FALSE(result.truncated);
@@ -114,16 +114,16 @@ TEST_F(LinuxProcessMemoryMapReaderTest, WhatEachKindOfMissingOrBrokenSmapsReadsA
 {
     LinuxProcessMemoryMapReader reader(m_Proc.path.string());
     std::filesystem::remove(m_Proc.path / "100" / "smaps");
-    EXPECT_EQ(reader.readMemoryMap(TARGET).status, MemoryMapReadStatus::ProcessExited);
+    EXPECT_EQ(reader.readMemoryMap(MEMORY_MAP_READER_TARGET).status, MemoryMapReadStatus::ProcessExited);
 
     std::filesystem::create_directory(m_Proc.path / "100" / "smaps"); // read() on it fails (EISDIR)
-    const MemoryMapReadResult broken = reader.readMemoryMap(TARGET);
+    const MemoryMapReadResult broken = reader.readMemoryMap(MEMORY_MAP_READER_TARGET);
     EXPECT_EQ(broken.status, MemoryMapReadStatus::Failed);
     EXPECT_FALSE(broken.detail.empty());
 
     std::filesystem::remove(m_Proc.path / "100" / "smaps");
     write("smaps", "");
-    const MemoryMapReadResult empty = reader.readMemoryMap(TARGET);
+    const MemoryMapReadResult empty = reader.readMemoryMap(MEMORY_MAP_READER_TARGET);
     EXPECT_EQ(empty.status, MemoryMapReadStatus::Ok);
     EXPECT_TRUE(empty.mappings.empty());
 }
@@ -135,7 +135,7 @@ TEST_F(LinuxProcessMemoryMapReaderTest, AKernelWithoutSmapsIsUnsupported)
     std::filesystem::remove(m_Proc.path / "100" / "smaps");
     LinuxProcessMemoryMapReader reader(m_Proc.path.string());
     EXPECT_FALSE(reader.hasMemoryMap());
-    EXPECT_EQ(reader.readMemoryMap(TARGET).status, MemoryMapReadStatus::Unsupported);
+    EXPECT_EQ(reader.readMemoryMap(MEMORY_MAP_READER_TARGET).status, MemoryMapReadStatus::Unsupported);
 }
 
 // An smaps this user can't read is permission denied (another user's process), which the brokered reader
@@ -148,7 +148,7 @@ TEST_F(LinuxProcessMemoryMapReaderTest, AnUnreadableSmapsIsPermissionDenied)
     }
     std::filesystem::permissions(m_Proc.path / "100" / "smaps", std::filesystem::perms::none);
     LinuxProcessMemoryMapReader reader(m_Proc.path.string());
-    EXPECT_EQ(reader.readMemoryMap(TARGET).status, MemoryMapReadStatus::PermissionDenied);
+    EXPECT_EQ(reader.readMemoryMap(MEMORY_MAP_READER_TARGET).status, MemoryMapReadStatus::PermissionDenied);
     std::filesystem::permissions(m_Proc.path / "100" / "smaps", std::filesystem::perms::owner_all);
 }
 

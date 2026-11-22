@@ -65,7 +65,7 @@ TEST_F(ProcessesPanelRenderTest, CtrlFPutsTheCursorInTheFilter)
     const auto panel = attachedPanel(events.sink());
     renderUntilLoaded(*panel);
     ImGuiIO& io = ImGui::GetIO();
-    io.AddMousePosEvent(DISPLAY_WIDTH * 0.5F, DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
+    io.AddMousePosEvent(PANEL_RENDER_DISPLAY_WIDTH * 0.5F, PANEL_RENDER_DISPLAY_HEIGHT * 0.5F); // hovered: the table's keys are armed
     io.AddKeyEvent(ImGuiMod_Ctrl, true);
     io.AddKeyEvent(ImGuiKey_F, true);
     static_cast<void>(renderAndCapture(*panel));

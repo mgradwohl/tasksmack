@@ -19,7 +19,7 @@ namespace App
 namespace
 {
 
-using StatusBarView::Action;
+using StatusBarAction = StatusBarView::Action; // its own name: a unity batch can bring in another Action (#4783)
 
 constexpr const char* PROCESSES = ICON_FA_LIST "  412 processes";
 constexpr const char* INTERVAL = ICON_FA_ARROWS_ROTATE "  Updates every 1 s";
@@ -83,7 +83,7 @@ class StatusBarViewRenderTest : public ::testing::Test
     }
 
     StatusBarView::Input m_Input;
-    Action m_LastAction = Action::None;
+    StatusBarAction m_LastAction = StatusBarAction::None;
 
   private:
     ImGuiContext* m_Context = nullptr;
@@ -95,7 +95,7 @@ TEST_F(StatusBarViewRenderTest, ShowsTheProcessCountAndTheInterval)
     EXPECT_TRUE(text.contains("412 processes")) << text;
     EXPECT_TRUE(text.contains("Updates every 1 s")) << text;
     EXPECT_FALSE(text.contains("FPS")) << text; // Render Metrics is off
-    EXPECT_EQ(m_LastAction, Action::None);
+    EXPECT_EQ(m_LastAction, StatusBarAction::None);
 }
 
 TEST_F(StatusBarViewRenderTest, TheIconsShowOnlyWhenTheyApply)
@@ -115,7 +115,7 @@ TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStand
     EXPECT_TRUE(standard.contains(ICON_FA_LOCK " Standard")) << standard;
     press(StatusBarView::STANDARD_CHIP_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::Access);
+    EXPECT_EQ(m_LastAction, StatusBarAction::Access);
 
     m_Input.access = StatusBarView::AccessChip::Administrator;
     const std::string administrator = frame();
@@ -123,7 +123,7 @@ TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStand
     EXPECT_FALSE(administrator.contains(ICON_FA_LOCK)) << "the chip, not the lock as well";
     press(StatusBarView::ADMINISTRATOR_CHIP_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::None);
+    EXPECT_EQ(m_LastAction, StatusBarAction::None);
 
     // #4766: a capabilities session (setcap) looks like Administrator, and offers nothing either.
     m_Input.access = StatusBarView::AccessChip::Capabilities;
@@ -131,7 +131,7 @@ TEST_F(StatusBarViewRenderTest, TheAccessChipSaysStandardOrAdministratorAndStand
     EXPECT_TRUE(capabilities.contains(ICON_FA_SHIELD_HALVED " Administrator")) << capabilities;
     press(StatusBarView::ADMINISTRATOR_CHIP_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::None);
+    EXPECT_EQ(m_LastAction, StatusBarAction::None);
 }
 
 // #4766: the chip's tooltip says what the session is; a capabilities session's never says "nothing is limited".
@@ -155,7 +155,7 @@ TEST_F(StatusBarViewRenderTest, AConfigProblemShowsAWarningThatOpensSettings)
     EXPECT_TRUE(frame().contains(ICON_FA_TRIANGLE_EXCLAMATION));
     press(StatusBarView::CONFIG_PROBLEM_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::Settings);
+    EXPECT_EQ(m_LastAction, StatusBarAction::Settings);
 }
 
 TEST_F(StatusBarViewRenderTest, TheFrameRateReadoutShowsWhileRenderMetricsIsOn)
@@ -172,16 +172,16 @@ TEST_F(StatusBarViewRenderTest, SettingsAndHelpAreThereOnlyWithoutTheCustomTitle
     static_cast<void>(frame());
     press(StatusBarView::SETTINGS_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::None);
+    EXPECT_EQ(m_LastAction, StatusBarAction::None);
 
     m_Input.showControls = true;
     static_cast<void>(frame());
     press(StatusBarView::SETTINGS_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::Settings);
+    EXPECT_EQ(m_LastAction, StatusBarAction::Settings);
     press(StatusBarView::HELP_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::Help);
+    EXPECT_EQ(m_LastAction, StatusBarAction::Help);
 }
 
 TEST_F(StatusBarViewRenderTest, ANarrowWindowLeavesOutTheLowerPriorityParts)
@@ -230,7 +230,7 @@ TEST_F(StatusBarViewRenderTest, TheUpdateNoticeOpensItsPageAndCanBeDismissed)
     EXPECT_FALSE(frame().contains("is available"));
     press(StatusBarView::UPDATE_NOTICE_ID);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::None);
+    EXPECT_EQ(m_LastAction, StatusBarAction::None);
 
     m_Input.updateNotice = NOTICE;
     const std::string text = frame();
@@ -239,10 +239,10 @@ TEST_F(StatusBarViewRenderTest, TheUpdateNoticeOpensItsPageAndCanBeDismissed)
     EXPECT_FALSE(text.contains("###UpdateNotice")) << text;
     press(StatusBarView::UPDATE_NOTICE_ID);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::OpenUpdate);
+    EXPECT_EQ(m_LastAction, StatusBarAction::OpenUpdate);
     press(StatusBarView::DISMISS_UPDATE_LABEL);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::DismissUpdate);
+    EXPECT_EQ(m_LastAction, StatusBarAction::DismissUpdate);
 }
 
 // #3658: an elevated TaskSmack that didn't open the release page (Windows' shell couldn't open it as the user)
@@ -269,7 +269,7 @@ TEST_F(StatusBarViewRenderTest, AWithheldUpdateLinkIsNamedInTheNoticesTooltip)
     EXPECT_FALSE(seen.contains("Nothing is downloaded or installed")) << seen;
     press(StatusBarView::UPDATE_NOTICE_ID);
     static_cast<void>(frame());
-    EXPECT_EQ(m_LastAction, Action::OpenUpdate);
+    EXPECT_EQ(m_LastAction, StatusBarAction::OpenUpdate);
 }
 
 TEST_F(StatusBarViewRenderTest, ANarrowWindowLeavesTheUpdateNoticeOutBeforeTheStatus)
