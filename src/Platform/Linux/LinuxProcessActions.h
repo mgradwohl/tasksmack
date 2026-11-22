@@ -59,6 +59,9 @@ class LinuxProcessActions : public LinuxProcessControl
     /// least (LinuxCoreDump::coreBytesFromStatus()), read from the target itself through the identity
     /// check (#807, #2001).
     [[nodiscard]] DumpSpace dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory) override;
+    /// Not root (#4761): MayIgnorePermissions when @p directory's filesystem may ignore Linux permissions
+    /// (LinuxCoreDump::mayIgnorePermissions()); NotChecked otherwise, and as root, which refuses such a folder itself.
+    [[nodiscard]] DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory) override;
     /// The executable /proc/<pid>/exe names, read through the identity check, shown selected by the
     /// session's file manager, or its folder opened with xdg-open (#3064). Running as root for another
     /// user (sudo, pkexec), the folder is opened as that user, in their session, and D-Bus isn't tried:

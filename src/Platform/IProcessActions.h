@@ -261,6 +261,9 @@ enum class DumpFolderAccess : std::uint8_t
     ReadableByUser,     ///< Programs running as the signed-in user can list or read the folder, or can change who may
     Unknown,            ///< Its permissions couldn't be read
     Refused,            ///< The dump would refuse the folder: a junction or link, or not where its path says (problem)
+    /// Linux, not root (#4761): the folder's filesystem may ignore Linux permissions (a Windows drive under WSL, a share,
+    /// a FAT, exFAT or NTFS disk), so others who can read that drive could read a dump there. A hint: the dump is kept.
+    MayIgnorePermissions,
 };
 
 /// What dumpFolderAccess() found, and why the folder is refused when it is.
@@ -591,8 +594,9 @@ class IProcessActions
     }
 
     /// Whether less-privileged programs can open @p directory itself, for the dump's confirm to hint
-    /// (#4164); or why createDump() would refuse the folder. Read only where createDump() holds and checks the folder
-    /// (Windows, elevated); NotChecked elsewhere. Reads the file system: on the confirm's worker, never the UI thread.
+    /// (#4164); or why createDump() would refuse the folder. Read where createDump() holds and checks the folder
+    /// (Windows, elevated), and on Linux, not root, whether its filesystem may ignore permissions (#4761); NotChecked
+    /// elsewhere. Reads the file system: on the confirm's worker, never the UI thread.
     /// The default checks nothing.
     [[nodiscard]] virtual DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory)
     {

@@ -64,6 +64,7 @@
 #include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/syscall.h>
 #include <sys/types.h>
 #include <sys/wait.h>
@@ -1660,6 +1661,29 @@ TEST(LinuxProcessActionsDumpTest, DumpSpaceReadsTheFolderAndTheProcess)
     EXPECT_EQ(actions.dumpSpace(reused, dumps.path).processBytes, std::nullopt);
     EXPECT_EQ(actions.dumpSpace(ownTarget(), {}).freeBytes, std::nullopt);
     EXPECT_EQ(actions.dumpSpace(ownTarget(), dumps.path / "missing").freeBytes, std::nullopt);
+}
+
+// #4761: the confirm's hint. A folder on a drive that keeps permissions (the temp folder) needs none; WSL's Windows drive
+// (9p drvfs, where chmod does nothing) gets MayIgnorePermissions, checked where such a drive is mounted.
+TEST(LinuxProcessActionsDumpTest, AFolderOnADriveThatMayIgnorePermissionsIsHintedNotRefused)
+{
+    if (::geteuid() == 0)
+    {
+        GTEST_SKIP() << "root refuses such a folder before the dump; the hint is a normal session's";
+    }
+    const TestSupport::ScopedTempDir dumps("tasksmack_dump_folder_access");
+    LinuxProcessActions actions(SyscallTrace::Tools{});
+    struct statfs stats{};
+    ASSERT_EQ(::statfs(dumps.path.c_str(), &stats), 0);
+    const DumpFolderAccess expected = LinuxCoreDump::mayIgnorePermissions(static_cast<std::uint64_t>(stats.f_type))
+                                        ? DumpFolderAccess::MayIgnorePermissions
+                                        : DumpFolderAccess::NotChecked;
+    EXPECT_EQ(actions.dumpFolderAccess(dumps.path).access, expected);
+    EXPECT_EQ(actions.dumpFolderAccess(dumps.path / "missing").access, DumpFolderAccess::NotChecked) << "unreadable: no hint";
+    if (struct statfs windowsDrive{}; ::statfs("/mnt/c", &windowsDrive) == 0 && windowsDrive.f_type == 0x01021997)
+    {
+        EXPECT_EQ(actions.dumpFolderAccess("/mnt/c").access, DumpFolderAccess::MayIgnorePermissions);
+    }
 }
 
 // ============================================================================
