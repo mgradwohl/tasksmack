@@ -88,7 +88,7 @@ namespace App
 namespace
 {
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog catches its own formatting and sink errors inside log()
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
     const auto count = std::to_underlying(ProcessColumn::Count);
@@ -1026,6 +1026,7 @@ void UserConfig::load()
         if (!text.has_value())
         {
             spdlog::error("Not reading {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), text.error());
+            setFileProblem(ConfigFileProblem::couldNotOpen(Core::pathToUtf8(m_ConfigPath))); // as by path (#4744)
             return;
         }
         if (!text->has_value())
@@ -1099,11 +1100,23 @@ std::string UserConfig::fileProblem() const
 void UserConfig::setFileProblem(std::string problem)
 {
     const std::scoped_lock lock(m_FileProblemMutex);
+    m_FileProblemIsLoads = !problem.empty();
     if (m_FileProblem != problem)
     {
         m_FileProblem = std::move(problem);
         m_FileProblemVersion.fetch_add(1, std::memory_order_release);
     }
+}
+
+void UserConfig::setSaveRefusal(std::string problem)
+{
+    const std::scoped_lock lock(m_FileProblemMutex);
+    if (m_FileProblemIsLoads || m_FileProblem == problem)
+    {
+        return;
+    }
+    m_FileProblem = std::move(problem);
+    m_FileProblemVersion.fetch_add(1, std::memory_order_release);
 }
 
 auto UserConfig::parseSettings(std::string_view tomlText, UserSettings& settings) -> bool
@@ -1293,8 +1306,9 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         if (!existing.has_value())
         {
             spdlog::error("Not saving settings: {} can't be opened; fix or remove it", Core::pathToUtf8(m_ConfigPath));
-            // It loaded, or this session would be on its defaults and never get here (#4653): only the save failed.
-            setFileProblem(ConfigFileProblem::couldNotSave(Core::pathToUtf8(m_ConfigPath), "can't be opened; fix or remove it"));
+            // Only the save failed (#4653), unless the load did too: then its notice, which says the defaults are in use,
+            // stays (#4744).
+            setSaveRefusal(ConfigFileProblem::couldNotSave(Core::pathToUtf8(m_ConfigPath), "can't be opened; fix or remove it"));
             return false;
         }
         try
@@ -1593,7 +1607,7 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
     const auto refuse = [this, &shown](std::string_view why)
     {
         spdlog::error("Not saving settings: {} {}", shown, why);
-        setFileProblem(ConfigFileProblem::couldNotSave(shown, why)); // the file loaded: not "default settings" (#4653)
+        setSaveRefusal(ConfigFileProblem::couldNotSave(shown, why)); // not "default settings" (#4653), unless it is (#4744)
         return false;
     };
 
