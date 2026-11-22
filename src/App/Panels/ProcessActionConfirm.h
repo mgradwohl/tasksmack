@@ -31,7 +31,13 @@ enum class Outcome : std::uint8_t
 /// With `dismiss`, the modal is closed unconfirmed if it is open (returning Cancelled) and
 /// `showRequested` is cleared: for a caller whose target changed while the modal was up, since
 /// clearing the flag alone does not close a modal ImGui already has open.
-Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid, bool dismiss = false);
+/// @p canRaisePriority as Detail::confirmBody() takes it (#4793): false where the session can't raise a priority again.
+Outcome render(bool& showRequested,
+               Detail::ProcessAction action,
+               std::string_view processName,
+               std::int32_t pid,
+               bool dismiss = false,
+               bool canRaisePriority = true);
 
 /// The same modal, same geometry and buttons, with a title and question the caller has already
 /// built: the Processes table's batch actions (#804), whose question lists several processes a line

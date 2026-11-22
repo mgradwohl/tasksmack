@@ -8,6 +8,7 @@
 /// test_ProcessesPanel.cpp doesn't link ProcessesPanel.cpp either - so these tests exercise the
 /// actual dispatch decision logic directly against a mock, which is the part #415 cared about.
 
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "Domain/PriorityConfig.h"
@@ -229,6 +230,54 @@ TEST(ProcessActionHelpersTest, ConfirmTitleNamesTheActionAndTheProcess)
 {
     EXPECT_EQ(confirmTitle(ProcessAction::Kill, "firefox", 1234), "Kill firefox (PID 1234)?");
     EXPECT_EQ(confirmTitle(ProcessAction::Stop, "make", 7), "Suspend make (PID 7)?");
+}
+
+// #4793: an unprivileged Linux session can lower a priority but not raise it again, so Efficiency mode is one-way there:
+// its confirms say what turning it off needs, and never promise a restore the kernel refuses. Windows restores a priority
+// class freely, and a session with CAP_SYS_NICE reads as before.
+TEST(ProcessActionHelpersTest, EfficiencyModesConfirmSaysWhenItCantBeTurnedOffAgain)
+{
+    const std::string restores = confirmBody(ProcessAction::EfficiencyModeOn, "make", 7);
+    const std::string oneWay = confirmBody(ProcessAction::EfficiencyModeOn, "make", 7, false);
+    const std::string offRestores = confirmBody(ProcessAction::EfficiencyModeOff, "make", 7);
+    const std::string offNeeds = confirmBody(ProcessAction::EfficiencyModeOff, "make", 7, false);
+    const std::string batchOn = ProcessBatch::confirmSummary(ProcessAction::EfficiencyModeOn, 3, false);
+    const std::string batchOff = ProcessBatch::confirmSummary(ProcessAction::EfficiencyModeOff, 3, false);
+#ifdef _WIN32
+    EXPECT_EQ(oneWay, restores);
+    EXPECT_EQ(offNeeds, offRestores);
+    EXPECT_EQ(batchOn, ProcessBatch::confirmSummary(ProcessAction::EfficiencyModeOn, 3));
+    EXPECT_EQ(batchOff, ProcessBatch::confirmSummary(ProcessAction::EfficiencyModeOff, 3));
+#else
+    EXPECT_TRUE(restores.ends_with(EFFICIENCY_MODE_RESTORES_TEXT)) << restores;
+    EXPECT_TRUE(oneWay.ends_with(EFFICIENCY_MODE_ONE_WAY_TEXT)) << oneWay;
+    EXPECT_FALSE(oneWay.contains("restores")) << oneWay;
+    EXPECT_TRUE(oneWay.contains("nice 19")) << "still says what it does";
+    EXPECT_TRUE(offRestores.contains("its priority will be restored")) << offRestores;
+    EXPECT_FALSE(offNeeds.contains("will be restored")) << offNeeds;
+    EXPECT_TRUE(offNeeds.ends_with(EFFICIENCY_MODE_OFF_NEEDS_TEXT)) << offNeeds;
+    EXPECT_TRUE(batchOn.ends_with(EFFICIENCY_MODE_ONE_WAY_TEXT)) << batchOn;
+    EXPECT_TRUE(batchOff.ends_with(EFFICIENCY_MODE_OFF_NEEDS_TEXT)) << batchOff;
+    EXPECT_FALSE(ProcessBatch::confirmSummary(ProcessAction::EfficiencyModeOn, 3).contains("Administrator"));
+#endif
+    // Every other action reads the same whatever the session may do.
+    for (const auto action : {ProcessAction::Terminate, ProcessAction::Kill, ProcessAction::Stop, ProcessAction::Resume})
+    {
+        EXPECT_EQ(confirmBody(action, "make", 7, false), confirmBody(action, "make", 7));
+    }
+}
+
+// The session's right to raise a priority again (#4793): Linux's CAP_SYS_NICE, which canSetRealtimeSchedPolicy reads.
+TEST(ProcessActionHelpersTest, OnlyASessionWithSysNiceCanRaiseAPriorityAgainOnLinux)
+{
+    Platform::ProcessActionCapabilities capabilities;
+#ifdef _WIN32
+    EXPECT_TRUE(sessionCanRaisePriority(capabilities));
+#else
+    EXPECT_FALSE(sessionCanRaisePriority(capabilities));
+    capabilities.canSetRealtimeSchedPolicy = true;
+    EXPECT_TRUE(sessionCanRaisePriority(capabilities));
+#endif
 }
 
 TEST(ProcessActionHelpersTest, ConfirmBodyStatesTheOutcome)

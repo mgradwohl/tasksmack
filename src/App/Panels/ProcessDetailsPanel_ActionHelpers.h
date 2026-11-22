@@ -322,10 +322,24 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     return std::format("{} {} (PID {})?", actionLabel(action), processName, pid);
 }
 
+/// The end of Linux's Efficiency mode confirm (#3202), and what it says instead where the session can't raise a priority
+/// again (#4793): an unprivileged user may lower a process's priority but not raise it (RLIMIT_NICE is 0 unless one was
+/// granted), so turning it off there needs an Administrator session.
+inline constexpr std::string_view EFFICIENCY_MODE_RESTORES_TEXT = "Turning Efficiency mode off restores both.";
+inline constexpr std::string_view EFFICIENCY_MODE_ONE_WAY_TEXT =
+    "This session can lower a priority but not raise it again, so turning Efficiency mode off needs TaskSmack (Administrator): "
+    "until then, or until the process restarts, it stays on.";
+inline constexpr std::string_view EFFICIENCY_MODE_OFF_NEEDS_TEXT =
+    "This session usually can't raise one: that needs TaskSmack (Administrator).";
+
 /// Confirm dialog body: what the action does to this process, so the outcome of a destructive
-/// action is stated rather than hidden behind "Are you sure?" (#1203).
-[[nodiscard]] inline std::string confirmBody(ProcessAction action, std::string_view processName, std::int32_t pid)
+/// action is stated rather than hidden behind "Are you sure?" (#1203). @p canRaisePriority: this session may raise a
+/// priority it lowered (Linux: CAP_SYS_NICE; sessionCanRaisePriority()). Without it, Linux's Efficiency mode is one-way,
+/// and its confirms say so rather than promise a restore the kernel refuses (#4793).
+[[nodiscard]] inline std::string
+confirmBody(ProcessAction action, std::string_view processName, std::int32_t pid, bool canRaisePriority = true)
 {
+    static_cast<void>(canRaisePriority); // Windows restores a priority class without a privilege
     switch (action)
     {
     case ProcessAction::Terminate:
@@ -367,12 +381,21 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
 #else
         // Linux (#3202): nice 19, and the cgroup's lowest CPU weight where it is alone in its cgroup.
         return std::format("{} (PID {}) will run at nice 19, the lowest priority, and if it is alone in its cgroup, at the lowest CPU "
-                           "weight: it gets CPU time when other work leaves some, so it may run much slower. Turning Efficiency mode "
-                           "off restores both.",
+                           "weight: it gets CPU time when other work leaves some, so it may run much slower. {}",
                            processName,
-                           pid);
+                           pid,
+                           canRaisePriority ? EFFICIENCY_MODE_RESTORES_TEXT : EFFICIENCY_MODE_ONE_WAY_TEXT);
 #endif
     case ProcessAction::EfficiencyModeOff:
+#ifndef _WIN32
+        if (!canRaisePriority)
+        {
+            return std::format("{} (PID {}) will leave Efficiency mode if its priority can be raised again. {}",
+                               processName,
+                               pid,
+                               EFFICIENCY_MODE_OFF_NEEDS_TEXT);
+        }
+#endif
         return std::format("{} (PID {}) will leave Efficiency mode, and its priority will be restored.", processName, pid);
     case ProcessAction::SetRealtimePriority:
         // The warning #3429 asks for: what Realtime does, and that it can make the desktop unresponsive.

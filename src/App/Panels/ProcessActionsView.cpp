@@ -67,6 +67,9 @@ void ProcessActionsView::renderControls(Platform::IProcessActions* actions,
                                         Platform::SchedPolicy currentSchedPolicy,
                                         std::uint32_t currentRtPriority)
 {
+    // For the confirm's text (#4793): the panel draws the confirm on its own (renderConfirmation()), a frame after the
+    // press that asks for it, so the capabilities the controls were drawn with are the ones it reads.
+    m_CanRaisePriority = Detail::sessionCanRaisePriority(capabilities);
     // No name, PID or header of its own: the view sits in the Overview's Actions block, under that
     // block's header and beside the Identity block that names the process (#1493). Its result line
     // goes under the block's last row (renderResultLine()).
@@ -394,7 +397,7 @@ void ProcessActionsView::renderConfirmDialog(Platform::IProcessActions* actions,
     // cancel or dismissal clears it without acting, so nothing stale is left to replay.
     const bool dismiss = takeDismiss(liveTarget);
     switch (ProcessActionConfirm::render(
-        m_ShowConfirmDialog, m_ConfirmAction, m_ConfirmTarget.processName, m_ConfirmTarget.target.pid, dismiss))
+        m_ShowConfirmDialog, m_ConfirmAction, m_ConfirmTarget.processName, m_ConfirmTarget.target.pid, dismiss, m_CanRaisePriority))
     {
     case ProcessActionConfirm::Outcome::Confirmed:
         dispatchConfirmed(actions);
