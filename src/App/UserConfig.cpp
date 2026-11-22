@@ -889,6 +889,9 @@ constexpr std::size_t MAX_CONFIG_FILE_BYTES = std::size_t{4} * 1024U * 1024U;
     std::array<char, 16384> chunk{};
     for (;;)
     {
+        // save() holds m_WriteMutex for the whole write by design: saves are serialised on the save worker, and the UI thread
+        // never waits on it (#2916).
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection)
         const auto n = ::read(fd, chunk.data(), chunk.size());
         if (n < 0)
         {
@@ -1148,6 +1151,14 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     // Held, it is written only through the folder held, relative to its handle (#3774): no path to it is followed.
     if (held != nullptr)
     {
+#ifndef _WIN32
+        // Run as root for a user, the folder held is theirs (App::LinuxHeldFolder, #4167): saved through its descriptor
+        // by writeIntoFolderFd(), which keeps the old config.toml's owner, mode and access control list (#4546).
+        if (const int folderFd = held->posixFolderFd(); folderFd >= 0)
+        {
+            return writeIntoFolderFd(folderFd, settings, std::nullopt);
+        }
+#endif
         return writeIntoHandedOver(*held, settings);
     }
     std::error_code ec;
@@ -1282,7 +1293,8 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         if (!existing.has_value())
         {
             spdlog::error("Not saving settings: {} can't be opened; fix or remove it", Core::pathToUtf8(m_ConfigPath));
-            setFileProblem(ConfigFileProblem::couldNotOpen(Core::pathToUtf8(m_ConfigPath))); // #4318
+            // It loaded, or this session would be on its defaults and never get here (#4653): only the save failed.
+            setFileProblem(ConfigFileProblem::couldNotSave(Core::pathToUtf8(m_ConfigPath), "can't be opened; fix or remove it"));
             return false;
         }
         try
@@ -1581,7 +1593,7 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
     const auto refuse = [this, &shown](std::string_view why)
     {
         spdlog::error("Not saving settings: {} {}", shown, why);
-        setFileProblem(ConfigFileProblem::couldNotOpen(shown));
+        setFileProblem(ConfigFileProblem::couldNotSave(shown, why)); // the file loaded: not "default settings" (#4653)
         return false;
     };
 
@@ -1591,7 +1603,7 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
     struct stat folderInfo = {};
     if (::fstat(folderFd, &folderInfo) != 0)
     {
-        return refuse("can't be saved: its folder can't be checked");
+        return refuse("is in a folder that can't be checked");
     }
     const uid_t effectiveUid = m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid();
     if (effectiveUid == 0)

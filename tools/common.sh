@@ -7,7 +7,7 @@ set -euo pipefail
 # and tools/coverage.sh's root pass both run exactly these, under sudo. Each suite skips when not root. A root suite
 # added later goes here, once.
 root_test_filter() {
-    printf '%s\n' 'DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*:RootDumpFolderRootTest.*:RootEnvironmentRootTest.*:UserConfigRootTest.*:NetlinkSocketStatsRootTest.*'
+    printf '%s\n' 'DetachedSpawnTest.AsRoot*:*/UdpByteCounterRootTest.*:UdpTrafficCollectorRootTest.*:SessionUserRootTest.*:RootCapabilitiesRootTest.*:LinuxProcessActionsRootTest.*:RootDumpFolderRootTest.*:RootEnvironmentRootTest.*:UserConfigRootTest.*:NetlinkSocketStatsRootTest.*:LinuxHeldFolderRootTest.*'
 }
 
 # Check if a command exists and provide installation instructions if missing
@@ -44,24 +44,40 @@ validate_build_prereqs() {
     return 0
 }
 
-# Validate coverage prerequisites (llvm-cov, llvm-profdata)
+# Validate coverage prerequisites (llvm-cov, llvm-profdata), found as coverage.sh then runs them: with
+# find_llvm_tool(), the LLVM folders before PATH (#4711). A --minimal setup-dev.sh installs llvm-23 but registers no
+# unversioned llvm-cov or llvm-profdata, and a PATH-only check refused it with every binary present. Held to the
+# clang floor as validate_build_prereqs() is, and the hint names the versioned package (apt's llvm is older).
 # Returns: 0 if all prerequisites are met, 1 otherwise
 validate_coverage_prereqs() {
-    check_command llvm-cov "apt install llvm" || return 1
-    check_command llvm-profdata "apt install llvm" || return 1
+    local tool path version
+    for tool in llvm-cov llvm-profdata; do
+        path="$(find_llvm_tool "$tool" 2>/dev/null || true)"
+        if [[ -z "$path" ]]; then
+            echo "Error: $tool not found. Install via: apt install llvm-23" >&2
+            return 1
+        fi
+        version="$(get_llvm_tool_major_version "$path" 2>/dev/null || true)"
+        if [[ -z "$version" || "$version" -lt 23 ]]; then
+            echo "Error: $tool >= 23 required, found: ${version:-unknown} ($path). Install via: apt install llvm-23" >&2
+            return 1
+        fi
+    done
     return 0
 }
 
 # Find LLVM tool (tries versioned paths first, then PATH)
 # Usage: find_llvm_tool "clang-format"
 # Returns: path to tool or empty string if not found
+# TASKSMACK_LLVM_LIB_ROOT stands in for /usr/lib, for tests (tests/tools/test_check_prereqs_sh.py, #4705).
 find_llvm_tool() {
     local tool="$1"
+    local root="${TASKSMACK_LLVM_LIB_ROOT:-/usr/lib}"
 
     # Try versioned LLVM installations first
     for ver in 23 22 21 20 19 18 17; do
-        if [[ -x "/usr/lib/llvm-$ver/bin/$tool" ]]; then
-            echo "/usr/lib/llvm-$ver/bin/$tool"
+        if [[ -x "$root/llvm-$ver/bin/$tool" ]]; then
+            echo "$root/llvm-$ver/bin/$tool"
             return 0
         fi
     done

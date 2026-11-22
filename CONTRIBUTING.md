@@ -174,8 +174,8 @@ steps in order, checks that the docs still give each command it runs, and stops 
 place a newcomer would trip (`-ContinueOnFinding` records them all). It writes a step table to
 `results.md` in `-OutDir`. Its help (`Get-Help tools/newcomer-check.ps1 -Full`) has the Windows
 Sandbox options.
-On Linux, `tools/newcomer-check.sh` does the same in a fresh Ubuntu 24.04 WSL distro (`wsl --install
-Ubuntu-24.04 --name tasksmack-newcomer`): copy only the script in and run it there, as `--help` says; it installs
+On Linux, `tools/newcomer-check.sh` does the same in a fresh Ubuntu 26.04 WSL distro (`wsl --install
+Ubuntu-26.04 --name tasksmack-newcomer`): copy only the script in and run it there, as `--help` says; it installs
 packages with sudo, so not on your own machine either.
 
 ### Linux Pre-Requisites
@@ -1193,10 +1193,19 @@ IWYU analyzes `#include` directives and suggests additions/removals for cleaner 
 ./tools/iwyu.sh src/Domain/ProcessModel.cpp
 ```
 
-**Installation:**
+**Installation:** build IWYU from source against Clang 23, at the commit CI pins (`IWYU_COMMIT_SHA` in
+`.github/workflows/ci.yml`), so a local run matches CI's. Don't use `sudo apt install iwyu`: Ubuntu 26.04's package
+is built against Clang 19 (`include-what-you-use 0.23 based on Ubuntu clang version 19.1.7`), and `tools/iwyu.sh`
+refuses `--fix` with it (#4707). `./tools/check-prereqs.sh` prints the commit to use.
+
 ```bash
-# Ubuntu/Debian
-sudo apt install iwyu
+sha=$(grep -oE "IWYU_COMMIT_SHA: '[0-9a-f]{40}'" .github/workflows/ci.yml | grep -oE '[0-9a-f]{40}')
+git init -q /tmp/iwyu-src
+git -C /tmp/iwyu-src remote add origin https://github.com/include-what-you-use/include-what-you-use.git
+git -C /tmp/iwyu-src fetch --depth 1 origin "$sha" && git -C /tmp/iwyu-src checkout --quiet FETCH_HEAD
+cmake -G Ninja -DCMAKE_C_COMPILER=clang-23 -DCMAKE_CXX_COMPILER=clang++-23 \
+    -DCMAKE_PREFIX_PATH=/usr/lib/llvm-23 -DCMAKE_INSTALL_PREFIX="$HOME/.local" -S /tmp/iwyu-src -B /tmp/iwyu-build
+cmake --build /tmp/iwyu-build && cmake --install /tmp/iwyu-build --strip   # iwyu in ~/.local/bin
 ```
 
 **Notes:**
@@ -1207,7 +1216,7 @@ sudo apt install iwyu
 - **CI trigger:** The IWYU CI job (`include-analysis`) is manual-only and will not run automatically on PRs. To run it, manually trigger the CI workflow via the Actions tab using "workflow_dispatch".
 - The project includes a `.iwyu.imp` mapping file for project-specific rules.
 - To run via pre-commit: `pre-commit run iwyu --hook-stage manual`.
-- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is typically built against an older Clang and will trigger this warning locally. For reliable local runs, build iwyu from source against Clang 23+: https://github.com/include-what-you-use/include-what-you-use
+- **Version compatibility:** IWYU must be built against Clang 23+. The script checks the version and: **fails hard** in CI or when `--fix` is used (to prevent corrupting includes); **warns and continues** for local dry runs (so you can still see results). The system package (`apt install iwyu`) is built against an older Clang and triggers this warning locally, so build it from source as **Installation** above shows.
 
 ### Formatting (required before PRs)
 
@@ -1409,6 +1418,11 @@ runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared b
 | `fuzz_release_json` | the update check's GitHub releases JSON reader and version parser (`Domain/UpdateCheck.h`) | `tests/fuzz/corpus/fuzz_release_json/` |
 | `fuzz_virustotal_json` | the VirusTotal v3 file report reader (`Domain/VirusTotal.h`) | `tests/fuzz/corpus/fuzz_virustotal_json/` |
 | `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`, its codec `Platform/BrokerProtocol.cpp`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_cron_tab` | the Startup tab's crontab reader, a user's own and the system tables (`Platform/Linux/CronTab.h`, #4357) | `tests/fuzz/corpus/fuzz_cron_tab/` |
+| `fuzz_systemd_unit` | the systemd unit file reader and its word reader (`Platform/Linux/SystemdUnitFile.h`, #4357) | `tests/fuzz/corpus/fuzz_systemd_unit/` |
+| `fuzz_xdg_autostart` | the autostart `.desktop` reader, and switching an entry on or off (`Platform/Linux/XdgAutostart.h`, #4357) | `tests/fuzz/corpus/fuzz_xdg_autostart/` |
+| `fuzz_os_release` | `/etc/os-release` and `/proc/stat`'s btime (`Platform/Linux/LinuxOsInfo.h`, #4357) | `tests/fuzz/corpus/fuzz_os_release/` |
+| `fuzz_proc_text` | `/proc/<pid>/smaps_rollup`, `/proc/<pid>/io` and `/proc/pressure/*` (`Platform/Linux/SmapsRollupParser.h`, `ProcIoParser.h`, `PressureParser.h`, #4357) | `tests/fuzz/corpus/fuzz_proc_text/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
@@ -2025,7 +2039,8 @@ already running" or exits with code 75) fails the run instead of being profiled.
 # Analyze a captured trace (top functions + optional flamegraph SVG)
 ./tools/analyze-perf.sh perf-data/perf-app-<timestamp>.data
 
-# Open in Hotspot GUI (if installed: sudo apt install hotspot)
+# Open in Hotspot GUI. It isn't packaged for Ubuntu 26.04 (#4706): `flatpak install flathub com.kdab.hotspot`
+# (then `flatpak run com.kdab.hotspot <file>`), or KDAB's AppImage from https://github.com/KDAB/hotspot/releases
 hotspot perf-data/perf-app-<timestamp>.data
 
 # Quick perf stat counters (no trace file)
@@ -3280,9 +3295,9 @@ CI caches (#1406): ccache and the FetchContent source cache (`.github/actions/fe
 - **`dependency-review.yml`**: Scans PRs and merge groups to block any that introduce vulnerable dependencies (CVE-based) in package manifests/lockfiles.
 - **`sanitizers.yml`**: Performs heavy blocking runs using Address/Undefined Behavior (ASan+UBSan) and Thread (TSan) sanitizers, generating HTML reports of memory leaks or data races. A push to `main` or a `release/*` branch runs TSan only, because ASan+UBSan already gates every PR in `ci.yml` (a push to `main` also refreshes that PR job's ccache); manual dispatch runs both, and `heavy-checks.yml` runs both nightly.
 - **`cache-prune.yml`**: After each run on `main` of a workflow that saves caches (CI, Sanitizers, Heavy Checks, ARM64, CodeQL, Static Analysis, Manual Build, Release; the `check-cache-prune-triggers` pre-commit hook keeps the list complete, #2410), deletes superseded Actions cache entries (all but the newest of each `ccache-<key>` prefix, each OS's FetchContent, configure-check and clang-tidy result cache, and each CodeQL TRAP cache, `tools/cache-prune-stale.py`). Manual dispatch defaults to a dry run that lists what it would delete (#1583).
-- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A manual dispatch re-reads `main` and every `release/*` branch.
+- **`main-health.yml`**: After every run of the main workflows on `main` or a `release/*` branch (CI, which includes the nightly full `clang-tidy`, plus ARM64, CodeQL, Sanitizers, Heavy Checks, OSV and Pre-commit; not the dispatch-only `static-analysis.yml`), opens or updates that branch's tracking issue (`CI: <branch> is red`, labelled `ci-red-main`) while any of them is red, and closes it when all are green again (#1406, #2741). A run that opened or closed one starts a `release-dashboard.yml` run, so the release page has it within minutes (#4700). A manual dispatch re-reads `main` and every `release/*` branch.
 - **`winget-health.yml`**: Once a day, checks that the newest Latest release is on WinGet (`manifests/t/TaskSmack/TaskSmack/<version>/` on microsoft/winget-pkgs' default branch). While it isn't and its pull request is stuck (a validation-error or author-feedback label, closed, missing) or 7 days have passed, it keeps one issue open (`WinGet: TaskSmack.TaskSmack <version> isn't published`, labelled `release` and `agent:Windows`, found by its title, never `ci-red-main`), and closes it once the version is there (#3486; [Publishing to WinGet](docs/dev/release-process.md#publishing-to-winget)). It does nothing before the first submission.
-- **`release-dashboard.yml`**: When an issue opens, closes or changes milestone, when `main` moves, and every 10 minutes (#4604, #4620), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
+- **`release-dashboard.yml`**: When an issue closes or changes milestone, when `main` moves, when Main Health opens or closes a tracking issue, and every five minutes on a schedule (#4604, #4620, #4700), generates the [release dashboard](docs/dev/release-process.md#the-release-dashboard)'s data (`tools/release-dashboard.py`: the milestones, the release tracker, the `ci-red-main` issues and the workflow runs) and replaces the one commit on the data-only `dashboard-data` branch, which `docs/release/` on the docs site reads. The read-only `generate` job also runs on a pull request that changes the generator; only `publish`, which runs no repository code, can write (#4524).
 - **`llvm-cache-warm.yml`**: Every Monday and Thursday, restores release.yml's LLVM package cache on x64 and arm64 with the same Setup LLVM inputs and pins, read from `release.yml`, so GitHub never evicts the entry a tag run installs from (#3825; [The Linux LLVM pin](docs/dev/release-process.md#the-linux-llvm-pin)). It saves nothing, and fails when the entry is gone: a dry run of `release.yml` from main saves it again.
 - **ClusterFuzzLite (`cflite_*.yml`)**: Google's continuous fuzzing suite. Runs on PRs (`cflite_pr.yml`), pushes to main (`cflite_build.yml`), and weekly for batching and pruning corpora (`cflite_batch.yml`, `cflite_prune.yml`).
 

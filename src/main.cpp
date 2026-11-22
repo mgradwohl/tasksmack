@@ -13,6 +13,9 @@
 #include "App/HelpLayer.h"
 #include "App/InstanceLock.h"
 #include "App/LaunchOptions.h"
+#ifdef __linux__
+#include "App/LinuxHeldFolder.h"
+#endif
 #include "App/PanelPlatforms.h"
 #include "App/Panels/RestartAsAdministratorButton.h"
 #include "App/RenderMetricsOverride.h"
@@ -41,6 +44,7 @@
 #include "Platform/Windows/DllSearchPolicy.h"
 #include "Platform/Windows/SdlEnvironment.h"
 #include "Platform/Windows/WinString.h"
+#include "Platform/Windows/WindowsHandles.h"
 #endif
 #ifdef __linux__
 #include "Domain/ProcessSecurity.h"
@@ -292,10 +296,28 @@ auto runApp(const App::LaunchOptions& launch) -> int
     // a handed-over one is on Windows (#3759): UserConfig writes through no link of theirs in it, and the dump folder and
     // recent commands stored there aren't offered. Before the configuration is first read.
     // Its environment is the less-privileged side's too: the writing test hooks were ignored above (#4090, #4104).
-    if (Platform::SessionUser::invokingUserHome().has_value())
+    // And the folder is held from here on, the one way into it (#4167, #4257), as an elevated Windows session holds its
+    // handed-over one (#3774): config.toml is read and saved, the instance lock taken and the user themes listed and read
+    // only relative to it, never by a path a link of theirs swapped in later could redirect. Refused (it can't be walked or
+    // made for them without a link of theirs), it is adopted with nothing held, which fails closed: this run starts from
+    // the defaults, saves nothing and takes no lock there.
+    std::shared_ptr<App::LinuxHeldFolder> heldUserFolder;
+    std::string heldUserFolderRefused;
+    if (Platform::SessionUser::invokingUserHome().has_value()) // LCOV_EXCL_START - root for a user only (UserConfigRootTest)
     {
         Core::ConfigDirOverride::markLessPrivilegedFolder();
-    }
+        const std::filesystem::path userDir = App::UserConfig::configDirectoryAtStartup();
+        if (auto held = App::LinuxHeldFolder::hold(userDir, ::geteuid()); held.has_value())
+        {
+            heldUserFolder = std::move(*held);
+            Core::ConfigDirOverride::adoptHandedOver(userDir, heldUserFolder);
+        }
+        else
+        {
+            heldUserFolderRefused = std::move(held.error());
+            Core::ConfigDirOverride::adoptHandedOver(userDir);
+        }
+    } // LCOV_EXCL_STOP
 #endif
 
     // Load user configuration early so we can apply window geometry before creating the SDL window.
@@ -338,6 +360,22 @@ auto runApp(const App::LaunchOptions& launch) -> int
         instanceLock =
             std::make_unique<App::InstanceLock>(App::InstanceLock::NotTaken{.why = "this account's settings folder was refused"});
     }
+    else
+    {
+        instanceLock = App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
+    }
+#elif defined(__linux__)
+    // Run as root for a user, the lock too is opened only through the folder held (#4167); a refused folder gets none.
+    std::unique_ptr<App::InstanceLock> instanceLock;
+    if (heldUserFolder != nullptr) // LCOV_EXCL_START - root for a user only
+    {
+        instanceLock =
+            App::acquireInstanceLock(*heldUserFolder, instanceLockPath.filename(), lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
+    }
+    else if (!heldUserFolderRefused.empty())
+    {
+        instanceLock = std::make_unique<App::InstanceLock>(App::InstanceLock::NotTaken{.why = "the user's settings folder was refused"});
+    } // LCOV_EXCL_STOP
     else
     {
         instanceLock = App::acquireInstanceLock(instanceLockPath, lockPatience, App::LOCK_RETRY_EVERY, lockProgress);
@@ -465,6 +503,20 @@ auto runApp(const App::LaunchOptions& launch) -> int
                          Core::pathToUtf8(*configDir),
                          ownDirRefused);
         }
+#endif
+#ifdef __linux__
+        else if (heldUserFolder != nullptr) // LCOV_EXCL_START - root for a user only
+        {
+            spdlog::info("Config directory (the user TaskSmack runs as root for, checked and held, #4167): {}",
+                         Core::pathToUtf8(*configDir));
+        }
+        else if (!heldUserFolderRefused.empty())
+        {
+            spdlog::warn("Not using {} ({}): TaskSmack runs as root for its user, and reads and writes there only through a folder "
+                         "it has checked and holds. This run starts from the default settings and saves none",
+                         Core::pathToUtf8(*configDir),
+                         heldUserFolderRefused);
+        } // LCOV_EXCL_STOP
 #endif
         else
         {
@@ -886,17 +938,17 @@ auto commandLineArguments() -> CommandLineArguments
 {
     CommandLineArguments arguments;
     int count = 0;
-    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &count);
+    // LocalFree'd however this returns, a copy that runs out of memory included (#4367).
+    const Platform::Windows::UniqueLocal<LPWSTR> argv(CommandLineToArgvW(GetCommandLineW(), &count));
     if (argv == nullptr)
     {
         return arguments;
     }
-    for (const wchar_t* const argument : std::span<LPWSTR>(argv, static_cast<std::size_t>(std::max(count, 0))))
+    for (const wchar_t* const argument : std::span<LPWSTR>(argv.get(), static_cast<std::size_t>(std::max(count, 0))))
     {
         arguments.utf8.push_back(Platform::WinString::wideToUtf8(argument));
         arguments.native.emplace_back(std::wstring(argument));
     }
-    LocalFree(static_cast<HLOCAL>(argv));
     return arguments;
 }
 // LCOV_EXCL_STOP

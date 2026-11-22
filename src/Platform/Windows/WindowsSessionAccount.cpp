@@ -1,5 +1,6 @@
 #include "WindowsSessionAccount.h"
 
+#include "OrdinalCase.h"
 #include "Platform/SessionAccount.h"
 #include "WinString.h"
 #include "WindowsElevation.h"
@@ -21,6 +22,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -61,7 +63,8 @@ struct WtsFree
     return std::wstring(owned.get(), length);
 }
 
-/// Whether @p a and @p b are equal ignoring case, as Windows compares account names.
+/// Whether @p a and @p b are equal ignoring case, as Windows compares account names: two of different lengths never
+/// are, and two empty ones always are, before Windows is asked (equalsOrdinalIgnoreCase(), OrdinalCase.h).
 [[nodiscard]] bool equalIgnoringCase(const std::wstring& a, const std::wstring& b)
 {
     if (a.size() != b.size())
@@ -72,7 +75,7 @@ struct WtsFree
     {
         return true;
     }
-    return CompareStringOrdinal(a.c_str(), static_cast<int>(a.size()), b.c_str(), static_cast<int>(b.size()), TRUE) == CSTR_EQUAL;
+    return equalsOrdinalIgnoreCase(std::wstring_view(a), std::wstring_view(b));
 }
 
 /// Whether the token's user is @p session's, by SID (#4077); nullopt when either SID can't be read.

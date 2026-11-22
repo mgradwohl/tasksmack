@@ -441,6 +441,19 @@ TEST(ConfigFileProblemTest, Utf16IsToldByItsByteOrderMarkOrANul)
     static_assert(!ConfigFileProblem::looksLikeUtf16(""));
 }
 
+// #4653: a refused save says why and that this session's changes aren't saved; the file it loaded is in use, so it never
+// says "default settings".
+TEST(ConfigFileProblemTest, ASaveRefusalSaysWhyAndNeverDefaultSettings)
+{
+    const std::string notice =
+        ConfigFileProblem::couldNotSave("/home/me/.config/tasksmack/config.toml", "is a link, which TaskSmack run as root doesn't follow");
+    EXPECT_EQ(notice,
+              "This session's settings changes aren't being saved: /home/me/.config/tasksmack/config.toml is a link, which "
+              "TaskSmack run as root doesn't follow.");
+    EXPECT_FALSE(notice.contains("default settings"));
+    EXPECT_TRUE(ConfigFileProblem::couldNotOpen("/x").contains("default settings")) << "a load that failed still says so";
+}
+
 // A cp1252 "é" (a hand edit in an editor that doesn't save UTF-8): the file is kept, the defaults load, and the problem
 // is recorded for the status bar and Settings, naming the file, the line and the reason. A save while it stands writes
 // nothing; once the file is fixed, the next save writes it and the problem clears.

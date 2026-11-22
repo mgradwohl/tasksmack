@@ -16,6 +16,7 @@
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/BrokerPipeServer.h"
 #include "Platform/Windows/WindowsDebugPrivilege.h"
+#include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsProcessActions.h"
 #include "Platform/Windows/WindowsProcessConnections.h"
 #include "Platform/Windows/WindowsProcessEnvironmentReader.h"
@@ -65,14 +66,15 @@ constexpr std::chrono::milliseconds SESSION_IDLE_TIMEOUT{Platform::Windows::Brok
 static_assert(Platform::Windows::MAX_MEMORY_MAP_REGIONS <= Platform::Broker::MAX_MEMORY_MAPPINGS);
 
 /// The command line's arguments after the program's name, or nothing when it can't be split.
-[[nodiscard]] std::vector<std::wstring_view> arguments(int& count, LPWSTR*& argv)
+/// The views point into @p argv, which owns CommandLineToArgvW's array.
+[[nodiscard]] std::vector<std::wstring_view> arguments(int& count, Platform::Windows::UniqueLocal<LPWSTR>& argv)
 {
-    argv = CommandLineToArgvW(GetCommandLineW(), &count);
+    argv.reset(CommandLineToArgvW(GetCommandLineW(), &count));
     if (argv == nullptr || count < 1)
     {
         return {};
     }
-    const std::span<LPWSTR> all(argv, static_cast<std::size_t>(count));
+    const std::span<LPWSTR> all(argv.get(), static_cast<std::size_t>(count));
     return {all.begin() + 1, all.end()};
 }
 
@@ -102,10 +104,10 @@ int WINAPI wWinMain(HINSTANCE /*instance*/, HINSTANCE /*previous*/, LPWSTR /*com
     {}
 
     int count = 0;
-    LPWSTR* argv = nullptr;
+    Platform::Windows::UniqueLocal<LPWSTR> argv; // LocalFree'd even if the views or the parse run out of memory (#4367)
     const std::vector<std::wstring_view> args = arguments(count, argv);
     const auto parsed = Helper::parseArguments(args);
-    LocalFree(static_cast<HLOCAL>(argv));
+    argv.reset();
     if (!parsed.has_value())
     {
         return static_cast<int>(Helper::Exit::Usage);

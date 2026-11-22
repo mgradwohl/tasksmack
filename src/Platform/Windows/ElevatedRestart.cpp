@@ -4,9 +4,11 @@
 #include "Platform/IHandedOverFolder.h"
 #include "Platform/Windows/BrokerHelper.h"
 #include "Platform/Windows/HandleRelativeFile.h"
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/PinnedFolder.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsHandles.h"
+#include "Platform/Windows/WindowsSecurityOwners.h"
 
 #include <algorithm>
 #include <chrono>
@@ -25,8 +27,6 @@
 #include <vector>
 
 // clang-format off
-#include <aclapi.h> // GetSecurityInfo
-#include <sddl.h>   // ConvertStringSidToSidW
 #include <shlobj.h>  // SHGetKnownFolderPath
 #include <userenv.h> // GetUserProfileDirectoryW: the token's own profile (#4106)
 // clang-format on
@@ -96,11 +96,11 @@ namespace
     return {text.begin(), text.end()};
 }
 
-/// Whether @p left and @p right name the same path component, ignoring case as NTFS does.
+/// Whether @p left and @p right name the same path component, ignoring case as NTFS does: the whole text, a trailing
+/// separator included. A named function, not the overloaded equalsOrdinalIgnoreCase, so std::ranges::equal can take it.
 [[nodiscard]] bool sameComponent(const std::wstring& left, const std::wstring& right) noexcept
 {
-    return CompareStringOrdinal(left.c_str(), static_cast<int>(left.size()), right.c_str(), static_cast<int>(right.size()), TRUE) ==
-           CSTR_EQUAL;
+    return equalsOrdinalIgnoreCase(std::wstring_view(left), std::wstring_view(right));
 }
 
 } // namespace
@@ -120,32 +120,6 @@ std::optional<DWORD> linkCountOf(const std::wstring& path)
         return std::nullopt;
     }
     return info.nNumberOfLinks;
-}
-
-std::optional<bool> ownerIsPrivileged(HANDLE handle)
-{
-    PSID owner = nullptr;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
-            ERROR_SUCCESS ||
-        owner == nullptr)
-    {
-        if (descriptor != nullptr)
-        {
-            LocalFree(descriptor);
-        }
-        return std::nullopt;
-    }
-    bool privileged = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE || IsWellKnownSid(owner, WinLocalSystemSid) != FALSE;
-    // NT SERVICE\TrustedInstaller, which owns what Windows itself installs.
-    PSID trustedInstaller = nullptr;
-    if (ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", &trustedInstaller) != FALSE)
-    {
-        privileged = privileged || EqualSid(owner, trustedInstaller) != FALSE;
-        LocalFree(trustedInstaller);
-    }
-    LocalFree(descriptor);
-    return privileged;
 }
 
 HANDLE openToPin(const std::wstring& path)
@@ -447,32 +421,14 @@ requireAcceptableOwner(HANDLE handle, OwnerAcceptableFn ownerAcceptable, std::st
 
 std::optional<bool> ownerIsOwnAccountOrAdministrators(HANDLE handle)
 {
-    PSID owner = nullptr;
-    PSECURITY_DESCRIPTOR descriptor = nullptr;
-    if (GetSecurityInfo(handle, SE_FILE_OBJECT, OWNER_SECURITY_INFORMATION, &owner, nullptr, nullptr, nullptr, &descriptor) !=
-            ERROR_SUCCESS ||
-        owner == nullptr)
+    const auto owner = ownerSidOf(handle);
+    if (!owner.has_value())
     {
-        if (descriptor != nullptr)
-        {
-            LocalFree(descriptor);
-        }
         return std::nullopt;
     }
-    bool acceptable = IsWellKnownSid(owner, WinBuiltinAdministratorsSid) != FALSE;
-    DWORD size = 0;
-    GetTokenInformation(GetCurrentProcessToken(), TokenUser, nullptr, 0, &size);
-    if (size != 0)
-    {
-        std::vector<std::byte> buffer(size);
-        if (GetTokenInformation(GetCurrentProcessToken(), TokenUser, buffer.data(), size, &size) != FALSE)
-        {
-            const auto* const user = reinterpret_cast<const TOKEN_USER*>(buffer.data());
-            acceptable = acceptable || EqualSid(owner, user->User.Sid) != FALSE;
-        }
-    }
-    LocalFree(descriptor);
-    return acceptable;
+    // The token's user read as every current-token caller reads it (readTokenUserSid(), #3864), through the same
+    // pseudo-handle as before; a user that can't be read leaves Administrators alone acceptable, as it always has.
+    return isAdministrators(owner->sid) || isTokenUser(owner->sid).value_or(false);
 }
 
 std::optional<std::filesystem::path> currentUserProfileDirectory()

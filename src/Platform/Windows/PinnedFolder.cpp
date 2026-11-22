@@ -34,13 +34,6 @@ constexpr DWORD FILE_RENAME_FLAGS_POSIX_SEMANTICS = 0x00000002;
 /// The most of a file read from the folder: config.toml and a theme are a few kilobytes.
 constexpr std::size_t MAX_READ_BYTES = std::size_t{16} * 1024 * 1024;
 
-/// Whether @p left and @p right are the same path, ignoring case as NTFS does.
-[[nodiscard]] bool samePath(std::wstring_view left, std::wstring_view right) noexcept
-{
-    return CompareStringOrdinal(left.data(), static_cast<int>(left.size()), right.data(), static_cast<int>(right.size()), TRUE) ==
-           CSTR_EQUAL;
-}
-
 /// @p relative's components, each a plain name: nothing absolute, no ".", "..", stream (':') or empty component.
 [[nodiscard]] std::optional<std::vector<std::wstring>> componentsOf(const std::filesystem::path& relative)
 {
@@ -90,7 +83,7 @@ std::expected<void, std::string> PinnedFolder::stillHeld() const
         return std::unexpected(std::format("{} is no longer a folder as it was when it was checked", utf8(m_Path)));
     }
     const std::optional<std::wstring> now = finalPathOf(m_Handle.get(), m_Functions.getFinalPath);
-    if (!now.has_value() || !samePath(*now, m_FinalPath))
+    if (!now.has_value() || !samePathText(*now, m_FinalPath))
     {
         return std::unexpected(std::format("{} is no longer where it was checked", utf8(m_Path)));
     }
@@ -161,7 +154,7 @@ PinnedFolder::openIn(HANDLE parent, const std::wstring& parentPath, const std::w
         return std::unexpected(std::format("{} is hard-linked to another file", WinString::wideToUtf8(expected)));
     }
     if (const std::optional<std::wstring> actual = finalPathOf(file.get(), m_Functions.getFinalPath);
-        !actual.has_value() || !samePath(*actual, expected))
+        !actual.has_value() || !samePathText(*actual, expected))
     {
         return std::unexpected(std::format("{} opened outside the folder held: {}",
                                            WinString::wideToUtf8(expected),
@@ -395,7 +388,7 @@ std::expected<void, std::string> PinnedFolder::replaceFile(const std::filesystem
     }
     guard.published();
     const std::wstring expected = m_FinalPath + L'\\' + target;
-    if (const auto actual = finalPathOf(staging.get(), m_Functions.getFinalPath); !actual.has_value() || !samePath(*actual, expected))
+    if (const auto actual = finalPathOf(staging.get(), m_Functions.getFinalPath); !actual.has_value() || !samePathText(*actual, expected))
     {
         return std::unexpected(std::format("{} was renamed outside the folder held", utf8(m_Path / name))); // LCOV_EXCL_LINE
     }

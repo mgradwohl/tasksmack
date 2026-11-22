@@ -57,8 +57,13 @@ the milestone `pri:high`, so the conveyor picks them up first.
 - **A performance analysis** with the repo's tools, on Windows and Linux, run against those baselines. It files
   product and tooling perf bugs early, when a fix can still be a refactor in stage 2.
 - **Fault-injection and regression tests** that protect stage 2's refactors.
+- **The newcomer check on both platforms:** each lane follows the documented contributor path on a clean machine,
+  from `git clone` to a first build, tests and benchmarks. Its `results.md` goes on the tracker, and each FINDING or
+  FAIL becomes a cycle issue ([The newcomer check](#the-newcomer-check)). Budget a night for each: the Linux run takes
+  an hour or more, and the Windows Sandbox run takes hours.
 
-**Done when:** main is green, the signed dry run passes, and the baselines are posted.
+**Done when:** main is green, the signed dry run passes, the baselines are posted, and both newcomer checks are on the
+tracker.
 
 ### 2. Fixes: refactors, bugs, test gaps
 
@@ -208,7 +213,7 @@ fixed at its source:
 | The page shows | It reads |
 |---|---|
 | Scope, and what's open | the milestone's issues. The tracker itself isn't counted, and neither are pull requests. GitHub's milestone page counts both, so it reads higher: by one while the tracker is open, and by one more for each pull request on the milestone. The page says so under the count. |
-| The open count by lane, and "Open issues" listed by lane | each open issue's `agent:*` labels: one label is that lane, two or more are "Both lanes". The figures add up to the open count, and each lane's links to the same search on GitHub ("No lane" has no link: its search would list the tracker). A lane's list runs in the lanes' queue order ([labels.md](labels.md), "Queue order") (#4585). |
+| The open count by lane, and "Open issues" listed by lane | each open issue's `agent:*` labels: one label is that lane, two or more are "Both lanes". The figures add up to the open count, and each lane's links to the same search on GitHub ("No lane" has no link: its search would list the tracker). A lane's list runs in the lanes' queue order ([labels.md](labels.md), "Queue order") (#4585), and ends with a group of its own, "Waiting on the maintainer", for the issues the lane can't take (#4718). |
 | In progress, in review | the `in progress` label or a draft pull request; a pull request that's ready for review |
 | "No high-severity bug open" | open `sev:high` and `sev:medium` issues on the milestone |
 | "Every feature merged, moved or cut" | open `enhancement` issues that aren't CI, tooling or security work |
@@ -216,7 +221,7 @@ fixed at its source:
 | "Code-review findings closed" | the milestone's `code-review` issues |
 | "Performance issues closed" | the milestone's `performance` issues: stage 4's measure against the baselines files its regressions there |
 | "Tracker checklist" | the task list in the tracker's body |
-| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Each carries a "Waiting on the maintainer" chip wherever it's listed, so a lane's list shows what the lane can't take. |
+| "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Listed by lane, they come after the lane's own work in a "Waiting on the maintainer" group, and the lane's count says how many (#4718). Under that heading and under this row the issues don't repeat it; anywhere else one is listed, it carries a "Waiting on the maintainer" chip. |
 | "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
 | "Pull requests merged" | the open pull requests on the milestone or closing one of its issues: how long each has been ready, and what it's waiting on (failing checks, a conflict, open review threads, a catch-up with its base, running checks) |
 | "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |
@@ -262,24 +267,41 @@ How it's made:
 - `tools/release-dashboard.py` reads the API and writes one JSON file per `vX.Y.Z` milestone, plus an index. A
   shipped release is written once and reused.
 - `.github/workflows/release-dashboard.yml` runs it and publishes the files to the `dashboard-data` branch, which
-  holds that one commit and nothing else. A run starts when an issue opens, closes or changes milestone, when
-  `main` moves, and every 10 minutes on a schedule (#4604). GitHub starts scheduled runs late and skips some
-  when it's busy, so the schedule alone left the page up to 37 minutes behind. A run that a change started waits
-  until the published data is five minutes old. Labels, edits, comments, pull request events and Main Health
-  start none (#4620): every event is a run, GitHub lists each one that wasn't needed as cancelled, and the next
-  run reads them anyway. So a new label, or `main` turning red, can take until the next run to show.
+  holds that one commit and nothing else. A run starts when an issue closes, reopens or changes milestone (a new
+  issue on a milestone is one of those), when `main` moves, when Main Health opens or closes a `ci-red-main`
+  issue, and on a schedule (#4604, #4700). GitHub starts scheduled runs late and skips some when it's busy, so
+  one schedule line alone left the page up to 37 minutes behind: there are two, five minutes apart. A run that
+  an issue, a push or the schedule started waits until the published data is five minutes old; Main Health's
+  and a person's don't. Labels, edits, comments and pull request events start none (#4620): every event is a
+  run, GitHub lists each one that wasn't needed as cancelled, and the next run reads them anyway. So a new
+  label can take until the next run to show.
 - A run stops before it reads anything when it has nothing to add (#4620): the published figures were read
   after the run was created (the second run of a merge, which is a push and an issue closing, and a run that
-  waited behind another), or the workflow token's hourly budget is used up. That last one is a warning on the
-  run, not a failure, and it stops a manual run too, so "Refresh now" publishes nothing then. Every workflow
-  here shares the budget (#4617), and the page stays as it was until the hour turns over.
+  waited behind another), or the workflow token's hourly budget is used up, before the run's wait or during it
+  (#4717). That last one is a warning on the run, not a failure, and it stops a manual run too, so "Refresh
+  now" publishes nothing new then. Every workflow here shares the budget (#4617), and the figures stay as they
+  were until the hour turns over.
+- When the budget is used up, the page says so and when it returns (#4726): "GitHub's API budget for this
+  repository is used up until 1:18 PM", in place of the warning about old data. The run that finds the budget
+  gone publishes the last data again as it is, with that time in `index.json`'s `budget_until`, which takes no
+  API call. It does that once for each hour the budget is gone, and the next run that reads writes an index
+  without the field. `generated_at` doesn't change, so "Updated" still gives the time the figures were read.
+  While the note shows, the page offers no "Refresh now": a run could add nothing. The note's commit on
+  `dashboard-data` keeps the time of the data it repeats, and its message and README say the figures are an
+  earlier run's. With both budgets gone the time is the later of the two hours' ends. A note that can't be
+  written, or that names a time over 75 minutes ahead, is a warning on the run and nothing is published.
+- A run on `main` makes no artifact (#4717): its read-only job hands the JSON to the job that publishes as a
+  job output. That job takes it as text that can't become commands, checks it's a flat set of JSON files
+  before pushing, and tries the push three times. A run that can't publish (a pull request's, or a manual one
+  on a branch) keeps its JSON as an artifact instead (`release-dashboard-data`, three days) for the reviewer.
 - To refresh now: "Refresh now" on the page opens the workflow on GitHub, where "Run workflow" starts a run, or
   `gh workflow run release-dashboard.yml`. The page can't start one itself, since that takes a token. A manual
   run doesn't queue: it cancels the run in progress and publishes what it reads. New data shows within about
   five minutes: the data host can serve the old file that long.
 - `docs/release/` is the page: static, no library, no CDN. It asks for new data every five minutes, and when the
-  tab comes back to the front. If the last run was more than 25 minutes ago it says so. A planned release's own
-  figures are up to an hour old by design, and a shipped release's never change, so neither has "Refresh now".
+  tab comes back to the front. If the last run was more than 25 minutes ago it says so, unless the budget note
+  above already gives the reason. A planned release's own figures are up to an hour old by design, and a
+  shipped release's never change, so neither has "Refresh now".
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.
@@ -337,6 +359,51 @@ Coverage stays on Codecov, and the page links to it.
   A `release/X.Y` branch must read `X.Y.*`. It's compared only with its own line's tags, so `release/0.9` stays
   green after v0.10.0 ships.
 
+## The newcomer check
+
+Nothing else tests the path a new contributor takes: clone, `setup-dev`, `check-prereqs`, the first build, the tests
+and the benchmarks. Release validation in stage 6 checks what ships, and the dev-tool tests check the scripts' logic
+without provisioning anything. `tools/newcomer-check.sh` and `tools/newcomer-check.ps1` (#2618) follow README.md and
+CONTRIBUTING.md on a machine with nothing installed. Before each step they check that the docs still give the command
+they're about to run. They record every step as PASS, FINDING, FAIL or SKIP in `results.md`. Six provisioning bugs
+filed in one day during v0.11.0 (#4704 to #4708, #4711) were in exactly this path, and no other check could see them
+(#4713).
+
+**When it runs** (maintainer, 2026-11-21):
+- **Stage 1 of every cycle,** on both platforms.
+- **On every toolchain bump:** LLVM ([the Linux LLVM pin](#the-linux-llvm-pin), or the Windows LLVM version), the CMake
+  minimum, the Ubuntu base, or the Windows SDK. The lane whose platform the bump touches runs it, or both lanes when it
+  touches both.
+- **A patch release** runs it only when the patch bumps a toolchain.
+
+**Where the results go:**
+- **The stage 1 runs:** `results.md` goes on a comment on the cycle's release tracker, from a checklist item that
+  starts with the cycle's newcomer-check issue number, so [the release dashboard](#the-release-dashboard) ticks it.
+- **A toolchain bump's run:** `results.md` goes on the bump's PR, before it merges.
+- **Each FINDING or FAIL** becomes an ordinary issue on the cycle's milestone, with the step's log attached. A FAIL is
+  a doc that no longer matches the script, or the other way round. A FINDING is a step that breaks as written.
+
+**Windows (agent:Windows):**
+- **Where:** in Windows Sandbox, which starts clean and is thrown away when it closes.
+- **The `.wsb`:**
+  - maps a folder holding only `tools/newcomer-check.ps1`, read-only, to `C:\newcomer-in`;
+  - maps an empty writable folder to `C:\newcomer-out`;
+  - sets `Networking` on, `MemoryInMB` 8192 and `VGpu` Disable.
+- **Its logon command:** the one in the script's `.EXAMPLE`, which runs it with
+  `-WindowsSandbox -ContinueOnFinding -SetupTimeoutMinutes 360 -ShutdownWhenDone`.
+- **Watching it:** follow `progress.log` in the output folder on the host, and wait for `DONE`.
+- **How long:** hours, not minutes. Windows Installer verifies each signed `.msi` in the Sandbox, and the Windows SDK
+  installs 48. Little CPU shows meanwhile.
+- **When:** run it overnight, outside the maintainer's day. It needs the Sandbox's 8 GB beside the WSL lane's VM, so
+  the WSL lane keeps to `-j 2` and no benchmarks while it runs. Agree the night on #4135.
+
+**Linux (agent:WSL):**
+- **Where:** in a fresh WSL distro of the current Ubuntu base (26.04; `newcomer-check.sh` was retargeted from 24.04
+  in #4712), with none of TaskSmack's tools installed: `wsl --install Ubuntu-26.04 --name tasksmack-newcomer`.
+- **How:** copy only the script into the distro and run it there. It clones the repository itself, asks for sudo once,
+  and does several full builds, so expect an hour or more.
+- **When:** in the WSL lane's window, on a night agreed on #4135, so that it doesn't overlap the Windows run.
+
 ## The Linux LLVM pin
 
 The Linux release legs build with clang from apt.llvm.org. `LLVM_LINUX_RELEASE` in `release.yml` (`23.1.6`) is
@@ -382,6 +449,8 @@ purpose:
    entry by itself.
 3. Run a release dry run on the PR branch. Both Linux legs must pass. After the merge, run one from main, so the
    cache holds the new release before a tag needs it.
+4. Run [the newcomer check](#the-newcomer-check) on Linux against the PR branch (`--ref`), and put its `results.md` on
+   the PR before it merges. A bump of the LLVM major also runs it on Windows.
 
 ## Publishing to WinGet
 
@@ -633,8 +702,8 @@ A patch happens only when a shipped bug warrants one.
 | Role | Responsibilities |
 |---|---|
 | Maintainer | scope and late-feature calls; declares the freeze; approves the candidate; manual checks; cuts the release branch; pushes the tag; merges the CHANGELOG PRs; SmartScreen submission; announcement |
-| Windows lane | Windows code and its review sweep; CI and the release pipeline; dry runs; Windows validation; post-publish verification; Windows screenshots; performance baselines |
-| WSL lane | Linux code and its review sweep; Linux packaging; Linux validation; the docs site; Linux screenshots |
+| Windows lane | Windows code and its review sweep; CI and the release pipeline; dry runs; Windows validation; post-publish verification; Windows screenshots; performance baselines; the Windows newcomer check |
+| WSL lane | Linux code and its review sweep; Linux packaging; Linux validation; the docs site; Linux screenshots; the Linux newcomer check |
 | agentDash | [the release dashboard](#the-release-dashboard): its generator, page and workflow (`agent:Dash`) |
 
 ## Why these steps

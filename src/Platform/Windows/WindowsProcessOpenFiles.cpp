@@ -4,6 +4,7 @@
 #include "Platform/IProcessOpenFiles.h"
 #include "Platform/ThreadName.h"
 #include "WinString.h"
+#include "WindowsFinalPath.h"
 #include "WindowsHandles.h"
 #include "WindowsNtQuery.h"
 #include "WindowsProcessIdentity.h"
@@ -65,21 +66,10 @@ using OwnedHandle = InjectableHandle;
     return {.descriptor = entry.handleValue, .kind = OpenFileKind::Other, .path = {}, .flags = std::nullopt, .deleted = false};
 }
 
-/// "C:\dir\file" from GetFinalPathNameByHandleW's "\\?\C:\dir\file", and "\\server\share" from "\\?\UNC\server\share".
-[[nodiscard]] std::wstring withoutExtendedPrefix(std::wstring path)
-{
-    if (path.starts_with(L"\\\\?\\UNC\\"))
-    {
-        return L"\\" + path.substr(7);
-    }
-    if (path.starts_with(L"\\\\?\\"))
-    {
-        return path.substr(4);
-    }
-    return path;
-}
-
-/// The path of the disk file @p handle (ours), DOS form when it has one, else the NT device path.
+/// The path of the disk file @p handle (ours), DOS form when it has one, else the NT device path: "C:\dir\file" from
+/// GetFinalPathNameByHandleW's "\\?\C:\dir\file", and "\\server\share" from "\\?\UNC\server\share" (FinalPathPrefix::Removed).
+/// Its own buffer sizing (MAX_PATH, then the answered length and one more, below MAX_FILE_PATH, the grown buffer kept for
+/// the NT form), so not readFinalPath()'s.
 [[nodiscard]] std::string finalPath(const ProcessOpenFilesFunctions& api, HANDLE handle)
 {
     std::wstring buffer(MAX_PATH, L'\0');
@@ -93,7 +83,7 @@ using OwnedHandle = InjectableHandle;
         }
         if (length > 0 && length < buffer.size())
         {
-            return WinString::wideToUtf8(withoutExtendedPrefix(std::wstring(buffer.data(), length)));
+            return WinString::wideToUtf8(withFinalPathPrefix(std::wstring(buffer.data(), length), FinalPathPrefix::Removed));
         }
     }
     return {};

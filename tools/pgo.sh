@@ -96,7 +96,7 @@ validate_pgo_prereqs() {
     validate_build_prereqs || return 1
     check_command clang-23 "apt install clang-23" || return 1
     if ! command -v lld-23 &>/dev/null && ! command -v ld.lld &>/dev/null && ! command -v lld &>/dev/null; then
-        echo "Error: LLD linker not found (tried lld-23, ld.lld, lld). Install via: apt install lld-23 (versioned) or apt install lld (unversioned)" >&2
+        echo "Error: LLD linker not found (tried lld-23, ld.lld, lld). Install via: apt install lld-23" >&2
         return 1
     fi
     return 0
