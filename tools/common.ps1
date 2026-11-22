@@ -219,3 +219,56 @@ function Initialize-LlvmRoot {
     Write-Error "LLVM_ROOT is not set and could not be derived. CMake presets require it; set LLVM_ROOT to your LLVM install directory."
     exit 1
 }
+
+# Smart App Control (#4781). Windows 11's Smart App Control blocks unsigned binaries without cloud reputation.
+# VerifiedAndReputablePolicyState under the code-integrity policy key is 0 (off), 1 (enforce) or 2 (evaluation);
+# the value is missing where Smart App Control doesn't exist (Windows 10, older Windows 11). Read only, without
+# elevation: this never writes it. Returns 0 for a missing key, a missing value or any other value.
+$SmartAppControlPolicyKey = 'HKLM:\SYSTEM\CurrentControlSet\Control\CI\Policy'
+$SmartAppControlHelpUrl = 'https://support.microsoft.com/en-us/topic/what-is-smart-app-control-285ea03d-fa88-4d56-882e-6698afdb7003'
+
+function Get-SmartAppControlState {
+    [CmdletBinding()]
+    [OutputType([int])]
+    param([string]$KeyPath = $SmartAppControlPolicyKey)
+
+    try {
+        $value = (Get-ItemProperty -LiteralPath $KeyPath -Name 'VerifiedAndReputablePolicyState' -ErrorAction Stop).VerifiedAndReputablePolicyState
+        if ($value -in 1, 2) { return [int]$value }
+    }
+    catch {
+        Write-Verbose "Smart App Control state not readable: $_"
+    }
+    return 0
+}
+
+# The text shown when Smart App Control enforces: what it is, what it blocks, whose choice turning it off is.
+function Get-SmartAppControlMessage {
+    [CmdletBinding()]
+    [OutputType([string[]])]
+    param()
+
+    return @(
+        'Smart App Control is enforcing on this machine (VerifiedAndReputablePolicyState = 1).',
+        'It blocks unsigned programs that have no cloud reputation: developer tools such as Git for Windows'' DLLs and ninja, and every TaskSmack binary you build locally. An installer or a build then fails or hangs on a "Bad Image" box (error 0xC0E90002).',
+        'Turning it off is your choice: Windows Security > App & browser control > Smart App Control settings > Off. It can''t be turned back on without reinstalling Windows, and Microsoft doesn''t intend it for development machines.',
+        "About Smart App Control: $SmartAppControlHelpUrl"
+    )
+}
+
+# Stops setup (throws) when Smart App Control enforces. With -DryRun nothing is installed, so it warns instead.
+function Assert-SmartAppControlOff {
+    [CmdletBinding()]
+    param(
+        [int]$State = (Get-SmartAppControlState),
+        [switch]$DryRun
+    )
+
+    if ($State -ne 1) { return }
+    $message = (Get-SmartAppControlMessage) -join [Environment]::NewLine
+    if ($DryRun) {
+        Write-Warning "$message$([Environment]::NewLine)A real run would stop here."
+        return
+    }
+    throw "$message$([Environment]::NewLine)Nothing was installed. Turn Smart App Control off and run this script again."
+}

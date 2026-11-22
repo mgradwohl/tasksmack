@@ -117,6 +117,11 @@ if(WIN32)
         # catalog no longer carries the pinned one (#2844). Stub winget; nothing is installed.
         add_test(NAME SetupDevScript
             COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-setup-dev.ps1)
+        # tools/newcomer-check.ps1's stall rule (#4781): a setup step whose process tree makes no progress for
+        # the window, or that sits behind a Bad Image box, is failed instead of waiting out the setup timeout.
+        # Short real shells (a sleep, a spin); nothing is installed.
+        add_test(NAME NewcomerCheckScript
+            COMMAND ${TASKSMACK_PWSH} -NoProfile -File ${CMAKE_SOURCE_DIR}/tools/test-newcomer-check.ps1)
         # The Authenticode gate's decision (cmake/VerifyWindowsSignatures.cmake): only an Artifact
         # Signing certificate passes, not a trusted self-signed CN=Matt Gradwohl one (#2990). The
         # certificates are made in memory; nothing is signed, stored or trusted.
@@ -175,14 +180,14 @@ if(WIN32)
         # reusable-build-test.yml gives these entries, and no others, a second attempt on that leg.
         # A new pwsh test joins both lists below (#3746: MeasureIdleScript, left out, died that way).
         set_tests_properties(ResizeCaptureScript EtwCaptureScript EtwAnalysisScript CMakeCacheScript BenchScript
-            BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript VerifyWindowsSignaturesScript
+            BenchAcrossLaunchesPs1Script CheckPrereqsScript SetupDevScript NewcomerCheckScript VerifyWindowsSignaturesScript
             BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript WingetManifestScript
             ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
             CheckWingetManifestsScript PROPERTIES
             RESOURCE_LOCK pwsh-script-tests
             LABELS pwsh-script)
         set_tests_properties(ResizeCaptureScript EtwAnalysisScript CMakeCacheScript CheckPrereqsScript SetupDevScript
-            VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
+            NewcomerCheckScript VerifyWindowsSignaturesScript BuildWindowsInstallerScript ResizePerfSummaryScript MeasureIdleScript
             WingetManifestScript ClangTidyHeadersScript FormatSourcesScript ReleaseSmokeCheckScript WindowsUpgradeCheckScript
             CheckWingetManifestsScript
             PROPERTIES TIMEOUT 120)
