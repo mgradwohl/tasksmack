@@ -32,6 +32,13 @@ enum class ServiceColumn : std::uint8_t
     Account,
 };
 
+/// What a not-loaded service's Account cell reads (#4763, ServiceInfo::notLoaded): unknown, not empty.
+inline constexpr std::string_view NOT_READ_CELL = "\xE2\x80\x94";
+/// Its row tooltip's line saying why.
+inline constexpr std::string_view NOT_LOADED_TOOLTIP =
+    "Not loaded: systemd hasn't read this service's file, so its account, command and type aren't known until it is "
+    "loaded (when it starts, or another unit needs it).";
+
 [[nodiscard]] std::string_view serviceStateLabel(Platform::ServiceState state) noexcept;
 [[nodiscard]] std::string_view serviceStartTypeLabel(Platform::ServiceStartType startType) noexcept;
 

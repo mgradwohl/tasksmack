@@ -255,6 +255,10 @@ TEST(SystemdServicesTest, AServicesConfigFillsItsAccountCommandAndType)
         EXPECT_TRUE(bare->binaryPath.empty()) << name;
         EXPECT_TRUE(bare->serviceType.empty()) << name;
     }
+    // #4763: only the unit file systemd hasn't loaded is marked so; a loaded unit whose config wasn't read isn't.
+    EXPECT_TRUE(find(services, "ssh.service")->notLoaded);
+    EXPECT_FALSE(find(services, "unread.service")->notLoaded);
+    EXPECT_FALSE(nginx->notLoaded);
 }
 
 TEST(SystemdServicesTest, AnEmptyUserIsRootUnlessTheUserIsDynamic)
