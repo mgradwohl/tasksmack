@@ -390,6 +390,29 @@ TEST(ServicesViewTest, RowsSortByStartTypeAndAccount)
     EXPECT_EQ(buildServiceRows(publication.services, "", ServiceColumn::Account, false), (std::vector<std::size_t>{2, 0, 1}));
 }
 
+// #4763: a unit file systemd hasn't loaded shows its Account as unknown, and its tooltip says why.
+TEST_F(ServicesViewRenderTest, ANotLoadedServicesAccountIsUnknownAndItsTooltipSaysWhy)
+{
+    Domain::ServicePublication publication;
+    publication.version = 1;
+    publication.services = {service("apt-news.service", "apt-news.service", ServiceState::Stopped, 0)};
+    publication.services[0].notLoaded = true;
+    ServicesViewState state;
+    const ImVec2 row = firstRowCentre(publication, state);
+    ASSERT_GT(row.y, 0.0F);
+    EXPECT_TRUE(captureFrame(publication, state).contains(NOT_READ_CELL));
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.AddMousePosEvent(row.x, row.y);
+    io.DeltaTime = 0.25F; // past the tooltip's hover delay in a few frames
+    std::string text;
+    for (int i = 0; i < 6 && !text.contains("Not loaded"); ++i)
+    {
+        text = captureFrame(publication, state);
+    }
+    EXPECT_TRUE(text.contains(NOT_LOADED_TOOLTIP)) << text;
+}
+
 TEST_F(ServicesViewRenderTest, HoveringARowShowsItsDetails)
 {
     Domain::ServicePublication publication;

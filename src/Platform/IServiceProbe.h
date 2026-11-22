@@ -57,6 +57,9 @@ struct ServiceInfo
     /// The probe's opaque id for the service's exact native name (#4304), which an action passes back in its
     /// ServiceTarget: on Windows, name is display text that may be lossy. None where names are exact (Linux).
     NativeId nativeId = NativeId::None;
+    /// Linux: a unit file systemd hasn't loaded (#4763), so its account, command and type weren't read: the table
+    /// shows them as unknown, not as empty, beside the stopped services that are loaded and show theirs.
+    bool notLoaded = false;
 };
 
 /// Which ServiceInfo fields this platform can fill at all, following ProcessCapabilities.
