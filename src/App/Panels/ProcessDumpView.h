@@ -122,9 +122,15 @@ inline constexpr std::string_view HANDOFF_NO_DEFAULT_FOLDER_TEXT =
 #endif
 
 /// What the result says, with the folder and a Copy button, in place of Open folder when the dump's folder is for
-/// administrators only (#4188): Explorer, running as the signed-in user, can't open it.
+/// administrators only (#4188): Explorer, running as the signed-in user, can't open it. On Linux, a root session's folder
+/// the user it runs for can't open (#4765): their file manager couldn't either.
+#ifdef _WIN32
 inline constexpr std::string_view ADMIN_ONLY_FOLDER_TEXT =
     "This folder is for administrators only: open it from Explorer or a debugger running as administrator.";
+#else
+inline constexpr std::string_view ADMIN_ONLY_FOLDER_TEXT =
+    "This folder is root's only, so your file manager can't open it: open it from a file manager or debugger running as root.";
+#endif
 
 /// The folder a confirm with nothing remembered uses, for @p noDefault (noDefaultDumpFolder()): defaultDumpDirectory(),
 /// or a test's.
@@ -208,7 +214,14 @@ inline constexpr std::string_view FOLDER_ACCESS_UNKNOWN_TEXT =
     "The dump file itself is for administrators only, but TaskSmack couldn't read this folder's permissions, so programs "
     "running as you may be able to see what is in it and read its other files. Choose one only administrators can open.";
 
-/// The confirm's warning for @p check (#4164): FOLDER_READABLE_TEXT, FOLDER_ACCESS_UNKNOWN_TEXT, or why the dump would
+/// What the confirm says when the folder's filesystem may ignore Linux permissions (#4761): a normal session's dump is
+/// written and kept there, as the user's own process in a folder they chose; this says who else could read it.
+inline constexpr std::string_view FOLDER_IGNORES_PERMISSIONS_TEXT =
+    "This folder's drive may ignore Linux permissions (a Windows drive under WSL, a network share, or a FAT, exFAT or "
+    "NTFS disk), so anyone who can read that drive could read the dump, which holds the process's memory.";
+
+/// The confirm's warning for @p check (#4164): FOLDER_READABLE_TEXT, FOLDER_ACCESS_UNKNOWN_TEXT,
+/// FOLDER_IGNORES_PERMISSIONS_TEXT (#4761), or why the dump would
 /// refuse the folder; empty when only administrators can read a new file there, or when it wasn't checked.
 [[nodiscard]] std::string folderAccessWarning(const Platform::DumpFolderCheck& check);
 /// What the confirm says, in place of a space warning, while its folder and drive are read (#3155).

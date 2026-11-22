@@ -52,7 +52,7 @@ If either check fails, don't use the file. See the user guide's [Verifying a Rel
 sudo ./bin/TaskSmack
 ```
 
-Run this way, links, **Open folder**, and Settings' **Edit Config File** and **Open Themes Folder** still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root.
+Run this way, links, **Open folder**, and Settings' **Edit Config File** and **Open Themes Folder** still open as you, in your desktop session: TaskSmack starts the browser or file manager as the user sudo (or pkexec) names, not as root. A folder only root can open, such as root's own dump folder (`TaskSmack-dumps` in root's home), isn't handed to your file manager, which couldn't open it: the dump's result names it, with **Copy**, for you to open as root (#4765).
 
 **Fix (option 2 — grant capabilities):**
 
@@ -213,6 +213,8 @@ On Linux, a socket shared by several processes, for example one inherited across
 ## Why doesn't the network Total match the sum of the interfaces?
 
 The Total counts hardware interfaces only. On Linux these are network cards, Wi-Fi, USB adapters, and Hyper-V or virtio NICs; bridges, `veth` pairs, VPN tunnels, VLANs, and bonds are left out. On Windows they are the adapters Windows reports as hardware; VPN adapters, Hyper-V and WSL `vEthernet` adapters, WAN Miniports, and tunnels such as Teredo are left out. Those interfaces carry traffic that also crosses a hardware interface, so counting them as well would double it. They are still listed and selectable on their own. When no hardware interface exists, as inside a container, every interface counts.
+
+For a few seconds after a burst the chart's **Sent** and **Received** figures can also read higher than the Interface Status table below it, even with one interface. The figures beside a chart ease toward each new sample, as every live value beside a chart does (`[ui] chart_smooth_factor`, in the user guide's [Advanced settings](user-guide.md#advanced-settings-configtoml-only)), while the table shows each sample as it was read. They agree again once the rate settles.
 
 ---
 

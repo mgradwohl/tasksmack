@@ -80,6 +80,8 @@ std::string folderAccessWarning(const Platform::DumpFolderCheck& check)
         return std::string(FOLDER_READABLE_TEXT);
     case Platform::DumpFolderAccess::Unknown:
         return std::string(FOLDER_ACCESS_UNKNOWN_TEXT);
+    case Platform::DumpFolderAccess::MayIgnorePermissions:
+        return std::string(FOLDER_IGNORES_PERMISSIONS_TEXT);
     case Platform::DumpFolderAccess::Refused:
         return check.problem.empty() ? std::string("TaskSmack can't write a dump to this folder. Choose another with Save dump to...")
                                      : check.problem;

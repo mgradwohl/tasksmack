@@ -263,4 +263,30 @@ TEST(LinuxCoreDumpTest, OverlappingDumpsKeepTheOwnerOnlyUmaskUntilTheLastOneEnds
     ::umask(before);
 }
 
+// #4761: the filesystems whose chmod may do nothing, from statfs()'s f_type; the usual Linux ones keep permissions.
+TEST(LinuxCoreDumpTest, TheDrivesThatMayIgnorePermissionsAreKnownByType)
+{
+    for (const std::uint64_t ignoring : {0x01021997ULL /* 9p, WSL's drvfs */,
+                                         0x4D44ULL /* FAT */,
+                                         0x2011BAB0ULL /* exFAT */,
+                                         0x5346544EULL /* ntfs */,
+                                         0x7366746EULL /* ntfs3 */,
+                                         0xFF534D42ULL /* CIFS */,
+                                         0xFE534D42ULL /* SMB2 */,
+                                         0x65735546ULL /* FUSE */})
+    {
+        EXPECT_TRUE(LinuxCoreDump::mayIgnorePermissions(ignoring)) << std::hex << ignoring;
+    }
+    for (const std::uint64_t keeping : {0xEF53ULL /* ext4 */,
+                                        0x58465342ULL /* xfs */,
+                                        0x9123683EULL /* btrfs */,
+                                        0x01021994ULL /* tmpfs */,
+                                        0x794C7630ULL /* overlayfs */})
+    {
+        EXPECT_FALSE(LinuxCoreDump::mayIgnorePermissions(keeping)) << std::hex << keeping;
+    }
+    // statfs()'s f_type is a signed long on some ABIs: a type read back sign-extended is still known.
+    EXPECT_TRUE(LinuxCoreDump::mayIgnorePermissions(0xFFFFFFFFFF534D42ULL));
+}
+
 } // namespace Platform

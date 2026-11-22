@@ -16,6 +16,7 @@
 #include "RunProgramLookup.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
+#include "UserFolderAccess.h"
 
 #include <spdlog/spdlog.h>
 
@@ -60,6 +61,7 @@
 #include <spawn.h>
 #include <sys/poll.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/types.h> // NOLINT(misc-include-cleaner) - pid_t; clang-tidy 23 maps it to no header
 // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG, WIFEXITED and WEXITSTATUS, which tidy maps elsewhere (see their uses)
@@ -1021,6 +1023,7 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
     }
+    bool permissionsIgnored = false; // a normal session's dump on a drive that ignores Linux permissions (#4761)
     // Still the file made above, this account's, opened without following a link (a shared folder's member could swap
     // one in), and made owner-only through that descriptor before it's published (#4175, the second #4177 review).
     {
@@ -1041,12 +1044,23 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         }
         if (same && !ownerOnly)
         {
-            std::filesystem::remove(written, ec);
-            releaseName();
-            return std::unexpected(std::format(
-                "Couldn't make the dump file {} private: its filesystem keeps it readable by others (it ignores permissions), so "
-                "it was removed. Choose a folder on a local disk",
-                written.string()));
+            if (::geteuid() == 0)
+            {
+                // Root writes into a folder only root may change (#4176), so its dump is never left for others to read.
+                std::filesystem::remove(written, ec);
+                releaseName();
+                std::string message = std::format("Couldn't make the dump file {} private: its filesystem keeps it readable by "
+                                                  "others (it ignores Linux permissions), so it was removed. TaskSmack runs as root: "
+                                                  "choose a folder on a drive that keeps Linux permissions",
+                                                  file.string());
+                spdlog::warn("Not keeping the dump of PID {}: {}", target.pid, message);
+                return std::unexpected(std::move(message));
+            }
+            // Not root (#4761): the user's own process, in a folder they chose, which the confirm said may ignore
+            // permissions. Kept, and the result says who else can read it.
+            spdlog::info(
+                "The dump of PID {} at {} is readable by others: its filesystem ignores Linux permissions", target.pid, file.string());
+            permissionsIgnored = true;
         }
         if (!same)
         {
@@ -1070,10 +1084,33 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     return ProcessDump{
         .file = file,
         .sizeBytes = ec ? 0 : static_cast<std::uint64_t>(size),
-        .note = {},
+        .note = permissionsIgnored ? std::string(LinuxCoreDump::PERMISSIONS_IGNORED_NOTE) : std::string{},
         .fromSnapshot = false,
         .liveReason = LinuxCoreDump::LIVE_REASON,
     };
+}
+
+DumpFolderCheck LinuxProcessActions::dumpFolderAccess(const std::filesystem::path& directory)
+{
+    if (::geteuid() == 0)
+    {
+        // Root refuses a folder on a drive that ignores permissions before the dump (RootDumpFolder::rootDumpRefusal()).
+        // Run for a user (#4765): a folder they can't open (root's own TaskSmack-dumps) is named in the result with Copy,
+        // as Windows' admin-only folder is (#4188), never handed to their file manager, which couldn't open it.
+        const std::optional<DetachedSpawn::RunAs> user = SessionUser::invokingUserSession();
+        if (user.has_value() &&
+            !UserFolderAccess::canOpenFolder(directory, user->uid, user->gid, user->groups, &UserFolderAccess::statPath))
+        {
+            return {.access = DumpFolderAccess::AdministratorsOnly, .problem = {}};
+        }
+        return {};
+    }
+    struct statfs stats{};
+    if (::statfs(directory.c_str(), &stats) == 0 && LinuxCoreDump::mayIgnorePermissions(static_cast<std::uint64_t>(stats.f_type)))
+    {
+        return {.access = DumpFolderAccess::MayIgnorePermissions, .problem = {}};
+    }
+    return {};
 }
 
 DumpSpace LinuxProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)

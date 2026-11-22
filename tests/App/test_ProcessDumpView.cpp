@@ -499,6 +499,9 @@ TEST(ProcessDumpViewTest, TheFolderAccessWarningNamesWhatTheCheckFound)
               DumpDetail::FOLDER_ACCESS_UNKNOWN_TEXT);
     EXPECT_EQ(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::Refused, .problem = "it is a junction"}), "it is a junction");
     EXPECT_FALSE(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::Refused, .problem = {}}).empty());
+    // #4761: a normal Linux session's folder on a drive that may ignore permissions is a hint, never a refusal.
+    EXPECT_EQ(DumpDetail::folderAccessWarning({.access = DumpFolderAccess::MayIgnorePermissions, .problem = {}}),
+              DumpDetail::FOLDER_IGNORES_PERMISSIONS_TEXT);
 }
 
 // The confirm warns when programs running as the user could read the dump, and the admin can still go on, or choose
