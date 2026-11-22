@@ -1,0 +1,7 @@
+﻿[Desktop Entry]
+Type=Application
+Name=Sync
+Exec=sync --start %U
+Icon=sync
+OnlyShowIn=GNOME;KDE;
+X-GNOME-Autostart-enabled=true

@@ -174,8 +174,8 @@ steps in order, checks that the docs still give each command it runs, and stops 
 place a newcomer would trip (`-ContinueOnFinding` records them all). It writes a step table to
 `results.md` in `-OutDir`. Its help (`Get-Help tools/newcomer-check.ps1 -Full`) has the Windows
 Sandbox options.
-On Linux, `tools/newcomer-check.sh` does the same in a fresh Ubuntu 24.04 WSL distro (`wsl --install
-Ubuntu-24.04 --name tasksmack-newcomer`): copy only the script in and run it there, as `--help` says; it installs
+On Linux, `tools/newcomer-check.sh` does the same in a fresh Ubuntu 26.04 WSL distro (`wsl --install
+Ubuntu-26.04 --name tasksmack-newcomer`): copy only the script in and run it there, as `--help` says; it installs
 packages with sudo, so not on your own machine either.
 
 ### Linux Pre-Requisites
@@ -1418,6 +1418,11 @@ runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared b
 | `fuzz_release_json` | the update check's GitHub releases JSON reader and version parser (`Domain/UpdateCheck.h`) | `tests/fuzz/corpus/fuzz_release_json/` |
 | `fuzz_virustotal_json` | the VirusTotal v3 file report reader (`Domain/VirusTotal.h`) | `tests/fuzz/corpus/fuzz_virustotal_json/` |
 | `fuzz_broker_protocol` | the Windows helper's request decoder, which reads what an unprivileged process sends (`Platform/BrokerProtocol.h`, its codec `Platform/BrokerProtocol.cpp`) | `tests/fuzz/corpus/fuzz_broker_protocol/` |
+| `fuzz_cron_tab` | the Startup tab's crontab reader, a user's own and the system tables (`Platform/Linux/CronTab.h`, #4357) | `tests/fuzz/corpus/fuzz_cron_tab/` |
+| `fuzz_systemd_unit` | the systemd unit file reader and its word reader (`Platform/Linux/SystemdUnitFile.h`, #4357) | `tests/fuzz/corpus/fuzz_systemd_unit/` |
+| `fuzz_xdg_autostart` | the autostart `.desktop` reader, and switching an entry on or off (`Platform/Linux/XdgAutostart.h`, #4357) | `tests/fuzz/corpus/fuzz_xdg_autostart/` |
+| `fuzz_os_release` | `/etc/os-release` and `/proc/stat`'s btime (`Platform/Linux/LinuxOsInfo.h`, #4357) | `tests/fuzz/corpus/fuzz_os_release/` |
+| `fuzz_proc_text` | `/proc/<pid>/smaps_rollup`, `/proc/<pid>/io` and `/proc/pressure/*` (`Platform/Linux/SmapsRollupParser.h`, `ProcIoParser.h`, `PressureParser.h`, #4357) | `tests/fuzz/corpus/fuzz_proc_text/` |
 | `fuzz_version_resource` | the version resource walk the Publisher column and the Modules section read a held file with: PE headers, resource directory, `VS_VERSIONINFO` tree, `VS_FIXEDFILEINFO` (`Platform/Windows/WindowsVersionResourceMath.h`) | `tests/fuzz/corpus/fuzz_version_resource/` |
 | `fuzz_crash_event_xml` | the Application Error and Hang event XML reader and the WDI StartupInfo file reader, UTF-16 decoding included (`Platform/Windows/WindowsCrashEvents.h`, `Platform/Windows/WindowsStartupImpact.h`) | `tests/fuzz/corpus/fuzz_crash_event_xml/` |
 | `fuzz_etw_udp` | the ETW UDP event payload decoder, its per-process sums and the trace session name (`Platform/Windows/WindowsEtwNetMath.h`) | `tests/fuzz/corpus/fuzz_etw_udp/` |
