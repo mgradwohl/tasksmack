@@ -749,8 +749,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
 
     // Suppress delta-based rates for implausibly short intervals to prevent
     // large startup rate spikes (e.g. from the immediate first background poll)
-    constexpr double MIN_ELAPSED_FOR_RATES = static_cast<double>(Sampling::REFRESH_INTERVAL_MIN_MS) / 2000.0;
-    if (m_HasPrevious && timeDelta < MIN_ELAPSED_FOR_RATES)
+    if (m_HasPrevious && timeDelta < Sampling::MIN_ELAPSED_FOR_RATES_SECONDS)
     {
         timeDelta = 0.0;
     }
@@ -932,7 +931,7 @@ void SystemModel::computeSnapshot(const Platform::SystemCounters& counters,
         }
         else
         {
-            // Too short an interval to rate (MIN_ELAPSED_FOR_RATES): nothing was measured (#2129).
+            // Too short an interval to rate (MIN_ELAPSED_FOR_RATES_SECONDS): nothing was measured (#2129).
             totalGap.rx = true;
             totalGap.tx = true;
         }

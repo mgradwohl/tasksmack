@@ -317,6 +317,35 @@ inline constexpr std::string_view NO_TRUSTED_FOLDER_PATH = "/proc/nonexistent";
     return rootTrustedPath(path, systemRootFs());
 }
 
+/// For a library loaded into a root or otherwise privileged process (#4668): rootTrustedPath()'s checks, for a regular file
+/// rather than an executable one. Every folder on the way only root can change, every link too, the file root's and no
+/// one else's to write, and not on an untrusted mount, so no other account chose the code the process runs.
+/// @return The path to dlopen(), as rootTrustedPath() answers it; nullopt when another account could have put it there.
+[[nodiscard]] inline std::optional<std::string> rootTrustedLibrary(const std::string& path, const RootFs& fs)
+{
+    // A regular file where the path leads, by the same calls the other checks make (a test's tree, or lstat()).
+    const RootFs asLibrary{
+        .ownership = fs.ownership,
+        .readLink = fs.readLink,
+        .canonical = fs.canonical,
+        .executable =
+            [&fs](const std::string& file)
+        {
+            const std::optional<std::string> resolved = fs.canonical(file);
+            const std::optional<SyscallTrace::PathOwnership> entry = resolved.has_value() ? fs.ownership(*resolved) : std::nullopt;
+            return entry.has_value() && (entry->mode & S_IFMT) == S_IFREG;
+        },
+        .onProcfs = fs.onProcfs,
+        .onUntrustedFilesystem = fs.onUntrustedFilesystem,
+    };
+    return rootTrustedPath(path, asLibrary);
+}
+
+[[nodiscard]] inline std::optional<std::string> rootTrustedLibrary(const std::string& path)
+{
+    return rootTrustedLibrary(path, systemRootFs());
+}
+
 /// Whether rootTrustedPath() accepts @p path.
 [[nodiscard]] inline bool isRootTrustedExecutable(const std::string& path)
 {

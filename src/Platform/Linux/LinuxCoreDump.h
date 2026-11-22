@@ -3,6 +3,7 @@
 #include "Domain/Utf8Sanitize.h"
 
 #include <algorithm>
+#include <array>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -32,6 +33,33 @@ inline constexpr int MAX_NAME_ATTEMPTS = 100;
 /// How a Linux dump is written, for ProcessDump::liveReason: always from the running process, as there is
 /// no snapshot of a process to write from (ProcessActionCapabilities::dumpsFromSnapshot is false, #2241).
 inline constexpr const char* LIVE_REASON = "gdb's gcore stops it to copy its memory out";
+
+/// The note on a dump a normal session kept although its filesystem left it readable by others (#4761): the fchmod() to
+/// owner-only did nothing (a Windows drive under WSL, a share without Unix extensions). Root refuses such a dump (#4648).
+inline constexpr const char* PERMISSIONS_IGNORED_NOTE =
+    "Its drive ignores Linux permissions, so anyone who can read that drive can read this dump, which holds the "
+    "process's memory. Move it somewhere private if the process held secrets.";
+
+/// Whether a filesystem of statfs() type @p type may ignore Linux permissions (#4761), so a file's chmod there may do
+/// nothing: 9p (WSL's drvfs drives, without "metadata"), FAT, exFAT, NTFS (ntfs, ntfs3), CIFS/SMB (without Unix
+/// extensions) and FUSE (ntfs-3g, and most). "May": some of these honour permissions as mounted; the dump's own check,
+/// after it is written, says for sure.
+[[nodiscard]] constexpr bool mayIgnorePermissions(std::uint64_t type) noexcept
+{
+    // <linux/magic.h>: V9FS_MAGIC, MSDOS_SUPER_MAGIC, EXFAT_SUPER_MAGIC, NTFS_SB_MAGIC, ntfs3's "ntfs", CIFS_SUPER_MAGIC,
+    // SMB2_SUPER_MAGIC, FUSE_SUPER_MAGIC.
+    constexpr std::array<std::uint64_t, 8> IGNORING{
+        0x01021997U,
+        0x00004D44U,
+        0x2011BAB0U,
+        0x5346544EU,
+        0x7366746EU,
+        0xFF534D42U,
+        0xFE534D42U,
+        0x65735546U,
+    };
+    return std::ranges::contains(IGNORING, type & 0xFFFFFFFFU);
+}
 
 /// The message for a dump stopped because it was asked to; the partial file has been deleted by then.
 inline constexpr const char* CANCELLED_MESSAGE = "Cancelled; the partial dump file was deleted";

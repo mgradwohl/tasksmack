@@ -44,11 +44,11 @@ namespace
 {
 
 /// The largest autostart file read: they are a few hundred bytes; anything far larger isn't one.
-constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
+constexpr std::uintmax_t STARTUP_MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
 
 /// The value of environment variable @p name, or empty. Read when the probe or actions are made, before
 /// they are used on a worker.
-[[nodiscard]] std::string environment(const char* name)
+[[nodiscard]] std::string startupEnvironment(const char* name)
 {
     const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe) - see above
     return value != nullptr ? std::string(value) : std::string{};
@@ -56,7 +56,7 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
 
 [[nodiscard]] XdgAutostart::Dirs dirsFromEnvironment()
 {
-    return XdgAutostart::dirs(environment("HOME"), environment("XDG_CONFIG_HOME"), environment("XDG_CONFIG_DIRS"));
+    return XdgAutostart::dirs(startupEnvironment("HOME"), startupEnvironment("XDG_CONFIG_HOME"), startupEnvironment("XDG_CONFIG_DIRS"));
 }
 
 /// @p path's text, or nullopt when it can't be read or is too large to be an autostart file.
@@ -64,7 +64,7 @@ constexpr std::uintmax_t MAX_FILE_BYTES = std::uintmax_t{64} * 1024U;
 {
     std::error_code ec;
     const std::uintmax_t size = std::filesystem::file_size(path, ec);
-    if (ec || size > MAX_FILE_BYTES)
+    if (ec || size > STARTUP_MAX_FILE_BYTES)
     {
         return std::nullopt;
     }
@@ -432,9 +432,9 @@ SystemdUserDirs systemdUserDirs(std::string_view home, std::string_view xdgConfi
 
 LinuxStartupProbe::LinuxStartupProbe()
     : LinuxStartupProbe(dirsFromEnvironment(),
-                        environment("XDG_CURRENT_DESKTOP"),
-                        environment("PATH"),
-                        systemdUserDirs(environment("HOME"), environment("XDG_CONFIG_HOME")),
+                        startupEnvironment("XDG_CURRENT_DESKTOP"),
+                        startupEnvironment("PATH"),
+                        systemdUserDirs(startupEnvironment("HOME"), startupEnvironment("XDG_CONFIG_HOME")),
                         cronSources())
 {}
 

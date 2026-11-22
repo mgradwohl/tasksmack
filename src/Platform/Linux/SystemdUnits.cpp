@@ -103,11 +103,6 @@ BootTimestampsRead readBootTimestamps()
 namespace
 {
 
-constexpr const char* SYSTEMD = "org.freedesktop.systemd1";
-constexpr const char* SYSTEMD_PATH = "/org/freedesktop/systemd1";
-constexpr const char* SYSTEMD_MANAGER = "org.freedesktop.systemd1.Manager";
-constexpr const char* SYSTEMD_SERVICE = "org.freedesktop.systemd1.Service";
-
 /// Why systemd couldn't answer, in the user's terms.
 [[nodiscard]] std::string systemdError(const BusError& error, int result)
 {

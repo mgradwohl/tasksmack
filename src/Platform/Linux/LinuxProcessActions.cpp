@@ -16,6 +16,7 @@
 #include "RunProgramLookup.h"
 #include "SessionUser.h"
 #include "SyscallTrace.h"
+#include "UserFolderAccess.h"
 
 #include <spdlog/spdlog.h>
 
@@ -60,6 +61,7 @@
 #include <spawn.h>
 #include <sys/poll.h>
 #include <sys/stat.h>
+#include <sys/statfs.h>
 #include <sys/statvfs.h>
 #include <sys/types.h> // NOLINT(misc-include-cleaner) - pid_t; clang-tidy 23 maps it to no header
 // NOLINTNEXTLINE(misc-include-cleaner) - WNOHANG, WIFEXITED and WEXITSTATUS, which tidy maps elsewhere (see their uses)
@@ -369,6 +371,18 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     return named.st_dev == running.st_dev && named.st_ino == running.st_ino;
 }
 
+/// Whether the process is in this one's mount namespace (#4650); nullopt when either namespace link can't be read.
+[[nodiscard]] std::optional<bool> sharesMountNamespaceFromProc(std::int32_t pid)
+{
+    struct stat theirs{};
+    struct stat ours{};
+    if (::stat(std::format("/proc/{}/ns/mnt", pid).c_str(), &theirs) != 0 || ::stat("/proc/self/ns/mnt", &ours) != 0)
+    {
+        return std::nullopt;
+    }
+    return theirs.st_dev == ours.st_dev && theirs.st_ino == ours.st_ino;
+}
+
 /// The real uid on /proc/<pid>/status's "Uid:" line (#4271): readable by anyone, dumpable or not.
 [[nodiscard]] std::optional<uid_t> processRealUidFromProc(std::int32_t pid)
 {
@@ -482,6 +496,10 @@ runCancellable(const LinuxProcessSyscalls& syscalls, const std::vector<std::stri
     if (syscalls.isProcessExecutable == nullptr)
     {
         syscalls.isProcessExecutable = &isProcessExecutableFromProc;
+    }
+    if (syscalls.sharesMountNamespace == nullptr)
+    {
+        syscalls.sharesMountNamespace = &sharesMountNamespaceFromProc;
     }
     if (syscalls.showItemInFileManager == nullptr)
     {
@@ -712,10 +730,13 @@ ProcessActionResult LinuxProcessActions::openFileLocation(const ProcessTarget& t
         return identity;
     }
     const std::expected<std::string, int> link = syscalls().executableLink(target.pid);
-    // The link's text is the path in the process's mount namespace (#4397): unless the file has since been deleted or
-    // replaced, check that it names the running file here too, before the pidfd says the process lasted.
+    // The link's text is the path in the process's mount namespace (#4397): check that it names the running file here
+    // too, before the pidfd says the process lasted. A deleted or replaced file can't be compared, so its path counts
+    // only when the process shares this mount namespace (#4650): a container's upgraded /usr/sbin/nginx isn't the
+    // host's /usr/sbin. A namespace that can't be read keeps the old answer.
     const bool deleted = link.has_value() && FileManagerReveal::withoutDeletedSuffix(*link).size() != link->size();
-    const bool namesItHere = !link.has_value() || deleted || syscalls().isProcessExecutable(target.pid, *link);
+    const bool namesItHere = !link.has_value() || (deleted ? syscalls().sharesMountNamespace(target.pid).value_or(true)
+                                                           : syscalls().isProcessExecutable(target.pid, *link));
     int exited = syscalls().pollPidfd(pidfd.get());
     while (exited < 0 && errno == EINTR)
     {
@@ -1002,19 +1023,44 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
         spdlog::warn("Dump of PID {} failed: {}", target.pid, message);
         return std::unexpected(std::move(message));
     }
+    bool permissionsIgnored = false; // a normal session's dump on a drive that ignores Linux permissions (#4761)
     // Still the file made above, this account's, opened without following a link (a shared folder's member could swap
     // one in), and made owner-only through that descriptor before it's published (#4175, the second #4177 review).
     {
         // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
         const int finished = ::open(written.c_str(), O_RDONLY | O_NOFOLLOW | O_CLOEXEC);
         struct stat current = {};
+        // And owner-only as the filesystem now says (#4648): one that ignores the fchmod (cifs without unix extensions)
+        // returns 0 and leaves the file readable by everyone, with the process's memory in it.
         const bool same = finished >= 0 && ::fstat(finished, &current) == 0 && S_ISREG(current.st_mode) &&
                           current.st_dev == workingFile.st_dev && current.st_ino == workingFile.st_ino && current.st_uid == ::geteuid() &&
                           ::fchmod(finished, S_IRUSR | S_IWUSR) == 0;
         const int error = errno;
+        struct stat made = {};
+        const bool ownerOnly = same && ::fstat(finished, &made) == 0 && (made.st_mode & static_cast<mode_t>(S_IRWXG | S_IRWXO)) == 0;
         if (finished >= 0)
         {
             ::close(finished);
+        }
+        if (same && !ownerOnly)
+        {
+            if (::geteuid() == 0)
+            {
+                // Root writes into a folder only root may change (#4176), so its dump is never left for others to read.
+                std::filesystem::remove(written, ec);
+                releaseName();
+                std::string message = std::format("Couldn't make the dump file {} private: its filesystem keeps it readable by "
+                                                  "others (it ignores Linux permissions), so it was removed. TaskSmack runs as root: "
+                                                  "choose a folder on a drive that keeps Linux permissions",
+                                                  file.string());
+                spdlog::warn("Not keeping the dump of PID {}: {}", target.pid, message);
+                return std::unexpected(std::move(message));
+            }
+            // Not root (#4761): the user's own process, in a folder they chose, which the confirm said may ignore
+            // permissions. Kept, and the result says who else can read it.
+            spdlog::info(
+                "The dump of PID {} at {} is readable by others: its filesystem ignores Linux permissions", target.pid, file.string());
+            permissionsIgnored = true;
         }
         if (!same)
         {
@@ -1038,10 +1084,33 @@ LinuxProcessActions::createDump(const ProcessTarget& target, const std::filesyst
     return ProcessDump{
         .file = file,
         .sizeBytes = ec ? 0 : static_cast<std::uint64_t>(size),
-        .note = {},
+        .note = permissionsIgnored ? std::string(LinuxCoreDump::PERMISSIONS_IGNORED_NOTE) : std::string{},
         .fromSnapshot = false,
         .liveReason = LinuxCoreDump::LIVE_REASON,
     };
+}
+
+DumpFolderCheck LinuxProcessActions::dumpFolderAccess(const std::filesystem::path& directory)
+{
+    if (::geteuid() == 0)
+    {
+        // Root refuses a folder on a drive that ignores permissions before the dump (RootDumpFolder::rootDumpRefusal()).
+        // Run for a user (#4765): a folder they can't open (root's own TaskSmack-dumps) is named in the result with Copy,
+        // as Windows' admin-only folder is (#4188), never handed to their file manager, which couldn't open it.
+        const std::optional<DetachedSpawn::RunAs> user = SessionUser::invokingUserSession();
+        if (user.has_value() &&
+            !UserFolderAccess::canOpenFolder(directory, user->uid, user->gid, user->groups, &UserFolderAccess::statPath))
+        {
+            return {.access = DumpFolderAccess::AdministratorsOnly, .problem = {}};
+        }
+        return {};
+    }
+    struct statfs stats{};
+    if (::statfs(directory.c_str(), &stats) == 0 && LinuxCoreDump::mayIgnorePermissions(static_cast<std::uint64_t>(stats.f_type)))
+    {
+        return {.access = DumpFolderAccess::MayIgnorePermissions, .problem = {}};
+    }
+    return {};
 }
 
 DumpSpace LinuxProcessActions::dumpSpace(const ProcessTarget& target, const std::filesystem::path& directory)

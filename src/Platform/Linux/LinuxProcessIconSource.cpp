@@ -28,7 +28,7 @@ namespace
 {
 
 /// The value of environment variable @p name, or empty.
-[[nodiscard]] std::string_view environment(const char* name)
+[[nodiscard]] std::string_view iconSearchEnvironment(const char* name)
 {
     // Read once, while the source is made on the UI thread at attach, before any worker runs.
     const char* value = std::getenv(name); // NOLINT(concurrency-mt-unsafe)
@@ -38,7 +38,9 @@ namespace
 } // namespace
 
 LinuxProcessIconSource::LinuxProcessIconSource()
-    : LinuxProcessIconSource(DesktopEntryIcons::searchDirs(environment("HOME"), environment("XDG_DATA_HOME"), environment("XDG_DATA_DIRS")),
+    : LinuxProcessIconSource(DesktopEntryIcons::searchDirs(iconSearchEnvironment("HOME"),
+                                                           iconSearchEnvironment("XDG_DATA_HOME"),
+                                                           iconSearchEnvironment("XDG_DATA_DIRS")),
                              "/proc")
 {}
 

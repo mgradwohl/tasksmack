@@ -1,9 +1,11 @@
 #include "RootEnvironment.h"
 
+#include "RootTools.h"
 #include "SessionUser.h"
 
 #include <algorithm>
 #include <array>
+#include <cerrno>
 #include <charconv>
 #include <cstddef>
 #include <cstdint>
@@ -162,20 +164,76 @@ std::optional<std::string> rootXauthorityCopy(const std::optional<std::string>& 
             return std::nullopt;
         }
     }
-    const std::string copy = folder + "/tasksmack-xauthority";
-    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
-    const int out = ::open(copy.c_str(), O_WRONLY | O_CREAT | O_TRUNC | O_NOFOLLOW | O_CLOEXEC, S_IRUSR | S_IWUSR);
+    std::optional<std::string> copy = writeXauthorityCopy(folder, *uid, *contents);
+    if (copy.has_value())
+    {
+        removeAtExit(*copy);
+    }
+    return copy;
+}
+
+/// The copy this session made, for removeCopyAtExit(); empty until there is one.
+std::string& copyToRemove()
+{
+    static std::string path;
+    return path;
+}
+
+void removeCopyAtExit()
+{
+    if (!copyToRemove().empty())
+    {
+        static_cast<void>(::unlink(copyToRemove().c_str()));
+    }
+}
+
+} // namespace
+
+std::optional<std::string> writeXauthorityCopy(const std::string& folder, uid_t uid, const std::string& contents)
+{
+    // Never a name another session uses (#4667): one fixed name let a second user's root session truncate the first's copy
+    // and write their own cookies into it. mkostemp() makes the file 0600 with O_EXCL, so it is always a new one.
+    std::string copy = folder + "/tasksmack-xauthority-" + std::to_string(uid) + "-XXXXXX";
+    // NOLINTNEXTLINE(misc-include-cleaner) - mkostemp is in <cstdlib> (glibc, _GNU_SOURCE)
+    const int out = ::mkostemp(copy.data(), O_CLOEXEC);
     if (out < 0)
     {
         return std::nullopt;
     }
-    const bool written = ::fchmod(out, S_IRUSR | S_IWUSR) == 0 && ::write(out, contents->data(), contents->size()) ==
-                                                                      static_cast<decltype(::write(out, nullptr, 0))>(contents->size());
+    std::size_t done = 0;
+    while (done < contents.size())
+    {
+        const auto wrote = ::write(out, contents.data() + done, contents.size() - done);
+        if (wrote < 0 && errno == EINTR)
+        {
+            continue;
+        }
+        if (wrote <= 0)
+        {
+            break;
+        }
+        done += static_cast<std::size_t>(wrote);
+    }
+    const bool written = done == contents.size() && ::fchmod(out, S_IRUSR | S_IWUSR) == 0;
     ::close(out);
-    return written ? std::optional(copy) : std::nullopt;
+    if (!written)
+    {
+        static_cast<void>(::unlink(copy.c_str()));
+        return std::nullopt;
+    }
+    return copy;
 }
 
-} // namespace
+void removeAtExit(const std::string& copy)
+{
+    // The path is stored before the handler is registered, so it is destroyed after the handler runs (reverse order).
+    const bool first = copyToRemove().empty();
+    copyToRemove() = copy;
+    if (first)
+    {
+        static_cast<void>(std::atexit(&removeCopyAtExit));
+    }
+}
 
 int openAsUser(const std::string& path, uid_t uid)
 {
@@ -347,7 +405,9 @@ std::vector<std::string> applyTo(const char* const* environment, const RootValue
     // Never a file the user names: root's own copy of the invoking user's (applyToThisProcess()), or none (the second
     // #4187 review: a user-named Xauthority sent another account's cookie to a display the user chose).
     setOrUnset("XAUTHORITY", values.contains("DISPLAY") ? root.xauthority : std::nullopt);
-    setOrUnset("PATH", std::string(ROOT_PATH));
+    // No session bus: SDL's libdbus would otherwise autolaunch one as root on the user's X display (#4764).
+    setOrUnset("DBUS_SESSION_BUS_ADDRESS", std::string(NO_SESSION_BUS));
+    setOrUnset("PATH", root.path);
     setOrUnset("HOME", root.home);
     return removed;
 }
@@ -358,7 +418,16 @@ void applyToThisProcess(bool apply)
     {
         return;
     }
-    RootValues root{.home = rootPasswdHome(), .runtimeDir = std::nullopt, .xauthority = std::nullopt};
+    // Only ROOT_PATH's folders no other account can write (#4666): SDL and the libraries in this process run programs by
+    // name (zenity for a file dialog), and would otherwise take one from a staff-writable or chown'd /usr/local. None:
+    // a folder in /proc, where no name is found (RootTools::NO_TRUSTED_FOLDER_PATH), never an empty PATH.
+    const std::string trusted = RootTools::trustedRootPath(ROOT_PATH, RootTools::systemRootFs());
+    RootValues root{
+        .home = rootPasswdHome(),
+        .runtimeDir = std::nullopt,
+        .xauthority = std::nullopt,
+        .path = trusted.empty() ? std::string(RootTools::NO_TRUSTED_FOLDER_PATH) : trusted,
+    };
     // root's own runtime folder, only if it's root's and no one else's to write.
     if (struct stat runtime = {}; ::lstat("/run/user/0", &runtime) == 0 && S_ISDIR(runtime.st_mode) && runtime.st_uid == 0 &&
                                   (runtime.st_mode & (S_IRWXG | S_IRWXO)) == 0)
@@ -379,7 +448,7 @@ void applyToThisProcess(bool apply)
         });
     // Fail closed: a PATH that isn't root's would be the user's (#4159).
     // NOLINTNEXTLINE(concurrency-mt-unsafe) - as above
-    if (const char* path = std::getenv("PATH"); path == nullptr || std::string_view(path) != ROOT_PATH)
+    if (const char* path = std::getenv("PATH"); path == nullptr || std::string_view(path) != root.path)
     {
         std::fputs("TaskSmack: couldn't set root's PATH in an environment that may be another user's; not starting\n", stderr);
         std::_Exit(1);

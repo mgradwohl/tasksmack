@@ -24,7 +24,7 @@ namespace
 
 using Posix::FdGuard;
 
-[[nodiscard]] ModulesReadResult failure(int err)
+[[nodiscard]] ModulesReadResult modulesFailure(int err)
 {
     switch (err)
     {
@@ -50,7 +50,7 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
 {
     if (target.pid <= 0)
     {
-        return failure(ESRCH);
+        return modulesFailure(ESRCH);
     }
     if (target.startTimeTicks == 0)
     {
@@ -66,23 +66,23 @@ ModulesReadResult LinuxProcessModulesReader::readModules(const ProcessTarget& ta
     const FdGuard dir(::open(dirPath.c_str(), O_RDONLY | O_DIRECTORY | O_CLOEXEC));
     if (dir.get() < 0)
     {
-        return failure(errno);
+        return modulesFailure(errno);
     }
     if (ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH); // gone, or the PID now names another process
+        return modulesFailure(ESRCH); // gone, or the PID now names another process
     }
     // One byte past the cap, so a maps exactly the cap long reads whole and isn't called cut short (#2749).
     const std::size_t readLimit = m_MaxMapsBytes == std::numeric_limits<std::size_t>::max() ? m_MaxMapsBytes : m_MaxMapsBytes + 1;
     const std::expected<std::string, int> maps = ProcParsing::readWholeFileAt(dir.get(), "maps", readLimit);
     if (!maps.has_value())
     {
-        return failure(maps.error());
+        return modulesFailure(maps.error());
     }
     // An exiting process's maps reads empty: confirmed before that is reported as "no modules".
     if (maps->empty() && ProcParsing::startTimeTicksAt(dir.get()) != target.startTimeTicks)
     {
-        return failure(ESRCH);
+        return modulesFailure(ESRCH);
     }
     // The read went past the cap (#2642): parse only the whole lines within it.
     std::string_view text = *maps;

@@ -40,6 +40,11 @@ inline constexpr int REFRESH_INTERVAL_DEFAULT_MS = 1000;
 inline constexpr int REFRESH_INTERVAL_MIN_MS = 100;
 inline constexpr int REFRESH_INTERVAL_MAX_MS = 5000;
 
+/// The shortest interval, in seconds, a delta is turned into a rate over: half the fastest refresh interval. A shorter
+/// one (an immediate first background poll, say) is treated as "no previous data", so a near-zero denominator can't
+/// make a startup spike. ProcessModel and SystemModel both use it (#4783: each had its own copy).
+inline constexpr double MIN_ELAPSED_FOR_RATES_SECONDS = static_cast<double>(REFRESH_INTERVAL_MIN_MS) / 2000.0;
+
 // -----------------------------------------------------------------------------
 // History Window Configuration
 // -----------------------------------------------------------------------------
@@ -264,6 +269,12 @@ inline constexpr int GPU_RESCAN_INTERVAL_SECONDS = 10;
 // How often the Linux system probe lists /sys/block for zram devices (zramctl or a swap service adding
 // or removing one). Each sample reads the known devices' mm_stat; only the listing waits for this.
 inline constexpr int ZRAM_RESCAN_INTERVAL_SECONDS = 10;
+
+// Whole disk re-enumeration interval (seconds) - fixed, not configurable (#4697)
+// How often the Linux disk probe lists /sys/block again (each device's size and slaves/: whole devices, media, stacking,
+// #4391, #4628) with no change in /proc/diskstats' device names; a name added or gone lists it in that sample. Each
+// sample reads /proc/diskstats; only the listing waits for this (a card put in an empty reader shows within it).
+inline constexpr int DISK_DEVICE_RESCAN_INTERVAL_SECONDS = 10;
 
 // NUMA node re-enumeration interval (seconds) - fixed, not configurable (#3088)
 // How often the Linux system probe lists /sys/devices/system/node and re-reads each node's cpulist: the

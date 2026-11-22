@@ -37,11 +37,6 @@ using Detail::BusError;
 using Detail::MallocString;
 using Detail::Message;
 
-constexpr const char* LOGIN1 = "org.freedesktop.login1";
-constexpr const char* LOGIN1_PATH = "/org/freedesktop/login1";
-constexpr const char* LOGIN1_MANAGER = "org.freedesktop.login1.Manager";
-constexpr const char* LOGIN1_SESSION = "org.freedesktop.login1.Session";
-
 /// A string property of session object @p path; empty when it can't be read.
 [[nodiscard]] std::string sessionString(sd_bus* bus, const std::string& path, const char* property)
 {

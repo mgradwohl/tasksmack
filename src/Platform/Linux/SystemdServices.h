@@ -269,6 +269,7 @@ inline constexpr std::string_view SERVICE_SUFFIX = ".service";
         info.displayName = name; // Not loaded: systemd hasn't read its Description
         info.state = ServiceState::Stopped;
         info.startType = startTypeFrom(state);
+        info.notLoaded = true; // nor its User, ExecStart or Type (#4763)
         result.push_back(std::move(info));
     }
     std::ranges::sort(result, {}, &ServiceInfo::name);
