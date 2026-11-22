@@ -75,6 +75,9 @@
   string with a line break in it is refused and never runs as shell, and publish refuses anything but a flat
   set of JSON files; and "Replace the branch's one commit" tries its push three times. tar, gzip, base64 and
   jq are real; `git`, `timeout`, `sleep` and `gh` are shell functions.
+- main-health.yml "Open, update or close the tracking issue" (#4739): with no issue changed, a dashboard whose
+  newest run was created eight or more minutes ago gets a dispatch, and one that ran lately, has never run or
+  can't be listed gets none; an issue that changed is still one dispatch and doesn't ask.
 - main-health.yml "Open, update or close the tracking issue" (#4700): a run that opened or closed a tracking
   issue dispatches release-dashboard.yml once, however many branches changed, and does so on exit, so also
   when a later branch then fails the step; a run that changed nothing or only rewrote an open issue
@@ -3187,7 +3190,8 @@ class HeavyChecksPushScopeTests(unittest.TestCase):
 # (a process per call would add about forty launches to a ctest entry that is short of time on ARM64 Windows,
 # #3643): logs each call on one line to $CALLS, lists $RELEASE_BRANCHES, finds the open tracking issues named
 # in $OPEN_ISSUES ("<branch>=<number>", space-separated), fails the lookup for $FAIL_BRANCH, opens #99, and
-# answers the dispatch with status $DISPATCH_STATUS.
+# answers the dispatch with status $DISPATCH_STATUS. The dashboard's newest run was created at $NEWEST_RUN
+# ("none" for a workflow that has never run, "fail" for a listing that can't be read).
 DASHBOARD_DISPATCH_GH_STUB = r"""gh() {
   local call="$*" name entry
   printf '%s\n' "${call//$'\n'/ }" >>"$CALLS"
@@ -3201,6 +3205,9 @@ DASHBOARD_DISPATCH_GH_STUB = r"""gh() {
       done ;;
     "api -X POST repos/owner/repo/actions/workflows/release-dashboard.yml/dispatches "*)
       return "${DISPATCH_STATUS:-0}" ;;
+    "api repos/owner/repo/actions/workflows/release-dashboard.yml/runs?branch=main&per_page=1 --jq .workflow_runs[0].created_at // empty")
+      if [[ "$NEWEST_RUN" == fail ]]; then return 1; fi
+      if [[ "$NEWEST_RUN" != none ]]; then echo "$NEWEST_RUN"; fi ;;
     "api repos/owner/repo/issues -f title="*) echo 99 ;;
     "api repos/owner/repo/issues/"*" --jq .body") echo '- **Sanitizers** (push): `failure`' ;;
     "api repos/owner/repo/labels "*|"api -X PATCH repos/owner/repo/issues/"*|"api repos/owner/repo/issues/"*"/comments "*) ;;
@@ -3214,20 +3221,33 @@ sleep() { :; }
 class MainHealthTellsTheDashboardTests(unittest.TestCase):
     """#4700: Main Health opens and closes its tracking issue with the workflow token, which starts no workflow,
     so the release dashboard only saw main turn red or green at its next run. A run that opened or closed an
-    issue now dispatches the dashboard, once, and a dispatch that fails doesn't fail the check."""
+    issue now dispatches the dashboard, once, and a dispatch that fails doesn't fail the check.
+
+    #4739: it also dispatches one when the dashboard has started no run for eight minutes. GitHub starts the
+    hour's first scheduled runs about ten minutes late, and the page's figures were up to 18 minutes old."""
 
     WORKFLOW = WORKFLOWS / "main-health.yml"
     DISPATCH = "api -X POST repos/owner/repo/actions/workflows/release-dashboard.yml/dispatches --silent -f ref=main"
+    ASKED = "api repos/owner/repo/actions/workflows/release-dashboard.yml/runs?branch=main&per_page=1 --jq .workflow_runs[0].created_at // empty"
     # name: (the branches judged red, the tracking issues open before the run, the release branches that exist,
-    #        the dispatch call's exit status, the branch whose issue lookup fails)
+    #        the dispatch call's exit status, the branch whose issue lookup fails, how many minutes ago the
+    #        dashboard's newest run was created: "none" for never, "fail" for a listing that can't be read)
     CASES = {
-        "green, no issue": ("", "", "", 0, ""),
-        "main turns red": ("main", "", "", 0, ""),
-        "main stays red": ("main", "main=7", "", 0, ""),
-        "main turns green": ("", "main=7", "", 0, ""),
-        "two branches change in one run": ("main", "release/0.9=8", "release/0.9", 0, ""),
-        "the dispatch fails": ("main", "", "", 1, ""),
-        "a later branch fails after main's issue opened": ("main", "", "release/0.9", 0, "release/0.9"),
+        "green, no issue": ("", "", "", 0, "", 1),
+        "main turns red": ("main", "", "", 0, "", 1),
+        "main stays red": ("main", "main=7", "", 0, "", 1),
+        "main turns green": ("", "main=7", "", 0, "", 1),
+        "two branches change in one run": ("main", "release/0.9=8", "release/0.9", 0, "", 1),
+        "the dispatch fails": ("main", "", "", 1, "", 1),
+        "a later branch fails after main's issue opened": ("main", "", "release/0.9", 0, "release/0.9", 1),
+        # #4739: nothing changed, and the dashboard's newest run is this old.
+        "green, the dashboard quiet for 9 minutes": ("", "", "", 0, "", 9),
+        "main stays red, the dashboard quiet for 9 minutes": ("main", "main=7", "", 0, "", 9),
+        "green, the dashboard's last run 7 minutes ago": ("", "", "", 0, "", 7),
+        "green, the dashboard has never run": ("", "", "", 0, "", "none"),
+        "green, the dashboard's runs can't be listed": ("", "", "", 0, "", "fail"),
+        "green and quiet, and the dispatch fails": ("", "", "", 1, "", 9),
+        "main turns red with the dashboard quiet too": ("main", "", "", 0, "", 20),
     }
 
     @classmethod
@@ -3246,10 +3266,14 @@ class MainHealthTellsTheDashboardTests(unittest.TestCase):
             '}\n'
         )
         script = []
-        for index, (red, open_issues, release_branches, status, fails) in enumerate(cls.CASES.values()):
+        now = time.time()
+        for index, (red, open_issues, release_branches, status, fails, quiet) in enumerate(cls.CASES.values()):
+            # The step's own `date` reads the real clock, so "9 minutes ago" is 9 minutes and 20 seconds before
+            # this was built: the seconds this takes to run can't tip a case over a minute.
+            newest = quiet if isinstance(quiet, str) else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(now - quiet * 60 - 20))
             script += [
                 f'( export RED_BRANCHES="{red}" OPEN_ISSUES="{open_issues}" RELEASE_BRANCHES="{release_branches}"',
-                f'  export DISPATCH_STATUS="{status}" FAIL_BRANCH="{fails}" CALLS="$DIR/calls-{index}"',
+                f'  export DISPATCH_STATUS="{status}" FAIL_BRANCH="{fails}" CALLS="$DIR/calls-{index}" NEWEST_RUN="{newest}"',
                 '  : > "$CALLS"',
                 functions,
                 DASHBOARD_DISPATCH_GH_STUB,
@@ -3270,7 +3294,9 @@ class MainHealthTellsTheDashboardTests(unittest.TestCase):
             "TRIGGER_URL": "https://github.example/runs/1",
             "TRIGGER_CONCLUSION": "failure",
             "TRIGGER_SHA": "0123456789abcdef",
+            "DASHBOARD_QUIET_MINUTES": step.env["DASHBOARD_QUIET_MINUTES"],
         }
+        cls.quiet_minutes = int(step.env["DASHBOARD_QUIET_MINUTES"])
         cls.result = run_bash("\n".join(script), tmp, env)
 
         def text(kind: str, index: int) -> str:
@@ -3325,6 +3351,51 @@ class MainHealthTellsTheDashboardTests(unittest.TestCase):
         log = self.seen[name]["log"]
         self.assertIn("try 4 of 4 failed", log)
         self.assertIn("Started a Release Dashboard run: opened #99 for main.", log)
+
+    def test_a_dashboard_with_no_run_for_eight_minutes_gets_one(self):
+        # #4739: the hour's first scheduled runs come about ten minutes late. Nothing changed here, and the
+        # dashboard is started all the same, whether main is green or stays red.
+        self.assertEqual(self.quiet_minutes, 8)
+        for name in ("green, the dashboard quiet for 9 minutes", "main stays red, the dashboard quiet for 9 minutes"):
+            with self.subTest(case=name):
+                self.assertEqual(self.dispatches(name), [self.DISPATCH])
+                self.assertIn("Started a Release Dashboard run: none has started for 9 minutes.", self.seen[name]["log"])
+                self.assertEqual(self.seen[name]["calls"].count(self.ASKED), 1)
+
+    def test_a_dashboard_that_ran_lately_is_left_alone(self):
+        for name in ("green, the dashboard's last run 7 minutes ago", "green, no issue"):
+            with self.subTest(case=name):
+                self.assertEqual(self.dispatches(name), [])
+                self.assertEqual(self.seen[name]["calls"].count(self.ASKED), 1)
+                self.assertNotIn("Release Dashboard", self.seen[name]["log"])
+
+    def test_a_question_that_fails_or_finds_no_run_starts_nothing_and_fails_nothing(self):
+        for name in ("green, the dashboard has never run", "green, the dashboard's runs can't be listed"):
+            with self.subTest(case=name):
+                self.assertEqual(self.dispatches(name), [])
+                self.assertNotIn("::warning", self.seen[name]["log"])
+
+    def test_a_quiet_dashboard_whose_dispatch_fails_is_a_warning(self):
+        name = "green and quiet, and the dispatch fails"
+        self.assertEqual(self.dispatches(name), [self.DISPATCH])
+        self.assertIn("::warning title=Main Health::The Release Dashboard run couldn't be started (none has started for 9 minutes). "
+                      "Its schedule starts the next.", self.seen[name]["log"])
+
+    def test_an_issue_that_changed_is_the_reason_given_and_the_dashboard_isnt_asked(self):
+        # One dispatch, not two, and no question: the issue's change starts the run whatever the dashboard did.
+        name = "main turns red with the dashboard quiet too"
+        self.assertEqual(self.dispatches(name), [self.DISPATCH])
+        self.assertIn("Started a Release Dashboard run: opened #99 for main.", self.seen[name]["log"])
+        self.assertNotIn(self.ASKED, self.seen[name]["calls"])
+        self.assertNotIn(self.ASKED, self.seen["main turns red"]["calls"])
+
+    def test_it_cant_start_itself_in_a_loop(self):
+        # Main Health runs after the watched workflows finish. The dashboard isn't one of them, so a run this
+        # starts doesn't bring Main Health back, and for eight minutes it is the newest run the question finds.
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        watched = text.split("    workflows: [", 1)[1].split("]", 1)[0]
+        self.assertNotIn("Release Dashboard", watched)
+        self.assertNotIn("release-dashboard", text.split("          WATCHED: |-\n", 1)[1].split("          # Jobs that only some runs", 1)[0])
 
     def test_the_job_may_dispatch_and_the_dashboard_can_be_dispatched(self):
         text = self.WORKFLOW.read_text(encoding="utf-8")

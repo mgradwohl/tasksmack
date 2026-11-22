@@ -39,9 +39,10 @@ on:
     - cron: '8-59/10 * * * *'
   # A person's run ("Refresh now" on the page), and Main Health's when it opens or closes a `ci-red-main`
   # issue (#4700): those issues are written with the workflow token, which starts no workflow except by a
-  # dispatch. The two are told apart by who sent them. A person's cancels the run in progress and always
-  # generates. Main Health's queues like any other run, doesn't wait for the five minutes, and stops if the
-  # published data already has main's new state.
+  # dispatch. Main Health also sends one when this workflow has started no run for eight minutes (#4739):
+  # the hour's first scheduled runs come about ten minutes late. The two are told apart by who sent them.
+  # A person's cancels the run in progress and always generates. Main Health's queues like any other run,
+  # doesn't wait for the five minutes, and stops if the published data already has what it would add.
   workflow_dispatch:
   # What the page shows changes when an issue closes, reopens or changes milestone, and when main moves
   # (#4604), so each of those starts a run. Such a run stops at once if the published data already has its
