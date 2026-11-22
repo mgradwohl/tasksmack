@@ -271,9 +271,10 @@ How it's made:
   issue on a milestone is one of those), when `main` moves, when Main Health opens or closes a `ci-red-main`
   issue, and on a schedule (#4604, #4700). GitHub starts scheduled runs late and skips some when it's busy, so
   one schedule line alone left the page up to 37 minutes behind: there are two, five minutes apart. Both
-  lines' first slots of an hour still come about ten minutes late together, so Main Health, which runs after
-  every watched workflow on `main`, also starts a run when the dashboard has started none for eight minutes
-  (#4739). A run that an issue, a push or the schedule started waits until the published data is five minutes
+  lines' first slots of an hour still come about ten minutes late together, so Main Health also starts a run
+  when the dashboard has none going and none has finished for six minutes (#4739). Main Health runs after
+  each watched workflow on `main` finishes, so this shortens the gap while `main` is busy and leaves it in a
+  quiet hour. A run that an issue, a push or the schedule started waits until the published data is five minutes
   old; Main Health's and a person's don't. Labels, edits, comments and pull request events start none (#4620):
   every event is a run, GitHub lists each one that wasn't needed as cancelled, and the next run reads them
   anyway. So a new label can take until the next run to show.
