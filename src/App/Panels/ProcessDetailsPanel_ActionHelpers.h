@@ -329,7 +329,15 @@ inline constexpr float AUTHORIZE_RESULT_SECONDS = 30.0F;
     switch (action)
     {
     case ProcessAction::Terminate:
+#ifdef _WIN32
+        // Windows asks through the process's windows (WM_CLOSE): say so before the confirm, not only when it fails (#4755).
+        return std::format("{} (PID {}) will be asked to exit. It can save its work first, or refuse. Windows asks through its "
+                           "windows, so a process with no window can't be asked: use Kill to end it.",
+                           processName,
+                           pid);
+#else
         return std::format("{} (PID {}) will be asked to exit. It can save its work first, or refuse.", processName, pid);
+#endif
     case ProcessAction::Kill:
         return std::format("{} (PID {}) will end immediately, without saving its work.", processName, pid);
     case ProcessAction::Stop:

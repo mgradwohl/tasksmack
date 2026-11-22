@@ -106,7 +106,7 @@ struct StartupViewState
     std::string filter;
     StartupColumn sortColumn = StartupColumn::Enabled; ///< The default (#1597): enabled entries first.
     bool ascending = true;
-    /// "Show Microsoft entries" (#3424): Windows' own scheduled tasks are hidden until it is ticked, as in Autoruns.
+    /// "Show Windows tasks" (#3424): Windows' own scheduled tasks are hidden until it is ticked, as in Autoruns.
     bool showOsComponents = false;
 
     std::vector<std::size_t> rows;

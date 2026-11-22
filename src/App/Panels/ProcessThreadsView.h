@@ -75,7 +75,7 @@ inline constexpr std::string_view THREAD_CPU_UNKNOWN = "\xE2\x80\x94";
 }
 
 /// The STATE cell: the state's name, then a suspended thread's suspend count or a waiting one's wait reason
-/// (Windows, #3069): "Stopped (suspend count 2)", "Sleeping (UserRequest)", "Running".
+/// (Windows, #3069): "Suspended (suspend count 2)", "Sleeping (UserRequest)", "Running".
 [[nodiscard]] inline std::string threadStateText(const Platform::ProcessThread& thread)
 {
     std::string text(Domain::processStateName(thread.state));
@@ -148,7 +148,7 @@ class ProcessThreadsView
         std::optional<double> cpuPercent; ///< None on the first read of it
         double cpuSeconds = 0.0;
         std::string tid;
-        std::string state;   ///< "Sleeping", "Stopped (suspend count 1)"
+        std::string state;   ///< "Sleeping", "Suspended (suspend count 1)"
         std::string cpu;     ///< "3.2%", or the dash
         std::string cpuTime; ///< "1m 04s"
         std::string nice;    ///< "0"

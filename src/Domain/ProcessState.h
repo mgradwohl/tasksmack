@@ -27,7 +27,12 @@ inline constexpr std::array<ProcessStateName, 8> PROCESS_STATE_NAMES{
         {.code = 'S', .name = "Sleeping"},
         {.code = 'D', .name = "Disk Sleep"},
         {.code = 'Z', .name = "Zombie"},
+#ifdef _WIN32
+        // Windows' word, and the one TaskSmack's own Suspend and Resume use: every thread is suspended (#4755).
+        {.code = 'T', .name = "Suspended"},
+#else
         {.code = 'T', .name = "Stopped"},
+#endif
         {.code = 't', .name = "Tracing"},
         {.code = 'X', .name = "Dead"},
         {.code = 'I', .name = "Idle"},
@@ -37,7 +42,7 @@ inline constexpr std::array<ProcessStateName, 8> PROCESS_STATE_NAMES{
 /// The code and name for any state not in PROCESS_STATE_NAMES.
 inline constexpr ProcessStateName UNKNOWN_PROCESS_STATE{.code = '?', .name = "Unknown"};
 
-/// The display name for a raw state code: 'T' -> "Stopped", anything unlisted -> "Unknown".
+/// The display name for a raw state code: 'T' -> "Stopped" ("Suspended" on Windows), anything unlisted -> "Unknown".
 [[nodiscard]] constexpr std::string_view processStateName(char code) noexcept
 {
     for (const auto& entry : PROCESS_STATE_NAMES)

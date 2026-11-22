@@ -614,7 +614,7 @@ TEST_F(ProcessesPanelRenderTest, TheGroupControlOffersOnlyTheModesThisSystemHasD
         return std::ranges::find(offered, label) != offered.end();
     };
     EXPECT_TRUE(offers("None")) << text;
-    EXPECT_TRUE(offers("Unit")) << text;
+    EXPECT_TRUE(offers(ProcessGrouping::groupByLabel(ProcessGrouping::GroupBy::Unit))) << text; // Service on Windows (#4755)
     EXPECT_TRUE(offers("User")) << text;
     EXPECT_FALSE(offers("Container")) << text;
     EXPECT_FALSE(offers("App")) << text;

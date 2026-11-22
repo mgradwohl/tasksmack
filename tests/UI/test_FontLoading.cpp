@@ -16,6 +16,7 @@
 #include <imgui.h>
 #include <imgui_internal.h> // ImTextCharFromUtf8()
 
+#include <cmath>
 #include <filesystem>
 #include <memory>
 #include <string_view>
@@ -165,6 +166,33 @@ TEST_F(FontLoadingTest, TheBodyFontHasTheIconsAndTabularDigits)
     EXPECT_LT(ImGui::CalcTextSize("i").x, zero);
     ImGui::PopFont();
     ImGui::EndFrame();
+}
+
+// #4762: each tabular digit is centred in its wider advance by a whole pixel (PixelSnapH), so its quad starts on a
+// pixel and never samples the atlas padding beside it, which after a font-size change held the old glyphs' pixels and
+// drew a faint mark beside every digit at 9 pt. Every size a user can pick.
+TEST_F(FontLoadingTest, TheTabularDigitsStartOnAWholePixelAtEverySize)
+{
+    Theme& theme = Theme::get();
+    for (int points = FONT_POINT_SIZE_MIN; points <= FONT_POINT_SIZE_MAX; ++points)
+    {
+        theme.setFontPointSize(points);
+        loadAllFonts(files(), assetsDir(), 1.0F);
+        ImFont* body = theme.regularFont();
+        ASSERT_NE(body, nullptr);
+        ImGui::NewFrame();
+        ImGui::PushFont(body, 0.0F);
+        ImFontBaked* baked = ImGui::GetFontBaked();
+        for (ImWchar digit = '0'; digit <= '9'; ++digit)
+        {
+            const ImFontGlyph* glyph = baked->FindGlyphNoFallback(digit);
+            ASSERT_NE(glyph, nullptr) << points << " pt, " << static_cast<char>(digit);
+            EXPECT_FLOAT_EQ(glyph->X0, std::floor(glyph->X0)) << points << " pt, '" << static_cast<char>(digit) << "'";
+        }
+        ImGui::PopFont();
+        ImGui::EndFrame();
+    }
+    theme.setFontPointSize(FONT_POINT_SIZE_DEFAULT);
 }
 
 // #4573: Inter has no U+FFFD, and ImGui draws a missing glyph as its fallback character, '?' for Inter, so a

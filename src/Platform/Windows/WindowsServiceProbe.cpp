@@ -243,7 +243,8 @@ ServiceEnumeration WindowsServiceProbe::enumerate()
             info.startType = cached.config.startType;
             info.binaryPath = cached.config.binaryPath;
             info.executablePath = cached.executablePath;
-            info.account = cached.config.account;
+            // As services.msc words it (#4755): "Local System", not the registry's "localSystem".
+            info.account = Windows::ServiceMath::serviceAccountText(cached.config.account, entry.ServiceStatusProcess.dwServiceType);
             info.description = cached.config.description;
             info.group = cached.config.group;
             seen.insert(wideName);
