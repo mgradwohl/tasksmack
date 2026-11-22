@@ -8,6 +8,7 @@
 /// test_ProcessesPanel.cpp doesn't link ProcessesPanel.cpp either - so these tests exercise the
 /// actual dispatch decision logic directly against a mock, which is the part #415 cared about.
 
+#include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessDetailsPanel_ActionHelpers.h"
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessSnapshot.h"
@@ -239,6 +240,21 @@ TEST(ProcessActionHelpersTest, ConfirmBodyStatesTheOutcome)
         EXPECT_TRUE(body.contains("proc (PID 42)")) << body;
         EXPECT_FALSE(body.contains("Are you sure")) << body;
     }
+}
+
+// #4755: Windows asks a process to exit through its windows, so Terminate's confirmation says, before it is sent,
+// that one with no window can't be asked and Kill ends it; Linux sends SIGTERM, which needs no window.
+TEST(ProcessActionHelpersTest, TerminatesConfirmationSaysAWindowlessProcessNeedsKillOnWindows)
+{
+    const std::string body = confirmBody(ProcessAction::Terminate, "worker.exe", 77);
+    EXPECT_TRUE(body.starts_with("worker.exe (PID 77) will be asked to exit. It can save its work first, or refuse.")) << body;
+#ifdef _WIN32
+    EXPECT_TRUE(body.contains("no window can't be asked: use Kill to end it.")) << body;
+    EXPECT_TRUE(ProcessBatch::confirmSummary(ProcessAction::Terminate, 3).contains("no window can't be asked: use Kill to end it."));
+#else
+    EXPECT_FALSE(body.contains("window")) << body;
+    EXPECT_FALSE(ProcessBatch::confirmSummary(ProcessAction::Terminate, 3).contains("window"));
+#endif
 }
 
 // The outcome is a flag, not a word to search for: neither a success whose text happens to

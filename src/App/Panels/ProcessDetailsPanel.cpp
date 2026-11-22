@@ -952,7 +952,13 @@ void ProcessDetailsPanel::renderBasicInfo(const Domain::ProcessSnapshot& proc)
     identityRows.add({.label = "Started", .value = text.started, .color = theme.scheme().textMuted});
     if (!proc.publisher.empty())
     {
-        identityRows.add({.label = "Publisher", .value = proc.publisher, .color = theme.scheme().textMuted});
+        // The company the file names itself (#4755): its tooltip says so, and points at the verified Signature.
+        identityRows.add({
+            .label = "Publisher",
+            .value = proc.publisher,
+            .color = theme.scheme().textMuted,
+            .tooltip = m_ProcessCapabilities.hasSignature ? ProcessSignatureText::PUBLISHER_TOOLTIP : std::string_view{},
+        });
     }
     if (m_ProcessCapabilities.hasSignature)
     {

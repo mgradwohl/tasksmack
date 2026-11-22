@@ -287,6 +287,27 @@ TEST(SystemInfoSectionsTest, CopyTextLeavesHiddenIdentifiersOut)
     return info; // no SKU, no embedded controller
 }
 
+// #4755: the BIOS release date reads ISO, as Installed and Boot time do, not SMBIOS's MM/DD/YYYY. A two-digit year is
+// SMBIOS 2.2's 19YY; anything that isn't such a date is shown as the firmware wrote it.
+TEST(SystemInfoSectionsTest, TheBiosReleaseDateIsIso)
+{
+    EXPECT_EQ(SystemInfo::firmwareDateText("08/03/2026"), "2026-08-03");
+    EXPECT_EQ(SystemInfo::firmwareDateText("12/31/1999"), "1999-12-31");
+    EXPECT_EQ(SystemInfo::firmwareDateText("05/14/98"), "1998-05-14");
+    EXPECT_EQ(SystemInfo::firmwareDateText(""), "");
+    EXPECT_EQ(SystemInfo::firmwareDateText("2024-05-14"), "2024-05-14") << "already ISO";
+    EXPECT_EQ(SystemInfo::firmwareDateText("13/01/2024"), "13/01/2024") << "no month 13";
+    EXPECT_EQ(SystemInfo::firmwareDateText("01/00/2024"), "01/00/2024") << "no day 0";
+    EXPECT_EQ(SystemInfo::firmwareDateText("1/5/2024"), "1/5/2024") << "not two-digit parts";
+    EXPECT_EQ(SystemInfo::firmwareDateText("01/05/224"), "01/05/224");
+    EXPECT_EQ(SystemInfo::firmwareDateText("0a/05/2024"), "0a/05/2024");
+    EXPECT_EQ(SystemInfo::firmwareDateText("01/05/2024 "), "01/05/2024 ");
+
+    Platform::FirmwareInfo info;
+    info.biosReleaseDate = "08/03/2026";
+    EXPECT_EQ(findRow(SystemInfo::buildFirmwareSection(info), "BIOS release date")->value, "2026-08-03");
+}
+
 TEST(SystemInfoSectionsTest, FirmwareSectionRows)
 {
     const Section section = SystemInfo::buildFirmwareSection(firmware());
