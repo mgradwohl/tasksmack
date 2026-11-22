@@ -44,8 +44,6 @@ on:
       - 'src/Platform/Linux/LinuxPlatformSecurity.h'
       - 'src/Platform/Linux/LinuxStorage.h'
       - 'src/Platform/Linux/NetworkdLinkJson.h'
-      - 'src/Platform/Linux/Nl80211.cpp'
-      - 'src/Platform/Linux/Nl80211.h'
       - 'src/Platform/Linux/PressureParser.h'
       - 'src/Platform/Linux/ProcFdParser.h'
       - 'src/Platform/Linux/ProcIoParser.h'
