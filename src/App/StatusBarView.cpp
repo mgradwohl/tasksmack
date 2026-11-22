@@ -24,6 +24,21 @@ namespace
 constexpr float CONFIG_PROBLEM_TOOLTIP_WIDTH_EM = 30.0F;
 } // namespace
 
+const char* accessChipTooltip(AccessChip chip) noexcept
+{
+    switch (chip)
+    {
+    case AccessChip::Standard:
+        return "Standard: some details of other users' processes, or actions on them, are unavailable. Click for Administrator";
+    case AccessChip::Capabilities:
+        return "Administrator, through file capabilities (setcap): every process can be seen and acted on. Services and other "
+               "systemd actions still need root: start TaskSmack (Administrator), or run it with sudo";
+    case AccessChip::Administrator:
+        break;
+    }
+    return "Administrator: nothing is limited for this session";
+}
+
 Action render(const Input& input)
 {
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
@@ -74,10 +89,7 @@ Action render(const Input& input)
             }
             if (ImGui::IsItemHovered())
             {
-                ImGui::SetTooltip("%s",
-                                  standard ? "Standard: some details of other users' processes, or actions on them, are unavailable. "
-                                             "Click for Administrator"
-                                           : "Administrator: nothing is limited for this session");
+                ImGui::SetTooltip("%s", accessChipTooltip(*input.access));
             }
             ImGui::SameLine();
         }

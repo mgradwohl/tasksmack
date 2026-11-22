@@ -462,6 +462,15 @@ invokerVariable(std::string_view name, std::optional<std::string> value, const s
     return false;
 }
 
+/// Whether this process is a capabilities session (#4766): not root, but holding capabilities, as the FAQ's setcap gives
+/// it. It sees and acts on every process, but systemd decides service actions by user, not capability, so those still
+/// need root. Worked out once.
+[[nodiscard]] inline bool capabilitiesOnlySession()
+{
+    static const bool capabilitiesOnly = ::geteuid() != 0 && processHoldsCapabilities();
+    return capabilitiesOnly;
+}
+
 /// Whether this process holds an ambient capability (/proc/self/status CapAmb), which a program it starts inherits; true
 /// when that can't be read, so no child is assumed to hold none.
 [[nodiscard]] inline bool processHoldsAmbientCapabilities()

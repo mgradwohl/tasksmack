@@ -398,6 +398,43 @@ TEST_F(ProcessesPanelRenderTest, PrivateAndSwapWithoutTheirFiguresShowTheDashAnd
     panel->onDetach();
 }
 
+// #4754: a process no account could be read for (on Windows, another account's, without administrator rights) shows
+// the dash in User, not a blank, and hovering it says why. The fixture's mock processes have no user.
+TEST_F(ProcessesPanelRenderTest, AUserNoAccountWasReadForShowsTheDashAndSaysWhy)
+{
+    ProcessColumnSettings& columns = UserConfig::get().settings().processColumns;
+    for (const ProcessColumn col : allProcessColumns())
+    {
+        if (getColumnInfo(col).canHide)
+        {
+            columns.setVisible(col, col == ProcessColumn::User);
+        }
+    }
+    const auto panel = attachedPanel();
+    renderUntilLoaded(*panel);
+    EXPECT_TRUE(renderAndCapture(*panel).contains(ProcessRowFormat::UNAVAILABLE_CELL_TEXT));
+
+    ImGuiStyle& style = ImGui::GetStyle();
+    style.HoverDelayShort = 0.0F;
+    style.HoverDelayNormal = 0.0F;
+    style.HoverStationaryDelay = 0.0F;
+    bool shown = false;
+    ImGuiIO& io = ImGui::GetIO();
+    for (int y = 20; y <= 140 && !shown; y += 6)
+    {
+        for (int x = 10; x <= static_cast<int>(DISPLAY_WIDTH) && !shown; x += 6)
+        {
+            io.AddMousePosEvent(static_cast<float>(x), static_cast<float>(y));
+            for (int frame = 0; frame < 3 && !shown; ++frame)
+            {
+                shown = renderAndCapture(*panel).contains(ProcessRowFormat::USER_UNREADABLE_CELL_REASON);
+            }
+        }
+    }
+    EXPECT_TRUE(shown) << "a blank User cell's tooltip";
+    panel->onDetach();
+}
+
 // #1891: with per-process GPU data supported but not read yet for a process (it was first listed after
 // the GPU sampler's last read), the GPU Engine and GPU Device cells read as the dash, and hovering one
 // says why -- not the generic "couldn't be read" an empty list would get.

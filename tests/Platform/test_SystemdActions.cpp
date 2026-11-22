@@ -111,6 +111,22 @@ TEST(SystemdActionsTest, ARefusalSaysToStartAnAdministratorSessionAndATimeoutIsP
     EXPECT_EQ(errorText("", "", true), "systemd didn't answer in time");
 }
 
+// #4766: a capabilities session's window says Administrator, so its refusal says why that isn't enough for systemd,
+// never "start TaskSmack (Administrator)" alone.
+TEST(SystemdActionsTest, ACapabilitiesSessionsRefusalSaysItNeedsRootNotAdministrator)
+{
+    using SystemdActions::errorText;
+    for (const std::string_view refused :
+         {SystemdActions::INTERACTIVE_AUTHORIZATION_REQUIRED, std::string_view("org.freedesktop.DBus.Error.AccessDenied")})
+    {
+        const std::string text = errorText(refused, "", false, true);
+        EXPECT_TRUE(text.starts_with("Requires root: this TaskSmack has file capabilities (setcap) only")) << text;
+        EXPECT_TRUE(text.contains("sudo")) << text;
+    }
+    EXPECT_EQ(errorText("", "", true, true), "systemd didn't answer in time") << "a timeout reads the same";
+    EXPECT_EQ(errorText("org.freedesktop.systemd1.NoSuchUnit", "x", false, true), "No such service");
+}
+
 TEST(SystemdActionsTest, RefusalsReadInTheUsersTerms)
 {
     // polkit's answer to an unprivileged caller that won't be prompted (#2006), and plain denial.
