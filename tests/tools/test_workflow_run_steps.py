@@ -3874,6 +3874,16 @@ class ReleaseDashboardGateTests(unittest.TestCase):
         self.assertIn("github.event_name != 'pull_request'", condition)
         self.assertIn("github.ref == 'refs/heads/main'", condition)
 
+    def test_neither_job_waits_in_the_builds_queue_for_a_runner(self):
+        # #4758: every other workflow runs on ubuntu-26.04, and its jobs waited minutes for a runner while the
+        # builds held that label's pool. A run here needs a runner twice. Both jobs run on a label the builds
+        # don't use, and a pinned one, not `latest`.
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        labels = re.findall(r"(?m)^    runs-on: (\S+)", text)
+        self.assertEqual(labels, ["ubuntu-24.04", "ubuntu-24.04"])
+        builds = (WORKFLOWS / "ci.yml").read_text(encoding="utf-8")
+        self.assertNotIn("runs-on: ubuntu-24.04", builds)
+
     def test_only_the_events_worth_a_run_start_one(self):
         # Each event starts a run, and a run that isn't needed shows as cancelled or stops here: Main Health
         # was two runs in three, and a new issue fired one `labeled` for each of its labels.

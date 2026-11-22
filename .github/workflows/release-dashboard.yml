@@ -87,10 +87,15 @@ concurrency:
 
 permissions: {}
 
+# Both jobs run on ubuntu-24.04, not the ubuntu-26.04 every other workflow here uses (#4758). That label's
+# pool is the one the builds, sanitizers and fuzzing queue on: on 2026-11-21, 96 of its 195 jobs in 75 minutes
+# waited a minute or more for a runner, the longest 18, while other labels' jobs started in about ten seconds.
+# A run here needs a runner twice, so the page's figures were 15 to 18 minutes old. Nothing here needs the
+# newer image: Python's standard library, git, jq, tar and base64.
 jobs:
   generate:
     name: Generate the data
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 15  # up to 5 minutes of waiting (below), then a run that has taken 1 to 5
     permissions:
       actions: read  # the watched workflows' runs, and release.yml's dry runs
@@ -415,7 +420,7 @@ jobs:
     if: >-
       github.event_name != 'pull_request' && github.ref == 'refs/heads/main' &&
       needs.generate.outputs.publish == 'true'
-    runs-on: ubuntu-26.04
+    runs-on: ubuntu-24.04
     timeout-minutes: 8  # three pushes of a minute each at the most, and the pauses between them
     permissions:
       contents: write  # replace the dashboard-data branch

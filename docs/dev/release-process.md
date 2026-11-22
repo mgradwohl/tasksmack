@@ -267,7 +267,8 @@ How it's made:
 - `tools/release-dashboard.py` reads the API and writes one JSON file per `vX.Y.Z` milestone, plus an index. A
   shipped release is written once and reused.
 - `.github/workflows/release-dashboard.yml` runs it and publishes the files to the `dashboard-data` branch, which
-  holds that one commit and nothing else. A run starts when an issue closes, reopens or changes milestone (a new
+  holds that one commit and nothing else. Its jobs run on `ubuntu-24.04`, not the `ubuntu-26.04` the builds
+  queue on: a run needs a runner twice, and waiting for one made the page up to 18 minutes old (#4758). A run starts when an issue closes, reopens or changes milestone (a new
   issue on a milestone is one of those), when `main` moves, when Main Health opens or closes a `ci-red-main`
   issue, and on a schedule (#4604, #4700). GitHub starts scheduled runs late and skips some when it's busy, so
   one schedule line alone left the page up to 37 minutes behind: there are two, five minutes apart. Both
