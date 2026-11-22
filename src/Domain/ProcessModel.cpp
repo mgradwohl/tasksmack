@@ -510,7 +510,7 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // A process this refresh couldn't read (#3031): its last row again, and its state as it was, so
         // the next real read is measured against the last real one. Not for a process with no row yet.
         if (current.heldOver && !inserted &&
-            appendHeldOverLocked(current, key, lastSampleTime, lastEnergyTime, lastGeneration, newSnapshots))
+            appendHeldOverLocked(current, key, lastSampleTime, lastEnergyTime, reseed, lastGeneration, newSnapshots))
         {
             const ProcessSnapshot& heldRef = newSnapshots.back();
             aggPageFaults += heldRef.pageFaultsPerSec;
@@ -529,9 +529,19 @@ void ProcessModel::computeSnapshotsLocked(const std::vector<Platform::ProcessCou
         // Read last refresh, as nearly every process was: this refresh's interval. Read before that, because
         // the refreshes between carried it over (#3031): the interval since that read.
         RateInterval interval{.totalCpuDelta = totalCpuDelta, .elapsedSeconds = elapsedSeconds, .timeDeltaUs = timeDeltaUs};
-        if (!m_HeldOver.empty() && !reseed)
+        if (!m_HeldOver.empty())
         {
-            interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime, energyAcquiredAt);
+            if (reseed)
+            {
+                // A re-seed emits no rate, but this read is still the process's new baseline: the held-over one is
+                // spent here too, or the next refresh would measure from it, about three intervals of time against
+                // one interval's counter growth (#4747).
+                m_HeldOver.erase(key);
+            }
+            else
+            {
+                interval = rateIntervalAfterHeldOverLocked(key, interval, totalCpuTime, currentSampleTime, energyAcquiredAt);
+            }
         }
 
         // --- peak RSS ---
@@ -1260,6 +1270,7 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
                                         const ProcessIdentity& key,
                                         Clock::time_point lastSampleTime,
                                         std::optional<Clock::time_point> lastEnergyTime,
+                                        bool reseed,
                                         std::shared_ptr<const ProcessGeneration>& previousGeneration,
                                         std::vector<ProcessSnapshot>& newSnapshots)
 {
@@ -1274,9 +1285,16 @@ bool ProcessModel::appendHeldOverLocked(const Platform::ProcessCounters& current
     {
         return false;
     }
-    // Its counters were read last refresh, unless it was carried over then too.
+    // Its counters were read last refresh, unless it was carried over then too: an entry already here was noted when
+    // they were, and no read has replaced them since, as every read takes the entry away first. In a re-seed refresh
+    // "last refresh" is the one that threw, which may or may not have stored this process's counters (#4747).
     m_HeldOver.try_emplace(key,
-                           HeldOverSince{.totalCpuTime = m_PrevTotalCpuTime, .sampleTime = lastSampleTime, .energyTime = lastEnergyTime});
+                           HeldOverSince{
+                               .totalCpuTime = m_PrevTotalCpuTime,
+                               .sampleTime = lastSampleTime,
+                               .energyTime = lastEnergyTime,
+                               .noBaseline = reseed,
+                           });
     // Copied in place: emplace_back(const ProcessSnapshot&), not the loop's push_back(ProcessSnapshot&&), so
     // that one stays inlined there.
     newSnapshots.emplace_back(*last).childrenIndices.clear(); // the next generation links its own tree
@@ -1293,6 +1311,11 @@ ProcessModel::RateInterval ProcessModel::rateIntervalAfterHeldOverLocked(const P
     if (since == m_HeldOver.end())
     {
         return interval;
+    }
+    if (since->second.noBaseline)
+    {
+        m_HeldOver.erase(since);
+        return RateInterval{}; // this read re-seeds the process: no rate (#4747)
     }
     interval.totalCpuDelta =
         (since->second.totalCpuTime > 0 && totalCpuTime > since->second.totalCpuTime) ? totalCpuTime - since->second.totalCpuTime : 0;

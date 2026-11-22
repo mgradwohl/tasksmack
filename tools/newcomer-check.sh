@@ -19,10 +19,10 @@
 #   2. git              install git if missing (no doc says to: a FINDING if it was needed)
 #   3. clone            git clone (CONTRIBUTING "Quick Start"), then check out --ref
 #   4. readme           README.md leads a newcomer to the build steps
-#   5. quickstart       CONTRIBUTING "Quick Start": python3.14 venv, requirements.txt, pre-commit
+#   5. quickstart       CONTRIBUTING "Quick Start" still gives its order: the automated setup first (it
+#                       installs Python 3.14 and makes .venv), the dev workflow, then pre-commit install
 #   6. setup-dev        ./tools/setup-dev.sh ("Automated Setup (Linux)")
-#   7. activate         source .venv/bin/activate (and retry the Quick Start Python steps when
-#                       they could not run before setup)
+#   7. activate         source .venv/bin/activate, then the Quick Start's pre-commit install with it active
 #   8. check-prereqs    ./tools/check-prereqs.sh
 #   9. dev-workflow     cmake --workflow --preset dev ("One-Command Dev Workflow")
 #  10. ctest            ctest --preset debug ("Test")
@@ -140,7 +140,6 @@ STEP_NOTE_LIST=()
 COMMIT="(not cloned)"
 DISPLAY_MODE=""
 GUI_WRAP=()        # empty on a desktop, (xvfb-run -a) headless
-QUICKSTART_DEFERRED=0
 SUDO_KEEPALIVE_PID=""
 
 note() {
@@ -400,16 +399,10 @@ step_readme() {
     return 0
 }
 
-# The Quick Start's Python commands, in its order. Returns 1 at the first one that fails.
-quickstart_python() {
-    cite CONTRIBUTING.md "python3.14 -m venv .venv"
-    run python3.14 -m venv .venv || return 1
-    cite CONTRIBUTING.md "source .venv/bin/activate"
-    activate_venv || return 1
-    cite CONTRIBUTING.md "python -m pip install -r requirements.txt"
-    run python -m pip install -r requirements.txt || return 1
+# The Quick Start's last step, with .venv active: the pre-commit hooks a first pull request needs.
+quickstart_hooks() {
     cite CONTRIBUTING.md "pre-commit install"
-    run pre-commit install || return 1
+    run pre-commit install
 }
 
 activate_venv() {
@@ -426,19 +419,13 @@ activate_venv() {
 
 step_quickstart() {
     cd "${CLONE_DIR}" || return 1
-    # Quick Start comes first in CONTRIBUTING.md and needs Python 3.14 before any setup step has installed it.
-    # Ubuntu 26.04 ships it as python3 (an older base, 24.04's 3.12, doesn't), but a fresh distro may lack its venv
-    # module, which quickstart_python() then reports.
-    if ! command -v python3.14 >/dev/null 2>&1; then
-        cite CONTRIBUTING.md "python3.14 -m venv .venv"
-        finding "Quick Start runs python3.14 before any step installs it (this distro ships Python $(python3 -c 'import sys; print(f"{sys.version_info[0]}.{sys.version_info[1]}")' 2>/dev/null || echo '?')); its venv/pip/pre-commit commands cannot run until 'Automated Setup (Linux)' below. Retried after setup-dev.sh"
-        QUICKSTART_DEFERRED=1
-        return 0
-    fi
-    if ! quickstart_python; then
-        fail "a Quick Start Python command failed before setup (see the log)"
-        return 1
-    fi
+    # The Quick Start's order (#4712): clone, then the OS's automated setup, which installs Python 3.14 and makes .venv
+    # (no Python command comes before it: a fresh Ubuntu 26.04 has python3.14 but not its venv module), then activate
+    # and check-prereqs, the dev workflow, and pre-commit install before a first pull request. Clone ran above and the
+    # rest run below as their own steps, in that order; this step checks the Quick Start still says so.
+    cite CONTRIBUTING.md "Run your OS's automated setup"
+    cite CONTRIBUTING.md "cmake --workflow --preset dev"
+    cite CONTRIBUTING.md "pre-commit install"
 }
 
 step_setup_dev() {
@@ -462,13 +449,9 @@ step_activate() {
     cite CONTRIBUTING.md "source .venv/bin/activate     # Use the project-local Python environment"
     activate_venv || { fail "could not activate .venv after setup-dev.sh"; return 1; }
     echo "python: $(command -v python) ($(python --version 2>&1))"
-    if [[ "${QUICKSTART_DEFERRED}" -eq 1 ]]; then
-        echo "Retrying the Quick Start Python commands now that setup-dev.sh installed Python 3.14:"
-        if ! quickstart_python; then
-            fail "a Quick Start Python command still fails after setup-dev.sh (see the log)"
-            return 1
-        fi
-        note "Quick Start Python commands work after setup-dev.sh"
+    if ! quickstart_hooks; then
+        fail "the Quick Start's pre-commit install failed with .venv active (see the log)"
+        return 1
     fi
 }
 
