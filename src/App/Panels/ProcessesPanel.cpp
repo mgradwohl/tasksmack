@@ -629,9 +629,15 @@ void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*f
 }
 
 /// The owner, left-aligned: its user name, or "CORP\alice" when two accounts with processes share that
-/// name (RowFormatCache::qualifiedUser, #3328).
-void userCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+/// name (RowFormatCache::qualifiedUser, #3328). The unreadable dash, saying why on hover, when no account
+/// could be read for it (#4754).
+void userCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
+    if (proc.user.empty())
+    {
+        renderUnavailableTextCell(ProcessRowFormat::USER_UNREADABLE_CELL_REASON, widths.unavailableText);
+        return;
+    }
     renderLeftAlignedText(fmt.qualifiedUser.empty() ? std::string_view{proc.user} : std::string_view{fmt.qualifiedUser}, fmt.userWidth);
 }
 
@@ -1440,6 +1446,10 @@ void ProcessesPanel::onEvent(Core::Event& event)
             if (m_Sampler)
             {
                 m_Sampler->requestStop();
+            }
+            if (m_UserSessions != nullptr)
+            {
+                m_UserSessions->requestStop(); // the sessions feed's too (#4656): its join overlaps, not follows
             }
             return false;
         });
@@ -2465,9 +2475,8 @@ void ProcessesPanel::renderContent()
             // Sort m_CachedSortedIndices (a copy of natural order), leaving m_CachedFilteredIndices
             // in natural order for the next sort to start from.
             m_CachedSortedIndices = m_CachedFilteredIndices;
-            std::ranges::sort(m_CachedSortedIndices,
-                              [&currentSnapshots, sortCol, ascending](size_t a, size_t b)
-                              { return ProcessSortUtils::compareByColumn(currentSnapshots[a], currentSnapshots[b], sortCol, ascending); });
+            // A text column folds each row's key once, not on every comparison (#4509).
+            ProcessSortUtils::sortByColumn(currentSnapshots, m_CachedSortedIndices, sortCol, ascending);
             // Pinned processes ahead of the rest, each group in the sort's order (#3061); in tree view
             // that puts pinned roots first, and pinned children first among their siblings.
             ProcessPins::pinnedFirst(m_CachedSortedIndices, currentSnapshots, m_Pins);
@@ -2831,10 +2840,25 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         }
         // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
         // most one rectangle or one line (#1612).
-        if (m_MetersShown && !exited) // an exited row's last values aren't live: no meter
+        // An exited row's last values aren't live, and the System Idle Process's CPU is idle time (#4753): no meter.
+        if (m_MetersShown && !exited && ProcessRowMeter::drawsMeterFor(proc, col))
         {
             ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
             ProcessRowMeter::renderCellSparkline(m_MeterSettings, col, m_CachedRowHistory.get(), procIdx, m_MeterColors);
+        }
+        if (ProcessRowMeter::showsIdleTime(proc, col))
+        {
+            // Muted, and saying why on hover, so ~90% idle doesn't read as 90% load (#4753).
+            ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+            CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
+            ImGui::PopStyleColor();
+            if (ImGui::BeginItemTooltip())
+            {
+                const std::string_view tip = ProcessRowMeter::IDLE_TIME_TOOLTIP;
+                ImGui::TextUnformatted(tip.data(), tip.data() + tip.size());
+                ImGui::EndTooltip();
+            }
+            continue;
         }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }

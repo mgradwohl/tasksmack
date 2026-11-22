@@ -13,11 +13,14 @@
 #include "Platform/ThreadName.h"
 #include "Platform/Windows/BrokerPipe.h"
 #include "Platform/Windows/BrokerPipeServer.h"
+#include "Platform/Windows/OrdinalCase.h"
 #include "Platform/Windows/WinString.h"
 #include "Platform/Windows/WindowsConversions.h"
+#include "Platform/Windows/WindowsFinalPath.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsNtQuery.h"
 #include "Platform/Windows/WindowsProcessIdentity.h"
+#include "Platform/Windows/WindowsSecurityOwners.h"
 
 #include <algorithm>
 #include <array>
@@ -84,33 +87,8 @@ constexpr std::wstring_view BROKER_FLAG = L"--broker";
     return Platform::WinString::win32ErrorText(error);
 }
 
-/// The longest path the wide Win32 calls return, in characters (an extended-length path).
-constexpr DWORD LONGEST_PATH = 32'768;
-
-/// A path a Win32 call writes into a buffer of the size it is given, @p read(buffer, size) returning
-/// the characters written (0 on failure, or @p size or more when the buffer was too small): MAX_PATH
-/// first, then the longest path. nullopt when it fails or doesn't fit.
-template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read read)
-{
-    for (const DWORD size : {DWORD{MAX_PATH}, LONGEST_PATH})
-    {
-        std::wstring path(size, L'\0');
-        const DWORD written = read(path.data(), size);
-        if (written == 0)
-        {
-            return std::nullopt;
-        }
-        if (written < size)
-        {
-            path.resize(written);
-            return path;
-        }
-    }
-    return std::nullopt;
-}
-
 /// The final path of the file at @p path: what it names once "..", short names, links and case are
-/// resolved. nullopt when it can't be opened.
+/// resolved, with the \\?\ prefix Windows gives it. nullopt when it can't be opened.
 [[nodiscard]] std::optional<std::wstring> finalPathOf(const std::wstring& path)
 {
     // No access asked beyond its attributes, every sharing mode: a running executable opens like
@@ -126,25 +104,8 @@ template<typename Read> [[nodiscard]] std::optional<std::wstring> readPath(Read 
     {
         return std::nullopt;
     }
-    return readPath([&file](wchar_t* buffer, DWORD size)
-                    { return GetFinalPathNameByHandleW(file.get(), buffer, size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); });
-}
-
-/// @p path without the prefix GetFinalPathNameByHandleW gives it: "C:\dir" for "\\?\C:\dir", and
-/// "\\server\share" for "\\?\UNC\server\share", so std::filesystem finds its root and each folder above.
-[[nodiscard]] std::wstring withoutExtendedPrefix(const std::wstring& path)
-{
-    constexpr std::wstring_view UNC = L"\\\\?\\UNC\\";
-    constexpr std::wstring_view EXTENDED = L"\\\\?\\";
-    if (path.starts_with(UNC))
-    {
-        return L"\\\\" + path.substr(UNC.size());
-    }
-    if (path.starts_with(EXTENDED))
-    {
-        return path.substr(EXTENDED.size());
-    }
-    return path;
+    return readFinalPath(
+        file.get(), &::GetFinalPathNameByHandleW, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS, FinalPathBuffer::Longest, FinalPathPrefix::Kept);
 }
 
 /// Frees what the security calls allocate with LocalAlloc.
@@ -212,14 +173,8 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
             return true;
         }
     }
-    // NT SERVICE\TrustedInstaller, which owns Windows' own files.
-    PSID trustedInstaller = nullptr;
-    if (ConvertStringSidToSidW(L"S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464", &trustedInstaller) == FALSE)
-    {
-        return false;
-    }
-    const std::unique_ptr<void, LocalFreer> owned(trustedInstaller);
-    return EqualSid(sid, trustedInstaller) != FALSE;
+    // NT SERVICE\TrustedInstaller, which owns Windows' own files (WindowsSecurityOwners.h's static SID, #4699).
+    return isTrustedInstaller(sid);
 }
 
 /// Whether @p descriptor's owner and every ACE that applies to the object itself leave @p rights to
@@ -274,7 +229,7 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
             PSID sid = &allowed->SidStart;
             if ((mask & rights) != 0 && !isAdministrative(sid))
             {
-                return std::unexpected(std::format("{} can change {} (rights 0x{:08X})", sidText(sid), name, mask & rights));
+                return std::unexpected(std::format("{} can change {}: it may {}", sidText(sid), name, changeRightsText(mask & rights)));
             }
             break;
         }
@@ -287,25 +242,6 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
         }
     }
     return {};
-}
-
-/// @p path without its trailing separators, for comparing a folder's names: "C:" for "C:\".
-[[nodiscard]] std::wstring_view withoutTrailingSeparators(std::wstring_view path)
-{
-    while (!path.empty() && (path.back() == L'\\' || path.back() == L'/'))
-    {
-        path.remove_suffix(1);
-    }
-    return path;
-}
-
-/// Whether two paths are the same text, ignoring case as NTFS does and trailing separators.
-[[nodiscard]] bool samePathText(std::wstring_view first, std::wstring_view second)
-{
-    first = withoutTrailingSeparators(first);
-    second = withoutTrailingSeparators(second);
-    return CompareStringOrdinal(first.data(), static_cast<int>(first.size()), second.data(), static_cast<int>(second.size()), TRUE) ==
-           CSTR_EQUAL;
 }
 
 /// @p path opened to read its attributes and security, @p folder with FILE_FLAG_BACKUP_SEMANTICS. Shared
@@ -324,13 +260,8 @@ constexpr GENERIC_MAPPING FILE_MAPPING{
 /// The final path of @p handle's file or folder, without the \\?\ prefix.
 [[nodiscard]] std::optional<std::wstring> finalPathOfHandle(HANDLE handle, const InstallCheckFunctions& functions)
 {
-    const auto final = readPath([handle, &functions](wchar_t* buffer, DWORD size)
-                                { return functions.getFinalPath(handle, buffer, size, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS); });
-    if (!final.has_value())
-    {
-        return std::nullopt;
-    }
-    return withoutExtendedPrefix(*final);
+    return readFinalPath(
+        handle, functions.getFinalPath, FILE_NAME_NORMALIZED | VOLUME_NAME_DOS, FinalPathBuffer::Longest, FinalPathPrefix::Removed);
 }
 
 /// Whether neither @p token's user nor anyone but an administrator has @p rights over what @p handle
@@ -373,7 +304,7 @@ checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo, const Insta
     {
         return std::unexpected(std::format("couldn't tell where {} is", WinString::wideToUtf8(file)));
     }
-    if (mustBeNamedSo && !samePathText(*final, file))
+    if (mustBeNamedSo && !samePathIgnoringTrailingSeparators(*final, file))
     {
         return std::unexpected(std::format("{} is really {}", WinString::wideToUtf8(file), WinString::wideToUtf8(*final)));
     }
@@ -394,7 +325,7 @@ checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo, const Insta
                 std::format("couldn't open {}: {}", WinString::wideToUtf8(folder.wstring()), lastErrorText(GetLastError())));
         }
         const auto folderFinal = finalPathOfHandle(handle.get(), functions);
-        if (!folderFinal.has_value() || !samePathText(*folderFinal, folder.wstring()))
+        if (!folderFinal.has_value() || !samePathIgnoringTrailingSeparators(*folderFinal, folder.wstring()))
         {
             return std::unexpected(std::format("{} moved while it was checked", WinString::wideToUtf8(folder.wstring())));
         }
@@ -406,7 +337,7 @@ checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo, const Insta
         folder = folder.parent_path();
     }
     const auto again = finalPathOfHandle(held.get(), functions);
-    if (!again.has_value() || !samePathText(*again, *final))
+    if (!again.has_value() || !samePathIgnoringTrailingSeparators(*again, *final))
     {
         return std::unexpected(std::format("{} moved while it was checked", WinString::wideToUtf8(file)));
     }
@@ -530,8 +461,8 @@ std::expected<UniqueHandle, std::string> openParent(DWORD pid, std::uint64_t sta
 
 std::optional<std::wstring> ownImage(GetModuleFileNameFn getModuleFileName)
 {
-    // A path that doesn't fit comes back truncated, with the size tried: readPath() tries the longest.
-    return readPath([getModuleFileName](wchar_t* buffer, DWORD size) { return getModuleFileName(nullptr, buffer, size); });
+    // A path that doesn't fit comes back truncated, with the size tried: moduleImagePath() tries the longest.
+    return moduleImagePath(getModuleFileName);
 }
 
 std::optional<std::uint64_t> startTicksOf(HANDLE process)
@@ -565,20 +496,19 @@ bool sameFile(const std::wstring& first, const std::wstring& second)
     {
         return false;
     }
-    // CompareStringOrdinal folds case with the system's upper-case table, as NTFS compares names.
-    return CompareStringOrdinal(
-               firstPath->c_str(), static_cast<int>(firstPath->size()), secondPath->c_str(), static_cast<int>(secondPath->size()), TRUE) ==
-           CSTR_EQUAL;
+    // CompareStringOrdinal folds case with the system's upper-case table, as NTFS compares names: the whole final paths,
+    // \\?\ prefixes and all.
+    return equalsOrdinalIgnoreCase(std::wstring_view(*firstPath), std::wstring_view(*secondPath));
 }
 
 std::optional<std::wstring> finalPath(const std::wstring& path)
 {
-    const auto final = finalPathOf(path);
+    auto final = finalPathOf(path);
     if (!final.has_value())
     {
         return std::nullopt;
     }
-    return withoutExtendedPrefix(*final);
+    return withFinalPathPrefix(std::move(*final), FinalPathPrefix::Removed);
 }
 
 std::expected<void, std::string>
@@ -604,6 +534,36 @@ std::expected<void, std::string> checkUnchangeableNamed(HANDLE token, const std:
     return checkOne(token, file, true, InstallCheckFunctions{});
 }
 
+std::string changeRightsText(DWORD rights)
+{
+    // FILE_ADD_FILE and FILE_ADD_SUBDIRECTORY are FILE_WRITE_DATA and FILE_APPEND_DATA on a folder.
+    constexpr auto WORDS = std::to_array<std::pair<DWORD, std::string_view>>({
+        {FILE_WRITE_DATA | FILE_APPEND_DATA, "write or add to it"},
+        {FILE_DELETE_CHILD, "delete what is in it"},
+        {DELETE, "delete or rename it"},
+        {WRITE_DAC, "change its permissions"},
+        {WRITE_OWNER, "take ownership of it"},
+    });
+    std::vector<std::string_view> granted;
+    for (const auto& [bits, words] : WORDS)
+    {
+        if ((rights & bits) != 0)
+        {
+            granted.push_back(words);
+        }
+    }
+    std::string text;
+    for (std::size_t i = 0; i < granted.size(); ++i)
+    {
+        if (i > 0)
+        {
+            text += (i + 1 == granted.size()) ? " and " : ", ";
+        }
+        text += granted[i];
+    }
+    return text;
+}
+
 std::expected<void, std::string> checkDescriptor(HANDLE token, PSECURITY_DESCRIPTOR descriptor, DWORD rights, std::string_view name)
 {
     const auto granted = grantedRights(token, descriptor, name);
@@ -613,7 +573,7 @@ std::expected<void, std::string> checkDescriptor(HANDLE token, PSECURITY_DESCRIP
     }
     if ((*granted & rights) != 0)
     {
-        return std::unexpected(std::format("TaskSmack's user can change {} (rights 0x{:08X})", name, *granted & rights));
+        return std::unexpected(std::format("TaskSmack's user can change {}: it may {}", name, changeRightsText(*granted & rights)));
     }
     return checkOnlyAdministrators(descriptor, rights, name);
 }
@@ -786,6 +746,9 @@ namespace
 BrokerPipeServer::RequestHandler readsOnlyOwnProcesses(BrokerPipeServer::RequestHandler handler,
                                                        std::function<bool(const ProcessTarget&)> ownedByUser)
 {
+    // The analyzer follows serveParent()'s filter, which refers to its caller's user SID: the handler returned is served
+    // and dropped inside that same call, while the SID lives, so nothing it refers to has gone.
+    // NOLINTNEXTLINE(clang-analyzer-core.StackAddressEscape) - the returned handler never outlives serveParent()'s frame
     return [handler = std::move(handler), ownedByUser = std::move(ownedByUser)](const Broker::Request& request) -> Broker::Response
     {
         // The Hello and actions pass. Each per-process read below needs its target to be the user's,

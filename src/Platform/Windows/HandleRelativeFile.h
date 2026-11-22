@@ -142,15 +142,19 @@ renameAside(HANDLE file, HANDLE parent, std::wstring_view name, NtSetInformation
 void markDeleteOnClose(HANDLE file) noexcept;
 
 /// GetFinalPathNameByHandleW's path for @p handle as a plain drive path, without the \\?\ prefix (a \\?\UNC\ path
-/// keeps it); nullopt when it can't be read.
+/// keeps it); nullopt when it can't be read. WindowsFinalPath.h's readFinalPath(), sized FinalPathBuffer::AsAnswered,
+/// FinalPathPrefix::KeptForUnc.
 [[nodiscard]] std::optional<std::wstring> finalPathOf(HANDLE handle, GetFinalPathFn getFinalPath = &::GetFinalPathNameByHandleW);
 
 /// Whether @p handle is a plain folder (not a reparse point), read through it; nullopt when it can't be read.
 [[nodiscard]] std::optional<bool> isPlainFolder(HANDLE handle);
 
-/// Whether the owner of @p handle (opened with READ_CONTROL) is BUILTIN\Administrators or SYSTEM; nullopt when it
-/// can't be read. A folder made while elevated is owned by Administrators; one a user made is not.
-[[nodiscard]] std::optional<bool> ownerIsAdministratorsOrSystem(HANDLE handle);
+/// Whether the owner of @p handle (opened with READ_CONTROL) is SYSTEM, TrustedInstaller or BUILTIN\Administrators;
+/// nullopt when it can't be read (WindowsSecurityOwners.h). A folder made while elevated is owned by Administrators,
+/// %ProgramData% by SYSTEM and Windows' own folders by TrustedInstaller; one a user made is none of them, and only an
+/// administrator can give a folder any of these owners (#4699). ElevatedRestart's checkConfigDir() and
+/// WindowsDumpFolder's folderReaders() use it too (#4715).
+[[nodiscard]] std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle);
 
 /// A security descriptor (LocalFree'd when it dies).
 using OwnedSecurityDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
@@ -162,8 +166,9 @@ using OwnedSecurityDescriptor = std::unique_ptr<void, decltype(&::LocalFree)>;
 /// itself, never followed: callers check isPlainFolder(). The error is GetLastError()'s message.
 [[nodiscard]] std::expected<UniqueHandle, std::string> openFolderByPath(const std::filesystem::path& folder, ACCESS_MASK extraAccess = 0);
 
-/// Whether two paths are the same text, ignoring case as NTFS compares names (CompareStringOrdinal): a held folder's
-/// finalPathOf() against the path it was opened by.
+/// Whether two paths are the same text, ignoring case as NTFS compares names and trailing separators except a drive
+/// root's (samePathIgnoringTrailingSeparators(), OrdinalCase.h, #4699): a held folder's finalPathOf() against the path
+/// it was opened by.
 [[nodiscard]] bool samePathText(std::wstring_view left, std::wstring_view right) noexcept;
 
 /// Whether an existing folder's owner (read through the handle) is trusted to take it over in place; nullopt when the
@@ -173,11 +178,12 @@ using OwnerTrustedFn = std::function<std::optional<bool>(HANDLE)>;
 /// Folder @p name, under the held @p parent, secured to @p security's DACL and owner, and held open (READ_CONTROL,
 /// WRITE_DAC, FILE_LIST_DIRECTORY, SYNCHRONIZE and FILE_READ_ATTRIBUTES, without FILE_SHARE_DELETE). It is made fresh
 /// when it isn't there. An entry there already is taken over in place only when it is a plain folder whose owner
-/// @p ownerTrusted trusts (unset: ownerIsAdministratorsOrSystem()) and this process can open for WRITE_DAC (its DACL
-/// reset, not its children's: SetKernelObjectSecurity doesn't propagate). Anything else -- a user-owned folder, a
-/// protected DACL this process can't open for WRITE_DAC, a junction or a planted file -- is moved aside (renameAside())
-/// through a handle opened for DELETE alone, which the parent's FILE_DELETE_CHILD grants even when the entry's own DACL
-/// grants this process nothing, and a fresh one is made in its place. @p display names it for the error.
+/// @p ownerTrusted trusts (unset: ownerIsSystemOrAdministratorsOrTrustedInstaller()) and this process can open for
+/// WRITE_DAC (its DACL reset, not its children's: SetKernelObjectSecurity doesn't propagate). Anything else -- a
+/// user-owned folder, a protected DACL this process can't open for WRITE_DAC, a junction or a planted file -- is moved
+/// aside (renameAside()) through a handle opened for DELETE alone, which the parent's FILE_DELETE_CHILD grants even when
+/// the entry's own DACL grants this process nothing, and a fresh one is made in its place. @p display names it for the
+/// error.
 [[nodiscard]] std::expected<UniqueHandle, std::string> secureChildFolder(HANDLE parent,
                                                                          const std::wstring& name,
                                                                          PSECURITY_DESCRIPTOR security,

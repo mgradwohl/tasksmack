@@ -154,6 +154,11 @@ struct VisibleSection
 /// administrator..." row (#3669).
 [[nodiscard]] Section buildFirmwareSection(const Platform::FirmwareInfo& firmware, bool canRestart = false);
 
+/// The BIOS release date as the section shows it (#4755): SMBIOS's MM/DD/YYYY ("08/03/2026") as ISO
+/// ("2026-08-03"), as Installed and Boot time are; SMBIOS 2.2's two-digit year is 19YY. Anything else that
+/// isn't such a date is kept as the firmware wrote it.
+[[nodiscard]] std::string firmwareDateText(std::string_view date);
+
 /// A memory size: whole GiB ("16 GiB") or, under 1 GiB, whole MiB ("512 MiB") when exact, else
 /// UI::Format::formatBytes() ("31.7 GiB"). Empty for 0 (unknown).
 [[nodiscard]] std::string formatMemoryCapacity(std::uint64_t bytes);

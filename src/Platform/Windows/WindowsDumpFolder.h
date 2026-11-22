@@ -46,7 +46,6 @@
 
 #include <expected>
 #include <filesystem>
-#include <optional>
 #include <string>
 #include <string_view>
 
@@ -69,11 +68,11 @@ struct AdminDumpFolderOptions
     /// The folders' security (SDDL). A test's leaves out the owner, which only an elevated token may set to
     /// Administrators, and adds an account of its own, so it can work in and remove the folders it made.
     std::string folderSecurity = std::string(ADMIN_DUMP_FOLDER_SECURITY);
-    /// Whether a folder there already may be taken over in place (secureChildFolder()); unset: owned by Administrators
-    /// or SYSTEM.
+    /// Whether a folder there already may be taken over in place (secureChildFolder()); unset: owned by SYSTEM,
+    /// TrustedInstaller or Administrators (ownerIsSystemOrAdministratorsOrTrustedInstaller(), HandleRelativeFile.h).
     OwnerTrustedFn ownerTrusted{}; // NOLINT(readability-redundant-member-init) - designated initializers leave it out
-    /// Whether %ProgramData% itself, the trust root, has an owner trusted to hold the folder; unset: SYSTEM,
-    /// TrustedInstaller or Administrators (ownerIsSystemOrAdministratorsOrTrustedInstaller()). A test's scratch one is its own.
+    /// Whether %ProgramData% itself, the trust root, has an owner trusted to hold the folder; unset: the same
+    /// owners, by the same function. A test's scratch one is its own.
     OwnerTrustedFn rootOwnerTrusted{}; // NOLINT(readability-redundant-member-init) - designated initializers leave it out
 };
 
@@ -113,10 +112,6 @@ struct AdminDumpFolderOptions
 /// groups, enabled and usable as an owner: an elevated administrator's token). A hand-off session that isn't elevated
 /// can't, so its admin-only dump files and folder can't be made (#4188). False when the token can't be read.
 [[nodiscard]] bool tokenCanOwnAsAdministrators();
-
-/// Whether the owner of @p handle (opened with READ_CONTROL) is SYSTEM, TrustedInstaller or BUILTIN\Administrators, as
-/// %ProgramData% is owned; nullopt when it can't be read.
-[[nodiscard]] std::optional<bool> ownerIsSystemOrAdministratorsOrTrustedInstaller(HANDLE handle);
 
 // NOLINTEND(misc-include-cleaner)
 

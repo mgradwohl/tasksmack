@@ -29,9 +29,10 @@ struct ProcessActionResult
     /// phrase the result line appends: Windows affinity across processor groups is only a preference
     /// (#2173). Empty for a plain success and on failure.
     std::string successNote;
-    /// On failure, whether the OS refused it for want of permission over the process (Linux: EPERM or
-    /// EACCES), which acting as an administrator could cure: BrokeredProcessActions retries such a
-    /// failure through the privileged helper (#2308). False for every other failure.
+    /// On failure, whether the OS refused it for want of permission over the process (Windows: access denied;
+    /// Linux: EPERM or EACCES), which acting as an administrator could cure: on Windows, BrokeredProcessActions
+    /// retries such a failure through the elevated helper (#2308); Linux has no helper (#3580). False for every
+    /// other failure.
     bool permissionDenied = false;
     /// On failure, whether the user called it off at a prompt of the system's (Windows: the UAC consent
     /// prompt dismissed, ERROR_CANCELLED), so the UI says it was cancelled rather than that it failed
@@ -260,6 +261,9 @@ enum class DumpFolderAccess : std::uint8_t
     ReadableByUser,     ///< Programs running as the signed-in user can list or read the folder, or can change who may
     Unknown,            ///< Its permissions couldn't be read
     Refused,            ///< The dump would refuse the folder: a junction or link, or not where its path says (problem)
+    /// Linux, not root (#4761): the folder's filesystem may ignore Linux permissions (a Windows drive under WSL, a share,
+    /// a FAT, exFAT or NTFS disk), so others who can read that drive could read a dump there. A hint: the dump is kept.
+    MayIgnorePermissions,
 };
 
 /// What dumpFolderAccess() found, and why the folder is refused when it is.
@@ -276,8 +280,6 @@ using FolderChoice = std::expected<std::optional<std::filesystem::path>, std::st
 /// What chooseDumpFolder() says where the platform has no folder dialog.
 inline constexpr const char* FOLDER_CHOICE_UNSUPPORTED_MESSAGE = "Choosing a folder isn't available on this system";
 
-/// An action to retry as an administrator (IProcessActions::runAuthorized(), #2308): which one, its
-/// target, and its argument where it has one.
 /// The signals beyond terminate, kill, suspend and resume that TaskSmack can send (#3063): what reloads a
 /// daemon (Hangup), interrupts a tool as Ctrl+C does (Interrupt), asks for a core dump (Quit), or triggers
 /// a program's own handler (User1, User2). Linux only (ProcessActionCapabilities::canSendSignals).
@@ -300,6 +302,8 @@ enum class ThreadAction : std::uint8_t
     End,     ///< TerminateThread: ended at once, with no chance to clean up
 };
 
+/// An action to retry as an administrator (IProcessActions::runAuthorized(), #2308): which one, its
+/// target, and its argument where it has one.
 struct AuthorizedAction
 {
     enum class Kind : std::uint8_t
@@ -313,15 +317,16 @@ struct AuthorizedAction
         SetAffinity,       ///< cpus
         SendSignal,        ///< signal (#3063)
         SetEfficiencyMode, ///< efficiencyMode (#3071)
-        CloseConnection,   ///< socketInode (#3066)
+        CloseConnection,   ///< tcpConnection (#3358); the helper closes by IPv4 TCP endpoints only
         ThreadAction,      ///< tid and threadAction (#3069)
     };
     Kind kind = Kind::Terminate;
     ProcessTarget target;
     ProcessSignal signal = ProcessSignal::Hangup;
     bool efficiencyMode = false;   ///< SetEfficiencyMode: on (true) or off
-    std::uint64_t socketInode = 0; ///< CloseConnection: the socket, by inode
-    /// CloseConnection on Windows (#3358): the IPv4 TCP connection, by its endpoints; all zero for one named by inode.
+    std::uint64_t socketInode = 0; ///< CloseConnection, Linux (#3066): the socket, by inode. Never sent to the helper (#3784).
+    /// CloseConnection on Windows (#3358): the IPv4 TCP connection, by its endpoints, which is all the helper closes
+    /// by; all zero for one named by inode.
     // NOLINTNEXTLINE(readability-redundant-member-init) - {} lets designated initializers omit it without a warning
     TcpConnectionToClose tcpConnection{};
     std::int32_t tid = 0;               ///< ThreadAction: the thread
@@ -369,10 +374,10 @@ struct ProcessActionCapabilities
     bool canSetAffinity = false;
     /// setSchedPolicy(): the CPU scheduling policy, Normal, Batch, Idle, FIFO or RR (#3086, #3219 Linux: sched_setscheduler).
     bool canSetSchedPolicy = false;
-    /// The real-time FIFO and round robin policies too, without asking for a password (#3219): CAP_SYS_NICE in
-    /// TaskSmack's own effective set, read once at construction, or the privileged helper connected. False doesn't
-    /// hide them: a user with an RLIMIT_RTPRIO (the audio group, say) may set them unprivileged, and a refusal
-    /// offers Authenticate and retry where the helper exists.
+    /// The real-time FIFO and round robin policies too, without a refusal for want of privilege (#3219): CAP_SYS_NICE in
+    /// TaskSmack's own effective set, read once at construction. False doesn't hide them: a user with an
+    /// RLIMIT_RTPRIO (the audio group, say) may set them unprivileged, and the OS's refusal is shown as the result. Linux only; there is no
+    /// helper to retry it (#3580).
     bool canSetRealtimeSchedPolicy = false;
     /// launchSyscallTrace(): found once, when the implementation is constructed, never per frame.
     SyscallTraceAvailability syscallTrace = SyscallTraceAvailability::Unsupported;
@@ -589,8 +594,9 @@ class IProcessActions
     }
 
     /// Whether less-privileged programs can open @p directory itself, for the dump's confirm to hint
-    /// (#4164); or why createDump() would refuse the folder. Read only where createDump() holds and checks the folder
-    /// (Windows, elevated); NotChecked elsewhere. Reads the file system: on the confirm's worker, never the UI thread.
+    /// (#4164); or why createDump() would refuse the folder. Read where createDump() holds and checks the folder
+    /// (Windows, elevated), and on Linux, not root, whether its filesystem may ignore permissions (#4761); NotChecked
+    /// elsewhere. Reads the file system: on the confirm's worker, never the UI thread.
     /// The default checks nothing.
     [[nodiscard]] virtual DumpFolderCheck dumpFolderAccess(const std::filesystem::path& directory)
     {

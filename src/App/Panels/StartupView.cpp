@@ -37,7 +37,7 @@ namespace App
 namespace
 {
 
-constexpr const char* FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup apps...";
+constexpr const char* STARTUP_FILTER_HINT = ICON_FA_MAGNIFYING_GLASS "  Filter startup apps...";
 
 using Platform::compareFolded;
 using Platform::containsFoldedCase;
@@ -448,12 +448,14 @@ void renderUnsupported(const Platform::StartupCapabilities& capabilities, Startu
 /// the filter before the count is drawn, so the count matches the table below.
 void renderFilterBar(const Domain::StartupPublication& publication, StartupViewState& state, const UI::ColorScheme& scheme)
 {
-    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
-        ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
+    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(ImGui::CalcTextSize(STARTUP_FILTER_HINT).x,
+                                                                   ImGui::GetStyle().FramePadding.x,
+                                                                   ImGui::GetFontSize(),
+                                                                   ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
-        ImGui::InputTextWithHint("##StartupFilter", FILTER_HINT, &state.filter);
+        ImGui::InputTextWithHint("##StartupFilter", STARTUP_FILTER_HINT, &state.filter);
     }
     ImGui::PopStyleColor();
     rebuildRowsIfStale(publication, state);
@@ -463,7 +465,7 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
     if (state.osComponentCount > 0)
     {
         ImGui::SameLine();
-        static_cast<void>(UI::Widgets::outlinedCheckbox("Show Microsoft entries", &state.showOsComponents));
+        static_cast<void>(UI::Widgets::outlinedCheckbox("Show Windows tasks", &state.showOsComponents));
         ImGui::SetItemTooltip("Show Windows' own scheduled tasks (%zu), which are read-only here", state.osComponentCount);
     }
 }

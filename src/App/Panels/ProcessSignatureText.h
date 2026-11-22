@@ -21,6 +21,12 @@ namespace App::ProcessSignatureText
 /// The check mark drawn before a verified signer.
 inline constexpr std::string_view VERIFIED_MARK = ICON_FA_CHECK;
 
+/// Process Details' Publisher tooltip (#4755): the Publisher is the company the file names in its own version
+/// information, which any file can claim; the Signature row is the one Windows verifies.
+inline constexpr std::string_view PUBLISHER_TOOLTIP =
+    "As the file names itself, in its version information, unverified: any file can claim a company. The Signature is who "
+    "Windows verifies signed it.";
+
 /// The theme colour of a signature's text: the primary text for a verified signer (its mark is in the
 /// success colour), the warning colour for Unsigned, the error colour for Invalid, muted otherwise.
 [[nodiscard]] inline ImVec4 textColor(Platform::ImageSignature signature, const UI::ColorScheme& scheme) noexcept

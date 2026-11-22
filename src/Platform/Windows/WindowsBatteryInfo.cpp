@@ -1,6 +1,7 @@
 #include "WindowsBatteryInfo.h"
 
 #include "WinString.h"
+#include "WindowsDevInfo.h"
 #include "WindowsPowerProbeMath.h"
 
 // clang-format off
@@ -65,11 +66,12 @@ using DeviceHandle = std::unique_ptr<std::remove_pointer_t<HANDLE>, DeviceCloser
 std::vector<std::wstring> enumerateBatteryDevicePaths()
 {
     std::vector<std::wstring> paths;
-    HDEVINFO devices = SetupDiGetClassDevsW(&BATTERY_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE);
-    if (devices == INVALID_HANDLE_VALUE)
+    const UniqueDevInfo owned(SetupDiGetClassDevsW(&BATTERY_INTERFACE_GUID, nullptr, nullptr, DIGCF_PRESENT | DIGCF_DEVICEINTERFACE));
+    if (!owned)
     {
         return paths;
     }
+    HDEVINFO devices = owned.get();
     for (DWORD index = 0; index < MAX_BATTERIES; ++index)
     {
         SP_DEVICE_INTERFACE_DATA iface{};
@@ -93,7 +95,6 @@ std::vector<std::wstring> enumerateBatteryDevicePaths()
             paths.emplace_back(static_cast<const wchar_t*>(detail->DevicePath));
         }
     }
-    SetupDiDestroyDeviceInfoList(devices);
     return paths;
 }
 

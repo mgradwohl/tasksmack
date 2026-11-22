@@ -51,6 +51,12 @@ class UserSessionsFeed
     /// Safe to call twice, or without start().
     void stop();
 
+    /// Tells the sampler to stop, without waiting for it (#4656): the exit's AppExitingEvent asks this with every other
+    /// sampler's requestStop() (#4590), so a session read in flight (logind, the brokered WTS read) winds down with
+    /// theirs, and stop()'s join overlaps them instead of starting after the Processes sampler's. On the UI thread.
+    /// Safe with no sampler, and before stop().
+    void requestStop() noexcept;
+
     /// Whether the Processes tab is shown and how its table is grouped, sessionsDemand()'s inputs:
     /// grouped by User, its groups show each account's sessions. The Processes panel sets them each frame;
     /// only a change does anything.

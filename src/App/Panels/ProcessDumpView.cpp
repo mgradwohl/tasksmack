@@ -80,6 +80,8 @@ std::string folderAccessWarning(const Platform::DumpFolderCheck& check)
         return std::string(FOLDER_READABLE_TEXT);
     case Platform::DumpFolderAccess::Unknown:
         return std::string(FOLDER_ACCESS_UNKNOWN_TEXT);
+    case Platform::DumpFolderAccess::MayIgnorePermissions:
+        return std::string(FOLDER_IGNORES_PERMISSIONS_TEXT);
     case Platform::DumpFolderAccess::Refused:
         return check.problem.empty() ? std::string("TaskSmack can't write a dump to this folder. Choose another with Save dump to...")
                                      : check.problem;
@@ -153,15 +155,14 @@ std::filesystem::path defaultDumpDirectory(bool noDefault)
     return tempDumpDirectory(noDefault);
 }
 
-std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault, const DefaultFolderFn& defaultFolder)
+std::filesystem::path dumpDirectory(const std::filesystem::path& remembered, bool noDefault, const DefaultFolderFn& defaultFolder)
 {
     if (!remembered.empty())
     {
-        std::filesystem::path directory = Core::utf8ToPath(remembered);
         std::error_code error;
-        if (std::filesystem::is_directory(directory, error))
+        if (std::filesystem::is_directory(remembered, error))
         {
-            return directory;
+            return remembered;
         }
     }
     return defaultFolder ? defaultFolder(noDefault) : std::filesystem::path{};
@@ -169,17 +170,29 @@ std::filesystem::path dumpDirectory(std::string_view remembered, bool noDefault,
 
 namespace
 {
-/// The folder chosen with Save dump to... in this session (UTF-8), which a hand-off session trusts (#2728).
-[[nodiscard]] std::string& folderChosenThisSession()
+/// The folder chosen with Save dump to... in this session, kept as the path itself (#4655): a name that isn't valid UTF-8
+/// (or, on Windows, holds an unpaired surrogate) has no exact text, and is still the folder the user chose. A hand-off
+/// session trusts only this one (#2728).
+[[nodiscard]] std::filesystem::path& folderChosenThisSession()
 {
-    static std::string chosen;
+    static std::filesystem::path chosen;
     return chosen;
 }
 } // namespace
 
-std::string trustedDumpFolder(std::string_view stored, bool handedOver, std::string_view chosenThisSession)
+std::filesystem::path
+trustedDumpFolder(const std::filesystem::path& stored, bool handedOver, const std::filesystem::path& chosenThisSession)
 {
-    return std::string(handedOver ? chosenThisSession : stored);
+    if (!chosenThisSession.empty())
+    {
+        return chosenThisSession;
+    }
+    return handedOver ? std::filesystem::path{} : stored;
+}
+
+void forgetChosenDumpFolderForTesting()
+{
+    folderChosenThisSession().clear();
 }
 
 namespace
@@ -195,14 +208,15 @@ constexpr const char* NO_DEFAULT_LOG_TEXT = "no folder until Save dump to... cho
 #endif
 } // namespace
 
-std::string rememberedDumpFolder()
+std::filesystem::path rememberedDumpFolder()
 {
     const std::string& stored = UserConfig::get().settings().dumpFolder;
+    const std::filesystem::path storedPath = stored.empty() ? std::filesystem::path{} : Core::utf8ToPath(stored);
     // A handed-over settings folder's (#2728), or any root session's on Linux (#4163): su and doas set no SUDO_UID, so
     // their config.toml, and its [dumps] folder, can be the user's without the folder being handed over (the #4174
     // review). Only a folder chosen with Save dump to... in this session is used then.
     const bool handedOver = Core::ConfigDirOverride::handedOver() || noDefaultDumpFolder();
-    if (handedOver && !stored.empty() && stored != folderChosenThisSession())
+    if (handedOver && !stored.empty() && folderChosenThisSession().empty())
     {
         static bool logged = false; // once a session, not at every dump
         if (!std::exchange(logged, true))
@@ -213,20 +227,20 @@ std::string rememberedDumpFolder()
                                                : "using this account's default unless Save dump to... chooses another");
         }
     }
-    return trustedDumpFolder(stored, handedOver, folderChosenThisSession());
+    return trustedDumpFolder(storedPath, handedOver, folderChosenThisSession());
 }
 
 void rememberDumpDirectory(const std::filesystem::path& directory)
 {
     auto& config = UserConfig::get();
-    folderChosenThisSession() = Core::pathToUtf8(directory); // chosen in Windows' folder dialog by this session's user
+    folderChosenThisSession() = directory; // chosen in the folder dialog by this session's user; used for the rest of it (#4655)
     // Saved only as text that names this folder again (#4327): a name that isn't valid UTF-8 is used this session but
     // never written, so the next run doesn't look for a folder by a mangled name.
     std::optional<std::string> exact = Core::pathToUtf8Exact(directory);
     if (!exact.has_value())
     {
-        spdlog::info("Not saving the dump folder {} to settings: its name isn't valid UTF-8",
-                     Domain::sanitizedUtf8(folderChosenThisSession()));
+        spdlog::info("Not saving the dump folder {} to settings: its name isn't valid UTF-8; it's used until TaskSmack exits",
+                     Domain::sanitizedUtf8(Core::pathToUtf8(directory)));
         return;
     }
     std::string folder = std::move(*exact);
@@ -455,7 +469,7 @@ void ProcessDumpView::request(const Platform::ProcessTarget& target,
 
 void ProcessDumpView::requestInRememberedFolder(const Platform::ProcessTarget& target,
                                                 std::string processName,
-                                                std::string_view remembered,
+                                                const std::filesystem::path& remembered,
                                                 Platform::IProcessActions* actions)
 {
     if (active() || target.pid <= 0)
@@ -464,8 +478,8 @@ void ProcessDumpView::requestInRememberedFolder(const Platform::ProcessTarget& t
     }
     // Named while it is checked; the worker falls back to the default folder where it is gone. Nothing
     // remembered names "the temporary folder" until the worker has found it.
-    openConfirm(target, std::move(processName), remembered.empty() ? std::filesystem::path{} : Core::utf8ToPath(remembered), actions);
-    checkFolder(actions, true, std::string(remembered));
+    openConfirm(target, std::move(processName), remembered, actions);
+    checkFolder(actions, true, remembered);
     rebuildQuestion();
 }
 
@@ -492,7 +506,7 @@ void ProcessDumpView::openConfirm(const Platform::ProcessTarget& target,
     m_DismissConfirm = false;
 }
 
-void ProcessDumpView::checkFolder(Platform::IProcessActions* actions, bool resolve, std::string remembered)
+void ProcessDumpView::checkFolder(Platform::IProcessActions* actions, bool resolve, std::filesystem::path remembered)
 {
     m_CheckWanted = true;
     m_CheckResolve = resolve;

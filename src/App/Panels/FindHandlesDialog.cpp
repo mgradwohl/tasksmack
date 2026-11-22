@@ -42,11 +42,11 @@ namespace App
 namespace
 {
 
-constexpr const char* POPUP_ID = "###FindHandles";
-constexpr const char* CLOSE_LABEL = "Close";
+constexpr const char* FIND_HANDLES_POPUP_ID = "###FindHandles";
+constexpr const char* FIND_HANDLES_CLOSE_LABEL = "Close";
 constexpr const char* QUERY_HINT = "A file, folder or library name, or part of its path";
-constexpr float BUTTON_MIN_EM = 7.5F;
-constexpr float DIALOG_WIDTH_EM = 56.0F;
+constexpr float FIND_HANDLES_BUTTON_MIN_EM = 7.5F;
+constexpr float FIND_HANDLES_DIALOG_WIDTH_EM = 56.0F;
 constexpr float RESULTS_HEIGHT_EM = 20.0F;
 
 using Domain::HandleSearch::HandleMatch;
@@ -383,7 +383,7 @@ bool FindHandlesDialog::renderQueryRow()
 {
     const bool running = searching();
     const ImGuiStyle& style = ImGui::GetStyle();
-    const float buttonWidth = UI::Widgets::footerButtonWidth({"Find", "Stop"}, BUTTON_MIN_EM);
+    const float buttonWidth = UI::Widgets::footerButtonWidth({"Find", "Stop"}, FIND_HANDLES_BUTTON_MIN_EM);
     ImGui::SetNextItemWidth(std::max(ImGui::GetFontSize() * 8.0F, ImGui::GetContentRegionAvail().x - buttonWidth - style.ItemSpacing.x));
     if (std::exchange(m_FocusQuery, false))
     {
@@ -503,20 +503,20 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
     retireIdleWorker();
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(FIND_HANDLES_POPUP_ID);
         m_ShowRequested = false;
         m_FocusQuery = true;
     }
-    m_Open = ImGui::IsPopupOpen(POPUP_ID);
+    m_Open = ImGui::IsPopupOpen(FIND_HANDLES_POPUP_ID);
     if (!m_Open)
     {
         return std::nullopt;
     }
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
-    const std::string title = std::string(ICON_FA_MAGNIFYING_GLASS "  Find handles") + POPUP_ID;
+    const std::string title = std::string(ICON_FA_MAGNIFYING_GLASS "  Find handles") + FIND_HANDLES_POPUP_ID;
     UI::Widgets::centerNextDialog(m_LastWorkSize);
-    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
+    const float width = std::min((FIND_HANDLES_DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
                                  UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
     std::optional<FindHandlesAction> action;
@@ -571,9 +571,9 @@ std::optional<FindHandlesAction> FindHandlesDialog::render(const ProcessList& pr
         static_cast<void>(RestartAsAdministrator::drawButton());
     }
 
-    const UI::Widgets::DialogFooterButton closeButton{.label = CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};
+    const UI::Widgets::DialogFooterButton closeButton{.label = FIND_HANDLES_CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};
     const UI::Widgets::DialogFooterAction pressed =
-        UI::Widgets::dialogFooter(closeButton, {}, UI::Widgets::footerButtonWidth({CLOSE_LABEL}, BUTTON_MIN_EM));
+        UI::Widgets::dialogFooter(closeButton, {}, UI::Widgets::footerButtonWidth({FIND_HANDLES_CLOSE_LABEL}, FIND_HANDLES_BUTTON_MIN_EM));
     // A double-click goes to Process Details, another tab: the dialog closes on the way.
     if (pressed == UI::Widgets::DialogFooterAction::Primary || escaped || (action.has_value() && action->showDetails))
     {

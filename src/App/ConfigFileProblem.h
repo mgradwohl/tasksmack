@@ -38,6 +38,14 @@ inline constexpr std::string_view CONSEQUENCE = "TaskSmack is using its default 
     return Domain::sanitizedUtf8(std::format("{} couldn't be opened. {}", pathText, CONSEQUENCE));
 }
 
+/// The notice for a save refused at @p pathText (display text) for the reason @p why, a phrase that follows the path
+/// ("is a link, which TaskSmack run as root doesn't follow") (#4653). The file loaded, or there was none, so its settings
+/// are the ones in use: what's lost is only this session's changes, which the notice says, never "default settings".
+[[nodiscard]] inline std::string couldNotSave(std::string_view pathText, std::string_view why)
+{
+    return Domain::sanitizedUtf8(std::format("This session's settings changes aren't being saved: {} {}.", pathText, why));
+}
+
 /// The notice for a config file at @p pathText (display text) whose @p bytes toml++ refused with @p error: the line,
 /// column and reason, or, for UTF-16 text, how to save it so TaskSmack can read it.
 [[nodiscard]] inline std::string couldNotParse(std::string_view pathText, std::string_view bytes, const toml::parse_error& error)

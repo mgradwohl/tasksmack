@@ -119,10 +119,14 @@ struct ProcessThreadTally
     }
 };
 
+/// PID 0's name. The process snapshot gives it no image name (Toolhelp says "[System Process]"); Task
+/// Manager and Process Explorer call it this, and its CPU time is the CPUs' idle time, not work (#4753).
+inline constexpr std::string_view SYSTEM_IDLE_PROCESS_NAME = "System Idle Process";
+
 /// The state letter for a process, with the meanings Linux gives them (#1156):
 ///  - 'I' Idle: the System Idle Process (PID 0), whose threads run whenever a CPU has nothing to do.
 ///  - 'R' Running: at least one thread is running or ready to run.
-///  - 'T' Stopped: every thread is suspended -- a suspended or frozen (UWP) process, or one stopped
+///  - 'T' Suspended (Linux's Stopped, #4755): every thread is suspended -- a suspended or frozen (UWP) process, or one stopped
 ///    in a debugger.
 ///  - 'S' Sleeping: every thread is waiting, not all of them suspended.
 ///  - '?' Unknown: no thread to judge by. Minimal processes (Secure System, Registry, Memory

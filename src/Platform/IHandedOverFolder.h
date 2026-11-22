@@ -2,8 +2,9 @@
 
 // The config folder an elevated restart was handed (#2728), held open from the startup check on (#3787): main.cpp
 // owns it for the rest of the run, and Core::ConfigDirOverride keeps only a weak reference, so nothing outlives it
-// and a hand-off whose folder is no longer held fails closed. Made by Platform::checkHandedOverConfigDir(); Windows
-// only (Windows::PinnedFolder).
+// and a hand-off whose folder is no longer held fails closed. On Windows, an elevated session's (Windows::PinnedFolder,
+// made by Platform::checkHandedOverConfigDir()); on Linux, a session run as root for a user holds that user's
+// (App::LinuxHeldFolder, #4167).
 //
 // It is also the one way into that folder (#3774): the instance lock, config.toml and its staging file, the user
 // themes and their folder are each opened through it, relative to the folder held, never by a path from the drive
@@ -67,6 +68,13 @@ class IHandedOverFolder
     /// The names of the plain files (no folders or links) in folder @p name, sorted; empty when it isn't there.
     [[nodiscard]] virtual std::expected<std::vector<std::filesystem::path>, std::string>
     listFiles(const std::filesystem::path& name) const = 0;
+
+    /// The folder's POSIX descriptor (O_PATH), for a save that keeps a file's owner, mode and access control list
+    /// (UserConfig's writeIntoFolderFd(), #4546, #4167); -1 where there is none (Windows).
+    [[nodiscard]] virtual int posixFolderFd() const noexcept
+    {
+        return -1;
+    }
 };
 
 } // namespace Platform

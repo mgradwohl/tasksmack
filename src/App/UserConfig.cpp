@@ -88,7 +88,7 @@ namespace App
 namespace
 {
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog catches its own formatting and sink errors inside log()
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
     const auto count = std::to_underlying(ProcessColumn::Count);
@@ -889,6 +889,9 @@ constexpr std::size_t MAX_CONFIG_FILE_BYTES = std::size_t{4} * 1024U * 1024U;
     std::array<char, 16384> chunk{};
     for (;;)
     {
+        // save() holds m_WriteMutex for the whole write by design: saves are serialised on the save worker, and the UI thread
+        // never waits on it (#2916).
+        // NOLINTNEXTLINE(clang-analyzer-unix.BlockInCriticalSection)
         const auto n = ::read(fd, chunk.data(), chunk.size());
         if (n < 0)
         {
@@ -1023,6 +1026,7 @@ void UserConfig::load()
         if (!text.has_value())
         {
             spdlog::error("Not reading {}: {}; using defaults", Core::pathToUtf8(m_ConfigPath), text.error());
+            setFileProblem(ConfigFileProblem::couldNotOpen(Core::pathToUtf8(m_ConfigPath))); // as by path (#4744)
             return;
         }
         if (!text->has_value())
@@ -1096,11 +1100,23 @@ std::string UserConfig::fileProblem() const
 void UserConfig::setFileProblem(std::string problem)
 {
     const std::scoped_lock lock(m_FileProblemMutex);
+    m_FileProblemIsLoads = !problem.empty();
     if (m_FileProblem != problem)
     {
         m_FileProblem = std::move(problem);
         m_FileProblemVersion.fetch_add(1, std::memory_order_release);
     }
+}
+
+void UserConfig::setSaveRefusal(std::string problem)
+{
+    const std::scoped_lock lock(m_FileProblemMutex);
+    if (m_FileProblemIsLoads || m_FileProblem == problem)
+    {
+        return;
+    }
+    m_FileProblem = std::move(problem);
+    m_FileProblemVersion.fetch_add(1, std::memory_order_release);
 }
 
 auto UserConfig::parseSettings(std::string_view tomlText, UserSettings& settings) -> bool
@@ -1148,6 +1164,14 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     // Held, it is written only through the folder held, relative to its handle (#3774): no path to it is followed.
     if (held != nullptr)
     {
+#ifndef _WIN32
+        // Run as root for a user, the folder held is theirs (App::LinuxHeldFolder, #4167): saved through its descriptor
+        // by writeIntoFolderFd(), which keeps the old config.toml's owner, mode and access control list (#4546).
+        if (const int folderFd = held->posixFolderFd(); folderFd >= 0)
+        {
+            return writeIntoFolderFd(folderFd, settings, std::nullopt);
+        }
+#endif
         return writeIntoHandedOver(*held, settings);
     }
     std::error_code ec;
@@ -1282,7 +1306,9 @@ bool UserConfig::writeSettings(const UserSettings& settings)
         if (!existing.has_value())
         {
             spdlog::error("Not saving settings: {} can't be opened; fix or remove it", Core::pathToUtf8(m_ConfigPath));
-            setFileProblem(ConfigFileProblem::couldNotOpen(Core::pathToUtf8(m_ConfigPath))); // #4318
+            // Only the save failed (#4653), unless the load did too: then its notice, which says the defaults are in use,
+            // stays (#4744).
+            setSaveRefusal(ConfigFileProblem::couldNotSave(Core::pathToUtf8(m_ConfigPath), "can't be opened; fix or remove it"));
             return false;
         }
         try
@@ -1581,7 +1607,7 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
     const auto refuse = [this, &shown](std::string_view why)
     {
         spdlog::error("Not saving settings: {} {}", shown, why);
-        setFileProblem(ConfigFileProblem::couldNotOpen(shown));
+        setSaveRefusal(ConfigFileProblem::couldNotSave(shown, why)); // not "default settings" (#4653), unless it is (#4744)
         return false;
     };
 
@@ -1591,7 +1617,7 @@ bool UserConfig::writeIntoFolderFd(int folderFd, const UserSettings& settings, s
     struct stat folderInfo = {};
     if (::fstat(folderFd, &folderInfo) != 0)
     {
-        return refuse("can't be saved: its folder can't be checked");
+        return refuse("is in a folder that can't be checked");
     }
     const uid_t effectiveUid = m_EffectiveUidForTesting.has_value() ? static_cast<uid_t>(*m_EffectiveUidForTesting) : ::geteuid();
     if (effectiveUid == 0)

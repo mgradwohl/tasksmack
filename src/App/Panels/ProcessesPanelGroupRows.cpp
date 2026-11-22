@@ -44,7 +44,7 @@ namespace
 
 /// A group header's total, right-aligned in its cell, with the clipped-text tooltip (as ProcessesPanel.cpp draws a
 /// row's numbers).
-void renderRightAlignedText(std::string_view text, float textWidth)
+void renderRightAlignedGroupText(std::string_view text, float textWidth)
 {
     static_cast<void>(UI::Widgets::cellText(text, textWidth, {.rightAligned = true, .clippedTooltip = true, .layoutFullText = false}));
 }
@@ -275,7 +275,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
         std::optional<std::string>& cached = texts.totals[toIndex(col)];
         if (cached.has_value())
         {
-            renderRightAlignedText(*cached, ImGui::CalcTextSize(cached->c_str()).x);
+            renderRightAlignedGroupText(*cached, ImGui::CalcTextSize(cached->c_str()).x);
             continue;
         }
         const std::optional<double> total = ProcessGrouping::totalFor(group.totals, col);
@@ -314,7 +314,7 @@ void ProcessesPanel::renderGroupHeaderRow(std::size_t groupIndex)
             break;
         }
         text.insert(0, "\xCE\xA3 "); // U+03A3
-        renderRightAlignedText(text, ImGui::CalcTextSize(text.c_str()).x);
+        renderRightAlignedGroupText(text, ImGui::CalcTextSize(text.c_str()).x);
         cached = std::move(text);
     }
 }

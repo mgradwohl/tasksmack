@@ -33,15 +33,15 @@ namespace
 {
 
 // The "###" part keeps the popup's ID fixed while its title names the process.
-constexpr const char* POPUP_ID = "###WaitChain";
-constexpr const char* CLOSE_LABEL = "Close";
-constexpr const char* REFRESH_LABEL = ICON_FA_ARROWS_ROTATE " Refresh";
+constexpr const char* WAIT_CHAIN_POPUP_ID = "###WaitChain";
+constexpr const char* WAIT_CHAIN_CLOSE_LABEL = "Close";
+constexpr const char* WAIT_CHAIN_REFRESH_LABEL = ICON_FA_ARROWS_ROTATE " Refresh";
 constexpr const char* END_PROCESS_LABEL = "End process...";
 
 // Floor on the footer's buttons, in ems, as for the other action dialogs (ProcessActionConfirm).
-constexpr float BUTTON_MIN_EM = 11.25F;
+constexpr float WAIT_CHAIN_BUTTON_MIN_EM = 11.25F;
 // The dialog's width in ems: a thread, an object's name and a process's on one line.
-constexpr float DIALOG_WIDTH_EM = 52.0F;
+constexpr float WAIT_CHAIN_DIALOG_WIDTH_EM = 52.0F;
 // The tree's height in lines; more scroll.
 constexpr float TREE_LINES = 18.0F;
 
@@ -229,7 +229,7 @@ void ProcessWaitChainDialog::open(Platform::IProcessActions* actions,
     m_Target = target;
     m_Name = std::move(name);
     m_OwnPid = ownPid;
-    m_Title = std::format("{}  Wait chain of {} (PID {}){}", ICON_FA_HOURGLASS_HALF, m_Name, m_Target.pid, POPUP_ID);
+    m_Title = std::format("{}  Wait chain of {} (PID {}){}", ICON_FA_HOURGLASS_HALF, m_Name, m_Target.pid, WAIT_CHAIN_POPUP_ID);
     m_Result.reset();
     m_Threads.clear();
     m_Summary.clear();
@@ -379,10 +379,10 @@ void ProcessWaitChainDialog::render()
     update(false);
     if (m_ShowRequested)
     {
-        ImGui::OpenPopup(POPUP_ID);
+        ImGui::OpenPopup(WAIT_CHAIN_POPUP_ID);
         m_ShowRequested = false;
     }
-    if (!ImGui::IsPopupOpen(POPUP_ID))
+    if (!ImGui::IsPopupOpen(WAIT_CHAIN_POPUP_ID))
     {
         m_CloseRequested = false;
         return;
@@ -390,7 +390,7 @@ void ProcessWaitChainDialog::render()
 
     const ImGuiViewport* viewport = ImGui::GetMainViewport();
     UI::Widgets::centerNextDialog(m_LastWorkSize);
-    const float width = std::min((DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
+    const float width = std::min((WAIT_CHAIN_DIALOG_WIDTH_EM * ImGui::GetFontSize()) + (ImGui::GetStyle().WindowPadding.x * 2.0F),
                                  UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x));
     ImGui::SetNextWindowSize(ImVec2(width, 0.0F));
     UI::Widgets::setNextDialogSizeConstraints(ImVec2(UI::DialogMetrics::computeDialogMaxExtent(viewport->WorkSize.x),
@@ -455,15 +455,15 @@ void ProcessWaitChainDialog::render()
         ImGui::PopTextWrapPos();
     }
 
-    const UI::Widgets::DialogFooterButton closeButton{.label = CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};
+    const UI::Widgets::DialogFooterButton closeButton{.label = WAIT_CHAIN_CLOSE_LABEL, .fills = nullptr, .tooltip = nullptr};
     const UI::Widgets::DialogFooterButton refreshButton{
-        .label = REFRESH_LABEL,
+        .label = WAIT_CHAIN_REFRESH_LABEL,
         .fills = nullptr,
         .tooltip = "Read the wait chains again",
         .disabled = reading(),
     };
-    UI::Widgets::DialogFooterAction pressed =
-        UI::Widgets::dialogFooter(closeButton, {}, UI::Widgets::footerButtonWidth({CLOSE_LABEL}, BUTTON_MIN_EM), refreshButton);
+    UI::Widgets::DialogFooterAction pressed = UI::Widgets::dialogFooter(
+        closeButton, {}, UI::Widgets::footerButtonWidth({WAIT_CHAIN_CLOSE_LABEL}, WAIT_CHAIN_BUTTON_MIN_EM), refreshButton);
     if (escaped)
     {
         pressed = UI::Widgets::DialogFooterAction::Primary;

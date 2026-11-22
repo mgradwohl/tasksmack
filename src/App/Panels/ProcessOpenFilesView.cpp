@@ -31,7 +31,7 @@ constexpr double SCANNING_ANIMATION_FPS = 30.0;
 
 /// Draws @p text in the current cell, clipped by the column, with the whole of it in a tooltip when
 /// it does not fit.
-void cellText(std::string_view text)
+void openFilesCellText(std::string_view text)
 {
     const float available = ImGui::GetContentRegionAvail().x;
     ImGui::TextUnformatted(text.data(), text.data() + text.size());
@@ -189,16 +189,16 @@ void ProcessOpenFilesView::renderTable()
             const Row& row = m_Rows[ordered[static_cast<std::size_t>(i)]];
             ImGui::TableNextRow(ImGuiTableRowFlags_None, rowHeight);
             ImGui::TableNextColumn();
-            cellText(row.descriptor);
+            openFilesCellText(row.descriptor);
             ImGui::TableNextColumn();
-            cellText(row.type);
+            openFilesCellText(row.type);
             if (modes)
             {
                 ImGui::TableNextColumn();
-                cellText(row.mode);
+                openFilesCellText(row.mode);
             }
             ImGui::TableNextColumn();
-            cellText(row.path);
+            openFilesCellText(row.path);
         }
     }
     ImGui::EndTable();

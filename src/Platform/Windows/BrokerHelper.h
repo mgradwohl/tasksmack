@@ -139,6 +139,11 @@ inline constexpr DWORD FOLDER_CHANGE_RIGHTS = FILE_ADD_FILE | FILE_ADD_SUBDIRECT
 /// one's name, and every user may create folders at a drive's root.
 inline constexpr DWORD ANCESTOR_CHANGE_RIGHTS = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
 
+/// What @p rights (some of the *_CHANGE_RIGHTS above) let a user do, in words, for the reason Settings shows
+/// when it can't offer Replace Task Manager (#4755), in place of the raw access mask: "write or add to it, delete
+/// or rename it and change its permissions". Empty for none of them.
+[[nodiscard]] std::string changeRightsText(DWORD rights);
+
 /// Whether neither the user of @p token (an impersonation token, identification level is enough) nor
 /// anyone but an administrator can change @p descriptor's object, @p rights over it: AccessCheck grants
 /// @p token none of them, its owner is Administrators, SYSTEM or TrustedInstaller, and no allow ACE that

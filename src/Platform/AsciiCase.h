@@ -1,14 +1,18 @@
 #pragma once
 
-// One ASCII case fold for every layer (#2566). There were about twenty, one in nearly every file that
-// filters, sorts or matches names: some folded A-Z by hand, others called std::tolower(), which
-// follows the C locale that main() sets from the user's environment, so what "equal, ignoring case"
-// meant depended on the file and on the locale. These fold ASCII letters only: every byte of 0x80 and
-// up is left as it is, so a UTF-8 sequence never changes and "É" never matches "é" (process and tab
-// names on Windows go through CompareStringOrdinal for that, SelectOverride.cpp). All constexpr and
-// allocation-free, so compile-time filters (HelpContent) and per-frame filters (ProcessFilterCache)
-// can use them. Platform is the lowest layer, so Domain, Core, UI and App code can all include it, as
-// they already include Platform/AsciiTrim.h.
+// The ASCII case fold, for identifiers, keys and protocol words (#2566): a column id, a TOML key, a
+// D-Bus or WMI name, an HTTP header, a file extension. There were about twenty, one in nearly every
+// file: some folded A-Z by hand, others called std::tolower(), which follows the C locale main() sets
+// from the user's environment. These fold ASCII letters only: every byte of 0x80 and up is left as it
+// is, so a UTF-8 sequence never changes and "É" never matches "é".
+//
+// That is wrong for anything the user types or reads (#4299, D2): filters, search boxes, sorted
+// columns. Those use Unicode simple case folding (Platform/Utf8CaseFold.h: equalsFoldedCase,
+// containsFoldedCase, compareFoldedCase). An identity Windows compares ignoring case (a path, an
+// account or service name) is ordinal: Platform::Windows::equalsOrdinalIgnoreCase (#4309).
+//
+// All constexpr and allocation-free. Platform is the lowest layer, so Domain, Core, UI and App code can
+// all include it, as they already include Platform/AsciiTrim.h.
 
 #include <compare>
 #include <cstddef>

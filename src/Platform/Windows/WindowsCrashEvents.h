@@ -19,6 +19,7 @@
 #include <expected>
 #include <format>
 #include <functional>
+#include <memory>
 #include <optional>
 #include <string>
 #include <string_view>
@@ -340,7 +341,8 @@ inline void readCrashes(CrashesInfo& info, const Functions& fns, std::size_t max
     info.available = true;
     info.family = OsFamily::Windows;
     std::uint32_t error = 0;
-    void* query = fns.openQuery(crashQueryXPath(CRASH_HISTORY_DAYS), error);
+    // Closed through fns.closeQuery however the walk ends, a parse that runs out of memory included.
+    std::unique_ptr<void, decltype(Functions::closeQuery)> query(fns.openQuery(crashQueryXPath(CRASH_HISTORY_DAYS), error), fns.closeQuery);
     if (query == nullptr)
     {
         info.accessDenied = error == ERROR_ACCESS_DENIED_CODE;
@@ -362,7 +364,7 @@ inline void readCrashes(CrashesInfo& info, const Functions& fns, std::size_t max
     std::string xml;
     for (;;)
     {
-        const std::expected<bool, std::uint32_t> next = fns.nextEventXml(query, xml);
+        const std::expected<bool, std::uint32_t> next = fns.nextEventXml(query.get(), xml);
         if (!next.has_value())
         {
             info.incomplete = true; // what was read is kept, marked as not the whole log (#4375)
@@ -384,7 +386,7 @@ inline void readCrashes(CrashesInfo& info, const Functions& fns, std::size_t max
         }
         info.events.push_back(std::move(*event));
     }
-    fns.closeQuery(query);
+    query.reset();
     // The query reads newest first; keep that order even if the log's clock went backwards.
     std::ranges::stable_sort(info.events, std::ranges::greater{}, &CrashEvent::unixSeconds);
 }

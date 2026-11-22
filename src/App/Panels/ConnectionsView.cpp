@@ -36,8 +36,8 @@ namespace App
 namespace
 {
 
-constexpr const char* FILTER_HINT = ICON_FA_FILTER "  Filter by process, address, port or state";
-constexpr const char* ROW_MENU_ID = "##ConnectionRowMenu";
+constexpr const char* CONNECTIONS_FILTER_HINT = ICON_FA_FILTER "  Filter by process, address, port or state";
+constexpr const char* CONNECTIONS_ROW_MENU_ID = "##ConnectionRowMenu";
 
 /// "*" for an endpoint with no address and no port (a listening or unconnected socket's remote end).
 [[nodiscard]] std::string endpointText(Platform::ConnectionFamily family, const Platform::ConnectionEndpoint& endpoint)
@@ -444,12 +444,14 @@ std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::Connect
     }
 
     const auto& scheme = UI::Theme::get().scheme();
-    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(
-        ImGui::CalcTextSize(FILTER_HINT).x, ImGui::GetStyle().FramePadding.x, ImGui::GetFontSize(), ImGui::GetContentRegionAvail().x));
+    ImGui::SetNextItemWidth(ProcessTableLayout::computeFilterWidth(ImGui::CalcTextSize(CONNECTIONS_FILTER_HINT).x,
+                                                                   ImGui::GetStyle().FramePadding.x,
+                                                                   ImGui::GetFontSize(),
+                                                                   ImGui::GetContentRegionAvail().x));
     ImGui::PushStyleColor(ImGuiCol_TextDisabled, scheme.textMuted);
     {
         const UI::Widgets::FrameOutlineScope frameOutline;
-        ImGui::InputTextWithHint("##ConnectionsFilter", FILTER_HINT, &state.filter);
+        ImGui::InputTextWithHint("##ConnectionsFilter", CONNECTIONS_FILTER_HINT, &state.filter);
     }
     ImGui::PopStyleColor();
     const double now = ImGui::GetTime();
@@ -465,7 +467,7 @@ std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::Connect
                                             ImGuiTableFlags_BordersV | ImGuiTableFlags_ScrollY | ImGuiTableFlags_ScrollX |
                                             ImGuiTableFlags_SizingFixedFit;
     // Got here, outside the table, so the popup the rows open is the one drawn after it.
-    const std::optional<ImGuiID> menuId = canClose ? std::optional<ImGuiID>(ImGui::GetID(ROW_MENU_ID)) : std::nullopt;
+    const std::optional<ImGuiID> menuId = canClose ? std::optional<ImGuiID>(ImGui::GetID(CONNECTIONS_ROW_MENU_ID)) : std::nullopt;
     if (!ImGui::BeginTable("##ConnectionsTable", 8, TABLE_FLAGS))
     {
         return std::nullopt;
@@ -513,7 +515,7 @@ std::optional<ConnectionsViewAction> renderConnectionsView(const Domain::Connect
     }
     ImGui::EndTable();
 
-    if (menuId.has_value() && ImGui::BeginPopup(ROW_MENU_ID))
+    if (menuId.has_value() && ImGui::BeginPopup(CONNECTIONS_ROW_MENU_ID))
     {
         if (state.menuRow.has_value())
         {

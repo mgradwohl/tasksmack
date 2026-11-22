@@ -16,7 +16,11 @@
 //   F4h/2Ch for "threshold exceeded" -- the drive's own assessment, what udisks2's SmartFailing reports.
 // - IDENTIFY DEVICE (ECh) answers 512 bytes; word 82 bit 0 says SMART is supported, word 85 bit 0 that
 //   it is enabled.
+//
+// The drive's other answers the Storage section reads are here too (#4358, from WindowsStorage.h, so the Linux fuzz
+// build reaches them): STORAGE_DEVICE_DESCRIPTOR's strings and bus, and the NVMe SMART / health information log page.
 
+#include "Domain/Utf8Sanitize.h"
 #include "Platform/ISystemInfoProbe.h"
 
 #include <array>
@@ -24,6 +28,7 @@
 #include <cstdint>
 #include <optional>
 #include <span>
+#include <string>
 #include <vector>
 
 namespace Platform::AtaSmartMath
@@ -298,3 +303,122 @@ toAtaHealth(std::span<const Attribute> attributes, const std::optional<Threshold
 }
 
 } // namespace Platform::AtaSmartMath
+
+namespace Platform::WindowsStorage
+{
+
+/// Where STORAGE_DEVICE_DESCRIPTOR (winioctl.h) keeps the fields the section reads, little endian as on every machine
+/// Windows runs on: the four string offsets (DWORDs) and BusType (a 4-byte STORAGE_BUS_TYPE), then the header's end,
+/// RawDeviceProperties. WindowsStorage.h checks each against the SDK's struct.
+inline constexpr std::size_t DESCRIPTOR_VENDOR_ID_OFFSET = 12;
+inline constexpr std::size_t DESCRIPTOR_PRODUCT_ID_OFFSET = 16;
+inline constexpr std::size_t DESCRIPTOR_PRODUCT_REVISION_OFFSET = 20;
+inline constexpr std::size_t DESCRIPTOR_SERIAL_NUMBER_OFFSET = 24;
+inline constexpr std::size_t DESCRIPTOR_BUS_TYPE_OFFSET = 28;
+inline constexpr std::size_t DESCRIPTOR_HEADER_BYTES = 36;
+
+/// The fields of a STORAGE_DEVICE_DESCRIPTOR the section shows.
+struct DeviceDescriptor
+{
+    std::string model;
+    std::string firmware;
+    std::string serial;
+    int busType = 0;
+};
+
+/// The NUL-terminated string at @p offset in @p buffer, as display text (#4312); empty for offset 0 (none)
+/// or one outside the buffer. A string missing its NUL ends at the buffer's end. The descriptor's strings
+/// are ASCII bytes, but the drive (or a USB-SATA bridge) writes them, so they are checked, not trusted:
+/// the spaces and 0xFF bytes some drives pad with are trimmed from both ends, a control character becomes
+/// U+FFFD, and the rest goes through the shared sanitizer (Domain::sanitizedUtf8, #4301), so a Latin-1 0xDC
+/// becomes one U+FFFD (#4299 D1), well-formed UTF-8 is kept, and the Disk tab, System Information and Copy
+/// never carry invalid UTF-8. Nothing uses these strings as an identity.
+[[nodiscard]] inline std::string descriptorString(std::span<const std::byte> buffer, std::uint32_t offset)
+{
+    if (offset == 0 || offset >= buffer.size())
+    {
+        return {};
+    }
+    std::size_t end = offset;
+    while (end < buffer.size() && buffer[end] != std::byte{0})
+    {
+        ++end;
+    }
+    const auto isPadding = [](std::byte value)
+    {
+        return value == std::byte{0x20} || value == std::byte{0xFF};
+    };
+    std::size_t first = offset;
+    while (first < end && isPadding(buffer[first]))
+    {
+        ++first;
+    }
+    while (end > first && isPadding(buffer[end - 1]))
+    {
+        --end;
+    }
+    std::string raw;
+    raw.reserve(end - first);
+    for (std::size_t i = first; i < end; ++i)
+    {
+        const auto value = std::to_integer<unsigned char>(buffer[i]);
+        if (value < 0x20 || value == 0x7F)
+        {
+            raw += Domain::UTF8_REPLACEMENT_CHARACTER; // a control character: valid UTF-8, but not display text
+        }
+        else
+        {
+            raw.push_back(static_cast<char>(value));
+        }
+    }
+    return Domain::sanitizedUtf8(raw);
+}
+
+/// A STORAGE_DEVICE_DESCRIPTOR buffer's model, firmware, serial and bus. The model is the product ID,
+/// with the vendor ID in front when it says more than the bus ("ATA", "NVMe") and isn't already there.
+/// nullopt when the buffer is too short for the descriptor.
+[[nodiscard]] inline std::optional<DeviceDescriptor> parseDeviceDescriptor(std::span<const std::byte> buffer)
+{
+    if (buffer.size() < DESCRIPTOR_HEADER_BYTES)
+    {
+        return std::nullopt;
+    }
+    const auto field = [buffer](std::size_t at)
+    {
+        return static_cast<std::uint32_t>(AtaSmartMath::littleEndian(buffer.subspan(at, sizeof(std::uint32_t))));
+    };
+    DeviceDescriptor descriptor;
+    const std::string vendor = descriptorString(buffer, field(DESCRIPTOR_VENDOR_ID_OFFSET));
+    descriptor.model = descriptorString(buffer, field(DESCRIPTOR_PRODUCT_ID_OFFSET));
+    if (!vendor.empty() && vendor != "ATA" && vendor != "NVMe" && !descriptor.model.starts_with(vendor))
+    {
+        descriptor.model = descriptor.model.empty() ? vendor : vendor + " " + descriptor.model;
+    }
+    descriptor.firmware = descriptorString(buffer, field(DESCRIPTOR_PRODUCT_REVISION_OFFSET));
+    descriptor.serial = descriptorString(buffer, field(DESCRIPTOR_SERIAL_NUMBER_OFFSET));
+    descriptor.busType = static_cast<int>(field(DESCRIPTOR_BUS_TYPE_OFFSET));
+    return descriptor;
+}
+
+/// The NVMe health information log page (NVMe base specification, Get Log Page 02h): critical warning
+/// at byte 0, available spare at 3, percentage used at 5, media errors from 160 (16 bytes, little
+/// endian; the low 8 are kept). nullopt when the page is short.
+[[nodiscard]] inline std::optional<NvmeHealth> parseNvmeHealthLog(std::span<const std::byte> page)
+{
+    constexpr std::size_t MEDIA_ERRORS = 160;
+    if (page.size() < MEDIA_ERRORS + sizeof(std::uint64_t))
+    {
+        return std::nullopt;
+    }
+    NvmeHealth health;
+    health.criticalWarning = static_cast<std::uint8_t>(page[0]);
+    health.availableSparePercent = static_cast<std::uint8_t>(page[3]);
+    health.percentageUsed = static_cast<std::uint8_t>(page[5]);
+    for (std::size_t i = 0; i < sizeof(std::uint64_t); ++i)
+    {
+        health.mediaErrors |= static_cast<std::uint64_t>(page[MEDIA_ERRORS + i]) << (8U * i);
+    }
+    return health;
+}
+
+} // namespace Platform::WindowsStorage
