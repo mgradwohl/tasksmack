@@ -1,0 +1,4 @@
+cpu  10 0 5 100 0 0 0 0 0 0
+intr 1
+btime 1795000000
+processes 42
