@@ -69,8 +69,8 @@ enum class RealtimeThreads : std::uint8_t
 }
 
 /// Whether Set scheduling policy may set @p policy: Normal, Batch and Idle (#3086), and the real-time FIFO and
-/// round robin (#3219). Deadline is never offered (it needs a runtime, deadline and period, not one priority); the
-/// broker protocol's decoder and LinuxProcessControl both refuse it, so the privileged helper is never asked for it.
+/// round robin (#3219). Deadline is never offered (it needs a runtime, deadline and period, not one priority);
+/// it is refused before LinuxProcessControl asks the OS (isValidSchedPolicySetting()).
 [[nodiscard]] constexpr bool isSettableSchedPolicy(SchedPolicy policy) noexcept
 {
     return policy == SchedPolicy::Normal || policy == SchedPolicy::Batch || policy == SchedPolicy::Idle || policy == SchedPolicy::Fifo ||
@@ -88,8 +88,8 @@ inline constexpr std::int32_t MIN_REALTIME_SCHED_PRIORITY = 1;
 inline constexpr std::int32_t MAX_REALTIME_SCHED_PRIORITY = 99;
 
 /// Whether @p policy with real-time priority @p rtPriority may be set (#3219): a settable policy, with 1 to 99 for
-/// FIFO and round robin and exactly 0 for Normal, Batch and Idle, as sched_setscheduler(2) requires. The broker
-/// protocol's decoder and LinuxProcessControl both refuse any other pair.
+/// FIFO and round robin and exactly 0 for Normal, Batch and Idle, as sched_setscheduler(2) requires.
+/// LinuxProcessControl refuses any other pair before it asks the OS.
 [[nodiscard]] constexpr bool isValidSchedPolicySetting(SchedPolicy policy, std::int32_t rtPriority) noexcept
 {
     if (!isSettableSchedPolicy(policy))
