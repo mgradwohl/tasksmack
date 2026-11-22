@@ -237,7 +237,7 @@ sudo apt install libbpf-dev
 
 ### Windows Pre-Requisites
 
-- LLVM/Clang 23 (includes clang-tidy, clang-format, lld, llvm-cov, llvm-profdata)
+- LLVM/Clang 23 (includes clang-tidy, clang-format, lld, llvm-cov, llvm-profdata). Configure refuses a Clang older than 23, or any other compiler, and its error names the fix: `pwsh tools/setup-dev.ps1` installs it and `pwsh tools/check-prereqs.ps1` checks it (`cmake/CompilerOptions.cmake`, #4352)
 - `LLVM_ROOT` environment variable set
 - CMake 3.29+
 - Ninja
