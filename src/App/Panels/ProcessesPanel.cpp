@@ -629,9 +629,15 @@ void priorityCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& /*f
 }
 
 /// The owner, left-aligned: its user name, or "CORP\alice" when two accounts with processes share that
-/// name (RowFormatCache::qualifiedUser, #3328).
-void userCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& /*widths*/)
+/// name (RowFormatCache::qualifiedUser, #3328). The unreadable dash, saying why on hover, when no account
+/// could be read for it (#4754).
+void userCell(const Domain::ProcessSnapshot& proc, const RowFormatCache& fmt, const ProcessCellWidths& widths)
 {
+    if (proc.user.empty())
+    {
+        renderUnavailableTextCell(ProcessRowFormat::USER_UNREADABLE_CELL_REASON, widths.unavailableText);
+        return;
+    }
     renderLeftAlignedText(fmt.qualifiedUser.empty() ? std::string_view{proc.user} : std::string_view{fmt.qualifiedUser}, fmt.userWidth);
 }
 

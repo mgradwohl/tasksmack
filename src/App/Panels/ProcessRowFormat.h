@@ -131,6 +131,18 @@ inline constexpr const char* GPU_NOT_READ_YET_CELL_REASON = "Not available yet: 
 /// Tooltip of a cell in a column this system's process probe cannot fill at all (#1028, #1035).
 inline constexpr const char* UNSUPPORTED_CELL_REASON = "Not available on this system.";
 
+/// Tooltip of a User cell no account could be read for (#4754). On Windows, a standard user can't open the token of
+/// another account's process (SYSTEM, the service accounts, DWM-1), and nothing else it may call names that account:
+/// WTSEnumerateProcessesExW leaves the same processes' SIDs out unelevated. Administrator rights read them all but a
+/// protected process's.
+#ifdef _WIN32
+inline constexpr const char* USER_UNREADABLE_CELL_REASON =
+    "Not available: Windows lets TaskSmack read which account runs another account's process (SYSTEM, a service's, "
+    "DWM's) only with administrator rights, and a protected process's not at all.";
+#else
+inline constexpr const char* USER_UNREADABLE_CELL_REASON = "Not available: the account this process runs as could not be read.";
+#endif
+
 /// Tooltip of a Private cell where the probe doesn't fill it (#1879): on Windows a process's private
 /// bytes are its commit charge, which the Virtual column already shows.
 inline constexpr const char* PRIVATE_UNSUPPORTED_CELL_REASON = "Private bytes on Windows are the commit size, shown in the Virtual column.";
