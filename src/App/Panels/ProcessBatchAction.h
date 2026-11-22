@@ -178,9 +178,11 @@ template<typename SnapshotVector>
     return std::format("{} {} processes?", Detail::actionLabel(action), count);
 }
 
-/// What the action does to these processes, as the single confirmation states it for one (#1203).
-[[nodiscard]] inline std::string confirmSummary(Detail::ProcessAction action, std::size_t count)
+/// What the action does to these processes, as the single confirmation states it for one (#1203). @p canRaisePriority
+/// as Detail::confirmBody() takes it (#4793).
+[[nodiscard]] inline std::string confirmSummary(Detail::ProcessAction action, std::size_t count, bool canRaisePriority = true)
 {
+    static_cast<void>(canRaisePriority); // Windows restores a priority class without a privilege
     switch (action)
     {
     case Detail::ProcessAction::Terminate:
@@ -208,9 +210,20 @@ template<typename SnapshotVector>
 #ifdef _WIN32
         return std::format("{} processes will run at Idle priority on Windows' power-saving scheduling (EcoQoS).", count);
 #else
-        return std::format("{} processes will run at nice 19, the lowest priority.", count); // #3202
+        // #3202; one-way where the session can't raise a priority again (#4793)
+        return canRaisePriority
+                 ? std::format("{} processes will run at nice 19, the lowest priority.", count)
+                 : std::format("{} processes will run at nice 19, the lowest priority. {}", count, Detail::EFFICIENCY_MODE_ONE_WAY_TEXT);
 #endif
     case Detail::ProcessAction::EfficiencyModeOff:
+#ifndef _WIN32
+        if (!canRaisePriority)
+        {
+            return std::format("{} processes will leave Efficiency mode if their priorities can be raised again. {}",
+                               count,
+                               Detail::EFFICIENCY_MODE_OFF_NEEDS_TEXT);
+        }
+#endif
         return std::format("{} processes will leave Efficiency mode, and their priorities will be restored.", count);
     case Detail::ProcessAction::SetRealtimePriority: // one process at a time (#3429), never a batch: said for completeness
         return std::format("{} processes will run at the Realtime priority class, which can make the desktop unresponsive.", count);
@@ -334,9 +347,10 @@ inline void appendNotableWarnings(std::string& body, const NotableTargets& notab
 /// The confirmation's body: the summary, then the processes by name and PID (appendTargetList()), then
 /// a line for each of TaskSmack itself and PID 1 that is among them. @p ownPid is TaskSmack's own PID
 /// (0 when unknown).
-[[nodiscard]] inline std::string confirmBody(Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid)
+[[nodiscard]] inline std::string
+confirmBody(Detail::ProcessAction action, std::span<const BatchTarget> targets, std::int32_t ownPid, bool canRaisePriority = true)
 {
-    std::string body = confirmSummary(action, targets.size());
+    std::string body = confirmSummary(action, targets.size(), canRaisePriority);
     body += '\n';
     const NotableTargets notable = appendTargetList(body, targets, ownPid);
     appendNotableWarnings(body, notable, action == Detail::ProcessAction::Resume ? "resumed" : "acted on");

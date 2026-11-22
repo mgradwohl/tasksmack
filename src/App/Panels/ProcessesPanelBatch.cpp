@@ -3,6 +3,7 @@
 
 #include "App/PanelPlatforms.h"
 #include "App/Panels/FindHandlesDialog.h"
+#include "App/Panels/ProcessActionsView.h"
 #include "App/Panels/ProcessAffinityDialog.h"
 #include "App/Panels/ProcessBatchAction.h"
 #include "App/Panels/ProcessBatchRun.h"
@@ -56,12 +57,13 @@ void ProcessesPanel::requestSelectionAction(Detail::ProcessAction action)
     {
         const ProcessBatch::BatchTarget& only = targets.front();
         m_RowAction.title = Detail::confirmTitle(action, only.name, only.target.pid);
-        m_RowAction.question = Detail::confirmBody(action, only.name, only.target.pid);
+        m_RowAction.question =
+            Detail::confirmBody(action, only.name, only.target.pid, Detail::sessionCanRaisePriority(m_ActionCapabilities));
     }
     else
     {
         m_RowAction.title = ProcessBatch::confirmTitle(action, targets.size());
-        m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid);
+        m_RowAction.question = ProcessBatch::confirmBody(action, targets, m_OwnPid, Detail::sessionCanRaisePriority(m_ActionCapabilities));
     }
     m_RowAction.action = action;
     m_RowAction.targets = std::move(targets);

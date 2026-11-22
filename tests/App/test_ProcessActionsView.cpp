@@ -849,6 +849,17 @@ TEST(ProcessActionsViewTest, TheEfficiencyModeToggleIsHiddenDisabledOrEnabledAnd
     const Detail::EfficiencyModeToggle on = Detail::efficiencyModeToggle(can, TARGET_A, true, false, 1);
     EXPECT_EQ(on.state, State::Enabled);
     EXPECT_TRUE(std::string_view(on.tooltip).contains("Turn Efficiency mode off")) << on.tooltip;
+#ifndef _WIN32
+    // #4793: a session without CAP_SYS_NICE can't raise the priority again, and both tooltips say what that takes;
+    // one with it reads as before.
+    EXPECT_FALSE(std::string_view(on.tooltip).contains("are restored")) << on.tooltip;
+    EXPECT_TRUE(std::string_view(on.tooltip).contains("TaskSmack (Administrator)")) << on.tooltip;
+    EXPECT_TRUE(std::string_view(off.tooltip).contains("turning it off needs TaskSmack (Administrator)")) << off.tooltip;
+    Platform::ProcessActionCapabilities privileged = can;
+    privileged.canSetRealtimeSchedPolicy = true;
+    EXPECT_TRUE(std::string_view(Detail::efficiencyModeToggle(privileged, TARGET_A, true, false).tooltip).contains("are restored"));
+    EXPECT_FALSE(std::string_view(Detail::efficiencyModeToggle(privileged, TARGET_A, false, false).tooltip).contains("Administrator"));
+#endif
 }
 
 TEST(ProcessActionsViewTest, TurningEfficiencyModeOnAsksFirstAndOffRunsAtOnce)
