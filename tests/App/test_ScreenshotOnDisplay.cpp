@@ -224,7 +224,7 @@ struct Png
 }
 
 /// What the observer saw.
-struct Observed
+struct ScreenshotObserved
 {
     int frames = 0;
     int closeRequests = 0;              ///< WindowCloseEvents seen: the normal close path
@@ -254,7 +254,7 @@ class ObserverLayer : public Core::Layer
     /// CLOSE_AFTER_FRAMES frames in a row: a test that runs until a script is done, however slow its frames are.
     /// @p capturesWritten, when given, is a screenshot sequence's count so far: the theme of the frame the
     /// first one was taken in is noted (ScreenshotLayer, pushed before this layer, writes it in the same frame).
-    explicit ObserverLayer(Observed& observed, std::function<bool()> closeWhen = {}, std::function<int()> capturesWritten = {})
+    explicit ObserverLayer(ScreenshotObserved& observed, std::function<bool()> closeWhen = {}, std::function<int()> capturesWritten = {})
         : Layer("ScreenshotObserver"),
           m_Observed(observed),
           m_CloseWhen(std::move(closeWhen)),
@@ -335,7 +335,7 @@ class ObserverLayer : public Core::Layer
     // Frames the close condition must hold first: the last step's frame drawn, and one more.
     static constexpr int CLOSE_AFTER_FRAMES = 3;
 
-    Observed& m_Observed;
+    ScreenshotObserved& m_Observed;
     std::function<bool()> m_CloseWhen;
     std::function<int()> m_CapturesWritten;
     int m_HeldFrames = 0;
@@ -349,7 +349,7 @@ struct RunResult
     App::ScreenshotLayer::Outcome outcome = App::ScreenshotLayer::Outcome::Pending;
     int framesWritten = 0;
     std::pair<int, int> capturedSize{0, 0};
-    Observed observed;
+    ScreenshotObserved observed;
 };
 
 /// A small window, so the capture is quick: the drawable's real size is read back, whatever the shell's
