@@ -211,6 +211,19 @@ Test toggle maximize/restore:
 **GNOME:**
 - [ ] Verify custom title bar integrates with GNOME's window management
 - [ ] Test with GNOME's window tiling features (if active)
+- [ ] **Native decorations, on a Release build or an installed package** (#4440): turn on **Use native window decorations**
+  in Settings and restart TaskSmack.
+  - Expected: the window has libdecor's title bar and borders, and its buttons, drag and edge resize work. GNOME draws no
+    server-side decorations, so without libdecor the window was frameless: a Release configure now fails unless SDL loads
+    libdecor (`TASKSMACK_REQUIRE_LIBDECOR`, `cmake/SdlLibdecorCheck.cmake`), and the `.deb` recommends `libdecor-0-0`.
+  - A session run as root for a user, or with file capabilities (`setcap`), keeps the custom title bar whatever the
+    setting says: it never loads libdecor (#4254).
+
+**Any desktop with a dock or taskbar (GNOME, KDE):**
+- [ ] The dock shows TaskSmack's icon and groups the window with its launcher (#4451), from the `.deb`'s desktop file.
+  - Expected: the window's Wayland `app_id` (and X11 `WM_CLASS`) is `app.tasksmack.TaskSmack`, the desktop file's id
+    (`Core::DESKTOP_APP_ID`), not the executable's name. `tools/wayland-matrix.sh` finds its window on headless sway by
+    this id, so a wrong one fails every sway step; the icon and the grouping themselves need a desktop.
 
 **KDE/Plasma:**
 - [ ] Verify interaction with KDE's window snapping/tiling
