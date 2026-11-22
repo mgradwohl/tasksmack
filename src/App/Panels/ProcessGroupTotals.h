@@ -45,14 +45,18 @@ struct Totals
     void add(const Domain::ProcessSnapshot& proc) noexcept
     {
         ++processes;
-        cpuPercent += proc.cpuPercent;
+        // The System Idle Process's CPU is the CPUs' idle time, not load (#4753): a group holding it isn't the busiest.
+        if (!proc.cpuTimeIsIdle)
+        {
+            cpuPercent += proc.cpuPercent;
+            cpuTimeSeconds += proc.cpuTimeSeconds;
+        }
         memoryPercent += proc.memoryPercent;
         resident += proc.memoryBytes;
         privateBytes += proc.privateBytes;
         swap += proc.swapBytes;
         threads += proc.threadCount;
         handles += proc.handleCount;
-        cpuTimeSeconds += proc.cpuTimeSeconds;
         ioRead += proc.ioReadBytesPerSec;
         ioWrite += proc.ioWriteBytesPerSec;
         netSent += proc.netSentBytesPerSec;
