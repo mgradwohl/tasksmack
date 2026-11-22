@@ -1205,7 +1205,7 @@ git -C /tmp/iwyu-src remote add origin https://github.com/include-what-you-use/i
 git -C /tmp/iwyu-src fetch --depth 1 origin "$sha" && git -C /tmp/iwyu-src checkout --quiet FETCH_HEAD
 cmake -G Ninja -DCMAKE_C_COMPILER=clang-23 -DCMAKE_CXX_COMPILER=clang++-23 \
     -DCMAKE_PREFIX_PATH=/usr/lib/llvm-23 -DCMAKE_INSTALL_PREFIX="$HOME/.local" -S /tmp/iwyu-src -B /tmp/iwyu-build
-cmake --build /tmp/iwyu-build && cmake --install /tmp/iwyu-build --strip   # iwyu in ~/.local/bin
+cmake --build /tmp/iwyu-build && cmake --install /tmp/iwyu-build --strip   # include-what-you-use in ~/.local/bin
 ```
 
 **Notes:**

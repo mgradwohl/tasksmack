@@ -254,14 +254,6 @@ class WindowsProcessActions : public IProcessActions
     /// The Wait Chain Traversal API on each of the process's threads (#3084; Windows::readWaitChains()),
     /// as TaskSmack's user, through the same identity check as every action.
     [[nodiscard]] WaitChainReadResult readWaitChains(const ProcessTarget& target, const std::stop_token& stopToken) override;
-    /// One thread's Suspend (SuspendThread), Resume (ResumeThread) or End (TerminateThread) (#3069), as Process
-    /// Explorer's Threads tab. Refused before anything is opened for the System process, TaskSmack's own process
-    /// and refuseThreadActionsOn()'s (threadActionRefusal()); then through the process's identity check, the
-    /// critical and protected guards for Suspend and End, as the process-level actions, and checks on the handle acted
-    /// through that Windows says the thread is the process's (GetProcessIdOfThread) and was created at
-    /// @p threadCreateTime (GetThreadTimes): a TID reused since the user confirmed, or an unknown time (0), is refused. Access
-    /// denied opening the thread is permissionDenied, so the elevated helper can retry it, unless the process
-    /// is protected. Windows counts suspensions: the success note says so when the count isn't the plain one.
     /// Open file location (#3426): the executable's path (QueryFullProcessImageNameW) through the same
     /// identity check as every action, then Explorer on it, selected: SHOpenFolderAndSelectItems, or
     /// explorer.exe /select when that fails (Windows::revealInExplorer()). As TaskSmack's user, never the
@@ -287,6 +279,14 @@ class WindowsProcessActions : public IProcessActions
     /// unless TaskSmack is elevated already (read once, at construction), when it simply opens it, elevated.
     /// A dismissed prompt is a cancelled result. As TaskSmack's user, never the elevated helper.
     [[nodiscard]] ProcessActionResult runProgram(const RunProgramRequest& request) override;
+    /// One thread's Suspend (SuspendThread), Resume (ResumeThread) or End (TerminateThread) (#3069), as Process
+    /// Explorer's Threads tab. Refused before anything is opened for the System process, TaskSmack's own process
+    /// and refuseThreadActionsOn()'s (threadActionRefusal()); then through the process's identity check, the
+    /// critical and protected guards for Suspend and End, as the process-level actions, and checks on the handle acted
+    /// through that Windows says the thread is the process's (GetProcessIdOfThread) and was created at
+    /// @p threadCreateTime (GetThreadTimes): a TID reused since the user confirmed, or an unknown time (0), is refused. Access
+    /// denied opening the thread is permissionDenied, so the elevated helper can retry it, unless the process
+    /// is protected. Windows counts suspensions: the success note says so when the count isn't the plain one.
     [[nodiscard]] ProcessActionResult
     actOnThread(const ProcessTarget& target, std::int32_t tid, std::uint64_t threadCreateTime, ThreadAction action) override;
     /// Close connection (#3358): the IPv4 TCP connection reset with SetTcpEntry(MIB_TCP_STATE_DELETE_TCB)
