@@ -2834,10 +2834,25 @@ void ProcessesPanel::renderProcessRow(const Domain::ProcessSnapshot& proc, const
         }
         // The meter first, so the cell's text is drawn over it (#1528): O(1) checks per cell, and at
         // most one rectangle or one line (#1612).
-        if (m_MetersShown && !exited) // an exited row's last values aren't live: no meter
+        // An exited row's last values aren't live, and the System Idle Process's CPU is idle time (#4753): no meter.
+        if (m_MetersShown && !exited && ProcessRowMeter::drawsMeterFor(proc, col))
         {
             ProcessRowMeter::renderCellMeter(m_MeterSettings, col, proc, m_MeterMaxima, m_MeterColors);
             ProcessRowMeter::renderCellSparkline(m_MeterSettings, col, m_CachedRowHistory.get(), procIdx, m_MeterColors);
+        }
+        if (ProcessRowMeter::showsIdleTime(proc, col))
+        {
+            // Muted, and saying why on hover, so ~90% idle doesn't read as 90% load (#4753).
+            ImGui::PushStyleColor(ImGuiCol_Text, UI::Theme::get().scheme().textMuted);
+            CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
+            ImGui::PopStyleColor();
+            if (ImGui::BeginItemTooltip())
+            {
+                const std::string_view tip = ProcessRowMeter::IDLE_TIME_TOOLTIP;
+                ImGui::TextUnformatted(tip.data(), tip.data() + tip.size());
+                ImGui::EndTooltip();
+            }
+            continue;
         }
         CELL_RENDERERS[toIndex(col)].render(proc, fmt, m_TextSizeCache.cells);
     }

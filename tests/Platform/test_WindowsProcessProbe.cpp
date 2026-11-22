@@ -922,7 +922,8 @@ TEST(WindowsProcessProbeTest, EnumerateIncludesKernelPseudoProcesses)
 
     const auto idle = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 0; });
     ASSERT_NE(idle, processes.end());
-    EXPECT_EQ(idle->name, "[System Process]");
+    EXPECT_EQ(idle->name, "System Idle Process") << "Task Manager's name, not Toolhelp's [System Process] (#4753)";
+    EXPECT_TRUE(idle->cpuTimeIsIdle) << "its CPU time is the CPUs' idle time, not load";
 
     const auto system = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 4; });
     ASSERT_NE(system, processes.end());
