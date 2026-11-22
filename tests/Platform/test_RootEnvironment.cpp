@@ -134,6 +134,27 @@ TEST(RootEnvironmentTest, EverythingElseGoesAndRootsValuesReplaceTheUsers)
         << "root's own copy of the user's cookie, never a file the user names (the second #4187 review)";
 }
 
+// #4764: a root session has no session bus. With none named, SDL's libdbus autolaunched one on X11 (dbus-launch, as root),
+// which outlived TaskSmack; the user's own (sudo -E, pkexec) is never root's either.
+TEST(RootEnvironmentTest, TheSessionBusIsDisabledNeverTheUsersNorAutolaunched)
+{
+    for (const bool userHadOne : {false, true})
+    {
+        std::vector<const char*> environment{"DISPLAY=:0"};
+        if (userHadOne)
+        {
+            environment.push_back("DBUS_SESSION_BUS_ADDRESS=unix:path=/run/user/1000/bus");
+        }
+        environment.push_back(nullptr);
+        Recorder recorder;
+        const std::vector<std::string> removed = applyTo(
+            environment.data(), RootValues{.home = "/root", .runtimeDir = std::nullopt, .xauthority = std::nullopt}, recorder.operations());
+        EXPECT_EQ(recorder.set.at("DBUS_SESSION_BUS_ADDRESS"), std::string(NO_SESSION_BUS)) << userHadOne;
+        EXPECT_EQ(std::ranges::find(removed, "DBUS_SESSION_BUS_ADDRESS") != removed.end(), userHadOne)
+            << "the user's own address is dropped, and logged as dropped";
+    }
+}
+
 // #4666: the process's own PATH is the one applyToThisProcess() works out (ROOT_PATH's root-only folders), not ROOT_PATH
 // itself: a /usr/local another account may write is left out of what SDL's zenity lookup searches.
 TEST(RootEnvironmentTest, PathIsTheOneGivenSoAnUntrustedUsrLocalIsLeftOut)

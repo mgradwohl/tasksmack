@@ -1292,7 +1292,9 @@ std::vector<ProcessCounters> WindowsProcessProbe::enumerate()
         }
         if (imageName.empty() && pid == 0)
         {
-            counters.name = "[System Process]"; // Parity with the previous Toolhelp name for the Idle pseudo-process
+            // The snapshot gives the Idle pseudo-process no image name, and Toolhelp's "[System Process]" read as
+            // the system's own load at ~90% CPU (#4753): name it as Task Manager and Process Explorer do.
+            counters.name = std::string(SYSTEM_IDLE_PROCESS_NAME);
         }
 
         // Refresh TTL-cached details (owner, command, publisher, ...) - may fail for protected processes

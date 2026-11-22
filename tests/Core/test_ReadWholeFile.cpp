@@ -8,9 +8,24 @@
 
 #include <filesystem>
 #include <fstream>
+#include <ios>
 #include <optional>
 #include <string>
 #include <system_error>
+
+#ifdef _WIN32
+#include "Platform/Windows/WindowsHandles.h"
+
+// clang-format off
+#ifndef WIN32_LEAN_AND_MEAN
+#define WIN32_LEAN_AND_MEAN
+#endif
+#ifndef NOMINMAX
+#define NOMINMAX
+#endif
+#include <windows.h>
+// clang-format on
+#endif
 
 namespace Core
 {
@@ -28,6 +43,7 @@ struct TestFolder
         std::filesystem::remove_all(path, ec);
         std::filesystem::create_directories(path);
     }
+    // NOLINTNEXTLINE(bugprone-exception-escape) - only MSVC's debug path copy (its container proxy) can throw; a test failure
     ~TestFolder()
     {
         std::error_code ec;
@@ -58,7 +74,7 @@ TEST(ReadWholeFileTest, AnEmptyFileIsEmptyAndAMissingOneIsNothing)
 {
     const TestFolder dir("ts_read_whole_file_empty");
     {
-        std::ofstream out(dir.path / "empty.toml");
+        const std::ofstream out(dir.path / "empty.toml");
     }
     EXPECT_EQ(readWholeFile(dir.path / "empty.toml"), std::optional<std::string>(std::string{}));
     EXPECT_EQ(readWholeFile(dir.path / "missing.toml"), std::nullopt);
@@ -72,6 +88,30 @@ TEST(ReadWholeFileTest, AReadThatFailsIsNothingNotAnEmptyFile)
     std::filesystem::create_directories(dir.path / "config.toml");
     EXPECT_EQ(readWholeFile(dir.path / "config.toml"), std::nullopt);
 }
+
+#ifdef _WIN32
+// #4745: an editor or a sync tool holds config.toml open for writing, sharing read and write. _wfopen_s opened the file
+// unshared (read sharing only), so the read failed with a sharing violation and the load fell back to defaults.
+TEST(ReadWholeFileTest, AFileAnotherProgramHoldsOpenForWritingIsStillRead)
+{
+    const TestFolder dir("ts_read_whole_file_shared");
+    const std::filesystem::path path = dir.path / "config.toml";
+    const std::string bytes = "[ui]\nname = \"held\"\n";
+    {
+        std::ofstream out(path, std::ios::binary);
+        out << bytes;
+    }
+    const Platform::Windows::UniqueHandle writer(CreateFileW(path.c_str(),
+                                                             GENERIC_WRITE,
+                                                             FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                                                             nullptr,
+                                                             OPEN_EXISTING,
+                                                             FILE_ATTRIBUTE_NORMAL,
+                                                             nullptr));
+    ASSERT_TRUE(writer.valid()) << "CreateFileW failed: " << GetLastError();
+    EXPECT_EQ(readWholeFile(path), std::optional<std::string>(bytes));
+}
+#endif
 
 } // namespace
 } // namespace Core

@@ -65,6 +65,37 @@ TEST(ProcessRowMeterTest, AZeroOrUnusableMaxDrawsNothing)
     EXPECT_FLOAT_EQ(absoluteFraction(std::numeric_limits<double>::quiet_NaN(), 10.0), 0.0F);
 }
 
+// #4753: the System Idle Process's CPU % and CPU Time are idle time: shown muted with a tooltip, never with a
+// meter. Its other columns, and every other process's CPU, keep theirs.
+TEST(ProcessRowMeterTest, TheSystemIdleProcessesCpuIsIdleTimeAndGetsNoMeter)
+{
+    Domain::ProcessSnapshot idle;
+    idle.pid = 0;
+    idle.cpuTimeIsIdle = true;
+    idle.cpuPercent = 92.0;
+    idle.memoryPercent = 1.0;
+    Domain::ProcessSnapshot busy;
+    busy.pid = 1234;
+    busy.cpuPercent = 92.0;
+
+    EXPECT_TRUE(ProcessRowMeter::showsIdleTime(idle, ProcessColumn::CpuPercent));
+    EXPECT_TRUE(ProcessRowMeter::showsIdleTime(idle, ProcessColumn::CpuTime));
+    EXPECT_FALSE(ProcessRowMeter::showsIdleTime(idle, ProcessColumn::MemPercent));
+    EXPECT_FALSE(ProcessRowMeter::showsIdleTime(idle, ProcessColumn::Name));
+    EXPECT_FALSE(ProcessRowMeter::showsIdleTime(busy, ProcessColumn::CpuPercent));
+    EXPECT_FALSE(ProcessRowMeter::IDLE_TIME_TOOLTIP.empty());
+
+    EXPECT_FALSE(ProcessRowMeter::drawsMeterFor(idle, ProcessColumn::CpuPercent));
+    EXPECT_TRUE(ProcessRowMeter::drawsMeterFor(idle, ProcessColumn::MemPercent));
+    EXPECT_TRUE(ProcessRowMeter::drawsMeterFor(busy, ProcessColumn::CpuPercent));
+    EXPECT_FALSE(ProcessRowMeter::drawsMeterFor(busy, ProcessColumn::Command)) << "no meter column";
+
+    const ColumnMaxima maxima;
+    EXPECT_FLOAT_EQ(ProcessRowMeter::fractionOf(idle, ProcessColumn::CpuPercent, maxima), 0.0F);
+    EXPECT_FLOAT_EQ(ProcessRowMeter::fractionOf(idle, ProcessColumn::MemPercent, maxima), 0.01F);
+    EXPECT_FLOAT_EQ(ProcessRowMeter::fractionOf(busy, ProcessColumn::CpuPercent, maxima), 0.92F);
+}
+
 TEST(ProcessRowMeterTest, OnlyResourceColumnsHaveAMeter)
 {
     EXPECT_EQ(scaleOf(ProcessColumn::CpuPercent), Scale::Percent);

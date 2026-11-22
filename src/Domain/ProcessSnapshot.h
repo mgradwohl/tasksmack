@@ -156,6 +156,10 @@ struct ProcessSnapshot
     // A top-level window has stopped answering its messages (Windows, #3084): `status` then says
     // "Not responding" (processStatusText()). Always false on Linux.
     bool notResponding = false;
+    // Its CPU time is the CPUs' idle time, not work: Windows' System Idle Process (PID 0,
+    // Platform::ProcessCounters::cpuTimeIsIdle). Its CPU % is shown muted and with no meter, so a mostly idle
+    // machine doesn't read as one at 90% load (#4753). Always false on Linux.
+    bool cpuTimeIsIdle = false;
     // Its CPU scheduling policy and real-time priority under FIFO or RR (#3086). The Policy column's text,
     // Platform::schedPolicyText(), is worded from them where it is drawn, not kept here: a string in every
     // snapshot made every copy of the published snapshots dearer (#3244).
