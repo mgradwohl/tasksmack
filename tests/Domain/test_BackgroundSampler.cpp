@@ -133,6 +133,59 @@ class GatedSamplable : public Domain::ISamplable
     int m_Samples = 0;
 };
 
+/// Tells the test when the thread it was armed on has ended, without joining it (#4658): arm() runs on that thread
+/// (a sampler's start hook) and leaves a thread_local behind, whose destructor runs as the thread exits, after its
+/// function has returned. The signal must outlive the thread: declare it before the sampler, whose destructor joins.
+class ThreadExitSignal
+{
+  public:
+    /// Called on the thread to watch.
+    void arm()
+    {
+        thread_local Notifier notifier;
+        notifier.signal = this;
+    }
+
+    /// True once the armed thread has ended; false if it is still running after @p timeout.
+    [[nodiscard]] bool waitForExit(std::chrono::milliseconds timeout)
+    {
+        std::unique_lock lock(m_Mutex);
+        return m_Changed.wait_for(lock, timeout, [this] { return m_Exited; });
+    }
+
+  private:
+    struct Notifier
+    {
+        Notifier() = default;
+        ~Notifier()
+        {
+            if (signal != nullptr)
+            {
+                signal->markExited();
+            }
+        }
+        Notifier(const Notifier&) = delete;
+        Notifier& operator=(const Notifier&) = delete;
+        Notifier(Notifier&&) = delete;
+        Notifier& operator=(Notifier&&) = delete;
+
+        ThreadExitSignal* signal = nullptr;
+    };
+
+    void markExited()
+    {
+        {
+            const std::scoped_lock lock(m_Mutex);
+            m_Exited = true;
+        }
+        m_Changed.notify_all();
+    }
+
+    std::mutex m_Mutex;
+    std::condition_variable m_Changed;
+    bool m_Exited = false;
+};
+
 template<typename Predicate> [[nodiscard]] bool waitFor(Predicate predicate, std::chrono::milliseconds timeout = 2000ms)
 {
     constexpr auto POLL_INTERVAL = 5ms;
@@ -240,6 +293,39 @@ TEST(BackgroundSamplerTest, RequestStopAloneEndsTheSamplingAndStopThenJoins)
     sampler.stop();
     EXPECT_FALSE(sampler.isRunning());
     EXPECT_EQ(samplable->getSampleCount(), settled) << "stop() after the request takes no further sample";
+}
+
+// #4590, #4658: requestStop() wakes a sampler asleep on a long interval, so the exit's samplers end together rather
+// than each waiting out its interval. The thread must end on the request alone, before stop() (which asks and wakes
+// it too) runs. The interval is the longest a sampler takes (the constructor clamps to it), and the bound is a second
+// short of it: a request that left the sampler asleep would see the thread end only when the interval ran out.
+TEST(BackgroundSamplerTest, RequestStopWakesASamplerAsleepOnALongInterval)
+{
+    constexpr auto LONG_INTERVAL = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MAX_MS);
+    constexpr auto WAKE_BOUND = LONG_INTERVAL - 1s;
+    static_assert(WAKE_BOUND >= 4s, "time enough for a woken thread to end on a loaded runner");
+
+    ThreadExitSignal exited; // before the sampler: it outlives the sampler thread
+    Domain::SamplerConfig config;
+    config.interval = LONG_INTERVAL;
+    config.onThreadStart = [&exited]
+    {
+        exited.arm();
+    };
+    Domain::BackgroundSampler sampler(config);
+    ASSERT_EQ(sampler.interval(), LONG_INTERVAL);
+    auto const samplable = std::make_shared<MockSamplable>();
+    sampler.addSamplable(samplable);
+    sampler.start();
+    samplable->waitForSamples(1); // the first pass ran: the sampler now sleeps out the interval
+
+    sampler.requestStop();
+    EXPECT_TRUE(exited.waitForExit(WAKE_BOUND)) << "requestStop() alone wakes the sleeping sampler and its thread ends";
+    EXPECT_TRUE(sampler.isRunning()) << "asked, not yet joined: stop() still joins it and logs its summary";
+
+    sampler.stop();
+    EXPECT_FALSE(sampler.isRunning());
+    EXPECT_EQ(samplable->getSampleCount(), 1) << "no sample after the request";
 }
 
 TEST(BackgroundSamplerTest, RequestStopWhenNotRunningIsNoOp)

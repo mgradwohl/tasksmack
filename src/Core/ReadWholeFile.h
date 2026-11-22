@@ -38,6 +38,30 @@
 namespace Core
 {
 
+#ifndef _WIN32
+namespace Detail
+{
+/// Closes the descriptor it holds when it dies: on every way out of readWholeFile(), a throwing append included (#4746).
+class ClosesFd
+{
+  public:
+    explicit ClosesFd(int fd) noexcept : m_Fd(fd)
+    {}
+    ~ClosesFd()
+    {
+        ::close(m_Fd);
+    }
+    ClosesFd(const ClosesFd&) = delete;
+    ClosesFd& operator=(const ClosesFd&) = delete;
+    ClosesFd(ClosesFd&&) = delete;
+    ClosesFd& operator=(ClosesFd&&) = delete;
+
+  private:
+    int m_Fd;
+};
+} // namespace Detail
+#endif
+
 /// The bytes of the file at @p path, opened by the path itself, never by a narrowed name. nullopt when it can't be
 /// opened, or a read fails before its end (EIO, ESTALE, EISDIR for a folder): never a part of it as if it were all.
 [[nodiscard]] inline std::optional<std::string> readWholeFile(const std::filesystem::path& path)
@@ -71,6 +95,7 @@ namespace Core
     {
         return std::nullopt;
     }
+    const Detail::ClosesFd closesFd(fd); // closed on every way out
     for (;;)
     {
         // A caller may hold its own lock over the read of a small local file (UserConfig's config.toml, a theme), as it
@@ -83,7 +108,6 @@ namespace Core
             {
                 continue;
             }
-            ::close(fd);
             return std::nullopt;
         }
         if (got == 0)
@@ -92,7 +116,6 @@ namespace Core
         }
         text.append(chunk.data(), static_cast<std::size_t>(got));
     }
-    ::close(fd);
 #endif
     return text;
 }

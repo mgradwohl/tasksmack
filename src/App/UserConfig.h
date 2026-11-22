@@ -370,8 +370,13 @@ class UserConfig
     mutable std::mutex m_FileProblemMutex;
     std::string m_FileProblem;
     std::atomic<std::uint64_t> m_FileProblemVersion = 0;
-    /// Records @p problem (empty: none) for fileProblem(); the version moves only when the text changes.
+    bool m_FileProblemIsLoads = false; // under m_FileProblemMutex: the notice says the file wasn't used (#4744)
+    /// Records @p problem (empty: none) for fileProblem(): load()'s notice for a file it couldn't use, or none once one
+    /// is read or saved. The version moves only when the text changes.
     void setFileProblem(std::string problem);
+    /// Records a save's refusal for fileProblem(), unless load()'s notice stands (#4744): that one already says the
+    /// defaults are in use and nothing is saved over the file, which a save's reason would hide.
+    void setSaveRefusal(std::string problem);
 
     /// Whether @p step is the one a test made fail; sets errno to its error if so.
     [[nodiscard]] bool saveStepFails(SaveStep step) const noexcept;
