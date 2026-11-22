@@ -75,6 +75,10 @@
   string with a line break in it is refused and never runs as shell, and publish refuses anything but a flat
   set of JSON files; and "Replace the branch's one commit" tries its push three times. tar, gzip, base64 and
   jq are real; `git`, `timeout`, `sleep` and `gh` are shell functions.
+- main-health.yml "Open, update or close the tracking issue" (#4739): with no issue changed, a dashboard with
+  no run going and none ended for six minutes gets a dispatch, and one that ran lately, is running, has never
+  run, can't be listed or is switched off gets none; an issue that changed is still one dispatch and doesn't
+  ask. The clock is fixed, and the question's jq filter runs on real jq.
 - main-health.yml "Open, update or close the tracking issue" (#4700): a run that opened or closed a tracking
   issue dispatches release-dashboard.yml once, however many branches changed, and does so on exit, so also
   when a later branch then fails the step; a run that changed nothing or only rewrote an open issue
@@ -3187,7 +3191,10 @@ class HeavyChecksPushScopeTests(unittest.TestCase):
 # (a process per call would add about forty launches to a ctest entry that is short of time on ARM64 Windows,
 # #3643): logs each call on one line to $CALLS, lists $RELEASE_BRANCHES, finds the open tracking issues named
 # in $OPEN_ISSUES ("<branch>=<number>", space-separated), fails the lookup for $FAIL_BRANCH, opens #99, and
-# answers the dispatch with status $DISPATCH_STATUS.
+# answers the dispatch with status $DISPATCH_STATUS. The question about the dashboard's newest runs gets
+# $NEWEST_RUN, as the step's own jq filter would give it: the time the newest ended, "active" when one is
+# queued or running, "none" for a workflow that has never run, "fail" for a listing that can't be read. The
+# workflow's state is $WORKFLOW_STATE. `date +%s` is the fixed $NOW, so no case depends on how long this takes.
 DASHBOARD_DISPATCH_GH_STUB = r"""gh() {
   local call="$*" name entry
   printf '%s\n' "${call//$'\n'/ }" >>"$CALLS"
@@ -3201,6 +3208,11 @@ DASHBOARD_DISPATCH_GH_STUB = r"""gh() {
       done ;;
     "api -X POST repos/owner/repo/actions/workflows/release-dashboard.yml/dispatches "*)
       return "${DISPATCH_STATUS:-0}" ;;
+    "api repos/owner/repo/actions/workflows/release-dashboard.yml/runs?branch=main&per_page=5 --jq "*)
+      if [[ "$NEWEST_RUN" == fail ]]; then return 1; fi
+      if [[ "$NEWEST_RUN" != none ]]; then echo "$NEWEST_RUN"; fi ;;
+    "api repos/owner/repo/actions/workflows/release-dashboard.yml --jq .state")
+      echo "${WORKFLOW_STATE:-active}" ;;
     "api repos/owner/repo/issues -f title="*) echo 99 ;;
     "api repos/owner/repo/issues/"*" --jq .body") echo '- **Sanitizers** (push): `failure`' ;;
     "api repos/owner/repo/labels "*|"api -X PATCH repos/owner/repo/issues/"*|"api repos/owner/repo/issues/"*"/comments "*) ;;
@@ -3208,26 +3220,48 @@ DASHBOARD_DISPATCH_GH_STUB = r"""gh() {
   esac
 }
 sleep() { :; }
+date() { if [[ "$1" == "+%s" ]]; then echo "$NOW"; else command date "$@"; fi; }
 """
 
 
 class MainHealthTellsTheDashboardTests(unittest.TestCase):
     """#4700: Main Health opens and closes its tracking issue with the workflow token, which starts no workflow,
     so the release dashboard only saw main turn red or green at its next run. A run that opened or closed an
-    issue now dispatches the dashboard, once, and a dispatch that fails doesn't fail the check."""
+    issue now dispatches the dashboard, once, and a dispatch that fails doesn't fail the check.
+
+    #4739: it also dispatches one when the dashboard is idle: none of its runs going, and none finished for
+    six minutes. GitHub starts the hour's first scheduled runs about ten minutes late, and the page's figures
+    were up to 18 minutes old."""
 
     WORKFLOW = WORKFLOWS / "main-health.yml"
     DISPATCH = "api -X POST repos/owner/repo/actions/workflows/release-dashboard.yml/dispatches --silent -f ref=main"
+    ASKED = "api repos/owner/repo/actions/workflows/release-dashboard.yml/runs?branch=main&per_page=5 --jq "
+    STATE = "api repos/owner/repo/actions/workflows/release-dashboard.yml --jq .state"
+    NOW = 1_800_000_000
     # name: (the branches judged red, the tracking issues open before the run, the release branches that exist,
-    #        the dispatch call's exit status, the branch whose issue lookup fails)
+    #        the dispatch call's exit status, the branch whose issue lookup fails, and the dashboard: how many
+    #        seconds ago its newest run ended, "active" for one queued or running, "none" for a workflow that
+    #        has never run, "fail" for a listing that can't be read, or (seconds, the workflow's state))
     CASES = {
-        "green, no issue": ("", "", "", 0, ""),
-        "main turns red": ("main", "", "", 0, ""),
-        "main stays red": ("main", "main=7", "", 0, ""),
-        "main turns green": ("", "main=7", "", 0, ""),
-        "two branches change in one run": ("main", "release/0.9=8", "release/0.9", 0, ""),
-        "the dispatch fails": ("main", "", "", 1, ""),
-        "a later branch fails after main's issue opened": ("main", "", "release/0.9", 0, "release/0.9"),
+        "green, no issue": ("", "", "", 0, "", 60),
+        "main turns red": ("main", "", "", 0, "", 60),
+        "main stays red": ("main", "main=7", "", 0, "", 60),
+        "main turns green": ("", "main=7", "", 0, "", 60),
+        "two branches change in one run": ("main", "release/0.9=8", "release/0.9", 0, "", 60),
+        "the dispatch fails": ("main", "", "", 1, "", 60),
+        "a later branch fails after main's issue opened": ("main", "", "release/0.9", 0, "release/0.9", 60),
+        # #4739: nothing changed, and the dashboard's newest run ended this long ago.
+        "green, the dashboard idle for 9 minutes": ("", "", "", 0, "", 9 * 60),
+        "main stays red, the dashboard idle for 9 minutes": ("main", "main=7", "", 0, "", 9 * 60),
+        "green, the dashboard idle for exactly 6 minutes": ("", "", "", 0, "", 6 * 60),
+        "green, the dashboard's last run ended 5 minutes 59 seconds ago": ("", "", "", 0, "", 6 * 60 - 1),
+        "green, a dashboard run is queued or running": ("", "", "", 0, "", "active"),
+        "green, the dashboard has never run": ("", "", "", 0, "", "none"),
+        "green, the dashboard's runs can't be listed": ("", "", "", 0, "", "fail"),
+        "green and idle, and the dispatch fails": ("", "", "", 1, "", 9 * 60),
+        "main turns red with the dashboard idle too": ("main", "", "", 0, "", 20 * 60),
+        "green, idle for three days and the workflow switched off": ("", "", "", 0, "", (3 * 24 * 3600, "disabled_manually")),
+        "green, idle for two hours and the workflow active": ("", "", "", 0, "", (2 * 3600, "active")),
     }
 
     @classmethod
@@ -3246,10 +3280,13 @@ class MainHealthTellsTheDashboardTests(unittest.TestCase):
             '}\n'
         )
         script = []
-        for index, (red, open_issues, release_branches, status, fails) in enumerate(cls.CASES.values()):
+        for index, (red, open_issues, release_branches, status, fails, dashboard) in enumerate(cls.CASES.values()):
+            ended, state = dashboard if isinstance(dashboard, tuple) else (dashboard, "active")
+            newest = ended if isinstance(ended, str) else time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime(cls.NOW - ended))
             script += [
                 f'( export RED_BRANCHES="{red}" OPEN_ISSUES="{open_issues}" RELEASE_BRANCHES="{release_branches}"',
-                f'  export DISPATCH_STATUS="{status}" FAIL_BRANCH="{fails}" CALLS="$DIR/calls-{index}"',
+                f'  export DISPATCH_STATUS="{status}" FAIL_BRANCH="{fails}" CALLS="$DIR/calls-{index}" NEWEST_RUN="{newest}"',
+                f'  export WORKFLOW_STATE="{state}" NOW="{cls.NOW}"',
                 '  : > "$CALLS"',
                 functions,
                 DASHBOARD_DISPATCH_GH_STUB,
@@ -3270,7 +3307,11 @@ class MainHealthTellsTheDashboardTests(unittest.TestCase):
             "TRIGGER_URL": "https://github.example/runs/1",
             "TRIGGER_CONCLUSION": "failure",
             "TRIGGER_SHA": "0123456789abcdef",
+            "DASHBOARD_QUIET_MINUTES": step.env["DASHBOARD_QUIET_MINUTES"],
+            "DASHBOARD_OFF_MINUTES": step.env["DASHBOARD_OFF_MINUTES"],
         }
+        cls.step = step
+        cls.quiet_minutes = int(step.env["DASHBOARD_QUIET_MINUTES"])
         cls.result = run_bash("\n".join(script), tmp, env)
 
         def text(kind: str, index: int) -> str:
@@ -3325,6 +3366,104 @@ class MainHealthTellsTheDashboardTests(unittest.TestCase):
         log = self.seen[name]["log"]
         self.assertIn("try 4 of 4 failed", log)
         self.assertIn("Started a Release Dashboard run: opened #99 for main.", log)
+
+    def asked(self, name: str) -> int:
+        return sum(1 for call in self.seen[name]["calls"] if call.startswith(self.ASKED))
+
+    def test_an_idle_dashboard_gets_a_run(self):
+        # #4739: the hour's first scheduled runs come about ten minutes late. Nothing changed here, and the
+        # dashboard is started all the same, whether main is green or stays red. Six minutes is the line.
+        self.assertEqual(self.quiet_minutes, 6)
+        for name, minutes in (("green, the dashboard idle for 9 minutes", 9), ("main stays red, the dashboard idle for 9 minutes", 9),
+                              ("green, the dashboard idle for exactly 6 minutes", 6)):
+            with self.subTest(case=name):
+                self.assertEqual(self.dispatches(name), [self.DISPATCH])
+                self.assertIn(f"Started a Release Dashboard run: none has run for {minutes} minutes.", self.seen[name]["log"])
+                self.assertEqual(self.asked(name), 1)
+                self.assertNotIn(self.STATE, self.seen[name]["calls"])
+
+    def test_a_dashboard_that_ran_lately_or_is_running_is_left_alone(self):
+        # The review's finding: measured from a run's start, a run that published a minute ago or was still
+        # going counted as quiet, and a second read came inside the five minutes between publishes.
+        for name in ("green, the dashboard's last run ended 5 minutes 59 seconds ago", "green, a dashboard run is queued or running",
+                     "green, no issue"):
+            with self.subTest(case=name):
+                self.assertEqual(self.dispatches(name), [])
+                self.assertEqual(self.asked(name), 1)
+                self.assertNotIn("Release Dashboard", self.seen[name]["log"])
+
+    def test_the_question_counts_a_run_as_going_until_it_has_ended_and_measures_from_the_end(self):
+        # The stub answers what the step's jq filter would. The filter itself, on real jq when bash has one:
+        # pull requests' runs aside, "active" if any of the newest is not completed, else the latest end.
+        run = self.step.run
+        self.assertIn('per_page=5"', run)
+        filter_text = run.split('per_page=5"', 1)[1].split("--jq '", 1)[1].split("'", 1)[0]
+        self.assertIn('select(.event != "pull_request")', filter_text)
+        self.assertIn('any(.[]; .status != "completed")', filter_text)
+        self.assertIn("map(.updated_at) | max", filter_text)
+        if not bash_has_jq():
+            self.skipTest("jq is not on bash's PATH")
+        lists = {
+            "empty": ([], ""),
+            "one queued behind finished ones": ([{"event": "schedule", "status": "queued", "updated_at": "2026-01-01T00:09:00Z"},
+                                                 {"event": "push", "status": "completed", "updated_at": "2026-01-01T00:05:00Z"}], "active"),
+            "all finished": ([{"event": "schedule", "status": "completed", "updated_at": "2026-01-01T00:05:00Z"},
+                              {"event": "issues", "status": "completed", "updated_at": "2026-01-01T00:07:00Z"}], "2026-01-01T00:07:00Z"),
+            "only a pull request's run going": ([{"event": "pull_request", "status": "in_progress", "updated_at": "2026-01-01T00:09:00Z"},
+                                                 {"event": "schedule", "status": "completed", "updated_at": "2026-01-01T00:02:00Z"}], "2026-01-01T00:02:00Z"),
+        }
+        tmp = Path(tempfile.mkdtemp(prefix="4739-main-health-filter-"))
+        self.addCleanup(shutil.rmtree, tmp, ignore_errors=True)
+        (tmp / "filter.jq").write_text(filter_text, encoding="utf-8", newline="\n")
+        script = []
+        for index, (runs, _) in enumerate(lists.values()):
+            (tmp / f"runs-{index}.json").write_text(json.dumps({"workflow_runs": runs}), encoding="utf-8")
+            script.append(f'jq -r -f "$DIR/filter.jq" "$DIR/runs-{index}.json" | tr -d "\\r" > "$DIR/out-{index}"')
+        result = run_bash("\n".join(script), tmp, {"DIR": posix(tmp)})
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        for index, (name, (_, expected)) in enumerate(lists.items()):
+            with self.subTest(runs=name):
+                self.assertEqual((tmp / f"out-{index}").read_text(encoding="utf-8").strip(), expected)
+
+    def test_a_question_that_fails_or_finds_no_run_starts_nothing_and_fails_nothing(self):
+        for name in ("green, the dashboard has never run", "green, the dashboard's runs can't be listed"):
+            with self.subTest(case=name):
+                self.assertEqual(self.dispatches(name), [])
+                self.assertNotIn("::warning", self.seen[name]["log"])
+
+    def test_a_workflow_switched_off_isnt_started_and_doesnt_warn_on_every_run(self):
+        # The review's finding: idle for days means the workflow is off, and each Main Health run would have
+        # tried a dispatch that fails and warned. Past an hour it asks the workflow's state first.
+        off = "green, idle for three days and the workflow switched off"
+        self.assertEqual(self.dispatches(off), [])
+        self.assertIn(self.STATE, self.seen[off]["calls"])
+        self.assertNotIn("::warning", self.seen[off]["log"])
+        late = "green, idle for two hours and the workflow active"
+        self.assertEqual(self.dispatches(late), [self.DISPATCH])
+        self.assertIn(self.STATE, self.seen[late]["calls"])
+        self.assertIn("none has run for 120 minutes", self.seen[late]["log"])
+
+    def test_an_idle_dashboard_whose_dispatch_fails_is_a_warning(self):
+        name = "green and idle, and the dispatch fails"
+        self.assertEqual(self.dispatches(name), [self.DISPATCH])
+        self.assertIn("::warning title=Main Health::The Release Dashboard run couldn't be started (none has run for 9 minutes). "
+                      "Its schedule starts the next.", self.seen[name]["log"])
+
+    def test_an_issue_that_changed_is_the_reason_given_and_the_dashboard_isnt_asked(self):
+        # One dispatch, not two, and no question: the issue's change starts the run whatever the dashboard did.
+        name = "main turns red with the dashboard idle too"
+        self.assertEqual(self.dispatches(name), [self.DISPATCH])
+        self.assertIn("Started a Release Dashboard run: opened #99 for main.", self.seen[name]["log"])
+        self.assertEqual(self.asked(name), 0)
+        self.assertEqual(self.asked("main turns red"), 0)
+
+    def test_it_cant_start_itself_in_a_loop(self):
+        # Main Health runs after the watched workflows finish. The dashboard isn't one of them, so a run this
+        # starts doesn't bring Main Health back, and the dashboard isn't idle again until six minutes after it ends.
+        text = self.WORKFLOW.read_text(encoding="utf-8")
+        watched = text.split("    workflows: [", 1)[1].split("]", 1)[0]
+        self.assertNotIn("Release Dashboard", watched)
+        self.assertNotIn("release-dashboard", text.split("          WATCHED: |-\n", 1)[1].split("          # Jobs that only some runs", 1)[0])
 
     def test_the_job_may_dispatch_and_the_dashboard_can_be_dispatched(self):
         text = self.WORKFLOW.read_text(encoding="utf-8")
