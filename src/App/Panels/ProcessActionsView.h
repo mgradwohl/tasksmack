@@ -43,6 +43,19 @@ namespace App
 namespace Detail
 {
 
+/// Whether this session may raise a process's priority again after lowering it (#4793), for the confirms' text
+/// (Detail::confirmBody()). Linux: only with CAP_SYS_NICE, which canSetRealtimeSchedPolicy reads from TaskSmack's own
+/// effective set; an unprivileged user can lower a priority but not raise it. Windows restores a priority class freely.
+[[nodiscard]] constexpr bool sessionCanRaisePriority(const Platform::ProcessActionCapabilities& capabilities) noexcept
+{
+#ifdef _WIN32
+    static_cast<void>(capabilities);
+    return true;
+#else
+    return capabilities.canSetRealtimeSchedPolicy;
+#endif
+}
+
 /// Whether the platform can run @p action, from its ProcessActionCapabilities. A button whose action
 /// it cannot run is not drawn; its grid cell is left empty. ProcessAction::None is never available.
 [[nodiscard]] constexpr bool isActionAvailable(const Platform::ProcessActionCapabilities& capabilities, ProcessAction action) noexcept
@@ -238,18 +251,25 @@ struct EfficiencyModeToggle
                    "Efficiency mode does: it uses less power, and may run slower",
     };
 #else
-    // Linux (#3202): nice 19 and, where it can, the cgroup's lowest CPU weight.
+    // Linux (#3202): nice 19 and, where it can, the cgroup's lowest CPU weight. A session that can't raise a priority
+    // again says so both ways (#4793): there, turning it off needs an Administrator session.
+    const bool canRaise = sessionCanRaisePriority(capabilities);
     if (on)
     {
         return {
             .state = EfficiencyModeToggleState::Enabled,
-            .tooltip = "Turn Efficiency mode off: the process's priority, and its cgroup's CPU weight, are restored",
+            .tooltip = canRaise ? "Turn Efficiency mode off: the process's priority, and its cgroup's CPU weight, are restored"
+                                : "Turn Efficiency mode off: that raises the process's priority again, which this session "
+                                  "usually can't do; it needs TaskSmack (Administrator)",
         };
     }
     return {
         .state = EfficiencyModeToggleState::Enabled,
-        .tooltip = "Run the process at nice 19, the lowest priority, as Task Manager's Efficiency mode does on Windows: it "
-                   "yields the CPU to other work, and may run slower",
+        .tooltip = canRaise ? "Run the process at nice 19, the lowest priority, as Task Manager's Efficiency mode does on Windows: it "
+                              "yields the CPU to other work, and may run slower"
+                            : "Run the process at nice 19, the lowest priority, as Task Manager's Efficiency mode does on Windows: it "
+                              "yields the CPU to other work, and may run slower. This session can't raise a priority again, so "
+                              "turning it off needs TaskSmack (Administrator)",
     };
 #endif
 }
@@ -969,6 +989,8 @@ class ProcessActionsView
     // First: among the most-aligned members, and one that can go anywhere, so nothing pads before it (the padding check).
     RefusalOffer<Retry> m_Offer; ///< The result line's countdown, and its Retry or Restart as administrator (#2308, #3658)
     bool m_ShowConfirmDialog = false;
+    /// Detail::sessionCanRaisePriority() of the capabilities last rendered with, for the confirm's text (#4793).
+    bool m_CanRaisePriority = true;
     bool m_DismissPending = false; // A selection change asked to close a dialog ImGui may still have open
     Detail::ProcessAction m_ConfirmAction = Detail::ProcessAction::None;
     ConfirmTarget m_ConfirmTarget;

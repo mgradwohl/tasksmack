@@ -194,7 +194,8 @@ Outcome renderOpen(bool& showRequested,
 
 } // namespace
 
-Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid, bool dismiss)
+Outcome render(
+    bool& showRequested, Detail::ProcessAction action, std::string_view processName, std::int32_t pid, bool dismiss, bool canRaisePriority)
 {
     if (dismiss)
     {
@@ -208,7 +209,7 @@ Outcome render(bool& showRequested, Detail::ProcessAction action, std::string_vi
                       Detail::actionLabel(action),
                       Detail::confirmsInDanger(action),
                       Detail::confirmTitle(action, processName, pid),
-                      Detail::confirmBody(action, processName, pid),
+                      Detail::confirmBody(action, processName, pid, canRaisePriority),
                       {});
 }
 

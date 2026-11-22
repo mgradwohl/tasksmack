@@ -390,7 +390,7 @@ void ProcessesPanel::requestRowAction(Detail::ProcessAction action, const Domain
         1,
         ProcessBatch::BatchTarget{.target = {.pid = proc.pid, .startTimeTicks = proc.startTimeTicks}, .name = proc.name, .priority = {}});
     m_RowAction.title = Detail::confirmTitle(action, proc.name, proc.pid);
-    m_RowAction.question = Detail::confirmBody(action, proc.name, proc.pid);
+    m_RowAction.question = Detail::confirmBody(action, proc.name, proc.pid, Detail::sessionCanRaisePriority(m_ActionCapabilities));
     m_ShowRowActionConfirm = true;
 }
 
