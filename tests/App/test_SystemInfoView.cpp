@@ -287,13 +287,17 @@ TEST(SystemInfoSectionsTest, CopyTextLeavesHiddenIdentifiersOut)
     return info; // no SKU, no embedded controller
 }
 
-// #4755: the BIOS release date reads ISO, as Installed and Boot time do, not SMBIOS's MM/DD/YYYY. A two-digit year is
-// SMBIOS 2.2's 19YY; anything that isn't such a date is shown as the firmware wrote it.
+// #4755: the BIOS release date reads ISO, as Installed and Boot time do, not SMBIOS's MM/DD/YYYY. A two-digit year pivots:
+// 00-79 is 20YY, 80-99 is 19YY (#4807); anything that isn't such a date is shown as the firmware wrote it.
 TEST(SystemInfoSectionsTest, TheBiosReleaseDateIsIso)
 {
     EXPECT_EQ(SystemInfo::firmwareDateText("08/03/2026"), "2026-08-03");
     EXPECT_EQ(SystemInfo::firmwareDateText("12/31/1999"), "1999-12-31");
     EXPECT_EQ(SystemInfo::firmwareDateText("05/14/98"), "1998-05-14");
+    EXPECT_EQ(SystemInfo::firmwareDateText("11/23/05"), "2005-11-23") << "two-digit year below 80 is 20yy";
+    EXPECT_EQ(SystemInfo::firmwareDateText("01/01/99"), "1999-01-01");
+    EXPECT_EQ(SystemInfo::firmwareDateText("12/31/79"), "2079-12-31") << "the pivot's last 20yy year";
+    EXPECT_EQ(SystemInfo::firmwareDateText("01/01/80"), "1980-01-01") << "the pivot's first 19yy year";
     EXPECT_EQ(SystemInfo::firmwareDateText(""), "");
     EXPECT_EQ(SystemInfo::firmwareDateText("2024-05-14"), "2024-05-14") << "already ISO";
     EXPECT_EQ(SystemInfo::firmwareDateText("13/01/2024"), "13/01/2024") << "no month 13";

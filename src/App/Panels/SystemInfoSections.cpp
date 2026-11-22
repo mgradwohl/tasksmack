@@ -424,7 +424,9 @@ std::string firmwareDateText(std::string_view date)
     }
     if (yearText.size() == 2)
     {
-        *year += 1900; // SMBIOS 2.2 and earlier: "mm/dd/yy", always 19yy
+        // SMBIOS 2.2 and earlier write "mm/dd/yy", and firmware kept writing it into the 2000s, so a fixed 19yy
+        // would show 11/23/05 as 1905. Pivot as common SMBIOS tooling does: 00-79 is 20yy, 80-99 is 19yy (#4807).
+        *year += (*year < 80) ? 2000 : 1900;
     }
     return std::format("{:04}-{:02}-{:02}", *year, *month, *day);
 }
