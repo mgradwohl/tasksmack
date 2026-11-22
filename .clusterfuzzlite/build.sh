@@ -184,3 +184,12 @@ build_fuzzer fuzz_os_release
 seed_corpus fuzz_os_release tests/fuzz/corpus/fuzz_os_release/* # os-release with escapes, and /proc/stat
 build_fuzzer fuzz_proc_text
 seed_corpus fuzz_proc_text tests/fuzz/corpus/fuzz_proc_text/* # smaps_rollup, io and pressure
+# The second tier (#4616): kernel text and messages, less hostile than a user's files, but hand-written parsers.
+build_fuzzer fuzz_cpu_details
+seed_corpus fuzz_cpu_details tests/fuzz/corpus/fuzz_cpu_details/* # /proc/cpuinfo, a cache size, a hex field
+build_fuzzer fuzz_proc_privileges
+seed_corpus fuzz_proc_privileges tests/fuzz/corpus/fuzz_proc_privileges/* # a status's CapEff and Tgid, mountinfo's /proc
+build_fuzzer fuzz_platform_security
+seed_corpus fuzz_platform_security tests/fuzz/corpus/fuzz_platform_security/* # SecureBoot efivar, LSM list, enforce, a UUID
+build_fuzzer fuzz_nl80211 src/Platform/Linux/Nl80211.cpp
+seed_corpus fuzz_nl80211 tests/fuzz/corpus/fuzz_nl80211/* # a family id, then a GET_STATION reply with station info

@@ -1423,6 +1423,10 @@ runs stay ASan-only, since ClusterFuzzLite keeps one corpus per target, shared b
 | `fuzz_xdg_autostart` | the autostart `.desktop` reader, and switching an entry on or off (`Platform/Linux/XdgAutostart.h`, #4357) | `tests/fuzz/corpus/fuzz_xdg_autostart/` |
 | `fuzz_os_release` | `/etc/os-release` and `/proc/stat`'s btime (`Platform/Linux/LinuxOsInfo.h`, #4357) | `tests/fuzz/corpus/fuzz_os_release/` |
 | `fuzz_proc_text` | `/proc/<pid>/smaps_rollup`, `/proc/<pid>/io` and `/proc/pressure/*` (`Platform/Linux/SmapsRollupParser.h`, `ProcIoParser.h`, `PressureParser.h`, #4357) | `tests/fuzz/corpus/fuzz_proc_text/` |
+| `fuzz_cpu_details` | `/proc/cpuinfo` and the `/sys/devices/system/cpu` values the CPU tab reads (`Platform/Linux/LinuxCpuDetails.h`, #4616) | `tests/fuzz/corpus/fuzz_cpu_details/` |
+| `fuzz_proc_privileges` | a process's CapEff and Tgid, and mountinfo's `/proc` line (`Platform/Linux/ProcPrivileges.h`, #4616) | `tests/fuzz/corpus/fuzz_proc_privileges/` |
+| `fuzz_platform_security` | the SecureBoot efivar, the LSM list, SELinux's enforce file and a partition type's UUID (`Platform/Linux/LinuxPlatformSecurity.h`, #4616) | `tests/fuzz/corpus/fuzz_platform_security/` |
+| `fuzz_nl80211` | the Wi-Fi details' nl80211 family lookup and GET_STATION reply walker (`Platform/Linux/Nl80211.{h,cpp}`, #4616) | `tests/fuzz/corpus/fuzz_nl80211/` |
 
 Pull requests that change `tests/fuzz/**`, `.clusterfuzzlite/**`, the `cflite_*.yml` workflows,
 any fuzzed parser (the headers in the table above, `UserConfig.{cpp,h}`, `UserConfigHelpers.h`,
