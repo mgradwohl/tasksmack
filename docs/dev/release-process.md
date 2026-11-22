@@ -302,6 +302,15 @@ How it's made:
   tab comes back to the front. If the last run was more than 25 minutes ago it says so, unless the budget note
   above already gives the reason. A planned release's own figures are up to an hour old by design, and a
   shipped release's never change, so neither has "Refresh now".
+- A late page says why (#4734). When its figures are over ten minutes old it asks GitHub's public API, without
+  a token, for the workflow's newest runs, and says one of four things: a refresh has been waiting for a
+  runner since a given time (other workflows hold them all, and a manual run would only cancel it, so the page
+  offers none), a refresh is running, the last refresh failed at a given time (with a link to the runs), or
+  none has started since a given time (then "Refresh now" helps). It says nothing when GitHub has newer
+  figures than the page, since only the page's copy is old then and it asks for the data again; and nothing
+  when the API can't be read. That limit is 60 requests an hour for each visitor's address: the page asks at
+  most every three minutes, only while it is late and on screen, and after a refusal not until the limit
+  resets. A pull request's run isn't counted.
 - The workflow's token shares one hourly API budget with every other workflow here, so the generator reads
   once an hour what changes slowly (the cycle's pass counts, a planned release). Each run's log says what it
   used and what's left, and warns under a quarter.

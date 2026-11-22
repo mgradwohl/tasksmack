@@ -420,6 +420,30 @@ TEST(UserSessionsFeedTest, ReadsOnlyOnDemandAndStopsCleanly)
     EXPECT_EQ(fake.use_count(), 2) << "the feed kept the sessions"; // this test's and the factory's copy
 }
 
+// #4656: the exit asks the feed's sampler to stop with every other sampler's, so it reads no more and stop()'s join
+// doesn't wait out another pass. The feed itself stays until stop().
+TEST(UserSessionsFeedTest, RequestStopEndsTheReadsWithoutTearingTheFeedDown)
+{
+    auto fake = std::make_shared<FakeSessions>(std::vector<UserSession>{session("2", "alice", 1000)});
+    UserSessionsFeed feed([fake] { return fake; });
+    feed.requestStop(); // no sampler yet: nothing to ask
+    feed.start();
+    const auto interval = std::chrono::milliseconds(Domain::Sampling::REFRESH_INTERVAL_MIN_MS);
+    feed.setInterval(interval);
+    feed.setProcessesView(true, ProcessGrouping::GroupBy::User);
+    ASSERT_TRUE(waitFor([&feed] { return feed.publishedVersion() >= 1; }));
+
+    feed.requestStop();
+    std::this_thread::sleep_for(interval * 2); // a read already running may still finish
+    const int readsAsked = fake->m_Reads.load();
+    std::this_thread::sleep_for(interval * 4);
+    EXPECT_EQ(fake->m_Reads.load(), readsAsked) << "read after requestStop()";
+    EXPECT_NE(feed.model(), nullptr) << "the feed stays until stop()";
+    feed.requestStop(); // twice is fine
+    feed.stop();
+    EXPECT_EQ(feed.model(), nullptr);
+}
+
 // A view shown before start() is read from as soon as the feed starts, whichever comes first (#3469 review).
 TEST(UserSessionsFeedTest, AViewShownBeforeStartIsReadOnceStarted)
 {

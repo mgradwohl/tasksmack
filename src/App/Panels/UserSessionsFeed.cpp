@@ -42,6 +42,14 @@ void UserSessionsFeed::start()
     applyDemand(); // the view shown before start(), or still shown across a stop() and start()
 }
 
+void UserSessionsFeed::requestStop() noexcept
+{
+    if (m_Sampler)
+    {
+        m_Sampler->requestStop();
+    }
+}
+
 void UserSessionsFeed::stop()
 {
     m_Sampler.reset(); // joins the sampler thread: the one place it is waited for

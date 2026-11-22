@@ -1,7 +1,7 @@
 name: Artifact Prune
 
 # Deletes the repository's superseded artifacts nightly (#4617, the maintainer's choice on 2026-11-21): every copy of
-# a name but the newest on its branch, older than 6 hours, keeping benchmark* and release-dashboard-data. Each CI run
+# a name but the newest on its branch, older than 6 hours, keeping benchmark* (#4720 ended the dashboard's own artifact on main). Each CI run
 # uploads under the same names, so the list grew to about 6,600, and ClusterFuzzLite's PR run lists every artifact for
 # each corpus lookup: about 42 REST calls per 100 artifacts, enough to empty the workflow token's hourly budget for
 # every workflow. tools/prune-artifacts.py has the rule; tests/tools/test_prune_artifacts.py tests it.
