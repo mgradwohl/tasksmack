@@ -6,6 +6,7 @@
 #include "Domain/PriorityConfig.h"
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessSnapshot.h"
+#include "Domain/ProcessState.h"
 #include "Domain/SamplingConfig.h"
 #include "Mocks/MockGPUProbe.h"
 #include "Mocks/MockProbes.h"
@@ -813,7 +814,7 @@ TEST(ProcessModelTest, GivenStoppedState_WhenRefreshed_ThenSnapshotStateIsStoppe
     model.refresh();
 
     auto snaps = model.snapshots();
-    EXPECT_EQ(snaps[0].displayState, "Stopped");
+    EXPECT_EQ(snaps[0].displayState, Domain::processStateName('T')); // Suspended on Windows (#4755)
 }
 
 TEST(ProcessModelTest, GivenUnknownState_WhenRefreshed_ThenSnapshotStateIsUnknown)

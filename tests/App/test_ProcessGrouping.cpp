@@ -181,6 +181,31 @@ TEST(ProcessGroupingTest, ConfigValuesRoundTrip)
     EXPECT_EQ(ProcessGrouping::groupByFromConfig("bogus"), GroupBy::None);
 }
 
+// #4753: the System Idle Process's CPU is idle time, not load. A group holding it counts it as a process but adds
+// neither its CPU % nor its CPU time, so Group: Type's Windows Process group doesn't read as the busiest at ~90%.
+TEST(ProcessGroupingTest, TheSystemIdleProcessAddsNoCpuToItsGroup)
+{
+    Domain::ProcessSnapshot idle;
+    idle.pid = 0;
+    idle.cpuTimeIsIdle = true;
+    idle.cpuPercent = 90.0;
+    idle.cpuTimeSeconds = 1000.0;
+    idle.threadCount = 16;
+    Domain::ProcessSnapshot busy;
+    busy.pid = 4;
+    busy.cpuPercent = 2.5;
+    busy.cpuTimeSeconds = 10.0;
+    busy.threadCount = 200;
+
+    ProcessGrouping::Totals totals;
+    totals.add(idle);
+    totals.add(busy);
+    EXPECT_EQ(totals.processes, 2U);
+    EXPECT_DOUBLE_EQ(totals.cpuPercent, 2.5);
+    EXPECT_DOUBLE_EQ(totals.cpuTimeSeconds, 10.0);
+    EXPECT_EQ(totals.threads, 216) << "only its CPU is left out";
+}
+
 // #3186: every summable column reads its own total, and the rest have none.
 TEST(ProcessGroupingTest, EverySummableColumnHasItsTotal)
 {
@@ -235,7 +260,11 @@ TEST(ProcessGroupingTest, EverySummableColumnHasItsTotal)
 TEST(ProcessGroupingTest, LabelsNonAppUnitsAndStaleIndices)
 {
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::None), "None");
+#ifdef _WIN32
+    EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Unit), "Service") << "Windows groups by a hosted service (#4755)";
+#else
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Unit), "Unit");
+#endif
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::Container), "Container");
     EXPECT_EQ(ProcessGrouping::groupByLabel(GroupBy::App), "App");
     EXPECT_EQ(ProcessGrouping::appFromUnit("app-gnome-firefox-4521.slice"), "");

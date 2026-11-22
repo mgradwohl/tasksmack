@@ -447,7 +447,7 @@ TEST_F(StartupViewRenderTest, RightClickSelectsTheRowTheBarActsOn)
 }
 
 // #3424: Windows' scheduled tasks are labelled by where they are, their path is in the tooltip, and Windows' own
-// are hidden until "Show Microsoft entries" is ticked, which is offered only when there are some.
+// are hidden until "Show Windows tasks" is ticked, which is offered only when there are some.
 TEST(StartupViewTest, ScheduledTasksAreLabelledAndWindowsOwnAreHiddenByDefault)
 {
     EXPECT_EQ(startupLocationLabel(StartupLocation::ScheduledTaskUser), "Scheduled task");
@@ -479,7 +479,7 @@ TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
 {
     Domain::StartupPublication publication = makePublication();
     StartupViewState state;
-    EXPECT_FALSE(captureFrame(publication, state).contains("Show Microsoft entries")) << "no such entries, no checkbox";
+    EXPECT_FALSE(captureFrame(publication, state).contains("Show Windows tasks")) << "no such entries, no checkbox";
 
     auto windows = entry("Cleanup", "Microsoft Corporation", StartupLocation::ScheduledTaskMachine, true);
     windows.registrationName = R"(\Microsoft\Windows\Setup\Cleanup)";
@@ -487,7 +487,7 @@ TEST_F(StartupViewRenderTest, ShowMicrosoftEntriesBringsBackWindowsOwnTasks)
     publication.entries.push_back(windows);
     publication.version = 5;
     const std::string hidden = captureFrame(publication, state);
-    EXPECT_TRUE(hidden.contains("Show Microsoft entries"));
+    EXPECT_TRUE(hidden.contains("Show Windows tasks"));
     EXPECT_EQ(state.rows.size(), 4U);
     EXPECT_EQ(state.osComponentCount, 1U);
     EXPECT_TRUE(hidden.contains("4 of 4 startup apps (1 hidden)")) << "the hidden entry isn't counted as filtered out (#3891)";

@@ -591,6 +591,22 @@ TEST(BrokerHelperTest, ATaskSmackInAnInstallItsUserCanChangeIsRefused)
     checked = BrokerHelper::checkParentIsTaskSmack(parent->get(), arguments, self);
     ASSERT_FALSE(checked.has_value());
     EXPECT_TRUE(checked.error().contains("can change")) << checked.error();
+    // Said in words, as Settings shows it, not as an access mask (#4755).
+    EXPECT_TRUE(checked.error().contains(": it may ")) << checked.error();
+    EXPECT_FALSE(checked.error().contains("0x")) << checked.error();
+}
+
+// #4755: the rights that let a user change the install, in words, in the order a reader weighs them.
+TEST(BrokerHelperTest, ChangeRightsAreNamedInWords)
+{
+    EXPECT_EQ(BrokerHelper::changeRightsText(0), "");
+    EXPECT_EQ(BrokerHelper::changeRightsText(WRITE_DAC), "change its permissions");
+    EXPECT_EQ(BrokerHelper::changeRightsText(FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | DELETE | WRITE_DAC),
+              "write or add to it, delete or rename it and change its permissions")
+        << "0x00050006, the mask the manual pass saw";
+    EXPECT_EQ(BrokerHelper::changeRightsText(BrokerHelper::FOLDER_CHANGE_RIGHTS),
+              "write or add to it, delete what is in it, delete or rename it, change its permissions and take ownership of it");
+    EXPECT_EQ(BrokerHelper::changeRightsText(FILE_APPEND_DATA | WRITE_OWNER), "write or add to it and take ownership of it");
 }
 
 /// This process's token for identification, with Administrators deny-only (CreateRestrictedToken): a

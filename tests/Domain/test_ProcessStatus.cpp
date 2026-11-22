@@ -7,13 +7,13 @@
 #include "Domain/ProcessModel.h"
 #include "Domain/ProcessStatusText.h"
 #include "Mocks/MockProbes.h"
-#include "Platform/IProcessProbe.h"
 #include "Platform/ProcessTypes.h"
 
 #include <gtest/gtest.h>
 
 #include <memory>
 #include <string>
+#include <utility>
 
 using TestMocks::makeProcessCounters;
 using TestMocks::MockProcessProbe;
@@ -105,7 +105,7 @@ TEST(ProcessStatusTest, MultipleProcessesWithDifferentStatuses)
     Domain::ProcessModel model(std::move(probe));
     model.refresh();
 
-    auto snaps = model.snapshots();
+    const auto snaps = model.snapshots();
     ASSERT_EQ(snaps.size(), 3);
 
     // Find each process and verify status
@@ -231,6 +231,26 @@ TEST(ProcessStatusTest, NotRespondingIsPublishedWithTheStatusAndClearsWhenItAnsw
     ASSERT_EQ(snaps.size(), 1);
     EXPECT_FALSE(snaps[0].notResponding);
     EXPECT_TRUE(snaps[0].status.empty());
+}
+
+// #4753: the probe's word that a process's CPU time is idle time (Windows' System Idle Process) reaches its
+// snapshot, where the Processes table mutes its CPU; every other process's stays false.
+TEST(ProcessStatusTest, IdleCpuTimeIsPublishedForTheIdleProcessOnly)
+{
+    auto probe = std::make_unique<MockProcessProbe>();
+    Platform::ProcessCounters idle = makeProcessCounters(0, "System Idle Process");
+    idle.cpuTimeIsIdle = true;
+    probe->setCounters({idle, makeProcessCounters(104, "app")});
+    probe->setTotalCpuTime(100000);
+
+    Domain::ProcessModel model(std::move(probe));
+    model.refresh();
+    const auto snaps = model.snapshots();
+    ASSERT_EQ(snaps.size(), 2);
+    for (const auto& snap : snaps)
+    {
+        EXPECT_EQ(snap.cpuTimeIsIdle, snap.pid == 0) << snap.pid;
+    }
 }
 
 } // namespace

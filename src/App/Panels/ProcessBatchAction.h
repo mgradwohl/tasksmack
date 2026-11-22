@@ -184,7 +184,14 @@ template<typename SnapshotVector>
     switch (action)
     {
     case Detail::ProcessAction::Terminate:
+#ifdef _WIN32
+        // Windows asks through each process's windows (#4755): one with none can't be asked.
+        return std::format("{} processes will be asked to exit. Each can save its work first, or refuse. Windows asks through their "
+                           "windows, so one with no window can't be asked: use Kill to end it.",
+                           count);
+#else
         return std::format("{} processes will be asked to exit. Each can save its work first, or refuse.", count);
+#endif
     case Detail::ProcessAction::Kill:
         return std::format("{} processes will end immediately, without saving their work.", count);
     case Detail::ProcessAction::Stop:

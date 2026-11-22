@@ -1035,6 +1035,25 @@ TEST_F(WindowsProcessProbeSeamTest, AProcessWithAHungWindowIsNotRespondingFromTh
     EXPECT_FALSE(find(answering.enumerate()).notResponding);
 }
 
+// #4753: PID 0 comes with no image name. It is the System Idle Process, as Task Manager names it, not Toolhelp's
+// "[System Process]", and its CPU time is marked as the CPUs' idle time; no other process is.
+TEST_F(WindowsProcessProbeSeamTest, PidZeroIsTheSystemIdleProcessAndItsCpuTimeIsIdle)
+{
+    fake().processes = {FakeProcess{.pid = 0, .createTime = 0, .name = L"", .threadIds = {}}, FakeProcess{}};
+    WindowsProcessProbe probe(fakeFunctions());
+    for (int sample = 0; sample < 2; ++sample) // the second from the detail cache's path
+    {
+        const std::vector<ProcessCounters> processes = probe.enumerate();
+        const auto idle = std::ranges::find_if(processes, [](const ProcessCounters& p) { return p.pid == 0; });
+        ASSERT_NE(idle, processes.end());
+        EXPECT_EQ(idle->name, "System Idle Process");
+        EXPECT_TRUE(idle->cpuTimeIsIdle);
+        EXPECT_EQ(idle->state, 'I');
+        EXPECT_EQ(find(processes).name, "app.exe");
+        EXPECT_FALSE(find(processes).cpuTimeIsIdle);
+    }
+}
+
 // The real walk, over this desktop's windows: sorted and unique, whatever it finds (this test hangs nothing).
 TEST(WindowsHungWindowsTest, TheRealWalkIsSortedAndUnique)
 {

@@ -463,7 +463,7 @@ void renderFilterBar(const Domain::StartupPublication& publication, StartupViewS
     if (state.osComponentCount > 0)
     {
         ImGui::SameLine();
-        static_cast<void>(UI::Widgets::outlinedCheckbox("Show Microsoft entries", &state.showOsComponents));
+        static_cast<void>(UI::Widgets::outlinedCheckbox("Show Windows tasks", &state.showOsComponents));
         ImGui::SetItemTooltip("Show Windows' own scheduled tasks (%zu), which are read-only here", state.osComponentCount);
     }
 }
