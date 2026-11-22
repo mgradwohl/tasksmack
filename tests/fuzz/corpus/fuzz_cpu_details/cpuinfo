@@ -1,0 +1,11 @@
+processor	: 0
+vendor_id	: GenuineIntel
+model name	: Intel(R) Core(TM) i7-1185G7 @ 3.00GHz
+physical id	: 0
+core id		: 0
+flags		: fpu vme vmx hypervisor
+
+processor	: 1
+model name	: Intel(R) Core(TM) i7-1185G7 @ 3.00GHz
+physical id	: 0
+core id		: 1
