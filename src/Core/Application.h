@@ -68,7 +68,8 @@ class Application
     /// Example: auto& shell = app.pushLayer<ShellLayer>(); shell.setContentYOffset(height);
     template<typename T, typename... Args>
         requires std::is_base_of_v<Layer, T>
-    T& pushLayer(Args&&... args)
+    // CodeQL, not clang-tidy, reads this: cpp/unused-local-variable flags the pack, used in the std::forward expansion.
+    T& pushLayer(Args&&... args) // NOLINT(cpp/unused-local-variable,cpp/unused-static-variable) - args used in std::forward pack expansion
     {
         const auto& layer = m_LayerStack.emplace_back(std::make_unique<T>(std::forward<Args>(args)...));
         try
