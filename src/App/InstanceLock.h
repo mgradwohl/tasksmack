@@ -9,12 +9,10 @@
 #include <string>
 #include <utility>
 
-#ifdef _WIN32
 namespace Platform
 {
 class IHandedOverFolder;
 } // namespace Platform
-#endif
 
 namespace App
 {
@@ -71,11 +69,10 @@ class InstanceLock
     /// A lock that is Unavailable for @p notTaken's reason, with nothing opened or created.
     explicit InstanceLock(NotTaken notTaken) noexcept : m_Error(std::move(notTaken.why))
     {}
-#ifdef _WIN32
-    /// Tries to take the lock on file @p name in @p folder, a config folder an elevated restart was handed (#2728),
-    /// opened only through the folder held (#3774): never by a path to it, so nothing on the way is looked up again.
+    /// Tries to take the lock on file @p name in @p folder, a config folder held open as the less-privileged side's: an
+    /// elevated restart's handed-over one on Windows (#2728, #3774), or, run as root for a user, theirs on Linux (#4167).
+    /// Opened only through the folder held, never by a path to it, so nothing on the way is looked up again.
     InstanceLock(const Platform::IHandedOverFolder& folder, const std::filesystem::path& name);
-#endif
     ~InstanceLock();
 
     InstanceLock(const InstanceLock&) = delete;
@@ -108,6 +105,10 @@ class InstanceLock
 #ifdef _WIN32
     /// Takes the byte-range lock on @p handle, an open lock file this object now owns.
     void lock(void* handle);
+#else
+    /// Takes flock(LOCK_EX | LOCK_NB) on @p fd, an open lock file this object now owns: Acquired, or why not (another
+    /// instance holds it, or the lock failed), with @p fd closed. True when it was taken.
+    bool lockFd(int fd);
 #endif
 };
 
@@ -151,13 +152,11 @@ struct LockWaitProgress
                                                                 std::chrono::milliseconds retryEvery = LOCK_RETRY_EVERY,
                                                                 const LockWaitProgress& progress = {});
 
-#ifdef _WIN32
-/// acquireInstanceLock() on file @p name in a handed-over config folder, opened only through the folder held (#3774).
+/// acquireInstanceLock() on file @p name in a held config folder, opened only through the folder held (#3774, #4167).
 [[nodiscard]] std::unique_ptr<InstanceLock> acquireInstanceLock(const Platform::IHandedOverFolder& folder,
                                                                 const std::filesystem::path& name,
                                                                 std::chrono::milliseconds patience,
                                                                 std::chrono::milliseconds retryEvery = LOCK_RETRY_EVERY,
                                                                 const LockWaitProgress& progress = {});
-#endif
 
 } // namespace App

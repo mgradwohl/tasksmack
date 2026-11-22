@@ -63,6 +63,8 @@
 #include <filesystem>
 #include <format>
 
+#include <elf.h> // AT_SECURE
+#include <sys/auxv.h>
 #include <sys/types.h>
 #include <unistd.h>
 #endif
@@ -162,7 +164,33 @@ void ensureXdgRuntimeDir()
             return; // valid path already provided by session manager
         }
 
-        spdlog::warn("Ignoring invalid XDG_RUNTIME_DIR='{}'; using a safe fallback", existingPath);
+        // Its Wayland socket is still the session's display (#4709): connect to it by its full path, so a rejected
+        // folder (WSLg's 0777 /mnt/wslg/runtime-dir) doesn't drop the session to X11. Not in a set-id or setcap
+        // session, which takes nothing from a folder others can write.
+        bool keptWayland = false;
+        const char* display = SDL_getenv("WAYLAND_DISPLAY");
+        if (display != nullptr && ::getauxval(AT_SECURE) == 0 && ::geteuid() == ::getuid())
+        {
+            if (const auto socket = RuntimeDir::waylandSocketIn(existingPath, display, ::getuid()); socket.has_value())
+            {
+                // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - called once before any threads start; setenv is in <cstdlib>
+                keptWayland = ::setenv("WAYLAND_DISPLAY", socket->c_str(), 1) == 0;
+            }
+        }
+        if (existingPath == "/mnt/wslg/runtime-dir")
+        {
+            // WSLg without systemd: Microsoft makes this folder writable by everyone. Expected there, so not a warning.
+            spdlog::info("XDG_RUNTIME_DIR='{}' (WSLg) is writable by others, so TaskSmack keeps its own runtime files in a "
+                         "private folder{}",
+                         existingPath,
+                         keptWayland ? "; the Wayland display is still used, by its full path" : "");
+        }
+        else
+        {
+            spdlog::warn("Ignoring invalid XDG_RUNTIME_DIR='{}'; using a safe fallback{}",
+                         existingPath,
+                         keptWayland ? " (the Wayland display there is still used, by its full path)" : "");
+        }
     }
 
     const uid_t uid = getuid();

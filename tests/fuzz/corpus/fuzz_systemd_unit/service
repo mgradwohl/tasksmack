@@ -1,0 +1,8 @@
+[Unit]
+Description=Sync daemon
+
+[Service]
+ExecStart=-%h/.local/bin/syncd --quiet "a b"
+
+[Install]
+WantedBy=default.target "x y.target"
