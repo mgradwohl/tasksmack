@@ -11,6 +11,11 @@
 // ESTALE, came back cut short or empty as if whole, and the exit save then rewrote the user's file from it (#1122's
 // "a file that can't be read is left alone"). So it reads with read(2) on POSIX and fread() with ferror() on Windows,
 // as Sha256::hashFile does since #4422.
+//
+// On Windows the file is opened sharing read and write (_SH_DENYNO), as the std::ifstream before #4652 did (#4745):
+// _wfopen_s opens it unshared (_SH_SECURE: read sharing only), so an editor or a sync tool holding config.toml or a
+// theme open for writing made the read fail, and the load fell back to defaults, while the other program's own open
+// for writing failed for as long as the read took.
 
 #include <array>
 #include <cstddef>
@@ -21,6 +26,8 @@
 #ifdef _WIN32
 #include <cstdio>
 #include <memory>
+
+#include <share.h>
 #else
 #include <cerrno>
 
@@ -38,8 +45,8 @@ namespace Core
     std::string text;
     std::array<char, 16384> chunk{};
 #ifdef _WIN32
-    std::FILE* opened = nullptr;
-    if (::_wfopen_s(&opened, path.c_str(), L"rb") != 0 || opened == nullptr)
+    std::FILE* const opened = ::_wfsopen(path.c_str(), L"rb", _SH_DENYNO); // shared, see above (#4745)
+    if (opened == nullptr)
     {
         return std::nullopt;
     }
