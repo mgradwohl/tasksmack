@@ -21,9 +21,10 @@ sees:
     and has the page look for new data every 30 seconds (#4604);
   - the release dashboard says when GitHub's API budget is used up and when it returns, in place of the
     stale banner, until that time passes or new data arrives (#4726);
-  - a late release dashboard says why, from GitHub's list of the refresh workflow's runs: a refresh waiting for
-    a runner, one running, the last one failed, or none started; and nothing when GitHub has newer figures and
-    only the page's copy is old, or when the list can't be read (#4734). No check reaches the real API;
+  - a late release dashboard says why, from GitHub's API: nothing when newer figures are published and only
+    the page's copy is old, and otherwise, from the refresh workflow's runs, a refresh waiting for a runner,
+    one running, the last one failed, or none published; and nothing when the API can't be read (#4734,
+    #4741). No check reaches the real API;
   - no JavaScript error, and no first-party request that fails.
 
 Usage: tools/docs-site-smoke.py [--docs DIR] [--offline] [--headed]
@@ -788,19 +789,25 @@ def check_release_dashboard_budget_note(page: Page, site: str, offline: bool) ->
 GITHUB_API = "https://api.github.com/**"
 
 
-def serve_runs(page: Page, runs: list[dict] | None, calls: list[str] | None = None, reset: int | None = None) -> None:
-    """Answers the dashboard's question to GitHub's API with @p runs, or refuses it (the hourly limit without a
-    token) when @p runs is None, saying the limit resets at @p reset (seconds since 1970) when that is given.
-    Every check gets an empty list by default, so none reaches the real API."""
+def serve_runs(page: Page, runs: list[dict] | None, calls: list[str] | None = None, reset: int | None = None,
+               published: dict | None = None) -> None:
+    """Answers the dashboard's questions to GitHub's API: the published index with @p published (the fixtures'
+    own when None, so nothing newer is published), and the workflow's runs with @p runs. Refuses both (the
+    hourly limit without a token) when @p runs is None, saying the limit resets at @p reset (seconds since
+    1970) when that is given. Every check gets an empty run list by default, so none reaches the real API."""
 
     def answer(route: Route) -> None:
+        url = route.request.url
         if calls is not None:
-            calls.append(route.request.url)
+            calls.append(url)
         headers = {"Access-Control-Allow-Origin": "*"}
         if runs is None:
             if reset is not None:
                 headers.update({"x-ratelimit-reset": str(reset), "Access-Control-Expose-Headers": "x-ratelimit-reset"})
             route.fulfill(status=403, content_type="application/json", body='{"message": "API rate limit exceeded"}', headers=headers)
+        elif "/contents/index.json" in url:
+            index = published if published is not None else json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
+            route.fulfill(status=200, content_type="application/json", body=json.dumps(index), headers=headers)
         else:
             route.fulfill(status=200, content_type="application/json", body=json.dumps({"workflow_runs": runs}), headers=headers)
 
@@ -809,7 +816,8 @@ def serve_runs(page: Page, runs: list[dict] | None, calls: list[str] | None = No
 
 
 def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) -> None:
-    """Past ten minutes the page asks GitHub what the refresh is doing, and says it (#4734)."""
+    """Past ten minutes the page asks GitHub what is published and what the refresh is doing, and says it
+    (#4734, #4741)."""
     index = json.loads((RELEASE_FIXTURES / "index.json").read_text(encoding="utf-8"))
     generated = datetime.datetime.fromisoformat(index["generated_at"].replace("Z", "+00:00"))
     serve_release_data(page)
@@ -830,9 +838,15 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
         page.clock.fast_forward(int(minutes * 60 * 1000))
         page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
 
+    def asked(kind: str) -> int:
+        return sum(1 for url in calls if kind in url)
+
     # The run that read the page's figures: created five and a half minutes before, done 18 seconds after.
-    # It proves nothing newer is published.
     theirs = run("completed", "success", -5.5, 0.3)
+    # #4741, as it happened on the live page: a run created before that read which only checked and stopped,
+    # and ended nearly nine minutes after the read because it too waited for a runner. A success like any
+    # other in this list, and it published nothing.
+    stopped = run("completed", "success", -1.4, 8.8)
     # A pull request's run of the same workflow, from a fork's `main`: it never publishes, and isn't counted.
     proof = run("completed", "success", 8, 9, event="pull_request")
     calls: list[str] = []
@@ -841,7 +855,7 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
     refresh = page.locator(".masthead a.refresh")
 
     # Nine minutes old: not late, and GitHub isn't asked.
-    serve_runs(page, [run("queued", None, 2, 6), proof, theirs], calls)
+    serve_runs(page, [run("queued", None, 2, 6), proof, stopped, theirs], calls)
     page.clock.install(time=generated + datetime.timedelta(minutes=9))
     page.goto(site + "release/")
     expect_release(page, index["current"])
@@ -849,8 +863,8 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
     if calls or why.is_visible():
         raise AssertionError(f"figures nine minutes old had the page ask GitHub ({len(calls)} times) or show a reason")
 
-    # Eleven minutes: a run has been queued since minute 6. It is waiting for a runner, and the page says so,
-    # with no "Refresh now": a manual run would cancel the one that is waiting.
+    # Eleven minutes: nothing newer is published, and a run has been queued since minute 6. It is waiting for a
+    # runner, and the page says so, with no "Refresh now": a manual run would cancel the one that is waiting.
     forward(2)
     says("A refresh has been waiting for a GitHub runner since")
     if "Starting another run won't help" not in (why.text_content() or ""):
@@ -859,7 +873,8 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
         raise AssertionError(f"the wait is said to be since {why.locator('strong').text_content()!r}, not {told(6)!r}")
     if refresh.is_visible() or stale.is_visible():
         raise AssertionError("with a refresh waiting, the page still offers 'Refresh now' or shows the stale banner")
-    if len(calls) != 1 or "/actions/workflows/release-dashboard.yml/runs" not in calls[0] or "branch=main" not in calls[0]:
+    # It asked two things, once each: what is published, then what the workflow's runs on main are doing.
+    if len(calls) != 2 or "/contents/index.json?ref=dashboard-data" not in calls[0] or "/actions/workflows/release-dashboard.yml/runs" not in calls[1] or "branch=main" not in calls[1]:
         raise AssertionError(f"the page asked GitHub {calls}")
     # It asks again no sooner than three minutes later, however often the page's clock ticks, and whatever the
     # page does meanwhile: a switch to a shipped release and back is no reason to ask sooner.
@@ -869,7 +884,7 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
     page.locator("#release-select").select_option(index["current"])
     expect_release(page, index["current"])
     forward(2)
-    if len(calls) != 1:
+    if len(calls) != 2:
         raise AssertionError(f"two minutes and a look at another release later, the page had asked GitHub {len(calls)} times")
 
     # A run queued 24 seconds ago is a run on its way to a runner, like every run: a refresh is running.
@@ -879,15 +894,16 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
     if refresh.is_visible():
         raise AssertionError("with a refresh running, the page offers 'Refresh now'")
 
-    # Nothing running, and nothing has run since the one that read these figures: GitHub's scheduler has started
-    # none. Now "Refresh now" is what helps, in the note and beside the page's age.
-    serve_runs(page, [run("completed", "cancelled", 16, 16), theirs], calls)
+    # Nothing running and nothing newer published. The page doesn't say none has started (the run that only
+    # checked did): it says none has published since its figures were read. Now "Refresh now" is what helps,
+    # in the note and beside the page's age.
+    serve_runs(page, [run("completed", "cancelled", 16, 16), stopped, theirs], calls)
     forward(4)
-    says("No refresh has started since")
-    if why.locator("strong").text_content() != told(-5.5) or why.locator("a.refresh").count() != 1 or not refresh.is_visible():
-        raise AssertionError(f"with no refresh started, the page says {why.text_content()!r} and shows {why.locator('a.refresh').count()} links in it")
+    says("No refresh has published since these figures were read at")
+    if why.locator("strong").text_content() != told(0) or why.locator("a.refresh").count() != 1 or not refresh.is_visible():
+        raise AssertionError(f"with no refresh published, the page says {why.text_content()!r} and shows {why.locator('a.refresh').count()} links in it")
 
-    # The newest run failed: the page says that, not that none has started, and links the runs.
+    # The newest run failed: the page says that, and links the runs.
     serve_runs(page, [run("completed", "failure", 20, 21), theirs], calls)
     forward(4)
     says("The last refresh failed at")
@@ -905,23 +921,37 @@ def check_release_dashboard_late_reason(page: Page, site: str, offline: bool) ->
         raise AssertionError("the note was hidden or rebuilt between two ticks that said the same thing")
 
     # GitHub refuses the question (the hourly limit without a token) and says the limit resets at minute 36.
-    # The page says nothing of its own, keeps the stale banner, and doesn't ask again before then.
+    # The page says nothing of its own, keeps the stale banner, and doesn't ask again before then: not even
+    # its second question, after the first was refused.
     serve_runs(page, None, calls, reset=int((generated + datetime.timedelta(minutes=36)).timestamp()))
+    before = len(calls)
     forward(4)
     why.wait_for(state="hidden", timeout=TIMEOUT_MS)
-    asked = len(calls)
+    if len(calls) != before + 1:
+        raise AssertionError(f"refused its first question, the page went on to ask {len(calls) - before - 1} more")
     forward(3.5)
-    if len(calls) != asked or why.is_visible() or not stale.is_visible():
-        raise AssertionError(f"before the limit reset the page asked GitHub {len(calls) - asked} more times, or shows a reason, or lost the stale banner")
+    if len(calls) != before + 1 or why.is_visible() or not stale.is_visible():
+        raise AssertionError(f"before the limit reset the page asked GitHub {len(calls) - before - 1} more times, or shows a reason, or lost the stale banner")
 
-    # After the reset: a run created at minute 30 has succeeded, so GitHub has newer figures than the page and
-    # only the page's copy is old. No reason is shown, and the page asks for the data again there and then.
-    serve_runs(page, [run("completed", "success", 30, 35), theirs], calls)
+    # After the reset. What is published is newer than the page's figures: only the page's copy is old. No
+    # reason is shown, the run list isn't asked for (a run is queued in it, and that isn't the reason), and the
+    # page asks for the data again there and then.
+    runs_asked = asked("/runs")
+    serve_runs(page, [run("queued", None, 31, 32), theirs], calls, published={**index, "generated_at": at(34)})
     with page.expect_request(lambda request: request.url.endswith("/index.json"), timeout=TIMEOUT_MS):
         page.clock.fast_forward(int(2.5 * 60 * 1000))
     page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
-    if len(calls) != asked + 1 or why.is_visible():
-        raise AssertionError(f"after the reset the page asked GitHub {len(calls) - asked} times and says {why.text_content()!r}")
+    if len(calls) != before + 2 or asked("/runs") != runs_asked or why.is_visible():
+        raise AssertionError(f"with newer figures published the page asked GitHub {calls[before + 1:]} and says {why.text_content()!r}")
+
+    # The same when what is published carries a budget note the page doesn't have: the note is the reason,
+    # and it comes with the data.
+    serve_runs(page, [theirs], calls, published={**index, "budget_until": at(70)})
+    with page.expect_request(lambda request: request.url.endswith("/index.json"), timeout=TIMEOUT_MS):
+        page.clock.fast_forward(int(3.5 * 60 * 1000))
+    page.wait_for_load_state("networkidle", timeout=TIMEOUT_MS)
+    if asked("/runs") != runs_asked or why.is_visible():
+        raise AssertionError(f"with a budget note published the page asked for the runs or says {why.text_content()!r}")
 
 
 def check_release_dashboard_link(page: Page, site: str, offline: bool) -> None:
@@ -945,7 +975,7 @@ CHECKS: list[tuple[str, Callable[[Page, str, bool], None]]] = [
     ("the release dashboard draws a release and switches between them", check_release_dashboard),
     ("the release dashboard says when its data can't be loaded", check_release_dashboard_without_data),
     ("the release dashboard says when the API budget is used up, and until when", check_release_dashboard_budget_note),
-    ("a late release dashboard says why: a refresh waiting for a runner, running, failed, or none started", check_release_dashboard_late_reason),
+    ("a late release dashboard says why: a refresh waiting for a runner, running, failed, or none published", check_release_dashboard_late_reason),
     ("the release dashboard flags old data and looks for new data after 'Refresh now'", check_release_dashboard_refresh),
     ("a lane's list on the release dashboard ends with what waits on the maintainer", check_release_dashboard_lane_all_waiting),
     ("the sidebar links the release dashboard", check_release_dashboard_link),

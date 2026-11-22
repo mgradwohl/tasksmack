@@ -25,18 +25,18 @@
   const WORKFLOW_PATH = '/actions/workflows/release-dashboard.yml';
   // Late, and why (#4734). Figures older than LATE_MINUTES have the page ask GitHub's public API what the
   // refresh is doing: no token, only while it's late and on screen, and at most every RUNS_EVERY_MS (the limit
-  // without a token is 60 requests an hour for each visitor's address). After a refusal it waits for the
-  // limit to reset, or REFUSED_MS when GitHub doesn't say when that is.
+  // without a token is 60 requests an hour for each visitor's address, and each time is two requests at the
+  // most). After a refusal it waits for the limit to reset, or REFUSED_MS when GitHub doesn't say when.
   const LATE_MINUTES = 10;
   const RUNS_EVERY_MS = 3 * 60 * 1000;
   const REFUSED_MS = 30 * 60 * 1000;
-  // A run that only checks and stops (the data already has its change) ends within about a minute of the
-  // read it found. One that ends later than this after the page's figures were read has published newer ones.
-  const READ_AGAIN_SECONDS = 120;
   // Every run is queued for a few seconds before a runner takes it. Longer than this is a run waiting for one.
   const QUEUED_SECONDS = 60;
   const API = 'https://api.github.com/repos/';
   const RUNS_PATH = WORKFLOW_PATH + '/runs?per_page=15&branch=main';
+  // The published index, read through the API and not the data host, which keeps a file five minutes: what
+  // is published now. The branch is the one the "release-data" address above names.
+  const PUBLISHED_INDEX_PATH = '/contents/index.json?ref=dashboard-data';
   const HOUR = 3600;
   const DAY = 86400;
 
@@ -329,7 +329,7 @@
       if (words !== drawn) {
         drawn = words;
         why.replaceChildren();
-        if (reason) fill(why, null, [lateWords(reason, start)]);
+        if (reason) fill(why, null, [lateWords(reason, start, ran)]);
       }
       stale.hidden = !still || spent || held || (reason && reason.kind === 'none') || minutes <= STALE_MINUTES;
       if (refresh) refresh.hidden = spent || held;
@@ -356,64 +356,80 @@
   const late = { asked: 0, refusedUntil: 0, reason: null };
 
   /**
-   * What the refresh workflow is doing (#4734), from its newest runs (newest first, as GitHub lists them),
-   * the time the page's figures were read (@p readSeconds) and the time now:
-   *   - `published`: GitHub has newer figures than the page. A run created after the page's were read has
-   *     succeeded (it published, or it stopped because newer ones were already there), or a run ended well
-   *     after that read. Only this page's copy is old: the data host keeps a file five minutes;
+   * What the refresh workflow is doing (#4734), from its newest runs (newest first, as GitHub lists them)
+   * and the time now. whyLate() asks this only once it knows nothing newer is published:
    *   - `failed`: the newest run that finished did not succeed;
    *   - `waiting`: a run has been queued for over a minute, which is a run waiting for a runner, for its
    *     read or for its publish;
    *   - `running`: a run is under way, or waits behind one that is;
-   *   - `none`: nothing is running: GitHub's scheduler has started no run.
-   * A pull request's run never publishes and isn't counted (one from a fork's `main` matches the branch).
-   * Null when the list is empty.
+   *   - `none`: nothing is running, and nothing newer is published.
+   * Whether a finished run published can't be read here (#4741): one that only checked and stopped is a
+   * success too, and when runners are scarce it ends as late as one that published. A pull request's run
+   * never publishes and isn't counted (one from a fork's `main` matches the branch). Null for an empty list.
    */
-  function lateReason(runs, readSeconds, nowSeconds) {
+  function lateReason(runs, nowSeconds) {
     const ours = runs.filter((run) => run.event !== 'pull_request');
     const ended = ours.filter((run) => run.status === 'completed' && run.conclusion !== 'cancelled' && run.conclusion !== 'skipped');
-    const newer = ended.some((run) => run.conclusion === 'success' &&
-      (seconds(run.created_at) > readSeconds || seconds(run.updated_at) > readSeconds + READ_AGAIN_SECONDS));
-    if (newer) return { kind: 'published' };
     if (ended.length && ended[0].conclusion !== 'success') return { kind: 'failed', since: seconds(ended[0].updated_at) };
     const live = ours.filter((run) => run.status !== 'completed');
     const waiting = live.find((run) => ['queued', 'waiting', 'requested'].includes(run.status) &&
       nowSeconds - seconds(run.updated_at) > QUEUED_SECONDS);
     if (waiting) return { kind: 'waiting', since: seconds(waiting.updated_at) };
     if (live.length) return { kind: 'running' };
-    return ended.length ? { kind: 'none', since: seconds(ended[0].created_at) } : null;
+    return ours.length ? { kind: 'none' } : null;
   }
 
-  /** Asks GitHub why the page is late, when that's due, and draws the answer. Says nothing when it can't ask. */
+  /** One question to GitHub's API for whyLate(): the answer as JSON, or null, noting a refusal's reset time. */
+  async function askGitHub(path, accept) {
+    const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(LOAD_MS) : undefined;
+    const response = await fetch(API + view.index.repo + path, { headers: { Accept: accept }, cache: 'no-store', signal });
+    if (response.ok) return response.json();
+    if (response.status === 403 || response.status === 429) {
+      // The hourly limit without a token. GitHub says when it resets; don't ask again before then.
+      const reset = Number(response.headers.get('x-ratelimit-reset')) * 1000;
+      late.refusedUntil = reset > Date.now() && reset - Date.now() <= 2 * HOUR * 1000 ? reset : Date.now() + REFUSED_MS;
+    }
+    return null;
+  }
+
+  /**
+   * Asks GitHub why the page is late, when that's due, and draws the answer. Says nothing when it can't ask.
+   * First what is published (#4741): the index as GitHub has it now, past the data host's cache. Newer than
+   * the page's, or with a budget note the page lacks, and only the page's copy is old: `published`. The same,
+   * and the run list says why.
+   */
   async function whyLate() {
-    const repo = view.index && view.index.repo;
-    const read = seconds(view.index && view.index.generated_at);
-    if (!REPO.test(repo || '') || !read || document.visibilityState !== 'visible') return;
+    const index = view.index;
+    const read = seconds(index && index.generated_at);
+    if (!index || !REPO.test(index.repo || '') || !read || document.visibilityState !== 'visible') return;
     if (Date.now() - late.asked < RUNS_EVERY_MS || Date.now() < late.refusedUntil) return;
     late.asked = Date.now();
     let reason = null;
     try {
-      const signal = typeof AbortSignal.timeout === 'function' ? AbortSignal.timeout(LOAD_MS) : undefined;
-      const response = await fetch(API + repo + RUNS_PATH, { headers: { Accept: 'application/vnd.github+json' }, cache: 'no-store', signal });
-      if (response.ok) {
-        reason = lateReason((await response.json()).workflow_runs || [], read, Date.now() / 1000);
-      } else if (response.status === 403 || response.status === 429) {
-        // The hourly limit without a token. GitHub says when it resets; don't ask again before then.
-        const reset = Number(response.headers.get('x-ratelimit-reset')) * 1000;
-        late.refusedUntil = reset > Date.now() && reset - Date.now() <= 2 * HOUR * 1000 ? reset : Date.now() + REFUSED_MS;
+      const published = await askGitHub(PUBLISHED_INDEX_PATH, 'application/vnd.github.raw+json');
+      if (published && (seconds(published.generated_at) > read || (published.budget_until || null) !== (index.budget_until || null))) {
+        reason = { kind: 'published' };
+      } else if (published) {
+        const runs = await askGitHub(RUNS_PATH, 'application/vnd.github+json');
+        if (runs) reason = lateReason(runs.workflow_runs || [], Date.now() / 1000);
       }
     } catch (error) {
-      // No network: the page then says what it always did, at 25 minutes.
+      // No network, or an answer that isn't JSON: the page then says what it always did, at 25 minutes.
       reason = null;
     }
+    // The page moved on while GitHub was being asked (new data, another release): the answer is for the old one.
+    if (view.index !== index) return;
     late.reason = reason;
     // GitHub has newer figures than this page: ask for the data again, and say nothing.
     if (reason && reason.kind === 'published') show(null, true);
     if (view.clock) view.clock();
   }
 
-  /** The words for a late page, by lateReason()'s answer; @p start is a "Refresh now" link for when one helps. */
-  function lateWords(reason, start) {
+  /**
+   * The words for a late page, by lateReason()'s answer. @p start is a "Refresh now" link for when one helps,
+   * and @p readSeconds when the page's figures were read.
+   */
+  function lateWords(reason, start, readSeconds) {
     if (reason.kind === 'waiting') {
       return ['A refresh has been waiting for a GitHub runner since ', el('strong', { text: hour(reason.since) }),
         ". Other workflows are using them all; it will publish when one is free. Starting another run won't help."];
@@ -423,7 +439,9 @@
       return ['The last refresh failed at ', el('strong', { text: hour(reason.since) }), '. ',
         link("The workflow's runs", WORKFLOW_PATH, { target: '_blank', rel: 'noopener' }), ' on GitHub say why.'];
     }
-    return ['No refresh has started since ', el('strong', { text: hour(reason.since) }), '. One usually starts within ten minutes.',
+    // Not "none has started": a run that only checked and stopped did start, and looks like any other here.
+    return ['No refresh has published since these figures were read at ', el('strong', { text: hour(readSeconds) }),
+      ', and none is running. One usually comes within ten minutes.',
       start && [' ', start, ' opens the Release Dashboard workflow on GitHub, where "Run workflow" starts a run.']];
   }
 
