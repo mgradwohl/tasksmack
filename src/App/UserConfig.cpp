@@ -88,7 +88,7 @@ namespace App
 namespace
 {
 
-// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog logging may theoretically throw; acceptable in practice
+// NOLINTNEXTLINE(bugprone-exception-escape) - spdlog catches its own formatting and sink errors inside log()
 [[nodiscard]] ProcessColumn processColumnFromIndex(const std::size_t index) noexcept
 {
     const auto count = std::to_underlying(ProcessColumn::Count);

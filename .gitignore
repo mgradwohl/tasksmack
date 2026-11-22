@@ -26,6 +26,7 @@ __pycache__/
 # A configure into the source tree writes these at its root (#4665): never commit them.
 /CPackConfig.cmake
 /CPackSourceConfig.cmake
+/CPackProjectConfig.cmake
 /dist/
 /packaging/dist/
 
