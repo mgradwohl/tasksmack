@@ -1,6 +1,7 @@
 #include "DetachedSpawn.h"
 
 #include "PosixGuards.h"
+#include "RootEnvironment.h"
 #include "RootTools.h"
 #include "SdlEnvironment.h"
 #include "SessionUser.h"
@@ -467,6 +468,8 @@ std::expected<void, SpawnFailure> Detail::spawnDetached(std::span<const std::str
     {
         rootEnvironment = RootTools::withRootPath(environ);
         environment = &rootEnvironment;
+        // It gets XAUTHORITY, the session's copy: keep that past TaskSmack's exit, for windows it opens later (#4811).
+        RootEnvironment::keepCopyAfterExit();
     }
     else if (!SdlEnvironment::environmentBeforeScrub().empty() && SessionUser::thisProcessChildrenMayGetStartingEnvironment())
     {

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <cerrno>
 #include <charconv>
 #include <cstddef>
@@ -179,9 +180,16 @@ std::string& copyToRemove()
     return path;
 }
 
+/// Whether a root program TaskSmack started may need the copy after it exits (keepCopyAfterExit(), #4811).
+std::atomic<bool>& copyKeptAfterExit()
+{
+    static std::atomic<bool> kept{false};
+    return kept;
+}
+
 void removeCopyAtExit()
 {
-    if (!copyToRemove().empty())
+    if (!copyToRemove().empty() && !copyKeptAfterExit().load())
     {
         static_cast<void>(::unlink(copyToRemove().c_str()));
     }
@@ -222,6 +230,11 @@ std::optional<std::string> writeXauthorityCopy(const std::string& folder, uid_t 
         return std::nullopt;
     }
     return copy;
+}
+
+void keepCopyAfterExit() noexcept
+{
+    copyKeptAfterExit().store(true);
 }
 
 void removeAtExit(const std::string& copy)
