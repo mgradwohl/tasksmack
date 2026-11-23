@@ -24,7 +24,7 @@
 # Requirements: a built TaskSmack; Xvfb when headless (apt install xvfb); for --webp, cwebp and
 # img2webp from libwebp (apt install webp). Identity: --hostname tasksmack-demo runs the shots in a
 # UTS + user namespace (unshare -r -u), so the hostname tab and System Information show that name and
-# the Processes User column reads root; review every image for names before committing it.
+# the Processes User column reads nobody; review every image for names before committing it.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -122,10 +122,14 @@ if [[ -z "${DISPLAY:-}" ]]; then
 fi
 trap 'if [[ -n "$XVFB_PID" ]]; then kill "$XVFB_PID" 2>/dev/null || true; fi' EXIT
 
-# --hostname: re-run this script inside a UTS + user namespace (the display and options carry over).
+# --hostname: re-run this script inside a UTS + user namespace (the display and options carry over). The hostname is set
+# as the namespace's root, then a nested user namespace maps that to nobody (65534) for TaskSmack: run as root, it
+# ignores TASKSMACK_CONFIG_DIR and TASKSMACK_SCREENSHOT (a root session keeps only an allow-list of variables, #4158), and
+# no shot was written. As nobody it honours them, and the Processes User column reads nobody, never a real name.
 if [[ -n "$DEMO_HOST" && -z "${TASKSMACK_SHOTS_NAMESPACED:-}" ]]; then
     # shellcheck disable=SC2016  # the inner bash expands $1 and $@
-    TASKSMACK_SHOTS_NAMESPACED=1 unshare -r -u bash -c 'hostname "$1"; shift; exec "$@"' _ "$DEMO_HOST" "$0" "${ORIG_ARGS[@]}"
+    TASKSMACK_SHOTS_NAMESPACED=1 unshare -r -u bash -c \
+        'hostname "$1"; shift; exec unshare --map-user=65534 --map-group=65534 "$@"' _ "$DEMO_HOST" "$0" "${ORIG_ARGS[@]}"
     exit $?
 fi
 
@@ -215,12 +219,11 @@ for t in "$DARK" "$LIGHT"; do
     # By its id, SystemInfo, the more robust form: a tab's id never changes, its label may.
     run_shot "system-$t" "$t" TASKSMACK_TAB=SystemInfo
 done
-# The Processes table grouped (#3068), as screenshots.ps1 has them, and by user (#3377 PR 4): each signed-in
-# account's sessions under its header. Those rows name the machine's real signed-in accounts (logind), which the
-# --hostname namespace doesn't change: review the user shot for names before committing it.
+# The Processes table grouped (#3068), as screenshots.ps1 has them.
 SHOT_TOML=$'[process_table]\ngroup_by = \'unit\'' run_shot "processes-grouped-unit-$DARK" "$DARK" TASKSMACK_TAB=Processes
 SHOT_TOML=$'[process_table]\ngroup_by = \'app\'' run_shot "processes-grouped-app-$DARK" "$DARK" TASKSMACK_TAB=Processes
-SHOT_TOML=$'[process_table]\ngroup_by = \'user\'' run_shot "processes-grouped-user-$DARK" "$DARK" TASKSMACK_TAB=Processes
+# No grouped-by-user shot on Linux: its signed-in sessions come from logind and utmp, which a user namespace
+# doesn't hide, so it would show the real login name (#4123).
 # The machine tab's sub-tabs (#2869), after the usual wait: the GPU and network charts need a few samples.
 for sub in cores gpu network; do
     run_shot "$sub-$DARK" "$DARK" TASKSMACK_TAB=overview TASKSMACK_MACHINE_TAB="$sub"
