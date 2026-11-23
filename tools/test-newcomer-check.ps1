@@ -4,6 +4,8 @@
 #   - Test-StepStalled, on synthetic samples: a step whose CPU doesn't move is stalled after the window, and
 #     CPU, I/O, a new process or a growing log each count as progress;
 #   - Get-ErrorDialog, on fake process lists (WerFault, a "Bad Image" window);
+#   - Get-BusiestProcess and the heartbeat (#4824): a process whose CPU read throws is skipped, and nothing the
+#     heartbeat does can fail the step;
 #   - Invoke-Shell with -StallMinutes, on real short shells: a sleeping shell is killed and fails as
 #     "stalled", a spinning one that finishes is not, and without -StallMinutes a sleeper just finishes.
 # Nothing is installed. Registered in CTest on Windows with PowerShell 7; can also run directly with pwsh -File.
@@ -21,7 +23,7 @@ $errors = $null
 $ast = [System.Management.Automation.Language.Parser]::ParseFile($script, [ref]$null, [ref]$errors)
 Assert-True (@($errors).Count -eq 0) "newcomer-check.ps1 does not parse: $errors"
 foreach ($name in 'Get-SmartAppControlState', 'Get-ProcessTreeSample', 'Test-StepStalled', 'Get-ErrorDialog',
-    'Write-OutFile', 'Write-CheckLog', 'Save-Diagnostic', 'Get-LogTail', 'Invoke-Shell') {
+    'Write-OutFile', 'Write-CheckLog', 'Save-Diagnostic', 'Get-LogTail', 'Invoke-Shell', 'Get-BusiestProcess') {
     $definition = $ast.Find({
             param($node)
             $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq $name
@@ -107,6 +109,20 @@ Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProce
 Assert-True ($null -eq (Get-ErrorDialog -TreePid $tree -Process @((New-FakeProcess 'git' 'git.exe - Bad Image' 777)))) 'a Bad Image window outside the tree is ignored'
 Assert-True ($null -eq (Get-ErrorDialog -TreePid @() -Process @((New-FakeProcess 'WerFault' '' 7)))) 'an empty tree matches nothing'
 
+# ── The heartbeat's busiest-process list (#4824) ──────────────────────────────────────────────────
+function New-CpuProcess {
+    param([string]$Name, [double]$Seconds, [switch]$Throws)
+    $proc = [pscustomobject]@{ Name = $Name }
+    if ($Throws) { Add-Member -InputObject $proc -MemberType ScriptProperty -Name TotalProcessorTime -Value { throw 'The process has exited.' } }
+    else { Add-Member -InputObject $proc -MemberType NoteProperty -Name TotalProcessorTime -Value ([TimeSpan]::FromSeconds($Seconds)) }
+    $proc
+}
+$fakes = @((New-CpuProcess 'idle' 0), (New-CpuProcess 'clang++' 0 -Throws), (New-CpuProcess 'cl' 50), (New-CpuProcess 'ninja' 200), (New-CpuProcess 'git' 7))
+$busy = @(Get-BusiestProcess -Process $fakes)
+Assert-True ($busy.Count -eq 3) "a process whose CPU read throws, and an idle one, are skipped: [$($busy -join ', ')]"
+Assert-True ($busy[0] -eq 'ninja 200s' -and $busy[1] -eq 'cl 50s' -and $busy[2] -eq 'git 7s') "busiest first: [$($busy -join ', ')]"
+Assert-True (@(Get-BusiestProcess -Process @((New-CpuProcess 'a' 1 -Throws))).Count -eq 0) 'only throwing processes gives an empty list'
+
 # ── Invoke-Shell with -StallMinutes, on real short shells ─────────────────────────────────────────
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-newcomer-check-tests-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null
@@ -135,6 +151,18 @@ try {
     # Without -StallMinutes a quiet step is left alone (the 3 s sleep outlasts the 1 s heartbeat).
     $code = Invoke-Shell -Shell pwsh -LogName 'quiet' -TimeoutMinutes 5 -Command 'Start-Sleep -Seconds 4' 6>$null
     Assert-True ($code -eq 0) "without -StallMinutes a quiet step finishes (exit $code)"
+
+    # The heartbeat survives a process whose CPU read throws (#4824), and a Save-Diagnostic that throws too: both
+    # become a warning in progress.log, and the step still finishes with its own exit code.
+    function Get-Process { param([switch]$ErrorAction) $script:fakes }
+    $code = Invoke-Shell -Shell pwsh -LogName 'racy' -TimeoutMinutes 5 -Command 'Start-Sleep -Seconds 3' 6>$null
+    Assert-True ($code -eq 0) "a heartbeat over a throwing process must not fail the step (exit $code)"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $OutDir 'progress.log') -Raw) -match 'busiest: ninja 200s, cl 50s, git 7s') 'the heartbeat must list the busiest processes'
+    function Save-Diagnostic { param([string]$Prefix) throw 'diagnostics failed' }
+    $code = Invoke-Shell -Shell pwsh -LogName 'diagfail' -TimeoutMinutes 5 -Command 'Start-Sleep -Seconds 3' 6>$null
+    Assert-True ($code -eq 0) "a failing heartbeat must not fail the step (exit $code)"
+    Assert-True ((Get-Content -LiteralPath (Join-Path $OutDir 'progress.log') -Raw) -match 'heartbeat skipped: diagnostics failed') 'a failed heartbeat must log a warning'
+    Remove-Item function:Get-Process, function:Save-Diagnostic
 
     Write-Host 'newcomer-check.ps1 tests passed'
 }

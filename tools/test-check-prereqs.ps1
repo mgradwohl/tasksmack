@@ -129,6 +129,22 @@ $checkerText = Get-Content -LiteralPath $checker -Raw
 Assert-True ($checkerText -match '(?s)Write-SmartAppControlStatus -State \$smartAppControl\)\) \{\s*\$AllOK = \$false') 'check-prereqs.ps1 must fail the summary when Smart App Control enforces'
 Assert-True ($checkerText.Contains('Get-SmartAppControlMessage')) 'check-prereqs.ps1 must print the Smart App Control message'
 
+# The RAM-per-core row (#4825): under 1 GB per logical processor warns and names the cap, else it passes.
+$ramFunction = $ast.Find({
+        param($node)
+        $node -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $node.Name -eq 'Write-MemoryPerCoreStatus'
+    }, $true)
+Assert-True ($null -ne $ramFunction) 'Write-MemoryPerCoreStatus not found in check-prereqs.ps1'
+. ([scriptblock]::Create($ramFunction.Extent.Text))
+$printed = (@(Write-MemoryPerCoreStatus -MemoryBytes (6GB) -Cores 16 6>&1) | ForEach-Object { "$_" }) -join ''
+Assert-True ($printed -match '^! RAM per core\s+0\.4 GB/core') "6 GB over 16 cores must warn: [$printed]"
+Assert-True ($printed.Contains('$env:CMAKE_BUILD_PARALLEL_LEVEL = 6')) "the warning must name the cap, 6 jobs for 6 GB: [$printed]"
+$printed = (@(Write-MemoryPerCoreStatus -MemoryBytes (0.5GB) -Cores 4 6>&1) | ForEach-Object { "$_" }) -join ''
+Assert-True ($printed.Contains('CMAKE_BUILD_PARALLEL_LEVEL = 1)')) "the cap is at least 1: [$printed]"
+$printed = (@(Write-MemoryPerCoreStatus -MemoryBytes (32GB) -Cores 16 6>&1) | ForEach-Object { "$_" }) -join ''
+Assert-True ($printed -match '^✓ RAM per core\s+2\.0 GB/core' -and -not $printed.Contains('CMAKE_BUILD_PARALLEL_LEVEL')) "32 GB over 16 cores must pass: [$printed]"
+Assert-True ($checkerText.Contains('Write-MemoryPerCoreStatus -MemoryBytes') -and $checkerText.Contains('Win32_ComputerSystem')) 'check-prereqs.ps1 must print the RAM-per-core row'
+
 # The checker itself, with a stub ccache.cmd ahead of any real ccache: its row shows the version.
 $root = Join-Path ([IO.Path]::GetTempPath()) "tasksmack-check-prereqs-tests-$([guid]::NewGuid().ToString('N'))"
 New-Item -ItemType Directory -Path $root | Out-Null

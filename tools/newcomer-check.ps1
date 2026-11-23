@@ -252,6 +252,22 @@ function Get-SmartAppControlState {
     return 0
 }
 
+# The busiest processes by CPU seconds, as 'name Ns' strings (#4824). Reads TotalProcessorTime per process in its
+# own try/catch: on Windows PowerShell 5.1 the CPU property throws when a process exits between the listing and
+# the read, which a build (clang++ starting and exiting all the time) hits nearly every time.
+function Get-BusiestProcess {
+    param([object[]]$Process = @(Get-Process -ErrorAction SilentlyContinue), [int]$Count = 4)
+    $rows = foreach ($proc in $Process) {
+        try {
+            $seconds = [double]$proc.TotalProcessorTime.TotalSeconds
+            if ($seconds -gt 0) { [pscustomobject]@{ Name = [string]$proc.Name; Cpu = $seconds } }
+        }
+        catch { $null = $_ }
+    }
+    return @(@($rows) | Sort-Object -Property Cpu -Descending | Select-Object -First $Count |
+            ForEach-Object { '{0} {1:N0}s' -f $_.Name, $_.Cpu })
+}
+
 # One reading of a step's process tree: CPU seconds and I/O bytes summed over the shell and everything
 # below it, which processes are in it, and how much the logs it and its installers write add up to.
 function Get-ProcessTreeSample {
@@ -386,21 +402,27 @@ function Invoke-Shell {
     $samples = New-Object System.Collections.ArrayList
     if ($StallMinutes -gt 0) { $null = $samples.Add((Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern)) }
     while (-not $p.WaitForExit($script:HeartbeatMilliseconds)) {
-        $busy = Get-Process | Where-Object { $_.CPU } | Sort-Object CPU -Descending | Select-Object -First 4 |
-            ForEach-Object { '{0} {1:N0}s' -f $_.Name, $_.CPU }
-        Write-CheckLog ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ($busy -join ', '))
-        Save-Diagnostic -Prefix $LogName
-        if ($StallMinutes -gt 0) {
-            $latest = Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern
-            $null = $samples.Add($latest)
-            $treePids = @($latest.Pids -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ })
-            $dialog = Get-ErrorDialog -TreePid $treePids
-            $stall = if ($dialog) { "an error window is open: $dialog" } else { Test-StepStalled -Samples $samples.ToArray() -WindowMinutes $StallMinutes }
-            if ($stall) {
-                & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
-                Write-CheckLog "  stalled: $stall"
-                throw "stalled after $([math]::Round(((Get-Date) - $started).TotalMinutes, 1)) min, $stall`n$(Get-LogTail $LogName)"
+        # Monitoring must never fail the step (#4824): anything it throws becomes a one-line warning. The stall
+        # and timeout verdicts are made outside the try, so they still fail it.
+        $stall = $null
+        try {
+            Write-CheckLog ('  ... {0:N0} min, busiest: {1}' -f ((Get-Date) - $started).TotalMinutes, ((Get-BusiestProcess) -join ', '))
+            Save-Diagnostic -Prefix $LogName
+            if ($StallMinutes -gt 0) {
+                $latest = Get-ProcessTreeSample -RootId $p.Id -LogPattern $logPattern
+                $null = $samples.Add($latest)
+                $treePids = @($latest.Pids -split ',' | Where-Object { $_ } | ForEach-Object { [int]$_ })
+                $dialog = Get-ErrorDialog -TreePid $treePids
+                $stall = if ($dialog) { "an error window is open: $dialog" } else { Test-StepStalled -Samples $samples.ToArray() -WindowMinutes $StallMinutes }
             }
+        }
+        catch {
+            try { Write-CheckLog "  (heartbeat skipped: $($_.Exception.Message))" } catch { $null = $_ }
+        }
+        if ($stall) {
+            & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
+            Write-CheckLog "  stalled: $stall"
+            throw "stalled after $([math]::Round(((Get-Date) - $started).TotalMinutes, 1)) min, $stall`n$(Get-LogTail $LogName)"
         }
         if ((Get-Date) -ge $deadline) {
             & taskkill.exe /T /F /PID $p.Id 2>&1 | Out-Null
