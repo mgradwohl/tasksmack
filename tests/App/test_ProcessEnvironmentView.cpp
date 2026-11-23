@@ -185,13 +185,15 @@ TEST(ProcessEnvironmentViewTest, KeepsEachReadStatusForItsStatusLine)
         Platform::EnvironmentReadStatus status;
         std::string_view text;
     };
-    constexpr std::array<Case, 5> CASES{{
-        {.status = Platform::EnvironmentReadStatus::PermissionDenied, .text = "Not readable (permission denied)"},
-        {.status = Platform::EnvironmentReadStatus::ProcessExited, .text = "Process exited"},
-        {.status = Platform::EnvironmentReadStatus::Unsupported, .text = "Not available on this platform"},
-        {.status = Platform::EnvironmentReadStatus::IdentityUnknown, .text = "Not available yet"},
-        {.status = Platform::EnvironmentReadStatus::Failed, .text = "Could not be read"},
-    }};
+    constexpr std::array<Case, 5> CASES{
+        {
+            {.status = Platform::EnvironmentReadStatus::PermissionDenied, .text = "Not readable (permission denied)"},
+            {.status = Platform::EnvironmentReadStatus::ProcessExited, .text = "Process exited"},
+            {.status = Platform::EnvironmentReadStatus::Unsupported, .text = "Not available on this platform"},
+            {.status = Platform::EnvironmentReadStatus::IdentityUnknown, .text = "Not available yet"},
+            {.status = Platform::EnvironmentReadStatus::Failed, .text = "Could not be read"},
+        },
+    };
     for (const Case& c : CASES)
     {
         SCOPED_TRACE(std::string(c.text));
@@ -394,6 +396,33 @@ TEST(ProcessEnvironmentViewTest, FilterMatchesNamesAndPlainValuesButNeverMaskedV
 
     view.setFilter("token"); // the name of a masked row always matches
     EXPECT_EQ(view.filteredRows().size(), 1U);
+}
+
+// #4838: a Windows path shows as itself, not with every backslash doubled, and the filter, which matches the text
+// the row shows, finds it as typed. A backslash that would read as an escape is still doubled, in the row and so for
+// the filter; a real control character is still shown as its escape.
+TEST(ProcessEnvironmentViewTest, AWindowsPathShowsAsItselfAndTheFilterFindsItAsTyped)
+{
+    ProcessEnvironmentView view;
+    view.applyResult(okResult({
+        {.name = "ComSpec", .value = R"(C:\Windows\system32\cmd.exe)"},
+        {.name = "NEWDIR", .value = "C:\\new"},
+        {.name = "TWO_LINES", .value = "a\nb"},
+        {.name = "TRAILING", .value = "C:\\Users\\"},
+    }));
+    ASSERT_EQ(view.rows().size(), 4U); // sorted: ComSpec, NEWDIR, TRAILING, TWO_LINES
+    EXPECT_EQ(view.rows()[0].value, "C:\\Windows\\system32\\cmd.exe");
+    EXPECT_EQ(view.rows()[1].value, "C:\\\\new") << "'\\' then 'n' can't pass for a newline";
+    EXPECT_EQ(view.rows()[2].value, "C:\\Users\\");
+    EXPECT_EQ(view.rows()[3].value, "a\\nb");
+
+    view.setFilter("c:\\windows\\SYSTEM32"); // as typed, ignoring case
+    ASSERT_EQ(view.filteredRows().size(), 1U);
+    EXPECT_EQ(view.rows()[view.filteredRows()[0]].name, "ComSpec");
+
+    view.setFilter("C:\\Users\\");
+    ASSERT_EQ(view.filteredRows().size(), 1U);
+    EXPECT_EQ(view.rows()[view.filteredRows()[0]].name, "TRAILING");
 }
 
 // ========== Authenticate to read (#2309) ==========
