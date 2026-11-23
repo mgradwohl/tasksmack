@@ -654,6 +654,35 @@ def windows_powershell() -> str | None:
     return str(path) if path.is_file() else None
 
 
+def in_windows_sandbox() -> bool:
+    """Whether this runs in Windows Sandbox (#4827), asked as tests/Support/WindowsSandbox.h asks it: this process's
+    ntdll was mapped from a file the host serves over VSMB (\\Device\\vmsmb\\...). There System32 isn't admin-only,
+    as a normal install's is: Authenticated Users may change C:\\ and System32 holds folders such as 0409 that
+    others may change. A name that can't be read says no, so a normal install never skips."""
+    if sys.platform != "win32":
+        return False
+    import ctypes  # noqa: PLC0415 - Windows only
+    from ctypes import wintypes  # noqa: PLC0415 - Windows only
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.GetModuleHandleW.argtypes = [wintypes.LPCWSTR]
+    kernel32.GetModuleHandleW.restype = wintypes.HMODULE
+    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
+    mapped = kernel32.K32GetMappedFileNameW
+    mapped.argtypes = [wintypes.HANDLE, wintypes.LPVOID, wintypes.LPWSTR, wintypes.DWORD]
+    mapped.restype = wintypes.DWORD
+    ntdll = kernel32.GetModuleHandleW("ntdll.dll")
+    if not ntdll:
+        return False
+    name = ctypes.create_unicode_buffer(32768)
+    length = mapped(kernel32.GetCurrentProcess(), ntdll, name, len(name))
+    return name.value[:length].lower().startswith("\\device\\vmsmb\\")
+
+
+IN_WINDOWS_SANDBOX = in_windows_sandbox()
+SANDBOX_SYSTEM32 = "Windows Sandbox's System32 isn't admin-only: Authenticated Users may change C:\\ there (#4827)"
+
+
 @unittest.skipUnless(windows_powershell(), "the trust script runs in Windows PowerShell")
 class TrustScriptTest(unittest.TestCase):
     """cmake/nsis/TaskSmackUninstallerTrust.ps1 (#4444), run for real on temporary folders. It only reads ACLs
@@ -689,6 +718,7 @@ class TrustScriptTest(unittest.TestCase):
         result = self.script("Uninstaller", self.root / "nothing" / "Uninstall.exe")
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
 
+    @unittest.skipIf(IN_WINDOWS_SANDBOX, SANDBOX_SYSTEM32)
     def test_a_file_only_administrators_can_change_is_trusted(self) -> None:
         # %SystemRoot%\System32 is owned by TrustedInstaller, and only SYSTEM, Administrators and TrustedInstaller may change it.
         system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
@@ -777,6 +807,7 @@ class TrustScriptTest(unittest.TestCase):
         self.assertEqual(self.script("Lock", folder).returncode, 1)
         self.assertEqual(self.sddl(folder), before, "nothing changed")
 
+    @unittest.skipIf(IN_WINDOWS_SANDBOX, SANDBOX_SYSTEM32)
     def test_an_admin_only_folder_is_left_as_it_is(self) -> None:
         system = Path(os.environ.get("SystemRoot", r"C:\Windows")) / "System32"
         before = self.sddl(system)

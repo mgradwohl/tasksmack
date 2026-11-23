@@ -10,6 +10,7 @@
 #include "Platform/Windows/WindowsElevation.h"
 #include "Platform/Windows/WindowsHandles.h"
 #include "Platform/Windows/WindowsSecurityOwners.h"
+#include "Support/WindowsSandbox.h"
 
 #include <gtest/gtest.h>
 
@@ -276,6 +277,15 @@ TEST(WindowsSecurityOwnersTest, EachCallerKeepsItsOwnSetOfTrustedOwners)
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(mine.get()), std::optional(false));
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(mine.get()), std::optional(true));
 
+    // And none of them reads a handle that can't be asked as trusted.
+    EXPECT_EQ(ElevatedRestart::ConfigDirFunctions{}.ownerIsPrivileged(nullptr), std::nullopt);
+    EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(nullptr), std::nullopt);
+    EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(nullptr), std::nullopt);
+
+    if (TestSupport::isWindowsSandbox())
+    {
+        GTEST_SKIP() << "the Windows folder: Windows Sandbox's system files aren't TrustedInstaller's (#4827)";
+    }
     const UniqueHandle windows = openToRead(windowsFolder());
     ASSERT_TRUE(windows) << GetLastError();
     const auto owner = ownerSidOf(windows.get());
@@ -284,11 +294,6 @@ TEST(WindowsSecurityOwnersTest, EachCallerKeepsItsOwnSetOfTrustedOwners)
     EXPECT_EQ(ElevatedRestart::ConfigDirFunctions{}.ownerIsPrivileged(windows.get()), std::optional(true));
     EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(windows.get()), std::optional(true));
     EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(windows.get()), std::optional(false));
-
-    // And none of them reads a handle that can't be asked as trusted.
-    EXPECT_EQ(ElevatedRestart::ConfigDirFunctions{}.ownerIsPrivileged(nullptr), std::nullopt);
-    EXPECT_EQ(ownerIsSystemOrAdministratorsOrTrustedInstaller(nullptr), std::nullopt);
-    EXPECT_EQ(ElevatedRestart::ownerIsOwnAccountOrAdministrators(nullptr), std::nullopt);
 }
 
 } // namespace
