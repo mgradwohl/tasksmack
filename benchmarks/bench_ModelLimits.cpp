@@ -989,22 +989,41 @@ void BM_ProcessModel_Snapshot_NamesAndCommands(benchmark::State& state)
 }
 BENCHMARK(BM_ProcessModel_Snapshot_NamesAndCommands)->ArgName("processes")->Arg(1'000)->Arg(5'000)->Unit(benchmark::kMicrosecond);
 
-// Domain::toSingleLine on one browser-style command line, as typed (range(0) == 0, the common case)
-// and with a newline in it (range(0) == 1) (#1624).
-void BM_ToSingleLine(benchmark::State& state)
+// Domain::toSingleLine over a batch of command lines as a process table holds them (#1624): short and long, plain, and a
+// few with a newline, a tab or another control character. One call on one 200-byte string was ~27 ns, small enough that a
+// layout shift in the binary moved it by half with no code change (#4798); a varied batch per iteration measures the work
+// itself. Times are per batch; items/s is per command line.
+void BM_ToSingleLine_Batch(benchmark::State& state)
 {
-    std::string command = "/usr/lib/firefox/firefox -contentproc -childID 42 -isForBrowser -prefsLen 31337"
-                          " -prefMapSize 244787 -jsInitLen 277276 -parentBuildID 20260901000000 -appDir /usr/lib/firefox/browser";
-    if (state.range(0) != 0)
-    {
-        command += "\n--injected-line";
-    }
+    const std::vector<std::string> commands = {
+        "bash",
+        "/usr/bin/python3 -m http.server 8000",
+        "/usr/lib/firefox/firefox -contentproc -childID 42 -isForBrowser -prefsLen 31337 -prefMapSize 244787 -jsInitLen 277276"
+        " -parentBuildID 20260901000000 -appDir /usr/lib/firefox/browser",
+        "/usr/lib/systemd/systemd-journald",
+        "sh -c echo first\necho second",
+        "/opt/app/bin/server --config /etc/app/server.toml --log-level debug --threads 16 --listen 0.0.0.0:8443",
+        "make\t-j8",
+        "/usr/libexec/gnome-terminal-server",
+        "node /home/user/projects/web/node_modules/.bin/vite --host 127.0.0.1 --port 5173 --strictPort --clearScreen false",
+        "printf \x1b[1mbold\x1b[0m",
+        "/usr/bin/pipewire",
+        "java -Xmx4g -XX:+UseG1GC -Dfile.encoding=UTF-8 -jar /srv/app/service.jar --spring.profiles.active=production",
+        "kworker/u16:3-events_unbound",
+        "vim notes.md",
+        "/usr/sbin/sshd -D -o AuthorizedKeysCommand=/usr/bin/sss_ssh_authorizedkeys",
+        "tail -f /var/log/syslog\r",
+    };
     for (auto _ : state)
     {
-        auto single = Domain::toSingleLine(command);
-        benchmark::DoNotOptimize(single.data());
+        for (const std::string& command : commands)
+        {
+            auto single = Domain::toSingleLine(command);
+            benchmark::DoNotOptimize(single.data());
+        }
     }
+    state.SetItemsProcessed(state.iterations() * static_cast<std::int64_t>(commands.size()));
 }
-BENCHMARK(BM_ToSingleLine)->ArgName("control")->Arg(0)->Arg(1);
+BENCHMARK(BM_ToSingleLine_Batch);
 
 } // namespace
