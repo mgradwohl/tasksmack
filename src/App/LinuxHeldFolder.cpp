@@ -431,6 +431,15 @@ std::expected<void*, std::string> LinuxHeldFolder::openLockFile(const std::files
         ::close(fd);
         return std::unexpected(name.string() + " isn't a plain file of its own (another name links to it); not using it as the lock");
     }
+    // Root hands the user only a lock file of root's: one this run made, or one an older root run left (#2437). Another
+    // account's file renamed in here is neither locked nor handed over (#4805): giving it to the user would let them
+    // read and change someone else's file through a sudo run.
+    if (givesToOwner() && info.st_uid != m_Owner.uid && info.st_uid != 0)
+    {
+        ::close(fd);
+        return std::unexpected(name.string() + " belongs to another account (uid " + std::to_string(info.st_uid) +
+                               "); not using it as the lock");
+    }
     // The user's, whether this run made it or an older one left it root's: their next run opens it read-write (#2437).
     if (givesToOwner() && info.st_uid != m_Owner.uid && ::fchown(fd, m_Owner.uid, m_Owner.gid) != 0)
     {
