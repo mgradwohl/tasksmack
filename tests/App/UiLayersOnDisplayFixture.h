@@ -41,6 +41,7 @@
 #include "UI/UILayer.h"
 
 #include <SDL3/SDL_events.h>
+#include <SDL3/SDL_init.h>
 #include <SDL3/SDL_keycode.h>
 #include <SDL3/SDL_mouse.h>
 #include <SDL3/SDL_scancode.h>
@@ -99,11 +100,12 @@ inline bool hasDisplay()
     return TestSupport::hasGLDisplay(); // one copy for every display suite (#4783)
 }
 
-/// Whether SDL runs these tests on native Wayland, as it chooses a driver: SDL_VIDEODRIVER when set, else
-/// Wayland whenever WAYLAND_DISPLAY names one (SDL 3 prefers it to X11). There the compositor moves,
-/// resizes and maximizes the window -- the hit test hands it the title bar and the borders (#744) -- and
-/// never tells TaskSmack where the window is, so injected drags can't move it (#2724). Known before the
-/// app starts, so a test can skip without waiting out its deadlines.
+/// Whether SDL runs these tests on native Wayland. There the compositor moves, resizes and maximizes the window -- the
+/// hit test hands it the title bar and the borders (#744) -- and never tells TaskSmack where the window is, so injected
+/// drags can't move it (#2724). Known before the app starts, so a test can skip without waiting out its deadlines.
+/// SDL is asked which driver it picks (#4841): SDL_VIDEODRIVER decides when set, but WAYLAND_DISPLAY alone doesn't.
+/// SDL 3 takes Wayland only when the compositor has its preferred protocols (fifo-v1), and otherwise X11 first, as
+/// on WSLg, whose compositor lacks them: there the tests run on XWayland, and expecting native Wayland failed them.
 inline bool onNativeWayland()
 {
 #ifdef _WIN32
@@ -117,7 +119,20 @@ inline bool onNativeWayland()
     {
         return std::string_view(driver).starts_with("wayland");
     }
-    return waylandDisplay != nullptr && *waylandDisplay != '\0';
+    if (waylandDisplay == nullptr || *waylandDisplay == '\0')
+    {
+        return false;
+    }
+    // The driver SDL's own choice lands on, asked once and let go (the subsystem is reference-counted, so a running
+    // app's video stays up).
+    if (!SDL_InitSubSystem(SDL_INIT_VIDEO))
+    {
+        return false;
+    }
+    const char* chosen = SDL_GetCurrentVideoDriver();
+    const bool wayland = chosen != nullptr && std::string_view(chosen) == "wayland";
+    SDL_QuitSubSystem(SDL_INIT_VIDEO);
+    return wayland;
 #endif
 }
 
