@@ -33,6 +33,7 @@
 #include "Core/HeadlessVideoDriverTestUtils.h"
 #include "Core/Layer.h"
 #include "Core/Utf8Path.h"
+#include "Core/VideoBackend.h"
 #include "Core/Window.h"
 #include "ScratchConfigDir.h"
 #include "UI/IconsFontAwesome6.h"
@@ -912,6 +913,12 @@ TEST_F(UiScenarioTest, TheSignOffStepsRunThroughTheWholeShell)
     try
     {
         Core::Application app(spec);
+        // Under XWayland (WSLg, a Wayland desktop SDL runs as X11 on) the compositor owns the pointer, so the injected
+        // drags the column steps make don't take (#4841). CI runs this under Xvfb, where they do.
+        if (Core::VideoBackend::isXWaylandFallback())
+        {
+            GTEST_SKIP() << "under XWayland the compositor owns the pointer, so injected drags don't take (#4841)";
+        }
         app.pushLayer<UI::UILayer>();
         auto& titleBar = app.pushLayer<App::TitleBarLayer>();
         auto& shell = app.pushLayer<App::ShellLayer>();
