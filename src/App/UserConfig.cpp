@@ -1011,6 +1011,7 @@ void UserConfig::load()
     {
         spdlog::error("Not reading {}: its folder isn't held open as it was when it was checked; using defaults",
                       Core::pathToUtf8(m_ConfigPath));
+        setFileProblem(ConfigFileProblem::folderNotHeld(Core::pathToUtf8(m_ConfigPath.parent_path()))); // said, not silent (#4806)
         return;
     }
     // Held, it is read only through the folder held, relative to its handle (#3774).
@@ -1170,6 +1171,7 @@ bool UserConfig::writeSettings(const UserSettings& settings)
     if (held == nullptr && Core::ConfigDirOverride::handedOverFolderReleased())
     {
         spdlog::error("Not saving settings: {} isn't held open as it was when it was checked", Core::pathToUtf8(configDir));
+        setSaveRefusal(ConfigFileProblem::folderNotHeld(Core::pathToUtf8(configDir))); // keeps load()'s, if it said so (#4806)
         return false;
     }
     // Held, it is written only through the folder held, relative to its handle (#3774): no path to it is followed.

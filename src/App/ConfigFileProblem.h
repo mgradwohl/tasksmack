@@ -38,6 +38,17 @@ inline constexpr std::string_view CONSEQUENCE = "TaskSmack is using its default 
     return Domain::sanitizedUtf8(std::format("{} couldn't be opened. {}", pathText, CONSEQUENCE));
 }
 
+/// The notice for a settings folder at @p folderText (display text) an elevated or root-for-a-user session couldn't hold
+/// open as checked (#4806): a link on its path (GNU stow, chezmoi, synced dotfiles), or a folder that couldn't be given
+/// to its user. Such a session neither reads nor writes there, so the defaults are in use and nothing is saved; the log
+/// says why the folder was refused.
+[[nodiscard]] inline std::string folderNotHeld(std::string_view folderText)
+{
+    return Domain::sanitizedUtf8(std::format("{} couldn't be opened safely for this session, so TaskSmack is using its "
+                                             "default settings and won't save this session's changes there. The log says why.",
+                                             folderText));
+}
+
 /// The notice for a save refused at @p pathText (display text) for the reason @p why, a phrase that follows the path
 /// ("is a link, which TaskSmack run as root doesn't follow") (#4653). The file loaded, or there was none, so its settings
 /// are the ones in use: what's lost is only this session's changes, which the notice says, never "default settings".
