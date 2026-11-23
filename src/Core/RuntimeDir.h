@@ -8,13 +8,18 @@
 
 #include <spdlog/spdlog.h>
 
+#include <algorithm>
 #include <filesystem>
+#include <iterator>
 #include <optional>
 #include <string>
 #include <string_view>
 #include <system_error>
 
+#include <fcntl.h>
+#include <sys/socket.h>
 #include <sys/stat.h>
+#include <sys/un.h>
 #include <unistd.h>
 
 namespace Core::RuntimeDir
@@ -126,25 +131,50 @@ namespace Core::RuntimeDir
     return fallbackPath;
 }
 
-/// The Wayland socket a rejected XDG_RUNTIME_DIR holds, as an absolute path for WAYLAND_DISPLAY (#4709): @p dir/@p display,
-/// when @p display is a plain socket name (not empty, no '/') and that entry is a socket @p uid owns (lstat: never through
-/// a link). WSLg without systemd sets XDG_RUNTIME_DIR to /mnt/wslg/runtime-dir, which is 0777 and so refused for
-/// TaskSmack's own files, though its wayland-0 is the session's display: libwayland takes an absolute WAYLAND_DISPLAY as
-/// it is, so the session stays on Wayland instead of dropping to X11. nullopt otherwise (a display already absolute, a
-/// name with a '/', nothing there, or a socket of another account's).
-[[nodiscard]] inline std::optional<std::string> waylandSocketIn(const std::filesystem::path& dir, std::string_view display, uid_t uid)
+/// A connection to the Wayland socket a rejected XDG_RUNTIME_DIR holds, for WAYLAND_SOCKET (#4709, #4810). WSLg without
+/// systemd sets XDG_RUNTIME_DIR to /mnt/wslg/runtime-dir, which is 0777 and so refused for TaskSmack's own files, though
+/// its wayland-0 is the session's display. Another account can rewrite that folder, so the socket is never reached by
+/// its path after a check: @p dir/@p display is opened O_PATH | O_NOFOLLOW (never through a link) and checked on that
+/// descriptor (a socket @p uid owns), then connected to through /proc/self/fd/<n>, which names that very inode. One
+/// swapped in after the check can't be the one connected to. libwayland takes the connected descriptor from
+/// WAYLAND_SOCKET before it looks at WAYLAND_DISPLAY. nullopt when @p display isn't a plain socket name (empty, or with
+/// a '/'), or the entry isn't there, isn't a socket, is another account's, or doesn't answer.
+[[nodiscard]] inline std::optional<int> connectWaylandSocketIn(const std::filesystem::path& dir, std::string_view display, uid_t uid)
 {
     if (display.empty() || display.contains('/'))
     {
         return std::nullopt;
     }
-    const std::filesystem::path socket = dir / std::string(display);
-    struct stat st{};
-    if (::lstat(socket.c_str(), &st) != 0 || !S_ISSOCK(st.st_mode) || st.st_uid != uid)
+    const std::filesystem::path entry = dir / std::string(display);
+    // NOLINTNEXTLINE(cppcoreguidelines-pro-type-vararg) - POSIX open() is variadic
+    const int pathFd = ::open(entry.c_str(), O_PATH | O_NOFOLLOW | O_CLOEXEC);
+    if (pathFd < 0)
     {
         return std::nullopt;
     }
-    return socket.string();
+    struct stat st{};
+    const bool owned = ::fstat(pathFd, &st) == 0 && S_ISSOCK(st.st_mode) && st.st_uid == uid;
+    std::optional<int> connected;
+    if (owned)
+    {
+        const std::string viaDescriptor = "/proc/self/fd/" + std::to_string(pathFd);
+        sockaddr_un address{};
+        address.sun_family = AF_UNIX;
+        static_assert(sizeof(address.sun_path) > 32, "room for /proc/self/fd/<n>");
+        std::ranges::copy(viaDescriptor, std::begin(address.sun_path));
+        const int socketFd = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0); // libwayland keeps it CLOEXEC too
+        // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the sockets API takes a generic sockaddr
+        if (socketFd >= 0 && ::connect(socketFd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)) == 0)
+        {
+            connected = socketFd;
+        }
+        else if (socketFd >= 0)
+        {
+            ::close(socketFd);
+        }
+    }
+    ::close(pathFd);
+    return connected;
 }
 
 } // namespace Core::RuntimeDir
