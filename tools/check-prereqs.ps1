@@ -91,6 +91,25 @@ function Write-SmartAppControlStatus {
     }
 }
 
+# Print the RAM-per-core row (#4825): Ninja runs one compile per core (plus two), and about 1 GB per clang++ is what
+# a TaskSmack translation unit needs, so less than that per logical processor ends in "LLVM ERROR: out of memory".
+# Warns, never fails; the row names the cap. Returns the memory per core in GB.
+function Write-MemoryPerCoreStatus {
+    param([double]$MemoryBytes, [int]$Cores)
+    if ($MemoryBytes -le 0 -or $Cores -le 0) { return $null }
+    $memoryGb = $MemoryBytes / 1GB
+    $perCore = $memoryGb / $Cores
+    $version = ('{0:N1} GB/core' -f $perCore)
+    if ($perCore -lt 1.0) {
+        $jobs = [int][math]::Max(1, [math]::Floor($memoryGb))
+        Write-Status -Name "RAM per core" -Status "warn" -Version $version -Path ('({0:N0} GB, {1} cores: before building, set $env:CMAKE_BUILD_PARALLEL_LEVEL = {2})' -f $memoryGb, $Cores, $jobs) -Required "1 GB"
+    }
+    else {
+        Write-Status -Name "RAM per core" -Status "ok" -Version $version -Required "1 GB"
+    }
+    return $perCore
+}
+
 # Get tool path
 function Get-ToolPath {
     param([string]$Command)
@@ -379,6 +398,12 @@ elseif ($msvcToolset.Version -ge $MIN_MSVC_TOOLSET_VERSION) {
 }
 else {
     Write-Status -Name "MSVC STL" -Status "warn" -Version $msvcToolset.Version.ToString() -Path "$($msvcToolset.Path) (older than CI's; pwsh tools/setup-dev.ps1 installs VS 2026)" -Required $MIN_MSVC_TOOLSET_VERSION
+}
+
+# Memory per core (#4825): a warning, not a failure. Win32_ComputerSystem reads without elevation.
+$computerSystem = Get-CimInstance -ClassName Win32_ComputerSystem -ErrorAction SilentlyContinue
+if ($computerSystem) {
+    $null = Write-MemoryPerCoreStatus -MemoryBytes ([double]$computerSystem.TotalPhysicalMemory) -Cores ([int]$computerSystem.NumberOfLogicalProcessors)
 }
 
 # Developer tools, not needed to build, test or run (#2618): a missing or old one is a warning, not a
