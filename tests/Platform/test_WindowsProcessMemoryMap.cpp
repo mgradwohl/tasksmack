@@ -12,6 +12,7 @@
 #include "Platform/IProcessMemoryMap.h"
 #include "Platform/Windows/WindowsDevicePaths.h"
 #include "Platform/Windows/WindowsProcessMemoryMap.h"
+#include "Support/WindowsSandbox.h"
 
 #include <gtest/gtest.h>
 
@@ -771,13 +772,11 @@ TEST(WindowsProcessMemoryMapRealTest, ReadsThisProcess)
     ASSERT_FALSE(result.mappings.empty());
     EXPECT_TRUE(std::ranges::is_sorted(result.mappings, {}, &MemoryMapping::start));
 
-    // ntdll's image, named by its drive path, with an executable region.
+    // ntdll's image, with an executable region (named by its drive path: checked last).
     const auto ntdll = std::ranges::find_if(
         result.mappings,
         [](const MemoryMapping& m) { return m.kind == MemoryMappingKind::Image && m.executable && m.path.ends_with("ntdll.dll"); });
     ASSERT_NE(ntdll, result.mappings.end());
-    EXPECT_EQ(ntdll->path.find("\\Device\\"), std::string::npos) << ntdll->path;
-    EXPECT_EQ(ntdll->path[1], ':') << ntdll->path;
 
     // This function's own code is in a region that's executable, and a local in one that's writable.
     const auto codeAddress = reinterpret_cast<std::uintptr_t>(&GetCurrentProcessId);
@@ -820,6 +819,15 @@ TEST(WindowsProcessMemoryMapRealTest, ReadsThisProcess)
                       m.privateDirtyBytes.value_or(0));
         EXPECT_FALSE(m.pssBytes.has_value());
     }
+
+    // ntdll is named by its drive path. Not in Windows Sandbox (#4827), which serves it from the host over VSMB, a
+    // \Device\vmsmb\... name with no drive-letter form.
+    if (TestSupport::isWindowsSandbox())
+    {
+        GTEST_SKIP() << "ntdll's drive path: Windows Sandbox serves it from the host over VSMB (" << ntdll->path << ")";
+    }
+    EXPECT_EQ(ntdll->path.find("\\Device\\"), std::string::npos) << ntdll->path;
+    EXPECT_EQ(ntdll->path[1], ':') << ntdll->path;
 }
 
 } // namespace

@@ -886,7 +886,7 @@ cmake --build --preset win-benchmark
 
 Invoke-Step 'Profiling: pwsh tools/profile-etw.ps1 bench + analyze-etw.ps1' {
     if ($SkipPerf) { return 'SKIP: -SkipPerf' }
-    $docCommand = 'pwsh tools/profile-etw.ps1 bench -BenchmarkFilter ''BM_ProcessModel_Refresh$'''
+    $docCommand = 'pwsh tools/profile-etw.ps1 bench -BenchmarkFilter ''BM_SystemModel_Refresh$'''
     Assert-DocText 'CONTRIBUTING.md' $docCommand
     $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole(
         [Security.Principal.WindowsBuiltInRole]::Administrator)

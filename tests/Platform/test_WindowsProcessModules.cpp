@@ -18,6 +18,7 @@
 #include "Platform/Windows/WindowsProcessModules.h"
 #include "Support/Junction.h"
 #include "Support/PeImageBuilder.h"
+#include "Support/WindowsSandbox.h"
 
 #include <gtest/gtest.h>
 
@@ -549,6 +550,10 @@ TEST(WindowsProcessModulesRealTest, ReadsThisProcess)
     const auto ntdll = std::ranges::find_if(result.modules, [](const ProcessModule& m) { return m.path.ends_with("ntdll.dll"); });
     ASSERT_NE(ntdll, result.modules.end());
     EXPECT_GT(ntdll->sizeBytes, 0U);
+    if (TestSupport::isWindowsSandbox())
+    {
+        GTEST_SKIP() << "ntdll's version: Windows Sandbox serves ntdll from the host over VSMB, not as a local file (#4827)";
+    }
     EXPECT_TRUE(ntdll->version.has_value());
     EXPECT_FALSE(ntdll->versionNotRead);
 }
@@ -560,6 +565,10 @@ TEST(WindowsProcessModulesRealTest, ReadsThisProcess)
 // TaskSmack, whose manifest does.
 TEST(WindowsProcessModulesRealTest, ReadsAFilesVersionThroughItsNtName)
 {
+    if (TestSupport::isWindowsSandbox())
+    {
+        GTEST_SKIP() << "Windows Sandbox serves ntdll from the host over VSMB, so its NT name isn't a local file's (#4827)";
+    }
     const HMODULE ntdll = GetModuleHandleW(L"ntdll.dll");
     ASSERT_NE(ntdll, nullptr);
     std::wstring ntName(32768, L'\0');

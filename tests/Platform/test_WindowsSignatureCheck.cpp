@@ -22,6 +22,7 @@
 #include "Platform/Windows/WindowsSignatureCheck.h"
 #include "Support/CiRealSystem.h"
 #include "Support/PeImageBuilder.h"
+#include "Support/WindowsSandbox.h"
 
 #include <gtest/gtest.h>
 
@@ -743,11 +744,6 @@ std::string systemBinary(const wchar_t* name)
 TEST(WindowsSignatureCheckRealTest, NotepadIsSignedByMicrosoftAndAFileThisTestWritesIsUnsigned)
 {
     const WindowsSignature::SignatureFunctions fns = systemSignatureFunctions();
-    const std::string notepad = systemBinary(L"notepad.exe");
-    const SignatureCheck system = WindowsSignature::checkSignature(fns, nullptr, notepad, notepad);
-    EXPECT_TRUE(isVerifiedSignature(system.signature)) << notepad << ": " << system.note;
-    EXPECT_NE(system.signer.find("Microsoft"), std::string::npos) << system.signer;
-
     const std::filesystem::path file =
         std::filesystem::temp_directory_path() / std::format(L"tasksmack-3070-{}-unsigned.exe", GetCurrentProcessId());
     std::ofstream(file, std::ios::binary) << "MZ but not really a program";
@@ -764,6 +760,15 @@ TEST(WindowsSignatureCheckRealTest, NotepadIsSignedByMicrosoftAndAFileThisTestWr
     EXPECT_FALSE(fns.errorMessage(ERROR_ACCESS_DENIED).empty());
     EXPECT_FALSE(fns.errorMessage(0xC0000034U).empty()); // an NTSTATUS, from ntdll's messages
     EXPECT_TRUE(fns.errorMessage(0x2FFFFFFFU).empty());
+
+    if (TestSupport::isWindowsSandbox())
+    {
+        GTEST_SKIP() << "notepad.exe's signature: Microsoft's signatures don't verify in Windows Sandbox (#4827)";
+    }
+    const std::string notepad = systemBinary(L"notepad.exe");
+    const SignatureCheck system = WindowsSignature::checkSignature(fns, nullptr, notepad, notepad);
+    EXPECT_TRUE(isVerifiedSignature(system.signature)) << notepad << ": " << system.note;
+    EXPECT_NE(system.signer.find("Microsoft"), std::string::npos) << system.signer;
 }
 
 /// This test process's identity, as the probe has it: its PID and creation time.
@@ -1094,6 +1099,10 @@ TEST(WindowsHeldFilePublisherTest, ThisProcesssAndNotepadsPublisherReadThroughTh
     closeImage(bound->image.file);
     EXPECT_EQ(viaHandle, WindowsProcessDetailReads::publisher(module));
 
+    if (TestSupport::isWindowsSandbox())
+    {
+        GTEST_SKIP() << "notepad.exe's publisher: Microsoft's signatures don't verify in Windows Sandbox (#4827)";
+    }
     const std::wstring notepad = WinString::utf8ToWide(systemBinary(L"notepad.exe"));
     const UniqueHandle file = openForRead(notepad);
     ASSERT_TRUE(file) << GetLastError();
