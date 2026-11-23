@@ -570,6 +570,34 @@ invokerVariable(std::string_view name, std::optional<std::string> value, const s
     return invoking->account.home;
 }
 
+/// The home whose settings this session keeps when its environment can't be trusted to name them (#4802): the user a
+/// root session was started for (@p invokingHome, invokingUserHome(), #3580), or, in a capabilities session
+/// (@p capabilitiesOnly, #4766), the real user's own, from @p realUserAccount (the passwd entry). That session runs with
+/// the user's environment but reads past file permissions, so Platform::ConfigDirectory::configDirectoryFor() takes
+/// XDG_CONFIG_HOME and HOME only inside this home. nullopt in a normal session, whose environment is its own; and in a
+/// capabilities session whose account can't be read, where Platform::UserPermissionsOnly still keeps the reads the user's.
+[[nodiscard]] inline std::optional<std::string> settingsOwnerHome(bool capabilitiesOnly,
+                                                                  const std::optional<std::string>& invokingHome,
+                                                                  const std::function<std::optional<Account>()>& realUserAccount)
+{
+    if (!capabilitiesOnly)
+    {
+        return invokingHome;
+    }
+    if (const std::optional<Account> account = realUserAccount ? realUserAccount() : std::nullopt;
+        account.has_value() && !account->home.empty())
+    {
+        return account->home;
+    }
+    return std::nullopt;
+}
+
+/// settingsOwnerHome() for this process: capabilitiesOnlySession(), invokingUserHome() and the real uid's account.
+[[nodiscard]] inline std::optional<std::string> settingsOwnerHome()
+{
+    return settingsOwnerHome(capabilitiesOnlySession(), invokingUserHome(), [] { return processAccount(::getuid()); });
+}
+
 /// invokingUserSession() for this process: its effective uid and environment, and the account looked up once
 /// (processAccount(), #3773). Whether the user's runtime folder exists is asked each time.
 [[nodiscard]] inline std::optional<DetachedSpawn::RunAs> invokingUserSession()

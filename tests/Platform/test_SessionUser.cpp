@@ -490,4 +490,30 @@ TEST(SessionUserTest, OnlyAChildOfTheSameUserWithNoCapabilitiesGetsTheStartingEn
     EXPECT_TRUE(childMayGetStartingEnvironment(1000, 1000, 1000, 1000, false, sudoUid(""))) << "an empty one is none";
 }
 
+// #4802: a capabilities session (setcap) runs with the user's environment but reads past file permissions, so its
+// settings belong to the real user's own home, from the passwd entry, whatever XDG_CONFIG_HOME or HOME say. A root
+// session keeps the user it was started for; a normal session trusts its own environment.
+TEST(SessionUserTest, ACapabilitiesSessionKeepsItsOwnUsersSettings)
+{
+    const auto alice = []
+    {
+        return std::optional<Account>(Account{.gid = 1000, .name = "alice", .home = "/home/alice", .shell = "", .groups = {}});
+    };
+    const auto unknown = []
+    {
+        return std::optional<Account>();
+    };
+    const auto noHome = []
+    {
+        return std::optional<Account>(Account{.gid = 1000, .name = "alice", .home = "", .shell = "", .groups = {}});
+    };
+
+    EXPECT_EQ(settingsOwnerHome(true, std::nullopt, alice), "/home/alice") << "the real user's, from the passwd entry";
+    EXPECT_EQ(settingsOwnerHome(false, std::nullopt, alice), std::nullopt) << "a normal session: its environment decides";
+    EXPECT_EQ(settingsOwnerHome(false, "/home/bob", alice), "/home/bob") << "root for a user: that user's, as before (#3580)";
+    EXPECT_EQ(settingsOwnerHome(true, std::nullopt, unknown), std::nullopt) << "no account: UserPermissionsOnly still guards";
+    EXPECT_EQ(settingsOwnerHome(true, std::nullopt, noHome), std::nullopt);
+    EXPECT_EQ(settingsOwnerHome(true, std::nullopt, {}), std::nullopt);
+}
+
 } // namespace Platform::SessionUser

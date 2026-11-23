@@ -149,6 +149,22 @@ using App::UserConfigHelpers::configDirectoryFrom;
     return std::nullopt;
 }
 
+// #4802: a capabilities session's own home (SessionUser::settingsOwnerHome()) bounds what its environment may name,
+// as a root session's user's does: XDG_CONFIG_HOME or HOME pointing at another user's folder is passed over.
+TEST(UserConfigHelpersTest, ACapabilitiesSessionsEnvironmentNamesSettingsOnlyInsideItsOwnHome)
+{
+    using Platform::ConfigDirectory::configDirectoryFor;
+    const auto another = configDirectoryFor("/home/bob/.config", "/home/alice", noPasswdLookup, "/cwd", "/home/alice");
+    EXPECT_EQ(another.directory, std::filesystem::path("/home/alice/.config/tasksmack")) << "never bob's";
+    EXPECT_TRUE(another.warning.contains("file capabilities")) << another.warning;
+    EXPECT_EQ(configDirectoryFor(std::nullopt, "/home/bob", noPasswdLookup, "/cwd", "/home/alice").directory,
+              std::filesystem::path("/home/alice/.config/tasksmack"))
+        << "a HOME that isn't the user's own";
+    EXPECT_EQ(configDirectoryFor("/home/alice/.xdg", "/home/alice", noPasswdLookup, "/cwd", "/home/alice").directory,
+              std::filesystem::path("/home/alice/.xdg/tasksmack"))
+        << "their own XDG_CONFIG_HOME, inside their home, as usual";
+}
+
 // #3580: run as root for a user (sudo, pkexec), TaskSmack keeps that user's settings, not root's.
 TEST(UserConfigHelpersTest, RootRunForAUserUsesThatUsersConfigWhenHomeIsRoots)
 {

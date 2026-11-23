@@ -65,6 +65,7 @@
 #include "Platform/ConfigDirectory.h"
 #include "Platform/Linux/SessionUser.h"
 #include "Platform/Linux/UserNameLookup.h"
+#include "Platform/Linux/UserPermissionsOnly.h"
 
 #include <array>
 #include <cerrno>
@@ -803,7 +804,7 @@ auto UserConfig::getConfigDirectory() -> std::filesystem::path
         readEnvVarString("HOME"),
         passwdHomeDirectory,
         cwd,
-        Platform::SessionUser::invokingUserHome(),
+        Platform::SessionUser::settingsOwnerHome(), // the user's own in a capabilities session too (#4802)
         ::geteuid() == 0 && Platform::SessionUser::thisProcessMayHaveAnotherUsersEnvironment());
     if (!choice.warning.empty())
     {
@@ -1148,6 +1149,16 @@ bool UserConfig::writeSettings(const UserSettings& settings)
 {
     // One write at a time, a background one or save()'s, and m_Synced with it.
     const std::scoped_lock writeLock(m_WriteMutex);
+#ifdef __linux__
+    // The user's own permissions for the whole write (#4802): a capabilities session's CAP_DAC_OVERRIDE, if it was given
+    // one, can't write into a folder the user couldn't. A root session isn't touched (its held folder, #4670).
+    const Platform::UserPermissionsOnly userPermissions;
+    if (!userPermissions.ok())
+    {
+        spdlog::error("Not saving settings: TaskSmack couldn't set aside its extra file permissions for the write");
+        return false;
+    }
+#endif
 
     // Ensure config directory exists
     const std::filesystem::path configDir = m_ConfigPath.parent_path();
