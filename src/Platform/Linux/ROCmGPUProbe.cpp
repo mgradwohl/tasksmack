@@ -12,10 +12,12 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <filesystem>
 #include <memory>
 #include <optional>
 #include <string>
+#include <system_error>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -281,16 +283,29 @@ bool ROCmGPUProbe::Impl::loadSymbols()
     // Note: tests inject the mock by setting LD_LIBRARY_PATH before process start (via CTest ENVIRONMENT_MODIFICATION)
     if (rocmHandle == nullptr)
     {
-        // A root, setcap or capability-holding session opens /opt/rocm's copy only if root alone could have put it there
-        // (#4668): its constructors would run with the session's privilege.
+        // A root, setcap or capability-holding session opens a copy only root alone could have put there (#4668), looked up
+        // in the system's own library folders, never through ld.so.cache (#4812): its constructors would run with the
+        // session's privilege.
         const bool privileged = ::geteuid() == 0 || ::getauxval(AT_SECURE) != 0 || SessionUser::processHoldsCapabilities();
         const auto open = [privileged](const char* candidate) -> void*
         {
-            const std::optional<std::string> path = ROCmGPUProbeMath::libraryToOpen(
-                candidate, privileged, [](const std::string& file) { return RootTools::rootTrustedLibrary(file); });
+            const std::expected<std::string, ROCmGPUProbeMath::LibraryRefusal> path = ROCmGPUProbeMath::libraryToOpen(
+                candidate,
+                privileged,
+                [](const std::string& file) { return RootTools::rootTrustedLibrary(file); },
+                [](const std::string& file)
+                {
+                    std::error_code error;
+                    return std::filesystem::exists(file, error);
+                });
             if (!path.has_value())
             {
-                spdlog::info("ROCmGPUProbe: not loading {} in a privileged session: another account could have put it there", candidate);
+                // Said only of a file that's there (#4813): with ROCm not installed there's nothing to warn about.
+                if (path.error() == ROCmGPUProbeMath::LibraryRefusal::Untrusted)
+                {
+                    spdlog::info("ROCmGPUProbe: not loading {} in a privileged session: another account could have put it there",
+                                 candidate);
+                }
                 return nullptr;
             }
             return dlopen(path->c_str(), RTLD_NOW);

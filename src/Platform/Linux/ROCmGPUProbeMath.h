@@ -10,6 +10,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <expected>
 #include <optional>
 #include <span>
 #include <string>
@@ -222,21 +223,80 @@ inline constexpr std::array<const char*, 6> ROCM_SMI_LIBRARY_NAMES{
     "/opt/rocm/lib/librocm_smi64.so",
 };
 
-/// What to dlopen() for the library name @p candidate (#4668). A soname is given as it is: ld.so finds it in the system's
-/// library folders, which a secure-execution session can't widen (LD_LIBRARY_PATH is ignored). An absolute path is ld.so's
-/// to open with no check of who put the file there, so in a @p privileged session (root, AT_SECURE or holding
-/// capabilities, where the library's constructors would run with that privilege) it is opened only by the path
-/// @p trusted gives for it (RootTools::rootTrustedLibrary(): a file only root could have put there), and not at all
-/// when that's nullopt. An unprivileged session opens it as it is: a library its own user placed runs as that user.
-template<typename Trusted>
-[[nodiscard]] std::optional<std::string> libraryToOpen(const char* candidate, bool privileged, const Trusted& trusted)
+/// The system's own library folders, where a privileged session looks a soname up itself (#4812): ld.so.cache can also
+/// name folders another account may change (/usr/local/lib by default on Debian and Ubuntu, /opt/rocm/lib from AMD's
+/// rocm.conf). The distribution's multiarch folders first, then the lib64 and lib ones.
+[[nodiscard]] inline const std::array<std::string, 6>& systemLibraryFolders()
+{
+#if defined(__x86_64__)
+    static const std::string multiarch = "x86_64-linux-gnu";
+#elif defined(__aarch64__)
+    static const std::string multiarch = "aarch64-linux-gnu";
+#else
+    static const std::string multiarch = "unknown-linux-gnu";
+#endif
+    static const std::array<std::string, 6> folders{
+        "/usr/lib/" + multiarch,
+        "/lib/" + multiarch,
+        "/usr/lib64",
+        "/lib64",
+        "/usr/lib",
+        "/lib",
+    };
+    return folders;
+}
+
+/// Why libraryToOpen() opens nothing (#4813): no such file, which is only "not installed", or a file another account
+/// could have put there, which is worth saying.
+enum class LibraryRefusal : std::uint8_t
+{
+    NotFound,
+    Untrusted,
+};
+
+/// What to dlopen() for the library name @p candidate (#4668, #4812). An unprivileged session opens it as it is: a
+/// library its own user placed runs as that user. In a @p privileged session (root, AT_SECURE or holding capabilities,
+/// where the library's constructors would run with that privilege), nothing is left to ld.so's search, whose cache can
+/// name a folder another account may change: a soname is looked up in systemLibraryFolders() (@p exists), and the file
+/// found, or an absolute path, is opened only by the path @p trusted gives for it (RootTools::rootTrustedLibrary(): a
+/// file only root could have put there). NotFound when there's no such file; Untrusted when the check refuses it.
+template<typename Trusted, typename Exists>
+[[nodiscard]] std::expected<std::string, LibraryRefusal>
+libraryToOpen(const char* candidate, bool privileged, const Trusted& trusted, const Exists& exists)
 {
     std::string name(candidate);
-    if (!privileged || !name.starts_with('/'))
+    if (!privileged)
     {
         return name;
     }
-    return trusted(name);
+    std::string path;
+    if (name.starts_with('/'))
+    {
+        path = std::move(name);
+    }
+    else
+    {
+        for (const std::string& folder : systemLibraryFolders())
+        {
+            std::string inFolder = folder;
+            inFolder += '/';
+            inFolder += name;
+            if (exists(inFolder))
+            {
+                path = std::move(inFolder);
+                break;
+            }
+        }
+    }
+    if (path.empty() || !exists(path))
+    {
+        return std::unexpected(LibraryRefusal::NotFound);
+    }
+    if (std::optional<std::string> opened = trusted(path); opened.has_value())
+    {
+        return *std::move(opened);
+    }
+    return std::unexpected(LibraryRefusal::Untrusted);
 }
 
 /// The first of @p names that @p open (dlopen, in the probe) gives a handle for, and that name; {nullptr, nullptr}
