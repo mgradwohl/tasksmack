@@ -47,10 +47,14 @@ TEST(ROCmGPUProbeMathTest, LibraryNamesTryEverySonameNewestFirst)
                                              "/opt/rocm/lib/librocm_smi64.so"}));
 }
 
-// #4668: in a root, setcap or capability-holding session, /opt/rocm's copy is opened only by the path the root-only check
-// gives, never when it refuses; a soname, and any name in an ordinary session, is opened as it is.
-TEST(ROCmGPUProbeMathTest, APrivilegedSessionOpensAnAbsoluteLibraryPathOnlyWhenItIsTrusted)
+// #4668, #4812, #4813: an ordinary session opens any name as it is. A root, setcap or capability-holding session opens
+// only a file the root-only check trusts, by the path it gives: a soname looked up in the system's own library folders
+// (never left to ld.so.cache, which can name /usr/local/lib or /opt/rocm/lib), or an absolute path. A missing file is
+// "not found", which isn't worth a warning; a refused one is "untrusted".
+TEST(ROCmGPUProbeMathTest, APrivilegedSessionOpensOnlyATrustedFileFromTheSystemsFolders)
 {
+    using ROCmGPUProbeMath::LibraryRefusal;
+    using ROCmGPUProbeMath::libraryToOpen;
     std::vector<std::string> asked;
     const auto trustsNone = [&asked](const std::string& path) -> std::optional<std::string>
     {
@@ -61,16 +65,40 @@ TEST(ROCmGPUProbeMathTest, APrivilegedSessionOpensAnAbsoluteLibraryPathOnlyWhenI
     {
         return "/canonical" + path;
     };
-    using ROCmGPUProbeMath::libraryToOpen;
-    EXPECT_EQ(libraryToOpen("librocm_smi64.so.6", true, trustsNone), std::optional<std::string>("librocm_smi64.so.6"));
-    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", false, trustsNone),
-              std::optional<std::string>("/opt/rocm/lib/librocm_smi64.so"));
-    EXPECT_TRUE(asked.empty()) << "only a privileged session's absolute path is checked";
-    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsNone), std::nullopt);
+    const std::string systemSo1 = ROCmGPUProbeMath::systemLibraryFolders().front() + "/librocm_smi64.so.1";
+    const auto present = [&systemSo1](const std::string& path)
+    {
+        return path == systemSo1 || path == "/opt/rocm/lib/librocm_smi64.so" || path == "/usr/local/lib/librocm_smi64.so.7";
+    };
+    const auto nothing = [](const std::string& /*path*/)
+    {
+        return false;
+    };
+
+    // An ordinary session: as it is, unchecked.
+    EXPECT_EQ(libraryToOpen("librocm_smi64.so.6", false, trustsNone, nothing), std::string("librocm_smi64.so.6"));
+    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", false, trustsNone, nothing), std::string("/opt/rocm/lib/librocm_smi64.so"));
+    EXPECT_TRUE(asked.empty()) << "nothing checked in an ordinary session";
+
+    // Privileged: a soname is found in the system's folders and opened by the trusted path.
+    EXPECT_EQ(libraryToOpen("librocm_smi64.so.1", true, trustsAll, present), std::string("/canonical" + systemSo1));
+    // ...but a copy only ld.so.cache would find (/usr/local/lib) is never reached: not found in the system's folders.
+    const auto so7 = libraryToOpen("librocm_smi64.so.7", true, trustsAll, present);
+    ASSERT_FALSE(so7.has_value());
+    EXPECT_EQ(so7.error(), LibraryRefusal::NotFound);
+    // An absolute path: the trusted path, or refused as untrusted.
+    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsAll, present),
+              std::string("/canonical/opt/rocm/lib/librocm_smi64.so"));
+    const auto refused = libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsNone, present);
+    ASSERT_FALSE(refused.has_value());
+    EXPECT_EQ(refused.error(), LibraryRefusal::Untrusted);
     EXPECT_EQ(asked, (std::vector<std::string>{"/opt/rocm/lib/librocm_smi64.so"}));
-    EXPECT_EQ(libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsAll),
-              std::optional<std::string>("/canonical/opt/rocm/lib/librocm_smi64.so"))
-        << "the path the check answers is the one opened";
+    // ROCm not installed (#4813): not found, never "untrusted", and nothing asked of the check.
+    asked.clear();
+    const auto missing = libraryToOpen("/opt/rocm/lib/librocm_smi64.so", true, trustsNone, nothing);
+    ASSERT_FALSE(missing.has_value());
+    EXPECT_EQ(missing.error(), LibraryRefusal::NotFound);
+    EXPECT_TRUE(asked.empty());
 }
 
 TEST(ROCmGPUProbeMathTest, OpenFirstLibraryTakesTheFirstNameThatOpens)
