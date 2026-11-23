@@ -128,10 +128,15 @@ inline constexpr std::array<std::string_view, 3> USER_SIDE_NAMES = {"PATH", "XDG
 /// @return The copy's path, or nullopt when it can't be made or written whole.
 [[nodiscard]] std::optional<std::string> writeXauthorityCopy(const std::string& folder, uid_t uid, const std::string& contents);
 
-/// Removes @p copy when TaskSmack exits normally (std::atexit()), as the session's copy is no use after it (#4667). A
-/// later call replaces the path; a crash leaves it until /run is cleared at the next boot. A root program TaskSmack started
-/// keeps the X connections it has; one it opens after TaskSmack exits finds no cookie.
+/// Removes @p copy when TaskSmack exits normally (std::atexit()), as the session's copy is no use after it (#4667), unless
+/// a root program TaskSmack started may still need it (keepCopyAfterExit(), #4811). A later call replaces the path; a crash
+/// leaves it until /run is cleared at the next boot.
 void removeAtExit(const std::string& copy);
+
+/// Keeps this session's Xauthority copy past TaskSmack's exit (#4811). Called when TaskSmack starts a root program with
+/// its own environment (DetachedSpawn: Run new task as administrator, a terminal), whose XAUTHORITY names the copy: a
+/// window it opens after TaskSmack exits needs the cookie. The copy is root's own, in root-only /run, cleared at boot.
+void keepCopyAfterExit() noexcept;
 
 /// Opens @p path read-only as @p uid would (#4187): setfsuid/setfsgid to them and their primary group for the open,
 /// then back to the effective ids, without following a final link (O_NOFOLLOW) or blocking on a FIFO

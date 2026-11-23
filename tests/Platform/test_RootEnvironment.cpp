@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <array>
 #include <cerrno>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
@@ -25,6 +26,7 @@
 #include <pwd.h>
 #include <sys/fsuid.h>
 #include <sys/stat.h>
+#include <sys/wait.h>
 #include <unistd.h>
 
 namespace Platform::RootEnvironment
@@ -451,6 +453,57 @@ TEST(RootEnvironmentRootTest, OpenAsUserOpensOnlyWhatThatUserCould)
     ::close(own);
     EXPECT_EQ(::setfsuid(static_cast<uid_t>(-1)), 0) << "root's filesystem uid is back";
     EXPECT_EQ(::setfsgid(static_cast<gid_t>(-1)), 0) << "and its group";
+    std::error_code error;
+    std::filesystem::remove_all(dir, error);
+}
+
+// #4811: the session's Xauthority copy is removed when TaskSmack exits, unless a root program it started may still open
+// windows with it (keepCopyAfterExit(), which DetachedSpawn calls for a root child). Each case runs in a child process,
+// whose real exit runs the atexit handler.
+TEST(RootEnvironmentTest, TheXauthorityCopyOutlivesTaskSmackOnlyWhenARootProgramMayNeedIt)
+{
+    const std::filesystem::path dir = std::filesystem::temp_directory_path() / ("ts_xauth_exit_" + std::to_string(::getpid()));
+    std::filesystem::create_directories(dir);
+    const auto copyAfterExit = [&dir](bool rootProgramStarted) -> std::string
+    {
+        std::array<int, 2> fds{};
+        if (::pipe(fds.data()) != 0)
+        {
+            return "";
+        }
+        const pid_t child = ::fork();
+        if (child == 0)
+        {
+            ::close(fds[0]);
+            const std::optional<std::string> copy = writeXauthorityCopy(dir.string(), ::getuid(), "cookie");
+            if (copy.has_value())
+            {
+                removeAtExit(*copy);
+                if (rootProgramStarted)
+                {
+                    keepCopyAfterExit();
+                }
+                static_cast<void>(::write(fds[1], copy->data(), copy->size()));
+            }
+            ::close(fds[1]);
+            std::exit(0); // NOLINT(concurrency-mt-unsafe) - the child's normal exit runs the atexit handler under test
+        }
+        ::close(fds[1]);
+        std::string path(4096, '\0');
+        const auto got = ::read(fds[0], path.data(), path.size());
+        ::close(fds[0]);
+        int status = 0;
+        static_cast<void>(::waitpid(child, &status, 0));
+        path.resize(got > 0 ? static_cast<std::size_t>(got) : 0);
+        return path;
+    };
+
+    const std::string removed = copyAfterExit(false);
+    ASSERT_FALSE(removed.empty());
+    EXPECT_FALSE(std::filesystem::exists(removed)) << "no root program started: removed at exit (#4667)";
+    const std::string kept = copyAfterExit(true);
+    ASSERT_FALSE(kept.empty());
+    EXPECT_TRUE(std::filesystem::exists(kept)) << "a root program may still open windows with it";
     std::error_code error;
     std::filesystem::remove_all(dir, error);
 }
