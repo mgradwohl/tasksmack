@@ -160,9 +160,10 @@ TEST_F(RuntimeDirTest, AMissingPathIsNotUsable)
     EXPECT_FALSE(isUsableRuntimeDir(path("missing")));
 }
 
-// #4709: WSLg without systemd sets XDG_RUNTIME_DIR to its 0777 /mnt/wslg/runtime-dir, refused for TaskSmack's own files;
-// its wayland-0 is still the session's display, found here by its full path, so the session stays on Wayland.
-TEST_F(RuntimeDirTest, AWaylandSocketInARefusedFolderIsFoundByItsFullPath)
+// #4709, #4810: WSLg without systemd sets XDG_RUNTIME_DIR to its 0777 /mnt/wslg/runtime-dir, refused for TaskSmack's own
+// files; its wayland-0 is still the session's display. TaskSmack connects to the socket it checked, through its
+// descriptor, and hands libwayland the connection, never the path another account could swap.
+TEST_F(RuntimeDirTest, AWaylandSocketInARefusedFolderIsConnectedToAsChecked)
 {
     const std::string folder = path("wslg-runtime-dir");
     ASSERT_TRUE(std::filesystem::create_directory(folder));
@@ -170,26 +171,38 @@ TEST_F(RuntimeDirTest, AWaylandSocketInARefusedFolderIsFoundByItsFullPath)
     ASSERT_FALSE(isUsableRuntimeDir(folder));
 
     const std::string socketPath = folder + "/wayland-0";
-    const int fd = ::socket(AF_UNIX, SOCK_STREAM, 0);
-    ASSERT_GE(fd, 0);
+    const int listener = ::socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    ASSERT_GE(listener, 0);
     sockaddr_un address{};
     address.sun_family = AF_UNIX;
     ASSERT_LT(socketPath.size(), sizeof(address.sun_path));
     std::ranges::copy(socketPath, std::begin(address.sun_path));
     // NOLINTNEXTLINE(cppcoreguidelines-pro-type-reinterpret-cast) - the sockets API takes a generic sockaddr
-    ASSERT_EQ(::bind(fd, reinterpret_cast<const sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::bind(listener, reinterpret_cast<const sockaddr*>(&address), sizeof(address)), 0);
+    ASSERT_EQ(::listen(listener, 4), 0);
 
-    EXPECT_EQ(waylandSocketIn(folder, "wayland-0", ::getuid()), std::optional<std::string>(socketPath));
-    EXPECT_EQ(waylandSocketIn(folder, "wayland-0", ::getuid() + 1), std::nullopt) << "another account's socket";
-    EXPECT_EQ(waylandSocketIn(folder, "wayland-1", ::getuid()), std::nullopt) << "nothing there";
-    EXPECT_EQ(waylandSocketIn(folder, socketPath, ::getuid()), std::nullopt) << "already absolute: left as it is";
-    EXPECT_EQ(waylandSocketIn(folder, "../wayland-0", ::getuid()), std::nullopt) << "not a plain socket name";
-    EXPECT_EQ(waylandSocketIn(folder, "", ::getuid()), std::nullopt);
+    const std::optional<int> connected = connectWaylandSocketIn(folder, "wayland-0", ::getuid());
+    ASSERT_TRUE(connected.has_value());
+    const int accepted = ::accept4(listener, nullptr, nullptr, SOCK_CLOEXEC);
+    EXPECT_GE(accepted, 0) << "the connection reached the socket that was checked";
+    ASSERT_EQ(::write(*connected, "x", 1), 1);
+    char byte = 0;
+    EXPECT_EQ(::read(accepted, &byte, 1), 1);
+    EXPECT_EQ(byte, 'x');
+    ::close(accepted);
+    ::close(*connected);
+
+    EXPECT_EQ(connectWaylandSocketIn(folder, "wayland-0", ::getuid() + 1), std::nullopt) << "another account's socket";
+    EXPECT_EQ(connectWaylandSocketIn(folder, "wayland-1", ::getuid()), std::nullopt) << "nothing there";
+    EXPECT_EQ(connectWaylandSocketIn(folder, socketPath, ::getuid()), std::nullopt) << "already absolute: left as it is";
+    EXPECT_EQ(connectWaylandSocketIn(folder, "../wayland-0", ::getuid()), std::nullopt) << "not a plain socket name";
+    EXPECT_EQ(connectWaylandSocketIn(folder, "", ::getuid()), std::nullopt);
     std::ofstream(folder + "/not-a-socket") << "x";
-    EXPECT_EQ(waylandSocketIn(folder, "not-a-socket", ::getuid()), std::nullopt) << "a regular file";
+    EXPECT_EQ(connectWaylandSocketIn(folder, "not-a-socket", ::getuid()), std::nullopt) << "a regular file";
     std::filesystem::create_symlink(socketPath, folder + "/linked-0");
-    EXPECT_EQ(waylandSocketIn(folder, "linked-0", ::getuid()), std::nullopt) << "never through a link";
-    ::close(fd);
+    EXPECT_EQ(connectWaylandSocketIn(folder, "linked-0", ::getuid()), std::nullopt) << "never through a link";
+    ::close(listener);
+    EXPECT_EQ(connectWaylandSocketIn(folder, "wayland-0", ::getuid()), std::nullopt) << "a socket nobody answers";
 }
 
 } // namespace

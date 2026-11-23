@@ -164,17 +164,24 @@ void ensureXdgRuntimeDir()
             return; // valid path already provided by session manager
         }
 
-        // Its Wayland socket is still the session's display (#4709): connect to it by its full path, so a rejected
-        // folder (WSLg's 0777 /mnt/wslg/runtime-dir) doesn't drop the session to X11. Not in a set-id or setcap
-        // session, which takes nothing from a folder others can write.
+        // Its Wayland socket is still the session's display (#4709), so a rejected folder (WSLg's 0777
+        // /mnt/wslg/runtime-dir) doesn't drop the session to X11. Others can rewrite that folder, so TaskSmack connects
+        // to the socket it checked and hands libwayland the connection through WAYLAND_SOCKET, never the path (#4810).
+        // WAYLAND_DISPLAY stays as it was: SDL looks for it, and should libwayland ever reconnect, the bare name
+        // resolves in TaskSmack's private runtime folder, finds nothing, and the session falls back to X11. Not in a
+        // set-id or setcap session, which takes nothing from a folder others can write.
         bool keptWayland = false;
         const char* display = SDL_getenv("WAYLAND_DISPLAY");
         if (display != nullptr && ::getauxval(AT_SECURE) == 0 && ::geteuid() == ::getuid())
         {
-            if (const auto socket = RuntimeDir::waylandSocketIn(existingPath, display, ::getuid()); socket.has_value())
+            if (const std::optional<int> socket = RuntimeDir::connectWaylandSocketIn(existingPath, display, ::getuid()); socket.has_value())
             {
                 // NOLINTNEXTLINE(concurrency-mt-unsafe,misc-include-cleaner) - called once before any threads start; setenv is in <cstdlib>
-                keptWayland = ::setenv("WAYLAND_DISPLAY", socket->c_str(), 1) == 0;
+                keptWayland = ::setenv("WAYLAND_SOCKET", std::to_string(*socket).c_str(), 1) == 0;
+                if (!keptWayland)
+                {
+                    ::close(*socket);
+                }
             }
         }
         if (existingPath == "/mnt/wslg/runtime-dir")
@@ -183,13 +190,14 @@ void ensureXdgRuntimeDir()
             spdlog::info("XDG_RUNTIME_DIR='{}' (WSLg) is writable by others, so TaskSmack keeps its own runtime files in a "
                          "private folder{}",
                          existingPath,
-                         keptWayland ? "; the Wayland display is still used, by its full path" : "");
+                         keptWayland ? "; the Wayland display is still used, through a connection to the socket TaskSmack checked" : "");
         }
         else
         {
             spdlog::warn("Ignoring invalid XDG_RUNTIME_DIR='{}'; using a safe fallback{}",
                          existingPath,
-                         keptWayland ? " (the Wayland display there is still used, by its full path)" : "");
+                         keptWayland ? " (the Wayland display there is still used, through a connection to the socket TaskSmack checked)"
+                                     : "");
         }
     }
 
