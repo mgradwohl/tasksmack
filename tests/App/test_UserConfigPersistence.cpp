@@ -2744,7 +2744,6 @@ TEST_F(UserConfigSaveLoadFixture, ARootSessionsFolderIsNeverWrittenThroughALink)
     EXPECT_EQ(parsed(target)["theme"]["id"].value<std::string>(), "arctic-fire") << "not written through the link";
 }
 
-#ifdef _WIN32
 /// Restores Core::ConfigDirOverride to @p previous when it dies, so a failed assertion in a test that marked a
 /// less-privileged folder doesn't leak that state to the next test.
 class RestoreConfigOverride
@@ -2765,6 +2764,7 @@ class RestoreConfigOverride
     std::optional<std::filesystem::path> m_Previous;
 };
 
+#ifdef _WIN32
 // #4106: on Windows the less-privileged side's folder is written only through the folder held. A session that marked
 // one but holds nothing (a refused own folder) saves nothing: writeSettings() fails closed, so no config.toml is written
 // and no folder is made, here not even behind a junction planted on the way.
@@ -2793,6 +2793,30 @@ TEST_F(UserConfigSaveLoadFixture, ALessPrivilegedFolderWithNothingHeldSavesNothi
     EXPECT_FALSE(std::filesystem::exists(link / "cfg" / "config.toml")) << "not written at all";
 }
 #endif
+// #4806: run as root for a user whose settings folder couldn't be held (a stow or chezmoi link on its path), main.cpp
+// adopts the folder with nothing held. The session then neither reads nor saves there, and says so: the notice the
+// status bar and Settings show, not just the log, so changes don't vanish silently.
+TEST_F(UserConfigSaveLoadFixture, AnUnheldLessPrivilegedFolderSaysSettingsArentReadOrSaved)
+{
+    writeFile(m_ConfigPath, "[theme]\nid = \"mocha\"\n");
+    const RestoreConfigOverride restore(Core::ConfigDirOverride::active());
+    Core::ConfigDirOverride::markLessPrivilegedFolder();
+    Core::ConfigDirOverride::adoptHandedOver(m_TempDir); // what main.cpp does when hold() refuses the folder
+    ASSERT_TRUE(Core::ConfigDirOverride::handedOverFolderReleased());
+    auto& config = UserConfig::get();
+    config.resetConfigPathForTesting(m_ConfigPath);
+    config.load();
+    EXPECT_NE(config.settings().themeId, "mocha") << "not read";
+    const std::string notice = config.fileProblem();
+    EXPECT_TRUE(notice.contains("couldn't be opened safely")) << notice;
+    EXPECT_TRUE(notice.contains("default settings")) << notice;
+
+    config.settings().themeId = "latte";
+    config.save();
+    EXPECT_EQ(parsed(m_ConfigPath)["theme"]["id"].value<std::string>(), "mocha") << "not saved";
+    EXPECT_EQ(config.fileProblem(), notice) << "the save's refusal keeps the same notice";
+}
+
 // #3787: a save takes the hold for its whole write, so the folder's owner letting it go part-way through (here, as
 // the staging file is named) can't leave the write going on with nothing held.
 TEST_F(UserConfigSaveLoadFixture, ASaveKeepsTheHandedOverFolderHeldForTheWholeWrite)
