@@ -120,7 +120,12 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
 3. **Signed dry run on that exact SHA,** with every job green. If it fails: a fix PR, then a new candidate.
 4. **Both lanes validate:**
    - Windows runs the smoke checks, Authenticode, and an installer install, upgrade and uninstall, plus an upgrade
-     and an uninstall while TaskSmack.exe is in use, which must exit with 32 and change nothing (#4436).
+     and an uninstall while TaskSmack.exe is in use, which must exit with 32 and change nothing (#4436). The
+     install, run and uninstall part is `pwsh tools/sandbox-install-check.ps1 -Version X.Y.Z` (or `-Installer
+     <path>` for a candidate's build): it writes the Sandbox file, starts the Sandbox, waits, closes it and prints
+     `results.md` with a `RESULT: PASS` or `RESULT: FAIL` line. It needs no typing in the Sandbox. Run it when
+     nobody is using the desktop, never from CI. `-WinGet` runs it through `SandboxTest.ps1` and winget (see
+     "Testing in Windows Sandbox").
    - WSL installs the Linux packages on the supported distros.
 5. **Manual checks** by the maintainer: UAC elevation, lock and virtual-desktop behaviour, and a real install of
    the installer.
@@ -163,12 +168,16 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    - `release.yml` builds, signs, validates and publishes the release, titled "TaskSmack vX.Y.0".
    - `changelog.yml` opens CHANGELOG PRs against main and `release/X.Y`, and fills in the release body.
 4. The maintainer merges both CHANGELOG PRs.
-5. Post-publish verification by the Windows lane:
+5. Post-publish verification by the Windows lane: `pwsh tools/release.ps1 -Step Verify -Version X.Y.Z`. It
+   downloads the release and checks:
    - asset digests and `SHA256SUMS`;
-   - cosign bundles and attestations;
-   - Authenticode;
-   - the download guide is present, and the notes aren't the placeholder.
-6. Submit the installers to Microsoft SmartScreen.
+   - the build-provenance attestation of every package, and the cosign bundle when `cosign` is installed;
+   - Authenticode on both installers and on the exes in both zips;
+   - the notes aren't the placeholder.
+
+   It prints a Markdown summary to post on the tracker. `-Step Status` shows the release run, the CHANGELOG PRs,
+   the winget-pkgs PR, the WinGet health issue and the milestone's open count.
+6. The maintainer submits the installers to Microsoft SmartScreen (see [SmartScreen submission](#smartscreen-submission)).
    Check that `publish-winget` opened the winget-pkgs pull request (see [Publishing to WinGet](#publishing-to-winget)).
 7. Close the milestone. Post a short announcement in GitHub Discussions: highlights, the download guide and how to
    verify.
@@ -331,6 +340,35 @@ How it's made:
 
 Coverage stays on Codecov, and the page links to it.
 
+## SmartScreen submission
+
+Microsoft SmartScreen warns about a new, signed installer until it has seen enough downloads of it. The maintainer
+tells Microsoft it's a good file, once per release, after the release is published and verified. One submission is
+one file, so send both installers.
+
+1. Open the file submission portal, <https://www.microsoft.com/en-us/wdsi/filesubmission>, and sign in.
+2. Choose **Software developer**.
+3. For the product, choose **Microsoft Defender SmartScreen**.
+4. Company: `TaskSmack Contributors`.
+5. Upload the file from the release's assets: `TaskSmack-X.Y.Z-win64.exe`, then do it all again for
+   `TaskSmack-X.Y.Z-windows-arm64.exe`. Optionally also send `TaskSmack.exe` from each zip.
+6. Choose **Incorrectly detected** (the file is clean).
+7. For the detection, enter `SmartScreen: Windows protected your PC (unrecognized app)`.
+8. Paste this into the additional information, with the file's own name and hash:
+
+   ```text
+   TaskSmack X.Y.Z, an open-source system monitor for Windows. This is the file
+   TaskSmack-X.Y.Z-win64.exe from https://github.com/mgradwohl/tasksmack/releases/tag/vX.Y.Z.
+   It is signed with Azure Artifact Signing, certificate subject CN=Matt Gradwohl, and carries
+   a build-provenance attestation. SHA-256: <the file's line in SHA256SUMS>
+   SmartScreen shows "Windows protected your PC" for it as an unrecognized app. Please
+   mark it as not malicious.
+   ```
+
+The SHA-256 comes from the release's `SHA256SUMS` (the line for that file name), which `release.ps1 -Step Verify`
+has just checked against the downloaded file. The portal's labels can differ a little from the ones here; pick the
+nearest. Microsoft answers by e-mail. Note the submission on the tracker.
+
 ## Branches and tags
 
 - **`main`:** all development lands here. It's frozen only from the feature freeze until the candidate is
@@ -475,6 +513,20 @@ purpose:
 
 ## Publishing to WinGet
 
+### WinGet: what the maintainer does
+
+- **Per release:** nothing. `publish-winget` opens the winget-pkgs pull request after `verify-published-release`
+  passes, and `winget-health.yml` follows it to the merge.
+- **Once, at v0.11.1:** the first automatic pull request comes from `tasksmack-boop` and waits at `Needs-CLA`.
+  Sign the Microsoft CLA as `tasksmack-boop` when the bot asks on that pull request. Later ones need nothing.
+  `release.ps1 -Step Status -Version 0.11.1` shows that pull request.
+- **If the health issue opens** ("WinGet: TaskSmack.TaskSmack <version> isn't published"): open the pull request it
+  links and read the label that needs us (see [Automatic updates](#automatic-updates) for which ones count). Fix
+  what it names, re-run the failed `publish-winget` job, or submit that version by hand as in the first
+  submission below. The issue closes itself once the version is on winget-pkgs.
+
+The rest of this section is the reference behind those three lines.
+
 TaskSmack is in the Windows Package Manager as `TaskSmack.TaskSmack` from v0.11.0 (#3486). Each version is
 three manifests in [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), under
 `manifests/t/TaskSmack/TaskSmack/<version>/`, pointing at the release's two NSIS installers
@@ -547,6 +599,12 @@ restart). SandboxTest.ps1 downloads WinGet into the Sandbox and validates the ma
 manifest there with `winget install --manifest`, which downloads each installer and checks its SHA-256, and runs
 `-Script`. Pin the script to a winget-pkgs commit you've read; `1410e3eea47ed72934a257db21cf7a638a862b94`
 (2026-06-16) is the one checked for this guide.
+
+`pwsh tools/sandbox-install-check.ps1 -Version X.Y.Z -WinGet` does the first check below with no typing: it
+downloads that pinned `SandboxTest.ps1`, writes the release's manifests with `tools/winget-manifest.ps1`, and runs
+a check script in the Sandbox through `-Script`. `SandboxTest.ps1` has no confirmation prompt, so it runs
+unattended, and the script waits for the result file, closes the Sandbox and prints it. The commands below are
+what it replaces, and the upgrade and by-ID checks still use them.
 
 **Before publication, check by what's installed, not by package ID.** Until `TaskSmack.TaskSmack` is merged into
 winget-pkgs, a copy installed from a local manifest isn't tied to any source. So
@@ -710,13 +768,27 @@ A missing or expired token doesn't fail a release. An empty secret skips the job
 `publish-winget`, after the release is published. To stop the automatic updates, delete the secret.
 ## Patch releases
 
-A patch happens only when a shipped bug warrants one.
+A patch happens only when a shipped bug warrants one. `tools/release.ps1` does the hand steps; each step can be run
+again, and prints what to do next. Its `-Step Tag` only prints the commands: agents never push a tag.
 
-1. Fix on main and add the `backport:X.Y` label. If the automatic cherry-pick conflicts, open a hand cherry-pick PR
-   (`git cherry-pick -x`).
-2. Review the `vX.Y.(N-1)..release/X.Y` diff only.
-3. Merge the version bump on `release/X.Y`. Run stage 6 on its head (soak, signed dry run, validation, approval),
-   then stage 7. A patch gets no Discussions announcement.
+| # | Who | What | Command |
+|---|---|---|---|
+| 1 | Lane that owns the fix | Merge the fix to main and add the `backport:X.Y` label. `backport.yml` opens the cherry-pick PR against `release/X.Y`. If it conflicts, cherry-pick by hand (`git cherry-pick -x <squash SHA>`) and open that PR. | `/backport` comment on the merged PR, to retry |
+| 2 | Lane that owns the fix | Merge each backport PR when CI is green and its review threads are resolved. | |
+| 3 | Reviewer | Review the `vX.Y.(N-1)..release/X.Y` diff only. | `git diff vX.Y.(N-1)..origin/release/X.Y` |
+| 4 | Windows lane | Open the version bump PR against `release/X.Y`: one changed line, `project(TaskSmack VERSION X.Y.N ...)`. Merge it before the candidate. | `pwsh tools/release.ps1 -Step Bump -Version X.Y.N` |
+| 5 | Windows lane | Soak, then the signed dry run on the branch's head, with every job green. | `pwsh tools/release.ps1 -Step DryRun -Ref release/X.Y` |
+| 6 | Both lanes | Validate (stage 6): Windows runs the Sandbox install check, WSL installs the Linux packages. | `pwsh tools/sandbox-install-check.ps1 -Installer <path>` on the dry run's installer |
+| 7 | Maintainer | Approve the candidate on the tracker. | |
+| 8 | Maintainer | Tag the approved commit and push the tag. | `pwsh tools/release.ps1 -Step Tag -Version X.Y.N -Sha <sha>` prints the commands |
+| 9 | Maintainer | Merge both CHANGELOG PRs (one against `release/X.Y`, one against main). | `pwsh tools/release.ps1 -Step Status -Version X.Y.N` |
+| 10 | Windows lane | Post-publish verification, summary on the tracker. | `pwsh tools/release.ps1 -Step Verify -Version X.Y.N` |
+| 11 | Maintainer | [SmartScreen submission](#smartscreen-submission). | |
+| 12 | Windows lane | Check `publish-winget` opened the winget-pkgs PR. For v0.11.1, the first automatic one, the maintainer signs the CLA as `tasksmack-boop` on it. | `pwsh tools/release.ps1 -Step Status -Version X.Y.N` |
+| 13 | Maintainer | Close the milestone. A patch gets no Discussions announcement. | |
+
+A patch to an older line (a v0.10.x after v0.11.0) gets no WinGet pull request: `publish-winget` skips it, since
+WinGet's newest version would go backwards.
 
 ## Who does what
 
