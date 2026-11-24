@@ -21,12 +21,17 @@
       Verify  Downloads the published release and checks SHA256SUMS, the build-provenance attestation of every
               package, Authenticode on both installers and on the exes in both zips, cosign when installed, and
               that the notes are not the placeholder. Prints a Markdown summary for the tracker. Read-only.
+      WinGet  Which WinGet path the release is on and what to do: A (TaskSmack.TaskSmack is in winget-pkgs; the
+              version's pull request, its labels, Needs-CLA), B (the first submission is still open) or C (it was
+              closed unmerged: the hand-submission commands). Same checks as publish-winget. With -Rerun, and only
+              when the package exists, the version doesn't and no pull request for it is open, it re-runs the tag
+              run's publish-winget job, waits, and prints the pull request it opened. Read-only without -Rerun.
       Status  The release run, the CHANGELOG pull requests, the winget-pkgs pull request, WinGet health issue
               and the milestone's open count. Read-only.
 
     Needs PowerShell 7 and an authenticated gh. Verify's Authenticode checks run on Windows only.
 .PARAMETER Step
-    Bump, DryRun, Tag, Verify or Status.
+    Bump, DryRun, Tag, Verify, Status or WinGet.
 .PARAMETER Version
     The release's version, X.Y.Z with no leading v (Bump needs a patch: Z of 1 or more).
 .PARAMETER Ref
@@ -35,6 +40,8 @@
     DryRun: the commit the branch's head must be. Tag: the commit to tag (40 hex digits).
 .PARAMETER NoWait
     DryRun: dispatch and print the run link without waiting for the result.
+.PARAMETER Rerun
+    WinGet: re-run publish-winget of the vX.Y.Z tag run when that is safe (see Steps); otherwise say why not.
 .EXAMPLE
     pwsh tools/release.ps1 -Step Bump -Version 0.11.1
 .EXAMPLE
@@ -45,15 +52,18 @@
     pwsh tools/release.ps1 -Step Verify -Version 0.11.0
 .EXAMPLE
     pwsh tools/release.ps1 -Step Status -Version 0.11.1
+.EXAMPLE
+    pwsh tools/release.ps1 -Step WinGet -Version 0.11.1 -Rerun
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('Bump', 'DryRun', 'Tag', 'Verify', 'Status')]
+    [ValidateSet('Bump', 'DryRun', 'Tag', 'Verify', 'Status', 'WinGet')]
     [string]$Step,
     [string]$Version,
     [string]$Ref,
     [string]$Sha,
-    [switch]$NoWait
+    [switch]$NoWait,
+    [switch]$Rerun
 )
 
 $ErrorActionPreference = 'Stop'
@@ -419,10 +429,199 @@ function Invoke-StatusStep {
     }
 }
 
+# The WinGet step (#4866). It makes the same checks publish-winget makes (release.yml, "Check TaskSmack.TaskSmack is in
+# winget-pkgs and has no pull request for this version"): the same contents paths and the same open-PR search. Only a
+# confirmed 404 means "not there"; a rate limit, a 5xx or no response is retried with backoff, then it throws.
+$WingetPackageId = 'TaskSmack.TaskSmack'
+$WingetFolder = "repos/$WingetRepo/contents/manifests/t/TaskSmack/TaskSmack"
+$WingetJobName = 'Submit the WinGet Update'
+$script:WingetRetryDelay = 5
+$script:WingetPollSeconds = 20
+$script:WingetWaitMinutes = 40
+
+function Invoke-GhRaw {
+    # Runs gh and returns its output lines and exit code without throwing (stderr merged in).
+    param([string[]]$Arguments)
+    $lines = @(& gh @Arguments 2>&1 | ForEach-Object { "$_" })
+    return [pscustomobject]@{ ExitCode = $LASTEXITCODE; Lines = $lines }
+}
+
+function Get-WingetHttpStatus {
+    # 200 or 404 for a contents path; anything else is retried with backoff, then throws.
+    param([string]$ApiPath)
+    $delay = $script:WingetRetryDelay
+    for ($try = 1; $try -le 4; $try++) {
+        $out = Invoke-GhRaw @('api', '-i', '--silent', $ApiPath)
+        $lines = @($out.Lines)
+        $status = if ($lines.Count -gt 0 -and $lines[0] -match '^HTTP/\S+ (\d{3})') { [int]$Matches[1] } else { 0 }
+        if ($status -eq 200 -or $status -eq 404) { return $status }
+        $detail = if ($status) { ($lines | Where-Object { $_ -match '^(HTTP/|Retry-After|X-Ratelimit-Remaining|X-Ratelimit-Reset)' }) -join '; ' } else { "no response: $($lines -join ' ')" }
+        Write-Host "GET $ApiPath, try $try of 4: $detail"
+        if ($try -lt 4 -and ($status -eq 0 -or $status -eq 403 -or $status -eq 429 -or $status -ge 500)) {
+            Start-Sleep -Seconds $delay
+            $delay *= 2
+            continue
+        }
+        throw "GET $ApiPath failed ($detail), so the WinGet state is unknown; run it again."
+    }
+}
+
+function Search-WingetPullRequests {
+    # winget-pkgs pull requests whose title names the package, through the search API (retried like publish-winget's).
+    param([string]$Qualifiers)
+    $query = "repo:$WingetRepo is:pr $Qualifiers $WingetPackageId in:title" -replace '\s+', ' '
+    $found = $null
+    for ($try = 1; $try -le 4 -and -not $found; $try++) {
+        $out = Invoke-GhRaw @('api', '-X', 'GET', 'search/issues', '-f', "q=$query", '-f', 'sort=created', '-f', 'order=desc')
+        if ($out.ExitCode -eq 0) { $found = ($out.Lines -join "`n") | ConvertFrom-Json }
+        elseif ($try -lt 4) { Write-Host "Search, try $try of 4, failed: $($out.Lines -join ' ')"; Start-Sleep -Seconds ($script:WingetRetryDelay * [math]::Pow(2, $try - 1)) }
+        else { throw "searching $WingetRepo's pull requests failed: $($out.Lines -join ' ')" }
+    }
+    return @($found.items | Where-Object { $_ -and $_.title.Contains($WingetPackageId) })
+}
+
+function Test-WingetTitleHasVersion {
+    param([string]$Title, [string]$Value)
+    return [bool]($Title -match "(^|[^0-9.])$([regex]::Escape($Value))($|[^0-9.])")
+}
+
+function Test-WingetMerged {
+    param($Item)
+    return [bool]($Item.pull_request -and $Item.pull_request.PSObject.Properties['merged_at'] -and $Item.pull_request.merged_at)
+}
+
+function Get-WingetState {
+    # Everything the step decides from. Reads only.
+    param([string]$Value)
+    $packageExists = (Get-WingetHttpStatus $WingetFolder) -eq 200
+    $versionExists = $packageExists -and ((Get-WingetHttpStatus "$WingetFolder/$Value") -eq 200)
+    $openForVersion = @(Search-WingetPullRequests 'is:open' | Where-Object { Test-WingetTitleHasVersion $_.title $Value })
+    $all = @(Search-WingetPullRequests '')
+    return [pscustomobject]@{
+        PackageExists   = $packageExists
+        VersionExists   = $versionExists
+        OpenForVersion  = $openForVersion
+        AllPullRequests = $all
+    }
+}
+
+function Get-WingetDecision {
+    # Which path a release is on, and whether publish-winget would submit it now (and so a re-run is allowed).
+    #   A: the package is in winget-pkgs.   B: it isn't, and its first submission is open (or merged, not yet visible).
+    #   C: it isn't, and no first submission is open: closed unmerged, or never made.
+    param([string]$Value, $State)
+    $versionPrs = @($State.AllPullRequests | Where-Object { Test-WingetTitleHasVersion $_.title $Value })
+    if ($State.PackageExists) {
+        $eligible = (-not $State.VersionExists) -and @($State.OpenForVersion).Count -eq 0
+        return [pscustomobject]@{ Path = 'A'; CanRerun = $eligible; VersionPrs = $versionPrs; FirstSubmissions = @() }
+    }
+    $first = @($State.AllPullRequests | Where-Object { $_.state -eq 'open' -or (Test-WingetMerged $_) })
+    $path = if ($first.Count -gt 0) { 'B' } else { 'C' }
+    return [pscustomobject]@{ Path = $path; CanRerun = $false; VersionPrs = $versionPrs; FirstSubmissions = @($State.AllPullRequests) }
+}
+
+function Get-WingetPrSummary {
+    param($Item)
+    $labels = @($Item.labels | ForEach-Object { $_.name })
+    $state = if (Test-WingetMerged $Item) { 'merged' } else { $Item.state }
+    return "#$($Item.number) $state [$($labels -join ', ')] $($Item.html_url)  $($Item.title)"
+}
+
+function Get-WingetHandSubmitCommands {
+    param([string]$Value)
+    return @(
+        "gh release download v$Value --repo $Repo --pattern SHA256SUMS --pattern SHA256SUMS.bundle --dir winget-$Value",
+        "pwsh tools/winget-manifest.ps1 -Version $Value -ReleaseDir winget-$Value -ReleaseDate <yyyy-MM-dd>",
+        "winget validate --manifest winget-$Value\winget\manifests\t\TaskSmack\TaskSmack\$Value",
+        "wingetcreate submit --prtitle `"New package: $WingetPackageId version $Value`" winget-$Value\winget\manifests\t\TaskSmack\TaskSmack\$Value")
+}
+
+function Write-WingetReport {
+    param([string]$Value, $State, $Decision)
+    switch ($Decision.Path) {
+        'A' {
+            Write-Host "Path A: $WingetPackageId is in $WingetRepo."
+            if ($State.VersionExists) { Write-Host "  $Value is already published there." }
+            else { Write-Host "  $Value is not published there yet." }
+            foreach ($pr in @($Decision.VersionPrs)) {
+                Write-Host "  PR: $(Get-WingetPrSummary $pr)"
+                if (@($pr.labels | ForEach-Object { $_.name }) -contains 'Needs-CLA') {
+                    Write-Host '  Needs-CLA: sign the CLA as tasksmack-boop (comment on the pull request when the bot asks).'
+                }
+            }
+            if (@($Decision.VersionPrs).Count -eq 0 -and -not $State.VersionExists) { Write-Host "  No pull request for $Value (open or merged)." }
+        }
+        'B' {
+            Write-Host "Path B: $WingetPackageId is not in $WingetRepo yet; its first submission is waiting."
+            foreach ($pr in @($Decision.FirstSubmissions)) { Write-Host "  First submission: $(Get-WingetPrSummary $pr)" }
+            Write-Host "  publish-winget skips $Value until that merges; then: pwsh tools/release.ps1 -Step WinGet -Version $Value -Rerun"
+        }
+        default {
+            Write-Host "Path C: $WingetPackageId is not in $WingetRepo, and no first submission is open."
+            foreach ($pr in @($Decision.FirstSubmissions)) { Write-Host "  Earlier: $(Get-WingetPrSummary $pr)" }
+            Write-Host '  Submit it by hand (docs/dev/release-process.md, "Publishing to WinGet"):'
+            Get-WingetHandSubmitCommands $Value | ForEach-Object { Write-Host "    $_" }
+        }
+    }
+}
+
+function Wait-WingetRerun {
+    # Polls the run until the re-run's attempt (one past -AttemptBefore) completes; returns the WinGet job's
+    # final state. Right after `gh run rerun` the run can still read as the earlier attempt, completed, so a
+    # completed status counts only once the attempt number has moved on.
+    param([string]$RunId, [int]$AttemptBefore)
+    $deadline = (Get-Date).AddMinutes($script:WingetWaitMinutes)
+    Start-Sleep -Seconds $script:WingetPollSeconds
+    $run = $null
+    $job = $null
+    while ((Get-Date) -lt $deadline) {
+        $run = Invoke-GhJson @('run', 'view', $RunId, '--repo', $Repo, '--json', 'status,attempt,jobs')
+        $job = @($run.jobs) | Where-Object { $_.name -eq $WingetJobName } | Select-Object -First 1
+        if ([int]$run.attempt -gt $AttemptBefore -and $run.status -eq 'completed') { break }
+        Start-Sleep -Seconds $script:WingetPollSeconds
+    }
+    if (-not $job -or -not $run -or [int]$run.attempt -le $AttemptBefore -or $run.status -ne 'completed') { throw "The re-run did not finish within $($script:WingetWaitMinutes) minutes: https://github.com/$Repo/actions/runs/$RunId" }
+    return $job
+}
+
+function Invoke-WingetStep {
+    param([string]$Value, [switch]$Rerun)
+    Assert-ReleaseVersion $Value
+    $tag = "v$Value"
+    $state = Get-WingetState $Value
+    $decision = Get-WingetDecision -Value $Value -State $state
+    Write-WingetReport -Value $Value -State $state -Decision $decision
+    if (-not $Rerun) { return }
+
+    if ($decision.Path -ne 'A') { Write-Host "Not re-running: path $($decision.Path); the package must be in $WingetRepo first."; return }
+    if ($state.VersionExists) { Write-Host "Not re-running: $Value is already in $WingetRepo."; return }
+    if (@($state.OpenForVersion).Count -gt 0) { Write-Host "Not re-running: a pull request for $Value is already open: $($state.OpenForVersion[0].html_url)"; return }
+
+    $runs = @(Invoke-GhJson @('run', 'list', '--repo', $Repo, '--workflow', 'release.yml', '--branch', $tag, '--event', 'push', '--limit', '10', '--json', 'databaseId,status,conclusion,url,headBranch'))
+    $run = $runs | Where-Object { $_ -and $_.headBranch -eq $tag } | Select-Object -First 1
+    if (-not $run) { Write-Host "Not re-running: no release.yml push run for $tag."; return }
+    if ($run.status -ne 'completed') { Write-Host "Not re-running: the $tag run is still $($run.status): $($run.url)"; return }
+    $view = Invoke-GhJson @('run', 'view', "$($run.databaseId)", '--repo', $Repo, '--json', 'attempt,jobs')
+    $job = @($view.jobs) | Where-Object { $_.name -eq $WingetJobName } | Select-Object -First 1
+    if (-not $job) { Write-Host "Not re-running: the $tag run has no job named '$WingetJobName' (publish-winget is skipped for a release that was not Latest): $($run.url)"; return }
+
+    Write-Host "Re-running '$WingetJobName' of $($run.url) (job $($job.databaseId))."
+    Invoke-Gh @('run', 'rerun', "$($run.databaseId)", '--repo', $Repo, '--job', "$($job.databaseId)") | Out-Null
+    $done = Wait-WingetRerun -RunId "$($run.databaseId)" -AttemptBefore ([int]$view.attempt)
+    Write-Host "Result: $($done.conclusion) https://github.com/$Repo/actions/runs/$($run.databaseId)"
+    $prs = @(Search-WingetPullRequests '' | Where-Object { Test-WingetTitleHasVersion $_.title $Value })
+    if ($prs.Count -eq 0) { Write-Host "No winget-pkgs pull request for $Value turned up (the search can lag a minute; run -Step WinGet -Version $Value again)." }
+    foreach ($pr in $prs) {
+        Write-Host "PR: $(Get-WingetPrSummary $pr)"
+        if (@($pr.labels | ForEach-Object { $_.name }) -contains 'Needs-CLA') { Write-Host 'Needs-CLA: sign the CLA as tasksmack-boop.' }
+    }
+    if ($done.conclusion -ne 'success') { throw "The re-run of $WingetJobName did not succeed ($($done.conclusion))." }
+}
+
 # Dot-sourcing (the tests) loads the functions without running a step.
 if ($MyInvocation.InvocationName -eq '.') { return }
 
-if (-not $Step) { throw 'Give -Step Bump, DryRun, Tag, Verify or Status (Get-Help tools/release.ps1).' }
+if (-not $Step) { throw 'Give -Step Bump, DryRun, Tag, Verify, Status or WinGet (Get-Help tools/release.ps1).' }
 if (-not (Get-Command gh -ErrorAction SilentlyContinue)) { throw 'gh (GitHub CLI) is required.' }
 switch ($Step) {
     'Bump' { Invoke-BumpStep -Value $Version }
@@ -430,4 +629,5 @@ switch ($Step) {
     'Tag' { Invoke-TagStep -Value $Version -CommitSha $Sha }
     'Verify' { Invoke-VerifyStep -Value $Version }
     'Status' { Invoke-StatusStep -Value $Version }
+    'WinGet' { Invoke-WingetStep -Value $Version -Rerun:$Rerun }
 }
