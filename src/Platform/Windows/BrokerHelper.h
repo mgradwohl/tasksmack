@@ -138,6 +138,18 @@ inline constexpr DWORD FOLDER_CHANGE_RIGHTS = FILE_ADD_FILE | FILE_ADD_SUBDIRECT
 /// out of the way. Not FILE_ADD_FILE or FILE_ADD_SUBDIRECTORY: a new entry can't take an existing
 /// one's name, and every user may create folders at a drive's root.
 inline constexpr DWORD ANCESTOR_CHANGE_RIGHTS = FILE_DELETE_CHILD | DELETE | WRITE_DAC | WRITE_OWNER;
+/// The rights left out over a volume's root directory (#4850): a root can't be deleted or renamed, so DELETE on
+/// it moves nothing out of the way. Windows Sandbox's C:\ grants Authenticated Users Modify on the root itself.
+inline constexpr DWORD VOLUME_ROOT_IGNORED_RIGHTS = DELETE;
+
+/// The rights checkUnchangeableBy() checks over a folder: FOLDER_CHANGE_RIGHTS over the @p nearest one (the
+/// file's own folder) and ANCESTOR_CHANGE_RIGHTS over each above it, without VOLUME_ROOT_IGNORED_RIGHTS when
+/// the folder is @p volumeRoot.
+[[nodiscard]] constexpr DWORD folderChangeRights(bool nearest, bool volumeRoot) noexcept
+{
+    const DWORD rights = nearest ? FOLDER_CHANGE_RIGHTS : ANCESTOR_CHANGE_RIGHTS;
+    return volumeRoot ? (rights & ~VOLUME_ROOT_IGNORED_RIGHTS) : rights;
+}
 
 /// What @p rights (some of the *_CHANGE_RIGHTS above) let a user do, in words, for the reason Settings shows
 /// when it can't offer Replace Task Manager (#4755), in place of the raw access mask: "write or add to it, delete
@@ -163,10 +175,11 @@ struct InstallCheckFunctions
 /// Whether the user of @p token (an impersonation token, identification level is enough), and anyone
 /// but an administrator, can change none of @p files: checkDescriptor() with FILE_CHANGE_RIGHTS over
 /// each file, FOLDER_CHANGE_RIGHTS over its folder and ANCESTOR_CHANGE_RIGHTS over each folder above, up
-/// to the root, after links are resolved. WRITE_DAC is among the rights, so an owner's implicit rights
-/// count too. The file and every folder are opened and held, unable to be renamed or deleted, and each
-/// folder's final path compared with its name, before the security is read from those same handles. So
-/// nothing can be swapped in between. Anything that can't be read is a refusal. The error names the path.
+/// to the root, without DELETE over the root itself (folderChangeRights()), after links are resolved.
+/// WRITE_DAC is among the rights, so an owner's implicit rights count too. The file and every folder
+/// are opened and held, unable to be renamed or deleted, and each folder's final path compared with its
+/// name, before the security is read from those same handles. So nothing can be swapped in between.
+/// Anything that can't be read is a refusal. The error names the path.
 [[nodiscard]] std::expected<void, std::string>
 checkUnchangeableBy(HANDLE token, std::span<const std::wstring> files, const InstallCheckFunctions& functions = {});
 

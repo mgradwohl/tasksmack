@@ -347,7 +347,8 @@ checkOne(HANDLE token, const std::wstring& file, bool mustBeNamedSo, const Insta
     }
     for (std::size_t index = 0; index < folders.size(); ++index)
     {
-        const DWORD rights = index == 0 ? FOLDER_CHANGE_RIGHTS : ANCESTOR_CHANGE_RIGHTS;
+        // The last folder held is the root: the walk above stops at the one with no relative path.
+        const DWORD rights = folderChangeRights(index == 0, index + 1 == folders.size());
         if (auto checked = checkHeld(token, folders[index].handle.get(), rights, folders[index].path.wstring()); !checked.has_value())
         {
             return checked;
