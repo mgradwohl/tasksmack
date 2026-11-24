@@ -339,8 +339,9 @@ $expected = @(
 )
 Assert-True (($lines -join "`n") -eq ($expected -join "`n")) "LLVM dry-run: lines [$($lines -join "`n")]"
 
-# The registry reader, against a scratch uninstall root under HKCU: an NSIS LLVM, an MSI LLVM, one
-# installed elsewhere and an unrelated LLVM-named package; only the first two are the LLVM in $LlvmDir.
+# The registry reader, against a scratch uninstall root under HKCU: an NSIS LLVM, two MSI LLVMs, one
+# installed elsewhere and an unrelated LLVM-named package. The MSI without an InstallLocation is retained,
+# as before: its MsiExec UninstallString does not identify an install folder.
 # The NSIS entries have no InstallLocation (as LLVM's NSIS .exe writes none), so their folder comes
 # from UninstallString: a 32-bit NSIS LLVM in Program Files (x86) and one in D:\LLVM are both left out.
 $scratch = "HKCU:\Software\TaskSmackTests-setup-dev-$([guid]::NewGuid().ToString('N'))"
@@ -348,6 +349,7 @@ try {
     $entries = @(
         @{ Key = 'LLVM'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '22.1.8'; UninstallString = '"C:\Program Files\LLVM\Uninstall.exe"' } }
         @{ Key = '{C261B515-7573-457D-AA83-FE1826A77ECE}'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '23.1.4'; WindowsInstaller = 1; InstallLocation = 'C:\Program Files\LLVM\'; UninstallString = 'MsiExec.exe /X{C261B515-7573-457D-AA83-FE1826A77ECE}' } }
+        @{ Key = '{F4F1A5DA-71AF-4F2E-9A0D-5E31EB9E769C}'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '24.1.0'; WindowsInstaller = 1; UninstallString = 'MsiExec.exe /X{F4F1A5DA-71AF-4F2E-9A0D-5E31EB9E769C}' } }
         @{ Key = 'LLVM32'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '21.1.0'; UninstallString = '"C:\Program Files (x86)\LLVM\Uninstall.exe"' } }
         @{ Key = 'LLVMCustom'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '22.1.8'; UninstallString = '"D:\LLVM\Uninstall.exe"' } }
         @{ Key = 'OpenMP'; Values = @{ DisplayName = 'LLVM OpenMP Runtime'; DisplayVersion = '19.0.0' } }
@@ -362,10 +364,11 @@ try {
     }
     $LlvmUninstallKeys = @($scratch)
     $found = @(& $realGetInstalledLlvm | Sort-Object Version)
-    Assert-True ($found.Count -eq 2) "registry: found [$(($found | ForEach-Object Version) -join ', ')]"
+    Assert-True ($found.Count -eq 3) "registry: found [$(($found | ForEach-Object Version) -join ', ')]"
     Assert-True ($found[0].Version -eq '22.1.8' -and $found[0].Major -eq 22 -and $null -eq $found[0].ProductCode -and $found[0].UninstallString -eq '"C:\Program Files\LLVM\Uninstall.exe"') "registry: NSIS entry [$($found[0] | Out-String)]"
     Assert-True ($found[1].Version -eq '23.1.4' -and $found[1].Major -eq 23 -and $found[1].ProductCode -eq '{C261B515-7573-457D-AA83-FE1826A77ECE}') "registry: MSI entry [$($found[1] | Out-String)]"
     Assert-True (Test-Path -LiteralPath $found[1].Key) "registry: key [$($found[1].Key)]"
+    Assert-True ($found[2].Version -eq '24.1.0' -and $found[2].Major -eq 24 -and $found[2].ProductCode -eq '{F4F1A5DA-71AF-4F2E-9A0D-5E31EB9E769C}' -and $found[2].UninstallString -eq 'MsiExec.exe /X{F4F1A5DA-71AF-4F2E-9A0D-5E31EB9E769C}') "registry: MSI without InstallLocation [$($found[2] | Out-String)]"
 }
 finally {
     Remove-Item -LiteralPath $scratch -Recurse -Force -ErrorAction SilentlyContinue
