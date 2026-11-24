@@ -109,11 +109,15 @@ __INSTALL__
         else { Add-Row 'Runs for 15 s' 'WARN' "exited with $($app.ExitCode) (the Sandbox has no vGPU, so an OpenGL failure is expected)" }
         Start-Sleep -Seconds 2
     }
+    # Nothing to uninstall after a failed install: the rows above already say why.
+    if ((Test-Path "$folder\TaskSmack.exe") -or (Get-Arp)) {
 __UNINSTALL__
-    $deadline = (Get-Date).AddSeconds(60)
-    while ((Test-Path $folder) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
-    Add-Row 'Folder removed' $(if (-not (Test-Path $folder)) { 'PASS' } else { 'FAIL' }) $folder
-    Add-Row 'Uninstall entry removed' $(if (-not (Get-Arp)) { 'PASS' } else { 'FAIL' }) ''
+        $deadline = (Get-Date).AddSeconds(60)
+        while ((Test-Path $folder) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+        Add-Row 'Folder removed' $(if (-not (Test-Path $folder)) { 'PASS' } else { 'FAIL' }) $folder
+        Add-Row 'Uninstall entry removed' $(if (-not (Get-Arp)) { 'PASS' } else { 'FAIL' }) ''
+    }
+    else { Add-Row 'Uninstall' 'SKIP' 'nothing was installed' }
 }
 catch {
     Add-Row 'Check script' 'FAIL' ($_.Exception.Message -replace '\|', '/')
@@ -195,6 +199,10 @@ function Stop-SandboxProcesses {
     foreach ($name in 'WindowsSandboxRemoteSession', 'WindowsSandbox', 'WindowsSandboxClient') {
         Get-Process -Name $name -ErrorAction SilentlyContinue | Stop-Process -Force -ErrorAction SilentlyContinue
     }
+    # The session takes a moment to go; wait for it, so the next run doesn't meet a Sandbox still closing.
+    $deadline = (Get-Date).AddSeconds(30)
+    while ((Get-Process -Name 'WindowsSandboxRemoteSession', 'WindowsSandbox', 'WindowsSandboxClient' -ErrorAction SilentlyContinue) -and
+        (Get-Date) -lt $deadline) { Start-Sleep -Milliseconds 500 }
 }
 
 function Wait-ForResult {
