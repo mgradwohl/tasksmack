@@ -25,10 +25,16 @@ unsigned.
 - **The installers**, `TaskSmack-<version>-win64.exe` and `TaskSmack-<version>-windows-arm64.exe`, and
   **`Uninstall.exe`**, the uninstaller each one installs, so installing and removing TaskSmack both show the
   same publisher.
+- **The NSIS plugin DLLs** each installer and uninstaller unpacks to a temporary folder while it runs (`nsExec.dll`,
+  `UserInfo.dll` and the rest of the pinned NSIS release's plugins). Smart App Control refuses to load an unsigned
+  DLL, so with unsigned plugins the installer quit without installing
+  ([#4864](https://github.com/mgradwohl/tasksmack/issues/4864)).
 
 ## How signing works
 
-The release workflow builds and packages each Windows `.zip` on a GitHub-hosted runner, with a first build of
+Before anything else, a job like the signing job below signs and timestamps the plugin DLLs of the pinned NSIS
+release (its download checked against a pinned SHA-256; no NSIS code runs in that job), so every installer and
+uninstaller embeds signed copies. The release workflow builds and packages each Windows `.zip` on a GitHub-hosted runner, with a first build of
 the installer whose only use is its uninstaller. A separate job, which checks out no code and builds nothing,
 then takes both `.zip`s and both uninstallers, signs and timestamps `TaskSmack.exe` and `TaskSmackHelper.exe`
 from each `.zip`, and each `Uninstall.exe` itself, through Azure Artifact Signing, and writes the
@@ -52,7 +58,9 @@ with the same certificate but publishes nothing.
 
 The third-party libraries TaskSmack uses are compiled from source and linked statically into
 `TaskSmack.exe`. TaskSmack does not sign binaries published by other projects; if a release ever ships one, it
-ships with that project's own signature or none.
+ships with that project's own signature or none. The one exception is NSIS's plugin DLLs, which NSIS publishes
+unsigned and which exist inside a release only as part of TaskSmack's own installer and uninstaller: they are
+signed as part of those, from the exact NSIS release the workflow pins, unchanged otherwise (#4864).
 
 Every signed `TaskSmack.exe`, `TaskSmackHelper.exe` and installer carries the product name **TaskSmack** and the product version of the release
 (`project(TaskSmack VERSION ...)` in `CMakeLists.txt`, which the release workflow requires to match the tag).

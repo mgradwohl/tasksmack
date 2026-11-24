@@ -18,10 +18,22 @@ inputs:
     # nsis-3.13.zip (SourceForge also lists SHA-1 db14f8af2ea346b786c6ae19343f61aaf5e09b8e and
     # MD5 530e3623c077cba879ed2ae6e13be362 for it, which this file matched when it was pinned).
     default: 'ba63dffc4410ee89193e1cb5a41989991bd77c61068da17e3156d136b7b0b3d8'
+  run-makensis:
+    description: >-
+      'false' unpacks and checks the zip but never runs anything in it (no makensis /VERSION, nothing added
+      to PATH or MAKENSIS): for release.yml's sign-nsis-plugins (#4864), which holds the signing token and
+      only reads the plugin DLLs, so no NSIS code runs in that job.
+    required: false
+    default: 'true'
 outputs:
   makensis:
     description: 'The full path of makensis.exe'
     value: ${{ steps.install.outputs.makensis }}
+  plugins-dir:
+    description: >-
+      The Plugins\x86-unicode folder makensis embeds plugins from (the installer is `Unicode true`,
+      cmake/CPackProjectConfig.cmake.in). tools/use-signed-nsis-plugins.ps1 puts the signed ones there (#4864).
+    value: ${{ steps.install.outputs.plugins-dir }}
 
 runs:
   using: 'composite'
@@ -37,6 +49,7 @@ runs:
       env:
         NSIS_VERSION: ${{ inputs.version }}
         NSIS_SHA256: ${{ inputs.sha256 }}
+        RUN_MAKENSIS: ${{ inputs.run-makensis }}
       run: |
         $ErrorActionPreference = 'Stop'
         $zip = Join-Path $env:RUNNER_TEMP "nsis-$env:NSIS_VERSION.zip"
@@ -65,6 +78,16 @@ runs:
         if (-not (Test-Path -LiteralPath $makensis -PathType Leaf)) {
           Write-Host "::error title=NSIS layout::nsis-$env:NSIS_VERSION.zip has no nsis-$env:NSIS_VERSION\makensis.exe."
           exit 1
+        }
+        $plugins = Join-Path $root "nsis-$env:NSIS_VERSION\Plugins\x86-unicode"
+        if (-not (Test-Path -LiteralPath $plugins -PathType Container)) {
+          Write-Host "::error title=NSIS layout::nsis-$env:NSIS_VERSION.zip has no nsis-$env:NSIS_VERSION\Plugins\x86-unicode."
+          exit 1
+        }
+        "plugins-dir=$plugins" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+        if ($env:RUN_MAKENSIS -eq 'false') {
+          Write-Host "nsis-$env:NSIS_VERSION.zip (SHA-256 $actual) unpacked under $root; makensis not run (run-makensis: false)."
+          exit 0
         }
         $reported = (& $makensis /VERSION | Out-String).Trim()
         if ($reported -ne "v$env:NSIS_VERSION") {
