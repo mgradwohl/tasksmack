@@ -521,12 +521,20 @@ purpose:
 - **Once, at v0.11.1:** the first automatic pull request comes from `tasksmack-boop` and waits at `Needs-CLA`.
   Sign the Microsoft CLA as `tasksmack-boop` when the bot asks on that pull request. Later ones need nothing.
   `release.ps1 -Step Status -Version 0.11.1` shows that pull request.
+- **Which path a release is on:** `pwsh tools/release.ps1 -Step WinGet -Version X.Y.Z [-Rerun]` reads winget-pkgs with the
+  checks `publish-winget` makes and prints one of three. **A:** the package is in winget-pkgs; it links the version's pull
+  request with its labels, and says to sign the CLA as `tasksmack-boop` when `Needs-CLA` is on it. **B:** the package
+  isn't there yet, and it names the open first submission. **C:** the first submission closed unmerged, and it prints the
+  hand-submission commands. With `-Rerun`, and only on path A when the version isn't in winget-pkgs and no pull
+  request for it is open, it re-runs the `Submit the WinGet Update` job of the `vX.Y.Z` tag run, waits, and prints
+  the pull request it opened. In any other state it says why it won't and re-runs nothing. If a release's tag run
+  skipped the job because the first submission was still open, run it with `-Rerun` once that merges.
 - **If the health issue opens** ("WinGet: TaskSmack.TaskSmack <version> isn't published"): open the pull request it
   links and read the label that needs us (see [Automatic updates](#automatic-updates) for which ones count). Fix
   what it names, re-run the failed `publish-winget` job, or submit that version by hand as in the first
   submission below. The issue closes itself once the version is on winget-pkgs.
 
-The rest of this section is the reference behind those three lines.
+The rest of this section is the reference behind those lines.
 
 TaskSmack is in the Windows Package Manager as `TaskSmack.TaskSmack` from v0.11.0 (#3486). Each version is
 three manifests in [microsoft/winget-pkgs](https://github.com/microsoft/winget-pkgs), under
@@ -785,7 +793,7 @@ again, and prints what to do next. Its `-Step Tag` only prints the commands: age
 | 9 | Maintainer | Merge both CHANGELOG PRs (one against `release/X.Y`, one against main). | `pwsh tools/release.ps1 -Step Status -Version X.Y.N` |
 | 10 | Windows lane | Post-publish verification, summary on the tracker. | `pwsh tools/release.ps1 -Step Verify -Version X.Y.N` |
 | 11 | Maintainer | [SmartScreen submission](#smartscreen-submission). | |
-| 12 | Windows lane | Check `publish-winget` opened the winget-pkgs PR. For v0.11.1, the first automatic one, the maintainer signs the CLA as `tasksmack-boop` on it. | `pwsh tools/release.ps1 -Step Status -Version X.Y.N` |
+| 12 | Windows lane | Check `publish-winget` opened the winget-pkgs PR. For v0.11.1, the first automatic one, the maintainer signs the CLA as `tasksmack-boop` on it. If 0.11.0's first submission was still open when the tag run reached the job, it submitted nothing: once that merges, `-Rerun` re-runs the job. | `pwsh tools/release.ps1 -Step WinGet -Version X.Y.N [-Rerun]` |
 | 13 | Maintainer | Close the milestone. A patch gets no Discussions announcement. | |
 
 A patch to an older line (a v0.10.x after v0.11.0) gets no WinGet pull request: `publish-winget` skips it, since

@@ -64,10 +64,113 @@ foreach ($case in @(
         @{ Args = @('-Step', 'DryRun', '-Ref', 'release/0.11', '-Sha', 'short'); Expect = '40-hex' }
         @{ Args = @('-Step', 'Verify', '-Version', '0.11'); Expect = 'X\.Y\.Z' }
         @{ Args = @('-Step', 'Status', '-Version', 'latest'); Expect = 'X\.Y\.Z' }
+        @{ Args = @('-Step', 'WinGet', '-Version', 'latest'); Expect = 'X\.Y\.Z' }
     )) {
     $result = Invoke-Release $case.Args
     Assert-True ($result.ExitCode -ne 0) "release.ps1 $($case.Args -join ' ') should fail"
     Assert-True ($result.Output -match $case.Expect) "release.ps1 $($case.Args -join ' '): expected /$($case.Expect)/ in: $($result.Output)"
 }
+
+# The WinGet step (#4866): the path decision and the re-run guard, with gh mocked. Functions redefined here win over
+# release.ps1's, so no gh call, sleep or network is made.
+function Start-Sleep { param([int]$Seconds) }
+function New-FakePr {
+    param([int]$Number, [string]$Title, [string]$State = 'open', [string[]]$Labels = @(), [bool]$Merged = $false)
+    return [pscustomobject]@{
+        number = $Number; title = $Title; state = $State; html_url = "https://example.test/pull/$Number"
+        labels = @($Labels | ForEach-Object { [pscustomobject]@{ name = $_ } })
+        pull_request = [pscustomobject]@{ merged_at = $(if ($Merged) { '2026-11-24T00:00:00Z' } else { $null }) }
+    }
+}
+function New-FakeState {
+    param([bool]$Package, [bool]$Version = $false, $Open = @(), $All = @())
+    return [pscustomobject]@{ PackageExists = $Package; VersionExists = $Version; OpenForVersion = @($Open); AllPullRequests = @($All) }
+}
+$first = New-FakePr 1 'New package: TaskSmack.TaskSmack version 0.11.0'
+$update = New-FakePr 2 'Update: TaskSmack.TaskSmack to 0.11.1' -Labels 'Needs-CLA'
+
+$d = Get-WingetDecision -Value '0.11.1' -State (New-FakeState $true -All @($first))
+Assert-True ($d.Path -eq 'A' -and $d.CanRerun) 'package present, no version, no open PR: path A, re-run allowed'
+$d = Get-WingetDecision -Value '0.11.1' -State (New-FakeState $true -Open @($update) -All @($update, $first))
+Assert-True ($d.Path -eq 'A' -and -not $d.CanRerun -and @($d.VersionPrs).Count -eq 1) 'open PR for the version: path A, no re-run'
+$d = Get-WingetDecision -Value '0.11.1' -State (New-FakeState $true -Version $true -All @($first))
+Assert-True ($d.Path -eq 'A' -and -not $d.CanRerun) 'version already there: no re-run'
+$d = Get-WingetDecision -Value '0.11.0' -State (New-FakeState $false -All @($first))
+Assert-True ($d.Path -eq 'B' -and -not $d.CanRerun) 'package absent, first submission open: path B'
+$d = Get-WingetDecision -Value '0.11.0' -State (New-FakeState $false -All @((New-FakePr 1 $first.title -State 'closed')))
+Assert-True ($d.Path -eq 'C' -and -not $d.CanRerun) 'package absent, first submission closed unmerged: path C'
+$d = Get-WingetDecision -Value '0.11.0' -State (New-FakeState $false -All @((New-FakePr 1 $first.title -State 'closed' -Merged $true)))
+Assert-True ($d.Path -eq 'B') 'package absent, first submission merged but not visible yet: path B'
+$d = Get-WingetDecision -Value '0.11.0' -State (New-FakeState $false)
+Assert-True ($d.Path -eq 'C') 'package absent, no submission at all: path C'
+Assert-True (Test-WingetTitleHasVersion 'Update: TaskSmack.TaskSmack to 0.11.1' '0.11.1') 'version in title'
+Assert-True (-not (Test-WingetTitleHasVersion 'Update: TaskSmack.TaskSmack to 0.11.10' '0.11.1')) '0.11.10 is not 0.11.1'
+Assert-True (-not (Test-WingetTitleHasVersion 'Update: TaskSmack.TaskSmack to 10.11.1' '0.11.1')) '10.11.1 is not 0.11.1'
+Assert-True (@(@(Get-WingetHandSubmitCommands '0.11.0') -match 'wingetcreate submit').Count -eq 1) 'hand-submit commands'
+
+# Status codes: a 404 is absent, a 200 present, a 5xx or rate limit is retried and then throws.
+$script:ghCalls = @()
+$script:ghReplies = @()
+function Invoke-GhRaw {
+    param([string[]]$Arguments)
+    $script:ghCalls += , $Arguments
+    $reply = $script:ghReplies[[math]::Min($script:ghCalls.Count, $script:ghReplies.Count) - 1]
+    return [pscustomobject]@{ ExitCode = 0; Lines = @($reply) }
+}
+$script:ghReplies = @('HTTP/2.0 404 Not Found'); $script:ghCalls = @()
+Assert-True ((Get-WingetHttpStatus 'repos/x/y') -eq 404) '404 is absent'
+$script:ghReplies = @('HTTP/2.0 200 OK'); $script:ghCalls = @()
+Assert-True ((Get-WingetHttpStatus 'repos/x/y') -eq 200) '200 is present'
+$script:ghReplies = @('HTTP/2.0 502 Bad Gateway', 'HTTP/2.0 403 Forbidden', 'HTTP/2.0 200 OK'); $script:ghCalls = @()
+Assert-True ((Get-WingetHttpStatus 'repos/x/y') -eq 200) 'a 5xx and a rate limit are retried'
+Assert-True ($script:ghCalls.Count -eq 3) "three tries, got $($script:ghCalls.Count)"
+$script:ghReplies = @('HTTP/2.0 500 Server Error'); $script:ghCalls = @()
+$threw = $false
+try { Get-WingetHttpStatus 'repos/x/y' | Out-Null } catch { $threw = $true }
+Assert-True ($threw -and $script:ghCalls.Count -eq 4) 'a persistent 5xx throws after four tries'
+$script:ghReplies = @('HTTP/2.0 401 Unauthorized'); $script:ghCalls = @()
+$threw = $false
+try { Get-WingetHttpStatus 'repos/x/y' | Out-Null } catch { $threw = $true }
+Assert-True ($threw -and $script:ghCalls.Count -eq 1) 'a 401 throws at once'
+
+# The re-run guard: gh run rerun is called only for path A with the version absent and no open PR.
+$script:reruns = @()
+$script:fake = $null
+function Get-WingetState { param([string]$Value) return $script:fake }
+function Invoke-GhJson {
+    param([string[]]$Arguments)
+    if ($Arguments[0] -eq 'run' -and $Arguments[1] -eq 'list') {
+        return @([pscustomobject]@{ databaseId = 99; status = 'completed'; conclusion = 'success'; url = 'https://example.test/run/99'; headBranch = 'v0.11.1' })
+    }
+    if ($Arguments[0] -eq 'run' -and $Arguments[1] -eq 'view') {
+        return [pscustomobject]@{ status = 'completed'; jobs = @([pscustomobject]@{ name = 'Submit the WinGet Update'; databaseId = 555; conclusion = 'success' }) }
+    }
+    throw "unexpected gh $($Arguments -join ' ')"
+}
+function Invoke-Gh {
+    param([string[]]$Arguments)
+    if ($Arguments[0] -eq 'run' -and $Arguments[1] -eq 'rerun') { $script:reruns += , $Arguments; return @() }
+    throw "unexpected gh $($Arguments -join ' ')"
+}
+function Search-WingetPullRequests { param([string]$Qualifiers) return @($update) }
+
+foreach ($case in @(
+        @{ Name = 'path B'; State = (New-FakeState $false -All @($first)) }
+        @{ Name = 'path C'; State = (New-FakeState $false) }
+        @{ Name = 'version present'; State = (New-FakeState $true -Version $true -All @($first)) }
+        @{ Name = 'open PR'; State = (New-FakeState $true -Open @($update) -All @($update, $first)) }
+    )) {
+    $script:fake = $case.State; $script:reruns = @()
+    Invoke-WingetStep -Value '0.11.1' -Rerun *> $null
+    Assert-True ($script:reruns.Count -eq 0) "-Rerun must not re-run on $($case.Name)"
+}
+$script:fake = New-FakeState $true -All @($first); $script:reruns = @()
+Invoke-WingetStep -Value '0.11.1' *> $null
+Assert-True ($script:reruns.Count -eq 0) 'without -Rerun nothing is re-run'
+$script:fake = New-FakeState $true -All @($first)
+$output = Invoke-WingetStep -Value '0.11.1' -Rerun 6>&1 | Out-String
+Assert-True ($script:reruns.Count -eq 1) 'path A, version absent, no open PR: one re-run'
+Assert-True (($script:reruns[0] -join ' ') -eq 'run rerun 99 --repo mgradwohl/tasksmack --job 555') "rerun arguments: $($script:reruns[0] -join ' ')"
+Assert-True ($output -match 'Result: success' -and $output -match 'Needs-CLA: sign the CLA as tasksmack-boop') "re-run output: $output"
 
 Write-Host 'release tests passed'
