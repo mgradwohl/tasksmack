@@ -141,6 +141,12 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
    creation"** setting must stay on: Dependency Review runs only on pull requests and merge groups, so a branch
    cut from a main commit could never satisfy it, and the push would be refused (v0.10.0, 2026-11-03).
 
+   The ruleset's **Require linear history** also refuses the cut (GH013, "This branch must not contain merge
+   commits"), because main's history keeps merge commits from before squash-only merging, such as `e5537d15`
+   (#502). Before the push, the maintainer adds **Repository admin, Always allow** to the ruleset's bypass list,
+   then removes it right after the push (v0.11.0, 2026-11-23). Pushes to the existing branch are checked only
+   for their new commits, so backports pass without the bypass.
+
    Right after the cut, bump main to `X.(Y+1).0`: a PR that changes only `project(TaskSmack VERSION ...)` in
    `CMakeLists.txt`. From then on main's builds read `X.(Y+1).0-dev`, above every `X.Y.*` patch. Until that bump
    merges, the version guard shows a notice on main (see [Versions](#versions)).
@@ -741,6 +747,7 @@ Each step answers something that went wrong in v0.7.0 to v0.9.1.
 | Eight backports were cherry-picked by hand during hardening. | 0.9.1 | Main freezes until approval, so hardening needs no backports. |
 | The SmartScreen submission and the CHANGELOG merges happened ad hoc. | 0.9.1 | Both are listed in stage 7. |
 | Main read 0.9.0 for weeks (#2102 to #3370), below the shipped v0.9.1, so its builds looked like v0.9.0 and were offered "v0.9.1 available" (#3371). | 0.10 | Main is bumped right after each branch cut, non-release builds read `-dev`, and the version guard fails below a published tag. |
+| The `release/0.11` cut was refused for an old merge commit in main's history (Require linear history). | 0.11 | Stage 7 step 1: a one-time admin bypass for the cut, removed after it. |
 
 ## Sources
 
