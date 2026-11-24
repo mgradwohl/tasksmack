@@ -821,6 +821,48 @@ class TrustScriptTest(unittest.TestCase):
     def test_the_folder_check_refuses_a_folder_that_isnt_there(self) -> None:
         self.assertEqual(self.script("CanLock", self.root / "missing").returncode, 1)
 
+    def masks(self, *items: str) -> dict[str, int]:
+        """Get-ItemMask's $ChangesChildren and $ChangesItem for each of @p items, from the script's own definitions: its
+        top-level statements but the try block that runs a mode, so nothing is read or changed."""
+        loader = (
+            f"$ast = [System.Management.Automation.Language.Parser]::ParseFile('{TRUST_SCRIPT}', [ref]$null, [ref]$null)\n"
+            "foreach ($statement in $ast.EndBlock.Statements) {\n"
+            "    if ($statement -isnot [System.Management.Automation.Language.TryStatementAst]) {\n"
+            "        . ([scriptblock]::Create($statement.Extent.Text))\n"
+            "    }\n"
+            "}\n"
+            "'children=' + [int]$ChangesChildren\n"
+            "'item=' + [int]$ChangesItem\n"
+            "'delete=' + [int]$Rights::Delete\n"
+        )
+        for index, item in enumerate(items):
+            loader += f"'children{index}=' + [int](Get-ItemMask '{item}' $ChangesChildren)\n"
+            loader += f"'item{index}=' + [int](Get-ItemMask '{item}' $ChangesItem)\n"
+        command = [windows_powershell(), "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", loader]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=120, check=False)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return {key: int(value) for key, value in (line.split("=", 1) for line in result.stdout.splitlines() if "=" in line)}
+
+    def test_a_volume_roots_delete_right_is_left_out_and_no_other_right(self) -> None:
+        # #4850: a volume's root can't be deleted or renamed, so Windows Sandbox's C:\, which gives Authenticated Users
+        # Modify on the root itself, doesn't make Program Files replaceable. Every other right still counts there.
+        masks = self.masks("C:\\", "D:\\", "C:\\Program Files", "C:\\Program Files\\", "C:\\TaskSmack")
+        delete, children, item = masks["delete"], masks["children"], masks["item"]
+        self.assertTrue(children & delete and item & delete, "Delete counts over any other folder")
+        for index in (0, 1):
+            with self.subTest(root=index):
+                self.assertEqual(masks[f"children{index}"], children & ~delete)
+                self.assertEqual(masks[f"item{index}"], item & ~delete)
+        for index in (2, 3, 4):
+            with self.subTest(folder=index):
+                self.assertEqual(masks[f"children{index}"], children)
+                self.assertEqual(masks[f"item{index}"], item)
+
+    def test_every_check_above_the_item_takes_the_roots_mask(self) -> None:
+        code = TRUST_SCRIPT.read_text(encoding="utf-8")
+        self.assertNotIn("Get-ChangeProblem $parent $ChangesChildren", code)
+        self.assertEqual(code.count("Get-ChangeProblem $parent (Get-ItemMask $parent $ChangesChildren)"), 2)
+
 
 def elevated() -> bool:
     if sys.platform != "win32":
