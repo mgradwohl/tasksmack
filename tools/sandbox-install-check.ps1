@@ -20,7 +20,8 @@
 
     -WinGet runs the check through SandboxTest.ps1 (pinned to the winget-pkgs commit docs/dev/release-process.md
     pins) with the manifests tools/winget-manifest.ps1 writes for the release, so winget does the install and
-    the uninstall. It needs network in the Sandbox. SandboxTest.ps1 asks nothing (it has no prompt), so this is
+    the uninstall. It needs network in the Sandbox. SandboxTest.ps1 asks to confirm a mapped folder outside a
+    winget-pkgs clone unless given -WarningAction, so this script passes -WarningAction Continue and is
     non-interactive too; it opens its own Sandbox window with a console, and this script waits for the result
     the same way and closes the Sandbox.
 
@@ -267,7 +268,9 @@ try {
         & (Join-Path $PSScriptRoot 'winget-manifest.ps1') -Version $Version -ReleaseDir $release -ReleaseDate $date
         $manifest = Join-Path $release "winget\manifests\t\TaskSmack\TaskSmack\$Version"
         Push-Location $WorkDir
-        try { & $sandboxTest -Manifest $manifest -MapFolder $WorkDir -Script ([scriptblock]::Create($checkText)) }
+        # -WarningAction Continue: without it, SandboxTest.ps1 asks "Continue with this operation?" about a mapped
+        # folder outside a winget-pkgs clone (its OnMappedFolderWarning defaults to Inquire).
+        try { & $sandboxTest -Manifest $manifest -MapFolder $WorkDir -Script ([scriptblock]::Create($checkText)) -WarningAction Continue }
         finally { Pop-Location }
     }
     else {
