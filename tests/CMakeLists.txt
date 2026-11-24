@@ -394,6 +394,11 @@ set_tests_properties(NsisUnicodeScript PROPERTIES TIMEOUT 60)
 add_test(NAME NsisInUseCheck COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_in_use.py)
 set_tests_properties(NsisInUseCheck PROPERTIES TIMEOUT 60)
 
+# Only the windows-arm64 installer refuses to run on x64 Windows (#4446): cmake/CPackProjectConfig.cmake.in is configured
+# and read as CPack does, per system name, and the x64 installer has no such check. Pure Python plus cmake, no makensis.
+add_test(NAME NsisArchGuard COMMAND ${Python3_EXECUTABLE} ${CMAKE_CURRENT_SOURCE_DIR}/tools/test_nsis_arch.py)
+set_tests_properties(NsisArchGuard PROPERTIES TIMEOUT 120)
+
 # tools/profile-heap.sh refuses a --bench-filter that matches no benchmark before starting heaptrack (#2987).
 # Stub binaries; the script is Linux-only, so the test is too.
 if(TASKSMACK_BASH AND NOT WIN32)

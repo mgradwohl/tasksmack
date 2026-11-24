@@ -467,6 +467,38 @@ tasksmack_upgrade_locked:
 ]=])
 endif()
 
+# The ARM64 installer on x64 Windows (#4446): both installers use NSIS's x86 stub, which runs on x64 and ARM64 alike, so
+# the windows-arm64 one, downloaded by hand to an x64 PC (WinGet picks by architecture), used to install and "succeed",
+# leaving a TaskSmack.exe that won't start. Only that installer, named by CPACK_SYSTEM_NAME (cmake/Packaging.cmake), gets
+# a check for native ARM64 (x64.nsh's IsNativeARM64, which asks IsWow64Process2 and so also answers for the emulated x86
+# stub); the x64 one needs none, since every supported machine is x64 or ARM64. Elsewhere it exits with
+# TASKSMACK_WRONG_ARCH_EXIT_CODE (1633, ERROR_INSTALL_PLATFORM_UNSUPPORTED's number) before anything is changed, with a
+# message naming the right installer. CPack's template has one .onInit and no hook in it, so the check is the first of
+# the install section's lines (CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS, before the in-use check and the upgrade step), which
+# also runs a silent (/S) install; an interactive one is stopped when the user starts the install, not before the first
+# page. WinGet's manifest needs no row for the code: it never offers this installer to an x64 PC. Checked by
+# tests/tools/test_nsis_arch.py. The lines go in through variables, so the tests that read the
+# bracket arguments of the blocks above don't see an architecture-specific block.
+if(CPACK_GENERATOR STREQUAL "NSIS" AND CPACK_SYSTEM_NAME STREQUAL "windows-arm64")
+    set(_ts_arch_defines [=[
+  ; TaskSmack's ARM64 check (#4446): BEGIN
+  !include LogicLib.nsh
+  !include x64.nsh
+  !define TASKSMACK_WRONG_ARCH_EXIT_CODE 1633
+  ; TaskSmack's ARM64 check (#4446): END
+]=])
+    set(_ts_arch_guard [=[
+  ; TaskSmack's ARM64 check (#4446): this installer is for Windows on Arm, before anything is changed.
+  ${IfNot} ${IsNativeARM64}
+    MessageBox MB_OK|MB_ICONSTOP "This installer is for TaskSmack on Windows on Arm, and this PC isn't one.$\r$\n$\r$\nDownload TaskSmack-@PROJECT_VERSION@-win64.exe, the installer for x64 Windows, and run that instead." /SD IDOK
+    SetErrorLevel ${TASKSMACK_WRONG_ARCH_EXIT_CODE}
+    Quit
+  ${EndIf}
+]=])
+    string(APPEND CPACK_NSIS_DEFINES "${_ts_arch_defines}")
+    string(PREPEND CPACK_NSIS_EXTRA_PREINSTALL_COMMANDS "${_ts_arch_guard}")
+endif()
+
 # The install folder (#4669): the uninstaller's last lines before CPack's own deletions. In a folder that isn't
 # admin-only, they would follow any junction a user who isn't an administrator planted there, as the elevated
 # uninstaller, so they're pointed at an empty folder of the uninstaller's own ($PLUGINSDIR) and delete nothing; the
