@@ -857,6 +857,46 @@ TEST(BrokerHelperTest, TheDescriptorCheckRefusesWhatItCantReadAndReadsConditiona
     EXPECT_TRUE(changeable.error().contains("can change the file")) << changeable.error();
 }
 
+// #4850: a volume root can't be deleted or renamed, so DELETE over it is left out; every other right still counts.
+TEST(BrokerHelperTest, AVolumeRootsDeleteRightIsLeftOutAndNoOtherRight)
+{
+    EXPECT_EQ(BrokerHelper::folderChangeRights(true, false), BrokerHelper::FOLDER_CHANGE_RIGHTS);
+    EXPECT_EQ(BrokerHelper::folderChangeRights(false, false), BrokerHelper::ANCESTOR_CHANGE_RIGHTS);
+    EXPECT_EQ(BrokerHelper::folderChangeRights(false, true), static_cast<DWORD>(FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER));
+    EXPECT_EQ(BrokerHelper::folderChangeRights(true, true),
+              static_cast<DWORD>(FILE_ADD_FILE | FILE_ADD_SUBDIRECTORY | FILE_DELETE_CHILD | WRITE_DAC | WRITE_OWNER))
+        << "a file directly in the root";
+}
+
+// #4850: Windows Sandbox's C:\, which gives Authenticated Users Modify on the root itself, passes as a root and is
+// refused as any other folder above; a root that gives WRITE_DAC or FILE_DELETE_CHILD is still refused.
+TEST(BrokerHelperTest, ARootThatGrantsUsersDeletePassesAndOneThatGrantsMoreIsRefused)
+{
+    const UniqueHandle token = standardUserToken();
+    ASSERT_TRUE(token);
+    const std::wstring administrators = L"O:SYG:SYD:PAI(A;;FA;;;SY)(A;;FA;;;BA)";
+    const DWORD rootRights = BrokerHelper::folderChangeRights(false, true);
+
+    // Modify (0x1301bf) on the root itself, and inherit-only on what is made inside it, as the Sandbox's C:\ has.
+    const auto sandboxRoot = descriptorOf(administrators + L"(A;;0x1301bf;;;AU)(A;OICIIO;0x1301bf;;;AU)");
+    ASSERT_NE(sandboxRoot, nullptr);
+    const auto passed = BrokerHelper::checkDescriptor(token.get(), sandboxRoot.get(), rootRights, "C:\\");
+    EXPECT_TRUE(passed.has_value()) << passed.error();
+    const auto above = BrokerHelper::checkDescriptor(token.get(), sandboxRoot.get(), BrokerHelper::ANCESTOR_CHANGE_RIGHTS, "C:\\x");
+    ASSERT_FALSE(above.has_value()) << "DELETE still counts over a folder that isn't a root";
+    EXPECT_TRUE(above.error().contains("can change")) << above.error();
+
+    // WRITE_DAC, WRITE_OWNER and FILE_DELETE_CHILD, each with Modify's DELETE.
+    for (const DWORD right : {DWORD{WRITE_DAC}, DWORD{WRITE_OWNER}, DWORD{FILE_DELETE_CHILD}})
+    {
+        const auto root = descriptorOf(administrators + std::format(L"(A;;{:#x};;;AU)", right | DELETE));
+        ASSERT_NE(root, nullptr);
+        const auto refused = BrokerHelper::checkDescriptor(token.get(), root.get(), rootRights, "C:\\");
+        ASSERT_FALSE(refused.has_value()) << std::format("a root that grants {:#x}", right);
+        EXPECT_TRUE(refused.error().contains("can change")) << refused.error();
+    }
+}
+
 TEST(BrokerHelperTest, ADescriptorCheckedWithoutAnImpersonationTokenIsRefused)
 {
     // AccessCheck takes an impersonation token: a process's primary one can't tell who may change anything.
