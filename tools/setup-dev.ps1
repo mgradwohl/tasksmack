@@ -227,10 +227,19 @@ function Get-InstalledLlvm {
             $properties = $item.PSObject.Properties
             $value = { param($Name) if ($properties[$Name]) { "$($properties[$Name].Value)".Trim() } else { '' } }
             if ((& $value 'DisplayName') -notmatch '^LLVM(\s+v?\d[\d.]*)?$') { continue }
-            $location = (& $value 'InstallLocation').TrimEnd('\')
-            if ($location -and $location -ne $dir) { continue }
-            $version = & $value 'DisplayVersion'
             $isMsi = (& $value 'WindowsInstaller') -eq '1' -and $key.PSChildName -match '^\{[0-9A-Fa-f-]{36}\}$'
+            $location = (& $value 'InstallLocation').TrimEnd('\')
+            if (-not $location -and -not $isMsi) {
+                # LLVM's NSIS .exe never writes InstallLocation: its folder is the one holding Uninstall.exe.
+                $uninstall = & $value 'UninstallString'
+                if ($uninstall -match '^\s*"([^"]+)"' -or $uninstall -match '^\s*(\S+\.exe)\b') {
+                    $location = (Split-Path -Parent $Matches[1]).TrimEnd('\')
+                }
+            }
+            # Skip known locations outside $LlvmDir; retain an MSI with no InstallLocation, as before.
+            if ($location -and $location -ne $dir) { continue }
+            if (-not $location -and -not $isMsi) { continue }
+            $version = & $value 'DisplayVersion'
             [pscustomobject]@{
                 Version              = $version
                 Major                = if ($version -match '^(\d+)') { [int]$Matches[1] } else { $null }
