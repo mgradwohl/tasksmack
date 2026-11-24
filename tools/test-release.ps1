@@ -143,7 +143,8 @@ function Invoke-GhJson {
         return @([pscustomobject]@{ databaseId = 99; status = 'completed'; conclusion = 'success'; url = 'https://example.test/run/99'; headBranch = 'v0.11.1' })
     }
     if ($Arguments[0] -eq 'run' -and $Arguments[1] -eq 'view') {
-        return [pscustomobject]@{ status = 'completed'; jobs = @([pscustomobject]@{ name = 'Submit the WinGet Update'; databaseId = 555; conclusion = 'success' }) }
+        # The run's attempt moves on with each re-run, as GitHub's does; the wait counts only the new attempt.
+        return [pscustomobject]@{ status = 'completed'; attempt = 1 + @($script:reruns).Count; jobs = @([pscustomobject]@{ name = 'Submit the WinGet Update'; databaseId = 555; conclusion = 'success' }) }
     }
     throw "unexpected gh $($Arguments -join ' ')"
 }

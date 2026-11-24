@@ -566,19 +566,21 @@ function Write-WingetReport {
 }
 
 function Wait-WingetRerun {
-    # Polls the run until it completes; returns the WinGet job's final state.
-    param([string]$RunId)
+    # Polls the run until the re-run's attempt (one past -AttemptBefore) completes; returns the WinGet job's
+    # final state. Right after `gh run rerun` the run can still read as the earlier attempt, completed, so a
+    # completed status counts only once the attempt number has moved on.
+    param([string]$RunId, [int]$AttemptBefore)
     $deadline = (Get-Date).AddMinutes($script:WingetWaitMinutes)
     Start-Sleep -Seconds $script:WingetPollSeconds
     $run = $null
     $job = $null
     while ((Get-Date) -lt $deadline) {
-        $run = Invoke-GhJson @('run', 'view', $RunId, '--repo', $Repo, '--json', 'status,jobs')
+        $run = Invoke-GhJson @('run', 'view', $RunId, '--repo', $Repo, '--json', 'status,attempt,jobs')
         $job = @($run.jobs) | Where-Object { $_.name -eq $WingetJobName } | Select-Object -First 1
-        if ($run.status -eq 'completed') { break }
+        if ([int]$run.attempt -gt $AttemptBefore -and $run.status -eq 'completed') { break }
         Start-Sleep -Seconds $script:WingetPollSeconds
     }
-    if (-not $job -or -not $run -or $run.status -ne 'completed') { throw "The re-run did not finish within $($script:WingetWaitMinutes) minutes: https://github.com/$Repo/actions/runs/$RunId" }
+    if (-not $job -or -not $run -or [int]$run.attempt -le $AttemptBefore -or $run.status -ne 'completed') { throw "The re-run did not finish within $($script:WingetWaitMinutes) minutes: https://github.com/$Repo/actions/runs/$RunId" }
     return $job
 }
 
@@ -599,13 +601,13 @@ function Invoke-WingetStep {
     $run = $runs | Where-Object { $_ -and $_.headBranch -eq $tag } | Select-Object -First 1
     if (-not $run) { Write-Host "Not re-running: no release.yml push run for $tag."; return }
     if ($run.status -ne 'completed') { Write-Host "Not re-running: the $tag run is still $($run.status): $($run.url)"; return }
-    $view = Invoke-GhJson @('run', 'view', "$($run.databaseId)", '--repo', $Repo, '--json', 'jobs')
+    $view = Invoke-GhJson @('run', 'view', "$($run.databaseId)", '--repo', $Repo, '--json', 'attempt,jobs')
     $job = @($view.jobs) | Where-Object { $_.name -eq $WingetJobName } | Select-Object -First 1
     if (-not $job) { Write-Host "Not re-running: the $tag run has no job named '$WingetJobName' (publish-winget is skipped for a release that was not Latest): $($run.url)"; return }
 
     Write-Host "Re-running '$WingetJobName' of $($run.url) (job $($job.databaseId))."
     Invoke-Gh @('run', 'rerun', "$($run.databaseId)", '--repo', $Repo, '--job', "$($job.databaseId)") | Out-Null
-    $done = Wait-WingetRerun -RunId "$($run.databaseId)"
+    $done = Wait-WingetRerun -RunId "$($run.databaseId)" -AttemptBefore ([int]$view.attempt)
     Write-Host "Result: $($done.conclusion) https://github.com/$Repo/actions/runs/$($run.databaseId)"
     $prs = @(Search-WingetPullRequests '' | Where-Object { Test-WingetTitleHasVersion $_.title $Value })
     if ($prs.Count -eq 0) { Write-Host "No winget-pkgs pull request for $Value turned up (the search can lag a minute; run -Step WinGet -Version $Value again)." }
