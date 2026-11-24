@@ -341,12 +341,15 @@ Assert-True (($lines -join "`n") -eq ($expected -join "`n")) "LLVM dry-run: line
 
 # The registry reader, against a scratch uninstall root under HKCU: an NSIS LLVM, an MSI LLVM, one
 # installed elsewhere and an unrelated LLVM-named package; only the first two are the LLVM in $LlvmDir.
+# The NSIS entries have no InstallLocation (as LLVM's NSIS .exe writes none), so their folder comes
+# from UninstallString: a 32-bit NSIS LLVM in Program Files (x86) and one in D:\LLVM are both left out.
 $scratch = "HKCU:\Software\TaskSmackTests-setup-dev-$([guid]::NewGuid().ToString('N'))"
 try {
     $entries = @(
         @{ Key = 'LLVM'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '22.1.8'; UninstallString = '"C:\Program Files\LLVM\Uninstall.exe"' } }
         @{ Key = '{C261B515-7573-457D-AA83-FE1826A77ECE}'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '23.1.4'; WindowsInstaller = 1; InstallLocation = 'C:\Program Files\LLVM\'; UninstallString = 'MsiExec.exe /X{C261B515-7573-457D-AA83-FE1826A77ECE}' } }
-        @{ Key = 'LLVM32'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '21.1.0'; InstallLocation = 'C:\Program Files (x86)\LLVM'; UninstallString = '"C:\Program Files (x86)\LLVM\Uninstall.exe"' } }
+        @{ Key = 'LLVM32'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '21.1.0'; UninstallString = '"C:\Program Files (x86)\LLVM\Uninstall.exe"' } }
+        @{ Key = 'LLVMCustom'; Values = @{ DisplayName = 'LLVM'; DisplayVersion = '22.1.8'; UninstallString = '"D:\LLVM\Uninstall.exe"' } }
         @{ Key = 'OpenMP'; Values = @{ DisplayName = 'LLVM OpenMP Runtime'; DisplayVersion = '19.0.0' } }
     )
     foreach ($entry in $entries) {
