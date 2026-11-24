@@ -57,7 +57,8 @@ env:
 
   # Authenticode signing of the Windows packages (#2302; docs/code-signing-policy.md): sign-windows signs
   # TaskSmack.exe and TaskSmackHelper.exe in both architectures' .zips, and both NSIS uninstallers, and
-  # sign-windows-installer both NSIS installers, through Azure Artifact Signing, with the Public Trust
+  # sign-windows-installer both NSIS installers, and sign-nsis-plugins, first, the NSIS plugin DLLs makensis
+  # embeds in both (#4864), through Azure Artifact Signing, with the Public Trust
   # certificate profile below. The signer common name that profile's certificates carry:
   # what build-windows configures as TASKSMACK_EXPECTED_SIGNER and validate-windows-package's signature
   # check requires, defined once so the two can't drift (#2779). The certificates last about three days and
@@ -73,7 +74,8 @@ env:
   # can't sign, so it packages both .zips as before #2302: no TaskSmackHelper.exe (it never ships
   # unsigned), no sign-windows, no signature check. It still builds both installers the same way, from the
   # unsigned .zips and uninstallers, and installs and uninstalls them, so the whole pipeline runs from any
-  # branch; only sign-windows-installer is skipped too. A real release always signs: validate refuses one
+  # branch; only sign-windows-installer and sign-nsis-plugins are skipped too, and makensis embeds the pinned
+  # NSIS's unsigned plugins. A real release always signs: validate refuses one
   # this would leave unsigned (#2745). Jobs read it through validate's `signing` output, since a job's
   # `if:` can't read `env`.
   SIGNING_ENABLED: ${{ startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/heads/release/') }}
@@ -497,9 +499,152 @@ jobs:
             exit 1
           fi
 
+  sign-nsis-plugins:
+    name: Sign the NSIS Plugins (Azure Artifact Signing)
+    needs: [validate]
+    # Smart App Control refuses the unsigned plugin DLLs an NSIS installer unpacks to %TEMP%\ns*.tmp (#4864):
+    # nsExec.dll fails, so the installer's trust check (cmake/CPackProjectConfig.cmake.in) exits 87 and installs
+    # nothing, and UserInfo.dll fails in CPack's own template; the uninstaller embeds the same plugins. makensis
+    # embeds a plugin file as it is, so this job signs every DLL in the pinned NSIS's Plugins\x86-unicode (the
+    # folder `Unicode true` reads; all of them, so a plugin CPack's template starts using later is covered too)
+    # before any makensis runs, and each job that runs makensis with signing on puts them in place first
+    # (tools/use-signed-nsis-plugins.ps1). Skipped while signing is off: those jobs then embed the unsigned
+    # plugins, as before. sign-windows' rules apply: the same environment, sign-in and signing settings (keep
+    # them in step), no build, and no NSIS code runs here: setup-nsis only unpacks and hash-checks the zip
+    # (run-makensis: false), so the checkout is just that action.
+    if: needs.validate.outputs.signing == 'true'
+    runs-on: windows-2025
+    environment: release-signing
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      id-token: write  # GitHub OIDC for azure/login: no client secret exists
+    steps:
+      - name: Check out the NSIS setup action
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          sparse-checkout: |
+            .github/actions/setup-nsis
+          sparse-checkout-cone-mode: false
+          persist-credentials: false
+
+      - name: Unpack the pinned NSIS
+        id: nsis
+        uses: ./.github/actions/setup-nsis
+        with:
+          run-makensis: 'false'
+
+      - name: Stage the plugins to sign
+        # to-sign/<name>.dll, and to-sign/plugins.json with each one's unsigned SHA-256, which
+        # use-signed-nsis-plugins.ps1 requires the consuming runner's own copy to match (the same NSIS release).
+        shell: pwsh
+        env:
+          PLUGINS_DIR: ${{ steps.nsis.outputs.plugins-dir }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $dlls = @(Get-ChildItem -LiteralPath $env:PLUGINS_DIR -File -Filter '*.dll')
+          if ($dlls.Count -eq 0) { Write-Error "No plugin DLLs in $env:PLUGINS_DIR."; exit 1 }
+          $out = (New-Item -ItemType Directory -Force -Path to-sign).FullName
+          $plugins = [ordered]@{}
+          foreach ($dll in $dlls | Sort-Object Name) {
+            Copy-Item -LiteralPath $dll.FullName -Destination (Join-Path $out $dll.Name)
+            $plugins[$dll.Name] = [ordered]@{ unsigned = (Get-FileHash -LiteralPath $dll.FullName -Algorithm SHA256).Hash }
+            Write-Host "$($dll.Name) $($dll.Length) bytes, SHA-256 $($plugins[$dll.Name].unsigned)"
+          }
+          [ordered]@{ plugins = $plugins } | ConvertTo-Json -Depth 4 | Out-File -FilePath (Join-Path $out 'plugins.json') -Encoding utf8
+          "NSIS_PLUGIN_FILES<<EOF`n$(($dlls | Sort-Object Name | ForEach-Object { Join-Path $out $_.Name }) -join "`n")`nEOF" |
+            Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
+      - name: Sign in to Azure (OIDC)
+        # As sign-windows' sign-in (a tenant-level sign-in, #2302).
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          allow-no-subscriptions: true
+
+      - name: Register the PowerShell Gallery if the runner has none
+        # As sign-windows' step of the same name (#3109): the signing action's Install-Module needs PSGallery.
+        shell: pwsh
+        run: |
+          if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {
+            Register-PSRepository -Default
+            $null = Get-PSRepository -Name PSGallery -ErrorAction Stop
+            Write-Host 'PSGallery was not registered: registered the default repository.'
+          } else {
+            Write-Host 'PSGallery is already registered: nothing to do.'
+          }
+
+      - name: Sign with Azure Artifact Signing
+        # sign-windows' settings (see its comments): SHA-256 digests, an RFC 3161 SHA-256 timestamp, the
+        # azure/login session as the only credential, and no dependency cache.
+        uses: azure/artifact-signing-action@c7ab2a863ab5f9a846ddb8265964877ef296ee82 # v2.0.0
+        with:
+          endpoint: ${{ env.ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ env.ARTIFACT_SIGNING_ACCOUNT }}
+          certificate-profile-name: ${{ env.ARTIFACT_SIGNING_PROFILE }}
+          files: ${{ env.NSIS_PLUGIN_FILES }}
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: TaskSmack Setup
+          description-url: https://github.com/mgradwohl/tasksmack
+          correlation-id: tasksmack-${{ github.run_id }}-${{ github.run_attempt }}-nsis-plugins
+          cache-dependencies: false
+          exclude-environment-credential: true
+          exclude-workload-identity-credential: true
+          exclude-managed-identity-credential: true
+          exclude-shared-token-cache-credential: true
+          exclude-visual-studio-credential: true
+          exclude-visual-studio-code-credential: true
+          exclude-azure-cli-credential: false
+          exclude-azure-powershell-credential: true
+          exclude-azure-developer-cli-credential: true
+          exclude-interactive-browser-credential: true
+
+      - name: Check the signatures and record them
+        # Each plugin Valid, signed by WINDOWS_EXPECTED_SIGNER and timestamped, and its signed SHA-256 added
+        # to plugins.json, which use-signed-nsis-plugins.ps1 checks before and after each makensis run.
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $manifestPath = 'to-sign/plugins.json'
+          $manifest = Get-Content -LiteralPath $manifestPath -Raw | ConvertFrom-Json -AsHashtable
+          $failed = $false
+          foreach ($name in @($manifest['plugins'].Keys)) {
+            $file = Join-Path 'to-sign' $name
+            $sig = Get-AuthenticodeSignature -LiteralPath $file
+            $cn = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '-' }
+            Write-Host "${name}: $($sig.Status); signer $($sig.SignerCertificate.Subject); issuer $($sig.SignerCertificate.Issuer); timestamped by $($sig.TimeStamperCertificate.Subject)"
+            if ($sig.Status -ne 'Valid' -or $cn -ne $env:WINDOWS_EXPECTED_SIGNER -or -not $sig.TimeStamperCertificate) {
+              Write-Host "::error::$name isn't validly signed and timestamped by '$env:WINDOWS_EXPECTED_SIGNER' ($($sig.Status): $($sig.StatusMessage))."
+              $failed = $true
+              continue
+            }
+            $manifest['plugins'][$name]['signed'] = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash
+          }
+          if ($failed) { exit 1 }
+          $manifest | ConvertTo-Json -Depth 4 | Out-File -FilePath $manifestPath -Encoding utf8
+
+      # For every job that runs makensis with signing on: build-windows (the first pass and Uninstall.exe),
+      # build-windows-installer and verify-reproducibility-windows. No create-release download matches it.
+      - name: Upload the signed plugins
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: nsis-plugins-signed
+          path: to-sign/*
+          if-no-files-found: error
+          retention-days: 90
+
   build-windows:
     name: Build Windows Packages (${{ matrix.arch }})
-    needs: [validate]
+    # sign-nsis-plugins first, with signing on, so the first pass and its Uninstall.exe embed signed NSIS
+    # plugins (#4864); with signing off it's skipped, and this runs as before.
+    needs: [validate, sign-nsis-plugins]
+    if: >-
+      ${{ !cancelled() && needs.validate.result == 'success' &&
+      (needs.sign-nsis-plugins.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-nsis-plugins.result == 'skipped')) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     # windows-11-arm: setup-windows-llvm installs the pinned native woa64 LLVM (plain ARM64, not
@@ -546,6 +691,23 @@ jobs:
       - name: Setup NSIS
         # The pinned, SHA-256-checked makensis the Package step's NSIS generator runs (MAKENSIS).
         uses: ./.github/actions/setup-nsis
+
+      # With signing on, the plugins makensis embeds are sign-nsis-plugins' signed ones (#4864), here and in
+      # every other job that runs makensis; "Check makensis embedded the signed NSIS plugins" proves they
+      # were still in place after the Package step.
+      - name: Download the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: nsis-plugins-signed
+          path: ${{ runner.temp }}/nsis-plugins-signed/
+
+      - name: Use the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & tools/use-signed-nsis-plugins.ps1 -SignedDir (Join-Path $env:RUNNER_TEMP 'nsis-plugins-signed') -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Setup ccache
         uses: hendrikmuhs/ccache-action@e91f31892a1d1b8c44424b1a94c0b7f52d337168 # v1.2.26
@@ -633,6 +795,13 @@ jobs:
         run: |
           cd build/win-release
           cpack -G "ZIP;NSIS" -D "CPACK_NSIS_EXECUTABLE=$env:MAKENSIS"
+
+      - name: Check makensis embedded the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & tools/use-signed-nsis-plugins.ps1 -Check -SignedDir (Join-Path $env:RUNNER_TEMP 'nsis-plugins-signed') -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Stage the installer's first pass
         # nsis-project/: CPack's project.nsi and NSIS.InstallOptions.ini, the uninstaller makensis built
@@ -985,8 +1154,9 @@ jobs:
     # tools/build-windows-installer.ps1 from the .zip that ships (windows-packages-<arch>: sign-windows'
     # signed .zip with signing on, else build-windows' own) and with the uninstaller to embed
     # (sign-windows' signed one, else the first pass's own), so it installs exactly the .zip's files and
-    # that uninstaller. Runs whether signing is on or not, as validate-windows-package does.
-    needs: [validate, build-windows, sign-windows]
+    # that uninstaller. Runs whether signing is on or not, as validate-windows-package does. With signing on,
+    # makensis embeds sign-nsis-plugins' signed plugins here too (#4864); build-windows succeeds only after it.
+    needs: [validate, sign-nsis-plugins, build-windows, sign-windows]
     if: >-
       ${{ !cancelled() && needs.build-windows.result == 'success' &&
       (needs.sign-windows.result == 'success' ||
@@ -1015,6 +1185,21 @@ jobs:
 
       - name: Setup NSIS
         uses: ./.github/actions/setup-nsis
+
+      # As build-windows' steps of the same names (#4864).
+      - name: Download the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: nsis-plugins-signed
+          path: ${{ runner.temp }}/nsis-plugins-signed/
+
+      - name: Use the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & tools/use-signed-nsis-plugins.ps1 -SignedDir (Join-Path $env:RUNNER_TEMP 'nsis-plugins-signed') -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Download the installer's first pass
         uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
@@ -1050,6 +1235,13 @@ jobs:
           $uninstaller = if ($env:SIGNED -eq 'true') { 'signed-uninstaller/Uninstall.exe' } else { 'nsis-project/Uninstall.exe' }
           & tools/build-windows-installer.ps1 -ProjectDir nsis-project -Zip $zips[0].FullName `
             -Uninstaller $uninstaller -OutputDir installer -Makensis $env:MAKENSIS
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Check makensis embedded the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & tools/use-signed-nsis-plugins.ps1 -Check -SignedDir (Join-Path $env:RUNNER_TEMP 'nsis-plugins-signed') -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       # With signing on, sign-windows-installer signs it and uploads windows-installer-<arch>; a name
@@ -1207,7 +1399,15 @@ jobs:
 
   verify-reproducibility-windows:
     name: Verify Windows Build Reproducibility (${{ matrix.arch }})
-    needs: [validate, build-windows]
+    # With signing on, this rebuild's makensis embeds the same signed NSIS plugins (nsis-plugins-signed, the
+    # one artifact both jobs download) as build-windows' (#4864), so its first-pass installer can still match
+    # byte for byte; with signing off both embed the pinned NSIS's unsigned ones. sign-nsis-plugins is
+    # skipped then, hence the condition.
+    needs: [validate, sign-nsis-plugins, build-windows]
+    if: >-
+      ${{ !cancelled() && needs.build-windows.result == 'success' &&
+      (needs.sign-nsis-plugins.result == 'success' ||
+      (needs.validate.outputs.signing != 'true' && needs.sign-nsis-plugins.result == 'skipped')) }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     # The originals are build-windows' unsigned .zip and first-pass NSIS installer for this
@@ -1256,6 +1456,21 @@ jobs:
       - name: Setup NSIS
         uses: ./.github/actions/setup-nsis
 
+      # As build-windows' steps of the same names (#4864).
+      - name: Download the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          name: nsis-plugins-signed
+          path: ${{ runner.temp }}/nsis-plugins-signed/
+
+      - name: Use the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & tools/use-signed-nsis-plugins.ps1 -SignedDir (Join-Path $env:RUNNER_TEMP 'nsis-plugins-signed') -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
       - name: Configure
         # No ccache here (unlike build-windows) -- see verify-reproducibility (Linux)'s
         # comment: a genuinely independent rebuild must not be able to serve a cached
@@ -1287,6 +1502,13 @@ jobs:
         run: |
           cd build/win-release
           cpack -G "ZIP;NSIS" -D "CPACK_NSIS_EXECUTABLE=$env:MAKENSIS"
+
+      - name: Check makensis embedded the signed NSIS plugins
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          & tools/use-signed-nsis-plugins.ps1 -Check -SignedDir (Join-Path $env:RUNNER_TEMP 'nsis-plugins-signed') -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
       - name: Record build inputs
         # This rebuild's manifest (see build-windows' step, #2802), for "Compare digests" to set
@@ -2353,6 +2575,43 @@ jobs:
           & repo/tools/verify-windows-signatures.ps1 -PackageRoot installer -Names (Split-Path -Leaf $env:TASKSMACK_INSTALLER) `
             -ExpectedSigner $env:WINDOWS_EXPECTED_SIGNER -VerifyScript repo/cmake/VerifyWindowsSignatures.cmake
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+      - name: Verify the installer and uninstaller embed signed NSIS plugins
+        # What Smart App Control loads (#4864): 7-Zip (on both runner images) opens an NSIS installer and lists
+        # the plugins it unpacks to %TEMP% under $PLUGINSDIR. In the installer and in the uninstaller it
+        # installs, nsExec.dll and UserInfo.dll must be there, and every plugin DLL must be Valid, signed by
+        # WINDOWS_EXPECTED_SIGNER and timestamped, or the installer exits 87 on a PC that enforces it.
+        if: env.SIGNING_ENABLED == 'true'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $sevenZip = (Get-Command 7z -ErrorAction SilentlyContinue).Source
+          if (-not $sevenZip) { $sevenZip = Join-Path $env:ProgramFiles '7-Zip\7z.exe' }
+          if (-not (Test-Path -LiteralPath $sevenZip -PathType Leaf)) { Write-Error "7-Zip isn't on this runner ($sevenZip)."; exit 1 }
+          $failed = $false
+          foreach ($exe in $env:TASKSMACK_INSTALLER, (Resolve-Path -LiteralPath expected-uninstaller/Uninstall.exe).Path) {
+            $out = Join-Path $env:RUNNER_TEMP "nsis-contents-$([guid]::NewGuid().ToString('N'))"
+            & $sevenZip x -y "-o$out" $exe | Out-Null
+            if ($LASTEXITCODE -gt 1) { Write-Error "7-Zip couldn't open $exe (exit $LASTEXITCODE)."; exit 1 }
+            $plugins = @(Get-ChildItem -LiteralPath $out -Recurse -File -Filter '*.dll' | Where-Object { $_.FullName -match '[\\/]\$PLUGINSDIR[\\/]' })
+            foreach ($required in 'nsExec.dll', 'UserInfo.dll') {
+              if (-not @($plugins | Where-Object Name -eq $required).Count) {
+                Write-Host "::error::$(Split-Path -Leaf $exe) has no `$PLUGINSDIR\$required (plugins found: $($plugins.Name -join ', '))."
+                $failed = $true
+              }
+            }
+            foreach ($dll in $plugins) {
+              $sig = Get-AuthenticodeSignature -LiteralPath $dll.FullName
+              $cn = if ($sig.SignerCertificate) { $sig.SignerCertificate.GetNameInfo([System.Security.Cryptography.X509Certificates.X509NameType]::SimpleName, $false) } else { '-' }
+              Write-Host "$(Split-Path -Leaf $exe): `$PLUGINSDIR\$($dll.Name) $($sig.Status), signer $cn"
+              if ($sig.Status -ne 'Valid' -or $cn -ne $env:WINDOWS_EXPECTED_SIGNER -or -not $sig.TimeStamperCertificate) {
+                Write-Host "::error::$(Split-Path -Leaf $exe) embeds `$PLUGINSDIR\$($dll.Name), which isn't validly signed and timestamped by '$env:WINDOWS_EXPECTED_SIGNER' ($($sig.Status))."
+                $failed = $true
+              }
+            }
+            Remove-Item -LiteralPath $out -Recurse -Force
+          }
+          if ($failed) { exit 1 }
 
       - name: Install silently into Program Files
         # /S: no window and the defaults, as an administrator gets them: all users, Program Files,

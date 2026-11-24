@@ -32,6 +32,11 @@
 - release.yml sign-windows and sign-windows-installer "Register the PowerShell Gallery if the runner has
   none": runs just before the signing action, whose Install-Module needs PSGallery, and registers the
   default gallery only when it's missing (#3109). Run with pwsh against stub repository cmdlets.
+- release.yml sign-nsis-plugins (#4864): with signing on, every NSIS plugin is signed before any makensis runs,
+  each job that runs makensis puts the signed plugins in place first and checks them after, and the shipped
+  installer and uninstaller are opened to check what they embed; with signing off only sign-nsis-plugins is
+  skipped. The job's staging and recording steps and tools/use-signed-nsis-plugins.ps1 run with pwsh, with
+  DLLs signed by Microsoft beside pwsh standing in for the release-signed plugins (Windows only).
 - changelog.yml release-notes "Wait for the release to be published" and "Replace the placeholder
   notes": the job waits out a missing or draft release and fails once its limit passes, then replaces
   release.yml's placeholder body with tools/compose-release-notes.py's notes and never edits notes
@@ -1704,7 +1709,7 @@ class SigningGalleryRegistrationTests(unittest.TestCase):
     whose PowerShell had no PSGallery, so each signing job registers it first when it's missing."""
 
     WORKFLOW = WORKFLOWS / "release.yml"
-    JOBS = ("sign-windows", "sign-windows-installer")
+    JOBS = ("sign-windows", "sign-windows-installer", "sign-nsis-plugins")
     REGISTER = "Register the PowerShell Gallery if the runner has none"
     SIGN = "Sign with Azure Artifact Signing"
     GUARD = "if (-not (Get-PSRepository -Name PSGallery -ErrorAction SilentlyContinue)) {"
@@ -1776,6 +1781,211 @@ class SigningGalleryRegistrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         self.assertNotIn("Register-PSRepository", result.stdout)
         self.assertIn("PSGallery is already registered: nothing to do.", result.stdout)
+
+
+def run_pwsh_step(script: str, directory: Path, env: dict[str, str]) -> subprocess.CompletedProcess:
+    """A step's script the way GitHub's `shell: pwsh` wrapper runs it, in `directory`."""
+    path = directory / "step.ps1"
+    path.write_text(script + "\n", encoding="utf-8")
+    return subprocess.run(
+        [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", f"$ErrorActionPreference = 'stop'; . '{path}'"],
+        cwd=directory,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        check=False,
+        env={**os.environ, **env},
+        timeout=120,
+    )
+
+
+def _signed_stand_ins() -> tuple[list[Path], str] | None:
+    """Two DLLs beside pwsh that carry a valid, timestamped embedded signature, and their signer's common
+    name: stand-ins for release-signed plugins, since no test can sign with the release certificate."""
+    if not PWSH or os.name != "nt":
+        return None
+    probe = subprocess.run(
+        [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command",
+         "Get-ChildItem $PSHOME -File -Filter *.dll | ForEach-Object { $s = Get-AuthenticodeSignature $_.FullName; "
+         "if ($s.Status -eq 'Valid' -and $s.TimeStamperCertificate) { $_.FullName + '|' + "
+         "$s.SignerCertificate.GetNameInfo('SimpleName', $false) } } | Select-Object -First 2"],
+        capture_output=True, text=True, encoding="utf-8", check=False, timeout=120,
+    )
+    rows = [line.split("|", 1) for line in probe.stdout.splitlines() if "|" in line]
+    if len(rows) < 2 or rows[0][1] != rows[1][1]:
+        return None
+    return [Path(rows[0][0]), Path(rows[1][0])], rows[0][1]
+
+
+class NsisPluginSigningTests(unittest.TestCase):
+    """#4864: Smart App Control refuses the unsigned NSIS plugins (nsExec.dll, UserInfo.dll) an installer and its
+    uninstaller unpack to %TEMP%, so the installer exited 87. With signing on, sign-nsis-plugins signs every
+    plugin of the pinned NSIS before any makensis runs, and every job that runs makensis puts the signed ones in
+    place first and checks them after; with signing off nothing of that runs and the pipeline is as before."""
+
+    WORKFLOW = WORKFLOWS / "release.yml"
+    SCRIPT = REPO / "tools" / "use-signed-nsis-plugins.ps1"
+    DOWNLOAD = "Download the signed NSIS plugins"
+    USE = "Use the signed NSIS plugins"
+    CHECK = "Check makensis embedded the signed NSIS plugins"
+    SIGNED_ONLY = "env.SIGNING_ENABLED == 'true'"
+    MAKENSIS_RUNS = ('cpack -G "ZIP;NSIS"', "tools/build-windows-installer.ps1")
+
+    def job_text(self, job: str) -> str:
+        lines = self.WORKFLOW.read_text(encoding="utf-8").splitlines()
+        start = lines.index(f"  {job}:")
+        end = next(i for i in range(start + 1, len(lines)) if re.match(r"^  [a-z][a-z0-9-]*:\s*$", lines[i]))
+        return "\n".join(lines[start:end])
+
+    def test_the_job_signs_like_sign_windows_and_only_with_signing_on(self):
+        job = workflow_jobs(self.WORKFLOW)["sign-nsis-plugins"]
+        self.assertEqual(job.needs, ["validate"])
+        self.assertEqual(job.condition, "needs.validate.outputs.signing == 'true'")
+        text = self.job_text("sign-nsis-plugins")
+        self.assertIn("    environment: release-signing", text)
+        self.assertIn("id-token: write", text)
+        # No NSIS code runs beside the signing token: setup-nsis only unpacks and hash-checks the zip.
+        self.assertIn("uses: ./.github/actions/setup-nsis", text)
+        self.assertIn("run-makensis: 'false'", text)
+        sign = find_step(self.WORKFLOW, "Sign with Azure Artifact Signing", job="sign-nsis-plugins")
+        self.assertEqual(sign.uses, find_step(self.WORKFLOW, "Sign with Azure Artifact Signing", job="sign-windows").uses)
+        login = find_step(self.WORKFLOW, "Sign in to Azure (OIDC)", job="sign-nsis-plugins")
+        self.assertEqual(login.uses, find_step(self.WORKFLOW, "Sign in to Azure (OIDC)", job="sign-windows").uses)
+        self.assertIn("name: nsis-plugins-signed", text)
+
+    def test_setup_nsis_runs_nothing_from_the_zip_when_told_not_to(self):
+        action = (REPO / ".github" / "actions" / "setup-nsis" / "action.yml").read_text(encoding="utf-8")
+        skip = action.index("if ($env:RUN_MAKENSIS -eq 'false') {")
+        self.assertLess(action.index('"plugins-dir=$plugins"'), skip)
+        self.assertLess(skip, action.index("& $makensis /VERSION"))
+        self.assertLess(skip, action.index('"MAKENSIS=$makensis"'))
+
+    def simulate(self, signing: str) -> dict[str, str]:
+        """Each job's result for a run in which every job that starts succeeds."""
+        jobs = workflow_jobs(self.WORKFLOW)
+        results: dict[str, str] = {}
+        pending = list(jobs)
+        while pending:
+            ready = [key for key in pending if all(need in results for need in jobs[key].needs)]
+            self.assertTrue(ready, f"a needs cycle or an unknown job among {pending}")
+            for key in ready:
+                scope: dict[str, object] = {f"needs.{need}.result": results[need] for need in jobs[key].needs}
+                scope["needs.validate.outputs.signing"] = signing
+                scope["__success__"] = all(results[need] == "success" for need in jobs[key].needs)
+                results[key] = "success" if condition_holds(jobs[key].condition, scope) else "skipped"
+                pending.remove(key)
+        return results
+
+    def test_signing_on_signs_the_plugins_first_and_off_skips_only_that(self):
+        windows = ("build-windows", "build-windows-installer", "verify-reproducibility-windows",
+                   "validate-windows-package")
+        on = self.simulate("true")
+        self.assertEqual(on["sign-nsis-plugins"], "success")
+        for job in windows + ("sign-windows", "sign-windows-installer"):
+            self.assertEqual(on[job], "success", job)
+        off = self.simulate("false")
+        self.assertEqual(off["sign-nsis-plugins"], "skipped")
+        for job in windows:
+            self.assertEqual(off[job], "success", job)
+        # A failed or cancelled plugin signing stops the Windows build, even though validate passed.
+        jobs = workflow_jobs(self.WORKFLOW)
+        for result in ("failure", "cancelled", "skipped"):
+            scope = {"needs.validate.result": "success", "needs.sign-nsis-plugins.result": result,
+                     "needs.validate.outputs.signing": "true", "__success__": False}
+            self.assertFalse(condition_holds(jobs["build-windows"].condition, scope), result)
+
+    def test_every_makensis_run_embeds_the_signed_plugins_when_signing(self):
+        jobs = workflow_jobs(self.WORKFLOW)
+        found = []
+        for key, job in jobs.items():
+            names = step_names(self.WORKFLOW, key)
+            runs = [i for i, name in enumerate(names)
+                    if any(marker in find_step(self.WORKFLOW, name, job=key).run for marker in self.MAKENSIS_RUNS)]
+            if not runs:
+                continue
+            found.append(key)
+            with self.subTest(job=key):
+                self.assertIn("sign-nsis-plugins", job.needs)
+                setup = names.index("Setup NSIS")
+                self.assertLess(setup, names.index(self.DOWNLOAD))
+                self.assertLess(names.index(self.DOWNLOAD), names.index(self.USE))
+                self.assertLess(names.index(self.USE), min(runs))
+                self.assertGreater(names.index(self.CHECK), max(runs))
+                for name in (self.DOWNLOAD, self.USE, self.CHECK):
+                    self.assertEqual(find_step(self.WORKFLOW, name, job=key).condition, self.SIGNED_ONLY, name)
+                self.assertIn("tools/use-signed-nsis-plugins.ps1 -SignedDir", find_step(self.WORKFLOW, self.USE, job=key).run)
+                self.assertIn("tools/use-signed-nsis-plugins.ps1 -Check", find_step(self.WORKFLOW, self.CHECK, job=key).run)
+        self.assertEqual(sorted(found), ["build-windows", "build-windows-installer", "verify-reproducibility-windows"])
+
+    def test_the_shipped_installer_and_uninstaller_are_checked_for_signed_plugins(self):
+        step = find_step(self.WORKFLOW, "Verify the installer and uninstaller embed signed NSIS plugins",
+                         job="validate-windows-package")
+        self.assertEqual(step.condition, self.SIGNED_ONLY)
+        for text in ("$env:TASKSMACK_INSTALLER", "expected-uninstaller/Uninstall.exe", "'nsExec.dll', 'UserInfo.dll'"):
+            self.assertIn(text, step.run)
+        names = step_names(self.WORKFLOW, "validate-windows-package")
+        self.assertLess(names.index(step.name), names.index("Install silently into Program Files"))
+
+    @unittest.skipUnless(_signed_stand_ins(), "needs Windows pwsh and two signed DLLs beside it")
+    def test_the_signing_jobs_handoff_puts_signed_plugins_in_place(self):
+        """The job's "Stage the plugins to sign" and "Check the signatures and record them" around a stand-in
+        signing, then use-signed-nsis-plugins.ps1 on a runner's plugin folder, and its -Check."""
+        stand_ins, signer = _signed_stand_ins()  # type: ignore[misc]
+        with tempfile.TemporaryDirectory() as tmp:
+            work = Path(tmp)
+            plugins = work / "nsis" / "Plugins" / "x86-unicode"
+            plugins.mkdir(parents=True)
+            for index, name in enumerate(("nsExec.dll", "UserInfo.dll")):
+                (plugins / name).write_bytes(bytes(range(10 + index)))
+            runner_copy = work / "runner-plugins"
+            shutil.copytree(plugins, runner_copy)
+            github_env = work / "github-env.txt"
+            github_env.write_text("", encoding="utf-8")
+            stage = find_step(self.WORKFLOW, "Stage the plugins to sign", job="sign-nsis-plugins")
+            result = run_pwsh_step(stage.run, work, {"PLUGINS_DIR": str(plugins), "GITHUB_ENV": str(github_env)})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            manifest = json.loads((work / "to-sign" / "plugins.json").read_text(encoding="utf-8-sig"))
+            self.assertEqual(sorted(manifest["plugins"]), ["UserInfo.dll", "nsExec.dll"])
+            self.assertEqual(manifest["plugins"]["nsExec.dll"]["unsigned"],
+                             hashlib.sha256((plugins / "nsExec.dll").read_bytes()).hexdigest().upper())
+            listed = github_env.read_text(encoding="utf-8-sig").splitlines()
+            self.assertEqual(listed[0], "NSIS_PLUGIN_FILES<<EOF")
+            self.assertEqual(sorted(Path(line).name for line in listed[1:-1]), ["UserInfo.dll", "nsExec.dll"])
+            self.assertEqual(listed[-1], "EOF")
+
+            # The signing action, stood in for by two validly signed DLLs.
+            for stand_in, name in zip(stand_ins, ("nsExec.dll", "UserInfo.dll")):
+                shutil.copyfile(stand_in, work / "to-sign" / name)
+            record = find_step(self.WORKFLOW, "Check the signatures and record them", job="sign-nsis-plugins")
+            result = run_pwsh_step(record.run, work, {"WINDOWS_EXPECTED_SIGNER": signer})
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            def use(*extra: str, expected_signer: str = signer) -> subprocess.CompletedProcess:
+                return subprocess.run(
+                    [PWSH, "-NoLogo", "-NoProfile", "-NonInteractive", "-File", str(self.SCRIPT), *extra,
+                     "-SignedDir", str(work / "to-sign"), "-PluginsDir", str(runner_copy),
+                     "-ExpectedSigner", expected_signer],
+                    capture_output=True, text=True, encoding="utf-8", check=False, timeout=120,
+                )
+
+            self.assertEqual(use("-Check").returncode, 1, "the unsigned plugins must fail -Check")
+            self.assertEqual(use(expected_signer="Matt Gradwohl").returncode, 1, "another signer must be refused")
+            self.assertEqual(hashlib.sha256((runner_copy / "nsExec.dll").read_bytes()).hexdigest().upper(),
+                             manifest["plugins"]["nsExec.dll"]["unsigned"], "a refused set must change nothing")
+            result = use()
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            for stand_in, name in zip(stand_ins, ("nsExec.dll", "UserInfo.dll")):
+                self.assertEqual((runner_copy / name).read_bytes(), stand_in.read_bytes())
+            result = use("-Check")
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+            # Another NSIS release's plugin, or one the signed set doesn't cover, is refused.
+            (runner_copy / "nsExec.dll").write_bytes(b"another release")
+            self.assertEqual(use().returncode, 1)
+            self.assertEqual(use("-Check").returncode, 1)
+            shutil.copyfile(work / "to-sign" / "nsExec.dll", runner_copy / "nsExec.dll")
+            (runner_copy / "System.dll").write_bytes(b"unsigned")
+            self.assertEqual(use().returncode, 1)
 
 
 # Stands in for the release-notes job's gh calls (#3144). `release view` answers isDraft from the next

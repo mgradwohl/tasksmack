@@ -125,7 +125,8 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
      <path>` for a candidate's build): it writes the Sandbox file, starts the Sandbox, waits, closes it and prints
      `results.md` with a `RESULT: PASS` or `RESULT: FAIL` line. It needs no typing in the Sandbox. Run it when
      nobody is using the desktop, never from CI. `-WinGet` runs it through `SandboxTest.ps1` and winget (see
-     "Testing in Windows Sandbox").
+     "Testing in Windows Sandbox"). The Sandbox enforces Smart App Control, which GitHub's runners don't: it is
+     the check that the installer's NSIS plugins load, which needs them signed (`sign-nsis-plugins`, #4864).
    - WSL installs the Linux packages on the supported distros.
 5. **Manual checks** by the maintainer: UAC elevation, lock and virtual-desktop behaviour, and a real install of
    the installer.

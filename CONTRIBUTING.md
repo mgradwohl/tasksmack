@@ -3718,7 +3718,7 @@ identity, `CN=Matt Gradwohl, O=Matt Gradwohl, L=REDMOND, S=wa, C=US`, so UAC and
 enter `release-signing`: every tag run, and dry runs dispatched from `main` or `release/*`. Both
 take a reviewed PR to change, so only reviewed code is ever signed (#2988). A dry run from any other
 branch, a PR branch included, packages both `.zip`s as before #2302: without
-`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-windows` and
+`TaskSmackHelper.exe` (the helper never ships unsigned), with `sign-nsis-plugins`, `sign-windows` and
 `sign-windows-installer` skipped (`build-windows-installer`, `validate-windows-package` and
 `create-release` accept those skips only then), and with no signature check. It still builds both
 installers the same way, from the unsigned `.zip`s and the first pass's own uninstallers, and runs
@@ -3730,6 +3730,15 @@ its backport PR merges; follow up with a fix PR if that run fails.
 
 With signing on, `release.yml` does this:
 
+0. `sign-nsis-plugins` (like `sign-windows`: `windows-2025`, `release-signing`, no build; its only checkout is
+   `.github/actions/setup-nsis`, run with `run-makensis: false`, so it unpacks and hash-checks the pinned NSIS but
+   runs none of it) signs every DLL in that NSIS's `Plugins\x86-unicode`, the plugins makensis embeds, and uploads
+   them with `plugins.json` (each one's unsigned and signed SHA-256) as `nsis-plugins-signed` (#4864). Every job
+   below that runs makensis (`build-windows`, `build-windows-installer`, `verify-reproducibility-windows`) first
+   runs `tools/use-signed-nsis-plugins.ps1`, which checks its runner's plugins are the same NSIS release's and the
+   signed ones are signed by `Matt Gradwohl`, and copies them in place, and runs it again with `-Check` after.
+   Smart App Control refuses the unsigned plugins an installer unpacks to `%TEMP%`, so without this the installer
+   exits 87 and the uninstaller deletes nothing. With signing off it's skipped and makensis embeds NSIS's own.
 1. `build-windows` (both architectures) configures with `-DTASKSMACK_PACKAGE_WINDOWS_HELPER=ON`,
    `-DTASKSMACK_SIGN_AFTER_PACKAGING=ON` and `-DTASKSMACK_EXPECTED_SIGNER=Matt Gradwohl`, packages
    the `.zip` and the NSIS installer's first pass with CPack (`cpack -G "ZIP;NSIS"`, the helper
@@ -3739,7 +3748,7 @@ With signing on, `release.yml` does this:
    installer go up as `windows-nsis-<arch>`. NSIS is 3.13 from `.github/actions/setup-nsis`, pinned by
    SHA-256 (`windows-2025` ships none, `windows-11-arm` 3.10).
 2. `sign-windows` (on `windows-2025`; no checkout, no build; in `release-signing`, and with
-   `sign-windows-installer` the only jobs with `id-token: write` apart from `create-release`'s Sigstore
+   `sign-windows-installer` and `sign-nsis-plugins` the only jobs with `id-token: write` apart from `create-release`'s Sigstore
    signing and attestations) downloads both unsigned `.zip`s and uninstallers, extracts the two executables from each
    `.zip`, signs in with `azure/login` and signs all six files with `azure/artifact-signing-action`
    (SHA-256 file digest, RFC 3161 SHA-256 timestamp from `http://timestamp.acs.microsoft.com`, every
@@ -3763,7 +3772,9 @@ With signing on, `release.yml` does this:
    certificate that Microsoft's ID Verified CA issued and that carries an Artifact Signing extended
    key usage, timestamped, and by the same subject. It runs the same check on the installer, installs
    it and runs it on `TaskSmack.exe`, `TaskSmackHelper.exe` and `Uninstall.exe` as installed (see
-   [Release Artifact Validation](#release-artifact-validation)). Only then can `create-release` hash
+   [Release Artifact Validation](#release-artifact-validation)). It also opens the installer and the signed
+   uninstaller with 7-Zip and requires every plugin DLL under `$PLUGINSDIR` to pass the same signature check.
+   Only then can `create-release` hash
    them into the Sigstore-signed `SHA256SUMS` and publish them, so an unsigned or wrongly signed helper, installer or uninstaller
    can't be published.
 
