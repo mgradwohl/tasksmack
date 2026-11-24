@@ -11,7 +11,8 @@
       Safe means admin-only: the file, its folder and every folder above can be changed by no one but SYSTEM,
       Administrators and TrustedInstaller (the owners, the write rights of every allow entry), none is a link
       or junction, and the volume is a fixed NTFS one: the same test TaskSmackHelper and Replace Task Manager
-      apply to an install (BrokerHelper::checkUnchangeableNamed). A valid signature isn't enough (#4660): the
+      apply to an install (BrokerHelper::checkUnchangeableNamed). Over a volume's root, Delete doesn't count: a
+      root can't be deleted or renamed (#4850). A valid signature isn't enough (#4660): the
       verdict is on a path a standard user could swap before the installer starts it, and even the genuine
       uninstaller deletes its files by path, through any junction a standard user planted in the folder.
     -Mode Folder: exit 0 when -Path, or the nearest folder above it that exists, is admin-only (the
@@ -50,6 +51,14 @@ $ChangesItem = $Rights::WriteData -bor $Rights::AppendData -bor $Rights::WriteEx
 $ChangesChildren = $Rights::DeleteSubdirectoriesAndFiles -bor $Rights::Delete -bor $Rights::ChangePermissions -bor
     $Rights::TakeOwnership
 
+# $Mask for $Item, without Delete when $Item is a volume's root directory (#4850): a root can't be deleted or renamed,
+# so Delete there replaces nothing below it. Windows Sandbox's C:\ gives Authenticated Users Modify on the root itself.
+function Get-ItemMask([string]$Item, $Mask) {
+    $root = [System.IO.Path]::GetPathRoot($Item)
+    if (-not $root -or $root.TrimEnd('\', '/') -ne $Item.TrimEnd('\', '/')) { return $Mask }
+    return [System.Security.AccessControl.FileSystemRights]([int]$Mask -band (-bnot [int]$Rights::Delete))
+}
+
 # Why $Item can be changed by someone who isn't an administrator, or $null when no one can.
 function Get-ChangeProblem([string]$Item, $Mask) {
     $info = Get-Item -LiteralPath $Item -Force
@@ -77,16 +86,16 @@ function Get-AdminOnlyProblem([string]$Target) {
     $drive = New-Object System.IO.DriveInfo($root)
     if ($drive.DriveType -ne 'Fixed' -or $drive.DriveFormat -ne 'NTFS') { return "$root isn't a fixed NTFS volume" }
     $item = Get-Item -LiteralPath $full -Force
-    $problem = Get-ChangeProblem $full $ChangesItem
+    $problem = Get-ChangeProblem $full (Get-ItemMask $full $ChangesItem)
     if ($problem) { return $problem }
     $folder = if ($item.PSIsContainer) { $full } else { [System.IO.Path]::GetDirectoryName($full) }
     if (-not $item.PSIsContainer) {
-        $problem = Get-ChangeProblem $folder ($ChangesItem -bor $ChangesChildren)
+        $problem = Get-ChangeProblem $folder (Get-ItemMask $folder ($ChangesItem -bor $ChangesChildren))
         if ($problem) { return $problem }
     }
     $parent = [System.IO.Path]::GetDirectoryName($folder)
     while ($parent) {
-        $problem = Get-ChangeProblem $parent $ChangesChildren
+        $problem = Get-ChangeProblem $parent (Get-ItemMask $parent $ChangesChildren)
         if ($problem) { return $problem }
         $parent = [System.IO.Path]::GetDirectoryName($parent)
     }
@@ -111,7 +120,7 @@ function Get-AboveProblem([string]$Folder) {
     if ($drive.DriveType -ne 'Fixed' -or $drive.DriveFormat -ne 'NTFS') { return "$root isn't a fixed NTFS volume" }
     $parent = [System.IO.Path]::GetDirectoryName($Folder)
     while ($parent) {
-        $problem = Get-ChangeProblem $parent $ChangesChildren
+        $problem = Get-ChangeProblem $parent (Get-ItemMask $parent $ChangesChildren)
         if ($problem) { return $problem }
         $parent = [System.IO.Path]::GetDirectoryName($parent)
     }
