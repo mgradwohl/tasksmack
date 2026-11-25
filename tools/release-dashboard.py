@@ -536,11 +536,27 @@ def collect_live(gh: GitHub, watched: Sequence[tuple[str, str]], branch: str, no
         behind = compared.get("ahead_by")
     return {
         "branch": branch,
+        "head": branch_head(gh, branch),
         "open_pull_requests": list(gh.graphql_nodes(OPEN_PULL_REQUESTS_QUERY, ("repository", "pullRequests"))),
         "latest_runs": latest,
         "dry_runs": dry_runs,
         "dry_run_behind": behind,
     }
+
+
+def branch_head(gh: GitHub, branch: str) -> dict[str, Any] | None:
+    """@p branch's head commit and when it landed there, which the soak counts from (#4869): the first push run
+    for that commit on the branch, since a merge queue's commit or a cherry-pick is dated before it lands, and the
+    committer date only when no push run has started yet. None when the branch is gone (a retired release/X.Y)."""
+    try:
+        head = gh.rest(f"commits/{urllib.parse.quote(branch, safe='')}")
+    except GitHubError as error:
+        if "HTTP 404" in str(error) or "HTTP 422" in str(error):
+            return None
+        raise
+    runs = gh.rest("actions/runs", branch=branch, event="push", head_sha=head["sha"], per_page=100)["workflow_runs"]
+    landed = min((run["created_at"] for run in runs), default=None)
+    return {"sha": head["sha"], "at": landed or head["commit"]["committer"]["date"]}
 
 
 def _run_summary(run: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -1365,13 +1381,14 @@ def ship_list(
                 )
             )
         else:
-            soaked = health["hours"] is None or health["hours"] >= SOAK_HOURS
+            # Unknown is not soaked (#4869): a row with no start time stays active.
+            soaked = health["hours"] is not None and health["hours"] >= SOAK_HOURS
             rows.append(
                 _row(
                     "main",
                     f"{live['branch']} green for {SOAK_HOURS} hours",
                     "done" if soaked else "active",
-                    "green" if health["hours"] is None else f"green for {_duration(health['hours'])}",
+                    "green, start unknown" if health["hours"] is None else f"green for {_duration(health['hours'])}",
                     note="The candidate needs every push check and nightly job green for a day, Heavy Checks' nightly run included.",
                 )
             )
@@ -1503,13 +1520,21 @@ def read_live(
             "issue_url": f"https://github.com/{repo}/issues/{open_period['n']}",
         }
     else:
-        last = max((period["end"] for period in periods if period["end"] is not None), default=None)
+        # Green since the later of the last red period's end and the head commit: a soak is on the candidate,
+        # so a branch that was never red, or a new commit after a red period, starts the count again (#4869).
+        ends = [period["end"] for period in periods if period["end"] is not None]
+        head = raw.get("head")
+        if head is not None:
+            # A clock that ran fast can date a commit after now: count from now, never from the future.
+            ends.append(min(parse_time(head["at"]), now))
+        last = max(ends, default=None)
         main = {
             "state": "green",
             "since": last,
             "hours": None if last is None else round(hours_between(last, now), 1),
             "issue": None,
         }
+    main["head"] = None if raw.get("head") is None else raw["head"]["sha"]
     main["workflows"] = [
         {
             "name": entry["name"],

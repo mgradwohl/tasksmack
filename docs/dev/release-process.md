@@ -114,7 +114,9 @@ local Linux coverage figure (`tools/coverage.sh`) before it merges.
 
 ### 6. Candidate and validation
 
-1. **Soak:** main green for 24 hours, with every required push check and the nightly jobs passing.
+1. **Soak:** main green for 24 hours, with every required push check and the nightly jobs passing. The 24 hours
+   are on the branch's head commit: each merge starts them again, and the dashboard counts from when the head
+   landed.
 2. **Candidate:** one exact commit proposed on the tracker. Main already reads `VERSION X.Y.0` in `CMakeLists.txt`,
    from the bump right after the last branch cut (see [Versions](#versions)); if it doesn't, merge that bump first.
 3. **Signed dry run on that exact SHA,** with every job green. If it fails: a fix PR, then a new candidate.
@@ -238,7 +240,7 @@ fixed at its source:
 | "Performance issues closed" | the milestone's `performance` issues: stage 4's measure against the baselines files its regressions there |
 | "Tracker checklist" | the task list in the tracker's body |
 | "Nothing waiting on the maintainer" | open issues labelled `question` or `manual close`. Listed by lane, they come after the lane's own work in a "Waiting on the maintainer" group, and the lane's count says how many (#4718). Under that heading and under this row the issues don't repeat it; anywhere else one is listed, it carries a "Waiting on the maintainer" chip. |
-| "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
+| "main green for 24 hours" | `main-health.yml`'s `ci-red-main` issues: each one's open time is a red period. Green time counts from the later of the last red period's end and when the branch's head commit landed (its first push run, else its commit time), so a new commit starts the 24 hours again and a branch never red counts from its head. The workflow list under it shows each watched workflow's latest push run and latest nightly run, as `main-health.yml` judges them |
 | "Pull requests merged" | the open pull requests on the milestone or closing one of its issues: how long each has been ready, and what it's waiting on (failing checks, a conflict, open review threads, a catch-up with its base, running checks) |
 | "Signed release dry run on main" | `release.yml`'s latest manual run on main, and how many commits main is past it |
 | "Candidate approved" | the first one-line tracker comment after the freeze that approves the candidate or release |
