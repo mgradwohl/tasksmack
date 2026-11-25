@@ -1695,7 +1695,7 @@ jobs:
     # happen to be present.
     container:
       # By digest (#3908): the release gate's base can't change under one tag's runs. Renovate refreshes it by PR.
-      image: ubuntu:24.04@sha256:73b999393d07f2bf65a40373778a44dc9a6d54ad7718d29247d8ff9413c4d6a8
+      image: ubuntu:24.04@sha256:562111b88caa79c71391c0c4d3c2114a7d5c35915c20561fd893cb1e07929e6b
     # Container jobs default `run` steps to `sh` (dash on Ubuntu), not bash, even though
     # every other job in this workflow gets bash by default on the bare VM runner. The
     # steps below use bash-only [[ ... ]] conditions, which dash doesn't support.
