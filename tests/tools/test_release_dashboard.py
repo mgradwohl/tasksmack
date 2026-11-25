@@ -314,6 +314,8 @@ LIVE = {
         run(908, "success", at(19), sha="b" * 40),
     ],
     "dry_run_behind": 3,
+    # Older than the last red period's end, so the soak counts from that end.
+    "head": {"sha": "c" * 40, "at": at(19, 20)},
 }
 
 CI_COUNTS = [
@@ -1168,8 +1170,11 @@ class ShipListTests(unittest.TestCase):
         )
         day = self.case(live=self.live(main={"state": "green", "hours": 24.0}))
         self.assertEqual((day["main"]["state"], day["main"]["summary"]), ("done", "green for 24 h"))
+        # No start time known is not soaked (#4869).
         never = self.case(live=self.live(main={"state": "green", "hours": None}))
-        self.assertEqual((never["main"]["state"], never["main"]["summary"]), ("done", "green"))
+        self.assertEqual((never["main"]["state"], never["main"]["summary"]), ("active", "green, start unknown"))
+        young = self.case(live=self.live(main={"state": "green", "hours": 23.9}))
+        self.assertEqual(young["main"]["state"], "active")
         long = self.case(live=self.live(main={"state": "green", "hours": 100.0}))
         self.assertEqual(long["main"]["summary"], "green for 4 days")
 
@@ -1305,6 +1310,25 @@ class BuildTests(unittest.TestCase):
         self.assertEqual((scoped["waiting"], scoped["ready_since"]), ("1 review thread open", "2026-01-20T03:00:00Z"))
         self.assertEqual((other["waiting"], other["ready_since"]), ("a draft", None))
 
+    def test_a_new_head_restarts_the_soak(self):
+        # #4869: the soak is on the candidate, so a head newer than the last red period counts from the head.
+        live = {**LIVE, "head": {"sha": "d" * 40, "at": at(20, 6)}}
+        release = dashboard.build_release(RAW["v1.1.0"], published(), RED_ISSUES, CI_COUNTS, live, REPOSITORY, NOW, {(1, 1, 0)})
+        main = release["live"]["main"]
+        self.assertEqual((main["state"], main["since"], main["hours"], main["head"]), ("green", at(20, 6), 6.0, "d" * 40))
+        self.assertEqual((rows(release)["main"]["state"], rows(release)["main"]["summary"]), ("active", "green for 6 h"))
+        # A branch that was never red counts from its head, not as soaked.
+        never = dashboard.build_release(RAW["v1.1.0"], published(), [], CI_COUNTS, live, REPOSITORY, NOW, {(1, 1, 0)})
+        self.assertEqual((never["live"]["main"]["hours"], rows(never)["main"]["state"]), (6.0, "active"))
+        # A head dated after now counts from now.
+        future = {**LIVE, "head": {"sha": "e" * 40, "at": at(20, 15)}}
+        ahead = dashboard.build_release(RAW["v1.1.0"], published(), RED_ISSUES, CI_COUNTS, future, REPOSITORY, NOW, {(1, 1, 0)})
+        self.assertEqual((ahead["live"]["main"]["since"], ahead["live"]["main"]["hours"]), (at(20, 12), 0.0))
+        # Older data with no head keeps the last red period's end.
+        old = {key: value for key, value in LIVE.items() if key != "head"}
+        kept = dashboard.build_release(RAW["v1.1.0"], published(), RED_ISSUES, CI_COUNTS, old, REPOSITORY, NOW, {(1, 1, 0)})
+        self.assertEqual((kept["live"]["main"]["since"], kept["live"]["main"]["head"]), ("2026-01-20T02:00:00Z", None))
+
     def test_main_red_now(self):
         red = [*RED_ISSUES, {"number": 310, "title": "CI: main is red", "created_at": at(20, 11), "closed_at": None}]
         release = dashboard.build_release(
@@ -1382,6 +1406,39 @@ class BuildTests(unittest.TestCase):
         index = dashboard.build_index([build("v1.0.0"), build("v1.2.0")], REPOSITORY, NOW)
         self.assertEqual(index["current"], "v1.2.0")
         self.assertIsNone(dashboard.build_index([], REPOSITORY, NOW)["current"])
+
+
+class HeadLookup:
+    """Answers branch_head's two calls: the branch's head commit, and the push runs for it."""
+
+    def __init__(self, runs=(), missing=False):
+        self.runs = list(runs)
+        self.missing = missing
+        self.asked = []
+
+    def rest(self, path, **params):
+        self.asked.append((path, params))
+        if path.startswith("commits/"):
+            if self.missing:
+                raise dashboard.GitHubError(f"GET {path}: HTTP 404")
+            return {"sha": "f" * 40, "commit": {"committer": {"date": at(20, 1)}}}
+        return {"workflow_runs": [{"created_at": created} for created in self.runs]}
+
+
+class BranchHeadTests(unittest.TestCase):
+    def test_the_first_push_run_is_when_the_head_landed(self):
+        gh = HeadLookup(runs=[at(20, 5), at(20, 3), at(20, 4)])
+        self.assertEqual(dashboard.branch_head(gh, "release/0.11"), {"sha": "f" * 40, "at": at(20, 3)})
+        self.assertEqual(gh.asked[0][0], "commits/release%2F0.11")
+        self.assertEqual(
+            gh.asked[1], ("actions/runs", {"branch": "release/0.11", "event": "push", "head_sha": "f" * 40, "per_page": 100})
+        )
+
+    def test_no_push_run_yet_uses_the_commit_time(self):
+        self.assertEqual(dashboard.branch_head(HeadLookup(), "main"), {"sha": "f" * 40, "at": at(20, 1)})
+
+    def test_a_retired_branch_has_no_head(self):
+        self.assertIsNone(dashboard.branch_head(HeadLookup(missing=True), "release/0.10"))
 
 
 class FakeGitHub:
